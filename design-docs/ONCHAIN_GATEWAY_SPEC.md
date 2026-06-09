@@ -12,10 +12,10 @@
 ## 0. What this is
 
 A fully on-chain "buy cycles with fiat or stablecoins" service: a single
-verifiable Motoko backend canister + an asset canister. Card (Stripe, inbound),
-ck-USDC (ICRC-2), and USDC-on-Base (x402) rails all converge on a unified
-CMC mint. Successor in spirit to Cycle.Express with CyclePay's capability
-surface, but run as one auditable Wasm.
+verifiable Motoko backend canister + an asset canister. **Two rails in scope —
+Card (Stripe, inbound) and ck-USDC (ICRC-2)** — converging on a unified CMC
+mint. (USDC-on-Base/x402 is **deferred**, see §11.) Successor in spirit to
+Cycle.Express with CyclePay's capability surface, but run as one auditable Wasm.
 
 **Tooling:** `icp-cli` (never `dfx`), `mops` for Motoko deps, Motoko with
 `persistent actor` + orthogonal persistence.
@@ -27,9 +27,9 @@ surface, but run as one auditable Wasm.
 | # | Decision | Rationale |
 |---|---|---|
 | 1 | **v1 = production money-handler.** Full idempotency + recovery on day one; every rail must be safe to lose funds on. | Highest correctness bar; this is real money, not a demo. |
-| 2 | **Rails ship sequenced, each GA'd independently:** Card → ck-USDC → Base. | Real users/revenue while the Base (hardest) rail is still being hardened; Base bugs can't endanger proven rails. The order state machine is rail-pluggable from day one. |
+| 2 | ⚠️ **Rails ship sequenced, each GA'd independently:** **Card → ck-USDC.** **Base/x402 dropped from scope for now** (see §11). | Card first for revenue; ck-USDC is pure on-chain. Base deferred — unclear consumer (a generic x402 agent wouldn't use II, a different model) and it carried *all* the EVM-crypto risk. Order state machine stays rail-pluggable so Base can return later. |
 | 3 | **Scope = human, one-shot, II-authenticated purchases only.** | Tightest audit surface. |
-| 3a | ⚠️ **Override — OUT OF SCOPE entirely:** subscriptions, auto-refill, GitHub OIDC CI top-ups, delegation/agent HTTP API. | The original doc listed these. Subscriptions/auto-refill are impossible on card (need outbound `sk_live`) and only ever rode on a ck-USDC standing allowance, which is also cut. OIDC/delegation cut for scope. **Consequence: the product makes _almost_ no outbound HTTPS** (see §3 forex exception). |
+| 3a | ⚠️ **Override — OUT OF SCOPE entirely:** subscriptions, auto-refill, GitHub OIDC CI top-ups, delegation/agent HTTP API, **Base/x402 rail**. | The original doc listed these. Subscriptions/auto-refill are impossible on card (need outbound `sk_live`) and only ever rode on a ck-USDC standing allowance, which is also cut. OIDC/delegation cut for scope. Base/x402 deferred (§11). **Consequence: the product makes _almost_ no outbound HTTPS** (see §3 forex exception). |
 | 4 | **Destinations:** any canister (`notify_top_up`, `TPUP` memo) **or** a cycles-ledger account (`notify_mint_cycles`, `MINT` memo). | Full parity with cycle-express's two delivery modes. Note asymmetry: only canister destinations can become `Undeliverable`. |
 
 ---
@@ -143,7 +143,7 @@ issue manual fiat refunds.
 
 - `orders : Map<OrderId, Order>`
 - `journal : Map<OrderId, JournalEntry>` (status, transfer intent, block_index, cycles, retries, timestamps, destination)
-- per-rail dedup: `processedStripeEvents`, `processedIntents`, `processedCkUsdcBlocks : Set<Nat>`, `processedBaseTx : Set<Text>`
+- per-rail dedup: `processedStripeEvents`, `processedIntents`, `processedCkUsdcBlocks : Set<Nat>` (a `processedBaseTx` set joins if/when Base returns, §11)
 - `errorQueue` (Type 1 + Type 2, bounded)
 - `principalsToOrders : Map<Principal, [OrderId]>`
 - `auditLog` — **bounded ring buffer**
@@ -196,16 +196,50 @@ explicit `(with migration = ...)` functions (see migrating-motoko skills).
   (no `pumping`-style deadlock).
 - `notify_*` is idempotent on `block_index`, so resume can't double-mint.
 
-### 5.3 Treasury management
+### 5.3 Treasury management + ICP burn cap
 
 - **`AwaitingTreasury`**: a Paid order the float can't yet fund sits here; the
   recovery timer retries until refill; **soft UI gate** disables tiers when the
   float is low; **balance alerts** via a query method + audit log; a **max-wait
   bound** escalates to the error queue (operator refunds).
+- ⚠️ **Per-period ICP burn cap** (decided): a hard, operator-configured ceiling on
+  total ICP the canister will convert to cycles within a rolling window. This is
+  the **primary blast-radius bound** if the webhook secret leaks (forged "paid"
+  webhooks can't drain more than the cap before detection + rotation) — and it
+  doubles as a safety limit against any mint-path bug. When the cap is hit, new
+  mints pause (orders sit in `AwaitingTreasury`-style hold) + alert; resets next
+  window or on manual override. Independent of SEV — works on any subnet.
 
 ---
 
 ## 6. Rails
+
+### 6.0 Ingress — two paths (decided)
+
+HTTP requests reach a canister via the IC boundary node, which packages them into
+a Candid `HttpRequest` and calls `http_request` (query) → if the handler returns
+`upgrade = ?true`, it re-issues to `http_request_update` (update, through
+consensus). **Crucially, HTTP requests arrive as the _anonymous_ principal** —
+the boundary node does not propagate Internet Identity. So HTTP routes can only be
+authenticated by their **payload**, never by `caller == owner`. This forces two
+ingress paths:
+
+- **Candid calls (agent-js, II-authenticated)** — the entire app API: create
+  order (locks rate, captures owner), query status, order history, admin /
+  error-queue resolution, **and the ck-USDC `approve`/pull flow**. Caller = the
+  real II principal.
+- **HTTP route (anonymous, payload-authed)** — **exactly one: `POST /webhook/stripe`**,
+  authenticated by the HMAC. Stripe can't make Candid calls, so this is
+  irreducible; nothing else needs HTTP ingress now that Base/x402 is deferred.
+
+⚠️ **Hand-rolled `Http.mo` on `mo:core`, not `mo:server`** (decided): `mo:server`
+carries the deprecated `mo:base` and asset-store / caching / certification
+machinery we don't need (assets live on a separate canister; this canister only
+POSTs). With a single POST route that **always** returns `upgrade = ?true`,
+response certification is moot (the gateway discards the query response and re-runs
+the update through consensus). The minimal surface: parse `HttpRequest`,
+**case-insensitive header lookup** (for `Stripe-Signature`), strip the query
+string, match the one path, body-size guard, sane status codes.
 
 ### 6.1 Card (Stripe) — inbound-only, no `sk_live`
 
@@ -223,62 +257,53 @@ explicit `(with migration = ...)` functions (see migrating-motoko skills).
 - ⚠️ **Hold ck-USDC, mint from the shared ICP float** (not per-order DEX). Operator
   converts accrued ck-USDC→ICP off-chain to refill. Consistent with the card rail.
 
-### 6.3 USDC on Base (x402) — threshold ECDSA + EVM RPC *(release 3, biggest unknown)*
+### 6.3 USDC on Base (x402) — ⚠️ DEFERRED / OUT OF SCOPE FOR NOW
 
-- First `/x402/topup` → `402` + payment requirements; user signs **EIP-3009
-  `transferWithAuthorization`** off-chain (gasless for them), reposts with
-  `X-PAYMENT`.
-- ⚠️ **Verify the authorization locally first** (decided): the canister runs
-  **secp256k1 `ecrecover` + EIP-712 typed-data hashing** in Motoko to confirm the
-  signature recovers to the claimed `from` before spending any gas (rejects bad
-  auths instantly, no wasted gas). Also check `validAfter`/`validBefore` window +
-  nonce-unseen.
-- Then **as relayer** submits `transferWithAuthorization` on Base: derive Base
-  address from threshold-ECDSA pubkey (keccak) → ABI-encode the call → build +
-  RLP-encode + keccak-hash the tx → `sign_with_ecdsa` → broadcast via the **EVM
-  RPC canister** → settlement.
-- **Settlement → `Paid`** only when `eth_getTransactionReceipt` shows
-  `status=success` **and** recipient/amount/`from` match, after a small
-  **confirmation buffer** (Base can reorg). **Dedup on tx hash**; EIP-3009 nonce
-  replay guard.
-- **EVM RPC multi-provider consensus** used for both broadcast and receipt reads.
-- ⚠️ **Gas tank:** the canister-as-relayer **must hold ETH on Base** to pay gas
-  (operator-funded). USDC settles to the same hot address and accrues as revenue.
-  Gas-low → fail-closed/soft-gate the Base tier + alert (no money lost; the
-  signed authorization simply isn't submitted until refilled).
-
-#### Crypto: all-Motoko (decided)
-
-⚠️ **All EVM crypto in Motoko**, not a Rust helper canister — preserves the
-single-Wasm thesis. We rejected delegating to a Rust/Alloy signer canister
-despite its maturity. **New `mops` packages will be written as needed.**
-
-- **Surface:** keccak256, RLP encode/decode, ABI-encoding, EIP-712 typed-data
-  hashing, **secp256k1 `ecrecover`** (the gnarly one), pubkey→address. (Outer-tx
-  signing is IC threshold ECDSA, not a package.)
-- **Validation gate (all green before Base go-live):** (1) Ethereum/EIP-712/
-  EIP-3009 **known-answer test vectors**; (2) **differential/property testing**
-  vs a reference impl (ethers.js/Alloy) — randomized inputs, assert byte-equality
-  (catches `ecrecover` malleability / recovery-id edge cases); (3) **Base Sepolia
-  end-to-end** (digest→ecrecover→sign→broadcast→receipt). External crypto audit
-  not gated but strongly advisable (easy to add).
+Dropped from current requirements (see §11 for the full rationale + the prior
+design work that's parked there). In short: unclear consumer (a generic x402
+client is an agent, which wouldn't use II — a different ownership model), and it
+carried *all* the EVM-crypto risk (keccak/RLP/ABI/EIP-712/`ecrecover`, threshold
+ECDSA, EVM RPC, ETH gas tank). The order state machine remains rail-pluggable so
+it can return cleanly later.
 
 ---
 
 ## 7. Security & trust
 
-- ⚠️ **Webhook signing secret protected with vetKeys** (reverses the locked
-  "no vetKeys for v1"). The only stored secret; HMAC is symmetric, so "verify" =
-  "forge" → it must be confidential.
-  - **Client-side IBE provisioning:** operator encrypts the secret against the
-    canister's vetKD master public key; only **ciphertext** transits the boundary
-    node / lives in stable memory + checkpoints.
-  - **Derive-per-webhook + zeroize in-message** (no plaintext caching) so the
-    decrypted secret **never persists into a checkpoint.**
-  - **Honest limit:** a brief in-use RAM exposure remains during HMAC
-    computation (SEV-SNP would close it; out of scope). Blast radius if leaked is
-    bounded — forge "paid" webhooks → free cycles at operator expense; Stripe
-    account/PII untouched; detectable via reconciliation; rotatable.
+- ⚠️ **Webhook signing secret: SEV-SNP for confidentiality + ICP burn cap for
+  blast-radius** (reverses the earlier "pull vetKeys in" decision — **no vetKeys
+  at all**). The only stored secret; HMAC is symmetric, so "verify" = "forge" → it
+  must be kept confidential. Stored **plaintext** in canister state; protected by
+  the hardware, not by cryptography in the canister. Set via an admin method.
+
+  **Why this is acceptable (the documented tradeoff):** even in the worst case
+  where the secret leaks, an attacker can only forge "paid" webhooks → mint free
+  cycles at operator expense, and a **per-period ICP burn cap** (see §5.3) bounds
+  how much can be drained before detection + secret rotation. Stripe account/PII
+  are untouched (no `sk_live`); forged orders are detectable via off-chain
+  reconciliation; the secret is rotatable. So the loss is **bounded, detectable,
+  and recoverable** regardless of whether SEV holds.
+
+  **SEV-SNP caveats that MUST be tracked (per `ARCHITECTURE_ANALYSIS.md` §8 —
+  documenting honestly, not assuming "safe"):**
+  - **Confidentiality rests on hardware + attestation**, not math: SEV-SNP
+    unbroken *and* every replica in the subnet running attested SEV-SNP. Trust
+    shifts to AMD; SEV-SNP has a published side-channel CVE history.
+  - ⚠️ **Memory encryption ≠ state-at-rest encryption.** SEV-SNP protects RAM, but
+    canister state is also **checkpointed to disk and state-synced** between nodes.
+    **If checkpoints/state-sync are not also confidential on the target subnet, a
+    plaintext secret leaks through that path and SEV buys nothing.** *Verify this
+    hardest before relying on it.*
+  - **Provisioning exposure:** setting the secret via an update call means the
+    argument **transits the boundary node** (TLS-terminated there) and is processed
+    as an ingress message — exposed at provisioning unless an attestation-tied
+    confidential channel is used.
+  - **Maturity / availability:** depends on an attested SEV-SNP confidential subnet
+    being production-ready and the canister actually deployed there. **If no such
+    subnet is available when M1 ships, the secret is plaintext on a normal subnet
+    and the ICP burn cap + accountable node providers are the *only* protections.**
+    The burn cap is the robust, available-today backstop; SEV is the confidentiality
+    layer that may or may not be available — design so launch doesn't *block* on it.
 - **Governance:** ⚠️ **flat controller allowlist, equal privileges** — any
   controller can upgrade, withdraw funds/cycles, provision/rotate the secret,
   resolve error-queue entries, set tiers, adjust forex params, pause, edit the
@@ -286,10 +311,9 @@ despite its maturity. **New `mops` packages will be written as needed.**
   the operator set; any one can upgrade-then-drain." M-of-N (note: IC controllers
   are OR-semantics, so true M-of-N upgrades need a multisig-canister controller)
   and SNS are the documented hardening path.
-- **Base key isolation:** unisolated per the locked topology, with blast-radius
-  mitigations — periodic **sweep hot→cold** (keep only a working gas balance),
-  signing factored into `Ecdsa.mo` (cheap to isolate later), **per-tx/per-period
-  signing caps**.
+- **Base key isolation:** n/a while Base/x402 is deferred (§11). No threshold-ECDSA
+  signing key exists in scope; the only secret in the system is the plaintext
+  Stripe webhook signing secret (§7, first bullet).
 
 ---
 
@@ -302,65 +326,78 @@ despite its maturity. **New `mops` packages will be written as needed.**
   `icp canister status <canister>` and diffs.
 - Frontend via `@dfinity/asset-canister` recipe — **certified assets**, committed
   `.did`, reproducible asset build.
-- External security audit **not gated** for v1 (easy to add per rail GA later;
-  Base crypto would be the priority target).
+- External security audit **not gated** for v1 (easy to add per rail GA later).
 
 ---
 
 ## 9. Tech stack & layout
 
-- **Motoko** (`persistent actor`), `mo:server` + asset canister, `Timer`.
-- Candid bindings: ICP ledger, CMC, ck-USDC (ICRC-1/2), cycles ledger, EVM RPC
-  canister, IC management (ECDSA + vetKD).
-- `mops` packages: HMAC/SHA-256, keccak256, RLP, secp256k1, JSON, hex.
+- **Motoko** (`persistent actor`, `mo:core` 2.0.0+), **hand-rolled `Http.mo`**
+  (not `mo:server`, see §6.0) + separate asset canister, `Timer`.
+- Candid bindings: ICP ledger, CMC, ck-USDC (ICRC-1/2), cycles ledger.
+  (No vetKD / IC-management ECDSA — neither vetKeys nor Base in scope.)
+- `mops` packages: HMAC/SHA-256, JSON, hex. (No EVM crypto — Base deferred.)
 - `icp-cli` build/deploy; reproducible release.
 - Tests — **go-live bar** (decided): **unit tests wherever logic is isolable**
-  (crypto primitives, fee math, rate derivation, parsers, state-machine
-  transitions, dedup) **+ a full PocketIC integration suite green before each
-  rail's go-live**. PocketIC suite covers: happy path, duplicate/replay,
-  ambiguous-transfer recovery, `AwaitingTreasury`, error queue Type1/Type2,
-  forex fail-closed, upgrade-mid-flight, `postupgrade` re-arm. External
-  simulation: real ledger/CMC Wasms; **crafted HMAC-signed Stripe webhooks**;
-  **mocked EVM RPC canister**; **mocked HTTPS outcall** for forex; PocketIC
-  time-control for timers.
+  (HMAC, fee math, rate derivation, parsers, state-machine transitions, dedup)
+  **+ a full PocketIC integration suite green before each rail's go-live**.
+  PocketIC suite covers: happy path, duplicate/replay, ambiguous-transfer
+  recovery, `AwaitingTreasury`, error queue Type1/Type2, forex fail-closed,
+  upgrade-mid-flight, `postupgrade` re-arm. External simulation: real ledger/CMC
+  Wasms; **crafted HMAC-signed Stripe webhooks**; **mocked HTTPS outcall** for
+  forex; PocketIC time-control for timers.
 
 ```
 src/backend/
-  Main.mo        # actor: HTTP routes, order API, timer, upgrade/migration hooks
+  Main.mo        # actor: http_request(_update), order Candid API, timer, migration hooks
+  Http.mo        # hand-rolled minimal HTTP: parse, case-insensitive headers, one route
   Orders.mo      # Order + JournalEntry types, state machine, stable store
   Idempotency.mo # per-rail dedup sets + retention/pruning
   ErrorQueue.mo  # Type1/Type2 entries, bounded
   rails/Card.mo  # Stripe webhook HMAC verify + parse + charge.refunded
-  rails/CkUsdc.mo# ICRC-2 approve/transfer_from flow
-  rails/Base.mo  # EIP-3009 verify, EVM tx build/sign/broadcast, receipt
+  rails/CkUsdc.mo# ICRC-2 approve/transfer_from flow (Candid)
   Cmc.mo         # ICP transfer (write-intent + created_at_time) + notify_*
-  Ecdsa.mo       # threshold ECDSA: address derivation + signing (isolation-ready)
-  EvmRpc.mo      # EVM RPC canister bindings + helpers
-  Secret.mo      # vetKD IBE provisioning + derive-per-webhook decrypt
+  Secret.mo      # webhook secret: admin-set, plaintext (SEV-protected), rotation
   Forex.mo       # cached rate + lazy refresh outcall + transform
-  Treasury.mo    # ICP float, AwaitingTreasury, alerts, sweeps
+  Treasury.mo    # ICP float, AwaitingTreasury, alerts
   Auth.mo        # II ownership + controller allowlist
   Util.mo, Hmac.mo, Account.mo
-src/frontend/    # Astro/JS SPA, II login, multi-rail UI, order history
+src/frontend/    # Astro/JS SPA, II login, Card + ck-USDC UI, order history
 ```
+
+(Base-rail modules — `rails/Base.mo`, `Ecdsa.mo`, `EvmRpc.mo` — and EVM `mops`
+crypto are parked until/unless Base returns; see §11.)
 
 ---
 
 ## 10. Resolved since v2 draft
 
+- **Ingress (decided):** two-path model — II Candid for the whole app API +
+  ck-USDC; **one anonymous HTTP route** (`/webhook/stripe`). **Hand-rolled
+  `Http.mo` on `mo:core`**, not `mo:server` (§6.0).
+- **Base/x402 dropped from scope for now** (§6.3, §11) — removed all EVM crypto,
+  threshold ECDSA, EVM RPC, ETH gas tank, and the EVM-address ownership variant;
+  **single II ownership restored**.
+- **vetKeys dropped** (§7) — webhook secret kept confidential by **SEV-SNP**
+  (hardware) with documented caveats, and blast-radius bounded by a **per-period
+  ICP burn cap** (§5.3). No vetKD dependency.
 - **Frontend:** polling order-status by `order_id` + order-history view; **no
-  destination pre-validation** (Type-2 is the catch-all).
+  destination pre-validation** (Type-2 is the catch-all). M1 builds the shell +
+  Card flow + history + rail selector; M2 adds the ck-USDC panel.
 - **Go-live test bar:** unit-where-possible + full PocketIC suite per rail (§9).
-- **Base build:** **all-Motoko**, write new `mops` crypto packages as needed
-  (§6.3); **local EIP-3009 verification** (full crypto surface incl. `ecrecover`);
+
+## 11. Deferred / future (non-blocking)
+
+- **Base/x402 rail** — the original 3rd rail, dropped (§6.3). Open question to
+  resolve before it returns: **who is the consumer?** A generic x402 client is an
+  agent, which wouldn't use II — implying a different (EVM-address) ownership
+  model. Parked work if it returns: EVM crypto (`mops` keccak/RLP/ABI/EIP-712/
+  `ecrecover`), threshold ECDSA, EVM RPC, ETH gas tank, hot→cold sweeping,
   validation via test vectors + differential + Base Sepolia e2e.
-
-## 11. Hardening roadmap (deferred, non-blocking)
-
-- M-of-N / SNS governance (note: true M-of-N upgrades need a multisig-canister
+- **Confidential-subnet verification** — confirm an attested SEV-SNP subnet is
+  available and that **checkpoint/state-sync are also confidential** (§7); deploy
+  there. Until then the ICP burn cap + accountable providers carry the secret.
+- **M-of-N / SNS governance** (true M-of-N upgrades need a multisig-canister
   controller, since IC controllers are OR-semantics).
-- Base signer-canister isolation (the `Ecdsa.mo` boundary keeps this cheap).
-- vetKeys + SEV-SNP for full secret confidentiality (closes the in-use RAM gap).
-- Retention/archival pipeline once order volume warrants.
-- External security audits (Base crypto = priority target).
-```
+- **Retention/archival pipeline** once order volume warrants.
+- **External security audit** (mint/idempotency + secret-handling paths).
