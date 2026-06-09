@@ -45,6 +45,14 @@ Cycle.Express with CyclePay's capability surface, but run as one auditable Wasm.
 - **Single ownership model:** order keyed to owner principal; query authz is
   `caller == order.owner`; `principalsToOrders` for history (fixes the
   lost-receipt problem). No bearer-secret order handles.
+- ⚠️ **`Owner` is a single-case variant from day one** — `type Owner = { #ii :
+  Principal }` — even though II is the only case in scope. Rationale: if
+  Base/x402 returns, its consumer is an agent owning orders by EVM address;
+  adding `#evmAddress : Blob` to a stable variant is a **migration-free,
+  compatible extension**, whereas widening a bare `Principal` field would force
+  a stable-state migration plus an audit of every authz site. The compiler then
+  makes every authz check pattern-match instead of silently assuming Principal.
+  (See §11 "Seams kept for Base".)
 - **Order IDs:** random, `raw_rand`-derived (not a monotonic counter) — the ID
   sits in the public `client_reference_id`, so randomness avoids enumeration and
   leaking order volume. It is **not** a bearer secret (authz is `caller == owner`).
@@ -385,6 +393,9 @@ crypto are parked until/unless Base returns; see §11.)
   destination pre-validation** (Type-2 is the catch-all). M1 builds the shell +
   Card flow + history + rail selector; M2 adds the ck-USDC panel.
 - **Go-live test bar:** unit-where-possible + full PocketIC suite per rail (§9).
+- **Seams kept for Base (§11.1, binding on M1):** `Owner` single-case variant
+  (§2), `Http.mo` route table, ownership captured at the API edge, expiry
+  semantics per-rail. Keeps a future Base return additive, not a refactor.
 
 ## 11. Deferred / future (non-blocking)
 
@@ -394,6 +405,34 @@ crypto are parked until/unless Base returns; see §11.)
   model. Parked work if it returns: EVM crypto (`mops` keccak/RLP/ABI/EIP-712/
   `ecrecover`), threshold ECDSA, EVM RPC, ETH gas tank, hot→cold sweeping,
   validation via test vectors + differential + Base Sepolia e2e.
+
+### 11.1 Seams kept for Base (binding on M1 implementation)
+
+Base is out of scope, but M1 must not bake in assumptions that would have to be
+*unwound* (rather than added to) if it returns. Most of the architecture is
+already rail-agnostic — money-out (`Paid` → float → CMC mint), recovery, the
+burn cap, and per-rail dedup sets are all additive. Four seams are deliberate
+and **binding** on the M1 implementation:
+
+1. **`Owner` variant (§2):** `type Owner = { #ii : Principal }` from day one.
+   Adding `#evmAddress : Blob` later is a compatible, migration-free variant
+   extension; a bare `Principal` field would mean a stable-state migration and
+   an audit of every authz site.
+2. **`Http.mo` routes via a table, not a hardcoded path.** "Exactly one route"
+   (§6.0) is *policy*, not architecture: dispatch off a `[(method, path,
+   handler)]` table with one entry. x402 is also anonymous, payload-authed HTTP
+   — it adds rows, not a restructure. Likewise `upgrade = ?true` is a per-route
+   flag that happens to be true everywhere in M1.
+3. **Ownership capture stays at the API edge.** `Orders.createOrder` takes the
+   owner as a *parameter*; it never reads `msg.caller` itself. Card/ck-USDC
+   orders are created by an II Candid call, but a Base order would be created by
+   an anonymous HTTP request whose owner comes from the verified EIP-3009
+   signature.
+4. **Expiry semantics are per-rail money-in behavior — do not unify into the
+   core.** "Expiry is advisory only" (§4) is a *Card* property (a late genuine
+   payment is still honored). Base would need **enforced** expiry
+   (`validBefore`, reorg/confirmation windows). The state machine owns
+   transitions, not expiry policy.
 - **Confidential-subnet verification** — confirm an attested SEV-SNP subnet is
   available and that **checkpoint/state-sync are also confidential** (§7); deploy
   there. Until then the ICP burn cap + accountable providers carry the secret.
