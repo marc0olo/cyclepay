@@ -49,7 +49,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 | # | Status | Task |
 |---|--------|------|
-| 14 | ☐ | **ck-USDC rail** (`rails/CkUsdc.mo`, spec §6.2): ICRC-1/2 bindings, `icrc2_transfer_from` pull after user `icrc2_approve` (Candid, II caller), `block_index` dedup, amount-short mismatch handling, hold-ckUSDC treasury posture; unit tests. |
+| 14 | ☑ | **ck-USDC rail** (`rails/CkUsdc.mo`, spec §6.2): ICRC-1/2 bindings, `icrc2_transfer_from` pull after user `icrc2_approve` (Candid, II caller), `block_index` dedup, amount-short mismatch handling, hold-ckUSDC treasury posture; unit tests. |
 | 15 | ☐ | **PocketIC suite — ck-USDC go-live bar**: approve/pull happy path, dedup, mismatch, treasury interplay. |
 | 16 | ☐ | **Frontend M2**: ck-USDC panel (approve → purchase flow). |
 
@@ -62,6 +62,69 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 ## Changelog
 
+- **2026-06-10 — Task 14 done.** ck-USDC rail (§6.2). `rails/CkUsdc.mo` is the
+  pure half — ICRC-1/2 Candid types (ledger `xevnm-gaaaa-aaaar-qafnq-cai`,
+  6 decimals ⇒ 1¢ = 10⁴ units exactly, the 1:1 peg makes `usdCents` pricing
+  exact on the money-in side), deterministic pull-intent construction, result
+  interpretation, the pull journal, and the claim resume decision — all
+  unit-tested without an IC env; Main.mo owns the awaits. **The pull is
+  money-IN with the §5.1 write-intent-before-call treatment**:
+  `icrc2_transfer_from` debits the *user*, so the args (incl.
+  `created_at_time`; memo = the order ID's UTF-8, exactly the 32-byte ICRC-1
+  bound, tying ledger tx → order) are frozen and persisted in one sync block
+  before the ledger await. A lost response (upgrade mid-pull) replays the
+  *identical* args — the ledger pulls once or answers `#Duplicate` with the
+  original block; an intent at/past the 24 h dedup window without a block
+  escalates as `#stuckMint{stage = "stalePullIntent"}` and is **never rebuilt
+  fresh** (fresh args after an executed-but-unrecorded pull would debit the
+  user twice). The order deliberately stays `#created` on escalation (no
+  legal pre-payment edge to `#errorQueue`, and the position may be "nothing
+  happened"); the journal's escalation mark blocks further claims, queues
+  exactly once, and the operator reads the ck-USDC ledger then either refunds
+  via `withdraw_ck_usdc` or clears the intent via `reset_ck_usdc_pull`
+  (refuses when a block is recorded). **Definite-rejection rule**: ic-icrc1
+  ledgers check `created_at_time` dedup *before* balance/allowance, so
+  `InsufficientAllowance`/`InsufficientFunds`/`BadFee` prove no attempt with
+  these args ever moved money — the intent is dropped and the error surfaces
+  user-actionably; that is what turns the §6.2 **amount-short mismatch**
+  (approval < amount + ledger fee) into a clean "approve at least
+  `required`, retry" instead of a stuck order. `TooOld` is the uncertainty
+  case (escalate); `TemporarilyUnavailable`/`CreatedInFuture`/`GenericError`
+  keep the intent for replay. **Success path** commits block-dedup
+  (`processedCkUsdcBlocks`, §4.2, never pruned) + journal block + `#paid` in
+  one sync block, then kicks the shared mint pipeline as a detached
+  self-message — money-out is rail-agnostic from `#paid` on. **No fixed
+  tiers**: nothing structural pins the amount the way a card Payment Link
+  does and the canister pulls the exact price itself, so
+  `create_ck_usdc_order(usdCents, destination)` takes a user-chosen amount
+  inside operator bounds; **defaults fail closed** (`maxUsdCents = 0` keeps
+  the rail disabled until the operator sizes it — the empty-tier-list
+  stance). Rail fee formula defaults 0 bps/0¢ (no structural processor fee;
+  ledger fees are user-paid; the operator absorbs off-chain conversion per
+  §3 at-cost) and is admin-settable. Quote path refactored once for both
+  rails: `quoteCents` (rail fee formula over the one shared §3.1 rate cache,
+  one epoch per quote) + `quoteWithRefresh` (lazy refresh, fail-closed) +
+  `createOrderWithFreshId` (raw_rand re-draw loop); card `create_order`
+  delegates to them unchanged in behavior. **Hold-ckUSDC treasury posture**
+  (§6.2): pulled ck-USDC accrues in the canister's own ledger account (its
+  balance is public — no query method needed); admin `withdraw_ck_usdc` is
+  the off-chain ckUSDC→ICP→float conversion lever (attended; no
+  created_at_time, doc says check the ledger before retrying an ambiguous
+  failure). Per-order transient `pullsInFlight` single-flight guards the
+  check-await-credit window; `claim_ck_usdc_order` requires `caller ==
+  owner` (no existence leak), rail match, and claimable status (`#expired`
+  stays claimable — §4 expiry is advisory). 32 new tests (units/config/
+  amount boundary matrices incl. exactly-min/max; pinned intent + wire-form
+  vectors incl. 32-byte memo; full interpretPull matrix; journal patch
+  semantics; claimStage pinned over all 8 statuses with the
+  exactly-window-vs-−1 ns boundary, once-only escalation, block-beats-
+  escalation heal); 390 total green; `mops check` lint-clean, `mops build` +
+  `icp build` green; `.did` gains exactly `create_ck_usdc_order`/
+  `claim_ck_usdc_order`/`set_ck_usdc_config`/`ck_usdc_config`/`ck_usdc_pull`/
+  `reset_ck_usdc_pull`/`withdraw_ck_usdc`; frontend rebuilt against the new
+  committed `.did` (tsc strict + vite build + 21 vitest green — M2 UI itself
+  is task 16). Live approve→pull against a deployed ck-USDC ledger is task
+  15's PocketIC go-live bar.
 - **2026-06-10 — Task 13 done.** Frontend M1 (`src/frontend/`), deployed as a
   second canister via the `@dfinity/asset-canister@v2.2.1` recipe (v2.1.0 is
   incompatible with icp-cli 0.3.x — its `assets` sync step type was removed in

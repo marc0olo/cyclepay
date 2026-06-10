@@ -464,3 +464,50 @@ highest-priority actionable item.
 NEXT: task 14 — ck-USDC rail (rails/CkUsdc.mo, §6.2): ICRC-1/2 bindings,
 icrc2_transfer_from pull after user approve, block_index dedup, amount-short
 mismatch handling, hold-ckUSDC treasury posture; unit tests.
+## 2026-06-10 — Iteration 15 — Task 14: ck-USDC rail (DONE)
+Task 12 stays ◐ (blocked on 4K-page host, see memory) — task 14 was the
+highest-priority actionable item.
+- src/backend/rails/CkUsdc.mo (pure half): ICRC-1/2 types (self-contained,
+  no Cmc import); ledger xevnm-gaaaa-aaaar-qafnq-cai pinned; 1¢ = 10^4 units
+  (6 decimals + 1:1 peg ⇒ usdCents pricing exact on money-in); buildPullIntent
+  = §5.1 write-intent-before-call, MONEY-IN edition (transfer_from debits the
+  USER): created_at_time frozen, memo = orderId UTF-8 (exactly the 32-byte
+  ICRC-1 bound, ledger-tx→order audit link); transferFromArgs pure projection
+  → replay bit-identical; interpretPull encodes the DEDUP-FIRST rule
+  (ic-icrc1 checks created_at_time dedup before balance/allowance, so
+  InsufficientAllowance/Funds/BadFee PROVE nothing ever moved → #drop intent,
+  clean user error = §6.2 amount-short handling; TooOld = #uncertain,
+  escalate; TemporarilyUnavailable/CreatedInFuture/GenericError = #retry);
+  pull journal (financial record, never pruned) w/ escalatedAtNs once-only
+  mark; claimStage = whole resume decision pure (#created/#expired claimable,
+  block-beats-escalation #recoverBlock heal, exactly-window escalates).
+- Main.mo: create_ck_usdc_order(usdCents, destination) — NO tiers (nothing
+  structural pins the amount like a Payment Link; canister pulls exact
+  price); operator bounds FAIL CLOSED (maxUsdCents=0 default = rail
+  disabled); rail fee formula default 0/0 (no processor fee; conversion cost
+  operator-absorbed §3), admin-settable. claim_ck_usdc_order: owner-only (no
+  existence leak), wrongRail guard, transient pullsInFlight single-flight,
+  driveClaim: stage → pull → creditPull (dedup recordCkUsdcBlock + journal
+  block + #paid ONE sync block) → detached processMint kick. Stale intent →
+  #stuckMint{stage="stalePullIntent"}, order STAYS #created (no legal edge,
+  position maybe-nothing-happened); ops levers: ck_usdc_pull (admin query),
+  reset_ck_usdc_pull (refuses if block recorded), withdraw_ck_usdc (hold-
+  ckUSDC posture: accrued ckUSDC → operator → off-chain →ICP float refill).
+  Refactor: quoteCents (per-rail fee over shared rate cache) +
+  quoteWithRefresh + createOrderWithFreshId; card create_order delegates.
+- Tests: ckusdc (32) — pinned ledger id/window/units, config+amount boundary
+  matrices, intent/wire-form vectors (32B memo), interpretPull matrix,
+  journal patch + no-op-on-missing, claimStage all-8-status pin + window
+  boundary + once-only escalation. 390 total green.
+- Gotchas: `transient` is a moc 1.9 KEYWORD — illegal as a variant tag
+  (#transient → syntax error M0001); renamed #retryable. `ignore async {}`
+  needs send capability — NOT available in a plain (non-async*) private
+  func; inline the detached kick into the async* driver instead of a helper.
+- Verified: mops check ✓ (lint clean), mops test ✓ (390), mops build ✓,
+  icp build ✓ both canisters; .did gains exactly the 7 ck_usdc methods;
+  frontend rebuilt against new committed .did (tsc strict + vite build + 21
+  vitest ✓ — bindgen regenerates, M2 UI is task 16).
+NEXT: Task 15 — PocketIC suite, ck-USDC go-live bar: deploy a local ICRC-2
+ledger as ck-USDC, approve/pull happy path, dedup/replay, amount-short,
+stale-intent escalation, treasury interplay (same 4K-page host constraint
+as task 12 — implement + typecheck here, execute on dev host/CI).

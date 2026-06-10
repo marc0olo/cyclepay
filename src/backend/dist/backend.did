@@ -35,45 +35,65 @@ type SetError = variant {tooShort: record {
                                      min: nat;
                                      size: nat;
                                    };};
-type Result_7 = 
+type Result_9 = 
  variant {
    err: CreateOrderError;
    ok: CreatedOrder;
  };
-type Result_6 = 
+type Result_8 = 
  variant {
    err: ProcessOrderError;
    ok: Order;
  };
-type Result_5 = 
+type Result_7 = 
  variant {
    err: ResolveError;
    ok: Entry;
  };
-type Result_4 = 
+type Result_6 = 
  variant {
    err: ValidateError;
    ok;
  };
-type Result_3 = 
+type Result_5 = 
+ variant {
+   err: ConfigError__2;
+   ok;
+ };
+type Result_4 = 
  variant {
    err: ConfigError__1;
    ok;
  };
-type Result_2 = 
+type Result_3 = 
  variant {
    err: IntervalError;
    ok;
  };
-type Result_1 = 
+type Result_2 = 
  variant {
    err: ConfigError;
    ok;
  };
-type Result = 
+type Result_11 = 
+ variant {
+   err: ClaimCkUsdcError;
+   ok: Order;
+ };
+type Result_10 = 
+ variant {
+   err: CreateCkUsdcOrderError;
+   ok: CreatedCkUsdcOrder;
+ };
+type Result_1 = 
  variant {
    err: SetError;
    ok;
+ };
+type Result = 
+ variant {
+   err: text;
+   ok: nat;
  };
 type Response = 
  record {
@@ -103,6 +123,23 @@ type Rail =
  variant {
    card;
    ckUsdc;
+ };
+type PullIntent = 
+ record {
+   amountUnits: nat;
+   createdAtTimeNs: nat64;
+   feeUnits: nat;
+   fromOwner: principal;
+   memo: blob;
+ };
+type PullEntry = 
+ record {
+   blockIndex: opt nat;
+   createdAtNs: int;
+   escalatedAtNs: opt int;
+   intent: PullIntent;
+   orderId: OrderId;
+   updatedAtNs: int;
  };
 type ProcessOrderError = 
  variant {
@@ -224,6 +261,12 @@ type CreatedOrder =
    clientReferenceId: text;
    order: Order;
  };
+type CreatedCkUsdcOrder = 
+ record {
+   amountUnits: nat;
+   approveUnits: nat;
+   order: Order;
+ };
 type CreateOrderError = 
  variant {
    anonymous;
@@ -232,12 +275,36 @@ type CreateOrderError =
    tierBelowFees: text;
    unknownTier: text;
  };
+type CreateCkUsdcOrderError = 
+ variant {
+   aboveMaximum: nat;
+   amountBelowFees;
+   anonymous;
+   belowMinimum: nat;
+   idGeneration;
+   railDisabled;
+   rateUnavailable;
+   zeroAmount;
+ };
+type Config__2 = 
+ record {
+   feeBps: nat;
+   feeFixedCents: nat;
+   ledgerFeeUnits: nat;
+   maxUsdCents: nat;
+   minUsdCents: nat;
+ };
 type Config__1 = 
  record {
    feeBps: nat;
    feeFixedCents: nat;
    maxAgeNs: int;
    url: text;
+ };
+type ConfigError__2 = 
+ variant {
+   feeBpsTooHigh;
+   minAboveMax;
  };
 type ConfigError__1 = 
  variant {
@@ -257,6 +324,26 @@ type Config =
    lowFloatThresholdE8s: nat;
    maxHoldNs: int;
  };
+type ClaimCkUsdcError = 
+ variant {
+   anonymous;
+   badFee: record {expectedFee: nat;};
+   inFlight;
+   insufficientAllowance: record {
+                            allowance: nat;
+                            required: nat;
+                          };
+   insufficientFunds: record {
+                        balance: nat;
+                        required: nat;
+                      };
+   ledgerRejected: text;
+   notClaimable: text;
+   notFound;
+   retryable: text;
+   staleIntent;
+   wrongRail;
+ };
 type Account = 
  record {
    owner: principal;
@@ -273,15 +360,36 @@ service : {
   audit_log: () -> (vec Event) query;
   /// Public — the frontend renders tiers and their Payment Links from this.
   card_tiers: () -> (vec Tier) query;
+  /// Public — bounds and fee formula are what users are charged (the same
+  /// transparency stance as forex_status); the frontend renders the rail
+  /// panel (or its disabled state) from this.
+  ck_usdc_config: () -> (Config__2) query;
+  /// Money-IN journal for one order (admin, ops parity with mint_journal).
+  ck_usdc_pull: (id: OrderId) -> (opt PullEntry) query;
+  /// §6.2 pull: after `icrc2_approve` (≥ the order's approveUnits, spender =
+  /// this canister), the owner claims and the canister pulls the exact quoted
+  /// price. Idempotent against double-clicks (single-flight) and safe against
+  /// lost responses (the persisted intent replays bit-identically; the ledger
+  /// dedups on created_at_time). On success the order is `#paid` and the
+  /// mint pipeline is kicked — the same money-out path as the card rail.
+  claim_ck_usdc_order: (id: OrderId) -> (Result_11);
+  /// Create a ck-USDC order (§6.2): user-chosen amount within operator
+  /// bounds — nothing structural pins the amount the way a card Payment Link
+  /// does, and the canister pulls the exact price itself. Same §3 quote path
+  /// as the card rail (locked cycle quantity, fail-closed on a stale rate),
+  /// priced with this rail's own fee formula. The flow after this:
+  /// `icrc2_approve` (user → ledger, ≥ approveUnits) then `claim_ck_usdc_order`.
+  create_ck_usdc_order: (usdCents: nat, destination: Destination) ->
+   (Result_10);
   /// Create a card-rail order: II caller becomes the owner (ownership is
   /// captured here at the API edge, seam §11.1.3), the tier's USD amount is
   /// quoted into a locked cycle *quantity* (§3, net of fees at the cached
   /// rate — a stale cache refreshes lazily, a failed refresh fails closed
-  /// §3.1), and the ID comes from raw_rand. Each quoteTier call snapshots
-  /// fee config + rate together, so one order is always priced from one
-  /// consistent epoch even when a refresh await interleaves with a config
-  /// change; the store write after the awaits is atomic.
-  create_order: (tierId: text, destination: Destination) -> (Result_7);
+  /// §3.1), and the ID comes from raw_rand. The fee config is snapshotted
+  /// before the refresh await, so one order is always priced from one
+  /// consistent epoch even when a refresh interleaves with a config change;
+  /// the store write after the awaits is atomic.
+  create_order: (tierId: text, destination: Destination) -> (Result_9);
   /// §4.1 operator worklist + retained history. Admin: entries carry
   /// payment references and claimed-but-bogus URL params.
   error_queue: () -> (vec Entry) query;
@@ -321,7 +429,7 @@ service : {
   mint_journal: (id: OrderId) -> (opt JournalEntry) query;
   /// Manual mint kick (admin, §7) — ops lever for a stuck-looking order;
   /// safe to spam, every step is deduped/idempotent/single-flighted.
-  process_order: (id: OrderId) -> (Result_6);
+  process_order: (id: OrderId) -> (Result_8);
   /// §5.2 liveness observability, public (operational transparency, same
   /// stance as treasury_status): cadence + last completed timer sweep. A
   /// null or stale `lastSweep` means recovery is not running.
@@ -343,29 +451,38 @@ service : {
   /// Returns the e8s of consumption cleared. Held orders resume on the next
   /// sweep, not here — the pre-gate stays the single decision point.
   reset_burn_window: () -> (nat);
+  /// Clear a stuck pull intent so the order becomes claimable again — ONLY
+  /// after verifying on the ck-USDC ledger that no transaction matches the
+  /// intent (a fresh intent after an executed-but-unrecorded pull would debit
+  /// the user twice). Refuses when a block is recorded (money moved). False =
+  /// nothing cleared.
+  reset_ck_usdc_pull: (id: OrderId) -> (bool);
   /// Manual resolution (§4.1/§7): refund issued off-chain, or Type 2 cycles
   /// re-delivered/refunded. (`charge.refunded` resolves Type 1 entries
   /// automatically; this is the fallback and the only path for Type 2.)
-  resolve_error: (id: nat) -> (Result_5);
+  resolve_error: (id: nat) -> (Result_7);
   /// Replace the card tier config (§3/§7 — admin, validated atomically: a
   /// bad config never partially applies).
-  set_card_tiers: (tiers: vec Tier) -> (Result_4);
+  set_card_tiers: (tiers: vec Tier) -> (Result_6);
+  /// Adjust the rail config (§7): amount bounds, fee formula, ledger fee.
+  /// Validated atomically — a bad config never partially applies.
+  set_ck_usdc_config: (config: Config__2) -> (Result_5);
   /// Adjust forex params (§7): fee formula, staleness window, source URL.
   /// Validated atomically — a bad config never partially applies.
-  set_forex_config: (config: Config__1) -> (Result_3);
+  set_forex_config: (config: Config__1) -> (Result_4);
   /// Tune the sweep cadence (admin, §7) — re-arms immediately, no redeploy.
   /// Validated against the §5.1 bound: the cadence must stay well inside
   /// the ledger dedup window or replay loses its safety margin.
-  set_recovery_interval: (intervalNs: nat) -> (Result_2);
+  set_recovery_interval: (intervalNs: nat) -> (Result_3);
   /// Adjust treasury policy (§5.3/§7): burn cap, window, max hold, alert
   /// threshold. Validated atomically — a bad config never partially applies.
-  set_treasury_config: (config: Config) -> (Result_1);
+  set_treasury_config: (config: Config) -> (Result_2);
   /// Provision or rotate the Stripe webhook signing secret (§7). Pass the
   /// full `whsec_...` string from the Stripe dashboard — the whole string,
   /// prefix included, is the HMAC key. NOTE: the argument transits the
   /// TLS-terminating boundary node as plain ingress (§7 provisioning
   /// exposure); rotate after provisioning over an untrusted path.
-  set_webhook_secret: (secret: text) -> (Result);
+  set_webhook_secret: (secret: text) -> (Result_1);
   /// §5.3 balance alert + soft UI gate, public: the frontend disables tiers
   /// off `lowFloat`, and cap consumption is operational transparency (the
   /// thesis), not a secret. The float observation may be stale — `atNs` says
@@ -374,4 +491,10 @@ service : {
   /// Provisioning state only — the secret itself is never readable back
   /// out, even by controllers. `generation` confirms a rotation landed.
   webhook_secret_status: () -> (Status) query;
+  /// §6.2 hold-ckUSDC treasury posture: pulled ck-USDC accrues in this
+  /// canister's ledger account; the operator withdraws it here, converts to
+  /// ICP off-chain, and refills the float. Attended admin lever — no
+  /// created_at_time dedup; on an ambiguous failure check the ledger before
+  /// retrying. (Balance is public on the ck-USDC ledger; no query needed.)
+  withdraw_ck_usdc: (to: Account, amountUnits: nat) -> (Result);
 }
