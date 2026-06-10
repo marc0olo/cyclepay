@@ -1,0 +1,12 @@
+canisters:
+  - name: backend
+    recipe:
+      type: "@dfinity/motoko@v4.1.0"
+      configuration:
+        main: src/backend/Main.mo
+
+networks:
+  - name: local
+    mode: managed
+    gateway:
+      port: 0 # OS picks a free port — avoids collisions across worktrees/projects

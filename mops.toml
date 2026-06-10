@@ -1,0 +1,21 @@
+[dependencies]
+core = "2.5.0"
+
+[toolchain]
+moc = "1.9.0"
+lintoko = "0.10.0"
+
+[dev-dependencies]
+test = "2.1.2"
+
+[moc]
+# no --default-persistent-actors: actors write `persistent` explicitly so the
+# icp-cli motoko recipe (which doesn't read [moc].args) compiles them identically
+args = ["-W=M0223,M0236,M0237"]
+
+[canisters.backend]
+main = "src/backend/Main.mo"
+
+[build]
+outputDir = "src/backend/dist"
+args = ["--release"]

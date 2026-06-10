@@ -1,0 +1,21 @@
+# Progress log — one entry per loop iteration, newest last.
+
+## 2026-06-10 — Iteration 1 — Task 0: Scaffold (DONE)
+No PRD or progress.txt existed; bootstrapped both. Created PRD.md with the full
+prioritized task breakdown (tasks 0–18, M0–M3) derived from
+design-docs/ONCHAIN_GATEWAY_SPEC.md v2.1. Scaffolded the buildable project:
+- mops.toml: moc 1.9.0 + lintoko 0.10.0 pinned, core 2.5.0, test 2.1.2 (dev),
+  style warnings -W=M0223,M0236,M0237, [canisters.backend], [build] --release.
+  NOTE: deliberately NOT using --default-persistent-actors; actors write
+  `persistent` explicitly so the icp-cli recipe (which ignores [moc].args)
+  compiles identically.
+- icp.yaml: backend via @dfinity/motoko@v4.1.0 recipe; local network with
+  gateway port 0 (avoids port collisions).
+- src/backend/Main.mo: minimal `persistent actor CyclesGateway` + health query.
+- test/smoke.test.mo: harness smoke test.
+- .gitignore: .icp/cache/, src/backend/dist/. mops.lock committed (spec §8).
+Toolchain installed in sandbox: npm -g ic-mops @icp-sdk/icp-cli @icp-sdk/ic-wasm
+(+ apt libdbus-1-3 for icp-cli). Verified: mops check ✓, mops test ✓ (1 pass),
+mops build ✓, icp build ✓.
+NEXT: Task 1 — Types.mo + Orders.mo (Owner variant seam, order state machine,
+locked cycle quantity, transition unit tests).
