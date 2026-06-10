@@ -122,3 +122,32 @@ flag, POST /webhook/stripe entry; parser+routing unit tests).
   generated .did matches HTTP-gateway protocol.
 NEXT: Task 5 — Auth.mo + Secret.mo (controller allowlist, reject anonymous
 on user API, admin-set/rotate webhook secret w/ SEV-SNP posture note; tests).
+## 2026-06-10 — Iteration 6 — Task 5: Auth + Secret (DONE)
+- src/backend/Auth.mo: §7 flat allowlist = the CANISTER CONTROLLER SET
+  (OR-semantics, equal privileges; edits via canister settings, M-of-N =
+  multisig-canister controller). checkAdmin(caller, isController) — the
+  controller check is an INJECTED PREDICATE so the module unit-tests without
+  an IC env; Main passes Principal.isController (exists in core 2.5.0,
+  works in query context). Anonymous rejected BEFORE the predicate.
+  checkUser = II user-API gate (wired in task 6; webhook route stays
+  anonymous-by-design, payload-authed).
+- src/backend/Secret.mo: plaintext-by-design store (SEV-SNP posture doc'd
+  on the module: checkpoints/state-sync caveat, boundary-node provisioning
+  exposure, burn-cap backstop). Holds UTF-8 of the FULL whsec_ string
+  (prefix included = HMAC key per Stripe reference verifiers) + setAtNs +
+  generation (ops confirm rotation w/o read-back); set rejects <16 bytes,
+  store untouched on #err. No dual-secret window: Stripe sends one v1= per
+  active secret during overlap, Card.verify accepts any match.
+- Main.mo: persistent webhookSecret; requireAdmin TRAPS; set_webhook_secret
+  (Text→Result<(), SetError>); webhook_secret_status query (admin-gated,
+  never returns the secret). Webhook handler stays 503 stub until task 8.
+- Tests: auth (6) + secret (7) = 13 new, 181 total green. Boundary at
+  exactly-16 vs 15 bytes; anonymous-beats-predicate; rejected rotation
+  preserves working secret.
+- Gotchas: core 2.5.0 Principal has NO fromBlob — test principals must be
+  valid fromText strings ("aaaaa-aa", "2ibo7-dia" both fine).
+- Verified: mops check ✓, mops test ✓ (181), mops build ✓, icp build ✓,
+  .did gains exactly the two admin methods.
+NEXT: Task 6 — Order Candid API in Main.mo (create_order w/ raw_rand id +
+client_reference_id "<principal>_<orderId>", get_order/history authz,
+fixed card tiers config; wires Auth.checkUser + Orders store).

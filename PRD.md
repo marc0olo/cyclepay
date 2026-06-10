@@ -30,7 +30,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
 | 2 | ☑ | **Idempotency + error queue** (`Idempotency.mo`, `ErrorQueue.mo`): per-rail dedup sets (`processedStripeEvents` w/ ~7-day pruning, `processedIntents`, `processedCkUsdcBlocks`), bounded error queue with exactly Type 1 `{Duplicate|Unattributed}` (fiat-only) and Type 2 `{Undeliverable}` (cycles in app balance), bounded audit-log ring buffer; unit tests incl. pruning + bounds. |
 | 3 | ☑ | **HMAC-SHA256 + Stripe signature** (`Hmac.mo` or mops sha2 pkg, `rails/Card.mo` verify half): constant-time-compare HMAC over `timestamp.body`, `Stripe-Signature` header parse (`t=`, `v1=` list), timestamp-window replay guard; unit tests against known HMAC vectors + crafted Stripe signatures. |
 | 4 | ☑ | **Hand-rolled `Http.mo`** (spec §6.0): parse `HttpRequest`, case-insensitive header lookup, query-string strip, body-size guard, dispatch off a `[(method, path, handler)]` route table with per-route `upgrade` flag (binding seam §11.1.2) — one entry: `POST /webhook/stripe`; `http_request` returns `upgrade = ?true`, `http_request_update` dispatches; unit tests for parser + routing. |
-| 5 | ☐ | **Auth + secret** (`Auth.mo`, `Secret.mo`): controller allowlist (flat, equal privileges, §7), reject anonymous principal on user API, admin-set/rotate plaintext webhook secret (SEV-SNP posture documented, §7); unit tests. |
+| 5 | ☑ | **Auth + secret** (`Auth.mo`, `Secret.mo`): controller allowlist (flat, equal privileges, §7), reject anonymous principal on user API, admin-set/rotate plaintext webhook secret (SEV-SNP posture documented, §7); unit tests. |
 
 ### M1 — Card rail (Stripe), money-in → money-out
 
@@ -62,6 +62,38 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 ## Changelog
 
+- **2026-06-10 — Task 5 done.** `Auth.mo` (§7): the flat allowlist IS the
+  canister controller set (IC OR-semantics, equal privileges; editing it =
+  `canister settings update`, M-of-N hardening = a multisig canister as sole
+  controller). `checkAdmin(caller, isController)` takes the controller check
+  as an injected predicate so the module is pure and unit-testable —
+  `Main.mo` passes `Principal.isController` (ic0.is_controller, available in
+  query context too); anonymous is rejected *before* the predicate, so
+  `2vxsx-fae` can never be an admin even if it lands in the controller set.
+  `checkUser` is the II user-API gate (anonymous = shared identity → its
+  orders would be anyone's; wired in task 6 — the webhook route stays
+  anonymous-by-design, payload-authed). `Secret.mo` (§7): the system's only
+  stored secret, **plaintext by design** — SEV-SNP posture documented on the
+  module (memory encryption ≠ checkpoint/state-sync confidentiality — verify
+  hardest; provisioning transits the TLS-terminating boundary node; burn cap
+  §5.3 is the always-on backstop, launch never blocks on SEV). Store keeps
+  the UTF-8 bytes of the *full* `whsec_...` string (prefix included = the
+  HMAC key, matching Stripe's reference verifiers), `setAtNs`, and a
+  `generation` counter so ops can confirm a rotation landed without reading
+  the secret back; `set` rejects < 16 bytes (`#tooShort`) and leaves the
+  store untouched on rejection — a bad rotation never clobbers a working
+  secret. No dual-secret window needed: during Stripe's rotation overlap the
+  header carries one `v1=` per active secret and Card.verify (task 3)
+  accepts any match. `Main.mo`: persistent `webhookSecret` store;
+  `requireAdmin` traps (never a handled-looking error); `set_webhook_secret`
+  (Text → Result with `SetError`) + `webhook_secret_status` query
+  (admin-gated; exposes everything *about* the secret, never the secret —
+  no read-back even for controllers). 13 new tests (predicate-injected admin
+  matrix, anonymous-beats-predicate, min-length boundary at exactly 16 vs
+  15, rejected-rotation-preserves-store, rotation generations); 181 total
+  green; `mops check`/`build` + `icp build` green; `.did` gains the two
+  admin methods. `Principal.isController` itself needs an IC env — its
+  wiring is PocketIC-suite coverage (task 12).
 - **2026-06-10 — Task 4 done.** `Http.mo` (§6.0, hand-rolled — not
   `mo:server`): gateway `Request`/`Response` types (`certificate_version`
   omitted — Candid record subtyping drops it; nothing is certified since
