@@ -37,7 +37,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
 | # | Status | Task |
 |---|--------|------|
 | 6 | ☑ | **Order Candid API** (`Main.mo` wiring): `create_order` (II caller, tier, destination → locks cycle quantity, random `raw_rand` order ID, `client_reference_id = <principal>_<orderId>`), `get_order` / order history (`caller == owner` authz, `principalsToOrders`), fixed card tiers config; PocketIC or unit tests for authz + ID randomness handling. |
-| 7 | ☐ | **Forex subsystem** (`Forex.mo`, spec §3.1): USD↔XDR via HTTPS outcall with coarse-rounding `transform`, stable `{rate, ts}` cache, lazy refresh, single-flight guard, in-call retry cap, **fail-closed order creation** on stale+failed refresh; fee formula (≈2.9% + $0.30, configurable) and net-of-fees pricing (§3); unit tests for rounding/fee/staleness logic with mocked outcall. |
+| 7 | ☑ | **Forex subsystem** (`Forex.mo`, spec §3.1): USD↔XDR via HTTPS outcall with coarse-rounding `transform`, stable `{rate, ts}` cache, lazy refresh, single-flight guard, in-call retry cap, **fail-closed order creation** on stale+failed refresh; fee formula (≈2.9% + $0.30, configurable) and net-of-fees pricing (§3); unit tests for rounding/fee/staleness logic with mocked outcall. |
 | 8 | ☐ | **Stripe webhook ingestion** (`rails/Card.mo` complete): parse `checkout.session.completed` + `charge.refunded` JSON, claimed-not-trusted `client_reference_id` resolution, dedup (`event.id` + `payment_intent`), amount honored at actual paid value → `Paid`; unmatched/duplicate → Type 1; `charge.refunded` auto-resolves Type 1; unit tests with crafted signed payloads. |
 | 9 | ☐ | **CMC mint pipeline** (`Cmc.mo`, spec §5/§5.1): candid bindings for ICP ledger + CMC, write-intent-before-call with `created_at_time` dedup, `icrc1_transfer` → record `block_index` → `notify_top_up`/`notify_mint_cycles`, mint-to-self-then-forward delivery, failed forward → Type 2; rate derivation w/ CMC staleness guard (§5); unit tests for intent/replay logic. |
 | 10 | ☐ | **Treasury + burn cap** (`Treasury.mo`, spec §5.3): ICP float accounting, `AwaitingTreasury` hold + max-wait → error queue, low-float soft gate + balance-alert query, **per-period rolling ICP burn cap** with pause + manual override; unit tests for cap window math. |
@@ -62,6 +62,47 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 ## Changelog
 
+- **2026-06-10 — Task 7 done.** Forex subsystem (§3.1). New dep: `ic@4.0.0`
+  (caffeinelabs management-canister bindings — shares our exact `core@2.5.0`,
+  no version split; `Call.httpRequest` computes and attaches outcall cycles
+  via the `ic0` cost API). `Forex.mo` is the *pure* half, so everything
+  unit-tests with mocked bodies: rate is **XDR-per-USD in micros** (the shape
+  USD-base APIs serve; 1 XDR = 1T cycles ⇒
+  `cycles = netCents·micros·10_000`); default source
+  `https://open.er-api.com/v6/latest/USD` (keyless §3.1 — a keyed API would
+  be a second node-provider-readable secret); `extractXdrPerUsdMicros`
+  (first `"XDR"` key wins, plain positive JSON number, >6 frac digits
+  truncated); `coarseRound` to 1_000 micros (~0.14% — §3.1 determinism,
+  far below fee variance); **plausibility band 0.1–10 XDR/USD** (a
+  decimal-point bug at the source can never price orders free or 1000×);
+  `transformBody` = the outcall transform: raw body → canonical rounded
+  micros text, any failure → empty body so replicas reach consensus on
+  failure too; `parseCanonicalMicros` re-applies the band; fee formula
+  `⌈gross·bps/10_000⌉ + fixed` (**percentage rounds up** — overestimating
+  the fee means never over-delivering; net must be > 0); `quote` snapshots
+  fee config + cached rate in one call → `#ok/#stale/#unpriceable`;
+  `hostOf` derives the outcall `Host` header from the configured URL.
+  `Main.mo`: persistent `forexCache` (`{rate, ts}`, survives upgrades) +
+  `forexConfig` (defaults 290 bps / 30¢ / 1 h window; admin
+  `set_forex_config`, validated atomically: bps < 100%, positive window,
+  https-only); **transient** single-flight flag (a persistent flag stuck
+  true by an upgrade mid-outcall would deadlock refreshes forever) with
+  `try/finally` reset; in-call retry cap (3 attempts — boundary splits clear
+  on retry, API-down doesn't); `max_response_bytes = 16_000` (cycles charge
+  on the ceiling, not actual size); `forex_transform` query;
+  `create_order` now quotes off the cache, lazily refreshes on `#stale`,
+  re-quotes, and **fails closed** `#rateUnavailable` when the refresh fails
+  or another is in flight (§3.1); new `#tierBelowFees` error distinguishes
+  "fee swallows the tier" (operator config problem) from rate outages.
+  `forex_status` query is public (rate + fee params are market data, and
+  transparency is the thesis). 43 new tests (parser matrix incl.
+  key-inside-string and first-key-wins, rounding/band boundaries incl.
+  rounding *into* the band, transform fail-to-empty, fee vectors
+  cross-checked externally in python, freshness boundary at exactly-window,
+  quote composite, config validation); 237 total green; `mops check`
+  lint-clean, `mops build` + `icp build` green; `.did` gains
+  `forex_status`/`forex_transform`/`set_forex_config`. The live outcall +
+  single-flight under burst is PocketIC coverage (task 12).
 - **2026-06-10 — Task 6 done.** Order Candid API wired into `Main.mo`.
   `Tiers.mo` (§3): fixed card tiers as operator config —
   `{id; usdCents; paymentLinkUrl}` (controllers create the permanent Payment

@@ -1,9 +1,10 @@
 {
   "version": 3,
-  "mopsTomlDepsHash": "bc06cd7b7193ed088ce4f7a2f2e011251db5e12c9da4aee3e5513e9705516a76",
+  "mopsTomlDepsHash": "90561807e204018fde58fca4a3ac1a9eb6f8d9736ba1a1bbd8cc134b3c46933c",
   "deps": {
     "core": "2.5.0",
     "sha2": "0.2.1",
+    "ic": "4.0.0",
     "test": "2.1.2"
   },
   "hashes": {
@@ -103,6 +104,14 @@
       "sha2@0.2.1/src/sha256/state/process/blocks/iter.mo": "4001f759362c8096d0b5e56fed6594c9f6736c2e2790f6c3f047c873660ebe5f",
       "sha2@0.2.1/src/sha256/state/process/blocks/array.mo": "af83641e36a46959895844b84872536429ab70a915bf9b8a9e3a4a6ddfeb5f89",
       "sha2@0.2.1/src/sha256/state/process/blocks/blob.mo": "d834ead0f15ee63feacf90bcc600984dd838b52ff8aa91d522472485d916977c"
+    },
+    "ic@4.0.0": {
+      "ic@4.0.0/README.md": "7686aefce0c535d18ee2768e98660575563daa53b00d2c1041170032c232784c",
+      "ic@4.0.0/mops.toml": "7a6bb3d74b1ec5539b9bb88e0a0a0ba09e8c46e00b38cb5feda009d6b80723df",
+      "ic@4.0.0/src/Call.mo": "b4a3572e5617d0b1eb696450344b65e99504f844794e7ddf1cff664fcfeb2994",
+      "ic@4.0.0/src/lib.mo": "9d9ec84a85eb25d191c1cae99cb841d9b6e0cf0f9bc27c3f3805ac9673d7bef1",
+      "ic@4.0.0/LICENSE": "ec415b57f8143746b567c94bfad243f5342f3edf110c94641a1a60e02722db55",
+      "ic@4.0.0/src/Types.mo": "373c3a18e072058aecaaec99385a08f95746c7e86cc9694f9f23caa982c2ad6c"
     },
     "test@2.1.2": {
       "test@2.1.2/LICENSE": "ec415b57f8143746b567c94bfad243f5342f3edf110c94641a1a60e02722db55",

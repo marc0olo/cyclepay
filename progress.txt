@@ -179,3 +179,36 @@ NEXT: Task 7 — Forex.mo (§3.1): USD↔XDR HTTPS outcall w/ coarse-rounding
 transform, stable {rate, ts} cache, lazy refresh, single-flight, retry cap,
 fail-closed wiring into quoteCyclesForUsdCents; fee formula (≈2.9% + $0.30)
 net-of-fees pricing; mocked-outcall unit tests.
+## 2026-06-10 — Iteration 8 — Task 7: Forex subsystem (DONE)
+- Dep: ic@4.0.0 (caffeinelabs) — shares core@2.5.0 exactly (no version
+  split); Call.httpRequest auto-attaches outcall cycles (ic0 cost API).
+- src/backend/Forex.mo (pure half — unit-testable w/ mocked Blob bodies):
+  rate = XDR-per-USD micros (1 XDR = 1T cycles ⇒ cycles = net·micros·1e4);
+  default source open.er-api.com/v6/latest/USD (keyless, USD-base);
+  extractXdrPerUsdMicros (first "XDR" key wins, >6 frac digits truncated);
+  coarseRound to 1_000 micros (~0.14%); plausibility band 0.1–10 XDR/USD
+  (decimal-point bug at source can't mint free/1000x orders); transformBody
+  → canonical micros text, ANY failure → empty body (consensus on failure
+  too); parseCanonicalMicros re-applies band; fee = ⌈gross·bps/1e4⌉+fixed
+  (ceil: overestimate fee, never over-deliver; net>0); quote = one snapshot
+  of config+rate → #ok/#stale/#unpriceable; hostOf for Host header.
+- Main.mo: persistent forexCache + forexConfig (290bps/30¢/1h, admin
+  set_forex_config validated atomically, public forex_status); TRANSIENT
+  single-flight flag (persistent flag stuck by mid-outcall upgrade would
+  deadlock forever) w/ try/finally reset; retry cap 3; max_response_bytes
+  16k (charged on ceiling); forex_transform query; create_order quotes
+  cache → #stale → refresh → requote → fail-closed #rateUnavailable; new
+  #tierBelowFees error (config problem ≠ rate outage).
+- Tests: 43 new (parser matrix, band/round boundaries incl. round-into-band,
+  fee vectors cross-checked w/ python, exactly-at-window staleness, quote,
+  config validation). 237 total green.
+- Gotchas: core Char has NO toNat — use c.toNat32().toNat(); encodeUtf8 dot
+  notation in TESTS needs `import Text` too (M0072, same old story);
+  try/finally works fine in moc 1.9 for the single-flight reset.
+- Verified: mops check ✓ (lint clean), mops test ✓ (237), mops build ✓,
+  icp build ✓, .did gains forex_status/forex_transform/set_forex_config.
+NEXT: Task 8 — Stripe webhook ingestion (rails/Card.mo complete): parse
+checkout.session.completed + charge.refunded JSON, claimed-not-trusted
+client_reference_id resolution, event.id+payment_intent dedup, honor actual
+paid amount → Paid; unmatched/dup → Type 1; refund auto-resolve; crafted
+signed-payload tests.
