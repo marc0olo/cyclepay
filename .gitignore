@@ -7,3 +7,6 @@
 # build artifacts (commit .icp/data/ when it appears — it holds canister ID mappings)
 .icp/cache/
 src/backend/dist/
+
+# PocketIC integration suite (test/integration)
+test/integration/node_modules/

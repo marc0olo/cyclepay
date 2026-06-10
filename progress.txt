@@ -377,3 +377,43 @@ real ledger/CMC Wasms, crafted HMAC-signed webhooks, mocked forex outcall,
 time control; happy path, duplicate/replay, ambiguous-transfer recovery,
 AwaitingTreasury, Type 1/Type 2, forex fail-closed, upgrade-mid-flight,
 postupgrade timer re-arm.
+## 2026-06-10 — Iteration 13 — Task 12: PocketIC suite (IMPLEMENTED; run pending 4K-page host)
+- test/integration/: TS suite, vitest + @dfinity/pic 0.22 (bundles pocket-ic
+  server 14). KEY DISCOVERY: server-14 `icpFeatures` deploys the REAL NNS
+  ICP ledger + CMC + cycles ledger at mainnet IDs (and funds the anonymous
+  principal 1B ICP = our operator float source) — no wasm downloads, no
+  init-arg candid, satisfies §9 "real Wasms" with zero drift surface.
+  CMC rate driven via governance-impersonated set_icp_xdr_conversion_rate
+  (hidden update, caller==governance check only — PocketIC allows any
+  sender); MUST re-set after every advanceTime >15min (Cmc.cmcRateMaxAgeNs).
+- Files: src/idl.ts (hand-transcribed backend.did factory + icrc1/cmc
+  subsets), src/types.ts (typed candid mirrors), src/harness.ts (setup,
+  governance/operator helpers, node:crypto Stripe signer, outcall mock via
+  deferred-actor submit→mock→resume, tick-stepped status polling),
+  src/gateway.spec.ts (15 sequential scenarios, one shared instance).
+- Scenario highlights: §3 pricing vector asserted through the real
+  forex_transform; exactly-one-float-debit invariant on the happy path AND
+  after upgrade-mid-transfer replay (§5.1: tick until #minting commits,
+  upgrade kills the callback, advanceTime(1h) fires the re-armed transient
+  timer, replay recovers block via dedup — float delta == e8s+fee ONCE);
+  upgrade-mid-forward caught between cyclesMinted marker and delivery →
+  #ambiguousForward, never re-forwards; Type 2 via forward to the app
+  subnet's range-top canister id (never allocated); cycles-ledger delivery
+  arm against the real cycles ledger; treasury hold (cap-0 default), resume,
+  73h max-wait escalation; full dedup/Type-1/refund-auto-resolve matrix.
+- BLOCKER (environment, not code): IC replica memory tracker asserts
+  PAGE_SIZE==4096; this sandbox VM is 16K-page aarch64 → pocket-ic crashes
+  at instance creation (verified; jemalloc warning is benign, the
+  memory_tracker assert is not). No KVM. qemu-user x86_64: pocket-ic
+  segfaults in jemalloc init — guest mmap returns bit-47-set addresses
+  (host-VA passthrough), noncanonical for x86_64 userspace; -R reserved-VA
+  workaround fatally conflicts with vsyscall page alloc. Dead end, abandoned.
+- CI route: wrote .github/workflows/integration.yml but the sandbox's OAuth
+  token LACKS `workflow` scope (push rejected) → parked at
+  test/integration/ci/integration.yml w/ install instructions in README.
+- Verified here: tsc --noEmit clean, vitest lists all 15, mops check ✓,
+  mops test ✓ (358), mops build ✓, icp build ✓. PRD task 12 → ◐.
+NEXT: run the suite on a 4K-page host (operator: `cd test/integration &&
+npm ci && npm test` on the Mac, or git mv ci/integration.yml into
+.github/workflows/ and push w/ a workflow-scoped token), fix whatever the
+live run reveals, flip task 12 to ☑; then task 13 (frontend M1).

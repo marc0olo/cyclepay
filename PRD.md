@@ -42,7 +42,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
 | 9 | ☑ | **CMC mint pipeline** (`Cmc.mo`, spec §5/§5.1): candid bindings for ICP ledger + CMC, write-intent-before-call with `created_at_time` dedup, `icrc1_transfer` → record `block_index` → `notify_top_up`/`notify_mint_cycles`, mint-to-self-then-forward delivery, failed forward → Type 2; rate derivation w/ CMC staleness guard (§5); unit tests for intent/replay logic. |
 | 10 | ☑ | **Treasury + burn cap** (`Treasury.mo`, spec §5.3): ICP float accounting, `AwaitingTreasury` hold + max-wait → error queue, low-float soft gate + balance-alert query, **per-period rolling ICP burn cap** with pause + manual override; unit tests for cap window math. |
 | 11 | ☑ | **Recovery timer** (spec §5.2): `recurringTimer` sweep of `Minting`/`IcpAtCMC`/`AwaitingTreasury`, single-flight guard, re-arm in `postupgrade` (transient timer id), 24h-window guard (stale intent w/o block_index → error queue, never auto-replayed). |
-| 12 | ☐ | **PocketIC integration suite — Card go-live bar** (spec §9): real ledger/CMC Wasms, crafted HMAC-signed webhooks, mocked forex outcall, time control; covers happy path, duplicate/replay, ambiguous-transfer recovery, AwaitingTreasury, Type 1/Type 2, forex fail-closed, upgrade-mid-flight, postupgrade re-arm. |
+| 12 | ◐ | **PocketIC integration suite — Card go-live bar** (spec §9): real ledger/CMC Wasms, crafted HMAC-signed webhooks, mocked forex outcall, time control; covers happy path, duplicate/replay, ambiguous-transfer recovery, AwaitingTreasury, Type 1/Type 2, forex fail-closed, upgrade-mid-flight, postupgrade re-arm. *Suite fully implemented (`test/integration`, 15 scenarios) and typechecked; **execution pending a 4 KiB-page host** (macOS / x86_64 CI — the replica cannot run in this 16 KiB-page arm64 sandbox; see README + changelog). Go-live bar is green only when it has actually run.* |
 | 13 | ☐ | **Frontend M1** (asset canister): Astro/JS SPA, II login, rail selector, Card flow (tier links + `client_reference_id`), order status polling by `order_id`, order history. |
 
 ### M2 — ck-USDC rail
@@ -62,6 +62,52 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 ## Changelog
 
+- **2026-06-10 — Task 12 implemented (execution pending a 4 KiB-page host).**
+  PocketIC integration suite, `test/integration/` (TypeScript, vitest +
+  `@dfinity/pic` 0.22 / pocket-ic server 14). **Real-canister posture**: the
+  server's `icpFeatures` deploy the *actual* NNS ICP ledger, CMC, and cycles
+  ledger at their mainnet IDs (`icpToken` also funds the anonymous principal,
+  which the suite uses as the operator's ICP source) — exactly §9's "real
+  ledger/CMC Wasms" with no hand-pinned wasm downloads or init-arg encoding to
+  drift. The CMC's ICP/XDR rate is driven through the real governance-gated
+  `set_icp_xdr_conversion_rate` by impersonating the governance principal as
+  sender (a PocketIC capability), re-armed after every time jump because the
+  backend's 15-min CMC-rate guard is a hard constant. Webhooks are crafted
+  bodies HMAC-signed per Stripe's scheme in node:crypto and delivered through
+  `http_request_update`; forex outcalls are intercepted with the
+  pending-outcall API (deferred-actor submit → mock → resume) so the
+  canister's own `forex_transform` still runs replica-side; the §3 pricing
+  vector (500¢ → 3_353_350_000_000 cycles at 0.737 XDR/USD) is asserted
+  end-to-end. 15 sequential scenarios on one instance (state accumulates like
+  a live gateway's): unprovisioned-secret 503; admin gating; forex
+  fail-closed (3 rejected outcalls → `#rateUnavailable`); priced order +
+  authz; ingress guards (bad MAC, stale `t`, 404/405/413) on the live route
+  table; AwaitingTreasury under the fail-closed cap-0 default; the happy path
+  (cap sized → resume → ledger transfer → `notify_top_up` → forward, with
+  *exactly-one-debit* float assertions and destination cycle-balance deltas);
+  duplicate/replay through every dedup layer + Type 1 `#duplicate` + refund
+  auto-resolve; Type 1 `#unattributed`; delivery to a real cycles-ledger
+  account (second forward arm); Type 2 `#undeliverable` (forward to a
+  never-allocated canister id from the app subnet's range top — cycles refund
+  to the app balance, asserted); **upgrade-mid-transfer** (tick-stepped to
+  the instant `#minting` commits, then upgrade — callback dropped, §5.1
+  intent persisted; the post-upgrade transient-initializer timer fires after
+  `advanceTime(1 h)` and the replay recovers the block with the float debited
+  exactly once); **upgrade-mid-forward** (caught between the `cyclesMinted`
+  pre-forward marker and delivery → `#ambiguousForward` escalation, never
+  re-forwarded); treasury max-wait escalation at 73 h; audit-log seq
+  monotonicity + error-queue accounting. **Execution environment finding**:
+  the IC replica's memory tracker hard-asserts 4096-byte pages; this sandbox
+  is a 16 KiB-page arm64 VM (no KVM, and qemu-user x86_64 emulation dies in
+  jemalloc on >47-bit guest addresses), so the suite *cannot execute here* —
+  it runs natively on the developer's macOS host and on x86_64 CI. A ready
+  GitHub Actions job sits at `test/integration/ci/integration.yml` (parked
+  outside `.github/workflows/` because the sandbox token lacks the `workflow`
+  scope; `git mv` + push with a normal token enables it). Verified in-sandbox:
+  `tsc --noEmit`, vitest collection of all 15 scenarios, `mops check`/`test`
+  (358), `mops build`, `icp build`. Task stays ◐ until the suite has actually
+  run green — that, plus fixing whatever it reveals, is the next loop's first
+  order of business.
 - **2026-06-10 — Task 11 done.** Recovery timer (§5.2). `Recovery.mo` is the
   pure half — cadence policy + sweep eligibility, unit-tested without an IC
   env; Main.mo owns the `recurringTimer` arming. **Cadence bound**:
