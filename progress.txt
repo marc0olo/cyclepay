@@ -43,3 +43,29 @@ locked cycle quantity, transition unit tests).
   icp build ✓. PRD task 1 → ☑, changelog updated.
 NEXT: Task 2 — Idempotency.mo + ErrorQueue.mo (per-rail dedup sets w/ 7-day
 Stripe pruning, bounded Type1/Type2 error queue, audit-log ring buffer, tests).
+## 2026-06-10 — Iteration 3 — Task 2: Idempotency + ErrorQueue + AuditLog (DONE)
+- src/backend/Idempotency.mo: stripeEvents/stripeIntents Map<Text,Int>
+  (first-seen ns; NOT refreshed on replay so day-6 redelivery still prunes
+  day 7), ckUsdcBlocks Set<Nat> never pruned (§4.2 retention); record* → Bool
+  (false = duplicate, ack-and-drop); pruneStripe (cutoff: age >= 7d, constant
+  604_800_000_000_000 — module-level lets must be STATIC, M0014 rejects
+  7*24*60*60*1e9 arithmetic).
+- src/backend/ErrorQueue.mo: Kind = #duplicate{orderId;paymentRef} |
+  #unattributed{claimedRef;paymentRef} (Type 1) | #undeliverable{orderId;
+  cycles} (Type 2) — payloads make types structural; isType1/paymentRefOf;
+  Store {entries: Map<Nat,Entry>; var nextId} (monotonic id = age order);
+  add(capacity) evicts oldest-resolved-first, oldest-unresolved last resort,
+  returns evicted[] for caller to audit-log; resolve (notFound/
+  alreadyResolved), resolveByPaymentRef = charge.refunded auto-resolve
+  (skips resolved + Type 2); unresolved/all/get/size. Capacity is a call-site
+  param — config lands in Main.mo (task 6).
+- src/backend/AuditLog.mo: Queue-backed ring buffer (pushBack/popFront O(1)),
+  hard cap, monotonic never-reused seq → readers detect drops.
+- Tests: idempotency (11), errorqueue (10), auditlog (3) — boundary at
+  exactly-7d pruned / 7d-1ns kept, namespace independence, eviction
+  preference, id non-reuse, auto-resolve idempotence. 105 total green.
+- Gotchas: M0014 (static module lets); Set.insert/Map.insert deprecated M0235
+  → use contains+add; .toArray() on iter needs `import Iter` (again).
+- Verified: mops check ✓, mops test ✓ (105), mops build ✓, icp build ✓.
+NEXT: Task 3 — HMAC-SHA256 + Stripe signature verify (constant-time compare,
+Stripe-Signature header parse, timestamp window; known-vector tests).
