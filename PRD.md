@@ -28,7 +28,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
 | 0 | ☑ | **Scaffold**: PRD, `mops.toml` (pinned moc 1.9.0 + lintoko, core 2.5.0, test), `icp.yaml` (`@dfinity/motoko` recipe, port-0 local network), minimal `persistent actor` in `src/backend/Main.mo`, smoke test green, `mops check`/`build` green. |
 | 1 | ☑ | **Core types + Order state machine** (`Types.mo`, `Orders.mo`): `Owner = { #ii : Principal }` variant (binding seam §11.1.1), `Destination = { #canister; #cyclesLedgerAccount }`, `OrderStatus` (`Created/Expired/Paid/Minting/IcpAtCMC/Delivered/AwaitingTreasury/ErrorQueue`), `Order`, `JournalEntry`; legal-transition function with owner passed as a parameter (seam §11.1.3); locked cycle *quantity* at creation (§3); unit tests for every legal/illegal transition. |
 | 2 | ☑ | **Idempotency + error queue** (`Idempotency.mo`, `ErrorQueue.mo`): per-rail dedup sets (`processedStripeEvents` w/ ~7-day pruning, `processedIntents`, `processedCkUsdcBlocks`), bounded error queue with exactly Type 1 `{Duplicate|Unattributed}` (fiat-only) and Type 2 `{Undeliverable}` (cycles in app balance), bounded audit-log ring buffer; unit tests incl. pruning + bounds. |
-| 3 | ☐ | **HMAC-SHA256 + Stripe signature** (`Hmac.mo` or mops sha2 pkg, `rails/Card.mo` verify half): constant-time-compare HMAC over `timestamp.body`, `Stripe-Signature` header parse (`t=`, `v1=` list), timestamp-window replay guard; unit tests against known HMAC vectors + crafted Stripe signatures. |
+| 3 | ☑ | **HMAC-SHA256 + Stripe signature** (`Hmac.mo` or mops sha2 pkg, `rails/Card.mo` verify half): constant-time-compare HMAC over `timestamp.body`, `Stripe-Signature` header parse (`t=`, `v1=` list), timestamp-window replay guard; unit tests against known HMAC vectors + crafted Stripe signatures. |
 | 4 | ☐ | **Hand-rolled `Http.mo`** (spec §6.0): parse `HttpRequest`, case-insensitive header lookup, query-string strip, body-size guard, dispatch off a `[(method, path, handler)]` route table with per-route `upgrade` flag (binding seam §11.1.2) — one entry: `POST /webhook/stripe`; `http_request` returns `upgrade = ?true`, `http_request_update` dispatches; unit tests for parser + routing. |
 | 5 | ☐ | **Auth + secret** (`Auth.mo`, `Secret.mo`): controller allowlist (flat, equal privileges, §7), reject anonymous principal on user API, admin-set/rotate plaintext webhook secret (SEV-SNP posture documented, §7); unit tests. |
 
@@ -62,6 +62,30 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 ## Changelog
 
+- **2026-06-10 — Task 3 done.** Dependency: `sha2@0.2.1` (research-ag,
+  depends on our exact `core@2.5.0`); the `hmac` mops package was rejected —
+  it drags in `core@1.0.0` + `sha2@0.1.6` alongside ours. `Hmac.mo`: RFC 2104
+  HMAC-SHA256 over the sha2 digest API with a multi-part message argument (so
+  Card MACs `"<t>."` + raw body without copying), and `constantTimeEqual`
+  (XOR-OR accumulate over all bytes — a short-circuiting compare is a timing
+  oracle that leaks the expected MAC, and HMAC "verify" = "forge", §7; length
+  mismatch may return early, MAC width isn't secret). `Util.mo`: hex codec
+  (lowercase encode = Stripe wire format; decode accepts either case, rejects
+  odd length / non-hex). `rails/Card.mo` (verify half, §6.1):
+  `parseSignatureHeader` per Stripe's reference parsers — first `t=` wins,
+  unknown schemes (`v0=`) and unparseable elements ignored, `v1=` candidates
+  hex-decoded and filtered to 32 bytes, no usable `t`/`v1` → null;
+  `signedPayloadMac` over `"<t>.<raw body>"`; `verify` enforces an *absolute*
+  timestamp window (|now − t| ≤ tolerance, default 300 s per Stripe; t is
+  inside the MAC so it can't be forged to defeat the window) *before* MAC
+  work, then constant-time-compares every `v1` candidate (multiple v1 = secret
+  rotation). Tests: RFC 4231 vectors 1–4, 6, 7 + externally computed (python
+  hmac) boundary vectors (empty key, key = 64 B used as-is, key = 65 B
+  hashed) + a pinned crafted Stripe vector — so the implementation is checked
+  against Stripe's actual scheme, not against itself; tamper/rotation/window
+  boundary (±tolerance exact vs +1 s)/malformed-header matrix. 38 new tests,
+  143 total green; `mops check`/`build` + `icp build` green. Event JSON
+  parsing + order resolution = task 8; wiring into HTTP ingress = task 4.
 - **2026-06-10 — Task 2 done.** `Idempotency.mo` (§4.2): `stripeEvents` /
   `stripeIntents` as `Map<Text, Int>` (key → first-seen ns, timestamp never
   refreshed on replay) + `ckUsdcBlocks : Set<Nat>` (never pruned — financial

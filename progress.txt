@@ -69,3 +69,31 @@ Stripe pruning, bounded Type1/Type2 error queue, audit-log ring buffer, tests).
 - Verified: mops check ✓, mops test ✓ (105), mops build ✓, icp build ✓.
 NEXT: Task 3 — HMAC-SHA256 + Stripe signature verify (constant-time compare,
 Stripe-Signature header parse, timestamp window; known-vector tests).
+## 2026-06-10 — Iteration 4 — Task 3: HMAC-SHA256 + Stripe signature (DONE)
+- Dep: sha2@0.2.1 (research-ag) — matches core 2.5.0 exactly. REJECTED the
+  `hmac` mops pkg (edjCase): pins core@1.0.0 + sha2@0.1.6, would put two core
+  versions in the build. HMAC is ~25 lines over a SHA-256 digest, hand-rolled.
+- src/backend/Hmac.mo: RFC 2104 (key > 64B → hashed, zero-pad, ipad/opad),
+  multi-part message arg so Card can MAC "<t>." + body without a copy;
+  constantTimeEqual = XOR-OR over all bytes (compare is on the forge path:
+  HMAC verify == forge), early return on length mismatch only.
+- src/backend/Util.mo: hex codec (lowercase encode, either-case decode,
+  null on odd len / bad char).
+- src/backend/rails/Card.mo: parseSignatureHeader (Stripe reference-parser
+  semantics: first t= wins, v0=/junk ignored, v1= filtered to valid 32-byte
+  hex; null if no usable t/v1), signedPayloadMac("<t>.<raw body>"), verify =
+  parse → ABSOLUTE window |now−t| ≤ tolerance (default 300s; t is signed so
+  it can't be forged to beat the window) → constant-time compare vs EVERY v1
+  (rotation). Errors: #malformedHeader / #timestampOutsideWindow{t,now} /
+  #signatureMismatch.
+- Tests pinned to EXTERNAL vectors (python hmac, computed this iteration, in
+  shell history not committed): RFC 4231 TC1–4,6,7; empty/64B/65B key
+  boundaries; crafted Stripe header vector + rotated-secret second v1.
+  Window boundary at exactly ±tolerance vs +1s. 18 card + 20 hmac = 38 new,
+  143 total green.
+- Gotchas: none at compile (first-try clean — parenthesize variant payloads
+  `#tag({...})`); `mops test` only prints per-FILE ✓ — run
+  `mops test <name>` to see per-test counts.
+NEXT: Task 4 — hand-rolled Http.mo (HttpRequest parse, case-insensitive
+header lookup, query-string strip, body-size guard, route table w/ upgrade
+flag, POST /webhook/stripe entry; parser+routing unit tests).
