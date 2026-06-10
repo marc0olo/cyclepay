@@ -3,10 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "PocketIC integration suite — the Card-rail go-live bar (spec §9).",
+  "description": "PocketIC integration suite — the Card and ck-USDC go-live bars (spec §9).",
   "scripts": {
     "build:backend": "cd ../.. && mops build",
-    "pretest": "npm run build:backend",
+    "fetch:wasm": "node scripts/fetch-ledger-wasm.mjs",
+    "pretest": "npm run fetch:wasm && npm run build:backend",
     "test": "vitest run"
   },
   "devDependencies": {

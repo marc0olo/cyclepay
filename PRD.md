@@ -50,7 +50,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
 | # | Status | Task |
 |---|--------|------|
 | 14 | ☑ | **ck-USDC rail** (`rails/CkUsdc.mo`, spec §6.2): ICRC-1/2 bindings, `icrc2_transfer_from` pull after user `icrc2_approve` (Candid, II caller), `block_index` dedup, amount-short mismatch handling, hold-ckUSDC treasury posture; unit tests. |
-| 15 | ☐ | **PocketIC suite — ck-USDC go-live bar**: approve/pull happy path, dedup, mismatch, treasury interplay. |
+| 15 | ◐ | **PocketIC suite — ck-USDC go-live bar**: approve/pull happy path, dedup, mismatch, treasury interplay. *Suite fully implemented (`test/integration/src/ckusdc.spec.ts`, 11 scenarios against the real pinned `ic-icrc1-ledger` at the mainnet ck-USDC id) and typechecked; **execution pending the same 4 KiB-page host as task 12** — both bars run together (`npm test`). Green only when actually run.* |
 | 16 | ☐ | **Frontend M2**: ck-USDC panel (approve → purchase flow). |
 
 ### M3 — Verifiability & ship
@@ -62,6 +62,57 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 ## Changelog
 
+- **2026-06-10 — Task 15 implemented (execution pending a 4 KiB-page host,
+  same constraint as task 12).** PocketIC suite, ck-USDC go-live bar —
+  `test/integration/src/ckusdc.spec.ts`, 11 scenarios on its own instance
+  (vitest runs spec files sequentially; the card bar's instance is untouched).
+  **Real-ledger posture extended to the rail under test**: the suite installs
+  the *actual* `ic-icrc1-ledger` from the pinned `ledger-suite-icrc-2026-03-09`
+  release (sha256-verified by the committed `scripts/fetch-ledger-wasm.mjs`
+  pretest step — the binary itself is gitignored; the pin is the verifiable
+  artifact, spec §8 stance) at **exactly the mainnet ck-USDC id
+  `xevnm-gaaaa-aaaar-qafnq-cai` that `CkUsdc.mo` pins** — PocketIC's fiduciary
+  subnet mirrors mainnet's canister range, so `targetCanisterId` lands it
+  there; ICRC-2 enabled, 10_000-unit fee, init args transcribed from (and
+  verified against) the wasm's own `candid:service` metadata. The in-flight
+  harness/idl/types halves from the previous session were reviewed (IDL
+  checked field-by-field against the committed `backend.did`) and kept.
+  Scenario highlights: **fail-closed rail** (default `maxUsdCents = 0`
+  rejects, config admin-gated/validated/public, bounds checked before any
+  quote); the **§3 pricing twin** (the same 500¢ through this rail's 0/0 fee
+  formula → 3_685_000_000_000 cycles locked vs the card's net-455¢ 3.35T —
+  one quote path, per-rail formulas, asserted end-to-end through the real
+  transform); **§6.2 amount-short mismatch** both ways (allowance short of
+  `amount + ledger fee`, then balance short) — definite rejections carry
+  `required`, drop the intent (journal emptied, order stays claimable), and
+  the approve-more-retry recovery lands `Paid` with exact ledger accounting
+  (user debit, canister credit, allowance spent, 32-byte order-id memo);
+  **§5.1 money-IN replay**: claim interrupted by a backend upgrade the
+  instant the pull intent is journaled (ledger call in flight cross-subnet) —
+  the orphaned `icrc2_transfer_from` executes, the re-claim replays the
+  bit-identical intent, the ledger answers `#Duplicate` with the original
+  block, and the user is **debited exactly once** (balance pinned before and
+  after); **stale-intent escalation** manufactured deterministically by
+  stopping the ledger canister (intent journaled, pull rejected, never
+  executed), advancing 24 h, claiming → once-only `stalePullIntent`
+  escalation with the order deliberately still `Created`, then the operator
+  path: `reset_ck_usdc_pull` (admin-gated, refuses on settled pulls — both
+  asserted) → fresh claim → `Paid` → delivered; **treasury interplay**: the
+  cap-0 default holds the ck order's mint in `AwaitingTreasury`, sizing the
+  cap + `process_order` delivers through the real CMC with exactly-one float
+  debit, the §5.3 window recording `CK_ORDER_E8S`, and the ceil-dust overshoot
+  (`e8s × permyriad − locked = 25_000` cycles) staying operator-side;
+  **hold-ckUSDC withdraw lever** (accrued 3-pull balance withdrawn minus one
+  ledger fee, over-withdraw surfaces the ledger error); **trail coherence**
+  (ckusdc.* audit tags, seq monotonicity, zero open queue entries after the
+  operator resolves the stale-pull escalation). Verified in-sandbox: fetch
+  script downloads + sha256-verifies the wasm, `tsc --noEmit` strict clean,
+  vitest collects all 26 scenarios (15 card + 11 ck-USDC), `mops check`
+  lint-clean, `mops test` 390 green, `mops build` + `icp build` green,
+  committed `.did` unchanged. `pretest` now chains wasm fetch + backend
+  build, so the parked CI job and the dev-host `npm test` run both bars with
+  no extra steps. Task stays ◐ until the suite has actually run green on a
+  4 KiB-page host — same bar as task 12.
 - **2026-06-10 — Task 14 done.** ck-USDC rail (§6.2). `rails/CkUsdc.mo` is the
   pure half — ICRC-1/2 Candid types (ledger `xevnm-gaaaa-aaaar-qafnq-cai`,
   6 decimals ⇒ 1¢ = 10⁴ units exactly, the 1:1 peg makes `usdCents` pricing

@@ -122,6 +122,64 @@ export interface TreasuryStatus {
   heldOrders: bigint;
 }
 
+export interface CkUsdcConfig {
+  minUsdCents: bigint;
+  maxUsdCents: bigint;
+  feeBps: bigint;
+  feeFixedCents: bigint;
+  ledgerFeeUnits: bigint;
+}
+
+export type CkUsdcConfigError =
+  | { feeBpsTooHigh: null }
+  | { minAboveMax: null };
+
+export interface CreatedCkUsdcOrder {
+  order: Order;
+  amountUnits: bigint;
+  approveUnits: bigint;
+}
+
+export type CreateCkUsdcOrderError =
+  | { anonymous: null }
+  | { railDisabled: null }
+  | { zeroAmount: null }
+  | { belowMinimum: bigint }
+  | { aboveMaximum: bigint }
+  | { amountBelowFees: null }
+  | { rateUnavailable: null }
+  | { idGeneration: null };
+
+export type ClaimCkUsdcError =
+  | { anonymous: null }
+  | { notFound: null }
+  | { wrongRail: null }
+  | { notClaimable: string }
+  | { inFlight: null }
+  | { insufficientAllowance: { allowance: bigint; required: bigint } }
+  | { insufficientFunds: { balance: bigint; required: bigint } }
+  | { badFee: { expectedFee: bigint } }
+  | { ledgerRejected: string }
+  | { retryable: string }
+  | { staleIntent: null };
+
+export interface PullIntent {
+  createdAtTimeNs: bigint;
+  amountUnits: bigint;
+  feeUnits: bigint;
+  fromOwner: Principal;
+  memo: Bytes;
+}
+
+export interface PullEntry {
+  orderId: string;
+  intent: PullIntent;
+  blockIndex: Opt<bigint>;
+  escalatedAtNs: Opt<bigint>;
+  createdAtNs: bigint;
+  updatedAtNs: bigint;
+}
+
 export interface HttpRequest {
   method: string;
   url: string;
@@ -139,6 +197,10 @@ export interface HttpResponse {
 export interface BackendService {
   audit_log(): Promise<AuditEvent[]>;
   card_tiers(): Promise<Tier[]>;
+  ck_usdc_config(): Promise<CkUsdcConfig>;
+  ck_usdc_pull(id: string): Promise<Opt<PullEntry>>;
+  claim_ck_usdc_order(id: string): Promise<Result<Order, ClaimCkUsdcError>>;
+  create_ck_usdc_order(usdCents: bigint, destination: Destination): Promise<Result<CreatedCkUsdcOrder, CreateCkUsdcOrderError>>;
   create_order(tierId: string, destination: Destination): Promise<Result<CreatedOrder, CreateOrderError>>;
   error_queue(): Promise<ErrorEntry[]>;
   forex_status(): Promise<{ rate: Opt<{ xdrPerUsdMicros: bigint; fetchedAtNs: bigint }>; config: ForexConfig }>;
@@ -152,14 +214,17 @@ export interface BackendService {
   recovery_status(): Promise<{ intervalNs: bigint; lastSweep: Opt<{ atNs: bigint; pending: bigint }>; sweepInFlight: boolean }>;
   refresh_float(): Promise<bigint>;
   reset_burn_window(): Promise<bigint>;
+  reset_ck_usdc_pull(id: string): Promise<boolean>;
   resolve_error(id: bigint): Promise<Result<ErrorEntry, { notFound: bigint } | { alreadyResolved: bigint }>>;
   set_card_tiers(tiers: Tier[]): Promise<Result<null, unknown>>;
+  set_ck_usdc_config(config: CkUsdcConfig): Promise<Result<null, CkUsdcConfigError>>;
   set_forex_config(config: ForexConfig): Promise<Result<null, unknown>>;
   set_recovery_interval(intervalNs: bigint): Promise<Result<null, unknown>>;
   set_treasury_config(config: TreasuryConfig): Promise<Result<null, unknown>>;
   set_webhook_secret(secret: string): Promise<Result<null, unknown>>;
   treasury_status(): Promise<TreasuryStatus>;
   webhook_secret_status(): Promise<{ isSet: boolean; setAtNs: Opt<bigint>; generation: bigint }>;
+  withdraw_ck_usdc(to: Account, amountUnits: bigint): Promise<Result<bigint, string>>;
 }
 
 export interface Icrc1Service {
@@ -172,6 +237,23 @@ export interface Icrc1Service {
     memo: Opt<Bytes>;
     created_at_time: Opt<bigint>;
   }): Promise<{ Ok: bigint } | { Err: unknown }>;
+}
+
+export interface Icrc2Service extends Icrc1Service {
+  icrc2_approve(arg: {
+    fee: Opt<bigint>;
+    memo: Opt<Bytes>;
+    from_subaccount: Opt<Bytes>;
+    created_at_time: Opt<bigint>;
+    amount: bigint;
+    expected_allowance: Opt<bigint>;
+    expires_at: Opt<bigint>;
+    spender: Account;
+  }): Promise<{ Ok: bigint } | { Err: unknown }>;
+  icrc2_allowance(arg: {
+    account: Account;
+    spender: Account;
+  }): Promise<{ allowance: bigint; expires_at: Opt<bigint> }>;
 }
 
 export interface CmcService {

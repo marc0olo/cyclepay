@@ -19,9 +19,13 @@ import {
   type PendingHttpsOutcall,
 } from '@dfinity/pic';
 import { Principal } from '@icp-sdk/core/principal';
-import { backendIdlFactory, cmcIdlFactory, icrc1IdlFactory } from './idl';
+import {
+  backendIdlFactory, cmcIdlFactory, encodeCkUsdcLedgerInit, icrc1IdlFactory,
+  icrc2IdlFactory,
+} from './idl';
 import type {
-  BackendService, CmcService, Destination, HttpResponse, Icrc1Service,
+  BackendService, CmcService, CreatedCkUsdcOrder, CreateCkUsdcOrderError,
+  Destination, HttpResponse, Icrc1Service, Icrc2Service,
   Order, OrderStatusKey, Result, StatusVariant,
 } from './types';
 
@@ -32,10 +36,20 @@ export const ICP_LEDGER_ID = Principal.fromText('ryjl3-tyaaa-aaaaa-aaaba-cai');
 export const CMC_ID = Principal.fromText('rkp4c-7iaaa-aaaaa-aaaca-cai');
 export const CYCLES_LEDGER_ID = Principal.fromText('um5iw-rqaaa-aaaaq-qaaba-cai');
 export const GOVERNANCE_ID = Principal.fromText('rrkah-fqaaa-aaaaa-aaaaq-cai');
+/// The mainnet ck-USDC ledger id CkUsdc.mo pins. It lives in the fiduciary
+/// subnet's canister range, which PocketIC mirrors — the suite installs the
+/// real ic-icrc1-ledger wasm at exactly this id (`targetCanisterId` is
+/// supported on the Fiduciary subnet).
+export const CKUSDC_LEDGER_ID = Principal.fromText('xevnm-gaaaa-aaaar-qafnq-cai');
 
 export const BACKEND_WASM = resolve(
   import.meta.dirname,
   '..', '..', '..', 'src', 'backend', 'dist', 'backend.wasm',
+);
+/// Real ic-icrc1-ledger wasm, fetched (sha256-pinned) by the pretest script.
+export const CKUSDC_LEDGER_WASM = resolve(
+  import.meta.dirname,
+  '..', 'wasm', 'ic-icrc1-ledger.wasm.gz',
 );
 
 /// Deterministic suite epoch — must only be later than the CMC feature's
@@ -59,6 +73,26 @@ export const WEBHOOK_SECRET = 'whsec_8fJ3kQ9mN2pX7vR4tL6wY1zB5cD0eH';
 
 export const admin = createIdentity('cyclepay integration admin');
 export const user = createIdentity('cyclepay integration user');
+/// ck-USDC suite extras: a user whose balance can't cover a pull, and the
+/// ledger's minting account (never used after init).
+export const poorUser = createIdentity('cyclepay integration poor user');
+export const ckUsdcMinter = createIdentity('cyclepay integration ckusdc minter');
+
+/// ck-USDC constants (CkUsdc.mo): 6 decimals at 1:1 USD ⇒ 1¢ = 10^4 units;
+/// ledger transfer fee 10_000 units (1¢) — charged to the user's account on
+/// both `icrc2_approve` and the pull.
+export const CKUSDC_FEE_UNITS = 10_000n;
+/// The suite's standard ck-USDC order: 500¢ with the rail's default 0/0 fee
+/// formula → net 500¢ at 737_000 micro-XDR/USD = 5_000_000 units pulled and
+/// 3_685_000_000_000 cycles locked (cf. the card rail's 455¢ → 3.35335T —
+/// same §3 quote path, different fee formula).
+export const CK_ORDER_USD_CENTS = 500n;
+export const CK_ORDER_UNITS = 5_000_000n;
+export const CK_ORDER_APPROVE_UNITS = CK_ORDER_UNITS + CKUSDC_FEE_UNITS;
+export const CK_ORDER_LOCKED_CYCLES = 3_685_000_000_000n;
+/// ceil(3_685_000_000_000 / 35_000) — the e8s the shared mint pipeline
+/// derives for a ck-USDC order at the suite's CMC rate.
+export const CK_ORDER_E8S = 105_285_715n;
 
 export interface Gateway {
   server: PocketIcServer;
@@ -88,6 +122,9 @@ export async function setupGateway(): Promise<Gateway> {
   const pic = await PocketIc.create(server.getUrl(), {
     nns: { state: { type: SubnetStateType.New } },
     application: [{ state: { type: SubnetStateType.New } }],
+    // The fiduciary subnet's canister range mirrors mainnet's, so the
+    // ck-USDC suite can install a ledger at the exact id CkUsdc.mo pins.
+    fiduciary: { state: { type: SubnetStateType.New } },
     icpFeatures: {
       icpToken: IcpFeaturesConfig.DefaultConfig,
       cyclesMinting: IcpFeaturesConfig.DefaultConfig,
@@ -292,6 +329,111 @@ export async function createOrderWithForexMocks(
   mocks: ForexMock[],
 ): Promise<Result<{ order: Order; clientReferenceId: string }, unknown>> {
   const execute = await gw.deferredUser.create_order(tierId, destination);
+  for (const mock of mocks) {
+    await mockForexOutcall(gw.pic, mock);
+  }
+  return await execute();
+}
+
+// ── ck-USDC ledger (§6.2) ─────────────────────────────────────────────────
+
+export interface CkLedger {
+  canisterId: Principal;
+  subnetId: Principal;
+  /// Ledger actors per caller role — the suite approves as users and audits
+  /// balances anonymously.
+  asUser: Actor<Icrc2Service>;
+  asPoorUser: Actor<Icrc2Service>;
+  query: Actor<Icrc2Service>;
+  /// Stop/start the ledger canister — the deterministic way to manufacture
+  /// a pull whose intent persists without the ledger ever executing it.
+  stop(): Promise<void>;
+  start(): Promise<void>;
+}
+
+/// Install the REAL ic-icrc1-ledger (pinned release, fetched by pretest) at
+/// the mainnet ck-USDC id on the fiduciary subnet. ICRC-2 enabled; admin is
+/// the controller so the suite can stop/start it.
+export async function installCkUsdcLedger(
+  gw: Gateway,
+  initialBalances: [Principal, bigint][],
+): Promise<CkLedger> {
+  const fiduciary = await gw.pic.getFiduciarySubnet();
+  if (!fiduciary) throw new Error('instance has no fiduciary subnet');
+  const fixture = await gw.pic.setupCanister<Icrc2Service>({
+    idlFactory: icrc2IdlFactory,
+    wasm: CKUSDC_LEDGER_WASM,
+    arg: encodeCkUsdcLedgerInit({
+      minter: ckUsdcMinter.getPrincipal(),
+      archiveController: admin.getPrincipal(),
+      initialBalances,
+      transferFee: CKUSDC_FEE_UNITS,
+    }),
+    sender: admin.getPrincipal(),
+    controllers: [admin.getPrincipal()],
+    targetCanisterId: CKUSDC_LEDGER_ID,
+    targetSubnetId: fiduciary.id,
+  });
+  const asUser = fixture.actor;
+  asUser.setIdentity(user);
+  const asPoorUser = gw.pic.createActor<Icrc2Service>(icrc2IdlFactory, CKUSDC_LEDGER_ID);
+  asPoorUser.setIdentity(poorUser);
+  const query = gw.pic.createActor<Icrc2Service>(icrc2IdlFactory, CKUSDC_LEDGER_ID);
+  return {
+    canisterId: CKUSDC_LEDGER_ID,
+    subnetId: fiduciary.id,
+    asUser,
+    asPoorUser,
+    query,
+    stop: () => gw.pic.stopCanister({
+      canisterId: CKUSDC_LEDGER_ID,
+      sender: admin.getPrincipal(),
+      targetSubnetId: fiduciary.id,
+    }),
+    start: () => gw.pic.startCanister({
+      canisterId: CKUSDC_LEDGER_ID,
+      sender: admin.getPrincipal(),
+      targetSubnetId: fiduciary.id,
+    }),
+  };
+}
+
+export async function ckBalance(ledger: CkLedger, owner: Principal): Promise<bigint> {
+  return await ledger.query.icrc1_balance_of({ owner, subaccount: [] });
+}
+
+/// `icrc2_approve` the gateway as spender — what the frontend asks the
+/// user's wallet for between create and claim. Costs the approver one
+/// ledger fee.
+export async function approveCkUsdc(
+  ledgerActor: Actor<Icrc2Service>,
+  spender: Principal,
+  units: bigint,
+): Promise<void> {
+  const result = await ledgerActor.icrc2_approve({
+    fee: [],
+    memo: [],
+    from_subaccount: [],
+    created_at_time: [],
+    amount: units,
+    expected_allowance: [],
+    expires_at: [],
+    spender: { owner: spender, subaccount: [] },
+  });
+  if (!('Ok' in result)) {
+    throw new Error(`icrc2_approve failed: ${JSON.stringify(result, bigIntReplacer)}`);
+  }
+}
+
+/// Submit create_ck_usdc_order as the user, servicing forex outcalls like
+/// the card-rail twin (same §3.1 quote path, this rail's fee formula).
+export async function createCkOrderWithForexMocks(
+  gw: Gateway,
+  usdCents: bigint,
+  destination: Destination,
+  mocks: ForexMock[],
+): Promise<Result<CreatedCkUsdcOrder, CreateCkUsdcOrderError>> {
+  const execute = await gw.deferredUser.create_ck_usdc_order(usdCents, destination);
   for (const mock of mocks) {
     await mockForexOutcall(gw.pic, mock);
   }

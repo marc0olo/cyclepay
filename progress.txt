@@ -511,3 +511,48 @@ NEXT: Task 15 — PocketIC suite, ck-USDC go-live bar: deploy a local ICRC-2
 ledger as ck-USDC, approve/pull happy path, dedup/replay, amount-short,
 stale-intent escalation, treasury interplay (same 4K-page host constraint
 as task 12 — implement + typecheck here, execute on dev host/CI).
+## 2026-06-10 — Iteration 16 — Task 15: PocketIC ck-USDC bar (IMPLEMENTED; run pending 4K-page host)
+RESUMED IN-FLIGHT WORK: previous session left harness.ts/idl.ts/types.ts
+ck-USDC halves uncommitted (icrc2 factory, ledger-init encoder, CkLedger
+install/approve helpers, fiduciary subnet in setup) but no spec file, no
+wasm fetch, no package wiring. Reviewed the in-flight IDL field-by-field
+against the committed backend.did (exact match) and kept it.
+- KEY MECHANISM: PocketIC's fiduciary subnet mirrors mainnet's canister
+  range, so setupCanister({targetCanisterId}) installs the REAL
+  ic-icrc1-ledger at exactly xevnm-gaaaa-aaaar-qafnq-cai — the id CkUsdc.mo
+  pins. Wasm from pinned release ledger-suite-icrc-2026-03-09, sha256
+  354dd6ec… verified by new scripts/fetch-ledger-wasm.mjs (binary
+  gitignored, pin committed — §8 stance); init args verified against the
+  wasm's own candid:service metadata via ic-wasm. pretest = fetch + mops
+  build, so dev-host/CI `npm test` runs both bars unchanged.
+- src/ckusdc.spec.ts: 11 scenarios, own instance. Fail-closed rail config
+  (default-disabled, gated, validated, public) + bounds-before-quote;
+  §3 pricing twin (500¢ @ 0/0 formula → 3.685T locked, end-to-end through
+  the real transform); claim guards (anon/non-owner/unknown/wrongRail/
+  no-approval); §6.2 amount-short BOTH arms (allowance short → required
+  carried, intent dropped, order claimable; balance short ditto) then
+  approve→pull → Paid w/ exact ledger accounting (debit/credit/allowance-
+  spent/32B memo); §5.1 money-IN replay — upgrade mid-pull after intent
+  journals, orphaned transfer_from executes, re-claim replays identical
+  args → ledger #Duplicate → debited EXACTLY once (balances pinned);
+  stale-intent via stopCanister on the ledger (deterministic never-executed
+  pull) + 24h jump → once-only stalePullIntent escalation, order stays
+  Created, reset_ck_usdc_pull reopens (refusal-on-settled also pinned) →
+  claim → delivered; treasury interplay (cap-0 hold → size → process_order
+  → delivered, one float debit, ceil-dust 25_000 cycles operator-side);
+  withdraw lever (3-pull accrual − fee, over-withdraw → err); trail (tags,
+  seq, zero open entries after operator resolve).
+- Gotchas: vitest fileParallelism:false runs spec files sequentially —
+  ckusdc gets its own instance, no card-state interference. Actor typing:
+  spec-local poorUser actor needs `Actor<BackendService>` from @dfinity/pic
+  (createActor's ReturnType isn't generic-bound). GitHub release URL 302 ≠
+  exists-check: probe with -L download + gunzip -t + wasm magic.
+- Verified: fetch script ✓ (sha256 match), tsc --noEmit ✓, vitest lists 26
+  (15 card + 11 ck), mops check ✓, mops test ✓ (390), mops build ✓,
+  icp build ✓, .did unchanged. PRD task 15 → ◐ (same actually-ran bar as
+  task 12). Also committing the user's afk-ralph.sh tweak (usage guard +
+  push step) found in the working tree.
+NEXT: task 16 — Frontend M2: ck-USDC panel (amount input within public
+ck_usdc_config bounds, create → icrc2_approve via wallet/ledger → claim
+flow w/ claim-error→action mapping, rail tab enable); then tasks 17–18
+(reproducible build + runbook). Tasks 12/15 still need the dev-host/CI run.

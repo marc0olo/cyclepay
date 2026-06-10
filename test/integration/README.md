@@ -1,10 +1,13 @@
-# PocketIC integration suite — the Card-rail go-live bar (spec §9)
+# PocketIC integration suite — the Card and ck-USDC go-live bars (spec §9)
 
-End-to-end scenarios against a PocketIC instance running the **real** NNS
+End-to-end scenarios against PocketIC instances running the **real**
 canisters: the ICP ledger, the cycles minting canister, and the cycles ledger
 are deployed at their mainnet IDs by PocketIC's `icpFeatures` (the same Wasms
-mainnet runs, kept in sync with the instance topology by the server). The
-suite plays every external role itself:
+mainnet runs, kept in sync with the instance topology by the server), and the
+ck-USDC suite installs the real `ic-icrc1-ledger` (pinned release,
+sha256-verified by `scripts/fetch-ledger-wasm.mjs` in pretest) at the exact
+mainnet ck-USDC id on the fiduciary subnet, whose canister range mirrors
+mainnet's. The suite plays every external role itself:
 
 - **Stripe** — crafted `checkout.session.completed` / `charge.refunded`
   payloads, HMAC-SHA256-signed exactly per the `Stripe-Signature` scheme,
@@ -16,6 +19,9 @@ suite plays every external role itself:
 - **NNS governance** — the CMC's ICP/XDR conversion rate is set by calling
   `set_icp_xdr_conversion_rate` with the governance canister principal as
   sender (PocketIC permits arbitrary senders).
+- **The ck-USDC user's wallet** — `icrc2_approve` calls straight to the
+  installed ledger (including deliberately short approvals for the §6.2
+  amount-short mismatch), with balance/allowance audits around every pull.
 - **Time** — staleness windows, the recovery timer, and the treasury
   max-wait are driven with PocketIC time control; mid-flight interruption
   tests step rounds one tick at a time and upgrade the canister inside the
@@ -26,7 +32,7 @@ suite plays every external role itself:
 ```sh
 cd test/integration
 npm ci
-npm test        # pretest builds the backend wasm via `mops build`
+npm test        # pretest fetches the pinned ledger wasm + builds the backend
 ```
 
 Requirements: Node ≥ 20.11 and `mops` on PATH. The PocketIC server binary
@@ -69,3 +75,22 @@ git commit && git push   # needs a workflow-scoped token (a normal `gh auth` tok
 | 13 | upgrade mid-forward → `#ambiguousForward` escalation, never re-forwards | ambiguous-transfer recovery |
 | 14 | treasury max-wait → `treasuryWaitExceeded` escalation | AwaitingTreasury |
 | 15 | audit-log seq monotonicity + error-queue accounting | — |
+
+## Scenario map — ck-USDC go-live bar (`ckusdc.spec.ts`, task 15)
+
+Own instance (vitest runs spec files sequentially); real `ic-icrc1-ledger`
+at `xevnm-gaaaa-aaaar-qafnq-cai` with ICRC-2 enabled and a 10_000-unit fee.
+
+| # | Scenario | Coverage |
+|---|----------|----------|
+| ck-01 | `maxUsdCents = 0` default rejects orders; config admin-gated, validated, public | fail-closed rail config |
+| ck-02 | zero / below-min / above-max rejected before any quote | amount bounds |
+| ck-03 | 500¢ order through the shared §3 quote path with the rail's 0/0 fee formula | pricing |
+| ck-04 | anonymous/non-owner/unknown/wrong-rail claim guards; no-approval claim drops the intent | claim guards |
+| ck-05 | short approval → `insufficientAllowance` with `required`; full approve → pull → `Paid`; exact ledger accounting; cap-0 hold | amount-short mismatch, approve/pull happy path, treasury interplay |
+| ck-06 | cap sized → held ck order resumes → real CMC mint → delivery; settled pull never resettable | treasury interplay, shared money-out |
+| ck-07 | balance short of the pull → definite rejection, order stays claimable | amount-short (funds arm) |
+| ck-08 | upgrade mid-pull → intent replays bit-identically → ledger `#Duplicate` → debited exactly once | dedup/replay (§5.1 money-in) |
+| ck-09 | 24 h stale intent → once-only `stalePullIntent` escalation, order stays `Created`; `reset_ck_usdc_pull` re-opens; settles after | stale-intent escalation + ops levers |
+| ck-10 | `withdraw_ck_usdc` moves the accrued balance; over-withdraw surfaces the ledger error | hold-ckUSDC posture |
+| ck-11 | audit tags + error-queue accounting across the rail | — |

@@ -19,3 +19,6 @@ src/frontend/src/bindings/
 
 # PocketIC integration suite (test/integration)
 test/integration/node_modules/
+# fetched by scripts/fetch-ledger-wasm.mjs, sha256-pinned there — the pin is
+# committed, the binary is not
+test/integration/wasm/
