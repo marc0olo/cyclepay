@@ -58,10 +58,52 @@ Status: ☐ todo · ◐ in progress · ☑ done
 | # | Status | Task |
 |---|--------|------|
 | 17 | ☑ | **Reproducible build + release** (spec §8): Docker-pinned build, `ic-wasm` deterministic optimize + metadata, committed `.did`, published expected module hash per tagged release, asset-canister certified frontend. *`Dockerfile.release` + `scripts/reproducible-build.sh` (git-archive context) + `RELEASE.md`; container build verified byte-identical to the native build.* |
-| 18 | ☐ | **Ops runbook**: secret provisioning/rotation, error-queue resolution (Stripe Dashboard refunds), float refill, burn-cap override, confidential-subnet checklist (spec §7 caveats, §11.1). |
+| 18 | ☑ | **Ops runbook**: secret provisioning/rotation, error-queue resolution (Stripe Dashboard refunds), float refill, burn-cap override, confidential-subnet checklist (spec §7 caveats, §11.1). *`RUNBOOK.md` — go-live checklist, all admin levers with verified `icp` commands, full error-queue triage table (every Kind/stage → money position → action), incident procedure for a leaked secret, monitoring cadence, SEV-SNP verification checklist.* |
 
 ## Changelog
 
+- **2026-06-10 — Task 18 done.** Ops runbook (`RUNBOOK.md`) — the operating
+  manual the admin surface has been accumulating doc-comments toward. It is
+  written from the *code*, not the spec: every method name, argument shape,
+  default, capacity, and CLI command was checked against `Main.mo` and the
+  installed `icp-cli` 0.3.2 before being written down (`icp canister
+  settings update`, not dfx's `update-settings`; `top-up`, not
+  `deposit-cycles`). Structure: **operating model** (controller set = the
+  flat §7 allowlist, OR-semantics caveat, settings-level edit commands,
+  units table); **go-live checklist** ordered around the fail-closed
+  defaults (every money lever ships dark: empty tiers, cap 0, ck-USDC
+  max 0, no secret — the checklist is exactly the list of conscious
+  decisions); **secret provisioning/rotation** (full-`whsec_` key,
+  generation counter as the no-read-back rotation confirmation, Stripe
+  overlap = zero-downtime, boundary-node provisioning exposure → rotate
+  after first set, and the leaked-secret incident procedure: cap to 0
+  *first*, then rotate, then reconcile against Stripe, then
+  `reset_burn_window`); **tiers/forex/treasury sections** with sizing
+  guidance (the burn cap is "most ICP a leaked secret drains per window
+  before you notice"; too-small merely delays, too-large is unbounded —
+  start tight); **the error-queue triage table** — every `Kind` and every
+  `stuckMint` stage (`treasuryWaitExceeded`, `staleIntent`,
+  `retriesExhausted`, `ambiguousForward`, `missingJournal`,
+  `stalePullIntent`) mapped to its *money position* (certain/uncertain,
+  fiat-only vs cycles-stranded vs user-debited) and the concrete operator
+  action, including the never-rules (never rebuild a stale intent, never
+  re-forward an ambiguous forward); **ck-USDC levers** (rail enable,
+  `stalePullIntent` procedure keyed off the ledger memo = order id,
+  `reset_ck_usdc_pull`'s structural double-debit refusal, `withdraw_ck_usdc`
+  as both refund tool and the hold-ckUSDC float-conversion loop, with the
+  no-`created_at_time` check-ledger-before-retry warning); **recovery
+  timer + manual kicks**; **monitoring cadence** (the five public/admin
+  queries and what "healthy" reads like, audit-log `seq` gaps = ring
+  drops); **the §7/§11.1 confidential-subnet checklist** ordered
+  hardest-first (checkpoint/state-sync confidentiality before attestation
+  before maturity, with the until-then posture stated: burn cap +
+  accountable providers, plaintext accepted); **upgrade ops notes**
+  complementing RELEASE.md (§5.1 makes upgrades mid-flight safe by design;
+  which knobs are deliberately transient and reset on upgrade). Verified:
+  `mops check` lint-clean, `mops test` green (18 files / 390), `mops build`
+  + `icp build` green, committed `.did` untouched. **All buildable tasks
+  are now done; the only open items are tasks 12/15 — executing the
+  already-implemented PocketIC suites on a 4 KiB-page host.**
 - **2026-06-10 — Task 17 done.** Reproducible build + release (spec §8).
   **The deployable bytes are now a pure function of a git ref.**
   `scripts/reproducible-build.sh <ref>` pipes `git archive <ref>` — the

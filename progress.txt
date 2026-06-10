@@ -638,3 +638,37 @@ NEXT: task 18 — Ops runbook (secret provisioning/rotation, error-queue
 resolution incl. Stripe Dashboard refunds, float refill, burn-cap sizing/
 override, ck-USDC levers, confidential-subnet checklist §7/§11.1). Tasks
 12/15 still need the dev-host/CI run.
+## 2026-06-10 — Iteration 19 — Task 18: Ops runbook (DONE)
+Tasks 12/15 stay ◐ (4K-page host, see memory) — task 18 was the last
+buildable task.
+- RUNBOOK.md: written from the CODE, not the spec — every method/arg/
+  default/capacity checked against Main.mo, every CLI command checked
+  against installed icp-cli 0.3.2 (`icp canister settings update
+  --add-controller`, NOT dfx's update-settings; `icp canister top-up`,
+  NOT deposit-cycles — both were wrong in the first draft and caught by
+  running --help).
+- Sections: operating model (controllers = §7 allowlist, units table);
+  go-live checklist = exactly the fail-closed defaults (secret, tiers,
+  cap 0, ck max 0, alert, webhook endpoint w/ the two event types);
+  secret provisioning/rotation (generation counter = no-read-back
+  confirmation, Stripe overlap, boundary-node exposure → rotate-after-
+  provision, leak procedure: cap-to-0 FIRST then rotate then reconcile
+  then reset_burn_window); tiers/forex; treasury (cap sizing guidance:
+  too-small delays, too-large is unbounded — start tight); ERROR-QUEUE
+  TRIAGE TABLE — every Kind + every stuckMint stage → money position →
+  action incl. the never-rules (never rebuild stale intent, never
+  re-forward ambiguous); ck-USDC levers (stalePullIntent procedure off
+  ledger memo = orderId, reset refusal semantics, withdraw as refund +
+  float-conversion loop); recovery/manual kicks; monitoring cadence
+  (healthy reads of the 5 status queries, audit seq gaps = drops);
+  §7/§11.1 confidential-subnet checklist hardest-first (checkpoint/
+  state-sync confidentiality before attestation before maturity);
+  upgrade ops notes (mid-flight safe by §5.1; transient knobs reset by
+  design).
+- Verified: mops check ✓ (lint clean), mops test ✓ (18 files/390),
+  mops build ✓, icp build ✓, .did untouched. PRD task 18 → ☑.
+NEXT: PRD is complete except tasks 12/15 — both fully implemented +
+typechecked, blocked ONLY on executing PocketIC on a 4K-page host
+(operator: `cd test/integration && npm ci && npm test` on the Mac, or
+git mv test/integration/ci/integration.yml → .github/workflows/ and push
+w/ a workflow-scoped token). Nothing further is actionable in-sandbox.
