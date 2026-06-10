@@ -19,3 +19,27 @@ Toolchain installed in sandbox: npm -g ic-mops @icp-sdk/icp-cli @icp-sdk/ic-wasm
 mops build ✓, icp build ✓.
 NEXT: Task 1 — Types.mo + Orders.mo (Owner variant seam, order state machine,
 locked cycle quantity, transition unit tests).
+
+## 2026-06-10 — Iteration 2 — Task 1: Core types + Order state machine (DONE)
+- src/backend/Types.mo: Owner = {#ii : Principal} (binding seam §11.1.1) +
+  isOwnedBy (pattern-match authz), Rail {#card; #ckUsdc}, Account (ICRC-1),
+  Destination {#canister; #cyclesLedgerAccount}, OrderStatus (8 states),
+  statusToText, Order (immutable record, lockedCycles quantity per §3),
+  TransferIntent (§5.1 write-intent args), JournalEntry (§4.2).
+- src/backend/Orders.mo: Store {orders; principalsToOrders}; isLegalTransition
+  = §4 diagram, 11 legal edges (incl. Minting→ErrorQueue stale-intent §5.1 and
+  IcpAtCMC→ErrorQueue failed-forward Type 2 §4.1); Delivered/ErrorQueue
+  terminal; pure transition() → updated copy; create() takes owner as a
+  PARAMETER (seam §11.1.3), locks cycle quantity, rejects duplicate id;
+  applyTransition, get/getOwned (caller==owner authz), ordersFor history.
+  Expiry policy NOT in the core (seam §11.1.4 — per-rail, lands with rails).
+- test/orders.test.mo: exhaustive 64-pair matrix as data from the spec table,
+  count pinned to 11, terminality check, transition/copy semantics, dup-id,
+  authz, history ordering. 80 tests green.
+- Gotchas hit: extension methods need the module imported even for type
+  aliases — Map<Text,_> implicit compare needs `import Text`, iterator
+  .filterMap needs `import Iter` and BOTH type args (<OrderId, Order>).
+- Verified: mops check ✓ (lint clean), mops test ✓ (80), mops build ✓,
+  icp build ✓. PRD task 1 → ☑, changelog updated.
+NEXT: Task 2 — Idempotency.mo + ErrorQueue.mo (per-rail dedup sets w/ 7-day
+Stripe pruning, bounded Type1/Type2 error queue, audit-log ring buffer, tests).

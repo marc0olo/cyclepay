@@ -26,7 +26,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
 | # | Status | Task |
 |---|--------|------|
 | 0 | ☑ | **Scaffold**: PRD, `mops.toml` (pinned moc 1.9.0 + lintoko, core 2.5.0, test), `icp.yaml` (`@dfinity/motoko` recipe, port-0 local network), minimal `persistent actor` in `src/backend/Main.mo`, smoke test green, `mops check`/`build` green. |
-| 1 | ☐ | **Core types + Order state machine** (`Types.mo`, `Orders.mo`): `Owner = { #ii : Principal }` variant (binding seam §11.1.1), `Destination = { #canister; #cyclesLedgerAccount }`, `OrderStatus` (`Created/Expired/Paid/Minting/IcpAtCMC/Delivered/AwaitingTreasury/ErrorQueue`), `Order`, `JournalEntry`; legal-transition function with owner passed as a parameter (seam §11.1.3); locked cycle *quantity* at creation (§3); unit tests for every legal/illegal transition. |
+| 1 | ☑ | **Core types + Order state machine** (`Types.mo`, `Orders.mo`): `Owner = { #ii : Principal }` variant (binding seam §11.1.1), `Destination = { #canister; #cyclesLedgerAccount }`, `OrderStatus` (`Created/Expired/Paid/Minting/IcpAtCMC/Delivered/AwaitingTreasury/ErrorQueue`), `Order`, `JournalEntry`; legal-transition function with owner passed as a parameter (seam §11.1.3); locked cycle *quantity* at creation (§3); unit tests for every legal/illegal transition. |
 | 2 | ☐ | **Idempotency + error queue** (`Idempotency.mo`, `ErrorQueue.mo`): per-rail dedup sets (`processedStripeEvents` w/ ~7-day pruning, `processedIntents`, `processedCkUsdcBlocks`), bounded error queue with exactly Type 1 `{Duplicate|Unattributed}` (fiat-only) and Type 2 `{Undeliverable}` (cycles in app balance), bounded audit-log ring buffer; unit tests incl. pruning + bounds. |
 | 3 | ☐ | **HMAC-SHA256 + Stripe signature** (`Hmac.mo` or mops sha2 pkg, `rails/Card.mo` verify half): constant-time-compare HMAC over `timestamp.body`, `Stripe-Signature` header parse (`t=`, `v1=` list), timestamp-window replay guard; unit tests against known HMAC vectors + crafted Stripe signatures. |
 | 4 | ☐ | **Hand-rolled `Http.mo`** (spec §6.0): parse `HttpRequest`, case-insensitive header lookup, query-string strip, body-size guard, dispatch off a `[(method, path, handler)]` route table with per-route `upgrade` flag (binding seam §11.1.2) — one entry: `POST /webhook/stripe`; `http_request` returns `upgrade = ?true`, `http_request_update` dispatches; unit tests for parser + routing. |
@@ -62,6 +62,21 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 ## Changelog
 
+- **2026-06-10 — Task 1 done.** `Types.mo` (Owner single-case variant seam
+  §11.1.1 + `isOwnedBy` pattern-match authz helper, `Rail`, `Destination`
+  with ICRC-1 `Account`, `OrderStatus` ×8, immutable `Order` with
+  `lockedCycles` quantity per §3, `TransferIntent` per §5.1, `JournalEntry`
+  per §4.2) and `Orders.mo` (Store = `orders` map + `principalsToOrders`
+  history; `isLegalTransition` encoding the §4 diagram — 11 legal edges incl.
+  `Minting→ErrorQueue` (§5.1 stale intent) and `IcpAtCMC→ErrorQueue` (§4.1
+  Type 2); pure `transition` returning an updated copy; `create` taking owner
+  as a parameter per seam §11.1.3, rejecting duplicate IDs; `applyTransition`,
+  `getOwned`, `ordersFor`). `test/orders.test.mo`: exhaustive 8×8 matrix (64
+  cases) + terminality, transition-count pin (11), store/create/authz/history
+  suites — 80 tests green. `mops check`/`test`/`build` + `icp build` green.
+  Expiry policy deliberately *not* in the state machine (seam §11.1.4 — it is
+  per-rail money-in behavior, lands with rails). Journal map joins the store
+  in task 9 (CMC pipeline) where entries are first written.
 - **2026-06-10 — Task 0 done.** Toolchain installed (mops 2.13.2, icp-cli 0.3.2);
   `mops.toml` pinned (moc 1.9.0, lintoko 0.10.0, core 2.5.0, test 2.1.2;
   `--default-persistent-actors`, style warnings on); `icp.yaml` with
