@@ -4,6 +4,13 @@ canisters:
       type: "@dfinity/motoko@v4.1.0"
       configuration:
         main: src/backend/Main.mo
+        # The committed interface (spec §8) doubles as the embedded
+        # candid:service metadata — what `mops build` regenerates, the
+        # frontend bindgens from, and the deployed canister reports are
+        # provably the same bytes.
+        candid: src/backend/dist/backend.did
+        # ic-wasm deterministic optimize (spec §8).
+        shrink: true
   - name: frontend
     recipe:
       # v2.2.1+ required: icp-cli 0.3.x dropped the `assets` sync step the

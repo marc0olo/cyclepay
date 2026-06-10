@@ -57,11 +57,52 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 | # | Status | Task |
 |---|--------|------|
-| 17 | ☐ | **Reproducible build + release** (spec §8): Docker-pinned build, `ic-wasm` deterministic optimize + metadata, committed `.did`, published expected module hash per tagged release, asset-canister certified frontend. |
+| 17 | ☑ | **Reproducible build + release** (spec §8): Docker-pinned build, `ic-wasm` deterministic optimize + metadata, committed `.did`, published expected module hash per tagged release, asset-canister certified frontend. *`Dockerfile.release` + `scripts/reproducible-build.sh` (git-archive context) + `RELEASE.md`; container build verified byte-identical to the native build.* |
 | 18 | ☐ | **Ops runbook**: secret provisioning/rotation, error-queue resolution (Stripe Dashboard refunds), float refill, burn-cap override, confidential-subnet checklist (spec §7 caveats, §11.1). |
 
 ## Changelog
 
+- **2026-06-10 — Task 17 done.** Reproducible build + release (spec §8).
+  **The deployable bytes are now a pure function of a git ref.**
+  `scripts/reproducible-build.sh <ref>` pipes `git archive <ref>` — the
+  committed tree only, local changes structurally cannot leak into a
+  published hash — into `Dockerfile.release` and writes `backend.wasm` /
+  `frontend.wasm` / `backend.did` / `MODULE-HASHES.txt` to `release/`
+  (gitignored; hashes are what gets published). **Everything that shapes the
+  bytes is pinned**: base image `node:22.22.1-bookworm-slim` by digest,
+  `ic-mops` 2.13.2 / `@icp-sdk/icp-cli` 0.3.2 / `@icp-sdk/ic-wasm` 0.9.11 by
+  exact npm version in the Dockerfile, `moc` 1.9.0 via the committed
+  `mops.toml [toolchain]`, Motoko deps via `mops.lock`, recipes by tag in
+  `icp.yaml`. **`icp.yaml` backend recipe gains two §8 options**:
+  `shrink: true` (ic-wasm deterministic optimize — 877 K → 834 K; verified
+  that all metadata sections survive, including `motoko:stable-types` and
+  `enhanced-orthogonal-persistence`, which upgrades depend on) and
+  `candid: src/backend/dist/backend.did` — the *committed* interface is now
+  also the embedded `candid:service` metadata, so the file bindgen compiles
+  against and the interface the deployed canister reports are provably the
+  same bytes (verified by diffing the embedded section against the committed
+  file). The module is deliberately **not** gzip-compressed, so the on-chain
+  module hash (`icp canister status`) is directly `sha256sum`-comparable to
+  the artifact. **Determinism verified empirically, not assumed**: rebuild
+  with warm cache, rebuild after `rm -rf .icp/cache/artifacts`, and the
+  full container build (fresh npm-installed toolchain, fresh mops/moc
+  downloads, different userland) all produced byte-identical
+  `backend.wasm` (`2cd20d4e…`) and `frontend.wasm` (`04e565b3…`); the inner
+  `scripts/release-build.sh` cleans the artifact cache first so every release
+  build re-earns the claim. `RELEASE.md` documents the cut-a-release
+  procedure (tag → container build → publish `MODULE-HASHES.txt` in the
+  release notes → deploy → **gate on `icp canister status` matching the
+  published hash**), the anyone-can-verify procedure (`--public` works for
+  non-controllers; dashboard cross-check), the frontend posture (module hash
+  covers the pinned recipe's asset-canister wasm; asset *content* is
+  verified per-response by certified assets + `allow_raw_access: false`,
+  with the dist/ build itself reproducible from the committed lockfile), and
+  the stated caveats (multi-arch digest resolves per-platform — verified on
+  linux/arm64, wasm output is host-arch-independent by toolchain design;
+  recipe tags aren't content-addressed — a moved tag changes the hash, so it
+  can't go unnoticed, but old-tag reproducibility would break; accepted for
+  v1). Verified: `mops check` lint-clean, `mops test` 390 green,
+  `mops build` + `icp build` green, committed `.did` byte-unchanged.
 - **2026-06-10 — Task 16 done.** Frontend M2 — the ck-USDC rail tab goes
   live (`src/frontend/`). **Structure**: the rail tabs are now real tabs —
   each rail is a *panel* (Card: tier picker; ck-USDC: amount input) feeding
