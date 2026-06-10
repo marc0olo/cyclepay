@@ -341,3 +341,39 @@ w/ pause + manual override; unit tests for cap window math.
 NEXT: Task 11 — Recovery timer (§5.2): recurringTimer sweep reusing
 sweepMintable, single-flight guard, re-arm in postupgrade (transient timer
 id), expiry sweep for stale #created orders if in scope; timer-logic tests.
+## 2026-06-10 — Iteration 12 — Task 11: Recovery timer (DONE)
+- src/backend/Recovery.mo (pure half): validateInterval = cadence bound
+  interval <= ledgerDedupWindow/4 (§5.1 "cadence ≪ 24h" pinned to ≥4 sweeps
+  per window — one sweep/window burns the only replay chance on one
+  transient failure); defaultIntervalNs 1h (25 maxMintRetries × 1h > 24h,
+  pinned by test); isSweepable extracts sweepMintable's inline status
+  filter (#paid/#minting/#icpAtCmc/#awaitingTreasury; #created waits on
+  the user — expiry stays per-rail per seam §11.1.4, NOT in scope here).
+- Main.mo: persistent recoverySweepIntervalNs (operator cadence survives
+  upgrades); transient recoverySweepInFlight single-flight (persistent
+  flag stuck by mid-sweep upgrade = the §5.2 pumping deadlock) w/
+  try/finally; persistent lastRecoverySweep {atNs; pending} liveness
+  observation; recoveryTimerId = TRANSIENT INITIALIZER calling
+  Timer.recurringTimer<system> — EOP re-runs transient initializers on
+  every upgrade, so this IS the postupgrade re-arm (no system func
+  needed; IC drops timers on upgrade so nothing stale to cancel).
+  Webhook kick deliberately bypasses the sweep flag (in-flight sweep
+  enumerated pending before the new order turned #paid; guarded kick
+  could cost a paying user a full interval). 24h stale-intent guard
+  needed zero new code — Cmc.stageOf (task 9) already escalates.
+  Admin set_recovery_interval (validated vs Cmc.ledgerDedupWindowNs,
+  cancelTimer + re-arm immediately, audited) + public recovery_status.
+- Tests: recovery (8) — zero/min/exactly-window÷4 vs +1ns boundaries,
+  default-legal-vs-real-window, 25×default>24h retry-budget pin,
+  sweepable matrix pinned exhaustive 4-of-8. 358 total green.
+- Gotchas: none — first-try clean compile AND lint. Note import order in
+  Main.mo is case-INsensitive by path ("Recovery" sorts before
+  "rails/Card"); shared (non-query) funcs have <system> capability so
+  set_recovery_interval can re-arm without tricks.
+- Verified: mops check ✓ (lint clean), mops test ✓ (358), mops build ✓,
+  icp build ✓, .did gains exactly set_recovery_interval/recovery_status.
+NEXT: Task 12 — PocketIC integration suite, the Card go-live bar (§9):
+real ledger/CMC Wasms, crafted HMAC-signed webhooks, mocked forex outcall,
+time control; happy path, duplicate/replay, ambiguous-transfer recovery,
+AwaitingTreasury, Type 1/Type 2, forex fail-closed, upgrade-mid-flight,
+postupgrade timer re-arm.

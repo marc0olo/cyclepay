@@ -14,6 +14,7 @@ import Runtime "mo:core/Runtime";
 import Set "mo:core/Set";
 import Text "mo:core/Text";
 import Time "mo:core/Time";
+import Timer "mo:core/Timer";
 import { ic } "mo:ic";
 import Call "mo:ic/Call";
 import IC "mo:ic/Types";
@@ -25,6 +26,7 @@ import Forex "Forex";
 import Http "Http";
 import Idempotency "Idempotency";
 import Orders "Orders";
+import Recovery "Recovery";
 import Card "rails/Card";
 import Secret "Secret";
 import Tiers "Tiers";
@@ -668,17 +670,14 @@ persistent actor CyclesGateway {
     try { await* driveMint(orderId) } finally { mintsInFlight.remove(orderId) };
   };
 
-  /// Sweep every order with money-out work pending (#paid/#minting/
-  /// #icpAtCmc/#awaitingTreasury — the §5.3 hold retries until refill or
-  /// max-wait) through the driver. Kicked after webhook ingestion; the
-  /// §5.2 recurring recovery timer (task 11) reuses it.
+  /// Sweep every order with money-out work pending (Recovery.isSweepable:
+  /// #paid/#minting/#icpAtCmc/#awaitingTreasury — the §5.3 hold retries
+  /// until refill or max-wait) through the driver. Kicked after webhook
+  /// ingestion; the §5.2 recovery timer sweeps it on a cadence.
   func sweepMintable() : async* Nat {
     let pending = List.empty<Types.OrderId>();
     for ((id, order) in orderStore.orders.entries()) {
-      switch (order.status) {
-        case (#paid or #minting or #icpAtCmc or #awaitingTreasury) pending.add(id);
-        case (_) {};
-      };
+      if (Recovery.isSweepable(order.status)) pending.add(id);
     };
     for (id in pending.values()) {
       await* processMint(id);
@@ -706,6 +705,80 @@ persistent actor CyclesGateway {
   public shared query ({ caller }) func mint_journal(id : Types.OrderId) : async ?Types.JournalEntry {
     requireAdmin(caller);
     mintJournal.get(id);
+  };
+
+  // ── Recovery timer (task 11, §5.2) ──────────────────────────────────────
+
+  /// §5.2 sweep cadence. Persistent — an operator-tuned cadence survives
+  /// upgrades; the transient timer below re-arms at this value. Bounded by
+  /// Recovery.validateInterval (≪ the §5.1 ledger dedup window).
+  var recoverySweepIntervalNs : Nat = Recovery.defaultIntervalNs;
+
+  /// §5.2 single-flight guard: a sweep slower than the interval must skip
+  /// the next firing, never pile up. Transient on purpose — a persistent
+  /// flag left true by an upgrade mid-sweep would deadlock recovery
+  /// forever (the `pumping`-style deadlock §5.2 warns about); an upgrade
+  /// resets it and the timer below re-arms.
+  transient var recoverySweepInFlight = false;
+
+  /// Last *completed* timer sweep — recovery liveness for ops (the §5.2
+  /// timer is the backstop for every detached webhook kick that dies, so
+  /// "is it actually firing" must be observable).
+  var lastRecoverySweep : ?{ atNs : Int; pending : Nat } = null;
+
+  /// The timer job. Correctness against concurrent drivers is processMint's
+  /// per-order single-flight; this flag only stops sweep pile-up. The
+  /// webhook kick deliberately bypasses it — a just-paid order must not
+  /// wait a full interval because a background sweep (which enumerated
+  /// `pending` before that order turned #paid) was still in flight.
+  func recoverySweep() : async () {
+    if (recoverySweepInFlight) return;
+    recoverySweepInFlight := true;
+    try {
+      let pending = await* sweepMintable();
+      lastRecoverySweep := ?{ atNs = Time.now(); pending };
+    } finally {
+      recoverySweepInFlight := false;
+    };
+  };
+
+  /// §5.2 the timer itself. Transient initializer = runs on install AND on
+  /// every upgrade (postupgrade re-initialization), so a deploy can never
+  /// leave recovery dead; the IC drops timers across upgrades, so there is
+  /// no stale duplicate to cancel.
+  transient var recoveryTimerId : Timer.TimerId =
+    Timer.recurringTimer<system>(#nanoseconds(recoverySweepIntervalNs), recoverySweep);
+
+  /// Tune the sweep cadence (admin, §7) — re-arms immediately, no redeploy.
+  /// Validated against the §5.1 bound: the cadence must stay well inside
+  /// the ledger dedup window or replay loses its safety margin.
+  public shared ({ caller }) func set_recovery_interval(intervalNs : Nat) : async Result.Result<(), Recovery.IntervalError> {
+    requireAdmin(caller);
+    switch (Recovery.validateInterval(intervalNs, Cmc.ledgerDedupWindowNs)) {
+      case (#err(e)) #err(e);
+      case (#ok) {
+        recoverySweepIntervalNs := intervalNs;
+        Timer.cancelTimer(recoveryTimerId);
+        recoveryTimerId := Timer.recurringTimer<system>(#nanoseconds(intervalNs), recoverySweep);
+        audit("recovery.intervalSet", "sweep cadence set to " # intervalNs.toText() # " ns");
+        #ok;
+      };
+    };
+  };
+
+  /// §5.2 liveness observability, public (operational transparency, same
+  /// stance as treasury_status): cadence + last completed timer sweep. A
+  /// null or stale `lastSweep` means recovery is not running.
+  public query func recovery_status() : async {
+    intervalNs : Nat;
+    lastSweep : ?{ atNs : Int; pending : Nat };
+    sweepInFlight : Bool;
+  } {
+    {
+      intervalNs = recoverySweepIntervalNs;
+      lastSweep = lastRecoverySweep;
+      sweepInFlight = recoverySweepInFlight;
+    };
   };
 
   // ── HTTP ingress ────────────────────────────────────────────────────────
@@ -749,7 +822,7 @@ persistent actor CyclesGateway {
     // A verified checkout marked its order #paid synchronously inside the
     // dispatch above; kick money-out (§5) as a detached self-message so the
     // Stripe ack is never held hostage by ledger/CMC latency. The §5.2
-    // recovery timer (task 11) is the backstop if this message dies.
+    // recovery timer is the backstop if this detached message dies.
     ignore async { ignore await* sweepMintable() };
     response;
   };

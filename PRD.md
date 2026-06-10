@@ -41,7 +41,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
 | 8 | ☑ | **Stripe webhook ingestion** (`rails/Card.mo` complete): parse `checkout.session.completed` + `charge.refunded` JSON, claimed-not-trusted `client_reference_id` resolution, dedup (`event.id` + `payment_intent`), amount honored at actual paid value → `Paid`; unmatched/duplicate → Type 1; `charge.refunded` auto-resolves Type 1; unit tests with crafted signed payloads. |
 | 9 | ☑ | **CMC mint pipeline** (`Cmc.mo`, spec §5/§5.1): candid bindings for ICP ledger + CMC, write-intent-before-call with `created_at_time` dedup, `icrc1_transfer` → record `block_index` → `notify_top_up`/`notify_mint_cycles`, mint-to-self-then-forward delivery, failed forward → Type 2; rate derivation w/ CMC staleness guard (§5); unit tests for intent/replay logic. |
 | 10 | ☑ | **Treasury + burn cap** (`Treasury.mo`, spec §5.3): ICP float accounting, `AwaitingTreasury` hold + max-wait → error queue, low-float soft gate + balance-alert query, **per-period rolling ICP burn cap** with pause + manual override; unit tests for cap window math. |
-| 11 | ☐ | **Recovery timer** (spec §5.2): `recurringTimer` sweep of `Minting`/`IcpAtCMC`/`AwaitingTreasury`, single-flight guard, re-arm in `postupgrade` (transient timer id), 24h-window guard (stale intent w/o block_index → error queue, never auto-replayed). |
+| 11 | ☑ | **Recovery timer** (spec §5.2): `recurringTimer` sweep of `Minting`/`IcpAtCMC`/`AwaitingTreasury`, single-flight guard, re-arm in `postupgrade` (transient timer id), 24h-window guard (stale intent w/o block_index → error queue, never auto-replayed). |
 | 12 | ☐ | **PocketIC integration suite — Card go-live bar** (spec §9): real ledger/CMC Wasms, crafted HMAC-signed webhooks, mocked forex outcall, time control; covers happy path, duplicate/replay, ambiguous-transfer recovery, AwaitingTreasury, Type 1/Type 2, forex fail-closed, upgrade-mid-flight, postupgrade re-arm. |
 | 13 | ☐ | **Frontend M1** (asset canister): Astro/JS SPA, II login, rail selector, Card flow (tier links + `client_reference_id`), order status polling by `order_id`, order history. |
 
@@ -62,6 +62,44 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 ## Changelog
 
+- **2026-06-10 — Task 11 done.** Recovery timer (§5.2). `Recovery.mo` is the
+  pure half — cadence policy + sweep eligibility, unit-tested without an IC
+  env; Main.mo owns the `recurringTimer` arming. **Cadence bound**:
+  `validateInterval` enforces interval ≤ ledger-dedup-window / 4 (§5.1 —
+  recovery cadence ≪ 24 h means a stuck `#minting` order gets *several*
+  replay attempts while its intent still dedups; one sweep per window would
+  burn the only chance on a single transient failure). Default 1 h — legal
+  against the real window, and it sizes task 9's retry budget: 25 retries ×
+  1 h > 24 h, so an outage shorter than a day never exhausts the notify
+  loop (both claims pinned by tests). `isSweepable` extracts the sweep
+  predicate `sweepMintable` had inline (#paid/#minting/#icpAtCmc/
+  #awaitingTreasury; `#created` waits on the user — expiry stays per-rail,
+  seam §11.1.4). **Re-arm across upgrades**: the timer id is a `transient`
+  initializer, so EOP re-runs it on install *and* every upgrade — a deploy
+  can never leave recovery dead, and since the IC drops timers across
+  upgrades there's no stale duplicate to cancel; the operator-tuned
+  `recoverySweepIntervalNs` is persistent, so the re-arm uses the
+  configured cadence, not the default. **Single-flight**: a transient
+  `recoverySweepInFlight` flag makes a sweep slower than the interval skip
+  the next firing rather than pile up (transient = an upgrade mid-sweep
+  can't deadlock recovery — the §5.2 `pumping` warning); correctness under
+  concurrency stays with processMint's per-order single-flight. The
+  webhook kick deliberately *bypasses* the sweep flag: an in-flight sweep
+  enumerated `pending` before the just-verified order turned `#paid`, so a
+  guarded kick could make a paying user wait a full interval. The §5.1
+  24 h stale-intent guard needed no new code — `Cmc.stageOf` (task 9)
+  already escalates an over-window intent without a block_index and never
+  auto-replays it; the timer just drives orders into it on a cadence.
+  Admin `set_recovery_interval` (validated, re-arms immediately, audited) +
+  public `recovery_status` (cadence, last *completed* sweep, in-flight
+  flag — the timer is the backstop for every detached webhook kick that
+  dies, so liveness must be observable). 8 new tests (zero/min/exactly-
+  window-÷4/+1 ns boundaries, default-vs-real-window, retry-budget pin,
+  sweepable-state matrix pinned exhaustive 4-of-8); 358 total green;
+  `mops check` lint-clean, `mops build` + `icp build` green; `.did` gains
+  exactly `set_recovery_interval`/`recovery_status`. Live timer firing,
+  postupgrade re-arm, and single-flight under fire are PocketIC coverage
+  (task 12).
 - **2026-06-10 — Task 10 done.** Treasury + burn cap (§5.3). `Treasury.mo`
   is the pure half — rolling-window burn accounting, the pre-gate decision,
   the hold max-wait, and the soft-gate signal — all unit-tested without an
