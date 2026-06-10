@@ -21,12 +21,20 @@ fi
 export GH_TOKEN=$(gh auth token)
 
 for ((i=1; i<=$1; i++)); do
+  echo "Running loop $i of $1"
+
+  if claude -p "/usage" | grep -q "100%"; then
+      echo "Usage limit reached"
+      exit 1
+  fi
+
   result=$(sbx run claude-cyclepay -- --permission-mode acceptEdits -p "@progress.txt \
   1. Find the highest-priority task and implement it. \
   2. Run your tests and type checks. \
   3. Update the PRD with what was done. \
   4. Append your progress to progress.txt. \
   5. Commit your changes. \
+  6. Push to origin. \
   ONLY WORK ON A SINGLE TASK. \
   If the PRD is complete, output <promise>COMPLETE</promise>.")
 
