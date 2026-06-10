@@ -97,3 +97,28 @@ Stripe-Signature header parse, timestamp window; known-vector tests).
 NEXT: Task 4 — hand-rolled Http.mo (HttpRequest parse, case-insensitive
 header lookup, query-string strip, body-size guard, route table w/ upgrade
 flag, POST /webhook/stripe entry; parser+routing unit tests).
+## 2026-06-10 — Iteration 5 — Task 4: Hand-rolled Http.mo (DONE)
+- src/backend/Http.mo: gateway Request/Response (certificate_version omitted,
+  Candid subtyping drops it); pathOf (strip from first '?'); headerValue
+  (ASCII-fold names only, first match wins — core Text has NO toLower, hand-
+  rolled via Char.fromNat32(+32)); dispatch off [Route] table w/ per-route
+  upgrade flag (seam §11.1.2). 404 unknown path / 405 + Allow header (methods
+  on that path, table order) / 413 over body cap BEFORE the upgrade decision
+  (oversize never reaches consensus). Query half: upgrade route → ?true w/o
+  running handler; non-upgrade route runs in the query. Update half re-applies
+  all guards (http_request_update is directly Candid-callable).
+- src/backend/Main.mo: http_request(_update) wired; one-entry route table
+  POST /webhook/stripe upgrade=true; handler = 503 stub (Stripe retries
+  non-2xx) until tasks 5+8. routes AND 64 KiB cap are `transient` — closures
+  aren't stable; persistent let would freeze first-deploy config forever.
+- test/http.test.mo: 25 tests — pathOf edges (first-? wins, empty url),
+  header case/dup/missing, at-cap vs over-cap boundary, handler-not-run on
+  query upgrade (stub returns 299; seeing 200 proves skip), echo handler
+  proves update dispatch passes the req, exact-case method match, 405 Allow
+  content. 168 total green.
+- Gotchas: mo:core Text has no toLower/toUpper (ASCII fold by hand); lint
+  M0236 wants dot notation even for Text.encodeUtf8 → "x".encodeUtf8().
+- Verified: mops check ✓, mops test ✓ (168), mops build ✓, icp build ✓,
+  generated .did matches HTTP-gateway protocol.
+NEXT: Task 5 — Auth.mo + Secret.mo (controller allowlist, reject anonymous
+on user API, admin-set/rotate webhook secret w/ SEV-SNP posture note; tests).

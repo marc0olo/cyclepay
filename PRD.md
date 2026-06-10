@@ -29,7 +29,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
 | 1 | ☑ | **Core types + Order state machine** (`Types.mo`, `Orders.mo`): `Owner = { #ii : Principal }` variant (binding seam §11.1.1), `Destination = { #canister; #cyclesLedgerAccount }`, `OrderStatus` (`Created/Expired/Paid/Minting/IcpAtCMC/Delivered/AwaitingTreasury/ErrorQueue`), `Order`, `JournalEntry`; legal-transition function with owner passed as a parameter (seam §11.1.3); locked cycle *quantity* at creation (§3); unit tests for every legal/illegal transition. |
 | 2 | ☑ | **Idempotency + error queue** (`Idempotency.mo`, `ErrorQueue.mo`): per-rail dedup sets (`processedStripeEvents` w/ ~7-day pruning, `processedIntents`, `processedCkUsdcBlocks`), bounded error queue with exactly Type 1 `{Duplicate|Unattributed}` (fiat-only) and Type 2 `{Undeliverable}` (cycles in app balance), bounded audit-log ring buffer; unit tests incl. pruning + bounds. |
 | 3 | ☑ | **HMAC-SHA256 + Stripe signature** (`Hmac.mo` or mops sha2 pkg, `rails/Card.mo` verify half): constant-time-compare HMAC over `timestamp.body`, `Stripe-Signature` header parse (`t=`, `v1=` list), timestamp-window replay guard; unit tests against known HMAC vectors + crafted Stripe signatures. |
-| 4 | ☐ | **Hand-rolled `Http.mo`** (spec §6.0): parse `HttpRequest`, case-insensitive header lookup, query-string strip, body-size guard, dispatch off a `[(method, path, handler)]` route table with per-route `upgrade` flag (binding seam §11.1.2) — one entry: `POST /webhook/stripe`; `http_request` returns `upgrade = ?true`, `http_request_update` dispatches; unit tests for parser + routing. |
+| 4 | ☑ | **Hand-rolled `Http.mo`** (spec §6.0): parse `HttpRequest`, case-insensitive header lookup, query-string strip, body-size guard, dispatch off a `[(method, path, handler)]` route table with per-route `upgrade` flag (binding seam §11.1.2) — one entry: `POST /webhook/stripe`; `http_request` returns `upgrade = ?true`, `http_request_update` dispatches; unit tests for parser + routing. |
 | 5 | ☐ | **Auth + secret** (`Auth.mo`, `Secret.mo`): controller allowlist (flat, equal privileges, §7), reject anonymous principal on user API, admin-set/rotate plaintext webhook secret (SEV-SNP posture documented, §7); unit tests. |
 
 ### M1 — Card rail (Stripe), money-in → money-out
@@ -62,6 +62,30 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 ## Changelog
 
+- **2026-06-10 — Task 4 done.** `Http.mo` (§6.0, hand-rolled — not
+  `mo:server`): gateway `Request`/`Response` types (`certificate_version`
+  omitted — Candid record subtyping drops it; nothing is certified since
+  every M1 response is discarded pre-upgrade or an error); `pathOf` strips
+  from the first `?` (routing never sees the query string); `headerValue`
+  folds header *names* ASCII-case-insensitively (RFC 9110 — values
+  untouched, first match wins); dispatch off a `[Route]` table with
+  per-route `upgrade : Bool` (binding seam §11.1.2 — "one route" stays
+  policy, not architecture). Semantics: unknown path → 404; known path,
+  wrong method → 405 + `Allow` listing the path's methods; body over cap →
+  413 *before* the upgrade decision, so oversized payloads never pay for
+  consensus; on the query half an upgrade route answers `upgrade = ?true`
+  without running its handler, a non-upgrade route runs right there; the
+  update half re-applies every guard because `http_request_update` is
+  directly callable via Candid. `Main.mo` wires `http_request` /
+  `http_request_update` + the one-entry table (`POST /webhook/stripe`,
+  `upgrade = true`); routes and the 64 KiB body cap are `transient`
+  (closures aren't stable, and a persistent `let` would freeze the
+  first-deploy config across upgrades). The stripe handler is a 503 stub —
+  Stripe treats non-2xx as retry-later — until secret (task 5) + ingestion
+  (task 8). 25 new tests (parse/lookup/404-405-413/at-cap vs over-cap
+  boundary/handler-not-run-on-query-upgrade/echo-proves-dispatch); 168
+  total green; `mops check`/`build` + `icp build` green; generated `.did`
+  matches the HTTP-gateway protocol.
 - **2026-06-10 — Task 3 done.** Dependency: `sha2@0.2.1` (research-ag,
   depends on our exact `core@2.5.0`); the `hmac` mops package was rejected —
   it drags in `core@1.0.0` + `sha2@0.1.6` alongside ours. `Hmac.mo`: RFC 2104
