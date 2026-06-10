@@ -36,7 +36,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 | # | Status | Task |
 |---|--------|------|
-| 6 | ☐ | **Order Candid API** (`Main.mo` wiring): `create_order` (II caller, tier, destination → locks cycle quantity, random `raw_rand` order ID, `client_reference_id = <principal>_<orderId>`), `get_order` / order history (`caller == owner` authz, `principalsToOrders`), fixed card tiers config; PocketIC or unit tests for authz + ID randomness handling. |
+| 6 | ☑ | **Order Candid API** (`Main.mo` wiring): `create_order` (II caller, tier, destination → locks cycle quantity, random `raw_rand` order ID, `client_reference_id = <principal>_<orderId>`), `get_order` / order history (`caller == owner` authz, `principalsToOrders`), fixed card tiers config; PocketIC or unit tests for authz + ID randomness handling. |
 | 7 | ☐ | **Forex subsystem** (`Forex.mo`, spec §3.1): USD↔XDR via HTTPS outcall with coarse-rounding `transform`, stable `{rate, ts}` cache, lazy refresh, single-flight guard, in-call retry cap, **fail-closed order creation** on stale+failed refresh; fee formula (≈2.9% + $0.30, configurable) and net-of-fees pricing (§3); unit tests for rounding/fee/staleness logic with mocked outcall. |
 | 8 | ☐ | **Stripe webhook ingestion** (`rails/Card.mo` complete): parse `checkout.session.completed` + `charge.refunded` JSON, claimed-not-trusted `client_reference_id` resolution, dedup (`event.id` + `payment_intent`), amount honored at actual paid value → `Paid`; unmatched/duplicate → Type 1; `charge.refunded` auto-resolves Type 1; unit tests with crafted signed payloads. |
 | 9 | ☐ | **CMC mint pipeline** (`Cmc.mo`, spec §5/§5.1): candid bindings for ICP ledger + CMC, write-intent-before-call with `created_at_time` dedup, `icrc1_transfer` → record `block_index` → `notify_top_up`/`notify_mint_cycles`, mint-to-self-then-forward delivery, failed forward → Type 2; rate derivation w/ CMC staleness guard (§5); unit tests for intent/replay logic. |
@@ -62,6 +62,37 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 ## Changelog
 
+- **2026-06-10 — Task 6 done.** Order Candid API wired into `Main.mo`.
+  `Tiers.mo` (§3): fixed card tiers as operator config —
+  `{id; usdCents; paymentLinkUrl}` (controllers create the permanent Payment
+  Links in the Stripe Dashboard and register them here; the canister never
+  calls Stripe); `validate` (non-empty unique ids, non-zero amounts) +
+  `find`. `Orders.mo` additions: `idFromEntropy` (first 16 raw_rand bytes →
+  32 lowercase hex chars, §2 — random so the public `client_reference_id`
+  can't be enumerated or leak volume; null on short entropy = broken source,
+  not bad luck) and `clientReferenceId(owner, id)` = `<principal>_<orderId>`
+  (§6.1; unambiguous split — principal text is `[a-z0-9-]`, the id is hex,
+  so the single `_` is the separator; task 8 re-resolves it claimed-not-
+  trusted). `Main.mo`: persistent `orderStore` + `cardTiers` (empty until
+  first `set_card_tiers` — no invented default prices); `create_order(tierId,
+  destination)` — `Auth.checkUser` rejects anonymous, tier lookup, quote,
+  then `raw_rand` → `Orders.create` with up to 3 re-draws on id collision;
+  ownership captured at the API edge as `#ii(caller)` (seam §11.1.3); tier +
+  quote are read *before* the await so a mid-call config change can't mix
+  two pricings. **Pricing seam fails closed (§3.1):** `quoteCyclesForUsdCents`
+  is a transient stub returning null until Forex (task 7), so `create_order`
+  answers `#rateUnavailable` rather than pricing on an invented rate — same
+  answer a real stale-rate outage gives. `get_order` (getOwned: null for
+  non-owners, existence not revealed) + `list_orders` (history) +
+  `set_card_tiers` (admin, validated atomically) + public `card_tiers`
+  query. 13 new tests (tier validation/lookup incl. duplicate/zero/empty;
+  pinned id hex vector, 16-byte boundary vs 15, distinct entropy → distinct
+  ids, collision-then-fresh-draw re-creates, client_reference_id exact
+  format); 194 total green; `mops check` lint-clean, `mops build` +
+  `icp build` green; `.did` gains exactly `create_order`/`get_order`/
+  `list_orders`/`set_card_tiers`/`card_tiers`. The `create_order` happy path
+  end-to-end (raw_rand + isController in an IC env) is PocketIC-suite
+  coverage (task 12).
 - **2026-06-10 — Task 5 done.** `Auth.mo` (§7): the flat allowlist IS the
   canister controller set (IC OR-semantics, equal privileges; editing it =
   `canister settings update`, M-of-N hardening = a multisig canister as sole

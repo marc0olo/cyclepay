@@ -1,5 +1,6 @@
 import { test; suite } "mo:test";
 import Principal "mo:core/Principal";
+import Runtime "mo:core/Runtime";
 import Types "../src/backend/Types";
 import Orders "../src/backend/Orders";
 
@@ -234,5 +235,57 @@ suite("store: ownership and history", func() {
   test("isOwnedBy pattern-matches the Owner variant (seam §11.1.1)", func() {
     assert Types.isOwnedBy(#ii(alice), alice);
     assert not Types.isOwnedBy(#ii(alice), bob);
+  });
+});
+
+suite("order ids from raw_rand entropy (task 6, §2)", func() {
+  // 32 bytes, the shape raw_rand actually returns.
+  let rawRandShaped : Blob = "\00\01\02\03\04\05\06\07\08\09\0A\0B\0C\0D\0E\0F\10\11\12\13\14\15\16\17\18\19\1A\1B\1C\1D\1E\1F";
+
+  test("derives 32 lowercase hex chars from the first 16 bytes", func() {
+    assert Orders.idFromEntropy(rawRandShaped) == ?"000102030405060708090a0b0c0d0e0f";
+  });
+
+  test("exactly idEntropyBytes is enough", func() {
+    let atMin : Blob = "\FF\FE\FD\FC\FB\FA\F9\F8\F7\F6\F5\F4\F3\F2\F1\F0";
+    assert atMin.size() == Orders.idEntropyBytes;
+    assert Orders.idFromEntropy(atMin) == ?"fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0";
+  });
+
+  test("one byte under the minimum is refused (broken entropy source)", func() {
+    let short : Blob = "\00\01\02\03\04\05\06\07\08\09\0A\0B\0C\0D\0E";
+    assert short.size() + 1 == Orders.idEntropyBytes;
+    assert Orders.idFromEntropy(short) == null;
+    assert Orders.idFromEntropy("" : Blob) == null;
+  });
+
+  test("distinct entropy yields distinct ids", func() {
+    let other : Blob = "\10\01\02\03\04\05\06\07\08\09\0A\0B\0C\0D\0E\0F";
+    assert Orders.idFromEntropy(rawRandShaped) != Orders.idFromEntropy(other);
+  });
+
+  test("a collision is reported, then a fresh draw succeeds (re-draw path)", func() {
+    let store = Orders.emptyStore();
+    let ?id = Orders.idFromEntropy(rawRandShaped) else Runtime.trap("entropy too short");
+    ignore newOrder(store, id, alice);
+    // Same entropy again: duplicate id, order untouched.
+    switch (Orders.create(store, id, #ii(alice), #card, #canister(alice), 1, 200)) {
+      case (#err(#duplicateId(dup))) assert dup == id;
+      case (#ok(_)) assert false;
+    };
+    // Fresh entropy: succeeds.
+    let ?id2 = Orders.idFromEntropy("\AA\01\02\03\04\05\06\07\08\09\0A\0B\0C\0D\0E\0F" : Blob) else Runtime.trap("entropy too short");
+    switch (Orders.create(store, id2, #ii(alice), #card, #canister(alice), 1, 200)) {
+      case (#ok(order)) assert order.id == id2;
+      case (#err(_)) assert false;
+    };
+    assert Orders.ordersFor(store, alice).size() == 2;
+  });
+});
+
+suite("client_reference_id (§6.1)", func() {
+  test("format is <principal>_<orderId>", func() {
+    assert Orders.clientReferenceId(#ii(alice), "00ff") == "aaaaa-aa_00ff";
+    assert Orders.clientReferenceId(#ii(bob), "000102030405060708090a0b0c0d0e0f") == "2vxsx-fae_000102030405060708090a0b0c0d0e0f";
   });
 });

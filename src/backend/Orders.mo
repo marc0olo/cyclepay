@@ -6,6 +6,8 @@
 /// is legal. Seam §11.1.3: `create` takes the owner as a parameter and never
 /// reads a caller itself; Card/ck-USDC owners come from an II Candid call,
 /// a future Base owner from a verified EIP-3009 signature.
+import Array "mo:core/Array";
+import Blob "mo:core/Blob";
 import Map "mo:core/Map";
 import List "mo:core/List";
 import Iter "mo:core/Iter";
@@ -13,8 +15,33 @@ import Principal "mo:core/Principal";
 import Text "mo:core/Text";
 import Result "mo:core/Result";
 import Types "Types";
+import Util "Util";
 
 module {
+
+  /// 128 bits of raw_rand entropy per order ID (§2: random, not a counter —
+  /// the ID is public inside `client_reference_id`, so it must not leak
+  /// order volume or be enumerable; it is NOT a bearer secret).
+  public let idEntropyBytes : Nat = 16;
+
+  /// Derive an order ID (32 lowercase hex chars) from the first
+  /// `idEntropyBytes` of a raw_rand blob; null if the entropy is too short
+  /// (raw_rand returns 32 bytes, so null means a broken caller, not bad luck).
+  public func idFromEntropy(entropy : Blob) : ?Types.OrderId {
+    if (entropy.size() < idEntropyBytes) return null;
+    let prefix = entropy.toArray().sliceToArray(0, idEntropyBytes);
+    ?Util.hexEncode(Blob.fromArray(prefix));
+  };
+
+  /// §6.1 — the value carried on the tier's Payment Link URL:
+  /// `<principal>_<orderId>`. Unambiguous to split: principal text is
+  /// `[a-z0-9-]`, the ID is hex, so the one `_` is the separator. Claimed,
+  /// not trusted — webhook ingestion (task 8) re-resolves and verifies it.
+  public func clientReferenceId(owner : Types.Owner, id : Types.OrderId) : Text {
+    switch (owner) {
+      case (#ii(p)) p.toText() # "_" # id;
+    };
+  };
 
   public type Store = {
     /// §4.2 — `orders : Map<OrderId, Order>`.
