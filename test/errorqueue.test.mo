@@ -31,6 +31,20 @@ suite("kinds: exactly two types (§4.1)", func() {
     assert ErrorQueue.paymentRefOf(#unattributed({ claimedRef = "x"; paymentRef = "pi_2" })) == ?"pi_2";
     assert ErrorQueue.paymentRefOf(#undeliverable({ orderId = "o2"; cycles = 9 })) == null;
   });
+
+  test("stuckMint (§5.1 escalation) is neither Type 1 nor refund-resolvable", func() {
+    assert not ErrorQueue.isType1(#stuckMint({ orderId = "o3"; stage = "staleIntent" }));
+    assert ErrorQueue.paymentRefOf(#stuckMint({ orderId = "o3"; stage = "staleIntent" })) == null;
+  });
+
+  test("charge.refunded auto-resolve never touches a stuckMint entry", func() {
+    let store = ErrorQueue.emptyStore();
+    ignore ErrorQueue.add(store, cap, #card, #stuckMint({ orderId = "o3"; stage = "ambiguousForward" }), "upgrade mid-forward", 100);
+    ignore addDuplicate(store, "o4", "pi_9", 200);
+    let resolved = ErrorQueue.resolveByPaymentRef(store, "pi_9", 300);
+    assert resolved.size() == 1;
+    assert ErrorQueue.unresolved(store).size() == 1; // the stuckMint stays
+  });
 });
 
 suite("add", func() {

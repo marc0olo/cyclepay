@@ -30,21 +30,29 @@ module {
     #unattributed : { claimedRef : Text; paymentRef : Text };
     /// Type 2 — minted, but forward failed (e.g. target canister deleted).
     #undeliverable : { orderId : Types.OrderId; cycles : Nat };
+    /// §5.1 escalation — the mint pipeline stopped where the money position
+    /// is uncertain (stale intent whose transfer fate is unknowable, a CMC
+    /// rejection/refund, or an ambiguous forward). Neither Type 1 nor
+    /// Type 2: the operator inspects the ledger/CMC/destination, then
+    /// refunds or re-delivers manually. `stage` = Cmc.EscalateReason text.
+    #stuckMint : { orderId : Types.OrderId; stage : Text };
   };
 
   public func isType1(kind : Kind) : Bool {
     switch (kind) {
       case (#duplicate(_) or #unattributed(_)) true;
-      case (#undeliverable(_)) false;
+      case (#undeliverable(_) or #stuckMint(_)) false;
     };
   };
 
   /// The payment reference a `charge.refunded` resolves — Type 1 only.
+  /// (`#stuckMint` carries no paymentRef: the order store doesn't retain the
+  /// payment_intent, and a refund alone doesn't settle an uncertain mint.)
   public func paymentRefOf(kind : Kind) : ?Text {
     switch (kind) {
       case (#duplicate({ paymentRef; orderId = _ })) ?paymentRef;
       case (#unattributed({ paymentRef; claimedRef = _ })) ?paymentRef;
-      case (#undeliverable(_)) null;
+      case (#undeliverable(_) or #stuckMint(_)) null;
     };
   };
 

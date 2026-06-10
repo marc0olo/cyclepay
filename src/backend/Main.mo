@@ -3,15 +3,23 @@
 /// See design-docs/ONCHAIN_GATEWAY_SPEC.md (spec v2.1) and PRD.md for the
 /// module layout this actor grows into: Orders.mo wiring, rails/, Cmc.mo,
 /// Forex.mo, Treasury.mo, ErrorQueue.mo, Auth.mo.
+import Error "mo:core/Error";
+import List "mo:core/List";
+import Map "mo:core/Map";
+import Nat "mo:core/Nat";
+import Nat64 "mo:core/Nat64";
 import Principal "mo:core/Principal";
 import Result "mo:core/Result";
 import Runtime "mo:core/Runtime";
+import Set "mo:core/Set";
 import Text "mo:core/Text";
 import Time "mo:core/Time";
+import { ic } "mo:ic";
 import Call "mo:ic/Call";
 import IC "mo:ic/Types";
 import AuditLog "AuditLog";
 import Auth "Auth";
+import Cmc "Cmc";
 import ErrorQueue "ErrorQueue";
 import Forex "Forex";
 import Http "Http";
@@ -331,6 +339,241 @@ persistent actor CyclesGateway {
     AuditLog.events(auditLog);
   };
 
+  // ── CMC mint pipeline (task 9, §5/§5.1) ─────────────────────────────────
+
+  /// §4.2 `journal : Map<OrderId, JournalEntry>` — the money-out record:
+  /// transfer intent (written *before* the ledger call, §5.1), block_index,
+  /// minted cycles, retries. Financial record — kept for years, never pruned.
+  let mintJournal : Cmc.Journal = Cmc.emptyJournal();
+
+  transient let icpLedger = actor (Cmc.icpLedgerId) : Cmc.LedgerService;
+  transient let cmc = actor (Cmc.cmcId) : Cmc.CmcService;
+  transient let cyclesLedger = actor (Cmc.cyclesLedgerId) : Cmc.CyclesLedgerService;
+
+  /// Per-order single-flight guard: two concurrent drivers for one order
+  /// would both pass the status gates between awaits. Transient — an
+  /// upgrade mid-mint clears it and the journal-driven resume (Cmc.stageOf)
+  /// picks up where the state actually is.
+  transient let mintsInFlight = Set.empty<Types.OrderId>();
+
+  /// Bounds the retriable-error loop on stages the ledger's 24 h dedup
+  /// window doesn't already bound (notify_top_up could otherwise retry
+  /// forever). Sweep cadence (task 11) makes 25 retries ≫ a day of outage.
+  transient let maxMintRetries : Nat = 25;
+
+  func selfPrincipal() : Principal = Principal.fromActor(CyclesGateway);
+
+  func audit(tag : Text, detail : Text) {
+    ignore AuditLog.append(auditLog, auditLogCapacity, Time.now(), tag, detail);
+  };
+
+  /// Driver-side transition helper: the pipeline only requests legal edges,
+  /// so a refusal is a concurrent-update race — degrade to "stop this pass"
+  /// (null), never trap mid-money-flow.
+  func tryTransition(id : Types.OrderId, to : Types.OrderStatus) : ?Types.Order {
+    switch (Orders.applyTransition(orderStore, id, to, Time.now())) {
+      case (#ok(order)) ?order;
+      case (#err(_)) null;
+    };
+  };
+
+  /// Queue a mint-path error entry, audit-logging any unresolved eviction
+  /// (each is a live money obligation dropped from on-chain state, §4.1).
+  func queueMintError(rail : Types.Rail, kind : ErrorQueue.Kind, detail : Text) {
+    let result = ErrorQueue.add(errorQueue, errorQueueCapacity, rail, kind, detail, Time.now());
+    for (victim in result.evicted.values()) {
+      if (victim.resolvedAtNs == null) {
+        audit("errorQueue.evictedUnresolved", "entry " # victim.id.toText() # ": " # victim.detail);
+      };
+    };
+  };
+
+  /// §5.1 escalation: the mint stopped where the money position is
+  /// uncertain. Terminal — the order goes `#errorQueue` and the operator
+  /// resolves off-chain (inspect ledger/CMC/destination, refund/re-deliver).
+  func escalateStuckMint(order : Types.Order, stage : Text, detail : Text) {
+    ignore tryTransition(order.id, #errorQueue);
+    Cmc.patch(mintJournal, order.id, { status = ?#errorQueue; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+    queueMintError(order.rail, #stuckMint({ orderId = order.id; stage }), detail);
+    audit("mint.stuck", order.id # " [" # stage # "]: " # detail);
+  };
+
+  /// §5 forward half of mint-to-self-then-forward. The cycles ride the call
+  /// from the app balance; a rejected/failed call refunds them to the app
+  /// balance — exactly the Type 2 posture (§4.1).
+  func forwardCycles(order : Types.Order) : async* { #ok; #failed : Text } {
+    try {
+      switch (order.destination) {
+        case (#canister(canisterId)) {
+          await (with cycles = order.lockedCycles) ic.deposit_cycles({ canister_id = canisterId });
+        };
+        case (#cyclesLedgerAccount(account)) {
+          ignore await (with cycles = order.lockedCycles) cyclesLedger.deposit({ to = account; memo = null });
+        };
+      };
+      #ok;
+    } catch (e) {
+      #failed(e.message());
+    };
+  };
+
+  /// Drive one order as far toward `#delivered` as the world allows (§5).
+  /// Each loop pass asks Cmc.stageOf for the next move off status + journal,
+  /// so the first attempt and every recovery resume run the same code —
+  /// "replay the identical transfer" (§5.1) isn't a special case, it IS the
+  /// transfer path. Retriable failures return with state untouched (plus a
+  /// retry bump) for the next sweep; uncertainty escalates.
+  func driveMint(orderId : Types.OrderId) : async* () {
+    label drive loop {
+      let ?order = Orders.get(orderStore, orderId) else return;
+      switch (Cmc.stageOf(order.status, mintJournal.get(orderId), Time.now(), Cmc.ledgerDedupWindowNs, maxMintRetries)) {
+        case (#none) return;
+        case (#escalate(reason)) {
+          let stage = Cmc.escalateReasonToText(reason);
+          escalateStuckMint(order, stage, "mint pipeline stopped: " # stage);
+          return;
+        };
+        case (#begin) {
+          // §5 rate derivation: fresh CMC ICP/XDR rate, staleness-guarded.
+          let rate = try { await cmc.get_icp_xdr_conversion_rate() } catch (e) {
+            audit("mint.rateFetchFailed", orderId # ": " # e.message());
+            return; // stays #paid; the next sweep retries
+          };
+          let ?permyriad = Cmc.freshCmcRate(rate.data, Time.now(), Cmc.cmcRateMaxAgeNs) else {
+            audit("mint.rateStale", orderId);
+            return;
+          };
+          // Re-read after the await; only an untouched #paid order proceeds.
+          let ?fresh = Orders.get(orderStore, orderId) else return;
+          if (fresh.status != #paid) continue drive;
+          let ?e8s = Cmc.icpE8sForCycles(fresh.lockedCycles, permyriad) else return;
+          // §5.1 step 1 — intent + #minting commit in ONE sync block,
+          // before the transfer await. From here the transfer args are
+          // frozen; replay is always bit-identical.
+          let intent = Cmc.buildIntent(selfPrincipal(), e8s, Time.now());
+          let ?minting = tryTransition(orderId, #minting) else return;
+          ignore Cmc.openEntry(mintJournal, minting, intent, Time.now());
+          // fall through the loop → #replayTransfer issues the transfer
+        };
+        case (#replayTransfer(intent)) {
+          let result = try { await icpLedger.icrc1_transfer(Cmc.transferArgs(intent)) } catch (e) {
+            Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+            audit("mint.transferFailed", orderId # ": " # e.message());
+            return;
+          };
+          switch (Cmc.interpretTransfer(result)) {
+            case (#blockIndex(block)) {
+              // §5.1 step 2 — block_index + #icpAtCmc in one sync block.
+              ignore tryTransition(orderId, #icpAtCmc);
+              Cmc.patch(mintJournal, orderId, { status = ?#icpAtCmc; blockIndex = ?block; cyclesMinted = null; bumpRetries = false }, Time.now());
+              // fall through → #notifyCmc
+            };
+            case (#retriable(detail)) {
+              Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+              audit("mint.transferRetriable", orderId # ": " # detail);
+              return;
+            };
+            case (#escalate(detail)) {
+              escalateStuckMint(order, "transferRejected", detail);
+              return;
+            };
+          };
+        };
+        case (#notifyCmc(block)) {
+          // Heal the (today unreachable) #minting-with-block combination.
+          if (order.status == #minting) { ignore tryTransition(orderId, #icpAtCmc) };
+          let result = try {
+            await cmc.notify_top_up({ block_index = Nat64.fromNat(block); canister_id = selfPrincipal() });
+          } catch (e) {
+            Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+            audit("mint.notifyFailed", orderId # ": " # e.message());
+            return;
+          };
+          switch (Cmc.interpretNotify(result)) {
+            case (#minted(cycles)) {
+              // Pre-forward marker: commits before the forward await. If we
+              // die mid-forward, stageOf answers #ambiguousForward and the
+              // operator checks the destination — at-most-once delivery,
+              // never an auto-double-forward.
+              Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = ?cycles; bumpRetries = false }, Time.now());
+            };
+            case (#retriable(detail)) {
+              Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+              audit("mint.notifyRetriable", orderId # ": " # detail);
+              return;
+            };
+            case (#escalate(detail)) {
+              escalateStuckMint(order, "notifyRejected", detail);
+              return;
+            };
+          };
+          switch (await* forwardCycles(order)) {
+            case (#ok) {
+              ignore tryTransition(orderId, #delivered);
+              Cmc.patch(mintJournal, orderId, { status = ?#delivered; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+              audit("mint.delivered", orderId # ": " # order.lockedCycles.toText() # " cycles");
+            };
+            case (#failed(detail)) {
+              // §4.1 Type 2: the failed deposit refunded the cycles to the
+              // app balance — minted money exists, delivery didn't happen.
+              ignore tryTransition(orderId, #errorQueue);
+              Cmc.patch(mintJournal, orderId, { status = ?#errorQueue; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+              queueMintError(order.rail, #undeliverable({ orderId; cycles = order.lockedCycles }), detail);
+              audit("mint.undeliverable", orderId # ": " # detail);
+            };
+          };
+          return;
+        };
+      };
+    };
+  };
+
+  /// Single-flight wrapper around the driver.
+  func processMint(orderId : Types.OrderId) : async* () {
+    if (mintsInFlight.contains(orderId)) return;
+    mintsInFlight.add(orderId);
+    try { await* driveMint(orderId) } finally { mintsInFlight.remove(orderId) };
+  };
+
+  /// Sweep every order with money-out work pending (#paid/#minting/
+  /// #icpAtCmc) through the driver. Kicked after webhook ingestion; the
+  /// §5.2 recurring recovery timer (task 11) reuses it.
+  func sweepMintable() : async* Nat {
+    let pending = List.empty<Types.OrderId>();
+    for ((id, order) in orderStore.orders.entries()) {
+      switch (order.status) {
+        case (#paid or #minting or #icpAtCmc) pending.add(id);
+        case (_) {};
+      };
+    };
+    for (id in pending.values()) {
+      await* processMint(id);
+    };
+    pending.size();
+  };
+
+  public type ProcessOrderError = { #notFound; #inFlight };
+
+  /// Manual mint kick (admin, §7) — ops lever for a stuck-looking order;
+  /// safe to spam, every step is deduped/idempotent/single-flighted.
+  public shared ({ caller }) func process_order(id : Types.OrderId) : async Result.Result<Types.Order, ProcessOrderError> {
+    requireAdmin(caller);
+    if (Orders.get(orderStore, id) == null) return #err(#notFound);
+    if (mintsInFlight.contains(id)) return #err(#inFlight);
+    await* processMint(id);
+    switch (Orders.get(orderStore, id)) {
+      case (?order) #ok(order);
+      case null #err(#notFound);
+    };
+  };
+
+  /// Money-out journal for one order (admin, §4.2) — intent, block_index,
+  /// minted cycles, retries.
+  public shared query ({ caller }) func mint_journal(id : Types.OrderId) : async ?Types.JournalEntry {
+    requireAdmin(caller);
+    mintJournal.get(id);
+  };
+
   // ── HTTP ingress ────────────────────────────────────────────────────────
 
   /// §6.0 body-size guard. Stripe events are a few KiB; 64 KiB is generous
@@ -368,7 +611,13 @@ persistent actor CyclesGateway {
   /// dispatcher re-applies every guard; the route handlers themselves are
   /// payload-authenticated (HMAC), never caller-authenticated.
   public func http_request_update(req : Http.Request) : async Http.Response {
-    Http.handleUpdate(routes, req, maxRequestBodyBytes);
+    let response = Http.handleUpdate(routes, req, maxRequestBodyBytes);
+    // A verified checkout marked its order #paid synchronously inside the
+    // dispatch above; kick money-out (§5) as a detached self-message so the
+    // Stripe ack is never held hostage by ledger/CMC latency. The §5.2
+    // recovery timer (task 11) is the backstop if this message dies.
+    ignore async { ignore await* sweepMintable() };
+    response;
   };
 
   /// Liveness probe; also used by the scaffold smoke test path.

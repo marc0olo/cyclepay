@@ -254,3 +254,52 @@ NEXT: Task 9 — CMC mint pipeline (Cmc.mo, §5/§5.1): candid bindings for ICP
 ledger + CMC, write-intent-before-call w/ created_at_time dedup,
 icrc1_transfer → block_index → notify_top_up, mint-to-self-then-forward,
 failed forward → Type 2, CMC rate staleness guard; intent/replay unit tests.
+## 2026-06-10 — Iteration 10 — Task 9: CMC mint pipeline (DONE)
+- src/backend/Cmc.mo (pure half, unit-testable): ledger/CMC/cycles-ledger
+  Candid types; topUpSubaccount (len-prefixed principal, 32B) + TPUP memo
+  (LE 0x50555054) pinned to python-computed vectors; e8s = ceil(cycles /
+  xdr_permyriad_per_icp) (1 e8s mints exactly `permyriad` cycles; round UP
+  so the mint covers the locked qty, dust is operator-side); freshCmcRate
+  15-min staleness guard (age >= window = stale, house convention) + zero-
+  rate refusal; buildIntent/transferArgs = deterministic §5.1 write-intent
+  (replay is bit-identical BY CONSTRUCTION — first attempt and recovery are
+  the same #replayTransfer stage); interpretTransfer (#Ok AND #Duplicate
+  both recover block_index; retriable = nothing-recorded vs escalate =
+  replay-can-never-succeed); interpretNotify; journal Map + patch helper
+  (no-op on missing id — never trap mid-money-flow); stageOf = the WHOLE
+  §5.1/§5.2 resume decision as one pure function (incl. maxRetries cap for
+  the notify loop the 24h window doesn't bound).
+- DECISION: one notify path — mint-to-self-then-forward via notify_top_up
+  (self)+TPUP for BOTH destination kinds; notify_mint_cycles/MINT unused
+  (would strand value in the cycles-LEDGER balance, splitting Type 2's
+  "cycles in app balance" invariant). Forward: #canister → ic.deposit_cycles
+  w/ attached cycles; #cyclesLedgerAccount → cycles-ledger deposit.
+- DECISION: forward is AT-MOST-ONCE — cyclesMinted doubles as a pre-forward
+  marker committed before the forward await; death mid-forward resumes as
+  #ambiguousForward → escalate (operator checks destination), never auto-
+  re-forward. Failed (not ambiguous) forward = clean Type 2 (deposit
+  rejection auto-refunds attached cycles to app balance).
+- ErrorQueue.Kind += #stuckMint{orderId; stage} (§5.1 escalations: stale
+  intent/CMC rejection/ambiguous forward) — neither Type 1 nor Type 2, no
+  paymentRef so charge.refunded auto-resolve skips it.
+- Main.mo: persistent mintJournal; transient per-order single-flight Set +
+  maxMintRetries 25; driveMint loop = stageOf-dispatched (begin → rate fetch
+  → intent+#minting in ONE sync block → fall through to replayTransfer →
+  block+#icpAtCmc sync → notify → marker → forward → #delivered);
+  sweepMintable over #paid/#minting/#icpAtCmc (task 11 timer reuses);
+  webhook kick = `ignore async` detached self-message after dispatch so
+  Stripe's ack never waits on ledger/CMC; admin process_order + mint_journal.
+- Tests: cmc (37: pinned vectors, boundaries at exactly-window and
+  exactly-24h, full interpret matrices, journal patch, 13-case stageOf incl.
+  ambiguity-beats-retries) + errorqueue (+2 stuckMint). 334 total green.
+- Gotchas: param named `self` on a module func makes lint M0236 demand dot
+  notation at the CALL site — rename the param; `ignore async {...}` inside
+  an async public func is the fire-and-forget kick (state already committed
+  when the self-message runs); Map/Text imports needed in TESTS for
+  journal.get dot notation (same M0072 story as always).
+- Verified: mops check ✓ (lint clean), mops test ✓ (334), mops build ✓,
+  icp build ✓, .did gains exactly process_order/mint_journal.
+NEXT: Task 10 — Treasury.mo (§5.3): ICP float accounting (icrc1_balance_of),
+Paid → AwaitingTreasury pre-gate when float short, max-wait → error queue,
+low-float soft gate + balance-alert query, per-period rolling ICP burn cap
+w/ pause + manual override; unit tests for cap window math.

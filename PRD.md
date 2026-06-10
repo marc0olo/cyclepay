@@ -39,7 +39,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
 | 6 | ☑ | **Order Candid API** (`Main.mo` wiring): `create_order` (II caller, tier, destination → locks cycle quantity, random `raw_rand` order ID, `client_reference_id = <principal>_<orderId>`), `get_order` / order history (`caller == owner` authz, `principalsToOrders`), fixed card tiers config; PocketIC or unit tests for authz + ID randomness handling. |
 | 7 | ☑ | **Forex subsystem** (`Forex.mo`, spec §3.1): USD↔XDR via HTTPS outcall with coarse-rounding `transform`, stable `{rate, ts}` cache, lazy refresh, single-flight guard, in-call retry cap, **fail-closed order creation** on stale+failed refresh; fee formula (≈2.9% + $0.30, configurable) and net-of-fees pricing (§3); unit tests for rounding/fee/staleness logic with mocked outcall. |
 | 8 | ☑ | **Stripe webhook ingestion** (`rails/Card.mo` complete): parse `checkout.session.completed` + `charge.refunded` JSON, claimed-not-trusted `client_reference_id` resolution, dedup (`event.id` + `payment_intent`), amount honored at actual paid value → `Paid`; unmatched/duplicate → Type 1; `charge.refunded` auto-resolves Type 1; unit tests with crafted signed payloads. |
-| 9 | ☐ | **CMC mint pipeline** (`Cmc.mo`, spec §5/§5.1): candid bindings for ICP ledger + CMC, write-intent-before-call with `created_at_time` dedup, `icrc1_transfer` → record `block_index` → `notify_top_up`/`notify_mint_cycles`, mint-to-self-then-forward delivery, failed forward → Type 2; rate derivation w/ CMC staleness guard (§5); unit tests for intent/replay logic. |
+| 9 | ☑ | **CMC mint pipeline** (`Cmc.mo`, spec §5/§5.1): candid bindings for ICP ledger + CMC, write-intent-before-call with `created_at_time` dedup, `icrc1_transfer` → record `block_index` → `notify_top_up`/`notify_mint_cycles`, mint-to-self-then-forward delivery, failed forward → Type 2; rate derivation w/ CMC staleness guard (§5); unit tests for intent/replay logic. |
 | 10 | ☐ | **Treasury + burn cap** (`Treasury.mo`, spec §5.3): ICP float accounting, `AwaitingTreasury` hold + max-wait → error queue, low-float soft gate + balance-alert query, **per-period rolling ICP burn cap** with pause + manual override; unit tests for cap window math. |
 | 11 | ☐ | **Recovery timer** (spec §5.2): `recurringTimer` sweep of `Minting`/`IcpAtCMC`/`AwaitingTreasury`, single-flight guard, re-arm in `postupgrade` (transient timer id), 24h-window guard (stale intent w/o block_index → error queue, never auto-replayed). |
 | 12 | ☐ | **PocketIC integration suite — Card go-live bar** (spec §9): real ledger/CMC Wasms, crafted HMAC-signed webhooks, mocked forex outcall, time control; covers happy path, duplicate/replay, ambiguous-transfer recovery, AwaitingTreasury, Type 1/Type 2, forex fail-closed, upgrade-mid-flight, postupgrade re-arm. |
@@ -62,6 +62,57 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 ## Changelog
 
+- **2026-06-10 — Task 9 done.** CMC mint pipeline (§5/§5.1). `Cmc.mo` is the
+  pure half — Candid interfaces (ICP ledger `icrc1_transfer`, CMC
+  `notify_top_up` + `get_icp_xdr_conversion_rate`, cycles ledger `deposit`),
+  deterministic intent construction, result interpretation, and the
+  resume/replay decision — all unit-tested without an IC env. Decisions:
+  **one notify path** — delivery is mint-to-self-then-forward via
+  `notify_top_up(self)` + TPUP memo for *both* destination kinds; the
+  `notify_mint_cycles`/MINT path is deliberately unused because it would
+  strand value in the app's cycles-*ledger* balance, splitting the §4.1
+  Type-2 invariant ("cycles in the app canister's own balance"). E8s
+  derivation: one e8s mints exactly `xdr_permyriad_per_icp` cycles, so
+  `e8s = ⌈cycles / permyriad⌉` (round up: the mint covers the locked
+  quantity, dust overshoot stays operator-side §3); CMC rate guarded by the
+  CyclePay post-incident **15 min staleness window** (age ≥ window = stale,
+  the house convention) and a zero-rate refusal. §5.1 is encoded
+  structurally: `stageOf(status, journalEntry, now, window, maxRetries)` is
+  a pure function deciding the driver's next move, and **the first transfer
+  attempt and every recovery replay are the same `#replayTransfer` stage**
+  off the persisted intent (`transferArgs` is a pure projection → replay is
+  bit-identical); intent + `#minting` commit in one sync block before the
+  transfer await; `#Ok` and `#Err(#Duplicate)` both recover the
+  block_index; an intent at/past the 24 h dedup window without a block
+  escalates, never replays. Errors split *retriable* (nothing recorded,
+  identical args can succeed later: TemporarilyUnavailable,
+  InsufficientFunds — the float-refill case until task 10's pre-gate,
+  CreatedInFuture, GenericError, CMC Processing/Other) vs *escalate*
+  (replay can never succeed: TooOld, BadFee, BadBurn, CMC
+  Refunded/InvalidTransaction/TransactionTooOld); a `maxRetries` cap bounds
+  the notify loop the 24 h window doesn't. **Forward is at-most-once**:
+  `cyclesMinted` doubles as a pre-forward marker committed before the
+  forward await — a death mid-forward resumes as `#ambiguousForward`
+  (operator checks the destination) rather than risking double delivery; a
+  *failed* forward (deposit rejected → cycles auto-refunded to the app
+  balance) is the clean Type 2 `#undeliverable`. `ErrorQueue.Kind` gains
+  `#stuckMint {orderId; stage}` for the §5.1 escalations — deliberately
+  neither Type 1 nor Type 2 (money position uncertain; no paymentRef, so
+  `charge.refunded` auto-resolve never touches it). §4.2 `journal` map
+  (persistent, never pruned) records intent/block_index/cyclesMinted/
+  retries per order. `Main.mo`: per-order transient single-flight set,
+  `sweepMintable()` over `#paid/#minting/#icpAtCmc` (the §5.2 timer reuses
+  it in task 11), webhook kick as a **detached self-message** after
+  `http_request_update` dispatch (Stripe's ack never waits on ledger/CMC
+  latency), admin `process_order` (manual kick, safe to spam) +
+  `mint_journal` query. 39 new tests (pinned-vector TPUP memo + top-up
+  subaccount layout + e8s math computed externally in python; staleness and
+  24 h boundaries; full transfer/notify interpretation matrices; journal
+  patch semantics; 13-case stageOf matrix incl. ambiguity-beats-retries;
+  stuckMint never refund-resolved); 334 total green; `mops check`
+  lint-clean, `mops build` + `icp build` green; `.did` gains exactly
+  `process_order`/`mint_journal`. Live ledger/CMC behavior (notify
+  idempotency shape, PocketIC NNS Wasms) is task 12's go-live bar.
 - **2026-06-10 — Task 8 done.** Stripe webhook ingestion — `rails/Card.mo`
   is complete (§6.1). `Json.mo`: hand-rolled strict JSON tree parser (the
   mops `json` package depends on deprecated `base` — same dependency-split
