@@ -10,10 +10,14 @@ import Text "mo:core/Text";
 import Time "mo:core/Time";
 import Call "mo:ic/Call";
 import IC "mo:ic/Types";
+import AuditLog "AuditLog";
 import Auth "Auth";
+import ErrorQueue "ErrorQueue";
 import Forex "Forex";
 import Http "Http";
+import Idempotency "Idempotency";
 import Orders "Orders";
+import Card "rails/Card";
 import Secret "Secret";
 import Tiers "Tiers";
 import Types "Types";
@@ -184,11 +188,32 @@ persistent actor CyclesGateway {
     clientReferenceId : Text;
   };
 
+  /// One tier quote = one consistent epoch: fee config and cached rate are
+  /// snapshotted together (config is read once here), and the §6.1 pricing
+  /// snapshot persisted on the order is built from that same epoch — the
+  /// webhook reprices a mismatched paid amount from it, never a fresh rate.
+  func quoteTier(tier : Tiers.Tier) : { #ok : (Nat, Types.Pricing); #stale; #unpriceable } {
+    let config = forexConfig;
+    switch (Forex.quote(forexCache, config, tier.usdCents, Time.now())) {
+      case (#ok(quoted)) #ok((
+        quoted.cycles,
+        {
+          usdCents = tier.usdCents;
+          xdrPerUsdMicros = quoted.xdrPerUsdMicros;
+          feeBps = config.feeBps;
+          feeFixedCents = config.feeFixedCents;
+        },
+      ));
+      case (#stale) #stale;
+      case (#unpriceable) #unpriceable;
+    };
+  };
+
   /// Create a card-rail order: II caller becomes the owner (ownership is
   /// captured here at the API edge, seam §11.1.3), the tier's USD amount is
   /// quoted into a locked cycle *quantity* (§3, net of fees at the cached
   /// rate — a stale cache refreshes lazily, a failed refresh fails closed
-  /// §3.1), and the ID comes from raw_rand. Each Forex.quote call snapshots
+  /// §3.1), and the ID comes from raw_rand. Each quoteTier call snapshots
   /// fee config + rate together, so one order is always priced from one
   /// consistent epoch even when a refresh await interleaves with a config
   /// change; the store write after the awaits is atomic.
@@ -201,13 +226,13 @@ persistent actor CyclesGateway {
       case (#ok) {};
     };
     let ?tier = Tiers.find(cardTiers, tierId) else return #err(#unknownTier(tierId));
-    let lockedCycles = switch (Forex.quote(forexCache, forexConfig, tier.usdCents, Time.now())) {
-      case (#ok(cycles)) cycles;
+    let (lockedCycles, pricing) = switch (quoteTier(tier)) {
+      case (#ok(quoted)) quoted;
       case (#unpriceable) return #err(#tierBelowFees(tierId));
       case (#stale) {
         ignore await* refreshForexRate();
-        switch (Forex.quote(forexCache, forexConfig, tier.usdCents, Time.now())) {
-          case (#ok(cycles)) cycles;
+        switch (quoteTier(tier)) {
+          case (#ok(quoted)) quoted;
           case (#unpriceable) return #err(#tierBelowFees(tierId));
           case (#stale) return #err(#rateUnavailable);
         };
@@ -218,7 +243,7 @@ persistent actor CyclesGateway {
     while (attempts < maxIdAttempts) {
       let entropy = await management.raw_rand();
       let ?id = Orders.idFromEntropy(entropy) else return #err(#idGeneration);
-      switch (Orders.create(orderStore, id, owner, #card, destination, lockedCycles, Time.now())) {
+      switch (Orders.create(orderStore, id, owner, #card, destination, lockedCycles, pricing, Time.now())) {
         case (#ok(order)) {
           return #ok({ order; clientReferenceId = Orders.clientReferenceId(owner, id) });
         };
@@ -256,6 +281,56 @@ persistent actor CyclesGateway {
     cardTiers;
   };
 
+  // ── Webhook ingestion state (task 8, §4.1/§4.2) ─────────────────────────
+
+  /// §4.2 per-rail dedup sets. Stripe keys prune opportunistically on the
+  /// webhook path (~7 days, Idempotency.mo); ck-USDC block indexes never.
+  let dedup : Idempotency.Store = Idempotency.emptyStore();
+
+  /// §4.1 bounded error queue: Type 1 (fiat-only, operator refunds in the
+  /// Stripe Dashboard) + Type 2 (stranded cycles, task 9).
+  let errorQueue : ErrorQueue.Store = ErrorQueue.emptyStore();
+
+  /// §4.2 bounded audit-log ring buffer — operational trail, not a
+  /// financial record (orders/error queue are the records of money).
+  let auditLog : AuditLog.Log = AuditLog.emptyLog();
+
+  /// Bounds are operator headroom knobs, not financial records — transient
+  /// so a redeploy can retune them (same reasoning as maxRequestBodyBytes).
+  transient let errorQueueCapacity : Nat = 1_000;
+  transient let auditLogCapacity : Nat = 4_096;
+
+  transient let webhookDeps : Card.Deps = {
+    orders = orderStore;
+    dedup;
+    errorQueue;
+    errorQueueCapacity;
+    auditLog;
+    auditLogCapacity;
+  };
+
+  /// §4.1 operator worklist + retained history. Admin: entries carry
+  /// payment references and claimed-but-bogus URL params.
+  public shared query ({ caller }) func error_queue() : async [ErrorQueue.Entry] {
+    requireAdmin(caller);
+    ErrorQueue.all(errorQueue);
+  };
+
+  /// Manual resolution (§4.1/§7): refund issued off-chain, or Type 2 cycles
+  /// re-delivered/refunded. (`charge.refunded` resolves Type 1 entries
+  /// automatically; this is the fallback and the only path for Type 2.)
+  public shared ({ caller }) func resolve_error(id : Nat) : async Result.Result<ErrorQueue.Entry, ErrorQueue.ResolveError> {
+    requireAdmin(caller);
+    ErrorQueue.resolve(errorQueue, id, Time.now());
+  };
+
+  /// §4.2 operational trail, newest-last. Admin: details reference payment
+  /// intents. Readers detect ring-buffer drops via gaps in `seq`.
+  public shared query ({ caller }) func audit_log() : async [AuditLog.Event] {
+    requireAdmin(caller);
+    AuditLog.events(auditLog);
+  };
+
   // ── HTTP ingress ────────────────────────────────────────────────────────
 
   /// §6.0 body-size guard. Stripe events are a few KiB; 64 KiB is generous
@@ -264,16 +339,21 @@ persistent actor CyclesGateway {
   transient let maxRequestBodyBytes : Nat = 65_536;
 
   /// HTTP route table (binding seam §11.1.2) — exactly one anonymous,
-  /// payload-authed route (§6.0). The handler is a stub until event
-  /// ingestion (task 8) wires `Secret.get(webhookSecret)` into Card.verify;
-  /// 503 makes Stripe keep retrying instead of treating the delivery as
-  /// accepted (same answer ingestion will give while the secret is unset).
+  /// payload-authed route (§6.0). The whole §6.1 path lives in Card.mo;
+  /// an unprovisioned secret answers 503 inside handleWebhook, which makes
+  /// Stripe keep retrying instead of treating the delivery as accepted.
   transient let routes : [Http.Route] = [
     {
       method = "POST";
       path = "/webhook/stripe";
       upgrade = true;
-      handler = func _ = Http.text(503, "stripe webhook not yet enabled");
+      handler = func req = Card.handleWebhook(
+        webhookDeps,
+        Secret.get(webhookSecret),
+        req,
+        Time.now(),
+        Card.defaultToleranceSeconds,
+      );
     },
   ];
 

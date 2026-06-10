@@ -67,16 +67,34 @@ module {
     };
   };
 
+  /// §3/§6.1 pricing snapshot captured at order creation. `lockedCycles`
+  /// is the §3 quantity for the *expected* (tier) amount; this snapshot is
+  /// what lets the webhook honor a **different actual paid amount** at the
+  /// same locked rate + fee formula instead of a fresh rate — "no quote
+  /// drift" holds even off the happy path.
+  public type Pricing = {
+    /// Gross USD cents the order was quoted for (the tier price).
+    usdCents : Nat;
+    /// XDR-per-USD rate (micros, Forex.mo) locked at creation.
+    xdrPerUsdMicros : Nat;
+    /// §3 fee formula at creation.
+    feeBps : Nat;
+    feeFixedCents : Nat;
+  };
+
   /// Immutable order record; status changes go through Orders.transition,
   /// which returns an updated copy. `lockedCycles` is the cycle *quantity*
   /// locked at creation (§3) — fulfillment delivers exactly this many cycles
   /// regardless of later rate movement; the operator absorbs ICP-cost drift.
+  /// (Webhook ingestion replaces it via Orders.markPaid when the actual paid
+  /// amount differs from the quoted tier, repriced from `pricing`.)
   public type Order = {
     id : OrderId;
     owner : Owner;
     rail : Rail;
     destination : Destination;
     lockedCycles : Nat;
+    pricing : Pricing;
     status : OrderStatus;
     createdAtNs : Int;
     updatedAtNs : Int;

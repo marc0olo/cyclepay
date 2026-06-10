@@ -72,7 +72,7 @@ module {
 
   func pruneTimestamped(map : Map.Map<Text, Int>, nowNs : Int) : Nat {
     let cutoff = nowNs - stripeRetentionNs;
-    let expired = map.entries().filterMap<(Text, Int), Text>(
+    let expired = map.entries().filterMap(
       func((key, firstSeenNs)) = if (firstSeenNs <= cutoff) ?key else null
     ).toArray();
     for (key in expired.values()) { map.remove(key) };

@@ -38,7 +38,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
 |---|--------|------|
 | 6 | ☑ | **Order Candid API** (`Main.mo` wiring): `create_order` (II caller, tier, destination → locks cycle quantity, random `raw_rand` order ID, `client_reference_id = <principal>_<orderId>`), `get_order` / order history (`caller == owner` authz, `principalsToOrders`), fixed card tiers config; PocketIC or unit tests for authz + ID randomness handling. |
 | 7 | ☑ | **Forex subsystem** (`Forex.mo`, spec §3.1): USD↔XDR via HTTPS outcall with coarse-rounding `transform`, stable `{rate, ts}` cache, lazy refresh, single-flight guard, in-call retry cap, **fail-closed order creation** on stale+failed refresh; fee formula (≈2.9% + $0.30, configurable) and net-of-fees pricing (§3); unit tests for rounding/fee/staleness logic with mocked outcall. |
-| 8 | ☐ | **Stripe webhook ingestion** (`rails/Card.mo` complete): parse `checkout.session.completed` + `charge.refunded` JSON, claimed-not-trusted `client_reference_id` resolution, dedup (`event.id` + `payment_intent`), amount honored at actual paid value → `Paid`; unmatched/duplicate → Type 1; `charge.refunded` auto-resolves Type 1; unit tests with crafted signed payloads. |
+| 8 | ☑ | **Stripe webhook ingestion** (`rails/Card.mo` complete): parse `checkout.session.completed` + `charge.refunded` JSON, claimed-not-trusted `client_reference_id` resolution, dedup (`event.id` + `payment_intent`), amount honored at actual paid value → `Paid`; unmatched/duplicate → Type 1; `charge.refunded` auto-resolves Type 1; unit tests with crafted signed payloads. |
 | 9 | ☐ | **CMC mint pipeline** (`Cmc.mo`, spec §5/§5.1): candid bindings for ICP ledger + CMC, write-intent-before-call with `created_at_time` dedup, `icrc1_transfer` → record `block_index` → `notify_top_up`/`notify_mint_cycles`, mint-to-self-then-forward delivery, failed forward → Type 2; rate derivation w/ CMC staleness guard (§5); unit tests for intent/replay logic. |
 | 10 | ☐ | **Treasury + burn cap** (`Treasury.mo`, spec §5.3): ICP float accounting, `AwaitingTreasury` hold + max-wait → error queue, low-float soft gate + balance-alert query, **per-period rolling ICP burn cap** with pause + manual override; unit tests for cap window math. |
 | 11 | ☐ | **Recovery timer** (spec §5.2): `recurringTimer` sweep of `Minting`/`IcpAtCMC`/`AwaitingTreasury`, single-flight guard, re-arm in `postupgrade` (transient timer id), 24h-window guard (stale intent w/o block_index → error queue, never auto-replayed). |
@@ -62,6 +62,56 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 ## Changelog
 
+- **2026-06-10 — Task 8 done.** Stripe webhook ingestion — `rails/Card.mo`
+  is complete (§6.1). `Json.mo`: hand-rolled strict JSON tree parser (the
+  mops `json` package depends on deprecated `base` — same dependency-split
+  rejection as `hmac` in task 3); scope = parse one document + read
+  text/Nat fields by dotted path; numbers kept as raw lexemes and
+  interpreted integer-only; hard-fails on lone surrogates, unescaped
+  control chars, trailing garbage; 64-level depth cap. A *tree* parse, not
+  key-scanning, because verified Stripe JSON still carries
+  attacker-influenced string values — a substring scan for
+  `"payment_intent"` could be steered by a value containing that text.
+  `Card.parseEvent`: `checkout.session.completed` (payment_intent,
+  claimed `client_reference_id` where JSON-null = absent, `amount_total`,
+  currency, `payment_status`) + `charge.refunded` + `#unhandled` (acked,
+  never a delivery failure); a handled type missing a required field 400s
+  (visible in the Stripe dashboard, e.g. subscription-mode session with
+  null payment_intent). `Card.handleWebhook` = the whole POST
+  /webhook/stripe path, synchronous end-to-end (no awaits → no
+  check/write interleaving), state injected via `Deps` so it unit-tests
+  without an IC env: verify (unprovisioned secret → 503 so Stripe
+  retries) → opportunistic 7-day dedup pruning → route. Checkout:
+  `event.id` dedup, then `payment_status` check (unpaid sessions ack
+  *without* consuming the intent), then `payment_intent` dedup (§4.2 one
+  mint per payment), then claimed-not-trusted attribution
+  (`Orders.parseClientReferenceId` — claimed principal compared as text,
+  never `fromText`-ed: garbage must not trap into a 5xx-retry loop; owner
+  + rail + currency verified against the stored order) — failures queue
+  Type 1 `#unattributed` and answer 200 (payment *is* handled: by the
+  operator). Already-handled order + fresh intent = genuine double-pay →
+  Type 1 `#duplicate` (§4.1). **Actual paid amount honored** (§3): tier
+  match uses the locked quantity verbatim; a mismatch is repriced from
+  the order's new `Types.Pricing` creation snapshot
+  (`Orders.markPaid` swaps in the honored quantity) — never from a fresh
+  rate, so "no quote drift" holds off the happy path; below-fee-floor
+  payments are Type 1. `charge.refunded` auto-resolves Type 1 entries by
+  payment_intent. Unresolved error-queue evictions and amount mismatches
+  go on the audit log. `Forex.netCents` widened to take any
+  `{feeBps; feeFixedCents}` (live config or pricing snapshot);
+  `Forex.quote` `#ok` now also returns the rate so `Main.quoteTier` can
+  persist the snapshot from the same epoch as the quote. `Main.mo` wires
+  persistent `dedup`/`errorQueue`/`auditLog` stores, `Card.Deps`, the
+  real webhook handler, and admin `error_queue`/`resolve_error`/
+  `audit_log` methods. 58 new tests (json parser matrix incl. surrogate
+  pairs, depth cap boundary 63 vs 64, inert-string-values;
+  parseClientReferenceId incl. no-trap-on-garbage-principal; markPaid;
+  parseEvent matrix; handleWebhook end-to-end over *signed* crafted
+  payloads — envelope guards, dedup layers, every Type 1 path, repriced
+  mismatch vector cross-checked by hand, refund auto-resolve); 295 total
+  green; `mops check` lint-clean, `mops build` + `icp build` green;
+  `.did` gains exactly the three admin methods. Live-gateway delivery +
+  upgrade-mid-flight replay are PocketIC coverage (task 12).
 - **2026-06-10 — Task 7 done.** Forex subsystem (§3.1). New dep: `ic@4.0.0`
   (caffeinelabs management-canister bindings — shares our exact `core@2.5.0`,
   no version split; `Call.httpRequest` computes and attaches outcall cycles

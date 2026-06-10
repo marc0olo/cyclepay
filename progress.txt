@@ -212,3 +212,45 @@ checkout.session.completed + charge.refunded JSON, claimed-not-trusted
 client_reference_id resolution, event.id+payment_intent dedup, honor actual
 paid amount → Paid; unmatched/dup → Type 1; refund auto-resolve; crafted
 signed-payload tests.
+## 2026-06-10 — Iteration 9 — Task 8: Stripe webhook ingestion (DONE)
+RESUMED IN-FLIGHT WORK: a previous run left the full implementation
+uncommitted (Json.mo, Card.mo ingestion, Main.mo wiring, Pricing snapshot,
+markPaid, parseClientReferenceId) but stopped before tests/PRD/commit.
+This iteration reviewed that code (matches spec §4.1/§6.1), fixed the two
+test files its signature changes broke, and wrote all tests.
+- src/backend/Json.mo (was untracked): strict JSON tree parser — mops json
+  pkg rejected (deps deprecated base; same split-rejection as hmac task 3).
+  Tree-parse not key-scan: verified bodies still carry attacker-influenced
+  STRING VALUES. Raw number lexemes, integer-only asNat; lone surrogates/
+  control chars/trailing garbage fail; depth cap 64.
+- Card.parseEvent: checkoutCompleted{eventId;paymentIntent;clientReferenceId
+  (JSON null = absent);amountTotalCents;currency;paid} | chargeRefunded |
+  unhandled (acked); missing required field → 400 (subscription-mode null
+  payment_intent stays visible in Stripe dashboard).
+- Card.handleWebhook (sync end-to-end, Deps-injected stores): secret null →
+  503; verify → prune → route. Checkout: event.id dedup → payment_status
+  (unpaid acks WITHOUT consuming intent) → intent dedup → attribution
+  (parseClientReferenceId: claimed principal compared as TEXT — fromText on
+  garbage traps → 5xx retry loop; owner/rail/currency checked) → Type 1
+  #unattributed on failure (200 — handled BY THE OPERATOR); fresh intent on
+  handled order → Type 1 #duplicate; actual amount honored: tier match =
+  locked qty verbatim, mismatch repriced from order.pricing snapshot
+  (Types.Pricing captured at create; Orders.markPaid swaps honored qty),
+  below-fee-floor → Type 1. charge.refunded auto-resolves by intent.
+- Forex.netCents widened to {feeBps;feeFixedCents}; Forex.quote #ok now
+  {cycles; xdrPerUsdMicros} so Main.quoteTier persists snapshot+quote from
+  one epoch. Main.mo: persistent dedup/errorQueue/auditLog + error_queue/
+  resolve_error/audit_log admin methods.
+- Tests: json (19), webhook (30, end-to-end over SIGNED crafted payloads —
+  signedPayloadMac is pinned to external vectors in card.test.mo so this
+  isn't self-agreement), orders +9 (parseClientReferenceId, markPaid);
+  fixed forex.test.mo quote shape + orders.test.mo create arity. 295 green.
+- Gotchas: none new — first-try clean compile on all three new test files
+  (the iteration-7 lesson list held: parenthesized variant payloads, module
+  imports for dot-notation, record-update `{ x with field = v }` syntax).
+- Verified: mops check ✓ (lint clean), mops test ✓ (295), mops build ✓,
+  icp build ✓, .did gains exactly error_queue/resolve_error/audit_log.
+NEXT: Task 9 — CMC mint pipeline (Cmc.mo, §5/§5.1): candid bindings for ICP
+ledger + CMC, write-intent-before-call w/ created_at_time dedup,
+icrc1_transfer → block_index → notify_top_up, mint-to-self-then-forward,
+failed forward → Type 2, CMC rate staleness guard; intent/replay unit tests.

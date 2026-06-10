@@ -209,10 +209,12 @@ module {
   /// part rounds *up* — overestimating the fee means we never over-deliver;
   /// the operator's at-cost posture absorbs the ≤1¢ variance (§3). Null when
   /// the fee swallows the whole amount (tier priced below the fee floor).
-  public func netCents(config : Config, grossCents : Nat) : ?Nat {
-    let fee = (grossCents * config.feeBps + 9_999) / 10_000 + config.feeFixedCents;
-    if (fee >= grossCents) return null;
-    ?(grossCents - fee);
+  /// The fee argument is the narrowed shape so both a live `Config` and an
+  /// order's creation-time `Pricing` snapshot (§6.1 amount honoring) fit.
+  public func netCents(fee : { feeBps : Nat; feeFixedCents : Nat }, grossCents : Nat) : ?Nat {
+    let total = (grossCents * fee.feeBps + 9_999) / 10_000 + fee.feeFixedCents;
+    if (total >= grossCents) return null;
+    ?(grossCents - total);
   };
 
   /// Locked cycle quantity (§3) for an already-netted amount:
@@ -222,17 +224,19 @@ module {
   };
 
   /// One-shot quote: one consistent snapshot of fee config + cached rate.
-  /// `#stale` = caller refreshes and re-quotes, or fails closed (§3.1);
-  /// `#unpriceable` = the tier's gross doesn't clear the fee — a config
-  /// problem, not a rate problem.
+  /// `#ok` carries the rate alongside the cycles so the caller can persist
+  /// the §6.1 pricing snapshot the quote was made from. `#stale` = caller
+  /// refreshes and re-quotes, or fails closed (§3.1); `#unpriceable` = the
+  /// tier's gross doesn't clear the fee — a config problem, not a rate
+  /// problem.
   public func quote(cache : Cache, config : Config, grossCents : Nat, nowNs : Int) : {
-    #ok : Nat;
+    #ok : { cycles : Nat; xdrPerUsdMicros : Nat };
     #stale;
     #unpriceable;
   } {
     let ?net = netCents(config, grossCents) else return #unpriceable;
     let ?micros = freshMicros(cache, config.maxAgeNs, nowNs) else return #stale;
-    #ok(cyclesForCents(net, micros));
+    #ok({ cycles = cyclesForCents(net, micros); xdrPerUsdMicros = micros });
   };
 
 };

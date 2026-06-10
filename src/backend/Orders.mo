@@ -36,11 +36,28 @@ module {
   /// §6.1 — the value carried on the tier's Payment Link URL:
   /// `<principal>_<orderId>`. Unambiguous to split: principal text is
   /// `[a-z0-9-]`, the ID is hex, so the one `_` is the separator. Claimed,
-  /// not trusted — webhook ingestion (task 8) re-resolves and verifies it.
+  /// not trusted — webhook ingestion re-resolves and verifies it.
   public func clientReferenceId(owner : Types.Owner, id : Types.OrderId) : Text {
     switch (owner) {
       case (#ii(p)) p.toText() # "_" # id;
     };
+  };
+
+  /// Inverse of `clientReferenceId`, claimed-not-trusted (§4.1: it is an
+  /// attacker-editable URL param). Returns the *claimed* owner principal
+  /// text and order ID — the caller must verify both against the stored
+  /// order; null on any shape deviation. Principal text is compared as
+  /// text, never `Principal.fromText`-ed: that traps on garbage, and a
+  /// trapped webhook is a 5xx Stripe retries forever.
+  public func parseClientReferenceId(ref : Text) : ?(Text, Types.OrderId) {
+    let parts = ref.split(#char '_').toArray();
+    if (parts.size() != 2) return null;
+    if (parts[0] == "") return null;
+    if (parts[1].size() != idEntropyBytes * 2) return null;
+    for (c in parts[1].chars()) {
+      if (not ((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f'))) return null;
+    };
+    ?(parts[0], parts[1]);
   };
 
   public type Store = {
@@ -113,6 +130,7 @@ module {
     rail : Types.Rail,
     destination : Types.Destination,
     lockedCycles : Nat,
+    pricing : Types.Pricing,
     nowNs : Int,
   ) : Result.Result<Types.Order, CreateError> {
     if (store.orders.containsKey(id)) {
@@ -124,6 +142,7 @@ module {
       rail;
       destination;
       lockedCycles;
+      pricing;
       status = #created;
       createdAtNs = nowNs;
       updatedAtNs = nowNs;
@@ -155,6 +174,31 @@ module {
           case (#ok(updated)) {
             store.orders.add(id, updated);
             #ok(updated);
+          };
+          case (#err(e)) #err(e);
+        };
+      };
+    };
+  };
+
+  /// Webhook money-in (§6.1): `#created`/`#expired` → `#paid`, honoring the
+  /// **actual** paid amount — `lockedCycles` is replaced by `honoredCycles`
+  /// (equal to the original when the paid amount matches the quoted tier;
+  /// repriced from the order's `pricing` snapshot when it doesn't).
+  public func markPaid(
+    store : Store,
+    id : Types.OrderId,
+    honoredCycles : Nat,
+    nowNs : Int,
+  ) : Result.Result<Types.Order, TransitionError> {
+    switch (store.orders.get(id)) {
+      case null #err(#notFound(id));
+      case (?order) {
+        switch (transition(order, #paid, nowNs)) {
+          case (#ok(updated)) {
+            let paid = { updated with lockedCycles = honoredCycles };
+            store.orders.add(id, paid);
+            #ok(paid);
           };
           case (#err(e)) #err(e);
         };

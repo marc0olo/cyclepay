@@ -216,7 +216,7 @@ suite("quote", func() {
   test("fresh cache prices the order", func() {
     let cache = Forex.emptyCache();
     Forex.record(cache, 737_000, 0);
-    assert Forex.quote(cache, cfg(290, 30, 100), 500, 50) == #ok(3_353_350_000_000);
+    assert Forex.quote(cache, cfg(290, 30, 100), 500, 50) == #ok({ cycles = 3_353_350_000_000; xdrPerUsdMicros = 737_000 });
   });
 
   test("stale or empty cache asks for a refresh", func() {

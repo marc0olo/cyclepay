@@ -46,6 +46,15 @@ func isExpectedLegal(from : Types.OrderStatus, to : Types.OrderStatus) : Bool {
 let alice = Principal.fromText("aaaaa-aa");
 let bob = Principal.fromText("2vxsx-fae");
 
+// §6.1 pricing snapshot used across the store tests; the values match the
+// forex.test.mo quote vector (500¢ @ 737_000 micros, 290 bps + 30¢).
+let pricing : Types.Pricing = {
+  usdCents = 500;
+  xdrPerUsdMicros = 737_000;
+  feeBps = 290;
+  feeFixedCents = 30;
+};
+
 func newOrder(store : Orders.Store, id : Types.OrderId, owner : Principal) : Types.Order {
   switch (
     Orders.create(
@@ -55,6 +64,7 @@ func newOrder(store : Orders.Store, id : Types.OrderId, owner : Principal) : Typ
       #card,
       #canister(alice),
       1_000_000_000_000, // 1T cycles locked at creation (§3)
+      pricing,
       100,
     )
   ) {
@@ -149,7 +159,7 @@ suite("store: create", func() {
   test("duplicate id is rejected, original order untouched", func() {
     let store = Orders.emptyStore();
     let original = newOrder(store, "ord-1", alice);
-    switch (Orders.create(store, "ord-1", #ii(bob), #ckUsdc, #canister(bob), 7, 999)) {
+    switch (Orders.create(store, "ord-1", #ii(bob), #ckUsdc, #canister(bob), 7, pricing, 999)) {
       case (#err(#duplicateId("ord-1"))) {};
       case _ assert false;
     };
@@ -269,13 +279,13 @@ suite("order ids from raw_rand entropy (task 6, §2)", func() {
     let ?id = Orders.idFromEntropy(rawRandShaped) else Runtime.trap("entropy too short");
     ignore newOrder(store, id, alice);
     // Same entropy again: duplicate id, order untouched.
-    switch (Orders.create(store, id, #ii(alice), #card, #canister(alice), 1, 200)) {
+    switch (Orders.create(store, id, #ii(alice), #card, #canister(alice), 1, pricing, 200)) {
       case (#err(#duplicateId(dup))) assert dup == id;
       case (#ok(_)) assert false;
     };
     // Fresh entropy: succeeds.
     let ?id2 = Orders.idFromEntropy("\AA\01\02\03\04\05\06\07\08\09\0A\0B\0C\0D\0E\0F" : Blob) else Runtime.trap("entropy too short");
-    switch (Orders.create(store, id2, #ii(alice), #card, #canister(alice), 1, 200)) {
+    switch (Orders.create(store, id2, #ii(alice), #card, #canister(alice), 1, pricing, 200)) {
       case (#ok(order)) assert order.id == id2;
       case (#err(_)) assert false;
     };
@@ -287,5 +297,89 @@ suite("client_reference_id (§6.1)", func() {
   test("format is <principal>_<orderId>", func() {
     assert Orders.clientReferenceId(#ii(alice), "00ff") == "aaaaa-aa_00ff";
     assert Orders.clientReferenceId(#ii(bob), "000102030405060708090a0b0c0d0e0f") == "2vxsx-fae_000102030405060708090a0b0c0d0e0f";
+  });
+});
+
+suite("parseClientReferenceId (§4.1 claimed-not-trusted)", func() {
+  let id = "000102030405060708090a0b0c0d0e0f"; // 32 hex chars = idEntropyBytes * 2
+
+  test("round-trips what clientReferenceId produces", func() {
+    assert Orders.parseClientReferenceId(Orders.clientReferenceId(#ii(bob), id)) == ?("2vxsx-fae", id);
+  });
+
+  test("returns the claimed parts verbatim — no Principal parsing (a garbage principal must not trap)", func() {
+    assert Orders.parseClientReferenceId("not!a@principal_" # id) == ?("not!a@principal", id);
+  });
+
+  test("wrong underscore count is rejected", func() {
+    assert Orders.parseClientReferenceId("") == null;
+    assert Orders.parseClientReferenceId("no-underscore") == null;
+    assert Orders.parseClientReferenceId("a_b_" # id) == null;
+  });
+
+  test("empty principal half is rejected", func() {
+    assert Orders.parseClientReferenceId("_" # id) == null;
+  });
+
+  test("order-id half must be exactly 32 lowercase hex chars", func() {
+    assert Orders.parseClientReferenceId("aaaaa-aa_" # id # "00") == null; // too long
+    assert Orders.parseClientReferenceId("aaaaa-aa_00ff") == null; // too short
+    assert Orders.parseClientReferenceId("aaaaa-aa_000102030405060708090A0B0C0D0E0F") == null; // uppercase
+    assert Orders.parseClientReferenceId("aaaaa-aa_g00102030405060708090a0b0c0d0e0f") == null; // non-hex
+  });
+});
+
+suite("markPaid (§6.1 amount honoring)", func() {
+  test("created -> paid, lockedCycles replaced by the honored quantity", func() {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    switch (Orders.markPaid(store, "ord-1", 42, 300)) {
+      case (#ok(paid)) {
+        assert paid.status == #paid;
+        assert paid.lockedCycles == 42;
+        assert paid.updatedAtNs == 300;
+        assert paid.pricing == pricing; // snapshot untouched
+      };
+      case (#err(_)) assert false;
+    };
+    switch (Orders.get(store, "ord-1")) {
+      case (?stored) assert stored.lockedCycles == 42 and stored.status == #paid;
+      case null assert false;
+    };
+  });
+
+  test("late payment: expired -> paid is honored (§4)", func() {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    drive(store, "ord-1", [#expired]);
+    switch (Orders.markPaid(store, "ord-1", 7, 300)) {
+      case (#ok(paid)) assert paid.status == #paid;
+      case (#err(_)) assert false;
+    };
+  });
+
+  test("already-paid order refuses a second markPaid, store unchanged", func() {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    switch (Orders.markPaid(store, "ord-1", 42, 300)) {
+      case (#ok(_)) {};
+      case (#err(_)) assert false;
+    };
+    switch (Orders.markPaid(store, "ord-1", 99, 400)) {
+      case (#err(#illegalTransition({ from = #paid; to = #paid }))) {};
+      case _ assert false;
+    };
+    switch (Orders.get(store, "ord-1")) {
+      case (?stored) assert stored.lockedCycles == 42 and stored.updatedAtNs == 300;
+      case null assert false;
+    };
+  });
+
+  test("unknown order id returns notFound", func() {
+    let store = Orders.emptyStore();
+    switch (Orders.markPaid(store, "missing", 1, 100)) {
+      case (#err(#notFound("missing"))) {};
+      case _ assert false;
+    };
   });
 });
