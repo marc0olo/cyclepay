@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CyclePay — cycles, on-chain</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <h1>CyclePay</h1>
+        <p class="tagline">Card → cycles, verifiably on-chain</p>
+      </div>
+      <div id="auth-area"></div>
+    </header>
+
+    <main>
+      <nav class="rails" aria-label="Payment rail">
+        <button id="rail-card" class="rail active" type="button">Card</button>
+        <button id="rail-ckusdc" class="rail" type="button" disabled title="ck-USDC lands in M2">
+          ck-USDC <span class="soon">soon</span>
+        </button>
+      </nav>
+
+      <section id="card-panel">
+        <div id="gate-notice" class="notice" hidden></div>
+
+        <h2>Pick an amount</h2>
+        <div id="tiers" class="tiers">
+          <p class="muted">Loading tiers…</p>
+        </div>
+        <p id="rate-line" class="muted"></p>
+
+        <form id="order-form">
+          <h2>Where should the cycles go?</h2>
+          <label class="radio">
+            <input type="radio" name="dest-kind" value="canister" checked />
+            Top up a canister
+          </label>
+          <label class="radio">
+            <input type="radio" name="dest-kind" value="cyclesLedgerAccount" />
+            Credit a cycles-ledger account
+          </label>
+
+          <div id="dest-canister" class="dest-fields">
+            <label>
+              Canister id
+              <input id="canister-principal" type="text" placeholder="aaaaa-aa" autocomplete="off" spellcheck="false" />
+            </label>
+          </div>
+          <div id="dest-ledger" class="dest-fields" hidden>
+            <label>
+              Account owner principal
+              <input id="ledger-owner" type="text" autocomplete="off" spellcheck="false" />
+            </label>
+            <label>
+              Subaccount (hex, optional)
+              <input id="ledger-subaccount" type="text" placeholder="leave empty for default" autocomplete="off" spellcheck="false" />
+            </label>
+          </div>
+
+          <p id="form-error" class="error" hidden></p>
+          <button id="create-order" type="submit" disabled>Sign in to continue</button>
+        </form>
+      </section>
+
+      <section id="active-order" hidden>
+        <h2>Order <span id="order-id-short"></span></h2>
+        <ol id="timeline" class="timeline"></ol>
+        <p id="order-status-line"></p>
+        <div id="pay-area" hidden>
+          <a id="pay-link" target="_blank" rel="noopener noreferrer" class="pay-button">Pay with card</a>
+          <p class="muted">
+            The payment page is a Stripe Payment Link carrying reference
+            <code id="client-ref"></code> — keep this tab open; status updates live.
+          </p>
+        </div>
+        <dl class="order-facts">
+          <dt>Cycles</dt><dd id="order-cycles"></dd>
+          <dt>Price</dt><dd id="order-price"></dd>
+          <dt>Destination</dt><dd id="order-dest"></dd>
+        </dl>
+      </section>
+
+      <section id="history" hidden>
+        <h2>Your orders</h2>
+        <table>
+          <thead>
+            <tr><th>Created</th><th>Order</th><th>Cycles</th><th>Price</th><th>Status</th></tr>
+          </thead>
+          <tbody id="orders"></tbody>
+        </table>
+      </section>
+    </main>
+
+    <footer>
+      <p class="muted">
+        Everything this gateway does — pricing, minting, delivery — runs in a
+        verifiable canister. No accounts, no custodians.
+      </p>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

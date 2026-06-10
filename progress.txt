@@ -417,3 +417,50 @@ NEXT: run the suite on a 4K-page host (operator: `cd test/integration &&
 npm ci && npm test` on the Mac, or git mv ci/integration.yml into
 .github/workflows/ and push w/ a workflow-scoped token), fix whatever the
 live run reveals, flip task 12 to ☑; then task 13 (frontend M1).
+## 2026-06-10 — Iteration 14 — Task 13: Frontend M1 (DONE)
+Task 12 stays ◐ (blocked on 4K-page host, see memory) — task 13 was the
+highest-priority actionable item.
+- src/frontend/: Vite + vanilla-TS SPA. DECISION: Astro rejected (SSG
+  machinery around the same Vite for one interactive page — the
+  mo:server/hmac/json dependency stance). deps: @icp-sdk/auth ^7, core ^5.3;
+  dev: bindgen ^0.3, vite 6, vitest 3, @types/node.
+- Bindings: @icp-sdk/bindgen Vite plugin regenerates src/bindings/backend.ts
+  from the COMMITTED backend.did every build (typed actor can't drift).
+  .gitignore now `src/backend/dist/*` + `!…/backend.did` (spec §8 committed
+  .did; mops build refreshes it → self-maintaining). NOTE bindgen wrapper
+  shapes: variants are `__kind__`-discriminated unions, opt fields are
+  `?: T` (undefined, NOT null) — but top-level opt RETURNS are `T | null`;
+  OrderStatus is a TS string enum. Frontend types derived structurally from
+  the actor (Awaited<ReturnType<…>>), immune to bindgen export naming.
+- II: @icp-sdk/auth 7.x, `new AuthClient({identityProvider:
+  "https://id.ai/authorize"})` — /authorize REQUIRED in 7.x (URL verbatim);
+  mainnet II works against local replicas (icp-cli ≥0.2.4 trusts mainnet
+  sigs) so no env branching. ic_env cookie via safeGetCanisterEnv for
+  canister id + rootKey (never fetchRootKey — MITM). createActor takes
+  {agentOptions}, NEVER {agent} (silent anonymous downgrade).
+- UI: tier picker (card_tiers), lowFloat soft-gate notice (treasury_status),
+  both Destination arms (canister / cycles-ledger acct + optional hex
+  subaccount, left-padded to 32B), create_order error→message map
+  (rateUnavailable = "nothing was charged", §3.1), Payment Link =
+  tier.paymentLinkUrl + client_reference_id (links are session-local — the
+  backend stores none; reopened created-orders show status, no pay button),
+  3s get_order polling → 4-step timeline, exactly delivered/errorQueue stop
+  the poll (pinned), expired stays pollable (§4 advisory), list_orders
+  history w/ row-click re-poll, rail tabs = §11.1 seam (ck-USDC disabled).
+- .ic-assets.json5: allow_raw_access false, standard security_policy,
+  immutable assets/ caching, SPA aliasing.
+- icp.yaml: frontend canister via @dfinity/asset-canister@v2.2.1 — v2.1.0
+  (the skill's version) PANICS on icp-cli 0.3.2: its `assets` sync step
+  type was removed; 2.2.1 uses the plugin-based sync.
+- vite.config.ts gotcha: vitest runs with command==="serve" → dev-server
+  config (which shells out to `icp network status`) must ALSO gate on
+  mode !== "test".
+- Tests: 21 vitest (terminal-set pin, step monotonicity, link ?/& cases,
+  cycles/USD formatting incl. §3 vector 3_353_350_000_000 → "3.353 T",
+  subaccount hex matrix, error-message distinctness). tsc --noEmit strict
+  clean; vite build ✓; mops check/test (358)/build ✓; icp build ✓ both
+  canisters. Live II popup + certified serving need a browser + deployed
+  canister → dev-host verification alongside task 12's suite.
+NEXT: task 14 — ck-USDC rail (rails/CkUsdc.mo, §6.2): ICRC-1/2 bindings,
+icrc2_transfer_from pull after user approve, block_index dedup, amount-short
+mismatch handling, hold-ckUSDC treasury posture; unit tests.

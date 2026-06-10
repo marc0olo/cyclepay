@@ -4,6 +4,16 @@ canisters:
       type: "@dfinity/motoko@v4.1.0"
       configuration:
         main: src/backend/Main.mo
+  - name: frontend
+    recipe:
+      # v2.2.1+ required: icp-cli 0.3.x dropped the `assets` sync step the
+      # v2.1.0 recipe emitted (plugin-based sync replaced it).
+      type: "@dfinity/asset-canister@v2.2.1"
+      configuration:
+        dir: src/frontend/dist
+        build:
+          - npm --prefix src/frontend ci
+          - npm --prefix src/frontend run build
 
 networks:
   - name: local

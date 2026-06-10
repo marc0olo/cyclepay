@@ -43,7 +43,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
 | 10 | ☑ | **Treasury + burn cap** (`Treasury.mo`, spec §5.3): ICP float accounting, `AwaitingTreasury` hold + max-wait → error queue, low-float soft gate + balance-alert query, **per-period rolling ICP burn cap** with pause + manual override; unit tests for cap window math. |
 | 11 | ☑ | **Recovery timer** (spec §5.2): `recurringTimer` sweep of `Minting`/`IcpAtCMC`/`AwaitingTreasury`, single-flight guard, re-arm in `postupgrade` (transient timer id), 24h-window guard (stale intent w/o block_index → error queue, never auto-replayed). |
 | 12 | ◐ | **PocketIC integration suite — Card go-live bar** (spec §9): real ledger/CMC Wasms, crafted HMAC-signed webhooks, mocked forex outcall, time control; covers happy path, duplicate/replay, ambiguous-transfer recovery, AwaitingTreasury, Type 1/Type 2, forex fail-closed, upgrade-mid-flight, postupgrade re-arm. *Suite fully implemented (`test/integration`, 15 scenarios) and typechecked; **execution pending a 4 KiB-page host** (macOS / x86_64 CI — the replica cannot run in this 16 KiB-page arm64 sandbox; see README + changelog). Go-live bar is green only when it has actually run.* |
-| 13 | ☐ | **Frontend M1** (asset canister): Astro/JS SPA, II login, rail selector, Card flow (tier links + `client_reference_id`), order status polling by `order_id`, order history. |
+| 13 | ☑ | **Frontend M1** (asset canister): Astro/JS SPA, II login, rail selector, Card flow (tier links + `client_reference_id`), order status polling by `order_id`, order history. *Built as a Vite + vanilla-TS SPA (decision: Astro rejected — SSG machinery for a one-page app; same Vite underneath).* |
 
 ### M2 — ck-USDC rail
 
@@ -62,6 +62,54 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 ## Changelog
 
+- **2026-06-10 — Task 13 done.** Frontend M1 (`src/frontend/`), deployed as a
+  second canister via the `@dfinity/asset-canister@v2.2.1` recipe (v2.1.0 is
+  incompatible with icp-cli 0.3.x — its `assets` sync step type was removed in
+  favor of a plugin; pinned with a comment in `icp.yaml`). **Stack decision**:
+  Vite + vanilla TypeScript SPA, not Astro — Astro is static-site machinery
+  around the same Vite for what is one interactive page; same
+  dependency-minimal stance as the `mo:server`/`hmac`/`json` rejections.
+  **Bindings, not hand-written IDL**: `@icp-sdk/bindgen`'s Vite plugin
+  regenerates `src/bindings/backend.ts` from the *committed* `backend.did` on
+  every build, so the typed actor cannot drift from the canister interface
+  without a type error; `.gitignore` now un-ignores
+  `src/backend/dist/backend.did` (spec §8 "committed `.did`" — every
+  `mops build` refreshes it, so the committed interface self-maintains).
+  Frontend types are derived structurally from the actor
+  (`Awaited<ReturnType<…>>`), immune to bindgen's export naming. **II login**
+  (`@icp-sdk/auth` 7.x): mainnet `https://id.ai/authorize` unconditionally —
+  the local network trusts mainnet subnet signatures since icp-cli 0.2.4, so
+  there is no environment branching; canister id + root key come from the
+  `ic_env` cookie (`safeGetCanisterEnv`), never a runtime root-key fetch (MITM
+  vector). 8 h delegation TTL. **Card flow**: tier picker rendered from the
+  public `card_tiers` query; destination form covers both `Destination` arms
+  (canister principal / cycles-ledger account with optional left-padded-hex
+  subaccount); `create_order` errors map to user-facing messages
+  (`rateUnavailable` says "nothing was charged" — the §3.1 fail-closed answer);
+  the Stripe Payment Link is `tier.paymentLinkUrl` +
+  `client_reference_id=<CreatedOrder.clientReferenceId>` (§6.1), opened in a
+  new tab while the SPA polls. Payment links are session-local (keyed by order
+  id) — the backend stores no link, and a reopened historical order in
+  `created` shows status, not a pay button. **Status polling by order id**:
+  3 s `get_order` polling drives a 4-step timeline
+  (Awaiting payment → Paid → Minting → Delivered); exactly the two §4 terminal
+  states stop the poll (pinned by test); `expired` stays pollable and reads as
+  a warning (§4: expiry is advisory — a late real payment still completes);
+  `awaitingTreasury` renders as "queued", and the §5.3 `treasury_status.lowFloat`
+  soft gate shows the low-float notice up front. **Order history**:
+  `list_orders` table, newest first, row click re-opens polling. **Rail
+  selector** is the §11.1 seam in UI form: Card live, ck-USDC a disabled tab
+  (M2 adds a panel, not a refactor). Asset posture (`.ic-assets.json5`):
+  `allow_raw_access: false` everywhere (raw domain = tamperable responses,
+  against the verifiability thesis), standard security policy, immutable
+  caching for content-hashed `assets/`, SPA aliasing. Pure logic
+  (status→step/terminal/tone map, payment-link composition, cycles/USD
+  formatting, subaccount hex parsing, error-message mapping) lives in
+  dependency-free `format.ts` with 21 vitest tests; `tsc --noEmit` strict
+  clean; `vite build` green; `mops check`/`test` (358) untouched-green;
+  `icp build` builds both canisters. Live II popup flow + asset certification
+  need a browser + deployed canister — exercised on the dev host alongside the
+  task 12 suite (same 4 KiB-page constraint for the local network).
 - **2026-06-10 — Task 12 implemented (execution pending a 4 KiB-page host).**
   PocketIC integration suite, `test/integration/` (TypeScript, vitest +
   `@dfinity/pic` 0.22 / pocket-ic server 14). **Real-canister posture**: the

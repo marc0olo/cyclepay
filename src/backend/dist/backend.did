@@ -1,0 +1,377 @@
+type ValidateError = 
+ variant {
+   duplicateTierId: text;
+   emptyTierId;
+   zeroUsdCents: text;
+ };
+type TransferIntent = 
+ record {
+   amountE8s: nat;
+   createdAtTimeNs: nat64;
+   memo: blob;
+   to: Account;
+ };
+type Tier = 
+ record {
+   id: text;
+   paymentLinkUrl: text;
+   usdCents: nat;
+ };
+type Status__1 = 
+ record {
+   burnedInWindowE8s: nat;
+   config: Config;
+   heldOrders: nat;
+   lastObservedFloat: opt FloatObservation;
+   lowFloat: bool;
+ };
+type Status = 
+ record {
+   generation: nat;
+   isSet: bool;
+   setAtNs: opt int;
+ };
+type SetError = variant {tooShort: record {
+                                     min: nat;
+                                     size: nat;
+                                   };};
+type Result_7 = 
+ variant {
+   err: CreateOrderError;
+   ok: CreatedOrder;
+ };
+type Result_6 = 
+ variant {
+   err: ProcessOrderError;
+   ok: Order;
+ };
+type Result_5 = 
+ variant {
+   err: ResolveError;
+   ok: Entry;
+ };
+type Result_4 = 
+ variant {
+   err: ValidateError;
+   ok;
+ };
+type Result_3 = 
+ variant {
+   err: ConfigError__1;
+   ok;
+ };
+type Result_2 = 
+ variant {
+   err: IntervalError;
+   ok;
+ };
+type Result_1 = 
+ variant {
+   err: ConfigError;
+   ok;
+ };
+type Result = 
+ variant {
+   err: SetError;
+   ok;
+ };
+type Response = 
+ record {
+   body: blob;
+   headers: vec HeaderField;
+   status_code: nat16;
+   upgrade: opt bool;
+ };
+type ResolveError = 
+ variant {
+   alreadyResolved: nat;
+   notFound: nat;
+ };
+type Request = 
+ record {
+   body: blob;
+   headers: vec HeaderField;
+   method: text;
+   url: text;
+ };
+type Rate = 
+ record {
+   fetchedAtNs: int;
+   xdrPerUsdMicros: nat;
+ };
+type Rail = 
+ variant {
+   card;
+   ckUsdc;
+ };
+type ProcessOrderError = 
+ variant {
+   inFlight;
+   notFound;
+ };
+type Pricing = 
+ record {
+   feeBps: nat;
+   feeFixedCents: nat;
+   usdCents: nat;
+   xdrPerUsdMicros: nat;
+ };
+type Owner = variant {ii: principal;};
+type OrderStatus = 
+ variant {
+   awaitingTreasury;
+   created;
+   delivered;
+   errorQueue;
+   expired;
+   icpAtCmc;
+   minting;
+   paid;
+ };
+type OrderId = text;
+type Order = 
+ record {
+   createdAtNs: int;
+   destination: Destination;
+   id: OrderId;
+   lockedCycles: nat;
+   owner: Owner;
+   pricing: Pricing;
+   rail: Rail;
+   status: OrderStatus;
+   updatedAtNs: int;
+ };
+type Kind = 
+ variant {
+   duplicate: record {
+                orderId: OrderId;
+                paymentRef: text;
+              };
+   stuckMint: record {
+                orderId: OrderId;
+                stage: text;
+              };
+   unattributed: record {
+                   claimedRef: text;
+                   paymentRef: text;
+                 };
+   undeliverable: record {
+                    cycles: nat;
+                    orderId: OrderId;
+                  };
+ };
+type JournalEntry = 
+ record {
+   blockIndex: opt nat;
+   createdAtNs: int;
+   cyclesMinted: opt nat;
+   destination: Destination;
+   orderId: OrderId;
+   retries: nat;
+   status: OrderStatus;
+   transferIntent: opt TransferIntent;
+   updatedAtNs: int;
+ };
+type IntervalError = 
+ variant {
+   intervalTooLong: record {maxNs: nat;};
+   zeroInterval;
+ };
+type HttpRequestResult = 
+ record {
+   body: blob;
+   headers: vec HttpHeader;
+   status: nat;
+ };
+type HttpHeader = 
+ record {
+   name: text;
+   value: text;
+ };
+type HeaderField = 
+ record {
+   text;
+   text;
+ };
+type FloatObservation = 
+ record {
+   atNs: int;
+   e8s: nat;
+ };
+type Event = 
+ record {
+   atNs: int;
+   detail: text;
+   seq: nat;
+   tag: text;
+ };
+type Entry = 
+ record {
+   createdAtNs: int;
+   detail: text;
+   id: nat;
+   kind: Kind;
+   rail: Rail;
+   resolvedAtNs: opt int;
+ };
+type Destination = 
+ variant {
+   canister: principal;
+   cyclesLedgerAccount: Account;
+ };
+type CreatedOrder = 
+ record {
+   clientReferenceId: text;
+   order: Order;
+ };
+type CreateOrderError = 
+ variant {
+   anonymous;
+   idGeneration;
+   rateUnavailable;
+   tierBelowFees: text;
+   unknownTier: text;
+ };
+type Config__1 = 
+ record {
+   feeBps: nat;
+   feeFixedCents: nat;
+   maxAgeNs: int;
+   url: text;
+ };
+type ConfigError__1 = 
+ variant {
+   feeBpsTooHigh;
+   nonPositiveMaxAge;
+   notHttps;
+ };
+type ConfigError = 
+ variant {
+   nonPositiveBurnWindow;
+   nonPositiveMaxHold;
+ };
+type Config = 
+ record {
+   burnCapE8s: nat;
+   burnWindowNs: int;
+   lowFloatThresholdE8s: nat;
+   maxHoldNs: int;
+ };
+type Account = 
+ record {
+   owner: principal;
+   subaccount: opt blob;
+ };
+/// Fully on-chain cycles gateway — composition root.
+/// 
+/// See design-docs/ONCHAIN_GATEWAY_SPEC.md (spec v2.1) and PRD.md for the
+/// module layout this actor grows into: Orders.mo wiring, rails/, Cmc.mo,
+/// Forex.mo, Treasury.mo, ErrorQueue.mo, Auth.mo.
+service : {
+  /// §4.2 operational trail, newest-last. Admin: details reference payment
+  /// intents. Readers detect ring-buffer drops via gaps in `seq`.
+  audit_log: () -> (vec Event) query;
+  /// Public — the frontend renders tiers and their Payment Links from this.
+  card_tiers: () -> (vec Tier) query;
+  /// Create a card-rail order: II caller becomes the owner (ownership is
+  /// captured here at the API edge, seam §11.1.3), the tier's USD amount is
+  /// quoted into a locked cycle *quantity* (§3, net of fees at the cached
+  /// rate — a stale cache refreshes lazily, a failed refresh fails closed
+  /// §3.1), and the ID comes from raw_rand. Each quoteTier call snapshots
+  /// fee config + rate together, so one order is always priced from one
+  /// consistent epoch even when a refresh await interleaves with a config
+  /// change; the store write after the awaits is atomic.
+  create_order: (tierId: text, destination: Destination) -> (Result_7);
+  /// §4.1 operator worklist + retained history. Admin: entries carry
+  /// payment references and claimed-but-bogus URL params.
+  error_queue: () -> (vec Entry) query;
+  /// Cache + params, public: the rate is market data and the fee formula is
+  /// what users are charged — nothing here is secret, and transparency is
+  /// the product thesis.
+  forex_status: () -> (record {
+                         config: Config__1;
+                         rate: opt Rate;
+                       }) query;
+  /// §3.1 coarse-rounding transform: every replica reduces its raw response
+  /// to a tiny canonical body (rounded micro-XDR/USD, or empty on parse
+  /// failure), so consensus is over `"737000"`, not 4 KiB of live JSON.
+  forex_transform: (args:
+   record {
+     context: blob;
+     response: HttpRequestResult;
+   }) -> (HttpRequestResult) query;
+  /// §2 query authz: `caller == order.owner`, null otherwise — existence is
+  /// not revealed to non-owners. Anonymous callers own nothing by
+  /// construction (create_order rejects them), so they always get null.
+  get_order: (id: OrderId) -> (opt Order) query;
+  /// Liveness probe; also used by the scaffold smoke test path.
+  health: () -> (bool) query;
+  /// §6.0 query half: the boundary node calls this first; a matched
+  /// upgrade route answers `upgrade = ?true` and the gateway re-issues the
+  /// request to `http_request_update` through consensus.
+  http_request: (req: Request) -> (Response) query;
+  /// §6.0 update half. Anyone can call this directly via Candid, so the
+  /// dispatcher re-applies every guard; the route handlers themselves are
+  /// payload-authenticated (HMAC), never caller-authenticated.
+  http_request_update: (req: Request) -> (Response);
+  /// Order history for the caller (§2, fixes the lost-receipt problem).
+  list_orders: () -> (vec Order) query;
+  /// Money-out journal for one order (admin, §4.2) — intent, block_index,
+  /// minted cycles, retries.
+  mint_journal: (id: OrderId) -> (opt JournalEntry) query;
+  /// Manual mint kick (admin, §7) — ops lever for a stuck-looking order;
+  /// safe to spam, every step is deduped/idempotent/single-flighted.
+  process_order: (id: OrderId) -> (Result_6);
+  /// §5.2 liveness observability, public (operational transparency, same
+  /// stance as treasury_status): cadence + last completed timer sweep. A
+  /// null or stale `lastSweep` means recovery is not running.
+  recovery_status: () ->
+   (record {
+      intervalNs: nat;
+      lastSweep: opt record {
+                       atNs: int;
+                       pending: nat;
+                     };
+      sweepInFlight: bool;
+    }) query;
+  /// On-demand float refresh (admin — public would let anyone spend our
+  /// cycles on ledger calls). The mint pre-gate refreshes the observation as
+  /// a side effect; this is the ops lever between mints.
+  refresh_float: () -> (nat);
+  /// §5.3 manual override: clear the rolling window's consumption after
+  /// confirming the traffic was legitimate (or rotating a leaked secret).
+  /// Returns the e8s of consumption cleared. Held orders resume on the next
+  /// sweep, not here — the pre-gate stays the single decision point.
+  reset_burn_window: () -> (nat);
+  /// Manual resolution (§4.1/§7): refund issued off-chain, or Type 2 cycles
+  /// re-delivered/refunded. (`charge.refunded` resolves Type 1 entries
+  /// automatically; this is the fallback and the only path for Type 2.)
+  resolve_error: (id: nat) -> (Result_5);
+  /// Replace the card tier config (§3/§7 — admin, validated atomically: a
+  /// bad config never partially applies).
+  set_card_tiers: (tiers: vec Tier) -> (Result_4);
+  /// Adjust forex params (§7): fee formula, staleness window, source URL.
+  /// Validated atomically — a bad config never partially applies.
+  set_forex_config: (config: Config__1) -> (Result_3);
+  /// Tune the sweep cadence (admin, §7) — re-arms immediately, no redeploy.
+  /// Validated against the §5.1 bound: the cadence must stay well inside
+  /// the ledger dedup window or replay loses its safety margin.
+  set_recovery_interval: (intervalNs: nat) -> (Result_2);
+  /// Adjust treasury policy (§5.3/§7): burn cap, window, max hold, alert
+  /// threshold. Validated atomically — a bad config never partially applies.
+  set_treasury_config: (config: Config) -> (Result_1);
+  /// Provision or rotate the Stripe webhook signing secret (§7). Pass the
+  /// full `whsec_...` string from the Stripe dashboard — the whole string,
+  /// prefix included, is the HMAC key. NOTE: the argument transits the
+  /// TLS-terminating boundary node as plain ingress (§7 provisioning
+  /// exposure); rotate after provisioning over an untrusted path.
+  set_webhook_secret: (secret: text) -> (Result);
+  /// §5.3 balance alert + soft UI gate, public: the frontend disables tiers
+  /// off `lowFloat`, and cap consumption is operational transparency (the
+  /// thesis), not a secret. The float observation may be stale — `atNs` says
+  /// how stale; `refresh_float` is the admin lever for a fresh read.
+  treasury_status: () -> (Status__1) query;
+  /// Provisioning state only — the secret itself is never readable back
+  /// out, even by controllers. `generation` confirms a rotation landed.
+  webhook_secret_status: () -> (Status) query;
+}
