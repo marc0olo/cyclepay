@@ -556,3 +556,43 @@ NEXT: task 16 — Frontend M2: ck-USDC panel (amount input within public
 ck_usdc_config bounds, create → icrc2_approve via wallet/ledger → claim
 flow w/ claim-error→action mapping, rail tab enable); then tasks 17–18
 (reproducible build + runbook). Tasks 12/15 still need the dev-host/CI run.
+## 2026-06-10 — Iteration 17 — Task 16: Frontend M2 ck-USDC panel (DONE)
+Tasks 12/15 stay ◐ (4K-page host, see memory) — task 16 was the highest-
+priority actionable item.
+- index.html restructured: rail tabs are REAL tabs now — per-rail panels
+  (Card: tiers; ck: amount input + bounds line + fail-closed "not enabled"
+  notice off maxUsdCents==0) feeding ONE shared destination form + submit;
+  lowFloat notice hoisted above tabs (treasury hold is rail-agnostic);
+  active-order gains ck-pay-area (Approve/Claim buttons + flow status) and
+  a Rail row; history gains a Rail column.
+- src/ledger.ts: hand-rolled minimal ICRC-2 actor (raw IDL — external
+  canister, no committed .did for bindgen; 3 methods: balance_of/allowance/
+  approve), ledger id pinned = CkUsdc.mo's mainnet xevnm-…-cai (PocketIC
+  fiduciary subnet hosts it at the same id → no env branching); actor.ts
+  agentOptions extracted+shared (ic_env host/rootKey); identity REQUIRED
+  (anonymous approve burns fee from the shared anonymous account).
+- Flow: create_ck_usdc_order → "1·Approve" (icrc2_approve, spender=backend,
+  amount=approveUnits, II identity) auto-chains into claim; "2·Claim"
+  standalone for approved-earlier/retry. RECONSTRUCTABLE cross-session
+  (unlike card pay links): units = pricing.usdCents·10^4 + public config
+  ledgerFee; claim's insufficientAllowance.required is ledger-authoritative
+  and overrides per-order (ckRequiredUnits map). Per-order busy guard;
+  renderCkPay re-renders on poll ticks w/o clobbering flow status.
+- format.ts (pure, tested): ckUnitsForCents (10^4 pin), formatCkUsdcUnits
+  (6dp, ≥2 shown), parseUsdAmount (strict: optional $, ≤2dp, no guessing),
+  createCkOrderErrorMessage (bounds carry $ values), claimErrorInfo §6.2
+  action mapping (amount-short → approve/fund + "nothing was charged";
+  retryable/inFlight → retry; staleIntent/badFee/ledgerRejected/
+  notClaimable/wrongRail/notFound/anonymous → "none", pinned ALL-7 sweep;
+  staleIntent says "not charged twice" §5.1), approveErrorMessage (raw
+  one-key variant records).
+- Tests: +17 vitest (38 total). Verified: tsc --noEmit strict ✓, vite
+  build ✓, mops check ✓, mops test ✓ (390), mops build ✓, icp build ✓
+  both canisters, committed .did unchanged (bindings regen identical).
+- Gotcha: bindgen surfaces PAYLOAD-LESS variants (Rail, OrderStatus) as TS
+  string enums, NOT __kind__ unions — compare via (x as unknown as string).
+NEXT: task 17 — Reproducible build + release (spec §8): Docker-pinned
+build, ic-wasm deterministic optimize + metadata, committed .did (already
+self-maintaining), published expected module hash per tagged release,
+asset-canister certified frontend. Tasks 12/15 still need the dev-host/CI
+run (live browser approve→claim rides the same session).

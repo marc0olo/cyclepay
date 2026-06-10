@@ -10,7 +10,7 @@
     <header>
       <div class="brand">
         <h1>CyclePay</h1>
-        <p class="tagline">Card → cycles, verifiably on-chain</p>
+        <p class="tagline">Card or ck-USDC → cycles, verifiably on-chain</p>
       </div>
       <div id="auth-area"></div>
     </header>
@@ -18,20 +18,32 @@
     <main>
       <nav class="rails" aria-label="Payment rail">
         <button id="rail-card" class="rail active" type="button">Card</button>
-        <button id="rail-ckusdc" class="rail" type="button" disabled title="ck-USDC lands in M2">
-          ck-USDC <span class="soon">soon</span>
-        </button>
+        <button id="rail-ckusdc" class="rail" type="button">ck-USDC</button>
       </nav>
 
-      <section id="card-panel">
-        <div id="gate-notice" class="notice" hidden></div>
+      <div id="gate-notice" class="notice" hidden></div>
 
+      <section id="card-panel">
         <h2>Pick an amount</h2>
         <div id="tiers" class="tiers">
           <p class="muted">Loading tiers…</p>
         </div>
         <p id="rate-line" class="muted"></p>
+      </section>
 
+      <section id="ck-panel" hidden>
+        <div id="ck-disabled-notice" class="notice" hidden>
+          The ck-USDC rail is not enabled yet — check back soon.
+        </div>
+        <h2>Choose an amount</h2>
+        <label class="amount-label">
+          Amount (USD)
+          <input id="ck-amount" type="text" inputmode="decimal" placeholder="5.00" autocomplete="off" spellcheck="false" />
+        </label>
+        <p id="ck-bounds-line" class="muted"></p>
+      </section>
+
+      <section>
         <form id="order-form">
           <h2>Where should the cycles go?</h2>
           <label class="radio">
@@ -76,7 +88,19 @@
             <code id="client-ref"></code> — keep this tab open; status updates live.
           </p>
         </div>
+        <div id="ck-pay-area" hidden>
+          <p>
+            Pay <strong id="ck-pay-amount"></strong> from your ck-USDC account:
+            approve the gateway to pull it, then claim.
+          </p>
+          <div class="ck-actions">
+            <button id="ck-approve" type="button" class="primary">1 · Approve</button>
+            <button id="ck-claim" type="button">2 · Claim</button>
+          </div>
+          <p id="ck-flow-status" class="muted" hidden></p>
+        </div>
         <dl class="order-facts">
+          <dt>Rail</dt><dd id="order-rail"></dd>
           <dt>Cycles</dt><dd id="order-cycles"></dd>
           <dt>Price</dt><dd id="order-price"></dd>
           <dt>Destination</dt><dd id="order-dest"></dd>
@@ -87,7 +111,7 @@
         <h2>Your orders</h2>
         <table>
           <thead>
-            <tr><th>Created</th><th>Order</th><th>Cycles</th><th>Price</th><th>Status</th></tr>
+            <tr><th>Created</th><th>Order</th><th>Rail</th><th>Cycles</th><th>Price</th><th>Status</th></tr>
           </thead>
           <tbody id="orders"></tbody>
         </table>

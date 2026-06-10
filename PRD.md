@@ -51,7 +51,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
 |---|--------|------|
 | 14 | ☑ | **ck-USDC rail** (`rails/CkUsdc.mo`, spec §6.2): ICRC-1/2 bindings, `icrc2_transfer_from` pull after user `icrc2_approve` (Candid, II caller), `block_index` dedup, amount-short mismatch handling, hold-ckUSDC treasury posture; unit tests. |
 | 15 | ◐ | **PocketIC suite — ck-USDC go-live bar**: approve/pull happy path, dedup, mismatch, treasury interplay. *Suite fully implemented (`test/integration/src/ckusdc.spec.ts`, 11 scenarios against the real pinned `ic-icrc1-ledger` at the mainnet ck-USDC id) and typechecked; **execution pending the same 4 KiB-page host as task 12** — both bars run together (`npm test`). Green only when actually run.* |
-| 16 | ☐ | **Frontend M2**: ck-USDC panel (approve → purchase flow). |
+| 16 | ☑ | **Frontend M2**: ck-USDC panel (approve → purchase flow). |
 
 ### M3 — Verifiability & ship
 
@@ -62,6 +62,54 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 ## Changelog
 
+- **2026-06-10 — Task 16 done.** Frontend M2 — the ck-USDC rail tab goes
+  live (`src/frontend/`). **Structure**: the rail tabs are now real tabs —
+  each rail is a *panel* (Card: tier picker; ck-USDC: amount input) feeding
+  the one shared destination form and the one shared order timeline, exactly
+  the §11.1 "new panel, not a refactor" seam the M1 layout promised. The
+  low-float treasury notice moved above the tabs (the hold is rail-agnostic).
+  **ck panel**: free amount entry (no tiers — §6.2, nothing structural pins
+  the amount) validated by a strict `parseUsdAmount` (optional `$`, ≤ 2
+  decimals — money input never guesses), bounds/fee line rendered from the
+  public `ck_usdc_config`, and the backend's fail-closed default surfaced
+  honestly: `maxUsdCents = 0` renders a "not enabled yet" notice with the
+  input and submit disabled. Every `CreateCkUsdcOrderError` variant maps to
+  a distinct user message (bound violations carry the actual bound in
+  dollars; `rateUnavailable` keeps the §3.1 "nothing was charged" wording).
+  **Approve → claim**: a hand-rolled minimal ICRC-2 actor (`ledger.ts` —
+  raw IDL, three methods; an external canister has no committed `.did` to
+  bindgen from) pinned to the same mainnet ck-USDC id as `CkUsdc.mo`
+  (PocketIC's fiduciary subnet hosts it at the identical id, so no
+  environment branching), built on the same ic_env agent recipe as the
+  backend actor (`agentOptions` extracted and shared; identity *required* —
+  an anonymous approve would burn fees from the shared anonymous account).
+  "1 · Approve" approves `approveUnits` for the gateway as spender with the
+  user's II identity, then claims automatically; "2 · Claim" stands alone
+  for users who approved earlier or are retrying. **Unlike the session-local
+  card Payment Link, the flow is reconstructable for any session**: the
+  amount derives from the order's pricing snapshot (1¢ = 10⁴ units, the
+  `CkUsdc.mo` constant mirrored and pinned by test) plus the public config's
+  ledger fee — so reopened `created`/`expired` ck orders stay payable from
+  history; when the config drifts, the claim's `insufficientAllowance.required`
+  is ledger-authoritative and supersedes the derived amount for that order's
+  next approve. **Claim-error → action mapping** (`claimErrorInfo`, the §6.2
+  UX half): the two amount-short arms read as clean "approve/fund and claim
+  again — nothing was charged" (definite rejections, intent dropped);
+  `retryable`/`inFlight` → retry; `staleIntent`/`badFee`/`ledgerRejected`/
+  `notClaimable`/`wrongRail` → operator/support territory, *never* presented
+  as user-retriable (a pinned test sweeps all seven non-retriable arms), and
+  `staleIntent` explicitly reassures "you will not be charged twice" (§5.1
+  money-in posture). Raw-ledger `icrc2_approve` errors get their own
+  formatter (one-key variant records, not bindgen unions). Gotcha for next
+  time: bindgen surfaces *payload-less* variants (`Rail`, `OrderStatus`) as
+  TS string enums, not `__kind__` unions. Order facts and history gain a
+  Rail column. 17 new vitest cases (38 total: units constant, ≥2-decimal
+  token formatting incl. the exact-fee vector, amount-parse matrix,
+  per-variant distinct messages, the action mapping). Verified: `tsc
+  --noEmit` strict clean, vite build green, `mops check`/`test` (390)/
+  `build` + `icp build` untouched-green, committed `.did` unchanged. Live
+  browser approve→claim against a deployed ledger rides the same dev-host
+  session as tasks 12/15.
 - **2026-06-10 — Task 15 implemented (execution pending a 4 KiB-page host,
   same constraint as task 12).** PocketIC suite, ck-USDC go-live bar —
   `test/integration/src/ckusdc.spec.ts`, 11 scenarios on its own instance

@@ -56,6 +56,9 @@ button.primary, .pay-button {
 .rail.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 .soon { font-size: 0.7rem; color: var(--muted); }
 
+.amount-label { display: block; font-size: 0.9rem; }
+.ck-actions { display: flex; gap: 0.6rem; margin: 0.6rem 0; }
+
 .tiers { display: flex; flex-wrap: wrap; gap: 0.6rem; }
 .tier {
   min-width: 9rem;

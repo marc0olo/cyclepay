@@ -7,7 +7,17 @@ import type { Identity } from "@icp-sdk/core/agent";
 import { createActor } from "./bindings/backend";
 
 const canisterEnv = safeGetCanisterEnv();
-const backendCanisterId = canisterEnv?.["PUBLIC_CANISTER_ID:backend"];
+export const backendCanisterId = canisterEnv?.["PUBLIC_CANISTER_ID:backend"];
+
+/// One agent recipe for every actor this app builds (backend and the ck-USDC
+/// ledger) — host and root key always come from ic_env.
+export function agentOptions(identity?: Identity) {
+  return {
+    host: window.location.origin,
+    rootKey: canisterEnv?.IC_ROOT_KEY,
+    ...(identity ? { identity } : {}),
+  };
+}
 
 export function makeBackend(identity?: Identity) {
   if (!backendCanisterId) {
@@ -17,13 +27,7 @@ export function makeBackend(identity?: Identity) {
   }
   // agentOptions, never a pre-built agent: passing { agent } to a bindgen
   // actor silently downgrades to the anonymous identity.
-  return createActor(backendCanisterId, {
-    agentOptions: {
-      host: window.location.origin,
-      rootKey: canisterEnv?.IC_ROOT_KEY,
-      ...(identity ? { identity } : {}),
-    },
-  });
+  return createActor(backendCanisterId, { agentOptions: agentOptions(identity) });
 }
 
 export type Backend = ReturnType<typeof makeBackend>;
@@ -35,3 +39,4 @@ export type Destination = Parameters<Backend["create_order"]>[1];
 export type CreateOrderResult = Awaited<ReturnType<Backend["create_order"]>>;
 export type TreasuryStatus = Awaited<ReturnType<Backend["treasury_status"]>>;
 export type ForexStatus = Awaited<ReturnType<Backend["forex_status"]>>;
+export type CkUsdcConfig = Awaited<ReturnType<Backend["ck_usdc_config"]>>;
