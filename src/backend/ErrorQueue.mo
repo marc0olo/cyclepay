@@ -30,11 +30,13 @@ module {
     #unattributed : { claimedRef : Text; paymentRef : Text };
     /// Type 2 — minted, but forward failed (e.g. target canister deleted).
     #undeliverable : { orderId : Types.OrderId; cycles : Nat };
-    /// §5.1 escalation — the mint pipeline stopped where the money position
-    /// is uncertain (stale intent whose transfer fate is unknowable, a CMC
-    /// rejection/refund, or an ambiguous forward). Neither Type 1 nor
-    /// Type 2: the operator inspects the ledger/CMC/destination, then
-    /// refunds or re-delivers manually. `stage` = Cmc.EscalateReason text.
+    /// §5.1/§5.3 escalation — the mint pipeline stopped before completing
+    /// (stale intent whose transfer fate is unknowable, a CMC
+    /// rejection/refund, an ambiguous forward, or a treasury hold past its
+    /// max wait — there the position is certain: fiat in, nothing minted).
+    /// Neither Type 1 nor Type 2: the operator inspects the
+    /// ledger/CMC/destination, then refunds or re-delivers manually.
+    /// `stage` = Cmc.EscalateReason text or "treasuryWaitExceeded".
     #stuckMint : { orderId : Types.OrderId; stage : Text };
   };
 

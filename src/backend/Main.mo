@@ -28,6 +28,7 @@ import Orders "Orders";
 import Card "rails/Card";
 import Secret "Secret";
 import Tiers "Tiers";
+import Treasury "Treasury";
 import Types "Types";
 
 persistent actor CyclesGateway {
@@ -363,6 +364,86 @@ persistent actor CyclesGateway {
 
   func selfPrincipal() : Principal = Principal.fromActor(CyclesGateway);
 
+  // ── Treasury + burn cap (task 10, §5.3) ─────────────────────────────────
+
+  /// §5.3 treasury policy. burnCapE8s defaults to 0 — every mint holds in
+  /// #awaitingTreasury until the operator consciously sizes the primary
+  /// blast-radius bound (same no-invented-numbers stance as the empty tier
+  /// list; a default cap in ICP would be a money decision invented here).
+  var treasuryConfig : Treasury.Config = Treasury.defaultConfig();
+
+  /// §5.3 rolling-window burn accounting. Persistent — an upgrade must not
+  /// reset the blast-radius bound mid-window.
+  let burnLedger : Treasury.Ledger = Treasury.emptyLedger();
+
+  /// Last float balance the mint pre-gate (or an admin refresh) observed.
+  /// The balance-alert query reads this; queries can't call the ledger.
+  var lastFloatObservation : ?Treasury.FloatObservation = null;
+
+  /// Record a float observation, audit-alerting on the *crossing* into low
+  /// (not every low observation — a sweep over held orders would spam the
+  /// ring buffer out of its useful history).
+  func observeFloat(e8s : Nat) {
+    let wasLow = switch (lastFloatObservation) {
+      case (?previous) Treasury.isLowFloat(treasuryConfig, previous.e8s);
+      case null false;
+    };
+    lastFloatObservation := ?{ e8s; atNs = Time.now() };
+    if (Treasury.isLowFloat(treasuryConfig, e8s) and not wasLow) {
+      audit("treasury.lowFloat", "float " # e8s.toText() # " e8s below threshold " # treasuryConfig.lowFloatThresholdE8s.toText());
+    };
+  };
+
+  /// Adjust treasury policy (§5.3/§7): burn cap, window, max hold, alert
+  /// threshold. Validated atomically — a bad config never partially applies.
+  public shared ({ caller }) func set_treasury_config(config : Treasury.Config) : async Result.Result<(), Treasury.ConfigError> {
+    requireAdmin(caller);
+    switch (Treasury.validateConfig(config)) {
+      case (#ok) { treasuryConfig := config; #ok };
+      case (#err(e)) #err(e);
+    };
+  };
+
+  /// §5.3 manual override: clear the rolling window's consumption after
+  /// confirming the traffic was legitimate (or rotating a leaked secret).
+  /// Returns the e8s of consumption cleared. Held orders resume on the next
+  /// sweep, not here — the pre-gate stays the single decision point.
+  public shared ({ caller }) func reset_burn_window() : async Nat {
+    requireAdmin(caller);
+    let cleared = Treasury.burnedInWindow(burnLedger, treasuryConfig.burnWindowNs, Time.now());
+    Treasury.reset(burnLedger);
+    audit("treasury.burnWindowReset", cleared.toText() # " e8s of window consumption cleared by operator");
+    cleared;
+  };
+
+  /// On-demand float refresh (admin — public would let anyone spend our
+  /// cycles on ledger calls). The mint pre-gate refreshes the observation as
+  /// a side effect; this is the ops lever between mints.
+  public shared ({ caller }) func refresh_float() : async Nat {
+    requireAdmin(caller);
+    let e8s = await icpLedger.icrc1_balance_of({ owner = selfPrincipal(); subaccount = null });
+    observeFloat(e8s);
+    e8s;
+  };
+
+  /// §5.3 balance alert + soft UI gate, public: the frontend disables tiers
+  /// off `lowFloat`, and cap consumption is operational transparency (the
+  /// thesis), not a secret. The float observation may be stale — `atNs` says
+  /// how stale; `refresh_float` is the admin lever for a fresh read.
+  public query func treasury_status() : async Treasury.Status {
+    var held = 0;
+    for ((_, order) in orderStore.orders.entries()) {
+      if (order.status == #awaitingTreasury) held += 1;
+    };
+    {
+      config = treasuryConfig;
+      burnedInWindowE8s = Treasury.burnedInWindow(burnLedger, treasuryConfig.burnWindowNs, Time.now());
+      lastObservedFloat = lastFloatObservation;
+      lowFloat = Treasury.lowFloatSignal(treasuryConfig, lastFloatObservation);
+      heldOrders = held;
+    };
+  };
+
   func audit(tag : Text, detail : Text) {
     ignore AuditLog.append(auditLog, auditLogCapacity, Time.now(), tag, detail);
   };
@@ -426,7 +507,28 @@ persistent actor CyclesGateway {
   func driveMint(orderId : Types.OrderId) : async* () {
     label drive loop {
       let ?order = Orders.get(orderStore, orderId) else return;
-      switch (Cmc.stageOf(order.status, mintJournal.get(orderId), Time.now(), Cmc.ledgerDedupWindowNs, maxMintRetries)) {
+      // §5.3: a treasury-held order resumes here — Treasury owns the hold
+      // policy (max-wait), Cmc.stageOf owns the money-out resume logic. A
+      // hold within the wait bound retries #begin: the pre-gate inside it is
+      // the single decision point for cap/float, so a rolled window or a
+      // refill clears the hold with no second code path. updatedAtNs is the
+      // hold start (the hold transition is the last one the order took).
+      let stage : Cmc.Stage = switch (order.status) {
+        case (#awaitingTreasury) {
+          switch (Treasury.holdStage(order.updatedAtNs, Time.now(), treasuryConfig.maxHoldNs)) {
+            case (#escalate) {
+              // Money position is *certain* here (fiat in, nothing minted)
+              // but the resolution is the same operator worklist: refund in
+              // the Stripe Dashboard (§5.3 max-wait → error queue).
+              escalateStuckMint(order, "treasuryWaitExceeded", "held past max wait: fiat received, nothing minted — refund via Stripe Dashboard");
+              return;
+            };
+            case (#retry) #begin;
+          };
+        };
+        case (_) Cmc.stageOf(order.status, mintJournal.get(orderId), Time.now(), Cmc.ledgerDedupWindowNs, maxMintRetries);
+      };
+      switch (stage) {
         case (#none) return;
         case (#escalate(reason)) {
           let stage = Cmc.escalateReasonToText(reason);
@@ -443,15 +545,46 @@ persistent actor CyclesGateway {
             audit("mint.rateStale", orderId);
             return;
           };
-          // Re-read after the await; only an untouched #paid order proceeds.
+          // §5.3 pre-gate input: the live float balance (also feeds the
+          // balance-alert observation).
+          let floatE8s = try {
+            await icpLedger.icrc1_balance_of({ owner = selfPrincipal(); subaccount = null });
+          } catch (e) {
+            audit("mint.balanceFetchFailed", orderId # ": " # e.message());
+            return; // status untouched; the next sweep retries
+          };
+          observeFloat(floatE8s);
+          // Re-read after the awaits; only an untouched mintable order
+          // proceeds (#awaitingTreasury arrives here via the hold retry).
           let ?fresh = Orders.get(orderStore, orderId) else return;
-          if (fresh.status != #paid) continue drive;
+          switch (fresh.status) {
+            case (#paid or #awaitingTreasury) {};
+            case (_) continue drive;
+          };
           let ?e8s = Cmc.icpE8sForCycles(fresh.lockedCycles, permyriad) else return;
-          // §5.1 step 1 — intent + #minting commit in ONE sync block,
-          // before the transfer await. From here the transfer args are
-          // frozen; replay is always bit-identical.
+          // §5.3 pre-gate: burn cap (blast-radius bound, checked first —
+          // it must hold mints even when the float could fund them), then
+          // float sufficiency. A held order stays put on re-hold (no
+          // transition, no re-audit — the hold start must keep its max-wait
+          // clock and the ring buffer its history).
+          switch (Treasury.gate(burnLedger, treasuryConfig, floatE8s, e8s, Cmc.icpTransferFeeE8s, Time.now())) {
+            case (#hold(reason)) {
+              if (fresh.status == #paid) {
+                ignore tryTransition(orderId, #awaitingTreasury);
+                audit("mint.held", orderId # ": " # Treasury.holdReasonToText(reason));
+              };
+              return;
+            };
+            case (#proceed) {};
+          };
+          // §5.1 step 1 — intent + #minting + burn-cap consumption commit
+          // in ONE sync block, before the transfer await. From here the
+          // transfer args are frozen; replay is always bit-identical. The
+          // cap entry is never refunded on failure — over-counting pauses
+          // mints early, the fail-safe direction for a blast-radius bound.
           let intent = Cmc.buildIntent(selfPrincipal(), e8s, Time.now());
           let ?minting = tryTransition(orderId, #minting) else return;
+          Treasury.recordBurn(burnLedger, treasuryConfig.burnWindowNs, e8s, Time.now());
           ignore Cmc.openEntry(mintJournal, minting, intent, Time.now());
           // fall through the loop → #replayTransfer issues the transfer
         };
@@ -536,13 +669,14 @@ persistent actor CyclesGateway {
   };
 
   /// Sweep every order with money-out work pending (#paid/#minting/
-  /// #icpAtCmc) through the driver. Kicked after webhook ingestion; the
+  /// #icpAtCmc/#awaitingTreasury — the §5.3 hold retries until refill or
+  /// max-wait) through the driver. Kicked after webhook ingestion; the
   /// §5.2 recurring recovery timer (task 11) reuses it.
   func sweepMintable() : async* Nat {
     let pending = List.empty<Types.OrderId>();
     for ((id, order) in orderStore.orders.entries()) {
       switch (order.status) {
-        case (#paid or #minting or #icpAtCmc) pending.add(id);
+        case (#paid or #minting or #icpAtCmc or #awaitingTreasury) pending.add(id);
         case (_) {};
       };
     };

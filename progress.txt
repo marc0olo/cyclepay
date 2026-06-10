@@ -303,3 +303,41 @@ NEXT: Task 10 — Treasury.mo (§5.3): ICP float accounting (icrc1_balance_of),
 Paid → AwaitingTreasury pre-gate when float short, max-wait → error queue,
 low-float soft gate + balance-alert query, per-period rolling ICP burn cap
 w/ pause + manual override; unit tests for cap window math.
+## 2026-06-10 — Iteration 11 — Task 10: Treasury + burn cap (DONE)
+- src/backend/Treasury.mo (pure half, §5.3): Queue-backed rolling burn
+  ledger (time-ordered; burnedInWindow = age < window, recordBurn prunes
+  front); gate() = the pre-gate, CAP CHECKED BEFORE FLOAT (blast-radius
+  bound must hold even with a full float; leaked-secret drains have one),
+  proceed iff burned+mint <= cap AND float >= mint+fee; holdStage =
+  max-wait (age >= bound escalates); lowFloat/lowFloatSignal (threshold 0
+  = disarmed; armed-but-unobserved = low); validateConfig.
+- DECISION: default burnCapE8s = 0 — FAIL CLOSED, every mint holds until
+  the operator sizes the bound (empty-tiers stance: a default cap in ICP
+  is an invented money decision). Cap 0 doubles as the pause lever.
+  Defaults: 24h window, 72h max hold, alert disarmed.
+- DECISION: cap consumption commits in the SAME §5.1 sync block as the
+  intent (after transition, before transfer await) and is never refunded
+  on failure — over-counting is the fail-safe direction.
+- DECISION: max-wait escalation reuses #stuckMint{stage="treasuryWait
+  Exceeded"} (no new ErrorQueue.Kind; doc widened — position is certain
+  here: fiat in, nothing minted, operator refunds in Stripe Dashboard).
+- Main.mo: driveMint intercepts #awaitingTreasury BEFORE Cmc.stageOf
+  (stageOf + its 13-case test matrix untouched) — in-window holds retry
+  #begin so the pre-gate is the single decision point; #begin gained the
+  balance_of await + observeFloat + gate (re-read status #paid OR
+  #awaitingTreasury after awaits; held #paid → #awaitingTreasury w/ audit,
+  re-hold silent so updatedAtNs keeps the max-wait clock); sweepMintable
+  += #awaitingTreasury; persistent treasuryConfig/burnLedger/
+  lastFloatObservation; observeFloat audits only the CROSSING into low;
+  admin set_treasury_config/reset_burn_window/refresh_float + public
+  treasury_status (frontend soft-gates tiers off lowFloat).
+- Tests: treasury (16) — window boundary at exactly-24h, front-prune,
+  exact cap/float boundaries, cap-beats-float pin, window-roll frees cap,
+  max-wait boundary, signal matrix. 350 total green.
+- Gotcha: own test bug, not code — at t=25h a t=1h burn is EXACTLY 24h old
+  → pruned (age >= window). First-try clean compile + lint otherwise.
+- Verified: mops check ✓ (lint clean), mops test ✓ (350), mops build ✓,
+  icp build ✓, .did gains exactly the 4 treasury methods.
+NEXT: Task 11 — Recovery timer (§5.2): recurringTimer sweep reusing
+sweepMintable, single-flight guard, re-arm in postupgrade (transient timer
+id), expiry sweep for stale #created orders if in scope; timer-logic tests.

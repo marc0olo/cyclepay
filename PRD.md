@@ -40,7 +40,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
 | 7 | ☑ | **Forex subsystem** (`Forex.mo`, spec §3.1): USD↔XDR via HTTPS outcall with coarse-rounding `transform`, stable `{rate, ts}` cache, lazy refresh, single-flight guard, in-call retry cap, **fail-closed order creation** on stale+failed refresh; fee formula (≈2.9% + $0.30, configurable) and net-of-fees pricing (§3); unit tests for rounding/fee/staleness logic with mocked outcall. |
 | 8 | ☑ | **Stripe webhook ingestion** (`rails/Card.mo` complete): parse `checkout.session.completed` + `charge.refunded` JSON, claimed-not-trusted `client_reference_id` resolution, dedup (`event.id` + `payment_intent`), amount honored at actual paid value → `Paid`; unmatched/duplicate → Type 1; `charge.refunded` auto-resolves Type 1; unit tests with crafted signed payloads. |
 | 9 | ☑ | **CMC mint pipeline** (`Cmc.mo`, spec §5/§5.1): candid bindings for ICP ledger + CMC, write-intent-before-call with `created_at_time` dedup, `icrc1_transfer` → record `block_index` → `notify_top_up`/`notify_mint_cycles`, mint-to-self-then-forward delivery, failed forward → Type 2; rate derivation w/ CMC staleness guard (§5); unit tests for intent/replay logic. |
-| 10 | ☐ | **Treasury + burn cap** (`Treasury.mo`, spec §5.3): ICP float accounting, `AwaitingTreasury` hold + max-wait → error queue, low-float soft gate + balance-alert query, **per-period rolling ICP burn cap** with pause + manual override; unit tests for cap window math. |
+| 10 | ☑ | **Treasury + burn cap** (`Treasury.mo`, spec §5.3): ICP float accounting, `AwaitingTreasury` hold + max-wait → error queue, low-float soft gate + balance-alert query, **per-period rolling ICP burn cap** with pause + manual override; unit tests for cap window math. |
 | 11 | ☐ | **Recovery timer** (spec §5.2): `recurringTimer` sweep of `Minting`/`IcpAtCMC`/`AwaitingTreasury`, single-flight guard, re-arm in `postupgrade` (transient timer id), 24h-window guard (stale intent w/o block_index → error queue, never auto-replayed). |
 | 12 | ☐ | **PocketIC integration suite — Card go-live bar** (spec §9): real ledger/CMC Wasms, crafted HMAC-signed webhooks, mocked forex outcall, time control; covers happy path, duplicate/replay, ambiguous-transfer recovery, AwaitingTreasury, Type 1/Type 2, forex fail-closed, upgrade-mid-flight, postupgrade re-arm. |
 | 13 | ☐ | **Frontend M1** (asset canister): Astro/JS SPA, II login, rail selector, Card flow (tier links + `client_reference_id`), order status polling by `order_id`, order history. |
@@ -62,6 +62,52 @@ Status: ☐ todo · ◐ in progress · ☑ done
 
 ## Changelog
 
+- **2026-06-10 — Task 10 done.** Treasury + burn cap (§5.3). `Treasury.mo`
+  is the pure half — rolling-window burn accounting, the pre-gate decision,
+  the hold max-wait, and the soft-gate signal — all unit-tested without an
+  IC env; Main.mo owns the `icrc1_balance_of` call and persistent state.
+  **Burn cap**: a `Queue`-backed time-ordered ledger of cap-consuming mints;
+  `burnedInWindow` counts burns with age < window (house staleness
+  convention), so consumption "resets next window" (§5.3) by aging out with
+  no timer; `recordBurn` prunes aged entries from the front. Consumption is
+  **conservative by construction**: it commits in the same §5.1 sync block
+  as the transfer intent (before the ledger await) and is never refunded on
+  a later failure — over-counting pauses mints early, the fail-safe
+  direction for a blast-radius bound. Manual override =
+  `reset_burn_window()` (admin, audited, returns cleared e8s).
+  **Pre-gate** (in the driver's `#begin`, after the CMC-rate and
+  `icrc1_balance_of` awaits, decided synchronously): the burn cap is checked
+  **before** float sufficiency — it must hold mints even when the float
+  could fund them (a leaked-secret drain has a full float); proceed iff
+  burned + mint ≤ cap (reaching exactly is allowed) AND float ≥ mint +
+  transfer fee. A held `#paid` order transitions to `#awaitingTreasury`
+  (audited); an already-held order re-holds silently so its max-wait clock
+  (`updatedAtNs`) and the ring buffer survive repeated sweeps.
+  **Hold/resume**: `driveMint` intercepts `#awaitingTreasury` before
+  `Cmc.stageOf` (which stays untouched) — within the wait bound the order
+  retries `#begin`, so the pre-gate is the single decision point and a
+  refill or rolled window clears the hold with no second code path; at/past
+  `maxHoldNs` it escalates as `#stuckMint{stage = "treasuryWaitExceeded"}`
+  (position certain — fiat in, nothing minted — operator refunds in the
+  Stripe Dashboard; ErrorQueue doc widened). `sweepMintable` now includes
+  `#awaitingTreasury`. **Defaults fail closed**: `burnCapE8s = 0` — every
+  mint holds until the operator consciously sizes the bound (the
+  empty-tier-list stance: a default cap in ICP would be an invented money
+  decision); cap 0 doubles as an explicit pause lever; 24 h window, 72 h max
+  hold, alert disarmed. **Float observability**: every pre-gate balance read
+  (and admin `refresh_float()`) updates a persistent observation;
+  `observeFloat` audit-alerts on the *crossing* into low (never per-sweep
+  spam); public `treasury_status` query = config + window consumption +
+  last observation + `lowFloat` (armed-but-never-observed reads low) + held
+  order count — the frontend's §5.3 soft UI gate disables tiers off it.
+  `set_treasury_config` validated atomically (positive window/max-hold).
+  16 new tests (window math incl. exactly-window-old boundary and
+  front-pruning, gate matrix incl. exact cap/float boundaries and
+  cap-beats-float ordering, window roll frees cap, max-wait boundary,
+  soft-gate signal matrix); 350 total green; `mops check` lint-clean,
+  `mops build` + `icp build` green; `.did` gains exactly
+  `set_treasury_config`/`reset_burn_window`/`refresh_float`/
+  `treasury_status`. Live balance/hold flow under PocketIC is task 12.
 - **2026-06-10 — Task 9 done.** CMC mint pipeline (§5/§5.1). `Cmc.mo` is the
   pure half — Candid interfaces (ICP ledger `icrc1_transfer`, CMC
   `notify_top_up` + `get_icp_xdr_conversion_rate`, cycles ledger `deposit`),
