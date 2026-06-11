@@ -1,4 +1,8 @@
 # Progress log — one entry per loop iteration, newest last.
+#
+# FROZEN (2026-06-10) — historical artifact. Tracking moved to GitHub
+# Issues (the source of truth; see docs/agents/issue-tracker.md). Do not
+# append entries here — comment on the relevant issue instead.
 
 ## 2026-06-10 — Iteration 1 — Task 0: Scaffold (DONE)
 No PRD or progress.txt existed; bootstrapped both. Created PRD.md with the full

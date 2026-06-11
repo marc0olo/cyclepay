@@ -1,5 +1,12 @@
 # PRD — Fully On-Chain Cycles Gateway
 
+> **FROZEN (2026-06-10) — historical artifact.** All task and progress
+> tracking moved to **GitHub Issues**, which is now the source of truth
+> (see `docs/agents/issue-tracker.md`). Do **not** update this file — the
+> instructions below to maintain the status columns and changelog no longer
+> apply. The M1 PRD lives in issue #1; the remaining open work (executing
+> the PocketIC go-live bars) is issues #2 and #3.
+
 Working task list for the autonomous build loop. Requirements and all design
 decisions live in `design-docs/ONCHAIN_GATEWAY_SPEC.md` (spec v2.1, the
 decision record); this file tracks **what to build, in what order, and what is
