@@ -97,10 +97,23 @@ frontend would be the cheapest place to start, and it would immediately report
 
 ## Continuous integration
 
-`.github/workflows/mops-test.yml` runs three jobs on every push and PR: `motoko`
-(lint, unit suites, and that the committed `.did` is current), `frontend` (build,
-typecheck, tests), and `integration` (the PocketIC suite).
+`.github/workflows/mops-test.yml` runs three jobs, all **verified green** on
+`ubuntu-latest`:
 
-⚠️ The `integration` job has **not been executed** — it was written here and the
-local equivalent is what is verified. It needs a 4 KiB-page host, which
-`ubuntu-latest` satisfies; expect to iterate on the first real run.
+- **motoko** — lint, unit suites, and that the committed `.did` is current
+- **frontend** — build (regenerates bindings) → typecheck → tests
+- **integration** — typecheck + the PocketIC suite
+
+Triggers: `push` on `main`/`master`, `pull_request`, and `workflow_dispatch`. Note
+that a push to a **feature branch matches none of the first two** — open a PR or
+dispatch it manually.
+
+The `integration` job needs a 4 KiB-page host, which `ubuntu-latest` satisfies (the
+IC replica hard-asserts 4096-byte pages).
+
+⚠️ **`npm ci` mismatches in `test/integration` cannot be reproduced on macOS.** The
+first run of this job failed on Linux-only optional dependencies (`@emnapi/*`, pulled
+in through vitest's rolldown wasm fallback) that a macOS resolve never records — so a
+local `npm ci` passes while CI fails. If that job fails on install, delete
+`test/integration/package-lock.json` and `node_modules` and resolve fresh; an
+incremental `npm install` only narrows the gap. CI is the only test for it.
