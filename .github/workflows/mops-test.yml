@@ -6,6 +6,9 @@ on:
       - main
       - master
   pull_request:
+  # So the gate can be run on demand against any branch, which is otherwise
+  # impossible: a push to a feature branch matches none of the triggers above.
+  workflow_dispatch:
 
 jobs:
   # Motoko lint + unit suites. Fast, so it stays its own job and fails early.
