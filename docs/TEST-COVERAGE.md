@@ -4,12 +4,17 @@ One place to answer "is X covered?". Run everything with `scripts/test-all.sh`.
 
 ## The three automated suites
 
-| Suite | Count | What it covers | How |
-|---|---|---|---|
-| **Motoko unit** (`test/*.test.mo`) | 21 files | pure logic: HMAC, the Stripe signature scheme, JSON parsing, fee/rate arithmetic, the §4 state machine, dedup, retention bands, the error queue, `Cmc.terminationFor`'s eight money positions, `stageOf`'s resume decisions | `mops test`. No IC environment — every module takes its dependencies as a record (`Card.Deps`), which is why the whole ingestion path is unit-testable |
-| **Frontend pure** (`format.test.ts`) | 69 tests | status mapping, cycle/USD formatting, the §3 pricing vector, slippage flooring, deposit-fee subtraction, receipt verification, every error-message mapping | `vitest` |
-| **Frontend DOM** (`main.test.ts`) | 13 tests | the real `index.html` body in jsdom with a stubbed backend: tier estimates, fee split, destination switch, the acknowledge-then-confirm quote flow, cancel visibility, the receipt render, the disabled ck panel | `vitest` + jsdom |
-| **PocketIC** (`test/integration/src/*.spec.ts`) | 67 scenarios | end-to-end against the **real** ICP ledger, CMC and cycles ledger, plus a sha256-pinned XRC mock at the mainnet id | `npm --prefix test/integration test` |
+Counts are deliberately absent: they drifted in three separate documents over one
+week of work, and a wrong number is worse than no number. Run
+`scripts/test-all.sh` for the live figures, and see `test/integration/README.md`
+for the scenario map by id — ids are stable, counts are not.
+
+| Suite | What it covers | How |
+|---|---|---|
+| **Motoko unit** (`test/*.test.mo`) | pure logic: HMAC, the Stripe signature scheme, JSON parsing, fee/rate arithmetic, the §4 state machine, dedup, retention bands, the error queue, `Cmc.terminationFor`'s eight money positions, `stageOf`'s resume decisions | `mops test`. No IC environment — every module takes its dependencies as a record (`Card.Deps`), which is why the whole ingestion path is unit-testable |
+| **Frontend pure** (`format.test.ts`) | status mapping, cycle/USD formatting, the §3 pricing vector, slippage flooring, deposit-fee subtraction, receipt verification, every error-message mapping | `vitest` |
+| **Frontend DOM** (`main.test.ts`) | the real `index.html` body in jsdom with a stubbed backend: tier estimates, fee split, destination switch, the acknowledge-then-confirm quote flow, cancel visibility, the receipt render, the disabled ck panel | `vitest` + jsdom |
+| **PocketIC** (`test/integration/src/*.spec.ts`) | end-to-end against the **real** ICP ledger, CMC and cycles ledger, plus a sha256-pinned XRC mock at the mainnet id | `npm --prefix test/integration test` |
 
 ### What makes the PocketIC suite the real bar
 
@@ -48,10 +53,10 @@ One place to answer "is X covered?". Run everything with `scripts/test-all.sh`.
 
 ### 1. The frontend in a real browser
 
-`main.ts` now has 13 jsdom tests (`main.test.ts`) covering its state machine — the
+`main.ts` now has jsdom tests (`main.test.ts`) covering its state machine — the
 quote-confirm flow, cancel visibility, the receipt render, destination switching —
 against the **real `index.html` body**, so a renamed id fails the test. The backend
-is stubbed deliberately: its behaviour is already proven by 67 PocketIC scenarios,
+is stubbed deliberately: its behaviour is already proven by the PocketIC suite,
 and a stub is the only way to drive a `#quoteChanged` or a delivered receipt
 on demand.
 
@@ -94,7 +99,7 @@ frontend would be the cheapest place to start, and it would immediately report
 
 `.github/workflows/mops-test.yml` runs three jobs on every push and PR: `motoko`
 (lint, unit suites, and that the committed `.did` is current), `frontend` (build,
-typecheck, tests), and `integration` (the 67 PocketIC scenarios).
+typecheck, tests), and `integration` (the PocketIC suite).
 
 ⚠️ The `integration` job has **not been executed** — it was written here and the
 local equivalent is what is verified. It needs a 4 KiB-page host, which

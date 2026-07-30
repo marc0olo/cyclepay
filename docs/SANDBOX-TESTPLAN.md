@@ -94,7 +94,7 @@ for when a local II works.)
 Group H is therefore the one part of this plan that wants a mainnet canister in
 **Stripe test mode** — real cycles, but test payments, and cheap at one $5 tier.
 The frontend *state logic* is separately covered headlessly by
-`src/frontend/src/main.test.ts` (13 jsdom tests), so what a browser adds is
+`src/frontend/src/main.test.ts` (jsdom), so what a browser adds is
 rendering and the real login, not behaviour.
 
 Everything else — signatures, attribution, amounts, dedup, refunds, async methods,

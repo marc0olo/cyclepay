@@ -38,8 +38,8 @@ account**. That is the whole point, and it is why the Stripe rail gets the
 attention: for that user a stablecoin rail is not an option, because acquiring
 the stablecoin is the same problem over again.
 
-**ck-USDC is frozen, not deleted.** It is code-complete, tested (11 PocketIC
-scenarios), and **disabled by default** (`maxUsdCents = 0`). Keep it compiling and
+**ck-USDC is frozen, not deleted.** It is code-complete, has its own PocketIC
+scenario map, and is **disabled by default** (`maxUsdCents = 0`). Keep it compiling and
 keep its suite green; do not add features to it. It exists because a payments
 dependency with no alternative is a single point of failure — if Stripe ever
 restricts the account, the rail is a config change away from live.
@@ -106,13 +106,13 @@ silently skips. The individual steps, if you need to run one in isolation:
 
 ```sh
 mops check                                   # lint + typecheck
-mops test                                    # Motoko unit suites (21)
+mops test                                    # Motoko unit suites
 mops build                                   # refreshes the committed .did
 npm --prefix src/frontend run build          # regenerates bindings
 npm --prefix src/frontend run typecheck
-npm --prefix src/frontend run test           # 82 — 69 pure + 13 jsdom (main.ts)
+npm --prefix src/frontend run test           # pure functions + jsdom (main.ts)
 npm --prefix test/integration run typecheck   # vitest does not typecheck
-npm --prefix test/integration test           # 67 PocketIC scenarios — the go-live bar
+npm --prefix test/integration test           # PocketIC scenarios — the go-live bar
 ```
 
 ⚠️ **`npm test`, never `npx vitest run`** for the integration suite: the latter

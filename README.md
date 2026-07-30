@@ -129,7 +129,7 @@ scripts/test-all.sh --fast   # skip PocketIC (needs a 4 KiB-page host)
 See `docs/TEST-COVERAGE.md` for what each suite covers and what is not covered.
 There are three suites:
 
-**1. Motoko unit tests** (`test/*.test.mo`) — 21 suites of pure-logic coverage
+**1. Motoko unit tests** (`test/*.test.mo`) — one suite per module, pure-logic
 (state machine, idempotency, HMAC/Stripe signatures, HTTP routing, pricing,
 treasury caps, …):
 
@@ -137,8 +137,8 @@ treasury caps, …):
 mops test
 ```
 
-**2. Frontend tests** (`src/frontend`) — 69 pure-function tests plus 13 jsdom
-tests driving `main.ts` against the real `index.html`:
+**2. Frontend tests** (`src/frontend`) — pure-function tests, plus jsdom tests
+driving `main.ts` against the real `index.html`:
 
 ```sh
 npm --prefix src/frontend run test        # vitest unit tests
@@ -146,7 +146,7 @@ npm --prefix src/frontend run typecheck
 ```
 
 **3. PocketIC integration suite** (`test/integration`) — the **go-live bar**
-(spec §9): 67 end-to-end scenarios against the real ICP ledger, CMC, cycles
+(spec §9): end-to-end scenarios against the real ICP ledger, CMC, cycles
 ledger, and ck-USDC ledger Wasms, plus the released XRC mock at the mainnet XRC
 id — HMAC-signed Stripe webhooks (over a real HTTP gateway in scenario 55), time
 control, outage injection against the real NNS canisters, and upgrade-mid-flight
