@@ -123,27 +123,43 @@ git commit && git push   # needs a workflow-scoped token (a normal `gh auth` tok
 | 48 | the alert/terminate timeline covers every in-flight status; a delivered order is never caught by it; the terminal stage matches the money position | notify stage bounded by time |
 | 49 | `async_payment_succeeded` arriving **before** `completed` still mints once; the later event raises no obligation | out-of-order events |
 | 50 | the bounded retention sweep expires **every** lapsed order across ticks, settles to `scanned == 0`, and an expired order is still payable | cursor completeness |
+| 51 | a CMC outage stalls the mint in `#paid`, audits the fetch failure, alerts at 2 h, and **delivers for real** once restored | rate-source outage |
+| 52 | an ICP ledger outage moves no money and records no block; recovery debits the float **exactly once** | ledger outage + §5.1 replay |
+| 53 | CMC stopped *after* the transfer → order parks at `#icpAtCmc` with a block and no minted cycles → `notifyDelayed` alert → terminates as `retriesExhausted` **carrying the real block index** | notify stall, end to end |
+| 54 | the CMC rate halves between transfer and notify → `mintShortfall` escalation, minted quantity preserved, buyer not subsidised from canister gas | rate move mid-mint |
 
-⚠️ **The `stageOf` escalation route is not integration-covered either**, for the
-same reason: reaching `#staleIntent`, `#retriesExhausted` or `#ambiguousForward`
-requires the real NNS ledger or CMC to fail repeatedly, or the canister to die
-between the pre-forward marker and delivery — and `stopCanister` drains outstanding
-callbacks rather than dropping them. Every `#stuckMint` entry these scenarios
-produce comes from the wait-timeline terminate path. The *decision* is pinned
-exhaustively in the `Cmc.terminationFor` unit suite; what no test exercises is the
-two-line expression that hands it to the queue.
+### Failure injection against the real NNS canisters
 
-⚠️ The per-`(status × journal × age)` terminal-stage mapping is pinned
-**exhaustively in the `Cmc.terminationFor` unit suite**, not here. PocketIC cannot
-stall the real NNS ledger or CMC, so an integration test cannot park an order in
-`#minting`/`#icpAtCmc` long enough to trip the bound — scenario 48 pins the one
-row it can reach and the unit suite covers all eight.
+⚠️ **Correction.** This file previously claimed PocketIC "cannot stall the real
+NNS ledger or CMC", and used that to justify leaving the money-out failure paths
+uncovered. **That was wrong.** NNS root controls the canisters `icpFeatures`
+deploys, and PocketIC accepts any impersonated sender — the same mechanism
+`setCmcRate` already used to impersonate governance. So:
 
-⚠️ Scenario 41 moves the rate **40%, not 100%**. A bigger jump is rejected by
-§3.1's own guards (`maxRateDeltaBps` caps a move at 50%; the implied-XDR/USD
-cross-check floors at 0.5), which would leave the previous quote serving and make
-the test pass vacuously. It asserts the exact repriced quantity rather than
-"smaller than before", so a silently-rejected refresh fails instead of hiding.
+```ts
+await stopNns(gw, CMC_ID);      // calls into it are now rejected
+await startNns(gw, CMC_ID);     // service restored
+```
+
+`tickUntilStatus(gw, id, ['minting'])` is the companion trick: it returns with the
+intent journaled and the ledger call in flight, so stopping the **CMC** at that
+point lets the transfer succeed and the notify fail — which is the only way to park
+an order at `#icpAtCmc`. Together these make almost every money-out failure path
+reachable end to end (scenarios 51–54).
+
+**What genuinely remains out of reach:**
+
+- **`#ambiguousForward` end to end.** It needs a callback dropped between the
+  pre-forward marker and delivery, and `stopCanister` *drains* outstanding
+  callbacks rather than dropping them. Unit-pinned in the `Cmc.terminationFor`
+  suite is the honest ceiling.
+- **`stageOf`'s `#escalate` arm.** Reaching `retriesExhausted` through it needs
+  `maxMintRetries` (2,000) sweeps to elapse, which is impractical in a test. The
+  terminate route reaches the same money positions and *is* covered (53), and the
+  decision function is exhaustively unit-pinned — but the `#escalate` arm's own
+  two-line wiring is exercised by nothing.
+- **A recorded real Stripe event.** Every payload here is hand-crafted JSON. Only
+  the `docs/STRIPE.md` §15 sandbox run closes that.
 
 ## Scenario map — ck-USDC go-live bar (`ckusdc.spec.ts`, task 15)
 

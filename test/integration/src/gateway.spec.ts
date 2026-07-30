@@ -11,7 +11,7 @@ import { Principal } from '@icp-sdk/core/principal';
 import {
   CYCLES_LEDGER_DEPOSIT_FEE, ICP_FEE_E8S, ICP_USD_RATE, ORDER_E8S,
   TIER_LOCKED_CYCLES, TIER_USD_CENTS, WEBHOOK_SECRET, XDR_PERMYRIAD_PER_ICP, user,
-  bigIntReplacer, partialRefundBody,
+  bigIntReplacer, partialRefundBody, stopNns, startNns, CMC_ID, ICP_LEDGER_ID,
   Gateway, setupGateway, teardownGateway, upgradeBackendMidFlight,
   setCmcRate, fundFloat, floatBalance,
   checkoutSessionBody, chargeRefundedBody, deliverWebhook, stripeSignature,
@@ -1883,4 +1883,209 @@ test('50 — retention covers every order across ticks and resets its cursor', a
     clientReferenceId: late.clientReferenceId, amountCents: TIER_USD_CENTS,
   }))).toMatchObject({ status_code: 200 });
   expect(await tickUntilStatus(gw, late.order.id, ['delivered'])).toBe('delivered');
+});
+
+test('51 — a CMC outage stalls the mint, alerts, and never invents a money position', async () => {
+  // Reachable because PocketIC lets us stop the real NNS canisters (impersonating
+  // NNS root, the same trick setCmcRate uses for governance). Money-out failure
+  // paths were previously written off as untestable; they are not.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  await fundFloat(gw, ORDER_E8S * 3n + ICP_FEE_E8S * 3n);
+
+  const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }, []));
+  const order = created.order;
+
+  // The CMC is down when the payment lands: money-out reads its rate directly, so
+  // the mint cannot even start. Nothing may be minted and nothing may be invented.
+  await stopNns(gw, CMC_ID);
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_cmc_out', paymentIntent: 'pi_cmc_out',
+    clientReferenceId: created.clientReferenceId, amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  await gw.pic.tick(10);
+  expect(await orderStatus(gw, order.id)).toBe('paid');
+
+  // The failure is audited rather than silent — with the CMC stopped the call is
+  // rejected outright, which is the fetch-failure arm, not the staleness arm.
+  const log = await gw.asAdmin.audit_log();
+  expect(log.some((e) => e.tag === 'mint.rateFetchFailed' || e.tag === 'mint.rateStale')).toBe(true);
+
+  // Past the alert threshold the operator is told, and retries continue.
+  await gw.pic.advanceTime(3 * 3_600 * 1_000);
+  await gw.pic.tick(5);
+  const alert = (await openErrorEntries(gw)).find(
+    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === order.id,
+  )!;
+  expect(alert).toBeDefined();
+  expect(await orderStatus(gw, order.id)).toBe('paid');
+
+  // Restoring the CMC delivers the order for real — an outage is not a loss.
+  await startNns(gw, CMC_ID);
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n));
+  await gw.pic.advanceTime(90_000);
+  await gw.pic.tick(5);
+  expect(await tickUntilStatus(gw, order.id, ['delivered'])).toBe('delivered');
+  // And the alert did not outlive the delay.
+  const closed = (await allErrorEntries(gw)).find((e) => e.id === alert.id)!;
+  expect(closed.resolvedAtNs).toHaveLength(1);
+});
+
+test('52 — an ICP ledger outage cannot move money or fabricate a block', async () => {
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  await fundFloat(gw, ORDER_E8S * 3n + ICP_FEE_E8S * 3n);
+
+  const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }, []));
+  const order = created.order;
+
+  await stopNns(gw, ICP_LEDGER_ID);
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_ledger_out', paymentIntent: 'pi_ledger_out',
+    clientReferenceId: created.clientReferenceId, amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  await gw.pic.tick(10);
+
+  // Fiat is in and the order is paid, but no ICP moved and no journal block was
+  // recorded — the §5.1 discipline is what makes this safe to resume.
+  expect(await orderStatus(gw, order.id)).toBe('paid');
+  const journal = await gw.asAdmin.mint_journal(order.id);
+  if (journal.length > 0) {
+    expect(journal[0]!.blockIndex).toHaveLength(0);
+  }
+  const log = await gw.asAdmin.audit_log();
+  expect(log.some((e) => e.tag === 'mint.balanceFetchFailed' || e.tag === 'mint.transferFailed')).toBe(true);
+
+  // Recovery: the ledger comes back and the same order completes. Exactly one
+  // debit — the replay discipline, now proven against a real outage rather than
+  // an upgrade.
+  await startNns(gw, ICP_LEDGER_ID);
+  const floatBefore = await floatBalance(gw);
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n));
+  await gw.pic.advanceTime(90_000);
+  await gw.pic.tick(5);
+  expect(await tickUntilStatus(gw, order.id, ['delivered'])).toBe('delivered');
+  const floatAfter = await floatBalance(gw);
+  expect(floatBefore - floatAfter).toBe(ORDER_E8S + ICP_FEE_E8S);
+});
+
+test('53 — a CMC outage after the transfer parks the order at icpAtCmc, alerts, then terminates with the block', async () => {
+  // The window `tickUntilStatus(['minting'])` gives us: the intent is journaled
+  // and the ledger call is in flight, so stopping the CMC here lets the TRANSFER
+  // succeed and the NOTIFY fail — the only way to park an order at #icpAtCmc.
+  // Every code path below had zero end-to-end coverage before.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n));
+  await fundFloat(gw, ORDER_E8S * 3n + ICP_FEE_E8S * 3n);
+
+  const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }, []));
+  const order = created.order;
+  const floatBefore = await floatBalance(gw);
+
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_notify_out', paymentIntent: 'pi_notify_out',
+    clientReferenceId: created.clientReferenceId, amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+
+  expect(await tickUntilStatus(gw, order.id, ['minting'])).toBe('minting');
+  await stopNns(gw, CMC_ID);
+  await gw.pic.tick(10);
+
+  // The ICP left the float and a block IS recorded — notify is the only thing
+  // outstanding. This is the position the whole terminationFor work exists for.
+  expect(await orderStatus(gw, order.id)).toBe('icpAtCmc');
+  const journal = (await gw.asAdmin.mint_journal(order.id))[0]!;
+  expect(journal.blockIndex).toHaveLength(1);
+  expect(journal.cyclesMinted).toHaveLength(0);
+  expect(floatBefore - (await floatBalance(gw))).toBe(ORDER_E8S + ICP_FEE_E8S);
+  const log = await gw.asAdmin.audit_log();
+  expect(log.some((e) => e.tag === 'mint.notifyFailed')).toBe(true);
+
+  // The alert names the stalled stage — previously unreachable, so untested.
+  await gw.pic.advanceTime(3 * 3_600 * 1_000);
+  await gw.pic.tick(5);
+  const alert = (await openErrorEntries(gw)).find(
+    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === order.id,
+  )!;
+  expect(alert).toBeDefined();
+  if ('deliveryDelayed' in alert.kind) {
+    expect(alert.kind.deliveryDelayed.stage).toBe('notifyDelayed');
+  }
+  expect(await orderStatus(gw, order.id)).toBe('icpAtCmc');
+
+  // Past the max wait it terminates — and THE POINT: the entry carries the money
+  // position, with the real block index, not a bare "pipeline stopped".
+  await gw.pic.advanceTime(80 * 3_600 * 1_000);
+  await gw.pic.tick(10);
+  expect(await tickUntilStatus(gw, order.id, ['errorQueue'])).toBe('errorQueue');
+  const terminal = (await openErrorEntries(gw)).find(
+    (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === order.id,
+  )!;
+  expect(terminal).toBeDefined();
+  if ('stuckMint' in terminal.kind) {
+    expect(terminal.kind.stuckMint.stage).toBe('retriesExhausted');
+  }
+  const block = journal.blockIndex[0]!;
+  expect(terminal.detail).toContain(`block ${block}`);
+  expect(terminal.detail).toContain('parked at the CMC');
+  // The alert did not outlive the delay.
+  expect((await allErrorEntries(gw)).find((e) => e.id === alert.id)!.resolvedAtNs).toHaveLength(1);
+
+  await startNns(gw, CMC_ID);
+});
+
+test('54 — a rate move between transfer and notify escalates instead of subsidising the buyer', async () => {
+  // The last money branch with no coverage. The e8s are sized from the CMC rate
+  // at transfer time; the CMC mints at ITS rate when notified. Drop the rate in
+  // between and the same ICP mints materially fewer cycles — forwarding
+  // lockedCycles anyway would quietly cover the gap from this canister's gas.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n));
+  await fundFloat(gw, ORDER_E8S * 3n + ICP_FEE_E8S * 3n);
+
+  const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }, []));
+  const order = created.order;
+
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_shortfall', paymentIntent: 'pi_shortfall',
+    clientReferenceId: created.clientReferenceId, amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+
+  // Freeze the pipeline with the transfer in flight, then halve the CMC's rate
+  // so the notify mints against a much worse conversion.
+  expect(await tickUntilStatus(gw, order.id, ['minting'])).toBe('minting');
+  await stopNns(gw, CMC_ID);
+  await gw.pic.tick(10);
+  expect(await orderStatus(gw, order.id)).toBe('icpAtCmc');
+
+  await startNns(gw, CMC_ID);
+  await setCmcRate(gw, XDR_PERMYRIAD_PER_ICP / 2n);
+  await gw.pic.advanceTime(90_000);
+  await gw.pic.tick(10);
+
+  // Escalated, not delivered — and the minted quantity is preserved so the
+  // operator can settle the position.
+  expect(await tickUntilStatus(gw, order.id, ['errorQueue'])).toBe('errorQueue');
+  const entry = (await openErrorEntries(gw)).find(
+    (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === order.id,
+  )!;
+  expect(entry).toBeDefined();
+  if ('stuckMint' in entry.kind) {
+    expect(entry.kind.stuckMint.stage).toBe('mintShortfall');
+  }
+  const minted = (await gw.asAdmin.mint_journal(order.id))[0]!.cyclesMinted[0]!;
+  expect(minted).toBeLessThan(TIER_LOCKED_CYCLES);
+  expect(entry.detail).toContain(minted.toString());
+
+  await setCmcRate(gw);
 });

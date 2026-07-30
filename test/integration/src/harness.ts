@@ -284,6 +284,22 @@ export async function upgradeBackendMidFlight(gw: Gateway): Promise<void> {
 }
 
 /// Current PocketIC time in whole seconds (Stripe `t=` granularity).
+/// NNS root controls the ledger/CMC that `icpFeatures` deploys, and PocketIC
+/// accepts any impersonated sender — the same mechanism `setCmcRate` already uses
+/// to impersonate governance. So the real NNS canisters CAN be taken out of
+/// service, which is what makes the money-out failure paths reachable end to end.
+export const NNS_ROOT = Principal.fromText('r7inp-6aaaa-aaaaa-aaabq-cai');
+
+/// Take an NNS canister out of service. Calls into it are then rejected, which is
+/// how a real ledger or CMC outage looks to the backend.
+export async function stopNns(gw: Gateway, canisterId: Principal): Promise<void> {
+  await gw.pic.stopCanister({ canisterId, sender: NNS_ROOT });
+}
+
+export async function startNns(gw: Gateway, canisterId: Principal): Promise<void> {
+  await gw.pic.startCanister({ canisterId, sender: NNS_ROOT });
+}
+
 export async function nowSeconds(pic: PocketIc): Promise<bigint> {
   return BigInt(Math.floor((await pic.getTime()) / 1_000));
 }
