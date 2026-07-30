@@ -110,6 +110,12 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       orderId: IDL.Text,
       paymentRef: IDL.Text,
     }),
+    abandoned: IDL.Record({ orderId: IDL.Text, reason: IDL.Text }),
+    deliveryDelayed: IDL.Record({
+      orderId: IDL.Text,
+      sinceNs: IDL.Int,
+      stage: IDL.Text,
+    }),
     stuckMint: IDL.Record({ orderId: IDL.Text, stage: IDL.Text }),
     unattributed: IDL.Record({ claimedRef: IDL.Text, paymentRef: IDL.Text }),
     undeliverable: IDL.Record({ cycles: IDL.Nat, orderId: IDL.Text }),
@@ -171,12 +177,15 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   });
   const RateAttempt = IDL.Record({ atNs: IDL.Int, detail: IDL.Text, ok: IDL.Bool });
   const TreasuryConfig = IDL.Record({
+    alertAfterNs: IDL.Int,
     burnCapE8s: IDL.Nat,
     burnWindowNs: IDL.Int,
     lowFloatThresholdE8s: IDL.Nat,
     maxHoldNs: IDL.Int,
   });
   const TreasuryConfigError = IDL.Variant({
+    alertNotBeforeMaxHold: IDL.Record({ alertAfterNs: IDL.Int, maxHoldNs: IDL.Int }),
+    nonPositiveAlertAfter: IDL.Null,
     nonPositiveBurnWindow: IDL.Null,
     nonPositiveMaxHold: IDL.Null,
   });
@@ -297,13 +306,32 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Variant({ ok: IDL.Null, err: GateReason })],
       ['query'],
     ),
-    error_queue: IDL.Func([], [IDL.Vec(ErrorEntry)], ['query']),
+    error_queue: IDL.Func(
+      [IDL.Opt(IDL.Nat), IDL.Nat],
+      [IDL.Record({ entries: IDL.Vec(ErrorEntry), nextCursor: IDL.Opt(IDL.Nat) })],
+      ['query'],
+    ),
+    error_queue_unresolved: IDL.Func(
+      [IDL.Opt(IDL.Nat), IDL.Nat],
+      [IDL.Record({ entries: IDL.Vec(ErrorEntry), nextCursor: IDL.Opt(IDL.Nat) })],
+      ['query'],
+    ),
+    error_queue_depth: IDL.Func(
+      [],
+      [IDL.Record({ retained: IDL.Nat, unresolved: IDL.Nat })],
+      ['query'],
+    ),
     lifecycle_config: IDL.Func(
       [],
       [IDL.Record({ gate: GateConfig, retention: RetentionConfig })],
       ['query'],
     ),
     order_for_payment: IDL.Func([IDL.Text], [IDL.Opt(IDL.Text)], ['query']),
+    abandon_order: IDL.Func(
+      [IDL.Text, IDL.Text],
+      [IDL.Variant({ ok: Order, err: IDL.Text })],
+      [],
+    ),
     retention_status: IDL.Func(
       [],
       [

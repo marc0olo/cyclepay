@@ -89,7 +89,7 @@ module {
 
   /// Statuses whose live counts are maintained. Keyed by `statusToText` so the
   /// map is a shared type and the key set is self-documenting.
-  let trackedStatuses : [Types.OrderStatus] = [#created, #expired, #paid, #awaitingTreasury];
+  let trackedStatuses : [Types.OrderStatus] = [#created, #expired, #paid, #minting, #icpAtCmc, #awaitingTreasury];
 
   func isTracked(status : Types.OrderStatus) : Bool {
     for (tracked in trackedStatuses.values()) {

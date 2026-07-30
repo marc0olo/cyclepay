@@ -646,11 +646,31 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// §4.1 operator worklist + retained history. Admin: entries carry
+  /// §4.1 retained history, oldest first, **paged**. Admin: entries carry
   /// payment references and claimed-but-bogus URL params.
-  public shared query ({ caller }) func error_queue() : async [ErrorQueue.Entry] {
+  ///
+  /// Paged because unresolved obligations are never evicted, so the queue can
+  /// grow — and an unpaginated read would eventually exceed Candid's 2 MB
+  /// message limit, i.e. the record would become unreadable exactly when it
+  /// mattered most. Pass `null` to start; feed `nextCursor` back until it is
+  /// null. `limit` is capped at `ErrorQueue.maxPageSize`.
+  public shared query ({ caller }) func error_queue(
+    afterId : ?Nat,
+    limit : Nat,
+  ) : async ErrorQueue.Page {
     requireAdmin(caller);
-    ErrorQueue.all(errorQueue);
+    ErrorQueue.page(errorQueue, afterId, limit);
+  };
+
+  /// The operator worklist: open obligations only, paged. Filtered server-side
+  /// so a large body of resolved history never stands between the operator and
+  /// the dollars that still need an answer.
+  public shared query ({ caller }) func error_queue_unresolved(
+    afterId : ?Nat,
+    limit : Nat,
+  ) : async ErrorQueue.Page {
+    requireAdmin(caller);
+    ErrorQueue.unresolvedPage(errorQueue, afterId, limit);
   };
 
   /// Manual resolution (§4.1/§7): refund issued off-chain, or Type 2 cycles
@@ -690,16 +710,57 @@ persistent actor CyclesGateway {
   /// picks up where the state actually is.
   transient let mintsInFlight = Set.empty<Types.OrderId>();
 
-  /// Bounds the retriable-error loop on stages the ledger's 24 h dedup
-  /// window doesn't already bound (notify_top_up could otherwise retry
-  /// forever). Sweep cadence (task 11) makes 25 retries ≫ a day of outage.
-  transient let maxMintRetries : Nat = 25;
+  /// Bounds the retriable-error loop on stages the ledger's 24 h dedup window
+  /// doesn't already bound. Defined alongside the sweep cadence in Recovery.mo,
+  /// because the two are only correct in combination.
+  transient let maxMintRetries : Nat = Recovery.maxMintRetries;
 
   /// Orders already audited for a blocked `#begin` this session, so a stuck
   /// order contributes one audit line rather than one per sweep. Transient: the
   /// durable record of a stuck order is its error-queue entry once the max-wait
   /// bound trips, not this.
   transient let mintBlockedAudited = Set.empty<Types.OrderId>();
+
+  /// Orders already alerted as delayed → the error-queue entry id raised for it.
+  ///
+  /// Persistent, so an upgrade does not re-alert an order that is still waiting
+  /// (which would put duplicate obligations on the operator's worklist).
+  ///
+  /// The *entry id* rather than a timestamp, because the alert has to be closed
+  /// when the delay ends: an order that eventually delivers must not leave an
+  /// open obligation on the worklist describing a problem that no longer exists.
+  let delayedAlerts = Map.empty<Types.OrderId, Nat>();
+
+  /// Raise the §5 delivery-delayed alert for an order, at most once.
+  ///
+  /// Deliberately does NOT transition the order: the cause is operator-fixable
+  /// and the order must stay sweepable so that fixing it delivers with no
+  /// further intervention. Only `abandon_order` ends an order without delivery.
+  func alertDelayed(order : Types.Order, stage : Text, detail : Text) {
+    if (delayedAlerts.containsKey(order.id)) return;
+    let entryId = queueMintError(
+      order.rail,
+      #deliveryDelayed({ orderId = order.id; stage; sinceNs = order.updatedAtNs }),
+      detail,
+    );
+    delayedAlerts.add(order.id, entryId);
+    audit("mint.delayed", order.id # " [" # stage # "]: " # detail);
+  };
+
+  /// The delay ended, so close the alert it raised.
+  ///
+  /// Resolving the entry matters as much as forgetting the mapping: an open
+  /// obligation describing a delay that is over is an orphan on the operator's
+  /// worklist, and the worklist is only useful if everything on it is live.
+  func clearDelayed(orderId : Types.OrderId) {
+    switch (delayedAlerts.get(orderId)) {
+      case (?entryId) {
+        ignore ErrorQueue.resolve(errorQueue, entryId, Time.now());
+        delayedAlerts.remove(orderId);
+      };
+      case null {};
+    };
+  };
 
   /// Audit a blocked mint at most once per order per session.
   func auditMintBlockedOnce(orderId : Types.OrderId, tag : Text, detail : Text) {
@@ -826,13 +887,14 @@ persistent actor CyclesGateway {
 
   /// Queue a mint-path error entry, audit-logging any unresolved eviction
   /// (each is a live money obligation dropped from on-chain state, §4.1).
-  func queueMintError(rail : Types.Rail, kind : ErrorQueue.Kind, detail : Text) {
+  func queueMintError(rail : Types.Rail, kind : ErrorQueue.Kind, detail : Text) : Nat {
     let result = ErrorQueue.add(errorQueue, errorQueueCapacity, rail, kind, detail, Time.now());
     for (victim in result.evicted.values()) {
       if (victim.resolvedAtNs == null) {
         audit("errorQueue.evictedUnresolved", "entry " # victim.id.toText() # ": " # victim.detail);
       };
     };
+    result.entry.id;
   };
 
   /// §5.1 escalation: the mint stopped where the money position is
@@ -841,7 +903,7 @@ persistent actor CyclesGateway {
   func escalateStuckMint(order : Types.Order, stage : Text, detail : Text) {
     ignore tryTransition(order.id, #errorQueue);
     Cmc.patch(mintJournal, order.id, { status = ?#errorQueue; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
-    queueMintError(order.rail, #stuckMint({ orderId = order.id; stage }), detail);
+    ignore queueMintError(order.rail, #stuckMint({ orderId = order.id; stage }), detail);
     audit("mint.stuck", order.id # " [" # stage # "]: " # detail);
   };
 
@@ -895,25 +957,42 @@ persistent actor CyclesGateway {
       // progressing bump `updatedAtNs` on every transition, so only a genuinely
       // stuck one trips this.
       if (order.status == #paid) {
-        switch (Treasury.holdStage(order.updatedAtNs, Time.now(), treasuryConfig.maxHoldNs)) {
-          case (#escalate) {
-            escalateStuckMint(order, "mintWaitExceeded", "paid but unable to mint past max wait: fiat received, nothing minted — refund via Stripe Dashboard");
+        switch (Treasury.waitStage(order.updatedAtNs, Time.now(), treasuryConfig)) {
+          case (#retry) {};
+          case (#alert) {
+            // Tell someone while the cause is still fixable, and keep retrying:
+            // most incidents end here with the order delivering.
+            alertDelayed(order, "mintDelayed", "paid but not yet minted past the alert threshold — fix the cause (burn cap / float / CMC) and it delivers on the next sweep");
+          };
+          case (#terminate) {
+            // §5.3 max-wait bound. By now the cause is not transient, and a
+            // buyer left waiting files a chargeback — which costs more than a
+            // refund. Terminating so the operator refunds is the protective act.
+            escalateStuckMint(order, "mintWaitExceeded", "paid but unminted past the max wait: fiat received, nothing minted — refund in the Stripe Dashboard");
+            clearDelayed(orderId);
+            mintBlockedAudited.remove(orderId);
             return;
           };
-          case (#retry) {};
         };
       };
       let stage : Cmc.Stage = switch (order.status) {
         case (#awaitingTreasury) {
-          switch (Treasury.holdStage(order.updatedAtNs, Time.now(), treasuryConfig.maxHoldNs)) {
-            case (#escalate) {
-              // Money position is *certain* here (fiat in, nothing minted)
-              // but the resolution is the same operator worklist: refund in
-              // the Stripe Dashboard (§5.3 max-wait → error queue).
-              escalateStuckMint(order, "treasuryWaitExceeded", "held past max wait: fiat received, nothing minted — refund via Stripe Dashboard");
+          switch (Treasury.waitStage(order.updatedAtNs, Time.now(), treasuryConfig)) {
+            case (#retry) #begin;
+            case (#alert) {
+              // A hold clears the moment the window rolls or the float is
+              // refilled, so keep retrying — but say something now.
+              alertDelayed(order, "treasuryDelayed", "held past the alert threshold — refill the float or raise the burn cap and it delivers on the next sweep");
+              #begin;
+            };
+            case (#terminate) {
+              // §5.3: the money position is certain (fiat in, nothing minted),
+              // and refunding beats letting the buyer charge back.
+              escalateStuckMint(order, "treasuryWaitExceeded", "held past the max wait: fiat received, nothing minted — refund in the Stripe Dashboard");
+              clearDelayed(orderId);
+              mintBlockedAudited.remove(orderId);
               return;
             };
-            case (#retry) #begin;
           };
         };
         case (_) Cmc.stageOf(order.status, mintJournal.get(orderId), Time.now(), Cmc.ledgerDedupWindowNs, maxMintRetries);
@@ -1040,6 +1119,7 @@ persistent actor CyclesGateway {
             case (#ok) {
               ignore tryTransition(orderId, #delivered);
               Cmc.patch(mintJournal, orderId, { status = ?#delivered; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+              clearDelayed(orderId);
               audit("mint.delivered", orderId # ": " # order.lockedCycles.toText() # " cycles");
             };
             case (#failed(detail)) {
@@ -1047,7 +1127,7 @@ persistent actor CyclesGateway {
               // app balance — minted money exists, delivery didn't happen.
               ignore tryTransition(orderId, #errorQueue);
               Cmc.patch(mintJournal, orderId, { status = ?#errorQueue; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
-              queueMintError(order.rail, #undeliverable({ orderId; cycles = order.lockedCycles }), detail);
+              ignore queueMintError(order.rail, #undeliverable({ orderId; cycles = order.lockedCycles }), detail);
               audit("mint.undeliverable", orderId # ": " # detail);
             };
           };
@@ -1069,6 +1149,14 @@ persistent actor CyclesGateway {
   /// until refill or max-wait) through the driver. Kicked after webhook
   /// ingestion; the §5.2 recovery timer sweeps it on a cadence.
   func sweepMintable() : async* Nat {
+    // Answer "is there anything to do?" in O(1) before scanning.
+    //
+    // The scan below is O(total orders), and it ran every tick forever even with
+    // nothing sweepable — a cost that grows with lifetime sales and never comes
+    // back down. The maintained tallies cover exactly the sweepable statuses, so
+    // an idle sweep is now free, which is what makes a shorter cadence
+    // affordable.
+    if (sweepableCount() == 0) return 0;
     let pending = List.empty<Types.OrderId>();
     for ((id, order) in orderStore.orders.entries()) {
       if (Recovery.isSweepable(order.status)) pending.add(id);
@@ -1077,6 +1165,15 @@ persistent actor CyclesGateway {
       await* processMint(id);
     };
     pending.size();
+  };
+
+  /// Orders with money-out work pending, from the maintained tallies. Must stay
+  /// in step with `Recovery.isSweepable` — the unit tests pin that.
+  func sweepableCount() : Nat {
+    Orders.countOf(orderStore, #paid)
+    + Orders.countOf(orderStore, #minting)
+    + Orders.countOf(orderStore, #icpAtCmc)
+    + Orders.countOf(orderStore, #awaitingTreasury);
   };
 
   public type ProcessOrderError = { #notFound; #inFlight };
@@ -1157,6 +1254,40 @@ persistent actor CyclesGateway {
   public shared query ({ caller }) func order_for_payment(paymentRef : Text) : async ?Types.OrderId {
     requireAdmin(caller);
     paidIntents.get(paymentRef);
+  };
+
+  /// Stop trying to deliver an order (admin, §7) — **the only path to a
+  /// terminal non-delivered state.**
+  ///
+  /// Nothing in the system gives up on a purchase automatically: a delay raises
+  /// `#deliveryDelayed` and keeps retrying, because its causes are all
+  /// operator-fixable. This is the deliberate human decision that a purchase
+  /// will not be completed, and it demands a reason so the trail records *why*
+  /// alongside *who*.
+  ///
+  /// Only reachable from a pre-delivery money-bearing state. A `#created` order
+  /// has taken no money and needs no decision; a `#delivered` one is done.
+  public shared ({ caller }) func abandon_order(
+    id : Types.OrderId,
+    reason : Text,
+  ) : async Result.Result<Types.Order, Text> {
+    requireAdmin(caller);
+    let ?order = Orders.get(orderStore, id) else return #err("no order " # id);
+    switch (order.status) {
+      case (#paid or #awaitingTreasury) {};
+      case (status) {
+        return #err("order " # id # " is " # Types.statusToText(status) # "; only a paid or held order can be abandoned");
+      };
+    };
+    if (reason.size() == 0) return #err("a reason is required — the audit trail must record why");
+    let ?abandoned = tryTransition(id, #errorQueue) else {
+      return #err("order " # id # " refused the transition to errorQueue");
+    };
+    Cmc.patch(mintJournal, id, { status = ?#errorQueue; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+    clearDelayed(id);
+    ignore queueMintError(order.rail, #abandoned({ orderId = id; reason }), "abandoned by operator: " # reason);
+    auditAdmin(caller, "order.abandoned", id # ": " # reason);
+    #ok(abandoned);
   };
 
   /// Money-out journal for one order (admin, §4.2) — intent, block_index,
@@ -1440,7 +1571,7 @@ persistent actor CyclesGateway {
   /// `withdraw_ck_usdc` (pull executed) or `reset_ck_usdc_pull` (it didn't).
   func escalateStalePull(order : Types.Order, detail : Text) {
     CkUsdc.markEscalated(ckUsdcPulls, order.id, Time.now());
-    queueMintError(#ckUsdc, #stuckMint({ orderId = order.id; stage = "stalePullIntent" }), detail);
+    ignore queueMintError(#ckUsdc, #stuckMint({ orderId = order.id; stage = "stalePullIntent" }), detail);
     audit("ckusdc.stalePull", order.id # ": " # detail);
   };
 

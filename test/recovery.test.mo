@@ -1,4 +1,5 @@
 import { test; suite } "mo:test";
+import Int "mo:core/Int";
 import Cmc "../src/backend/Cmc";
 import Recovery "../src/backend/Recovery";
 import Types "../src/backend/Types";
@@ -29,10 +30,18 @@ suite("validateInterval", func() {
     assert Recovery.validateInterval(Recovery.defaultIntervalNs, Cmc.ledgerDedupWindowNs) == #ok;
   });
 
-  test("default cadence gives maxMintRetries more than a day of retries", func() {
-    // Pins the Main.mo sizing claim: 25 retries × 1 h cadence > 24 h, so an
-    // outage shorter than a day can never exhaust the notify retry budget.
-    assert 25 * Recovery.defaultIntervalNs > 86_400_000_000_000;
+  test("the retry budget outlasts a full day of outage at the default cadence", func() {
+    // THE coupling invariant. Shortening the cadence without raising the retry
+    // budget converts a survivable outage into a stuck order — an outage shorter
+    // than a day must never exhaust the budget, because exhausting it escalates
+    // an order that would have completed.
+    assert Recovery.maxMintRetries * Recovery.defaultIntervalNs > 86_400_000_000_000;
+  });
+
+  test("the cadence leaves real margin under the §5.1 ledger dedup window", func() {
+    // Replay safety needs the cadence well inside the 24 h window, not merely
+    // legal at the boundary.
+    assert Recovery.defaultIntervalNs * 4 <= Int.abs(Cmc.ledgerDedupWindowNs);
   });
 });
 

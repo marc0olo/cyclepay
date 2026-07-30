@@ -16,6 +16,7 @@ import {
   checkoutSessionBody, chargeRefundedBody, deliverWebhook, stripeSignature,
   nowSeconds, setXrcRate, setXrcResponse, warmRates, ensureRates, tickRateTimer,
   orderStatus, statusKey, tickUntilStatus, expectOk, expectErr,
+  allErrorEntries, openErrorEntries,
 } from './harness';
 import type { ErrorEntry, Order } from './types';
 
@@ -56,7 +57,8 @@ const WORKING_TREASURY = {
   burnCapE8s: 10_000_000_000n, // 100 ICP / 24 h
   burnWindowNs: 86_400_000_000_000n,
   lowFloatThresholdE8s: 0n,
-  maxHoldNs: 259_200_000_000_000n, // 72 h
+  maxHoldNs: 259_200_000_000_000n, // 72 h — terminate, operator refunds
+  alertAfterNs: 7_200_000_000_000n, // 2 h — alert while it is still fixable
 };
 
 /// The §5.3 pause lever: cap 0 holds every mint.
@@ -259,7 +261,7 @@ test('07 — happy path: cap sized → held order resumes → real CMC mint land
 
 test('08 — duplicate/replay: every dedup layer holds through real ingress (§4.1/§4.2)', async () => {
   const floatBefore = await floatBalance(gw);
-  const errorsBefore = (await gw.asAdmin.error_queue()).length;
+  const errorsBefore = (await allErrorEntries(gw)).length;
 
   // Replay 1: identical event redelivered (Stripe retry) → ack-and-drop.
   const sameEvent = await deliverWebhook(gw, checkoutSessionBody({
@@ -278,7 +280,7 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   await gw.pic.tick(10);
   expect(await orderStatus(gw, orderA.id)).toBe('delivered');
   expect(await floatBalance(gw)).toBe(floatBefore);
-  expect((await gw.asAdmin.error_queue()).length).toBe(errorsBefore);
+  expect((await allErrorEntries(gw)).length).toBe(errorsBefore);
 
   // Genuine double-pay: a *new* payment intent against the handled order →
   // Type 1 #duplicate, acked 200 (the money is handled — by the operator).
@@ -287,7 +289,7 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
     amountCents: TIER_USD_CENTS,
   }));
   expect(doublePay.status_code).toBe(200);
-  const dupEntry = (await gw.asAdmin.error_queue()).find(
+  const dupEntry = (await allErrorEntries(gw)).find(
     (e) => 'duplicate' in e.kind && e.kind.duplicate.paymentRef === 'pi_a_double',
   ) as ErrorEntry;
   expect(dupEntry).toBeDefined();
@@ -296,7 +298,7 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   // charge.refunded auto-resolves the Type 1 entry by payment_intent.
   const refund = await deliverWebhook(gw, chargeRefundedBody('evt_a4', 'pi_a_double'));
   expect(refund.status_code).toBe(200);
-  const resolved = (await gw.asAdmin.error_queue()).find((e) => e.id === dupEntry.id) as ErrorEntry;
+  const resolved = (await allErrorEntries(gw)).find((e) => e.id === dupEntry.id) as ErrorEntry;
   expect(resolved.resolvedAtNs.length).toBe(1);
 
   await gw.pic.tick(5);
@@ -312,7 +314,7 @@ test('09 — Type 1 unattributed: claimed-not-trusted reference resolution (§6.
   }));
   expect(response.status_code).toBe(200);
 
-  const entry = (await gw.asAdmin.error_queue()).find(
+  const entry = (await allErrorEntries(gw)).find(
     (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_u',
   ) as ErrorEntry;
   expect(entry).toBeDefined();
@@ -369,7 +371,7 @@ test('11 — Type 2 undeliverable: failed forward refunds cycles to the app bala
 
   expect(await tickUntilStatus(gw, orderC.id, ['errorQueue'])).toBe('errorQueue');
 
-  const entry = (await gw.asAdmin.error_queue()).find(
+  const entry = (await allErrorEntries(gw)).find(
     (e) => 'undeliverable' in e.kind && e.kind.undeliverable.orderId === orderC.id,
   ) as ErrorEntry;
   expect(entry).toBeDefined();
@@ -482,48 +484,74 @@ test('13 — upgrade mid-forward: the stop-first procedure drains the forward, d
   expect((await gw.asAdmin.mint_journal(orderG.id))[0]!.blockIndex.length).toBe(1);
 
   // No error-queue entry: nothing about this needed an operator.
-  expect((await gw.asAdmin.error_queue()).find(
+  expect((await allErrorEntries(gw)).find(
     (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === orderG.id,
   )).toBeUndefined();
 });
 
-test('14 — treasury max-wait: a held order escalates with a certain money position (§5.3)', async () => {
+test('14 — a treasury hold alerts but keeps waiting, then delivers when fixed (§5.3)', async () => {
+  // The behaviour this pins: a hold past the alert threshold does NOT terminate
+  // the order. Its causes — a spent burn window, a short float — are all
+  // operator-fixable, so giving up would be abandoning a sale that was always
+  // going to complete. The buyer waits; they do not get an unrequested refund.
   await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
-  // Create while the cap still has headroom (the gate refuses otherwise), then
-  // pause. Same ordering as scenario 06.
   const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }));
   orderF = created.order;
   refF = created.clientReferenceId;
 
   expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
-
-  const response = await deliverWebhook(gw, checkoutSessionBody({
+  expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_f1', paymentIntent: 'pi_f', clientReferenceId: refF,
     amountCents: TIER_USD_CENTS,
-  }));
-  expect(response.status_code).toBe(200);
+  }))).toMatchObject({ status_code: 200 });
   expect(await tickUntilStatus(gw, orderF.id, ['awaitingTreasury'])).toBe('awaitingTreasury');
 
   const floatBefore = await floatBalance(gw);
 
-  // Past maxHold the recovery sweep escalates: fiat in, nothing minted —
-  // the operator refunds in the Stripe Dashboard.
-  await gw.pic.advanceTime(73 * 3_600 * 1_000);
-  await gw.pic.tick(3);
-  expect(await tickUntilStatus(gw, orderF.id, ['errorQueue'])).toBe('errorQueue');
+  // Past the ALERT threshold (2 h) but far short of the terminal bound (72 h):
+  // the operator is told while the cause is still fixable, and the order waits.
+  await gw.pic.advanceTime(3 * 3_600 * 1_000);
+  await gw.pic.tick(5);
 
-  const entry = (await gw.asAdmin.error_queue()).find(
-    (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === orderF.id,
+  const alert = (await openErrorEntries(gw)).find(
+    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === orderF.id,
   ) as ErrorEntry;
-  expect(entry).toBeDefined();
-  if ('stuckMint' in entry.kind) {
-    expect(entry.kind.stuckMint.stage).toBe('treasuryWaitExceeded');
+  expect(alert).toBeDefined();
+  if ('deliveryDelayed' in alert.kind) {
+    expect(alert.kind.deliveryDelayed.stage).toBe('treasuryDelayed');
   }
+  expect(await orderStatus(gw, orderF.id)).toBe('awaitingTreasury'); // NOT terminal
   expect(await floatBalance(gw)).toBe(floatBefore); // nothing moved
-  expect((await gw.asAnon.treasury_status()).heldOrders).toBe(0n);
-  // The 24 h burn window rolled over during the 73 h wait.
-  expect((await gw.asAnon.treasury_status()).burnedInWindowE8s).toBe(0n);
+
+  // The alert is raised once, not once per sweep — it is a worklist item, not a
+  // log line.
+  await gw.pic.advanceTime(2 * 3_600 * 1_000);
+  await gw.pic.tick(5);
+  expect((await openErrorEntries(gw)).filter(
+    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === orderF.id,
+  )).toHaveLength(1);
+
+  // THE POINT: fixing the cause delivers it, with no further intervention.
+  //
+  // The default sweep cadence is hourly, but the CMC rate guard is 15 min — so
+  // time cannot be advanced far enough to fire a sweep without staling the rate.
+  // Shorten the cadence, which is what an operator working an incident would do
+  // anyway.
+  expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n)); // 60 s
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  await gw.pic.advanceTime(90_000);
+  await gw.pic.tick(5);
+  expect(await tickUntilStatus(gw, orderF.id, ['delivered'])).toBe('delivered');
+  expect(await floatBalance(gw)).toBe(floatBefore - ORDER_E8S - ICP_FEE_E8S);
+
+  // The alert closes itself: an open obligation describing a delay that is over
+  // would be an orphan on the worklist.
+  expect((await openErrorEntries(gw)).find(
+    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === orderF.id,
+  )).toBeUndefined();
 });
 
 test('15 — operational trail is coherent end-to-end (§4.2)', async () => {
@@ -533,20 +561,29 @@ test('15 — operational trail is coherent end-to-end (§4.2)', async () => {
     expect(audit[i].seq).toBeGreaterThan(audit[i - 1].seq);
   }
   const tags = audit.map((e) => e.tag);
-  for (const expected of ['mint.held', 'mint.delivered', 'mint.undeliverable', 'mint.stuck']) {
+  for (const expected of ['mint.held', 'mint.delivered', 'mint.undeliverable', 'mint.delayed']) {
     expect(tags).toContain(expected);
   }
 
   // Every queue entry is accounted for: the C undeliverable (open — operator
   // re-delivers off-chain) and the F max-wait (open). Scenario 13's order
   // delivers cleanly across its upgrade, so it contributes no entry.
-  const queue = await gw.asAdmin.error_queue();
-  const open = queue.filter((e) => e.resolvedAtNs.length === 0);
-  expect(open.map((e) => Object.keys(e.kind)[0]).sort()).toEqual(['stuckMint', 'undeliverable']);
+  // The server-side worklist, which is what an operator actually reads.
+  const open = await openErrorEntries(gw);
+  // Only the Type 2 undeliverable is still live. Note what is absent and why:
+  //  - no terminal escalation for a recoverable delay (scenario 14 recovered),
+  //  - and no leftover delay alert either — it closed itself when the order
+  //    delivered, so the worklist holds only obligations that are still real.
+  expect(open.map((e) => Object.keys(e.kind)[0]).sort()).toEqual(['undeliverable']);
+  // Depth agrees with the paged content — the number ops monitors.
+  expect((await gw.asAnon.error_queue_depth()).unresolved).toBe(BigInt(open.length));
 
   // Admin gates on the trail itself.
   await expect(gw.asUser.audit_log()).rejects.toThrow(/not a controller/);
-  await expect(gw.asUser.error_queue()).rejects.toThrow(/not a controller/);
+  await expect(gw.asUser.error_queue([], 10n)).rejects.toThrow(/not a controller/);
+  await expect(gw.asUser.error_queue_unresolved([], 10n)).rejects.toThrow(/not a controller/);
+  // Depth is public — it is the monitoring signal, not the payment references.
+  expect((await gw.asAnon.error_queue_depth()).retained).toBeGreaterThan(0n);
 });
 
 test('16 — admission gate: no burn-cap headroom refuses the quote before any money moves', async () => {
@@ -645,7 +682,7 @@ test('18 — retention: created → expired → swept, and a late payment names 
     amountCents: TIER_USD_CENTS,
   }));
   expect(response.status_code).toBe(200);
-  const entry = (await gw.asAdmin.error_queue()).find(
+  const entry = (await allErrorEntries(gw)).find(
     (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_swept',
   ) as ErrorEntry;
   expect(entry).toBeDefined();
@@ -1069,53 +1106,135 @@ test('32 — rates going bad after payment cannot affect an order already #paid'
   await ensureRates(gw);
 });
 
-test('33 — an order that cannot mint is bounded and escalates with a certain money position', async () => {
-  // The gap this closes: #begin has paths that return without transitioning (a
-  // stale CMC rate among them), so a persistent upstream problem parked an order
-  // #paid forever — no bound, no error-queue entry, and one audit line per sweep
-  // in a ring buffer that drops.
+test('33 — an unmintable order alerts and waits; only abandon_order ends it', async () => {
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
   const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }));
   const stuck = created.order;
 
-  // Let the CMC rate go stale BEFORE the payment lands (its guard is 15 min), so
-  // the webhook's mint kick hits the rate check and returns without
-  // transitioning. Without this the order mints immediately and never reaches
-  // the state under test.
+  // Let the CMC rate go stale BEFORE payment (its guard is 15 min) so the mint
+  // kick cannot proceed and the order parks in #paid.
   await gw.pic.advanceTime(20 * 60 * 1_000);
   await gw.pic.tick(3);
-
   expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_stuck', paymentIntent: 'pi_stuck', clientReferenceId: created.clientReferenceId,
     amountCents: TIER_USD_CENTS,
   }))).toMatchObject({ status_code: 200 });
   await gw.pic.tick(10);
   expect(await orderStatus(gw, stuck.id)).toBe('paid');
-
-  // Money in, nothing minted — and now visible in a status query rather than
-  // only in the audit log.
   expect((await gw.asAnon.treasury_status()).paidOrders).toBeGreaterThanOrEqual(1n);
 
-  // Wait past the max-hold bound with the CMC rate deliberately never re-armed.
-  await gw.pic.advanceTime(73 * 3_600 * 1_000); // past the 72 h maxHold
-  await gw.pic.tick(3);
-  expect(await tickUntilStatus(gw, stuck.id, ['errorQueue'])).toBe('errorQueue');
+  // Past the alert threshold but short of the terminal bound.
+  await gw.pic.advanceTime(3 * 3_600 * 1_000);
+  await gw.pic.tick(5);
+  const alert = (await openErrorEntries(gw)).find(
+    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === stuck.id,
+  ) as ErrorEntry;
+  expect(alert).toBeDefined();
+  if ('deliveryDelayed' in alert.kind) {
+    expect(alert.kind.deliveryDelayed.stage).toBe('mintDelayed');
+  }
+  expect(await orderStatus(gw, stuck.id)).toBe('paid');
 
-  const entry = (await gw.asAdmin.error_queue()).find(
-    (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === stuck.id,
+  // Fixing the cause delivers it, automatically, on the next sweep.
+  expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n));
+  await ensureRates(gw);
+  await gw.pic.advanceTime(90_000);
+  await gw.pic.tick(5);
+  expect(await tickUntilStatus(gw, stuck.id, ['delivered'])).toBe('delivered');
+});
+
+test('34 — abandon_order is the only terminal give-up, and it demands a reason', async () => {
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }));
+  const doomed = created.order;
+
+  // Not abandonable before money is involved — nothing to decide about.
+  expectErr(await gw.asAdmin.abandon_order(doomed.id, 'too early'));
+
+  expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_aband', paymentIntent: 'pi_aband', clientReferenceId: created.clientReferenceId,
+    amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  expect(await tickUntilStatus(gw, doomed.id, ['awaitingTreasury'])).toBe('awaitingTreasury');
+
+  // Admin-gated, and a reason is mandatory so the trail records why.
+  await expect(gw.asUser.abandon_order(doomed.id, 'nope')).rejects.toThrow(/not a controller/);
+  expectErr(await gw.asAdmin.abandon_order(doomed.id, ''));
+
+  const abandoned = expectOk(await gw.asAdmin.abandon_order(doomed.id, 'buyer asked to cancel'));
+  expect(statusKey(abandoned)).toBe('errorQueue');
+
+  const entry = (await openErrorEntries(gw)).find(
+    (e) => 'abandoned' in e.kind && e.kind.abandoned.orderId === doomed.id,
+  ) as ErrorEntry;
+  expect(entry).toBeDefined();
+  if ('abandoned' in entry.kind) {
+    expect(entry.kind.abandoned.reason).toBe('buyer asked to cancel');
+  }
+
+  // The audit trail names WHO decided, not just that it happened.
+  const audit = await gw.asAdmin.audit_log();
+  const line = audit.find((e) => e.tag === 'order.abandoned' && e.detail.includes(doomed.id));
+  expect(line).toBeDefined();
+  expect(line!.detail).toContain('by ');
+  expect(line!.detail).toContain('buyer asked to cancel');
+
+  // Terminal: a second abandon is refused.
+  expectErr(await gw.asAdmin.abandon_order(doomed.id, 'again'));
+
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  await ensureRates(gw);
+});
+
+test('35 — past the max-wait bound the order terminates so the operator refunds (§5.3)', async () => {
+  // The spec's max-wait bound, and the reason it exists: a buyer left waiting
+  // indefinitely files a chargeback, which costs the operator more than a refund
+  // (dispute fees, dispute process, Stripe account health). By 72 h the cause is
+  // structural, not transient, so refunding proactively is the protective act.
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }));
+  const doomed = created.order;
+
+  expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_maxwait', paymentIntent: 'pi_maxwait', clientReferenceId: created.clientReferenceId,
+    amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  expect(await tickUntilStatus(gw, doomed.id, ['awaitingTreasury'])).toBe('awaitingTreasury');
+
+  const floatBefore = await floatBalance(gw);
+
+  // Alert first (2 h), then terminate (72 h) — two tiers, one timeline.
+  await gw.pic.advanceTime(3 * 3_600 * 1_000);
+  await gw.pic.tick(5);
+  expect(await orderStatus(gw, doomed.id)).toBe('awaitingTreasury');
+
+  await gw.pic.advanceTime(70 * 3_600 * 1_000);
+  await gw.pic.tick(5);
+  expect(await tickUntilStatus(gw, doomed.id, ['errorQueue'])).toBe('errorQueue');
+
+  const entry = (await openErrorEntries(gw)).find(
+    (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === doomed.id,
   ) as ErrorEntry;
   expect(entry).toBeDefined();
   if ('stuckMint' in entry.kind) {
-    expect(entry.kind.stuckMint.stage).toBe('mintWaitExceeded');
+    expect(entry.kind.stuckMint.stage).toBe('treasuryWaitExceeded');
   }
-  // The money position is stated for the operator: refund, don't re-drive.
+  // The money position is stated so the operator knows the action: refund.
   expect(entry.detail).toContain('nothing minted');
+  expect(entry.detail).toContain('refund');
+  expect(await floatBalance(gw)).toBe(floatBefore); // nothing moved
 
-  // And the count clears, so the signal is not sticky.
-  expect((await gw.asAnon.treasury_status()).paidOrders).toBe(0n);
+  // The superseded delay alert was closed, not left orphaned alongside it.
+  expect((await openErrorEntries(gw)).filter(
+    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === doomed.id,
+  )).toHaveLength(0);
 
-  await setXrcRate(gw, ICP_USD_RATE);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
   await ensureRates(gw);
 });

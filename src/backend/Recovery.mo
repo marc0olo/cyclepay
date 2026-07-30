@@ -14,7 +14,18 @@ module {
   /// `maxMintRetries = 25` (Main.mo) an order survives more than a full
   /// day of consecutive retriable failures before the notify loop
   /// escalates — an outage shorter than a day never strands an order.
-  public let defaultIntervalNs : Nat = 3_600_000_000_000;
+  public let defaultIntervalNs : Nat = 900_000_000_000; // 15 min
+
+  /// Retry budget for the money-out stages the ledger's own dedup window does
+  /// not already bound (`notify_top_up` could otherwise retry forever).
+  ///
+  /// **Coupled to the cadence, so they live together.** The invariant is
+  /// `maxMintRetries × defaultIntervalNs > 24 h`: an upstream outage shorter than
+  /// a day must never exhaust the budget, because exhausting it escalates an
+  /// order that would have completed. Shortening the cadence without raising
+  /// this silently converts a survivable outage into a stuck order — recovery
+  /// test pins it.
+  public let maxMintRetries : Nat = 100;
 
   public type IntervalError = {
     #zeroInterval;

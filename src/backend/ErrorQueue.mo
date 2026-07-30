@@ -52,12 +52,31 @@ module {
     /// Chargeback *prevention* belongs in Stripe (Radar rules, 3DS) and in the
     /// `Gate` per-purchase ceiling, not in Motoko.
     #refundAfterDelivery : { orderId : Types.OrderId; paymentRef : Text; cycles : Nat };
+    /// **An alert, not a failure.** Money is in and delivery has not happened
+    /// yet for a reason that is always operator-fixable: the burn window is
+    /// spent, the ICP float is short, or the CMC is unreachable. The order stays
+    /// in its pre-mint state and keeps being swept, so fixing the *cause*
+    /// delivers it with no further intervention.
+    ///
+    /// This exists because the alternative was worse: those causes used to
+    /// terminate the order after a max wait and tell the operator to refund —
+    /// giving up on a purchase that was always going to succeed. Delivery is the
+    /// product; a refund is what happens when we cannot identify a buyer, not
+    /// when we are merely busy.
+    ///
+    /// Raised once per order. Resolve it when the cause is fixed, or convert it
+    /// to `#abandoned` if you decide to stop.
+    #deliveryDelayed : { orderId : Types.OrderId; stage : Text; sinceNs : Int };
+    /// A human decided to stop trying. The **only** path to a terminal
+    /// non-delivered state — nothing automatic ends here.
+    #abandoned : { orderId : Types.OrderId; reason : Text };
   };
 
   public func isType1(kind : Kind) : Bool {
     switch (kind) {
       case (#duplicate(_) or #unattributed(_)) true;
       case (#undeliverable(_) or #stuckMint(_) or #refundAfterDelivery(_)) false;
+      case (#deliveryDelayed(_) or #abandoned(_)) false;
     };
   };
 
@@ -85,6 +104,9 @@ module {
       // auto-resolving on it would close the loss the instant it was recorded.
       // Only a human closes this one.
       case (#undeliverable(_) or #stuckMint(_) or #refundAfterDelivery(_)) null;
+      // Neither is settled by a refund landing: a delay wants its cause fixed,
+      // and an abandonment was already a conscious decision.
+      case (#deliveryDelayed(_) or #abandoned(_)) null;
     };
   };
 
@@ -216,6 +238,58 @@ module {
       resolved.add(updated);
     };
     resolved.toArray();
+  };
+
+  /// Hard cap on a page. Entries are a few hundred bytes, and a Candid message
+  /// is capped at 2 MB — so an unpaginated read of a queue that is allowed to
+  /// grow (see `AddResult.evicted`) would eventually become unreturnable. This
+  /// bounds the response instead of bounding the record.
+  public let maxPageSize : Nat = 200;
+
+  /// One page of entries, oldest first.
+  ///
+  /// Cursor-based rather than offset-based on purpose: resolved history is
+  /// trimmed as new entries arrive, so positional offsets shift under a client
+  /// mid-scan and would silently skip entries. Ids are monotonic and never
+  /// reused, so a cursor is stable.
+  ///
+  /// `nextCursor` is set **only when further matching entries remain**, so a
+  /// caller stops the moment it is null and never makes a wasted final request.
+  /// A page can therefore come back exactly full with no cursor.
+  public type Page = { entries : [Entry]; nextCursor : ?Nat };
+
+  func pageWhere(
+    store : Store,
+    afterId : ?Nat,
+    limit : Nat,
+    matches : Entry -> Bool,
+  ) : Page {
+    let capped = if (limit == 0 or limit > maxPageSize) maxPageSize else limit;
+    let collected = List.empty<Entry>();
+    var last : ?Nat = null;
+    for ((id, entry) in store.entries.entries()) {
+      let past = switch (afterId) { case (?cursor) id > cursor; case null true };
+      if (past and matches(entry)) {
+        if (collected.size() == capped) return { entries = collected.toArray(); nextCursor = last };
+        collected.add(entry);
+        last := ?id;
+      };
+    };
+    // Ran out of entries, so this is the last page regardless of how full it is.
+    { entries = collected.toArray(); nextCursor = null };
+  };
+
+  /// Everything still retained, paged (resolved entries included — they are the
+  /// audit history).
+  public func page(store : Store, afterId : ?Nat, limit : Nat) : Page {
+    pageWhere(store, afterId, limit, func(_) = true);
+  };
+
+  /// Open obligations only, paged. This is the operator's worklist: filtering
+  /// server-side means they never page through resolved history to find the
+  /// dollars that still need an answer.
+  public func unresolvedPage(store : Store, afterId : ?Nat, limit : Nat) : Page {
+    pageWhere(store, afterId, limit, func(entry) = entry.resolvedAtNs == null);
   };
 
   public func get(store : Store, id : Nat) : ?Entry {

@@ -134,7 +134,14 @@ export type ErrorKind =
   | { unattributed: { claimedRef: string; paymentRef: string } }
   | { undeliverable: { orderId: string; cycles: bigint } }
   | { stuckMint: { orderId: string; stage: string } }
-  | { refundAfterDelivery: { orderId: string; paymentRef: string; cycles: bigint } };
+  | { refundAfterDelivery: { orderId: string; paymentRef: string; cycles: bigint } }
+  | { deliveryDelayed: { orderId: string; stage: string; sinceNs: bigint } }
+  | { abandoned: { orderId: string; reason: string } };
+
+export interface ErrorQueuePage {
+  entries: ErrorEntry[];
+  nextCursor: Opt<bigint>;
+}
 
 export interface ErrorEntry {
   id: bigint;
@@ -160,6 +167,7 @@ export interface Tier {
 
 
 export interface TreasuryConfig {
+  alertAfterNs: bigint;
   burnCapE8s: bigint;
   burnWindowNs: bigint;
   lowFloatThresholdE8s: bigint;
@@ -256,9 +264,12 @@ export interface BackendService {
   create_ck_usdc_order(usdCents: bigint, destination: Destination): Promise<Result<CreatedCkUsdcOrder, CreateCkUsdcOrderError>>;
   create_order(tierId: string, destination: Destination): Promise<Result<CreatedOrder, CreateOrderError>>;
   can_purchase(usdCents: bigint): Promise<Result<null, GateReason>>;
-  error_queue(): Promise<ErrorEntry[]>;
+  error_queue(afterId: Opt<bigint>, limit: bigint): Promise<ErrorQueuePage>;
+  error_queue_unresolved(afterId: Opt<bigint>, limit: bigint): Promise<ErrorQueuePage>;
+  error_queue_depth(): Promise<{ unresolved: bigint; retained: bigint }>;
   lifecycle_config(): Promise<{ gate: GateConfig; retention: RetentionConfig }>;
   order_for_payment(paymentRef: string): Promise<Opt<string>>;
+  abandon_order(id: string, reason: string): Promise<Result<Order, string>>;
   retention_status(): Promise<RetentionStatus>;
   cycles_status(): Promise<{ balance: bigint; floor: bigint }>;
   recount_orders(): Promise<Array<[string, bigint]>>;

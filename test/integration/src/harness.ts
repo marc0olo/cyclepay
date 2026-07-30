@@ -28,7 +28,7 @@ import {
   icrc1IdlFactory, icrc2IdlFactory, xrcMockIdlFactory,
 } from './idl';
 import type {
-  BackendService, CmcService, CreatedCkUsdcOrder, CreateCkUsdcOrderError,
+  BackendService, CmcService, CreatedCkUsdcOrder, CreateCkUsdcOrderError, ErrorEntry,
   Destination, HttpResponse, Icrc1Service, Icrc2Service,
   Order, OrderStatusKey, Result, StatusVariant,
 } from './types';
@@ -579,6 +579,34 @@ export async function approveCkUsdc(
   });
   if (!('Ok' in result)) {
     throw new Error(`icrc2_approve failed: ${JSON.stringify(result, bigIntReplacer)}`);
+  }
+}
+
+/// Page through the whole error queue as an admin.
+///
+/// The canister query is paged (unresolved obligations are never evicted, so the
+/// queue can outgrow a 2 MB Candid response). Scenarios assert over the full set,
+/// so the paging lives here rather than in every test.
+export async function allErrorEntries(gw: Gateway): Promise<ErrorEntry[]> {
+  const all: ErrorEntry[] = [];
+  let cursor: [] | [bigint] = [];
+  for (;;) {
+    const page = await gw.asAdmin.error_queue(cursor, 200n);
+    all.push(...page.entries);
+    if (page.nextCursor.length === 0) return all;
+    cursor = page.nextCursor;
+  }
+}
+
+/// The operator worklist — open obligations only, paged server-side.
+export async function openErrorEntries(gw: Gateway): Promise<ErrorEntry[]> {
+  const open: ErrorEntry[] = [];
+  let cursor: [] | [bigint] = [];
+  for (;;) {
+    const page = await gw.asAdmin.error_queue_unresolved(cursor, 200n);
+    open.push(...page.entries);
+    if (page.nextCursor.length === 0) return open;
+    cursor = page.nextCursor;
   }
 }
 

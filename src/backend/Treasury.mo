@@ -33,7 +33,26 @@ module {
     burnWindowNs : Int;
     /// Max time a held order may sit in `#awaitingTreasury` before it
     /// escalates to the error queue (operator refunds).
+    /// How long an order may sit with money in and nothing delivered before it
+    /// is **terminated** and the operator refunds (§5.3 max-wait bound).
+    ///
+    /// Terminating matters, and not only for tidiness: a buyer left waiting
+    /// indefinitely files a chargeback, which is strictly worse for the operator
+    /// than a refund — dispute fees, a dispute process, and damage to Stripe
+    /// account health. Refunding proactively is the *protective* action.
+    ///
+    /// By the time this elapses the cause is not transient either: a float
+    /// unrefilled for days, or a multi-day CMC outage, is structural. Waiting
+    /// longer helps nobody.
     maxHoldNs : Int;
+    /// How long before the operator is **alerted** that an order is delayed.
+    ///
+    /// Complementary to `maxHoldNs`, not a substitute: this fires while the
+    /// problem is still fixable, so most incidents end with the order
+    /// *delivering* rather than reaching the terminal bound at all. Must be
+    /// shorter than `maxHoldNs` — alerting after the decision has already been
+    /// taken is useless.
+    alertAfterNs : Int;
     /// Soft-gate / balance-alert threshold on the observed float.
     /// 0 = signal disarmed.
     lowFloatThresholdE8s : Nat;
@@ -48,7 +67,8 @@ module {
     {
       burnCapE8s = 0;
       burnWindowNs = 86_400_000_000_000;
-      maxHoldNs = 259_200_000_000_000;
+      maxHoldNs = 259_200_000_000_000; // 72 h — terminate, operator refunds
+      alertAfterNs = 7_200_000_000_000; // 2 h — tell someone while it is fixable
       lowFloatThresholdE8s = 0;
     };
   };
@@ -58,11 +78,18 @@ module {
     #nonPositiveBurnWindow;
     /// A zero/negative max hold would escalate every held order instantly.
     #nonPositiveMaxHold;
+    #nonPositiveAlertAfter;
+    /// An alert at or after the terminal bound would never be actionable.
+    #alertNotBeforeMaxHold : { alertAfterNs : Int; maxHoldNs : Int };
   };
 
   public func validateConfig(config : Config) : Result.Result<(), ConfigError> {
     if (config.burnWindowNs <= 0) return #err(#nonPositiveBurnWindow);
     if (config.maxHoldNs <= 0) return #err(#nonPositiveMaxHold);
+    if (config.alertAfterNs <= 0) return #err(#nonPositiveAlertAfter);
+    if (config.alertAfterNs >= config.maxHoldNs) {
+      return #err(#alertNotBeforeMaxHold({ alertAfterNs = config.alertAfterNs; maxHoldNs = config.maxHoldNs }));
+    };
     #ok;
   };
 
@@ -164,6 +191,23 @@ module {
   /// is the last one it took.
   public func holdStage(heldSinceNs : Int, nowNs : Int, maxHoldNs : Int) : { #retry; #escalate } {
     if (nowNs - heldSinceNs >= maxHoldNs) #escalate else #retry;
+  };
+
+  /// The §5.3 timeline for an order with money in and nothing delivered.
+  ///
+  /// Three outcomes, not two: quiet retry while it is probably transient, then
+  /// an alert while it is still fixable, then termination once it plainly is not.
+  /// Splitting these is what lets the alert be early *without* making the
+  /// give-up early too.
+  public func waitStage(
+    heldSinceNs : Int,
+    nowNs : Int,
+    config : Config,
+  ) : { #retry; #alert; #terminate } {
+    let waited = nowNs - heldSinceNs;
+    if (waited >= config.maxHoldNs) return #terminate;
+    if (waited >= config.alertAfterNs) return #alert;
+    #retry;
   };
 
   /// Float observation cache shape — queries can't call the ledger, so the

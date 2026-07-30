@@ -20,7 +20,7 @@ import {
   Gateway, setupGateway, teardownGateway, upgradeBackendMidFlight,
   setCmcRate, fundFloat, floatBalance, setXrcRate, warmRates, ensureRates,
   CkLedger, installCkUsdcLedger, approveCkUsdc, ckBalance,
-  orderStatus, statusKey, tickUntilStatus, expectOk, expectErr,
+  orderStatus, statusKey, tickUntilStatus, expectOk, expectErr, allErrorEntries,
 } from './harness';
 import { backendIdlFactory } from './idl';
 import type { BackendService, ErrorEntry, Order } from './types';
@@ -57,7 +57,8 @@ const WORKING_TREASURY = {
   burnCapE8s: 10_000_000_000n, // 100 ICP / 24 h
   burnWindowNs: 86_400_000_000_000n,
   lowFloatThresholdE8s: 0n,
-  maxHoldNs: 259_200_000_000_000n, // 72 h
+  maxHoldNs: 259_200_000_000_000n, // 72 h — terminate, operator refunds
+  alertAfterNs: 7_200_000_000_000n, // 2 h — alert while it is still fixable
 };
 
 /// The §5.3 pause lever: cap 0 holds every mint.
@@ -92,6 +93,7 @@ beforeAll(async () => {
     burnWindowNs: 86_400_000_000_000n,
     lowFloatThresholdE8s: 0n,
     maxHoldNs: 259_200_000_000_000n, // 72 h
+    alertAfterNs: 7_200_000_000_000n, // 2 h
   }));
 });
 
@@ -371,7 +373,7 @@ test('ck-09 — stale intent escalates once, order stays Created, operator reset
   await gw.pic.tick(2);
   expect(expectErr(await gw.asUser.claim_ck_usdc_order(order3.id))).toEqual({ staleIntent: null });
   expect(await orderStatus(gw, order3.id)).toBe('created');
-  const stuck = (await gw.asAdmin.error_queue()).filter(
+  const stuck = (await allErrorEntries(gw)).filter(
     (e: ErrorEntry) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === order3.id,
   );
   expect(stuck).toHaveLength(1);
@@ -381,7 +383,7 @@ test('ck-09 — stale intent escalates once, order stays Created, operator reset
 
   // Once-only: further claims answer #staleIntent without re-queueing.
   expect(expectErr(await gw.asUser.claim_ck_usdc_order(order3.id))).toEqual({ staleIntent: null });
-  expect((await gw.asAdmin.error_queue()).filter(
+  expect((await allErrorEntries(gw)).filter(
     (e: ErrorEntry) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === order3.id,
   )).toHaveLength(1);
 
@@ -442,7 +444,7 @@ test('ck-11 — operational trail is coherent across the rail (§4.2)', async ()
 
   // Every queue entry is accounted for: the resolved stale-pull escalation
   // is the rail's only entry (definite rejections never queue).
-  const open = (await gw.asAdmin.error_queue()).filter((e) => e.resolvedAtNs.length === 0);
+  const open = (await allErrorEntries(gw)).filter((e) => e.resolvedAtNs.length === 0);
   expect(open).toHaveLength(0);
   expect((await gw.asAnon.treasury_status()).heldOrders).toBe(0n);
 });

@@ -203,3 +203,85 @@ suite("charge.refunded auto-resolve (§4.1)", func() {
     assert ErrorQueue.unresolved(store).size() == 1;
   });
 });
+
+suite("paging", func() {
+  // Unresolved obligations are never evicted, so the queue can outgrow a 2 MB
+  // Candid response. Paging bounds the response instead of the record.
+  func fill(store : ErrorQueue.Store, n : Nat) {
+    for (i in Nat.range(0, n)) {
+      ignore ErrorQueue.add(store, 1_000_000, #card, #duplicate({ orderId = "o" # i.toText(); paymentRef = "pi_" # i.toText() }), "d", 100 + i);
+    };
+  };
+
+  test("a cursor walks the whole queue exactly once, in arrival order", func() {
+    let store = ErrorQueue.emptyStore();
+    fill(store, 25);
+    var cursor : ?Nat = null;
+    var seen = 0;
+    var guard = 0;
+    label walk loop {
+      guard += 1;
+      if (guard > 50) { assert false; break walk };
+      let page = ErrorQueue.page(store, cursor, 10);
+      // Ids strictly ascend, so nothing is revisited or skipped.
+      for (entry in page.entries.values()) {
+        assert entry.id == seen;
+        seen += 1;
+      };
+      switch (page.nextCursor) {
+        case (?next) cursor := ?next;
+        case null break walk;
+      };
+    };
+    assert seen == 25;
+  });
+
+  test("a cursor appears only when more remains — no wasted final request", func() {
+    let store = ErrorQueue.emptyStore();
+    fill(store, 10);
+    // Exactly-full page with nothing left: no cursor, so the caller stops.
+    let exact = ErrorQueue.page(store, null, 10);
+    assert exact.entries.size() == 10;
+    assert exact.nextCursor == null;
+    // Full page with more behind it: cursor points at the last id returned.
+    let partial = ErrorQueue.page(store, null, 4);
+    assert partial.entries.size() == 4;
+    assert partial.nextCursor == ?3;
+    let next = ErrorQueue.page(store, ?3, 4);
+    assert next.entries[0].id == 4;
+  });
+
+  test("limit is capped, so a caller cannot ask for an unreturnable response", func() {
+    let store = ErrorQueue.emptyStore();
+    fill(store, ErrorQueue.maxPageSize + 50);
+    assert ErrorQueue.page(store, null, 100_000).entries.size() == ErrorQueue.maxPageSize;
+    // Zero means "give me a page", not "give me nothing".
+    assert ErrorQueue.page(store, null, 0).entries.size() == ErrorQueue.maxPageSize;
+  });
+
+  test("the worklist page skips resolved history server-side", func() {
+    let store = ErrorQueue.emptyStore();
+    fill(store, 6);
+    for (id in ([0, 1, 2, 3] : [Nat]).values()) {
+      switch (ErrorQueue.resolve(store, id, 900)) {
+        case (#ok(_)) {};
+        case (#err(_)) assert false;
+      };
+    };
+    // Four resolved entries stand between the start and the two open ones; the
+    // operator must not have to page past them.
+    let open = ErrorQueue.unresolvedPage(store, null, 10);
+    assert open.entries.size() == 2;
+    assert open.entries[0].id == 4;
+    assert open.entries[1].id == 5;
+    assert open.nextCursor == null;
+    assert ErrorQueue.unresolvedCount(store) == 2;
+  });
+
+  test("an empty queue pages cleanly", func() {
+    let store = ErrorQueue.emptyStore();
+    let page = ErrorQueue.page(store, null, 10);
+    assert page.entries.size() == 0;
+    assert page.nextCursor == null;
+  });
+});

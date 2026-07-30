@@ -81,6 +81,11 @@ type Result_2 =
    err: ConfigError;
    ok;
  };
+type Result_15 = 
+ variant {
+   err: text;
+   ok: Order;
+ };
 type Result_14 = 
  variant {
    err: Reason;
@@ -209,6 +214,11 @@ type Pricing =
    usdPerIcpMicros: nat;
    xdrPermyriadPerIcp: nat;
  };
+type Page = 
+ record {
+   entries: vec Entry;
+   nextCursor: opt nat;
+ };
 type Owner = variant {ii: principal;};
 type OrderStatus = 
  variant {
@@ -236,6 +246,15 @@ type Order =
  };
 type Kind = 
  variant {
+   abandoned: record {
+                orderId: OrderId;
+                reason: text;
+              };
+   deliveryDelayed: record {
+                      orderId: OrderId;
+                      sinceNs: int;
+                      stage: text;
+                    };
    duplicate: record {
                 orderId: OrderId;
                 paymentRef: text;
@@ -397,11 +416,17 @@ type ConfigError__1 =
  };
 type ConfigError = 
  variant {
+   alertNotBeforeMaxHold: record {
+                            alertAfterNs: int;
+                            maxHoldNs: int;
+                          };
+   nonPositiveAlertAfter;
    nonPositiveBurnWindow;
    nonPositiveMaxHold;
  };
 type Config = 
  record {
+   alertAfterNs: int;
    burnCapE8s: nat;
    burnWindowNs: int;
    lowFloatThresholdE8s: nat;
@@ -438,6 +463,18 @@ type Account =
 /// module layout this actor grows into: Orders.mo wiring, rails/, Cmc.mo,
 /// Pricing.mo, Treasury.mo, ErrorQueue.mo, Auth.mo.
 service : {
+  /// Stop trying to deliver an order (admin, §7) — **the only path to a
+  /// terminal non-delivered state.**
+  /// 
+  /// Nothing in the system gives up on a purchase automatically: a delay raises
+  /// `#deliveryDelayed` and keeps retrying, because its causes are all
+  /// operator-fixable. This is the deliberate human decision that a purchase
+  /// will not be completed, and it demands a reason so the trail records *why*
+  /// alongside *who*.
+  /// 
+  /// Only reachable from a pre-delivery money-bearing state. A `#created` order
+  /// has taken no money and needs no decision; a `#delivered` one is done.
+  abandon_order: (id: OrderId, reason: text) -> (Result_15);
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
   audit_log: () -> (vec Event) query;
@@ -500,9 +537,15 @@ service : {
                           balance: nat;
                           floor: nat;
                         }) query;
-  /// §4.1 operator worklist + retained history. Admin: entries carry
+  /// §4.1 retained history, oldest first, **paged**. Admin: entries carry
   /// payment references and claimed-but-bogus URL params.
-  error_queue: () -> (vec Entry) query;
+  /// 
+  /// Paged because unresolved obligations are never evicted, so the queue can
+  /// grow — and an unpaginated read would eventually exceed Candid's 2 MB
+  /// message limit, i.e. the record would become unreadable exactly when it
+  /// mattered most. Pass `null` to start; feed `nextCursor` back until it is
+  /// null. `limit` is capped at `ErrorQueue.maxPageSize`.
+  error_queue: (afterId: opt nat, limit: nat) -> (Page) query;
   /// Open-obligation depth, public.
   /// 
   /// Unresolved entries are never evicted, so this number only ever comes down
@@ -514,6 +557,10 @@ service : {
                               retained: nat;
                               unresolved: nat;
                             }) query;
+  /// The operator worklist: open obligations only, paged. Filtered server-side
+  /// so a large body of resolved history never stands between the operator and
+  /// the dollars that still need an answer.
+  error_queue_unresolved: (afterId: opt nat, limit: nat) -> (Page) query;
   /// §2 query authz: `caller == order.owner`, null otherwise — existence is
   /// not revealed to non-owners. Anonymous callers own nothing by
   /// construction (create_order rejects them), so they always get null.
