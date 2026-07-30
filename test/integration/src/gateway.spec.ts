@@ -1752,6 +1752,19 @@ test('48 — the notify stage is bounded by time, not only by the retry count', 
   )!;
   expect(stuckAlert).toBeDefined();
 
+  // Pin WHY it is stalled, so the terminal-stage assertion below is
+  // deterministic in meaning rather than by luck.
+  //
+  // Advancing 3 h staled the CMC rate (15 min guard), so the sweep returns at the
+  // rate check and never reaches the treasury pre-gate — the order therefore stays
+  // #paid rather than transitioning to #awaitingTreasury. (The zero burn cap
+  // WOULD hold it, and Treasury.gate's #hold branch does perform that transition;
+  // it simply is not reached here. Without pinning the cause, a timing change
+  // could park the order in the other state and flip the expected stage.)
+  expect(await orderStatus(gw, held.order.id)).toBe('paid');
+  const log = await gw.asAdmin.audit_log();
+  expect(log.some((e) => e.tag === 'mint.rateStale')).toBe(true);
+
   // Terminating at the max wait uses the stage that matches the MONEY POSITION.
   // Here no ICP moved, so it is the refundable one — not retriesExhausted, which
   // would tell the operator to notify a block index that does not exist.
@@ -1768,9 +1781,9 @@ test('48 — the notify stage is bounded by time, not only by the retry count', 
     // be the refundable one. Accepting either stage here would let the
     // journal-derived mapping regress silently — the per-status arms are pinned
     // exhaustively in the Cmc.terminationFor unit suite.
-    // #paid, not #awaitingTreasury: a zero burn cap refuses inside the mint
-    // pre-gate, so the order never transitions into the hold state. Either way
-    // no ICP moved, which is what the stage has to say.
+    // #paid (asserted above, with its cause pinned) → the refundable position:
+    // fiat in, no ICP moved. Exact, not a set — accepting either stage would let
+    // the journal-derived mapping regress silently.
     expect(terminal.kind.stuckMint.stage).toBe('mintWaitExceeded');
     expect(terminal.detail).toContain('nothing minted');
   }

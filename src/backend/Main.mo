@@ -1036,6 +1036,10 @@ persistent actor CyclesGateway {
     // open would put a false promise on the worklist next to the real problem,
     // and leak its `delayedAlerts` entry forever.
     clearDelayed(order.id);
+    // Same reasoning for the once-per-order audit guard: the order is terminal,
+    // so nothing will re-audit a mint block for it and keeping the id would only
+    // suppress a legitimate line if it were ever re-driven.
+    mintBlockedAudited.remove(order.id);
     ignore queueMintError(order.rail, #stuckMint({ orderId = order.id; stage }), detail);
     audit("mint.stuck", order.id # " [" # stage # "]: " # detail);
   };
@@ -1165,8 +1169,34 @@ persistent actor CyclesGateway {
       switch (stage) {
         case (#none) return;
         case (#escalate(reason)) {
+          // ⚠️ This is the route that actually fires. The recovery sweep runs
+          // every 15 min, so `stageOf` reaches an escalation within minutes of a
+          // failure, while the 72 h wait bound is the rare path. Emitting a bare
+          // "mint pipeline stopped: <reason>" here left the operator's *first*
+          // read of the entry with no instruction, on the high-probability route.
+          //
+          // Two different questions, so both are answered:
+          //
+          // - `stage` stays `stageOf`'s reason — that is the **cause**, and it is
+          //   the key the runbook triage table is organised by.
+          // - the detail comes from `terminationFor` — that is the **money
+          //   position**, which is what determines the action.
+          //
+          // They can legitimately disagree: retries exhausted in `#minting` with
+          // no block is caused by retry exhaustion but the money is in an
+          // unknown-transfer position, and "establish its fate, never rebuild"
+          // is the correct action regardless of why we stopped trying. Naming
+          // both means neither reading can mislead.
           let stage = Cmc.escalateReasonToText(reason);
-          escalateStuckMint(order, stage, "mint pipeline stopped: " # stage);
+          let position = Cmc.terminationFor(order.status, mintJournal.get(orderId));
+          let detail =
+            if (position.stage == stage) {
+              position.detail;
+            } else {
+              "stopped because: " # stage # ". Money position is " # position.stage
+              # " — " # position.detail;
+            };
+          escalateStuckMint(order, stage, detail);
           return;
         };
         case (#begin) {

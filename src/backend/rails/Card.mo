@@ -571,36 +571,65 @@ module {
     let #ii(owner) = order.owner;
     if (owner.toText() != claimedOwnerText) return unattributed("claimed owner does not match order " # orderId);
     if (order.rail != #card) return unattributed("order " # orderId # " is not a card order");
+    // ⚠️ **One intent, one credit — checked unconditionally, against the
+    // permanent record.**
+    //
+    // This has to run BEFORE the status switch, not inside one of its arms. The
+    // dedup sets prune at ~7 days; automatic Stripe retries (~3 days) can never
+    // outlive that, but a manual "resend" from the Dashboard can, and resending
+    // an event to confirm it was processed is an ordinary operator move. With
+    // both keys gone, attribution succeeds again — and if the resolved order is
+    // still `#created`, a status-scoped check would not fire and the intent would
+    // mint a **second** time.
+    //
+    // `paidIntents` is never pruned, so it can always answer "has this intent
+    // already been credited, and to what?". `attach_payment` enforces exactly
+    // this invariant; the two credit paths must not disagree about it.
+    switch (deps.paidIntents.get(session.paymentIntent)) {
+      case (?credited) {
+        if (credited == orderId) {
+          audit(
+            deps,
+            nowNs,
+            "stripe.replayedAfterPruning",
+            "intent " # session.paymentIntent # " was already credited to order " # orderId
+            # " and its dedup keys have been pruned — treated as a redelivery, not a second payment",
+          );
+          return ack(Http.text(200, "already credited"));
+        };
+        // Credited to a DIFFERENT order than this session names. The only way to
+        // reach this is an operator having attached the payment elsewhere, and
+        // until now that disagreement was completely silent: the genuine webhook
+        // was swallowed with no record that the reference and the credit
+        // disagreed. Never mint — the money is already spent on another order —
+        // but put the contradiction somewhere a human will see it.
+        audit(
+          deps,
+          nowNs,
+          "stripe.creditedElsewhere",
+          "intent " # session.paymentIntent # " names order " # orderId
+          # " but was already credited to order " # credited
+          # " — NOT minted again; reconcile which order the buyer actually paid for",
+        );
+        return ack(queueType1(
+          deps,
+          #duplicate({ orderId = credited; paymentRef = session.paymentIntent }),
+          "intent " # session.paymentIntent # " was credited to order " # credited
+          # " but its Stripe session names order " # orderId
+          # " — an attach_payment went to the wrong order, or the reference is wrong. Nothing was minted twice. Decide which order the buyer paid for; if it is "
+          # orderId # ", deliver that one from operator funds and refund/reconcile the other.",
+          nowNs,
+        ));
+      };
+      case null {};
+    };
     switch (order.status) {
       case (#created or #expired) {}; // §4: late payment on an expired order is still honored
       case (status) {
-        // ⚠️ Before calling this a second payment, ask whether it is the SAME
-        // payment arriving again.
-        //
-        // Both dedup sets are pruned at ~7 days, which automatic Stripe retries
-        // (~3 days) can never outlive — but a manual "resend" from the Dashboard
-        // can, and resending an event to confirm it was processed is an ordinary
-        // operator move. With the keys gone, attribution succeeds and this branch
-        // would report a second payment for a charge that was already delivered,
-        // inviting a refund of legitimate revenue.
-        //
-        // `paidIntents` is the permanent record of which intent funded which
-        // order and is never pruned, so it can still answer the question.
-        switch (deps.paidIntents.get(session.paymentIntent)) {
-          case (?credited) if (credited == orderId) {
-            audit(
-              deps,
-              nowNs,
-              "stripe.replayedAfterPruning",
-              "intent " # session.paymentIntent # " was already credited to order " # orderId
-              # " (status " # Types.statusToText(status) # ") and its dedup keys have been pruned — treated as a redelivery, not a second payment",
-            );
-            return ack(Http.text(200, "already credited"));
-          };
-          case (_) {};
-        };
         // A genuinely distinct payment for an already-handled order (§4.1:
-        // Stripe dedup ≠ double-pay protection).
+        // Stripe dedup is redelivery protection, not double-pay protection).
+        // Reaching here means the intent is NOT in paidIntents, so it is new
+        // money against an order that has already been paid.
         return ack(queueType1(
           deps,
           #duplicate({ orderId; paymentRef = session.paymentIntent }),

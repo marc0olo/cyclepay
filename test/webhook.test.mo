@@ -332,6 +332,33 @@ suite("a resent webhook is never a second payment", func() {
     ) != null;
   });
 
+  test("an intent credited to ANOTHER order never mints again, and says so", func() {
+    // The asymmetry this closes: the check used to live inside the
+    // already-handled-order arm, so if the resolved order was still #created it
+    // never ran. Sequence: an operator attaches pi_1 to order Y (wrong order),
+    // then >7 days later resends the session naming order X, still #created.
+    // Both dedup sets are pruned, attribution succeeds, and the old code minted
+    // a SECOND time for one payment and overwrote the pi->order link, so a later
+    // refund would reconcile against the wrong order.
+    let deps = freshDeps();
+    withOrder(deps, #card);
+    // Simulate the wrong-order attach: the intent is credited to some other id.
+    deps.paidIntents.add("pi_1", "ffffffffffffffffffffffffffffffff");
+
+    let resp = deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500));
+    assert resp.status_code == 200;
+    // NOT minted: the money is already spent on another order.
+    assert statusOf(deps) == #created;
+    // The contradiction is recorded — previously this was completely silent.
+    assert AuditLog.events(deps.auditLog).find(
+      func(e) = e.tag == "stripe.creditedElsewhere"
+    ) != null;
+    let open = ErrorQueue.unresolved(deps.errorQueue);
+    assert open.size() == 1;
+    // The link is NOT overwritten: whatever it pointed at still does.
+    assert deps.paidIntents.get("pi_1") == ?"ffffffffffffffffffffffffffffffff";
+  });
+
   test("a genuinely different intent for a handled order IS still a duplicate", func() {
     // The protection must not swallow real second payments — that is the whole
     // reason #duplicate exists (§4.1: Stripe dedup ≠ double-pay protection).

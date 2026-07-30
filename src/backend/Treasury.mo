@@ -44,6 +44,18 @@ module {
     /// By the time this elapses the cause is not transient either: a float
     /// unrefilled for days, or a multi-day CMC outage, is structural. Waiting
     /// longer helps nobody.
+    ///
+    /// ⚠️ **This is a per-state bound, not an end-to-end one.** The age it is
+    /// compared against is `order.updatedAtNs`, which every transition resets, so
+    /// an order that lingers in `#paid`, then `#minting`, then `#icpAtCmc` can
+    /// take materially longer than `maxHoldNs` from payment to resolution —
+    /// worst case on the order of a week and a half at the default.
+    ///
+    /// That is deliberate: each state is a distinct failure mode with a distinct
+    /// recovery, and an order that *just* progressed should not be terminated on
+    /// a clock started before its current problem existed. But it means this
+    /// bounds "stuck in one place", and `alertAfterNs` is what an operator
+    /// actually works against. RUNBOOK §5 spells out the cumulative timeline.
     maxHoldNs : Int;
     /// How long before the operator is **alerted** that an order is delayed.
     ///

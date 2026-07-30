@@ -124,6 +124,15 @@ git commit && git push   # needs a workflow-scoped token (a normal `gh auth` tok
 | 49 | `async_payment_succeeded` arriving **before** `completed` still mints once; the later event raises no obligation | out-of-order events |
 | 50 | the bounded retention sweep expires **every** lapsed order across ticks, settles to `scanned == 0`, and an expired order is still payable | cursor completeness |
 
+⚠️ **The `stageOf` escalation route is not integration-covered either**, for the
+same reason: reaching `#staleIntent`, `#retriesExhausted` or `#ambiguousForward`
+requires the real NNS ledger or CMC to fail repeatedly, or the canister to die
+between the pre-forward marker and delivery — and `stopCanister` drains outstanding
+callbacks rather than dropping them. Every `#stuckMint` entry these scenarios
+produce comes from the wait-timeline terminate path. The *decision* is pinned
+exhaustively in the `Cmc.terminationFor` unit suite; what no test exercises is the
+two-line expression that hands it to the queue.
+
 ⚠️ The per-`(status × journal × age)` terminal-stage mapping is pinned
 **exhaustively in the `Cmc.terminationFor` unit suite**, not here. PocketIC cannot
 stall the real NNS ledger or CMC, so an integration test cannot park an order in

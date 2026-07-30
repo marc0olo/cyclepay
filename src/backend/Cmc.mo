@@ -413,9 +413,18 @@ module {
             detail = "cycles WERE minted and the forward outcome is unknown — check the destination balance against mint_journal.cyclesMinted BEFORE anything else. Do not re-forward and do not notify the CMC again: the ICP is already consumed. Arrived -> resolve. Not arrived -> the cycles are in this canister's balance; deliver them manually.";
           };
         };
+        // The instruction names a block index, so it has to exist. Status
+        // #icpAtCmc means one was recorded; if the journal disagrees, say so
+        // rather than emitting an instruction nobody can follow.
+        let ?block = e.blockIndex else {
+          return {
+            stage = escalateReasonToText(#missingJournal);
+            detail = "order is #icpAtCmc but the journal has no block index — invariant breach. The ICP left the float, so find the transfer on the ICP ledger before moving any money.";
+          };
+        };
         {
           stage = escalateReasonToText(#retriesExhausted);
-          detail = "ICP reached the CMC but notify_top_up did not succeed within the max wait — notify manually with mint_journal.blockIndex (notify is idempotent). The ICP is parked at the CMC top-up subaccount, not lost.";
+          detail = "ICP reached the CMC (block " # block.toText() # ") but notify_top_up did not succeed — notify manually with that block; notify is idempotent. The ICP is parked at the CMC top-up subaccount, not lost.";
         };
       };
       case (#minting) {
@@ -428,17 +437,28 @@ module {
         switch (e.blockIndex) {
           // Transfer confirmed, only the notify outstanding — same position as
           // #icpAtCmc without cycles, so the same instruction.
-          case (?_) {
+          case (?block) {
             {
               stage = escalateReasonToText(#retriesExhausted);
-              detail = "the ICP transfer IS confirmed (block index in mint_journal) but notify_top_up did not complete within the max wait — notify manually with that block. The ICP is parked at the CMC, not lost.";
+              detail = "the ICP transfer IS confirmed (block " # block.toText() # ") but notify_top_up did not complete — notify manually with that block. The ICP is parked at the CMC, not lost.";
             };
           };
-          // No block: whether the transfer executed is unknown.
+          // No block: whether the transfer executed is unknown. The recovery
+          // instruction is only followable if the intent is there to match on.
           case null {
-            {
-              stage = escalateReasonToText(#staleIntent);
-              detail = "ICP transfer unconfirmed past the max wait — establish its fate on the ICP ledger (match mint_journal.transferIntent by created_at_time) before moving any money. Executed -> the ICP is at the CMC, notify with the found block. Not executed -> fiat in, nothing moved, refund. NEVER rebuild the intent.";
+            switch (e.transferIntent) {
+              case null {
+                {
+                  stage = escalateReasonToText(#missingJournal);
+                  detail = "order is #minting with neither a block index nor a transfer intent — invariant breach. Nothing can be matched on the ledger; reconstruct from audit_log before moving any money.";
+                };
+              };
+              case (?intent) {
+                {
+                  stage = escalateReasonToText(#staleIntent);
+                  detail = "ICP transfer unconfirmed — establish its fate on the ICP ledger by matching created_at_time " # intent.createdAtTimeNs.toText() # " and amount " # intent.amountE8s.toText() # " e8s. Executed -> the ICP is at the CMC, notify with the found block. Not executed -> fiat in, nothing moved, refund. NEVER rebuild the intent.";
+                };
+              };
             };
           };
         };

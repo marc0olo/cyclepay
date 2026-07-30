@@ -1,6 +1,8 @@
 import { test; suite } "mo:test";
 import Blob "mo:core/Blob";
 import Map "mo:core/Map";
+import Nat "mo:core/Nat";
+import Nat64 "mo:core/Nat64";
 import Principal "mo:core/Principal";
 import Text "mo:core/Text";
 import Cmc "../src/backend/Cmc";
@@ -368,7 +370,34 @@ suite("terminationFor — the money position, not the status", func() {
     let t = Cmc.terminationFor(#icpAtCmc, ?entryWith(?intentAt(0), ?42, null, 0));
     assert t.stage == "retriesExhausted";
     assert Text.contains(t.detail, #text "parked");
-    assert Text.contains(t.detail, #text "blockIndex");
+    // The actual block, not the field name — the instruction has to be followable
+    // without a second lookup.
+    assert Text.contains(t.detail, #text "block 42");
+  });
+
+  test("an #icpAtCmc order whose journal has no block is an invariant breach", func() {
+    // The status asserts a block was recorded. If the journal disagrees, emitting
+    // "notify with the block index" would be an instruction nobody can follow —
+    // and the ICP has already left the float, so silence is not an option either.
+    let t = Cmc.terminationFor(#icpAtCmc, ?entryWith(?intentAt(0), null, null, 0));
+    assert t.stage == "missingJournal";
+    assert Text.contains(t.detail, #text "left the float");
+  });
+
+  test("#minting with neither block nor intent is an invariant breach", func() {
+    let t = Cmc.terminationFor(#minting, ?entryWith(null, null, null, 0));
+    assert t.stage == "missingJournal";
+    assert Text.contains(t.detail, #text "Nothing can be matched");
+  });
+
+  test("the staleIntent instruction carries the values needed to match the ledger", func() {
+    let intent = intentAt(5_000);
+    let t = Cmc.terminationFor(#minting, ?entryWith(?intent, null, null, 0));
+    assert t.stage == "staleIntent";
+    let createdText = Nat64.toText(intent.createdAtTimeNs);
+    assert Text.contains(t.detail, #text createdText);
+    let amountText = Nat.toText(intent.amountE8s);
+    assert Text.contains(t.detail, #text amountText);
   });
 
   test("#minting WITH a block is retriesExhausted — the transfer is confirmed", func() {
@@ -417,9 +446,11 @@ suite("terminationFor — the money position, not the status", func() {
     let cases : [(Types.OrderStatus, ?Types.JournalEntry)] = [
       (#icpAtCmc, ?entryWith(?intentAt(0), ?1, ?1, 0)),
       (#icpAtCmc, ?entryWith(?intentAt(0), ?1, null, 0)),
+      (#icpAtCmc, ?entryWith(?intentAt(0), null, null, 0)),
       (#icpAtCmc, null),
       (#minting, ?entryWith(?intentAt(0), ?1, null, 0)),
       (#minting, ?entryWith(?intentAt(0), null, null, 0)),
+      (#minting, ?entryWith(null, null, null, 0)),
       (#minting, null),
       (#awaitingTreasury, null),
       (#paid, null),
