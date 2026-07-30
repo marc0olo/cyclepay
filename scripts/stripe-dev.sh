@@ -93,17 +93,25 @@ if [ "$BOOTSTRAP" -eq 1 ]; then
   echo "tiers:       tier5 (\$5.00)"
 
   # 100 ICP per 24 h, float gating off — enough for the gate to admit locally.
+  # alertAfterNs must be shorter than maxHoldNs (validation enforces it); 2 min
+  # here so the delay alert is reachable inside a dev session.
   icp canister call backend set_treasury_config \
-    '(record { burnCapE8s = 10_000_000_000 : nat; burnWindowNs = 86_400_000_000_000 : nat; lowFloatThresholdE8s = 0 : nat; maxHoldNs = 259_200_000_000_000 : nat })' \
+    '(record { burnCapE8s = 10_000_000_000 : nat; burnWindowNs = 86_400_000_000_000 : int; alertAfterNs = 120_000_000_000 : int; maxHoldNs = 259_200_000_000_000 : int; lowFloatThresholdE8s = 0 : nat })' \
     >/dev/null
-  echo "burn cap:    100 ICP / 24 h (float gating off)"
+  echo "burn cap:    100 ICP / 24 h (alert 2 min, float gating off)"
 
-  # Short retention so band 2 and band 3 are reachable in a dev session
-  # instead of 48 h / 90 days.
+  # Short TTL so expiry is reachable in a dev session instead of 48 h. There is
+  # no horizon: orders are never deleted.
   icp canister call backend set_retention_config \
-    '(record { orderTtlNs = 600_000_000_000 : nat; retentionHorizonNs = 1_800_000_000_000 : nat })' \
+    '(record { orderTtlNs = 600_000_000_000 : nat })' \
     >/dev/null
-  echo "retention:   TTL 10 min, horizon 30 min (dev-short)"
+  echo "retention:   TTL 10 min (dev-short; nothing is ever deleted)"
+
+  # Declare the Stripe world. A sandbox forwarder sends livemode=false events, so
+  # without this every honoured payment records `stripe.livemodeUnset`. On mainnet
+  # this must be `opt true` — see RUNBOOK §1.
+  icp canister call backend set_expected_livemode '(opt false)' >/dev/null
+  echo "livemode:    expecting TEST events (mainnet must be 'opt true')"
 fi
 
 # --- wire the forwarding session's signing secret ---------------------------
@@ -137,7 +145,9 @@ In a second terminal:
       not the happy path.
 
   For the happy path, create an order and pay its link:
-      1. icp canister call backend create_order '("tier5", variant { canister = principal "<some-canister>" })'
+      1. icp canister call backend create_order \
+             '("tier5", variant { canister = principal "<some-canister>" }, null)'
+         (the third argument pins a minimum cycle quantity; null opts out)
       2. Take the returned clientReferenceId.
       3. Open YOUR sandbox Payment Link with ?client_reference_id=<ref> appended.
       4. Pay with test card 4242 4242 4242 4242.
@@ -147,9 +157,23 @@ In a second terminal:
       icp canister call backend error_queue
       icp canister call backend order_for_payment '("pi_...")'
 
-Note: the canister checks the signature timestamp against ITS OWN clock with a
-±300 s tolerance. If the local replica's time has drifted further than that from
-real time, every live webhook is rejected with a 400.
+Two things to expect locally:
+
+1. Signature timestamps are checked against the replica's OWN clock with a ±300 s
+   tolerance. If local time has drifted further than that from real time, every
+   live webhook is rejected with a 400.
+
+2. **Money-OUT will not complete on this network.** A local `icp network` runs
+   only this project's canisters — there is no ICP ledger, no CMC and no cycles
+   ledger — so an order reaches `#paid` and then parks there, with
+   `mint.rateFetchFailed` in the audit log, because the CMC rate read has nothing
+   to call. That is the correct fail-closed behaviour, not a bug.
+
+   Everything up to and including `#paid` is genuinely exercised here: real Stripe
+   signatures, real event JSON, attribution, dedup, amount honouring, the error
+   queue. For the mint/deliver half use the PocketIC suite
+   (`cd test/integration && npm test`), which deploys the real ledger, CMC and
+   cycles ledger and can even stop them to simulate outages.
 
 Starting the forwarder (Ctrl-C to stop)...
 NOTES

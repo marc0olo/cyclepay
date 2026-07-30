@@ -659,7 +659,17 @@ stripe trigger checkout.session.completed
 This exercises the genuine path: real Stripe signatures, real event JSON, real
 retry behaviour on non-2xx.
 
-Two caveats:
+⚠️ **Money-out does not complete on a local `icp network`.** It runs only this
+project's canisters — no ICP ledger, no CMC, no cycles ledger — so an order reaches
+`#paid` and parks there with `mint.rateFetchFailed` audited, because the CMC rate
+read has nothing to call. That is correct fail-closed behaviour.
+
+So the local loop covers **money-in end to end** (real signatures, real event JSON,
+attribution, dedup, amount honouring, the error queue) and nothing after `#paid`.
+The mint/deliver half belongs to the PocketIC suite, which deploys the real ledger,
+CMC and cycles ledger — and can stop them to simulate outages (scenarios 51–54).
+
+Two further caveats:
 
 - `stripe trigger` builds a *synthetic* session with **no
   `client_reference_id`**, so it lands as Type 1 `#unattributed` — which is
