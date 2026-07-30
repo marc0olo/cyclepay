@@ -193,8 +193,12 @@ module {
     ?rates;
   };
 
-  /// The cached pair regardless of age — for status reporting and as the
-  /// baseline the delta guard compares against.
+  /// The cached pair regardless of age — for status reporting, so an operator can
+  /// see *what* is cached and how old it is even when it is too stale to price.
+  ///
+  /// Not the delta-guard baseline: that uses `freshRates`, because a stale rate is
+  /// not evidence about the current market and comparing against one deadlocks
+  /// pricing after an outage spanning a large move.
   public func lastRates(cache : Cache) : ?Rates {
     cache.rates;
   };

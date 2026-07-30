@@ -485,11 +485,17 @@ rail-specific summary:
 | `#refundAfterDelivery` | 200 | **fiat out, cycles out** — a loss | reconcile; consider restricting the payer |
 | `#deliveryDelayed` | 200 | **fiat in, mint still retrying** — nothing lost | an alert at 2 h, not a failure: clear the cause (float, burn cap) and it **self-resolves on delivery** |
 
-**The buyer is never left waiting indefinitely.** A paid order that cannot mint
-yet alerts the operator at 2 h while the position is still fully recoverable, and
-terminates at 72 h into `#stuckMint{stage="treasuryWaitExceeded"}` — fiat in,
-nothing minted, refund. Three days is the outer bound on "paid and heard
-nothing", and the operator has 70 hours of warning to make it not happen.
+**The buyer is never left waiting indefinitely.** A paid order that cannot
+progress alerts the operator at 2 h while the position is still fully recoverable
+and terminates at 72 h, and this holds for **every** in-flight status — not just
+`#paid`. `#minting` and `#icpAtCmc` are equally capable of sitting still, and a
+retry *count* is not a time bound: bounding the notify stage by retries alone let
+an order sit paid-and-undelivered for as long as the budget lasted, with no alert
+and no escalation.
+
+The terminal escalation names the stage, because the money position differs by
+where it stopped — fiat-in-nothing-minted is a refund, ICP-already-at-the-CMC is a
+manual notify. `RUNBOOK.md` §5 carries the mapping.
 
 ### Why a verified event is never answered with a 4xx
 

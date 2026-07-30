@@ -129,8 +129,9 @@ persistent actor CyclesGateway {
   /// refuse the mismatch instead of trusting that nobody pasted the wrong value.
   ///
   /// Null rather than `?true` by default so a fresh local install works against
-  /// a Stripe sandbox without configuration; the go-live checklist sets it, and
-  /// while it is unset every payment records `stripe.livemodeUnset`.
+  /// a Stripe sandbox without configuration. The go-live checklist sets it, and
+  /// until it is set every honoured payment records `stripe.livemodeUnset` — a
+  /// nudge that stops as soon as the expectation is declared.
   var expectLivemode : ?Bool = null;
 
   transient let xrc = actor (Xrc.canisterId) : Xrc.Service;
@@ -1088,24 +1089,69 @@ persistent actor CyclesGateway {
       // same `maxHoldNs` and escalated the same way. Orders that are actually
       // progressing bump `updatedAtNs` on every transition, so only a genuinely
       // stuck one trips this.
-      if (order.status == #paid) {
-        switch (Treasury.waitStage(order.updatedAtNs, Time.now(), treasuryConfig)) {
-          case (#retry) {};
-          case (#alert) {
-            // Tell someone while the cause is still fixable, and keep retrying:
-            // most incidents end here with the order delivering.
-            alertDelayed(order, "mintDelayed", "paid but not yet minted past the alert threshold — fix the cause (burn cap / float / CMC) and it delivers on the next sweep");
-          };
-          case (#terminate) {
-            // §5.3 max-wait bound. By now the cause is not transient, and a
-            // buyer left waiting files a chargeback — which costs more than a
-            // refund. Terminating so the operator refunds is the protective act.
-            escalateStuckMint(order, "mintWaitExceeded", "paid but unminted past the max wait: fiat received, nothing minted — refund in the Stripe Dashboard");
-            clearDelayed(orderId);
-            mintBlockedAudited.remove(orderId);
-            return;
+      // The alert tier covers **every** in-flight status, not just `#paid`.
+      // `#minting` and `#icpAtCmc` are equally capable of sitting still — a
+      // ledger or CMC that keeps answering retriably leaves the order there —
+      // and a buyer waiting on those is no less stuck than one waiting on the
+      // burn cap. `updatedAtNs` is the right age anchor for all three: retries
+      // do not transition, so it stays pinned at the moment the order entered
+      // its current state.
+      switch (order.status) {
+        case (#paid or #minting or #icpAtCmc) {
+          switch (Treasury.waitStage(order.updatedAtNs, Time.now(), treasuryConfig)) {
+            case (#retry) {};
+            case (#alert) {
+              // Tell someone while the cause is still fixable, and keep retrying:
+              // most incidents end here with the order delivering.
+              alertDelayed(
+                order,
+                switch (order.status) {
+                  case (#minting) "transferDelayed";
+                  case (#icpAtCmc) "notifyDelayed";
+                  case (_) "mintDelayed";
+                },
+                switch (order.status) {
+                  case (#minting) "paid, ICP transfer not yet confirmed past the alert threshold — check the ICP ledger; it resumes on the next sweep";
+                  case (#icpAtCmc) "paid, ICP is at the CMC but notify_top_up keeps failing past the alert threshold — check CMC health; the block index is in mint_journal and notify is idempotent";
+                  case (_) "paid but not yet minted past the alert threshold — fix the cause (burn cap / float / CMC) and it delivers on the next sweep";
+                },
+              );
+            };
+            case (#terminate) {
+              // §5.3 max-wait bound. By now the cause is not transient, and a
+              // buyer left waiting files a chargeback — which costs more than a
+              // refund. Terminating so the operator refunds is the protective act.
+              //
+              // The escalation differs by status because the **money position**
+              // does, and the position is what determines the operator's action:
+              //
+              // - `#paid`: fiat in, no ICP moved → refund.
+              // - `#icpAtCmc`: the ICP is already at the CMC under our top-up
+              //   subaccount. Refunding the fiat here would leave that ICP
+              //   parked, so the recovery is to notify manually with the
+              //   journaled block — which is exactly `retriesExhausted`.
+              // - `#minting`: bounded earlier by `#staleIntent` once the intent
+              //   passes the ledger dedup window, so reaching the max wait here
+              //   means an intent still inside the window; treat it as the
+              //   uncertain-transfer case rather than inventing a stage.
+              switch (order.status) {
+                case (#icpAtCmc) {
+                  escalateStuckMint(order, "retriesExhausted", "ICP is at the CMC and notify_top_up did not succeed within the max wait — notify manually with the block index in mint_journal; the ICP is parked, not lost");
+                };
+                case (#minting) {
+                  escalateStuckMint(order, "staleIntent", "ICP transfer unconfirmed past the max wait — establish the transfer's fate on the ICP ledger before doing anything else; never rebuild the intent");
+                };
+                case (_) {
+                  escalateStuckMint(order, "mintWaitExceeded", "paid but unminted past the max wait: fiat received, nothing minted — refund in the Stripe Dashboard");
+                };
+              };
+              clearDelayed(orderId);
+              mintBlockedAudited.remove(orderId);
+              return;
+            };
           };
         };
+        case (_) {};
       };
       let stage : Cmc.Stage = switch (order.status) {
         case (#awaitingTreasury) {
@@ -1672,25 +1718,33 @@ persistent actor CyclesGateway {
   /// right thing to trade away.
   transient let maxRetentionScanPerSweep : Nat = 2_000;
 
-  /// Where the last sweep stopped, so successive ticks cover the whole store
-  /// instead of rescanning the same prefix forever.
-  var retentionCursor : Nat = 0;
+  /// The last order id this sweep handled, so the next tick resumes after it.
+  ///
+  /// An **id**, not an index: an index into a snapshot is meaningless across
+  /// ticks, because an insert shifts every later position and a positional cursor
+  /// then silently skips some orders and re-scans others. Order ids are stable,
+  /// so resuming from one visits every order exactly once per pass.
+  var retentionCursor : ?Types.OrderId = null;
 
   func retentionSweep() : { expired : Nat; scanned : Nat } {
     // O(1) short-circuit, mirroring the mint sweep: no `#created` order means
     // nothing can expire, so the scan is pure waste.
-    if (Orders.countOf(orderStore, #created) == 0) return { expired = 0; scanned = 0 };
+    if (Orders.countOf(orderStore, #created) == 0) {
+      retentionCursor := null;
+      return { expired = 0; scanned = 0 };
+    };
     let now = Time.now();
     var expired = 0;
-    var scanned = 0;
-    // Materialise ids first — the loop mutates the store.
-    let ids = Orders.allIds(orderStore);
-    if (retentionCursor >= ids.size()) retentionCursor := 0;
-    let start = retentionCursor;
-    while (scanned < maxRetentionScanPerSweep and scanned < ids.size()) {
-      let index = (start + scanned) % ids.size();
-      scanned += 1;
-      let id = ids[index];
+    // Bounded slice, so the per-tick cost is O(maxRetentionScanPerSweep) and not
+    // O(total orders) — the store only ever grows, so anything proportional to it
+    // gets more expensive every tick forever.
+    let ids = Orders.idsFrom(orderStore, retentionCursor, maxRetentionScanPerSweep);
+    if (ids.size() == 0) {
+      // Reached the end; the next tick starts a fresh pass.
+      retentionCursor := null;
+      return { expired = 0; scanned = 0 };
+    };
+    for (id in ids.values()) {
       let ?order = Orders.get(orderStore, id) else continue;
       switch (Retention.bandOf(order.status, order.createdAtNs, now, retentionConfig)) {
         case (#keep) {};
@@ -1699,11 +1753,11 @@ persistent actor CyclesGateway {
         };
       };
     };
-    retentionCursor := if (ids.size() == 0) 0 else (start + scanned) % ids.size();
+    retentionCursor := ?ids[ids.size() - 1];
     if (expired > 0) {
       audit("retention.sweep", expired.toText() # " order(s) marked expired (still payable, §4)");
     };
-    { expired; scanned };
+    { expired; scanned = ids.size() };
   };
 
   /// The timer job. Correctness against concurrent drivers is processMint's

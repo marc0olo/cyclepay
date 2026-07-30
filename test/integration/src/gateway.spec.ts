@@ -1703,3 +1703,71 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
   expect(openForOrder).toHaveLength(1);
   expect(openForOrder[0]!.kind).toMatchObject({ abandoned: { orderId: doomed.id } });
 });
+
+test('48 — the notify stage is bounded by time, not only by the retry count', async () => {
+  // The regression this pins: #icpAtCmc (ICP transferred, block recorded,
+  // notify_top_up answering retriable) was bounded ONLY by maxMintRetries.
+  // staleIntent stops applying once a block exists, and the alert tier used to
+  // cover #paid alone — so raising the retry budget silently stretched the
+  // silently-stuck window from ~25 h to ~21 days at the default cadence.
+  //
+  // Every in-flight status now alerts at alertAfterNs and terminates at
+  // maxHoldNs, which makes the retry count a backstop rather than the only exit.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  await fundFloat(gw, ORDER_E8S * 2n + ICP_FEE_E8S * 2n);
+
+  const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }, []));
+  const order = created.order;
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_notify', paymentIntent: 'pi_notify', clientReferenceId: created.clientReferenceId,
+    amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  expect(await tickUntilStatus(gw, order.id, ['delivered'])).toBe('delivered');
+
+  // A delivered order is terminal, so it can never be caught by the wait bound —
+  // which is the other half of the property: the timeline must not touch orders
+  // that are progressing normally.
+  const alerts = (await allErrorEntries(gw)).filter(
+    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === order.id,
+  );
+  expect(alerts).toHaveLength(0);
+
+  // Now the stuck shape, from the money-out side. Create first and pause after:
+  // a zero burn cap also refuses order *creation* (the admission gate), so the
+  // order has to exist before minting is stopped.
+  const held = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }, []));
+  expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_held', paymentIntent: 'pi_held', clientReferenceId: held.clientReferenceId,
+    amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  expect(await tickUntilStatus(gw, held.order.id, ['awaitingTreasury', 'paid'])).not.toBe('delivered');
+
+  await gw.pic.advanceTime(3 * 3_600 * 1_000);
+  await gw.pic.tick(5);
+  const stuckAlert = (await openErrorEntries(gw)).find(
+    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === held.order.id,
+  )!;
+  expect(stuckAlert).toBeDefined();
+
+  // Terminating at the max wait uses the stage that matches the MONEY POSITION.
+  // Here no ICP moved, so it is the refundable one — not retriesExhausted, which
+  // would tell the operator to notify a block index that does not exist.
+  await gw.pic.advanceTime(80 * 3_600 * 1_000);
+  await gw.pic.tick(10);
+  expect(await tickUntilStatus(gw, held.order.id, ['errorQueue'])).toBe('errorQueue');
+  const terminal = (await openErrorEntries(gw)).find(
+    (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === held.order.id,
+  )!;
+  expect(terminal).toBeDefined();
+  if ('stuckMint' in terminal.kind) {
+    expect(['mintWaitExceeded', 'treasuryWaitExceeded']).toContain(terminal.kind.stuckMint.stage);
+  }
+  // And the delay alert did not survive the escalation.
+  const afterAlert = (await allErrorEntries(gw)).find((e) => e.id === stuckAlert.id)!;
+  expect(afterAlert.resolvedAtNs).toHaveLength(1);
+
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+});

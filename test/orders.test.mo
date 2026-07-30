@@ -1,5 +1,7 @@
 import { test; suite } "mo:test";
 import Array "mo:core/Array";
+import List "mo:core/List";
+import Nat "mo:core/Nat";
 import Principal "mo:core/Principal";
 import Runtime "mo:core/Runtime";
 import Types "../src/backend/Types";
@@ -508,5 +510,71 @@ suite("status counts — the O(1) query inputs", func() {
     for (status in ([#paid, #minting, #icpAtCmc, #delivered, #errorQueue] : [Types.OrderStatus]).values()) {
       assert Orders.countOf(store, status) == 0;
     };
+  });
+});
+
+suite("idsFrom — resumable scan", func() {
+  // Backs the retention sweep's bounded per-tick cost. The cursor must be a
+  // KEY, not an index: with a positional cursor an insert shifts every later
+  // position, so successive ticks skip some orders and re-scan others.
+  func storeWith(n : Nat) : Orders.Store {
+    let store = Orders.emptyStore();
+    for (i in Nat.range(0, n)) {
+      // Ids are fixed-width hex in production; pad so text order is stable.
+      let id = if (i < 10) "0" # i.toText() else i.toText();
+      switch (Orders.create(store, id, #ii(alice), #card, #canister(alice), 1_000, pricing, 0)) {
+        case (#ok(_)) {};
+        case (#err(_)) assert false;
+      };
+    };
+    store;
+  };
+
+  test("a null cursor starts at the beginning and honours the limit", func() {
+    let store = storeWith(10);
+    let page = Orders.idsFrom(store, null, 4);
+    assert page.size() == 4;
+  });
+
+  test("the cursor is exclusive, so nothing is visited twice", func() {
+    let store = storeWith(10);
+    let first = Orders.idsFrom(store, null, 4);
+    let second = Orders.idsFrom(store, ?first[first.size() - 1], 4);
+    for (id in second.values()) {
+      var clash = false;
+      for (seen in first.values()) { if (seen == id) clash := true };
+      assert not clash;
+    };
+  });
+
+  test("successive pages cover every order exactly once", func() {
+    let store = storeWith(10);
+    let seen = List.empty<Text>();
+    var cursor : ?Text = null;
+    label pages loop {
+      let page = Orders.idsFrom(store, cursor, 3);
+      if (page.size() == 0) break pages;
+      for (id in page.values()) seen.add(id);
+      cursor := ?page[page.size() - 1];
+    };
+    assert seen.size() == 10;
+    // No duplicates: every id in the store appears exactly once.
+    for (id in Orders.allIds(store).values()) {
+      var hits = 0;
+      for (s in seen.values()) { if (s == id) hits += 1 };
+      assert hits == 1;
+    };
+  });
+
+  test("an empty store and a limit of zero both terminate", func() {
+    assert Orders.idsFrom(Orders.emptyStore(), null, 10).size() == 0;
+    assert Orders.idsFrom(storeWith(5), null, 0).size() == 0;
+  });
+
+  test("a cursor past the end returns nothing, ending the pass", func() {
+    let store = storeWith(3);
+    let all = Orders.idsFrom(store, null, 10);
+    assert all.size() == 3;
+    assert Orders.idsFrom(store, ?all[2], 10).size() == 0;
   });
 });

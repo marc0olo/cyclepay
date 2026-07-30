@@ -502,7 +502,19 @@ module {
         };
         return ack(Http.text(200, "acknowledged: livemode mismatch logged"));
       };
-      case null {};
+      case null {
+        // Nothing is being refused here — but a gateway taking payments without
+        // having declared its Stripe mode has no defence against a test-mode
+        // secret minting real cycles, and the operator should see that in the
+        // trail rather than discover it later. Self-extinguishing: setting the
+        // expectation stops the line.
+        audit(
+          deps,
+          nowNs,
+          "stripe.livemodeUnset",
+          "intent " # session.paymentIntent # " honoured without a declared Stripe mode — set_expected_livemode is unset",
+        );
+      };
     };
     if (not session.paid) {
       // An async payment method has not settled. Money may still arrive, and it

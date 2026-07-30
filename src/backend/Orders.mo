@@ -305,6 +305,32 @@ module {
     store.orders.keys().toArray();
   };
 
+  /// Up to `limit` ids at or after `afterId` in key order, for a resumable scan.
+  ///
+  /// Exists so the retention sweep costs O(limit) per tick instead of O(all
+  /// orders): `allIds` materialises the whole key set into an array, which grows
+  /// forever because orders are never deleted, so a bounded *scan* over an
+  /// unbounded *materialisation* still gets more expensive every tick.
+  ///
+  /// The cursor is an order id rather than an index. An index into a snapshot is
+  /// meaningless across ticks — inserts shift everything after them, so a
+  /// positional cursor silently skips and re-scans. Keys are stable, so
+  /// resuming from one visits every order exactly once per pass.
+  public func idsFrom(store : Store, afterId : ?Types.OrderId, limit : Nat) : [Types.OrderId] {
+    let out = List.empty<Types.OrderId>();
+    let iter = switch (afterId) {
+      case (?id) store.orders.entriesFrom(id);
+      case null store.orders.entries();
+    };
+    for ((id, _) in iter) {
+      // entriesFrom is inclusive; the cursor is the last id already handled.
+      if (afterId == ?id) continue;
+      if (out.size() >= limit) return out.toArray();
+      out.add(id);
+    };
+    out.toArray();
+  };
+
   /// Authz-guarded lookup for the user API: `caller == order.owner` (§2).
   public func getOwned(store : Store, id : Types.OrderId, caller : Principal) : ?Types.Order {
     switch (store.orders.get(id)) {

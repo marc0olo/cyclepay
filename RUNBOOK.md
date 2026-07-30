@@ -288,7 +288,21 @@ cap is unbounded loss. Start tight.
   |---|---|---|
   | < `alertAfterNs` (2 h) | silent retries on the sweep | waiting; normal |
   | ≥ `alertAfterNs` | `#deliveryDelayed` alert enters the queue; **retries continue** | still waiting; nothing lost |
-  | ≥ `maxHoldNs` (72 h) | escalates to `#stuckMint{stage="treasuryWaitExceeded"}`, order terminal | refund |
+  | ≥ `maxHoldNs` (72 h) | escalates to a terminal `#stuckMint`, stage per money position | see below |
+
+  ⚠️ **The timeline covers every in-flight status, not just `paid`.** `minting`
+  and `icpAtCmc` can sit still too — a ledger or CMC answering retriably leaves an
+  order there — and the retry count alone is not a time bound. The alert names
+  which stage is stuck (`mintDelayed`, `transferDelayed`, `notifyDelayed`).
+
+  **The terminal stage differs by status, because the money position does**, and
+  the position is what determines the action:
+
+  | Stuck in | Escalates as | Because |
+  |---|---|---|
+  | `paid` / `awaitingTreasury` | `mintWaitExceeded` / `treasuryWaitExceeded` | fiat in, no ICP moved → **refund** |
+  | `minting` | `staleIntent` | the transfer's fate is uncertain → establish it on the ICP ledger first, **never** rebuild the intent |
+  | `icpAtCmc` | `retriesExhausted` | the ICP is already at the CMC under our top-up subaccount → **notify manually** with the journaled block; refunding alone would leave that ICP parked |
 
   The 2 h alert is the one to act on: it fires while the position is still fully
   recoverable, and clearing the underlying cause (refill the float, widen the
