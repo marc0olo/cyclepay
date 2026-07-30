@@ -15,6 +15,10 @@ release/
 src/backend/dist/*
 !src/backend/dist/backend.did
 
+# a stray root-level node_modules appears if anyone runs npx/vitest from the
+# repo root instead of the workspace that owns the tooling
+/node_modules/
+
 # frontend (src/frontend)
 src/frontend/node_modules/
 src/frontend/dist/

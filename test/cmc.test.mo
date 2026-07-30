@@ -1,6 +1,8 @@
 import { test; suite } "mo:test";
 import Blob "mo:core/Blob";
 import Map "mo:core/Map";
+import Nat "mo:core/Nat";
+import Nat64 "mo:core/Nat64";
 import Principal "mo:core/Principal";
 import Text "mo:core/Text";
 import Cmc "../src/backend/Cmc";
@@ -220,7 +222,17 @@ suite("journal", func() {
       rail = #card;
       destination = #canister(Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai"));
       lockedCycles = 1_000_000_000_000;
-      pricing = { usdCents = 500; xdrPerUsdMicros = 737_000; feeBps = 290; feeFixedCents = 30 };
+      pricing = {
+  usdCents = 500;
+  usdPerIcpMicros = 4_550_000; // $4.55 per ICP
+  xdrPermyriadPerIcp = 35_000; // 3.5 XDR per ICP
+  rateStandardDeviation = 0;
+  rateReceivedRates = 5;
+  rateQueriedSources = 5;
+  feeBps = 290;
+  feeFixedCents = 30;
+};
+      paidUsdCents = null;
       status = #paid;
       createdAtNs = 1;
       updatedAtNs = 2;
@@ -332,5 +344,157 @@ suite("stageOf (§5.1/§5.2 resume decision)", func() {
     for (status in [#created, #expired, #awaitingTreasury, #delivered, #errorQueue].values()) {
       assert Cmc.stageOf(status, null, 0, window, maxRetries) == #none;
     };
+  });
+});
+
+suite("terminationFor — the money position, not the status", func() {
+  // This is the function three consecutive defects came from getting wrong when
+  // the decision was inlined off `status` alone. Every arm is pinned here so a
+  // fourth round has to break a test rather than a production instruction.
+
+  test("#icpAtCmc WITH cyclesMinted is ambiguousForward, never retriesExhausted", func() {
+    // THE dangerous cell. Notify already succeeded and the order died mid-forward:
+    // the ICP is consumed and the cycles exist, possibly already delivered.
+    // Labelling it retriesExhausted would tell the operator "notify manually, the
+    // ICP is parked" — factually wrong, and it invites the double delivery
+    // #ambiguousForward exists to prevent.
+    let t = Cmc.terminationFor(#icpAtCmc, ?entryWith(?intentAt(0), ?42, ?3_500_000_000_000, 0));
+    assert t.stage == "ambiguousForward";
+    assert Text.contains(t.detail, #text "check the destination");
+    // Must NOT tell anyone the ICP is recoverable.
+    assert not Text.contains(t.detail, #text "parked");
+    assert Text.contains(t.detail, #text "Do not re-forward");
+  });
+
+  test("#icpAtCmc WITHOUT cyclesMinted is retriesExhausted and the ICP is parked", func() {
+    let t = Cmc.terminationFor(#icpAtCmc, ?entryWith(?intentAt(0), ?42, null, 0));
+    assert t.stage == "retriesExhausted";
+    assert Text.contains(t.detail, #text "parked");
+    // The actual block, not the field name — the instruction has to be followable
+    // without a second lookup.
+    assert Text.contains(t.detail, #text "block 42");
+  });
+
+  test("an #icpAtCmc order whose journal has no block is an invariant breach", func() {
+    // The status asserts a block was recorded. If the journal disagrees, emitting
+    // "notify with the block index" would be an instruction nobody can follow —
+    // and the ICP has already left the float, so silence is not an option either.
+    let t = Cmc.terminationFor(#icpAtCmc, ?entryWith(?intentAt(0), null, null, 0));
+    assert t.stage == "missingJournal";
+    assert Text.contains(t.detail, #text "left the float");
+  });
+
+  test("#minting with neither block nor intent is an invariant breach", func() {
+    let t = Cmc.terminationFor(#minting, ?entryWith(null, null, null, 0));
+    assert t.stage == "missingJournal";
+    assert Text.contains(t.detail, #text "Nothing can be matched");
+  });
+
+  test("the staleIntent instruction carries the values needed to match the ledger", func() {
+    let intent = intentAt(5_000);
+    let t = Cmc.terminationFor(#minting, ?entryWith(?intent, null, null, 0));
+    assert t.stage == "staleIntent";
+    let createdText = Nat64.toText(intent.createdAtTimeNs);
+    assert Text.contains(t.detail, #text createdText);
+    let amountText = Nat.toText(intent.amountE8s);
+    assert Text.contains(t.detail, #text amountText);
+  });
+
+  test("#minting WITH a block is retriesExhausted — the transfer is confirmed", func() {
+    // Same money position as #icpAtCmc-without-cycles, so the same instruction:
+    // the block is known, only the notify is outstanding.
+    let t = Cmc.terminationFor(#minting, ?entryWith(?intentAt(0), ?7, null, 0));
+    assert t.stage == "retriesExhausted";
+    assert Text.contains(t.detail, #text "IS confirmed");
+  });
+
+  test("#minting WITHOUT a block is staleIntent and forbids rebuilding the intent", func() {
+    let t = Cmc.terminationFor(#minting, ?entryWith(?intentAt(0), null, null, 0));
+    assert t.stage == "staleIntent";
+    assert Text.contains(t.detail, #text "NEVER rebuild");
+    // Both outcomes have to be spelled out, because the operator's action differs.
+    assert Text.contains(t.detail, #text "Executed");
+    assert Text.contains(t.detail, #text "Not executed");
+  });
+
+  test("a missing journal is never silently treated as a known position", func() {
+    for (status in ([#minting, #icpAtCmc] : [Types.OrderStatus]).values()) {
+      let t = Cmc.terminationFor(status, null);
+      assert t.stage == "missingJournal";
+      assert Text.contains(t.detail, #text "invariant breach");
+    };
+  });
+
+  test("#paid and #awaitingTreasury are the refundable positions", func() {
+    let held = Cmc.terminationFor(#awaitingTreasury, null);
+    assert held.stage == "treasuryWaitExceeded";
+    assert Text.contains(held.detail, #text "nothing minted");
+
+    let paid = Cmc.terminationFor(#paid, null);
+    assert paid.stage == "mintWaitExceeded";
+    assert Text.contains(paid.detail, #text "nothing minted");
+  });
+
+  test("the journal decides, so the same status yields different instructions", func() {
+    // The whole point of the extraction: status alone cannot answer this.
+    let withCycles = Cmc.terminationFor(#icpAtCmc, ?entryWith(?intentAt(0), ?42, ?1, 0));
+    let without = Cmc.terminationFor(#icpAtCmc, ?entryWith(?intentAt(0), ?42, null, 0));
+    assert withCycles.stage != without.stage;
+  });
+
+  test("every stage it can produce is non-empty and recognisable to the runbook", func() {
+    let cases : [(Types.OrderStatus, ?Types.JournalEntry)] = [
+      (#icpAtCmc, ?entryWith(?intentAt(0), ?1, ?1, 0)),
+      (#icpAtCmc, ?entryWith(?intentAt(0), ?1, null, 0)),
+      (#icpAtCmc, ?entryWith(?intentAt(0), null, null, 0)),
+      (#icpAtCmc, null),
+      (#minting, ?entryWith(?intentAt(0), ?1, null, 0)),
+      (#minting, ?entryWith(?intentAt(0), null, null, 0)),
+      (#minting, ?entryWith(null, null, null, 0)),
+      (#minting, null),
+      (#awaitingTreasury, null),
+      (#paid, null),
+    ];
+    let known = ["ambiguousForward", "retriesExhausted", "staleIntent", "missingJournal", "treasuryWaitExceeded", "mintWaitExceeded"];
+    for ((status, entry) in cases.values()) {
+      let t = Cmc.terminationFor(status, entry);
+      assert t.detail != "";
+      var recognised = false;
+      for (k in known.values()) { if (k == t.stage) recognised := true };
+      assert recognised;
+    };
+  });
+});
+
+suite("isMaterialShortfall", func() {
+  let locked = 3_500_000_000_000;
+
+  test("minting at or above the locked quantity is never a shortfall", func() {
+    assert not Cmc.isMaterialShortfall(locked, locked);
+    // icpE8sForCycles rounds UP, so overshoot is the normal case.
+    assert not Cmc.isMaterialShortfall(locked + 1_000, locked);
+  });
+
+  test("a quantisation-scale gap is absorbed, not escalated", func() {
+    // The CMC rate is quantised per e8s, so tiny gaps are expected. Putting a
+    // human on single cycles would be absurd.
+    assert not Cmc.isMaterialShortfall(locked - 1, locked);
+    assert not Cmc.isMaterialShortfall(locked - Cmc.maxMintShortfallCycles, locked);
+  });
+
+  test("boundary: exactly one cycle past the tolerance escalates", func() {
+    assert not Cmc.isMaterialShortfall(locked - Cmc.maxMintShortfallCycles, locked);
+    assert Cmc.isMaterialShortfall(locked - Cmc.maxMintShortfallCycles - 1, locked);
+  });
+
+  test("a real rate move is caught", func() {
+    // 10% short is a genuine market move across an outage, not rounding.
+    assert Cmc.isMaterialShortfall(locked * 90 / 100, locked);
+  });
+
+  test("the tolerance is far above quantisation and far below anything worth eating", func() {
+    // ~0.001 XDR. Sanity-check the magnitude so a careless edit is visible.
+    assert Cmc.maxMintShortfallCycles == 1_000_000_000;
+    assert Cmc.maxMintShortfallCycles * 1_000 < locked;
   });
 });

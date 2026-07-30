@@ -122,3 +122,43 @@ suite("parseSignatureHeader", func() {
     assert Card.parseSignatureHeader("") == null;
   });
 });
+
+suite("parseSignatureHeader: unauthenticated-work bounds", func() {
+  // The route's 64 KiB guard covers only the body, so without these an
+  // anonymous caller could send a ~2 MB signature header and make the canister
+  // hash thousands of candidates per request — free to invoke, expensive to
+  // serve.
+  let mac = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+
+  test("a header past the byte cap is refused outright", func() {
+    var header = "t=1492774577";
+    // Comfortably past maxSignatureHeaderBytes.
+    var i = 0;
+    while (i < 200) {
+      header #= ",v1=" # mac;
+      i += 1;
+    };
+    assert header.size() > Card.maxSignatureHeaderBytes;
+    assert Card.parseSignatureHeader(header) == null;
+  });
+
+  test("candidates are capped, and the ones kept are the first seen", func() {
+    var header = "t=1492774577";
+    var i = 0;
+    while (i < Card.maxV1Candidates + 5) {
+      header #= ",v1=" # mac;
+      i += 1;
+    };
+    let ?parsed = Card.parseSignatureHeader(header) else return assert false;
+    assert parsed.v1.size() == Card.maxV1Candidates;
+  });
+
+  test("a realistic rotation overlap is nowhere near either bound", func() {
+    // Two active secrets is what Stripe actually produces during a rotation.
+    let header = "t=1492774577,v1=" # mac # ",v1=" # mac;
+    assert header.size() < Card.maxSignatureHeaderBytes;
+    let ?parsed = Card.parseSignatureHeader(header) else return assert false;
+    assert parsed.v1.size() == 2;
+    assert parsed.timestampSeconds == 1492774577;
+  });
+});

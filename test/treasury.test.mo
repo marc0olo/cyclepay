@@ -13,6 +13,7 @@ func armedConfig() : Treasury.Config {
     burnCapE8s = 1_000;
     burnWindowNs = 24 * hour;
     maxHoldNs = 72 * hour;
+    alertAfterNs = 2 * hour;
     lowFloatThresholdE8s = 500;
   };
 };
@@ -158,5 +159,44 @@ suite("low-float signal (§5.3 soft gate)", func() {
 
   test("armed threshold with no observation yet reads low (conservative)", func() {
     assert Treasury.lowFloatSignal(armedConfig(), null);
+  });
+});
+
+suite("waitStage — the §5.3 timeline for money in, nothing delivered", func() {
+  // Three outcomes, not two. Splitting the alert from the terminal bound is what
+  // lets the operator be told early WITHOUT giving up on the sale early.
+  test("quiet retry before the alert threshold", func() {
+    assert Treasury.waitStage(0, 1 * hour, armedConfig()) == #retry;
+    assert Treasury.waitStage(0, 2 * hour - 1, armedConfig()) == #retry;
+  });
+
+  test("alert from alertAfterNs, and keep retrying — not terminal", func() {
+    assert Treasury.waitStage(0, 2 * hour, armedConfig()) == #alert;
+    assert Treasury.waitStage(0, 71 * hour, armedConfig()) == #alert;
+  });
+
+  test("terminate at maxHoldNs — the spec's max-wait bound", func() {
+    // A buyer left waiting files a chargeback, which costs the operator more
+    // than a refund; and by 72h the cause is structural, not transient.
+    assert Treasury.waitStage(0, 72 * hour, armedConfig()) == #terminate;
+    assert Treasury.waitStage(0, 1_000 * hour, armedConfig()) == #terminate;
+  });
+
+  test("the default config alerts long before it terminates", func() {
+    let d = Treasury.defaultConfig();
+    assert d.alertAfterNs < d.maxHoldNs;
+    // The alert must leave real room to act, not fire just before the deadline.
+    assert d.alertAfterNs * 4 < d.maxHoldNs;
+  });
+
+  test("an alert at or after the terminal bound is refused as config", func() {
+    // Alerting after the decision is already taken is useless.
+    assert Treasury.validateConfig({ armedConfig() with alertAfterNs = armedConfig().maxHoldNs })
+      == #err(#alertNotBeforeMaxHold({ alertAfterNs = armedConfig().maxHoldNs; maxHoldNs = armedConfig().maxHoldNs }));
+    assert Treasury.validateConfig({ armedConfig() with alertAfterNs = 0 }) == #err(#nonPositiveAlertAfter);
+  });
+
+  test("a clock that has not advanced never alerts", func() {
+    assert Treasury.waitStage(5 * hour, 5 * hour, armedConfig()) == #retry;
   });
 });

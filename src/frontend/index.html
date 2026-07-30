@@ -28,6 +28,8 @@
         <div id="tiers" class="tiers">
           <p class="muted">Loading tiers…</p>
         </div>
+        <p id="tier-detail" class="estimate-detail" hidden></p>
+        <p id="quote-notice" class="notice" hidden></p>
         <p id="rate-line" class="muted"></p>
       </section>
 
@@ -40,6 +42,7 @@
           Amount (USD)
           <input id="ck-amount" type="text" inputmode="decimal" placeholder="5.00" autocomplete="off" spellcheck="false" />
         </label>
+        <p id="ck-estimate" class="estimate" hidden></p>
         <p id="ck-bounds-line" class="muted"></p>
       </section>
 
@@ -54,6 +57,7 @@
             <input type="radio" name="dest-kind" value="cyclesLedgerAccount" />
             Credit a cycles-ledger account
           </label>
+          <p id="dest-fee-note" class="muted" hidden></p>
 
           <div id="dest-canister" class="dest-fields">
             <label>
@@ -79,6 +83,7 @@
 
       <section id="active-order" hidden>
         <h2>Order <span id="order-id-short"></span></h2>
+        <p id="order-lock-notice" class="notice" hidden></p>
         <ol id="timeline" class="timeline"></ol>
         <p id="order-status-line"></p>
         <div id="pay-area" hidden>
@@ -99,12 +104,39 @@
           </div>
           <p id="ck-flow-status" class="muted" hidden></p>
         </div>
+        <div id="cancel-area" hidden>
+          <button id="cancel-order" type="button" class="subtle">Cancel this order</button>
+          <p class="muted">
+            Frees the slot so you can start another. If a payment is already on
+            its way it will still be honoured at this order's locked rate.
+          </p>
+          <p id="cancel-status" class="error" hidden></p>
+        </div>
         <dl class="order-facts">
           <dt>Rail</dt><dd id="order-rail"></dd>
           <dt>Cycles</dt><dd id="order-cycles"></dd>
           <dt>Price</dt><dd id="order-price"></dd>
           <dt>Destination</dt><dd id="order-dest"></dd>
+          <dt>Locked rate</dt><dd id="order-rate"></dd>
         </dl>
+        <details id="receipt-area" hidden>
+          <summary>Receipt &amp; price verification</summary>
+          <dl class="order-facts">
+            <dt>You paid</dt><dd id="receipt-paid"></dd>
+            <dt>Cycles minted</dt><dd id="receipt-minted"></dd>
+            <dt>Funding ICP block</dt><dd id="receipt-block"></dd>
+            <dt>Rate sources</dt><dd id="receipt-sources"></dd>
+          </dl>
+          <p id="receipt-formula" class="mono"></p>
+          <p id="receipt-verdict"></p>
+          <p class="muted">
+            Both rates come from canisters you can query yourself — the
+            <a href="https://dashboard.internetcomputer.org/canister/uf6dk-hyaaa-aaaaq-qaaaq-cai"
+               target="_blank" rel="noopener noreferrer">Exchange Rate Canister</a>
+            for USD/ICP and the Cycles Minting Canister for XDR/ICP. Recompute the
+            line above and it must match the cycles this order locked.
+          </p>
+        </details>
       </section>
 
       <section id="history" hidden>

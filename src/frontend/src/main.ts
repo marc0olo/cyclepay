@@ -13,17 +13,30 @@ import {
   type CkUsdcConfig,
   type Destination,
   type Order,
+  type QuotePreview,
+  Rail,
   type Tier,
 } from "./actor";
 import { currentIdentity, signIn, signOut } from "./auth";
 import { makeCkUsdcLedger } from "./ledger";
 import {
+  RATE_LOCK_NOTE,
   STEPS,
   approveErrorMessage,
+  checkReceipt,
   ckUnitsForCents,
   claimErrorInfo,
   createCkOrderErrorMessage,
   createOrderErrorMessage,
+  type DestinationKind,
+  estimateLine,
+  type FeeConfig,
+  feeBreakdown,
+  gateReasonMessage,
+  type GateReason,
+  lockedVsEstimate,
+  minAcceptableCycles,
+  quoteChangedMessage,
   formatCkUsdcUnits,
   formatCycles,
   formatUsdCents,
@@ -31,12 +44,16 @@ import {
   parseSubaccountHex,
   parseUsdAmount,
   paymentLinkWithRef,
+  rateSourceNote,
   shortPrincipal,
   statusInfo,
   type StatusKey,
 } from "./format";
 
 const POLL_MS = 3_000;
+/// Debounce on the ck-USDC amount box: one query per pause in typing, not per
+/// keystroke.
+const QUOTE_DEBOUNCE_MS = 350;
 
 // The bindgen wrapper surfaces OrderStatus as a string enum whose values are
 // exactly the variant labels format.ts keys on.
@@ -68,6 +85,19 @@ const payLinks = new Map<string, string>();
 const ckRequiredUnits = new Map<string, bigint>();
 // Approve/claim flow guard: the order id of an in-flight ledger/claim call.
 let ckBusyOrderId: string | null = null;
+// Quotes the *backend* computed, keyed by tier id — never derived here, so what
+// a buyer is shown and what create_order locks cannot disagree.
+let tierQuotes = new Map<string, QuotePreview>();
+let ckQuote: QuotePreview | null = null;
+// Fee formulas, for rendering the split in words.
+let cardFee: FeeConfig | null = null;
+// The ledger's own deposit fee, from quote_previews.
+let depositFee = 0n;
+// Set when a created order's locked quantity differs from the estimate shown —
+// within tolerance, so the order went through, but the buyer should still hear
+// the real number rather than discover it.
+let lockNotice: string | null = null;
+let ckQuoteTimer: ReturnType<typeof setTimeout> | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let pollOrderId: string | null = null;
 let lastPolledStatus: string | null = null;
@@ -136,22 +166,30 @@ function setIdentity(next: Identity | null): void {
 // --- tiers + gates -------------------------------------------------------
 
 async function loadMarket(): Promise<void> {
-  const [tierList, treasury, forex, ck] = await Promise.all([
+  const [tierList, treasury, pricing, ck] = await Promise.all([
     backend.card_tiers(),
     backend.treasury_status(),
-    backend.forex_status(),
+    backend.pricing_status(),
     backend.ck_usdc_config(),
   ]);
   tiers = tierList;
   lowFloat = treasury.lowFloat;
   ckConfig = ck;
+  cardFee = { feeBps: pricing.config.feeBps, feeFixedCents: pricing.config.feeFixedCents };
 
+  // Both rate inputs are shown, because both are needed to reproduce a quote —
+  // the ICP price from the Exchange Rate Canister and the XDR/ICP rate the CMC
+  // will actually mint at. A buyer can query either canister and check us.
   const rateLine = el("rate-line");
-  if (forex.rate) {
-    const xdrPerUsd = (Number(forex.rate.xdrPerUsdMicros) / 1e6).toFixed(3);
-    rateLine.textContent = `Rate: ${xdrPerUsd} XDR/USD · fee ${Number(forex.config.feeBps) / 100}% + ${formatUsdCents(forex.config.feeFixedCents)} · cycles are locked at order creation`;
+  if (pricing.rates) {
+    const usdPerIcp = (Number(pricing.rates.usdPerIcpMicros) / 1e6).toFixed(2);
+    const xdrPerIcp = (Number(pricing.rates.xdrPermyriadPerIcp) / 1e4).toFixed(4);
+    const fee = `fee ${Number(pricing.config.feeBps) / 100}% + ${formatUsdCents(pricing.config.feeFixedCents)}`;
+    rateLine.textContent =
+      `ICP $${usdPerIcp} · ${xdrPerIcp} XDR/ICP · ${fee} · cycles are locked at order creation`;
   } else {
-    rateLine.textContent = "No exchange rate cached yet — order creation will fetch one.";
+    rateLine.textContent =
+      "No exchange rate available yet — orders are paused until one is fetched.";
   }
 
   const gate = el("gate-notice");
@@ -161,9 +199,50 @@ async function loadMarket(): Promise<void> {
   }
   show("gate-notice", lowFloat);
 
+  await refreshTierQuotes();
   renderTiers();
   renderCkPanel();
+  renderDestinationNote();
   renderSubmitGate();
+}
+
+/// Which destination the form is currently pointing at — the landing quantity
+/// differs by destination, so every estimate needs it.
+function selectedDestinationKind(): DestinationKind {
+  const checked = document.querySelector<HTMLInputElement>('input[name="dest-kind"]:checked');
+  return checked?.value === "cyclesLedgerAccount" ? "cyclesLedgerAccount" : "canister";
+}
+
+/// One round trip for the whole tier grid. Prices come from the backend's
+/// `quote_previews`, which runs the same code `create_order` runs.
+async function refreshTierQuotes(): Promise<void> {
+  tierQuotes = new Map();
+  if (tiers.length === 0) return;
+  try {
+    const preview = await backend.quote_previews(Rail.card, tiers.map((t) => t.usdCents));
+    depositFee = preview.cyclesLedgerDepositFee;
+    preview.quotes.forEach((quote, index) => {
+      const tier = tiers[index];
+      if (tier) tierQuotes.set(tier.id, quote);
+    });
+  } catch {
+    // Leave the map empty — tiers render without an estimate rather than with
+    // a wrong one.
+  }
+}
+
+/// The cycles-ledger deposit fee, disclosed where the choice is made rather
+/// than buried in a total.
+function renderDestinationNote(): void {
+  const node = el("dest-fee-note");
+  if (selectedDestinationKind() === "canister" || depositFee === 0n) {
+    show("dest-fee-note", false);
+    return;
+  }
+  node.textContent =
+    `The cycles ledger charges ${formatCycles(depositFee)} cycles to accept a deposit, ` +
+    `so an account receives that much less than a canister top-up. It is not added to your price.`;
+  show("dest-fee-note", true);
 }
 
 // maxUsdCents = 0 is the backend's fail-closed default: the rail exists but
@@ -190,6 +269,47 @@ function renderCkPanel(): void {
     `ledger fee ${formatCkUsdcUnits(ckConfig.ledgerFeeUnits)} per transfer · cycles are locked at order creation`;
 }
 
+/// Live estimate under the ck-USDC amount box, from the backend's quote.
+function renderCkEstimate(): void {
+  const node = el("ck-estimate");
+  if (ckQuote === null || ckConfig === null || ckRailDisabled()) {
+    show("ck-estimate", false);
+    return;
+  }
+  const destination = selectedDestinationKind();
+  const fee = { feeBps: ckConfig.feeBps, feeFixedCents: ckConfig.feeFixedCents };
+  node.textContent =
+    `${estimateLine(ckQuote.cycles ?? null, destination, depositFee)} · ` +
+    `${feeBreakdown(ckQuote.usdCents, ckQuote.feeCents, ckQuote.netCents, fee)} — ${RATE_LOCK_NOTE}`;
+  show("ck-estimate", true);
+}
+
+/// Debounced re-quote as the amount is typed. A malformed amount clears the
+/// estimate rather than leaving a stale one that belongs to different input.
+function scheduleCkQuote(): void {
+  clearRequote();
+  if (ckQuoteTimer !== null) clearTimeout(ckQuoteTimer);
+  const parsed = parseUsdAmount(el<HTMLInputElement>("ck-amount").value);
+  if (!parsed.ok) {
+    ckQuote = null;
+    renderCkEstimate();
+    return;
+  }
+  const cents = parsed.cents;
+  ckQuoteTimer = setTimeout(() => {
+    void (async () => {
+      try {
+        const preview = await backend.quote_previews(Rail.ckUsdc, [cents]);
+        depositFee = preview.cyclesLedgerDepositFee;
+        ckQuote = preview.quotes[0] ?? null;
+      } catch {
+        ckQuote = null;
+      }
+      renderCkEstimate();
+    })();
+  }, QUOTE_DEBOUNCE_MS);
+}
+
 function renderTiers(): void {
   const container = el("tiers");
   container.replaceChildren();
@@ -200,6 +320,7 @@ function renderTiers(): void {
     container.append(p);
     return;
   }
+  const destination = selectedDestinationKind();
   for (const tier of tiers) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -207,17 +328,37 @@ function renderTiers(): void {
     const amount = document.createElement("span");
     amount.className = "amount";
     amount.textContent = formatUsdCents(tier.usdCents);
+    // The cycle quantity, which is what the buyer is actually choosing between.
     const label = document.createElement("span");
     label.className = "cycles";
-    label.textContent = tier.id;
+    const quoted = tierQuotes.get(tier.id);
+    label.textContent = quoted === undefined
+      ? "—"
+      : estimateLine(quoted.cycles ?? null, destination, depositFee);
     btn.append(amount, label);
     btn.onclick = () => {
       selectedTierId = tier.id;
+      clearRequote();
       renderTiers();
+      renderTierDetail();
       renderSubmitGate();
     };
     container.append(btn);
   }
+  renderTierDetail();
+}
+
+/// Fee split and rate-lock note for the selected tier.
+function renderTierDetail(): void {
+  const node = el("tier-detail");
+  const quote = selectedTierId === null ? undefined : tierQuotes.get(selectedTierId);
+  if (!quote || cardFee === null) {
+    show("tier-detail", false);
+    return;
+  }
+  node.textContent =
+    `${feeBreakdown(quote.usdCents, quote.feeCents, quote.netCents, cardFee)} — ${RATE_LOCK_NOTE}`;
+  show("tier-detail", true);
 }
 
 function renderSubmitGate(): void {
@@ -231,14 +372,59 @@ function renderSubmitGate(): void {
   } else if (activeRail === "ckUsdc" && ckRailDisabled()) {
     btn.disabled = true;
     btn.textContent = "ck-USDC is not enabled yet";
+  } else if (activeRail === "card" && tierQuotes.get(selectedTierId ?? "")?.cycles === undefined) {
+    // Pricing is unavailable, so create_order would refuse. Say that here
+    // instead of letting the user find out by clicking.
+    btn.disabled = true;
+    btn.textContent = "Pricing unavailable — try again shortly";
+  } else if (acknowledgedQuote !== null) {
+    btn.disabled = false;
+    btn.textContent = "Confirm at the new rate";
   } else {
     btn.disabled = false;
-    btn.textContent = "Create order";
+    btn.textContent = "Create order & lock the rate";
   }
+}
+
+/// The estimate the buyer has acknowledged for the current amount.
+///
+/// Set when the gateway refuses a purchase because the rate moved past the 5%
+/// tolerance: the new figure goes on screen and the next click pins *it*, so a
+/// second refusal means a second real move rather than a loop.
+let acknowledgedQuote: { cents: bigint; cycles: bigint } | null = null;
+
+function clearRequote(): void {
+  if (acknowledgedQuote === null) return;
+  acknowledgedQuote = null;
+  showQuoteNotice(null);
+  renderSubmitGate();
+}
+
+function showQuoteNotice(message: string | null): void {
+  const node = el("quote-notice");
+  node.textContent = message ?? "";
+  show("quote-notice", message !== null);
+}
+
+/// The quantity to pin for an amount, honouring an acknowledged re-quote.
+/// `null` means "no expectation pinned" — the gateway prices without a floor.
+/// Only reached when no estimate was ever displayed, which is the one case where
+/// there is nothing to protect the buyer against.
+function pinFor(usdCents: bigint, shown: bigint | null): bigint | null {
+  const base = acknowledgedQuote?.cents === usdCents ? acknowledgedQuote.cycles : shown;
+  return base === null ? null : minAcceptableCycles(base);
+}
+
+/// Show a `#quoteChanged` refusal and arm the confirming click.
+function onQuoteChanged(usdCents: bigint, quoted: bigint): void {
+  acknowledgedQuote = { cents: usdCents, cycles: quoted };
+  showQuoteNotice(quoteChangedMessage(quoted, selectedDestinationKind(), depositFee));
+  renderSubmitGate();
 }
 
 function setRail(rail: RailKey): void {
   activeRail = rail;
+  clearRequote();
   el("rail-card").classList.toggle("active", rail === "card");
   el("rail-ckusdc").classList.toggle("active", rail === "ckUsdc");
   show("card-panel", rail === "card");
@@ -315,13 +501,24 @@ async function createCardOrder(dest: Destination): Promise<void> {
     showFormError("Selected tier vanished — reload the page.");
     return;
   }
-  const result = await backend.create_order(tier.id, dest);
+  const shown = tierQuotes.get(tier.id)?.cycles ?? null;
+  const result = await backend.create_order(tier.id, dest, pinFor(tier.usdCents, shown));
   if (result.__kind__ === "err") {
-    showFormError(createOrderErrorMessage(result.err.__kind__));
+    if (result.err.__kind__ === "quoteChanged") {
+      onQuoteChanged(tier.usdCents, result.err.quoteChanged.quoted);
+      return;
+    }
+    showFormError(
+      result.err.__kind__ === "notAdmitted"
+        ? gateReasonMessage(result.err.notAdmitted as GateReason)
+        : createOrderErrorMessage(result.err.__kind__),
+    );
     return;
   }
+  clearRequote();
   const created = result.ok;
   payLinks.set(created.order.id, paymentLinkWithRef(tier.paymentLinkUrl, created.clientReferenceId));
+  lockNotice = lockedVsEstimate(created.order.lockedCycles, shown);
   openOrder(created.order, created.clientReferenceId);
   void refreshHistory();
 }
@@ -332,12 +529,19 @@ async function createCkOrder(dest: Destination): Promise<void> {
     showFormError(amount.error);
     return;
   }
-  const result = await backend.create_ck_usdc_order(amount.cents, dest);
+  const shown = ckQuote?.cycles ?? null;
+  const result = await backend.create_ck_usdc_order(amount.cents, dest, pinFor(amount.cents, shown));
   if (result.__kind__ === "err") {
+    if (result.err.__kind__ === "quoteChanged") {
+      onQuoteChanged(amount.cents, result.err.quoteChanged.quoted);
+      return;
+    }
     showFormError(createCkOrderErrorMessage(result.err));
     return;
   }
+  clearRequote();
   const created = result.ok;
+  lockNotice = lockedVsEstimate(created.order.lockedCycles, shown);
   // approveUnits as quoted at creation — the claim error corrects it if the
   // ledger fee config drifts before the user gets around to approving.
   ckRequiredUnits.set(created.order.id, created.approveUnits);
@@ -366,9 +570,18 @@ function describeDestination(order: Order): string {
 function renderOrder(order: Order, clientReferenceId?: string): void {
   el("order-id-short").textContent = `${order.id.slice(0, 8)}…`;
   el("order-rail").textContent = isCkOrder(order) ? "ck-USDC" : "Card";
-  el("order-cycles").textContent = formatCycles(order.lockedCycles);
+  // No "≈" here: the rate is locked, so this figure is what the order pays out.
+  const destination = order.destination.__kind__ === "canister" ? "canister" : "cyclesLedgerAccount";
+  el("order-cycles").textContent = estimateLine(order.lockedCycles, destination, depositFee)
+    .replace(/^≈ /, "");
   el("order-price").textContent = formatUsdCents(order.pricing.usdCents);
   el("order-dest").textContent = describeDestination(order);
+  const lockNode = el("order-lock-notice");
+  lockNode.textContent = lockNotice ?? "";
+  show("order-lock-notice", lockNotice !== null);
+  el("order-rate").textContent =
+    `$${(Number(order.pricing.usdPerIcpMicros) / 1e6).toFixed(2)}/ICP · ` +
+    `${(Number(order.pricing.xdrPermyriadPerIcp) / 1e4).toFixed(4)} XDR/ICP · locked at creation`;
 
   const key = statusKeyOf(order);
   const info = statusInfo(key);
@@ -407,7 +620,88 @@ function renderOrder(order: Order, clientReferenceId?: string): void {
   show("ck-pay-area", isCk && awaitingPayment);
   if (isCk && awaitingPayment) renderCkPay(order);
 
+  // Only an unpaid order can be given up on; past payment it is going to
+  // deliver, and offering a cancel there would promise something untrue.
+  show("cancel-area", awaitingPayment && identity !== null);
+  el<HTMLButtonElement>("cancel-order").disabled = false;
+
   show("active-order", true);
+  void renderReceipt(order);
+}
+
+/// Receipt + price verification for a delivered order.
+///
+/// The check runs here, on the buyer's machine, from the rate inputs the receipt
+/// carries — both queryable from the XRC and the CMC. A gateway asserting its own
+/// price is correct proves nothing; recomputing it somewhere the operator does
+/// not control is the whole point.
+async function renderReceipt(order: Order): Promise<void> {
+  if (!identity || statusKeyOf(order) !== "delivered") {
+    show("receipt-area", false);
+    return;
+  }
+  let receipt: Awaited<ReturnType<Backend["receipt"]>>;
+  try {
+    receipt = await backend.receipt(order.id);
+  } catch {
+    show("receipt-area", false);
+    return;
+  }
+  if (!receipt) {
+    show("receipt-area", false);
+    return;
+  }
+  const v = receipt.verification;
+  el("receipt-paid").textContent = receipt.paidUsdCents === undefined
+    ? "—"
+    : formatUsdCents(receipt.paidUsdCents);
+  el("receipt-minted").textContent = receipt.cyclesMinted === undefined
+    ? "—"
+    : formatCycles(receipt.cyclesMinted);
+  el("receipt-block").textContent = receipt.mintBlockIndex === undefined
+    ? "—"
+    : receipt.mintBlockIndex.toString();
+  el("receipt-sources").textContent =
+    rateSourceNote(v.rateReceivedRates, v.rateQueriedSources) || "—";
+
+  const check = checkReceipt(v, receipt.order.lockedCycles);
+  el("receipt-formula").textContent = check.formula;
+  const verdict = el("receipt-verdict");
+  verdict.textContent = check.matches
+    ? "✓ Recomputed from these inputs, the price matches the cycles this order locked."
+    : "⚠ Recomputing from these inputs does not match the locked quantity — please contact support with the order id.";
+  verdict.className = check.matches ? "tone-ok" : "tone-err";
+  show("receipt-area", true);
+}
+
+/// Give up on an unpaid order.
+///
+/// The open-order cap counts unpaid orders, so without this a buyer who started
+/// several checkouts and finished none would be refused new orders until the TTL
+/// expired them — with the refusal telling them to abandon one and no way to.
+async function onCancelOrder(): Promise<void> {
+  if (!identity || pollOrderId === null) return;
+  const orderId = pollOrderId;
+  const btn = el<HTMLButtonElement>("cancel-order");
+  btn.disabled = true;
+  const status = el("cancel-status");
+  try {
+    const result = await backend.cancel_order(orderId);
+    if (result.__kind__ === "err") {
+      status.textContent = result.err;
+      show("cancel-status", true);
+      btn.disabled = false;
+      return;
+    }
+    show("cancel-status", false);
+    lockNotice = null;
+    renderOrder(result.ok);
+    void refreshHistory();
+  } catch (error) {
+    status.textContent = `Could not cancel: ${error instanceof Error ? error.message : String(error)}`;
+    show("cancel-status", true);
+    btn.disabled = false;
+  }
 }
 
 // --- ck-USDC approve → claim ------------------------------------------------
@@ -581,7 +875,10 @@ async function refreshHistory(): Promise<void> {
       if (index === cells.length - 1) td.className = `tone-${info.tone}`;
       row.append(td);
     });
-    row.onclick = () => openOrder(order);
+    row.onclick = () => {
+      lockNotice = null;
+      openOrder(order);
+    };
     body.append(row);
   }
 }
@@ -593,6 +890,11 @@ function wireDestinationToggle(): void {
     radio.onchange = () => {
       show("dest-canister", radio.value === "canister" ? radio.checked : !radio.checked);
       show("dest-ledger", radio.value === "cyclesLedgerAccount" ? radio.checked : !radio.checked);
+      // The landing quantity depends on the destination, so every estimate on
+      // screen has to follow the toggle.
+      renderDestinationNote();
+      renderTiers();
+      renderCkEstimate();
     };
   }
 }
@@ -601,8 +903,10 @@ async function init(): Promise<void> {
   renderAuth();
   wireDestinationToggle();
   el<HTMLFormElement>("order-form").onsubmit = (e) => void onCreateOrder(e);
+  el<HTMLInputElement>("ck-amount").oninput = () => scheduleCkQuote();
   el("rail-card").onclick = () => setRail("card");
   el("rail-ckusdc").onclick = () => setRail("ckUsdc");
+  el("cancel-order").onclick = () => void onCancelOrder();
   el("ck-approve").onclick = () => void onCkApprove();
   el("ck-claim").onclick = () => void onCkClaim();
 

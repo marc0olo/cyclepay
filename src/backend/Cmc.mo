@@ -113,6 +113,43 @@ module {
   /// surface as `#BadFee` → escalation, never a silent wrong transfer.
   public let icpTransferFeeE8s : Nat = 10_000;
 
+  /// How far the CMC's mint may fall short of the locked quantity before the
+  /// order is escalated instead of delivered.
+  ///
+  /// `icpE8sForCycles` rounds **up**, so the ICP sent normally mints slightly
+  /// *more* than the locked quantity. A shortfall therefore means the CMC's rate
+  /// moved unfavourably between sizing the transfer and notifying it — up to
+  /// 15 min under the staleness guard, or arbitrarily long when a recovery sweep
+  /// notifies a transfer stranded by an outage.
+  ///
+  /// A gap of a few cycles is still tolerated because the rate is quantised per
+  /// e8s and putting a human on single cycles is absurd. A *material* gap is a
+  /// real rate move, and covering it silently would subsidise the buyer out of
+  /// this canister's gas without limit — invisible, unbudgeted, and eventually a
+  /// trap when the balance cannot cover it. 1 G cycles is ~0.001 XDR: far above
+  /// quantisation, far below anything worth absorbing.
+  public let maxMintShortfallCycles : Nat = 1_000_000_000;
+
+  /// Did the CMC mint materially less than the order locked?
+  ///
+  /// Pure so the boundary is pinned by test rather than by reading the call site:
+  /// the consequence of getting it wrong in either direction is silent — too
+  /// strict escalates healthy orders, too loose subsidises buyers from this
+  /// canister's gas.
+  public func isMaterialShortfall(minted : Nat, locked : Nat) : Bool {
+    minted + maxMintShortfallCycles < locked;
+  };
+
+  /// Cycles the cycles ledger deducts from a `deposit`. A
+  /// `#cyclesLedgerAccount` destination therefore receives this much less than
+  /// the order's locked quantity; a `#canister` top-up pays nothing.
+  ///
+  /// Deliberately **not** grossed up into the quote: minting extra cycles to
+  /// cover a per-order fee would let anyone drain the operator by opening
+  /// account-destination orders, so the fee is disclosed to the buyer rather
+  /// than absorbed. Exposed through `quote_previews` for exactly that purpose.
+  public let cyclesLedgerDepositFee : Nat = 100_000_000;
+
   /// The CMC recognizes a top-up by this icrc1 memo: the 8-byte little-endian
   /// encoding of 0x50555054 ("TPUP"). Pinned by test vector.
   public let topUpMemo : Blob = "\54\50\55\50\00\00\00\00";
@@ -336,6 +373,109 @@ module {
     /// block_index, §5.2), then forward.
     #notifyCmc : Nat;
     #escalate : EscalateReason;
+  };
+
+  /// What to escalate when a **time bound** terminates an order, and the exact
+  /// instruction to hand the operator.
+  ///
+  /// ⚠️ **Derived from the journal, not from the status.** The status says where
+  /// the order stopped; the *journal* says where the money is, and the money
+  /// position is what determines the operator's action. Three consecutive defects
+  /// in this codebase came from deciding an escalation off status alone, so the
+  /// decision lives here as one pure function with every arm pinned by unit test
+  /// — the composition is what kept going wrong, not the pieces.
+  ///
+  /// The dangerous cell, and the reason this exists: an `#icpAtCmc` order whose
+  /// notify already succeeded (`cyclesMinted` journaled) died mid-forward. Read
+  /// off the status it looks like "notify never completed", and the instruction
+  /// "notify manually, the ICP is parked" is then **factually wrong** — the ICP
+  /// was consumed, the cycles exist, and they may already be at the destination.
+  /// Following it invites exactly the double delivery `#ambiguousForward` exists
+  /// to prevent.
+  public func terminationFor(
+    status : Types.OrderStatus,
+    entry : ?Types.JournalEntry,
+  ) : { stage : Text; detail : Text } {
+    switch (status) {
+      case (#icpAtCmc) {
+        let ?e = entry else {
+          return {
+            stage = escalateReasonToText(#missingJournal);
+            detail = "order is #icpAtCmc with no money-out journal — invariant breach, should be unreachable. Reconstruct from audit_log and the ICP ledger before moving any money.";
+          };
+        };
+        // Pre-forward marker set: the mint happened and the forward's fate is
+        // unknown. Never re-forward automatically, and never tell anyone the ICP
+        // is recoverable — it is already spent.
+        if (e.cyclesMinted != null) {
+          return {
+            stage = escalateReasonToText(#ambiguousForward);
+            detail = "cycles WERE minted and the forward outcome is unknown — check the destination balance against mint_journal.cyclesMinted BEFORE anything else. Do not re-forward and do not notify the CMC again: the ICP is already consumed. Arrived -> resolve. Not arrived -> the cycles are in this canister's balance; deliver them manually.";
+          };
+        };
+        // The instruction names a block index, so it has to exist. Status
+        // #icpAtCmc means one was recorded; if the journal disagrees, say so
+        // rather than emitting an instruction nobody can follow.
+        let ?block = e.blockIndex else {
+          return {
+            stage = escalateReasonToText(#missingJournal);
+            detail = "order is #icpAtCmc but the journal has no block index — invariant breach. The ICP left the float, so find the transfer on the ICP ledger before moving any money.";
+          };
+        };
+        {
+          stage = escalateReasonToText(#retriesExhausted);
+          detail = "ICP reached the CMC (block " # block.toText() # ") but notify_top_up did not succeed — notify manually with that block; notify is idempotent. The ICP is parked at the CMC top-up subaccount, not lost.";
+        };
+      };
+      case (#minting) {
+        let ?e = entry else {
+          return {
+            stage = escalateReasonToText(#missingJournal);
+            detail = "order is #minting with no money-out journal — invariant breach, should be unreachable. Reconstruct from audit_log and the ICP ledger before moving any money.";
+          };
+        };
+        switch (e.blockIndex) {
+          // Transfer confirmed, only the notify outstanding — same position as
+          // #icpAtCmc without cycles, so the same instruction.
+          case (?block) {
+            {
+              stage = escalateReasonToText(#retriesExhausted);
+              detail = "the ICP transfer IS confirmed (block " # block.toText() # ") but notify_top_up did not complete — notify manually with that block. The ICP is parked at the CMC, not lost.";
+            };
+          };
+          // No block: whether the transfer executed is unknown. The recovery
+          // instruction is only followable if the intent is there to match on.
+          case null {
+            switch (e.transferIntent) {
+              case null {
+                {
+                  stage = escalateReasonToText(#missingJournal);
+                  detail = "order is #minting with neither a block index nor a transfer intent — invariant breach. Nothing can be matched on the ledger; reconstruct from audit_log before moving any money.";
+                };
+              };
+              case (?intent) {
+                {
+                  stage = escalateReasonToText(#staleIntent);
+                  detail = "ICP transfer unconfirmed — establish its fate on the ICP ledger by matching created_at_time " # intent.createdAtTimeNs.toText() # " and amount " # intent.amountE8s.toText() # " e8s. Executed -> the ICP is at the CMC, notify with the found block. Not executed -> fiat in, nothing moved, refund. NEVER rebuild the intent.";
+                };
+              };
+            };
+          };
+        };
+      };
+      case (#awaitingTreasury) {
+        {
+          stage = "treasuryWaitExceeded";
+          detail = "held past the max wait: fiat received, nothing minted — refund in the Stripe Dashboard.";
+        };
+      };
+      case (_) {
+        {
+          stage = "mintWaitExceeded";
+          detail = "paid but unminted past the max wait: fiat received, nothing minted — refund in the Stripe Dashboard.";
+        };
+      };
+    };
   };
 
   /// Decide the next move. Pure — the §5.1/§5.2 resume semantics in one

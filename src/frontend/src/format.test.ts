@@ -1,23 +1,33 @@
 import { describe, expect, test } from "vitest";
 import {
-  STEPS,
   approveErrorMessage,
+  checkReceipt,
+  type CkCreateError,
   ckUnitsForCents,
+  type ClaimError,
   claimErrorInfo,
   createCkOrderErrorMessage,
   createOrderErrorMessage,
+  cyclesAtDestination,
+  cyclesForCents,
+  estimateLine,
+  feeBreakdown,
   formatCkUsdcUnits,
   formatCycles,
   formatUsdCents,
+  type GateReason,
+  gateReasonMessage,
+  lockedVsEstimate,
+  minAcceptableCycles,
   nsToMillis,
   parseSubaccountHex,
   parseUsdAmount,
   paymentLinkWithRef,
+  rateSourceNote,
   shortPrincipal,
   statusInfo,
-  type CkCreateError,
-  type ClaimError,
   type StatusKey,
+  STEPS,
 } from "./format";
 
 describe("statusInfo", () => {
@@ -275,5 +285,210 @@ describe("approveErrorMessage", () => {
   });
   test("unknown variants surface their tag", () => {
     expect(approveErrorMessage({ Expired: { ledger_time: 1n } })).toContain("Expired");
+  });
+});
+
+describe("gateReasonMessage", () => {
+  test("amountAboveMax tells the user what the limit is", () => {
+    const msg = gateReasonMessage({
+      __kind__: "amountAboveMax",
+      amountAboveMax: { usdCents: 200_000n, maxUsdCents: 100_000n },
+    });
+    // formatUsdCents does not group thousands — assert what it actually emits.
+    expect(msg).toContain("$1000.00");
+  });
+
+  test("tooManyOpenOrders tells the user what to do about it", () => {
+    const msg = gateReasonMessage({
+      __kind__: "tooManyOpenOrders",
+      tooManyOpenOrders: { open: 20n, max: 20n },
+    });
+    expect(msg).toContain("20");
+    expect(msg.toLowerCase()).toMatch(/pay or abandon/);
+  });
+
+  test("operational refusals promise nothing was charged", () => {
+    // These are all pre-payment refusals, so the copy must say so — otherwise a
+    // user seeing "unavailable" mid-purchase assumes money may have moved.
+    const operational: GateReason[] = [
+      { __kind__: "burnCapExhausted", burnCapExhausted: { burnedE8s: 1n, capE8s: 1n } },
+      { __kind__: "floatLow", floatLow: { thresholdE8s: 1n } },
+      { __kind__: "canisterCyclesLow", canisterCyclesLow: { balance: 0n, min: 1n } },
+    ];
+    for (const reason of operational) {
+      expect(gateReasonMessage(reason)).toContain("Nothing was charged");
+    }
+  });
+
+  test("floatLow renders with no observation present", () => {
+    // observedE8s is absent when the float has never been read.
+    expect(gateReasonMessage({
+      __kind__: "floatLow",
+      floatLow: { thresholdE8s: 1_000n },
+    })).not.toBe("");
+  });
+});
+
+describe("createOrderErrorMessage: notAdmitted", () => {
+  test("the key-only path still says nothing was charged", () => {
+    expect(createOrderErrorMessage("notAdmitted")).toContain("nothing was charged");
+  });
+});
+
+// --- pricing display + slippage ----------------------------------------------
+
+describe("cyclesForCents", () => {
+  test("reproduces the shared §3 vector", () => {
+    // The $5.00 tier: 500¢ less ⌈500·290/10⁴⌉ = 15¢ and 30¢ fixed leaves 455¢
+    // net, which at $4.55/ICP and 3.5 XDR/ICP is exactly 3.5 T — the same vector
+    // the Motoko suite and the PocketIC suite pin.
+    expect(cyclesForCents(455n, 35_000n, 4_550_000n)).toBe(3_500_000_000_000n);
+  });
+
+  test("refuses a zero ICP price rather than dividing by zero", () => {
+    expect(cyclesForCents(155n, 35_000n, 0n)).toBeNull();
+  });
+
+  test("floors, so a quote never exceeds what the money buys", () => {
+    // 1 × 1 × 1e12 / 3 is not an integer; the remainder must not round up.
+    expect(cyclesForCents(1n, 1n, 3n)).toBe(333_333_333_333n);
+  });
+});
+
+describe("minAcceptableCycles", () => {
+  test("allows exactly 5% below the shown figure", () => {
+    expect(minAcceptableCycles(1_000_000n)).toBe(950_000n);
+  });
+
+  test("never exceeds the shown figure — the guard only protects the buyer", () => {
+    for (const shown of [1n, 7n, 999n, 1_000_000_000_000n]) {
+      expect(minAcceptableCycles(shown) <= shown).toBe(true);
+    }
+  });
+
+  test("floors rather than rounding up, so the pin is never stricter than 5%", () => {
+    // 19 × 9500 / 10000 = 18.05 → 18, not 19 (which would reject an exact match).
+    expect(minAcceptableCycles(19n)).toBe(18n);
+  });
+});
+
+describe("cyclesAtDestination", () => {
+  test("a canister top-up receives the full quantity", () => {
+    expect(cyclesAtDestination(5_000_000_000n, "canister", 100_000_000n)).toBe(5_000_000_000n);
+  });
+
+  test("an account destination loses the ledger's deposit fee", () => {
+    expect(cyclesAtDestination(5_000_000_000n, "cyclesLedgerAccount", 100_000_000n)).toBe(
+      4_900_000_000n,
+    );
+  });
+
+  test("never goes negative when the fee exceeds the quantity", () => {
+    expect(cyclesAtDestination(50n, "cyclesLedgerAccount", 100_000_000n)).toBe(0n);
+  });
+
+  test("passes an unavailable quote straight through", () => {
+    expect(cyclesAtDestination(null, "cyclesLedgerAccount", 100_000_000n)).toBeNull();
+  });
+});
+
+describe("estimateLine", () => {
+  test("names the deposit fee for an account destination, so the gap is never a surprise", () => {
+    const line = estimateLine(5_000_000_000n, "cyclesLedgerAccount", 100_000_000n);
+    expect(line).toContain("4.9 G");
+    expect(line).toContain("deposit fee");
+  });
+
+  test("shows one figure for a canister top-up, where nothing is deducted", () => {
+    expect(estimateLine(5_000_000_000n, "canister", 100_000_000n)).toBe("≈ 5 G cycles");
+  });
+
+  test("says orders are paused rather than showing a zero when unpriceable", () => {
+    expect(estimateLine(null, "canister", 100_000_000n)).toContain("paused");
+  });
+});
+
+describe("feeBreakdown", () => {
+  test("accounts for every cent and states the operator takes nothing", () => {
+    const text = feeBreakdown(500n, 345n, 155n, { feeBps: 290n, feeFixedCents: 30n });
+    expect(text).toContain("$5.00 charged");
+    expect(text).toContain("$3.45 payment processing");
+    expect(text).toContain("$1.55 buys cycles");
+    expect(text).toContain("operator margin: none");
+  });
+
+  test("names a zero-fee rail as such instead of printing 0% + $0.00", () => {
+    expect(feeBreakdown(500n, 0n, 500n, { feeBps: 0n, feeFixedCents: 0n })).toContain(
+      "no processor fee",
+    );
+  });
+
+  test("tells the user to pick a larger amount when the fee swallows it", () => {
+    expect(feeBreakdown(30n, 39n, undefined, { feeBps: 290n, feeFixedCents: 30n })).toContain(
+      "larger amount",
+    );
+  });
+});
+
+describe("lockedVsEstimate", () => {
+  test("stays silent when the locked quantity is exactly what was shown", () => {
+    expect(lockedVsEstimate(1_000n, 1_000n)).toBeNull();
+  });
+
+  test("stays silent when nothing was shown to compare against", () => {
+    expect(lockedVsEstimate(1_000n, null)).toBeNull();
+  });
+
+  test("declares the real locked figure when the rate drifted within tolerance", () => {
+    const text = lockedVsEstimate(990_000_000_000n, 1_000_000_000_000n);
+    expect(text).toContain("fewer");
+    expect(text).toContain("will not change again");
+  });
+
+  test("also speaks up when the drift favoured the buyer", () => {
+    expect(lockedVsEstimate(1_010_000_000_000n, 1_000_000_000_000n)).toContain("more");
+  });
+});
+
+describe("checkReceipt", () => {
+  const verification = {
+    netCents: 455n,
+    usdPerIcpMicros: 4_550_000n,
+    xdrPermyriadPerIcp: 35_000n,
+    rateReceivedRates: 5n,
+    rateQueriedSources: 6n,
+  };
+
+  test("confirms a price that reproduces from the receipt's own inputs", () => {
+    const check = checkReceipt(verification, 3_500_000_000_000n);
+    expect(check.matches).toBe(true);
+    expect(check.recomputed).toBe(3_500_000_000_000n);
+  });
+
+  test("flags a locked quantity the inputs do not produce", () => {
+    expect(checkReceipt(verification, 3_500_000_000_001n).matches).toBe(false);
+  });
+
+  test("shows both rate inputs in the formula, since both are needed to re-derive it", () => {
+    const { formula } = checkReceipt(verification, 3_500_000_000_000n);
+    expect(formula).toContain("$4.55");
+    expect(formula).toContain("3.5000 XDR/ICP");
+    expect(formula).toContain("$4.55 net");
+  });
+
+  test("does not claim a match when there is no net amount to verify", () => {
+    const check = checkReceipt({ ...verification, netCents: undefined }, 1n);
+    expect(check.matches).toBe(false);
+    expect(check.recomputed).toBeNull();
+  });
+});
+
+describe("rateSourceNote", () => {
+  test("names how many sources answered, so a thin price is visible", () => {
+    expect(rateSourceNote(2n, 12n)).toBe("priced from 2 of 12 exchange sources");
+  });
+
+  test("says nothing when no sources were recorded", () => {
+    expect(rateSourceNote(0n, 0n)).toBe("");
   });
 });

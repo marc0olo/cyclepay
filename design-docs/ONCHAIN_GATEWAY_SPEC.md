@@ -1,21 +1,40 @@
 # Fully On-Chain Cycles Gateway — Spec v2 (decision record)
 
-> Supersedes the open questions in `NEW_ONCHAIN_APP_DESIGN.md`. This document is
-> the **decision record** from a grilling session: every branch we resolved, the
-> choice, and the rationale. Where we **deviated** from the original design doc,
-> it is called out explicitly (⚠️ **Override**). Read `ARCHITECTURE_ANALYSIS.md`
-> for the reasoning that led to the original design, and `NEW_ONCHAIN_APP_DESIGN.md`
-> for the locked rail/topology decisions that still stand.
+> **Status: non-binding rationale, not a contract.** This is the decision record
+> from the design session — every branch resolved, the choice, and the reasoning.
+> It is preserved because the *reasoning* is the valuable part, and it is the right
+> place to look for "why is it built this way?".
+>
+> **The implementation is authoritative where the two disagree.** Several
+> decisions here have been superseded by what shipped; each such section says so
+> inline and keeps the original reasoning in a collapsed block for provenance.
+> For behaviour, read the code and `RUNBOOK.md`; for operator procedure, read
+> `RUNBOOK.md`; for the Stripe rail end to end, read `docs/STRIPE.md`.
+>
+> Supersedes the open questions in `NEW_ONCHAIN_APP_DESIGN.md`. Where this
+> deviated from that original design doc, it is called out explicitly
+> (⚠️ **Override**). Read `ARCHITECTURE_ANALYSIS.md` for the reasoning that led
+> to the original design.
 
 ---
 
 ## 0. What this is
 
 A fully on-chain "buy cycles with fiat or stablecoins" service: a single
-verifiable Motoko backend canister + an asset canister. **Two rails in scope —
-Card (Stripe, inbound) and ck-USDC (ICRC-2)** — converging on a unified CMC
-mint. (USDC-on-Base/x402 is **deferred**, see §11.) Successor in spirit to
-Cycle.Express with CyclePay's capability surface, but run as one auditable Wasm.
+verifiable Motoko backend canister + an asset canister. Two rails are
+implemented — Card (Stripe, inbound) and ck-USDC (ICRC-2) — converging on a
+unified CMC mint. (USDC-on-Base/x402 is **deferred**, see §11.) Successor in
+spirit to Cycle.Express with CyclePay's capability surface, but run as one
+auditable Wasm.
+
+⚠️ **The Card rail is the product; ck-USDC ships frozen.** The purpose is
+onboarding developers who have **no ICP, no wallet, and no exchange account** —
+for whom a stablecoin rail is not an option, because acquiring the stablecoin is
+the same problem over again. ck-USDC is therefore code-complete and tested but
+**disabled by default** (`maxUsdCents = 0`), receives no new feature work, and
+exists as the fallback if Stripe ever restricts the account: a payments
+dependency with no alternative is a single point of failure for the whole
+service. Read every ck-USDC section below as "implemented, not the focus".
 
 **Tooling:** `icp-cli` (never `dfx`), `mops` for Motoko deps, Motoko with
 `persistent actor` + orthogonal persistence.
@@ -29,7 +48,7 @@ Cycle.Express with CyclePay's capability surface, but run as one auditable Wasm.
 | 1 | **v1 = production money-handler.** Full idempotency + recovery on day one; every rail must be safe to lose funds on. | Highest correctness bar; this is real money, not a demo. |
 | 2 | ⚠️ **Rails ship sequenced, each GA'd independently:** **Card → ck-USDC.** **Base/x402 dropped from scope for now** (see §11). | Card first for revenue; ck-USDC is pure on-chain. Base deferred — unclear consumer (a generic x402 agent wouldn't use II, a different model) and it carried *all* the EVM-crypto risk. Order state machine stays rail-pluggable so Base can return later. |
 | 3 | **Scope = human, one-shot, II-authenticated purchases only.** | Tightest audit surface. |
-| 3a | ⚠️ **Override — OUT OF SCOPE entirely:** subscriptions, auto-refill, GitHub OIDC CI top-ups, delegation/agent HTTP API, **Base/x402 rail**. | The original doc listed these. Subscriptions/auto-refill are impossible on card (need outbound `sk_live`) and only ever rode on a ck-USDC standing allowance, which is also cut. OIDC/delegation cut for scope. Base/x402 deferred (§11). **Consequence: the product makes _almost_ no outbound HTTPS** (see §3 forex exception). |
+| 3a | ⚠️ **Override — OUT OF SCOPE entirely:** subscriptions, auto-refill, GitHub OIDC CI top-ups, delegation/agent HTTP API, **Base/x402 rail**. | The original doc listed these. Subscriptions/auto-refill are impossible on card (need outbound `sk_live`) and only ever rode on a ck-USDC standing allowance, which is also cut. OIDC/delegation cut for scope. Base/x402 deferred (§11). **Consequence: the product makes _no_ outbound HTTPS at all** — pricing reads on-chain canisters (§3.1), so the canister's only outbound traffic is inter-canister calls. |
 | 4 | **Destinations:** any canister (`notify_top_up`, `TPUP` memo) **or** a cycles-ledger account (`notify_mint_cycles`, `MINT` memo). | Full parity with cycle-express's two delivery modes. Note asymmetry: only canister destinations can become `Undeliverable`. |
 
 ---
@@ -76,32 +95,108 @@ Cycle.Express with CyclePay's capability surface, but run as one auditable Wasm.
   deterministic amount-match. (We deliver on the **actual** paid amount, so a
   mismatched claim is honored at what was really paid.)
 
-### 3.1 Forex rate subsystem (the one outbound-HTTPS exception)
+### 3.1 Rate subsystem — both inputs on-chain
 
-USD→cycles needs a USD↔XDR forex input. CMC provides only ICP↔XDR. There is no
-on-chain XDR/USD oracle, and we chose a **direct HTTPS outcall** over XRC.
+> **Rewritten.** This section previously specified a direct HTTPS outcall to a
+> keyless USD-base forex API, with a coarse-rounding `transform` for consensus,
+> and described itself as "the one outbound-HTTPS exception". That subsystem is
+> gone. The reasoning below supersedes it; the original decision is recorded at
+> the end for provenance.
 
-- ⚠️ **This reintroduces outbound HTTPS** (a `transform` fn, ×replica cost,
-  IPv6 requirement). Accepted deliberately. The XRC inter-canister option was
-  rejected; the manual-constant option was rejected.
-- **Determinism:** the live rate is the hard case for consensus (each replica
-  samples a different value). Mitigated by a **coarse-rounding `transform`** so
-  replicas converge. Rounding *reduces, never eliminates*, boundary-split
-  failures.
-- **Cadence:** cache `{rate, ts}` in stable state; **lazy refresh** — orders
-  read the cache; only a **stale** cache triggers an outcall. **Single-flight**
-  guard so a burst doesn't fire concurrent outcalls. **In-call retry cap**
-  (boundary-splits often clear on retry).
-- ⚠️ **Fail-closed:** if a stale-triggered refresh fails (consensus or API
-  down), **block order creation** ("rate temporarily unavailable, retry") rather
-  than price on a stale rate. Safe because this happens at order *creation*,
-  before any money moves. **Extended outage ⇒ no new orders, but in-flight paid
-  orders still fulfill** (fulfillment uses the locked cycle quantity, not a fresh
-  rate).
-- **Keyless, IPv6-reachable source** required — a keyed API would add a *second*
-  node-provider-readable secret and break the "one secret" property.
+Pricing needs two inputs, and both are read from on-chain canisters:
 
----
+| Input | Source | Guard |
+|---|---|---|
+| **USD per ICP** | **Exchange Rate Canister** (`uf6dk-hyaaa-aaaaq-qaaaq-cai`) | plausibility band, delta-vs-last-good, minimum source count |
+| **XDR per ICP** | **CMC** `get_icp_xdr_conversion_rate` | 15-min staleness guard |
+
+```
+cycles = netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros
+```
+
+⚠️ **Derived via ICP rather than priced off a market USD/XDR rate.** At mint time
+the ICP needed is `cycles / P′` where `P′` is the CMC rate then; substituting the
+quote above, the ICP needed is `netCents/100/usdPerIcp × (P/P′)`. So when the CMC
+rate is unchanged between order and mint, **the operator spends exactly the
+dollars they received** — `P` cancels. Pricing off a market USD/XDR rate instead
+breaks even only when that rate happens to equal
+`(CMC's XDR/ICP) / (market USD/ICP)`; any gap between the CMC's published rate
+and the market-implied one is a systematic bias on every order.
+
+Both rates are read **on the same tick** and cached together, so the pair is
+time-aligned by construction — a quote built from an ICP price and a CMC rate
+taken at different moments is wrong by however much ICP moved in between.
+
+⚠️ **This delegates the off-chain dependency; it does not remove it.** The XRC
+makes HTTPS outcalls on our behalf — which is exactly what its fee encodes
+(20 M cycles served from its cache, more when it must fetch). What *this*
+canister gains: no `transform`, no replica-divergence problem, no coarse
+rounding, no retry-for-boundary-split, no IPv6 requirement, and **no
+operator-settable rate source** (a money lever that did not look like one). The
+aggregation is also done by something better at it — multi-source, with published
+standard deviation and source counts — and any third party can query the same two
+canisters and reproduce a quote.
+
+- **Three independent guards.** A plausibility band on the ICP price; a
+  delta bound against the last good value; and an **implied-XDR/USD cross-check**
+  (`P × 10⁸ / U`, banded 0.5–1.2) that uses the CMC as an independent reference on
+  the XRC. XDR/USD is an IMF basket that has sat in ~0.6–0.9 for decades, so an
+  XRC price wrong by a factor shows up as an absurd implied rate: $45.50/ICP
+  against 3.5 XDR/ICP implies 0.077. This is what stops us trusting a single
+  provider. A rejected refresh keeps the previous rate serving until it goes
+  stale, so a false positive degrades to "no new orders", never to mispricing.
+- ⚠️ **Minimum source count** (default 2). The XRC's own
+  `InconsistentRatesReceived` fires when collected rates disagree — but **a single
+  rate cannot disagree with itself**, so the degenerate one-exchange case arrives
+  as a clean `Ok`. This is the only guard that sees it.
+- ⚠️ **Refresh is timer-driven, never user-triggered.** The XRC charges per
+  request, so a refresh reachable from `create_order` would be an operation that
+  is free to invoke and expensive to serve — and a failing XRC would leave the
+  cache stale so that *every* subsequent order retried, a self-reinforcing drain.
+  Orders read the cache and fail closed. Cost is therefore decoupled from call
+  volume; backoff on failure; and a gateway with no rail enabled refreshes
+  nothing.
+- ⚠️ **The staleness window is a security control, bounded at 1 h.** A dead timer
+  is only safe because a stale cache *refuses to price*. An unbounded window would
+  let orders be priced indefinitely off a frozen rate — precisely the gap that
+  timer-reinstantiation guidance warns about.
+- ⚠️ **The quoted quantity is pinned at creation, enforced server-side.**
+  `create_order` takes an optional `minCycles`; a rate that no longer clears it
+  returns `#quoteChanged` and creates nothing. A client-side re-check cannot give
+  this guarantee — a query and the creating update are separate messages, so the
+  rate can refresh between them. It is a **minimum**, not an equality, so a move
+  in the buyer's favour passes through: the guard can only ever protect the buyer.
+  The *tolerance* is the caller's policy (the frontend uses 5%); the canister
+  enforces exactly the bound it is handed, so a caller needing an exact quantity
+  can pin one.
+- **The price is public before it is committed.** `quote_previews` is an
+  unauthenticated query running the same `quoteCents` the order path runs, so no
+  client has to reimplement §3 — and one that did could show a figure the gateway
+  would not honour.
+- **Fail-closed:** every implausible, stale, or missing input blocks order
+  creation. Nothing is priced on a guess. An extended outage means no new orders,
+  while in-flight paid orders still fulfil (fulfilment uses the locked quantity,
+  and money-out reads the CMC directly — never the rate cache).
+- **1 B cycles must be attached** per XRC request, refunded unused. That is a
+  *liquidity* requirement, not a cost: the canister must be able to attach it, so
+  `Gate.minCanisterCycles` has to stay well above it or pricing stops (fail-closed,
+  but the symptom looks like an unexplained rate outage).
+
+<details>
+<summary>Superseded: the original forex-outcall decision</summary>
+
+The original §3.1 specified a direct HTTPS outcall to a keyless, IPv6-reachable
+USD-base JSON source, accepting the reintroduction of outbound HTTPS along with a
+coarse-rounding `transform` so replicas would converge, a single-flight guard, an
+in-call retry cap, and fail-closed order creation on a failed refresh. XRC was
+considered and rejected at the time; a hardcoded constant was also rejected.
+
+It was replaced because deriving through ICP makes the operator's cost recovery
+exact rather than approximate, and because a single free endpoint parsed by us is
+a weaker source than an NNS-governed aggregator — while the source URL itself was
+an unaudited money lever.
+
+</details>
 
 ## 4. Core: one Order, one state machine
 
@@ -124,17 +219,49 @@ Created ──(never paid; advisory)──▶ Expired
   a genuine first payment always follows the happy path at the locked quantity;
   expiry only affects the live polling/QR UX.
 
-### 4.1 Error queue — exactly two types
+### 4.1 Error queue — money positions requiring a human
 
 | Type | Trigger | State at queueing | Resolution |
 |---|---|---|---|
 | **Type 1 `{Duplicate \| Unattributed}`** | Genuine 2nd/distinct payment for an already-handled order, OR `client_reference_id` resolves to no order. | **Fiat exists, nothing minted** (dedup gates the mint). | ⚠️ **Operator refunds in the Stripe Dashboard** (manual, off-chain, no `sk_live`). The `charge.refunded` webhook auto-marks the entry resolved. |
 | **Type 2 `{Undeliverable}`** | ICP→cycles minted, but delivery failed (e.g. target canister deleted). | **Cycles exist, in the app canister's own balance.** | Operator refunds or re-delivers; undeliverable cycles subsidize the canister's own gas in the meantime. |
 
+⚠️ **Two types was the original framing; the shipped queue carries six kinds.**
+The Type 1 / Type 2 split above is still the right *mental model* — it is the
+distinction that matters, "is the money fiat or is it cycles?" — but the
+implementation distinguishes finer positions, because an operator needs to know
+which recovery lever applies, not just which side of the mint the money sits on:
+
+| Kind | Type | Position |
+|---|---|---|
+| `#duplicate` | 1 | fiat in twice, one order |
+| `#unattributed` | 1 | fiat in, no resolvable order |
+| `#undeliverable` | 2 | cycles minted, forward cleanly rejected |
+| `#stuckMint {stage}` | either — **`stage` is what tells you which** | six distinct stages, from "certain, nothing minted" to "genuinely unknowable" |
+| `#refundAfterDelivery` | neither | a realised **loss**; cycles are gone and cannot be clawed back |
+| `#deliveryDelayed` | neither | nothing is wrong *yet* — an alert on a paid order still retrying |
+| `#abandoned` | neither | audit record of an operator voiding an unpaid order |
+
+The last three do not fit the Type 1/2 dichotomy at all, which is the honest
+reason the original framing did not survive: it assumed every queue entry is a
+money position awaiting a refund decision. `RUNBOOK.md` §6 carries the
+authoritative kind → position → action table.
+
 ⚠️ **Override of the original doc**, which credited the *user's* cycles-ledger
 balance and deferred fiat refunds. We do the opposite: **no automatic user
 credit**; off-happy-path money is **human-resolved**, and the operator **does**
 issue manual fiat refunds.
+
+⚠️ **The queue never drops an unresolved entry.** Only resolved entries are
+evicted; past its soft cap the queue grows rather than discarding an obligation.
+A ring buffer would eventually evict a record of someone's money — which is the
+one thing this structure exists to prevent.
+
+⚠️ **Refunding is not always the buyer-first answer.** `#unattributed` was
+originally refund-only; `attach_payment` now lets an operator credit the order
+the buyer actually meant, priced from that order's own creation-time snapshot. A
+refund makes the customer start over, and a customer who has paid and received
+nothing files a chargeback.
 
 **Key invariants:**
 - **Dedup gates the mint** — never mint for a payment that can't be cleanly
@@ -314,7 +441,7 @@ it can return cleanly later.
     layer that may or may not be available — design so launch doesn't *block* on it.
 - **Governance:** ⚠️ **flat controller allowlist, equal privileges** — any
   controller can upgrade, withdraw funds/cycles, provision/rotate the secret,
-  resolve error-queue entries, set tiers, adjust forex params, pause, edit the
+  resolve error-queue entries, set tiers, adjust pricing params, pause, edit the
   controller set. Admin authz = caller ∈ controllers. Honest trust model: "trust
   the operator set; any one can upgrade-then-drain." M-of-N (note: IC controllers
   are OR-semantics, so true M-of-N upgrades need a multisig-canister controller)
@@ -336,6 +463,21 @@ it can return cleanly later.
   `.did`, reproducible asset build.
 - External security audit **not gated** for v1 (easy to add per rail GA later).
 
+⚠️ **Verifiable code is only half of it — the price has to be checkable too.**
+A reproducible Wasm proves *what* runs; it does not let a buyer confirm they were
+charged correctly. So each order stores **both rate inputs** rather than the
+derived cycle figure, and `receipt(orderId)` (owner-scoped) returns them
+alongside the paid amount, the funding ICP block index, and the cycles minted.
+Anyone can query the XRC and the CMC and recompute
+`netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros` — so the quote is
+reproducible from first principles rather than asserted by the operator. Storing
+only the derived number would have made the price *checkable* but not
+*auditable*.
+
+The receipt is deliberately **not** admin-readable for other people's orders, and
+`mint_journal` stays admin-only: retries and raw transfer intents are operational
+detail, not the buyer's business.
+
 ---
 
 ## 9. Tech stack & layout
@@ -350,10 +492,17 @@ it can return cleanly later.
   (HMAC, fee math, rate derivation, parsers, state-machine transitions, dedup)
   **+ a full PocketIC integration suite green before each rail's go-live**.
   PocketIC suite covers: happy path, duplicate/replay, ambiguous-transfer
-  recovery, `AwaitingTreasury`, error queue Type1/Type2, forex fail-closed,
-  upgrade-mid-flight, `postupgrade` re-arm. External simulation: real ledger/CMC
-  Wasms; **crafted HMAC-signed Stripe webhooks**; **mocked HTTPS outcall** for
-  forex; PocketIC time-control for timers.
+  recovery, `AwaitingTreasury`, every error-queue kind, pricing fail-closed and
+  each rate guard, upgrade-mid-flight, timer re-arm. External simulation: real
+  ledger/CMC Wasms and the **released XRC mock canister** (sha256-pinned) driven
+  to return specific rates, quality signals, and each error variant; **crafted
+  HMAC-signed Stripe webhooks**; PocketIC time-control for timers.
+
+  ⚠️ **`postupgrade` is not used and must not be.** Under enhanced orthogonal
+  persistence there is no such hook; timers are re-armed by a `transient var`
+  initializer, which runs on install *and* upgrade. Timers are deactivated by any
+  Wasm change, and the safety net for a timer that never re-arms is that a stale
+  rate cache **refuses to price** — which is why `maxAgeNs` is capped (§3.1).
 
 ```
 src/backend/
@@ -361,12 +510,16 @@ src/backend/
   Http.mo        # hand-rolled minimal HTTP: parse, case-insensitive headers, one route
   Orders.mo      # Order + JournalEntry types, state machine, stable store
   Idempotency.mo # per-rail dedup sets + retention/pruning
-  ErrorQueue.mo  # Type1/Type2 entries, bounded
+  ErrorQueue.mo  # entries; only resolved ones are evicted
   rails/Card.mo  # Stripe webhook HMAC verify + parse + charge.refunded
   rails/CkUsdc.mo# ICRC-2 approve/transfer_from flow (Candid)
   Cmc.mo         # ICP transfer (write-intent + created_at_time) + notify_*
   Secret.mo      # webhook secret: admin-set, plaintext (SEV-protected), rotation
-  Forex.mo       # cached rate + lazy refresh outcall + transform
+  Pricing.mo     # pure quote derivation, guards, cached rate pair
+  Xrc.mo         # Exchange Rate Canister binding (USD/ICP)
+  Gate.mo        # pre-creation admission checks
+  Recovery.mo    # sweep cadence + retry bounds
+  Retention.mo   # #created → #expired (orders are never deleted)
   Treasury.mo    # ICP float, AwaitingTreasury, alerts
   Auth.mo        # II ownership + controller allowlist
   Util.mo, Hmac.mo, Account.mo
@@ -396,6 +549,108 @@ crypto are parked until/unless Base returns; see §11.)
 - **Seams kept for Base (§11.1, binding on M1):** `Owner` single-case variant
   (§2), `Http.mo` route table, ownership captured at the API edge, expiry
   semantics per-rail. Keeps a future Base return additive, not a refactor.
+
+## 10a. Resolved since v2.1 (the spec's own gaps, now closed)
+
+Decisions taken after v2.1 shipped, recorded here because they change behaviour
+the sections above describe. Implementation and operator procedure live in
+`docs/STRIPE.md` and `RUNBOOK.md`.
+
+- **Order expiry is enforced, not just legal.** §4 defined
+  `#created → #expired` and made expiry advisory, but nothing ever performed the
+  transition. `Retention.mo` owns it: a `#created` order past `orderTtlNs`
+  (default 48 h, sized past the 24 h Stripe Checkout Session) flips to
+  `#expired`, which is **still fully payable** — the §4 guarantee is unchanged.
+  The flip is bookkeeping, so an abandoned attempt is visibly stale rather than
+  indistinguishable from a live one.
+  - ⚠️ **Orders are never deleted, and there are no tombstones.** A third band
+    was specified here (delete past a 90-day horizon, keep the id in a
+    `sweptOrders` set) and has been removed. Deleting a financial record
+    contradicts the standard applied everywhere else — unresolved obligations are
+    never evicted, money facts live on permanent records — and it created
+    orphans: `paidIntents` entries pointing at records that no longer existed.
+  - Growth is bounded at its **source**, which is why retention never needed to
+    bound it: `Gate.maxOpenOrdersPerPrincipal` bounds the records a user can
+    create for free, and the burn cap bounds legitimate volume. An order is a few
+    hundred bytes, so a million is a few hundred MB — and a million orders is
+    millions of dollars of volume. If retention ever genuinely binds, archival to
+    a separate canister preserves the record; deletion does not.
+  - ⚠️ **A buyer can cancel their own unpaid order** (`cancel_order`, owner-scoped,
+    `#created → #expired`, idempotent). The open-order cap counts unpaid orders and
+    its refusal says to pay or abandon one — but `abandon_order` is admin-only and
+    accepts only *paid* orders, so without this a buyer who opened the cap's worth
+    of checkouts and finished none was locked out until the TTL expired them. Since
+    `#expired` stays payable, cancelling can never strand a payment already in
+    flight; and no error-queue entry is created, because nothing is owed.
+  - A late payment against an expired order is therefore **delivered, not
+    refunded**: the record is still there, so the §4 late-payment guarantee holds
+    for the life of the canister rather than for 90 days.
+  - Sweeping is cleanup, not protection — see the admission gate below for the
+    bound that actually stops state growth.
+
+- **Admission gate before quoting (`Gate.mo`).** §3 and §5.3 checked float and
+  burn-cap headroom only at *mint* time, i.e. after the customer had paid.
+  `create_order` (both rails) now refuses first, carrying the observed value and
+  the bound so the frontend can explain the refusal: per-principal open-order
+  cap, this canister's **own** cycle-balance floor, burn-cap window headroom,
+  ICP float threshold, and a per-purchase ceiling. `Treasury.gate` remains the
+  authoritative money check at mint time.
+  - ⚠️ **Deliberately an admission gate, not a capacity reservation.** A
+    reservation would need reserved-but-unpaid accounting plus a release path for
+    abandoned orders, and it still could not guarantee delivery (the operator can
+    withdraw the float; the CMC rate moves). Nothing is escrowed at creation —
+    `lockedCycles` is a **price, not a hold** — so a lapsed order releases
+    nothing.
+  - ⚠️ **These three defaults are non-zero**, unlike the burn cap and the
+    ck-USDC bound. Those are money decisions that must ship dark; these are
+    safety limits where a 0 default would brick the canister rather than protect
+    it. The card rail's on/off switch remains the empty tier list.
+  - **Two distinct resources.** The canister's own cycle balance (its gas —
+    exhaustion freezes then uninstalls it) was previously never read at all. It
+    is unrelated to the ICP float, which buys cycles for customers.
+
+- **Per-purchase ceiling.** `Tiers.validate` rejects a tier above it (the
+  operator-typo guard), and webhook amount-honouring refuses to mint a payment
+  above it — §6.1's repricing is an *upward* path, so an untampered ceiling is
+  what keeps a tampered link or a mis-set Stripe price from minting an arbitrary
+  quantity.
+
+- **Refund-after-delivery is recorded (`#refundAfterDelivery`).** §4.1 covered
+  refunds only as the *resolution* of a Type 1 entry. A `charge.refunded` for an
+  order already `#delivered` is a fourth position — fiat out **and** cycles out —
+  and is now queued and audited via a `payment_intent → orderId` index. It is
+  neither Type 1 nor Type 2, is never auto-resolved (the refund is what created
+  it), and is **not recoverable**: the canister cannot claw back forwarded cycles.
+  - ⚠️ **`charge.dispute.*` remains unsubscribed, by decision.** Feasible but not
+    actionable for the same reason. Chargeback exposure is managed by Stripe
+    Radar/3DS and by the per-purchase ceiling; the burn cap does **not** bound it,
+    because each payment is individually legitimate.
+
+- **Upgrades require stopping the canister first.** §5.1 stated upgrades were
+  safe mid-flight; the mechanism is different from what was assumed. The IC
+  *rejects* an upgrade while callbacks are outstanding, and `stop_canister`
+  **drains** in-flight calls rather than dropping them. The stop-first procedure
+  is therefore both mandatory and the safe one: a controlled upgrade cannot
+  strand money.
+  - Consequence: `ambiguousForward` and `stalePullIntent` are unreachable through
+    a controlled upgrade. They cover genuine faults (a callee that never replies,
+    a subnet incident, cycle exhaustion mid-call) and remain unit-tested.
+  - Motoko's enhanced orthogonal persistence additionally requires
+    `wasm_memory_persistence = keep` on the upgrade.
+
+- **Cycles-ledger delivery nets the ledger's deposit fee.** The two §5 forward
+  arms are asymmetric: a `#canister` destination receives the full locked
+  quantity, a `#cyclesLedgerAccount` destination receives it minus the ledger's
+  100 M-cycle deposit fee. ⚠️ **Deliberately not grossed up** — paying it from the
+  app's own balance would make every such order a subsidy, i.e. a griefable
+  gas-drain vector. The user chose the delivery rail and bears its fee.
+
+- **SEV-SNP subnet availability is confirmed.** §7 and §11 treated it as an open
+  question. Two sub-caveats remain open and unchanged: whether
+  **checkpoints/state-sync are also confidential** on the target subnet (memory
+  encryption alone does not cover state at rest — verify this hardest), and the
+  **provisioning exposure** of `set_webhook_secret` through the TLS-terminating
+  boundary node. The ICP burn cap remains the always-on backstop regardless.
 
 ## 11. Deferred / future (non-blocking)
 

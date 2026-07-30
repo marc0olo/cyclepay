@@ -75,8 +75,22 @@ module {
   public type Pricing = {
     /// Gross USD cents the order was quoted for (the tier price).
     usdCents : Nat;
-    /// XDR-per-USD rate (micros, Forex.mo) locked at creation.
-    xdrPerUsdMicros : Nat;
+    /// USD per ICP × 10⁶ as read from the Exchange Rate Canister at creation.
+    usdPerIcpMicros : Nat;
+    /// XDR per ICP × 10⁴ as read from the Cycles Minting Canister at creation.
+    ///
+    /// Both rate inputs are stored rather than the derived result, so the quote
+    /// is reproducible from first principles: anyone can query the XRC and the
+    /// CMC and recompute `netCents × xdrPermyriadPerIcp × 10¹² /
+    /// usdPerIcpMicros`. Storing only the derived number would make the price
+    /// checkable but not *auditable*.
+    xdrPermyriadPerIcp : Nat;
+    /// XRC quality signal for the ICP price above: how many sources answered
+    /// out of how many were asked, and their spread. A price assembled from two
+    /// sources is not the same product as one from twelve.
+    rateStandardDeviation : Nat;
+    rateReceivedRates : Nat;
+    rateQueriedSources : Nat;
     /// §3 fee formula at creation.
     feeBps : Nat;
     feeFixedCents : Nat;
@@ -96,6 +110,18 @@ module {
     lockedCycles : Nat;
     pricing : Pricing;
     status : OrderStatus;
+    /// What the buyer **actually paid**, in USD cents. Null until paid.
+    ///
+    /// Distinct from `pricing.usdCents`, which is what the order was *quoted*
+    /// for. The two differ whenever a card payment arrives for a different
+    /// amount. Recorded here, on the money record, so "what did this buyer
+    /// pay?" is answerable from state forever — the audit ring buffer is
+    /// telemetry and drops its oldest entries, so it cannot be the only place
+    /// a fact about money lives.
+    ///
+    /// On the ck-USDC rail this always equals `pricing.usdCents`: the canister
+    /// pulls the exact quoted price, so a mismatch is structurally impossible.
+    paidUsdCents : ?Nat;
     createdAtNs : Int;
     updatedAtNs : Int;
   };

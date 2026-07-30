@@ -284,4 +284,14 @@ module {
     };
   };
 
+  /// Null unless the path holds a genuine JSON boolean — a string `"true"` or a
+  /// missing field are both "not a boolean", so a caller deciding something
+  /// security-relevant cannot be fooled by a value of the wrong type.
+  public func boolAt(json : Json, path : Text) : ?Bool {
+    switch (at(json, path)) {
+      case (?#bool(b)) ?b;
+      case (_) null;
+    };
+  };
+
 };

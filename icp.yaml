@@ -11,6 +11,49 @@ canisters:
         candid: src/backend/dist/backend.did
         # ic-wasm deterministic optimize (spec §8).
         shrink: true
+  # DFINITY's published XRC mock, deployed locally so `create_order` can price.
+  # A local network has no Exchange Rate Canister, so without this the gateway
+  # correctly refuses every order with `rateUnavailable`.
+  #
+  # `icp deploy` stamps `PUBLIC_CANISTER_ID:xrc` into every canister's settings, and
+  # the backend reads it lazily (see Xrc.canisterIdEnvVar), defaulting to the real
+  # mainnet XRC when it is absent.
+  #
+  # It cannot reach mainnet: the `ic` environment below lists only backend and
+  # frontend, so `icp deploy -e ic` never creates or installs this canister and
+  # never injects its id. `pricing_status.xrcCanisterId` is the belt-and-braces
+  # check — on mainnet it must read uf6dk-hyaaa-aaaaq-qaaaq-cai.
+  - name: xrc
+    recipe:
+      type: "@dfinity/prebuilt@v2.1.0"
+      configuration:
+        # Fetched and hash-verified by test/integration's pretest
+        # (scripts/fetch-wasms.mjs) — the same binary and the same pin the PocketIC
+        # suite installs, so local and CI price off identical code. Run
+        # `npm --prefix test/integration run fetch:wasm` if it is missing.
+        path: test/integration/wasm/xrc_mock.wasm.gz
+        sha256: 037d1137e587fd4086311242d5b8ec9cae50eeba29e98cbcb661ae11e9658d11
+    # The mock's response is fixed at INSTALL time (it traps without an init arg),
+    # so this is the rate every local order prices from. $4.55/ICP at 9 decimals —
+    # the same vector the PocketIC suite pins, so local and CI agree. To simulate a
+    # different rate, edit this and `icp deploy --mode reinstall xrc`.
+    init_args:
+      value: >-
+        (record { response = variant { ExchangeRate = record {
+          base_asset = null;
+          quote_asset = null;
+          metadata = opt record {
+            decimals = 9 : nat32;
+            base_asset_num_received_rates = 5 : nat64;
+            base_asset_num_queried_sources = 6 : nat64;
+            quote_asset_num_received_rates = 5 : nat64;
+            quote_asset_num_queried_sources = 6 : nat64;
+            standard_deviation = 0 : nat64;
+            forex_timestamp = null;
+          };
+          rate = 4_550_000_000 : nat64;
+        } } })
+
   - name: frontend
     recipe:
       # v2.2.1+ required: icp-cli 0.3.x dropped the `assets` sync step the
@@ -25,5 +68,32 @@ canisters:
 networks:
   - name: local
     mode: managed
+    # Deploys the II canisters with the network, so sign-in works fully offline and
+    # can be automated. The default (no flag) is to use mainnet II even locally —
+    # pocket-ic trusts mainnet subnet signatures — but that needs the real II UI and
+    # a real passkey, which a headless test cannot drive.
+    ii: true
     gateway:
-      port: 0 # OS picks a free port — avoids collisions across worktrees/projects
+      # Fixed rather than OS-picked, so every local URL is predictable: the app at
+      # http://frontend.local.localhost:8000, Internet Identity at
+      # http://id.ai.localhost:8000, and the webhook route at
+      # http://127.0.0.1:8000/webhook/stripe?canisterId=<id>. A browser test can
+      # hardcode those instead of discovering them, and the II skill's documented
+      # URL works verbatim.
+      #
+      # Trade-off accepted: two projects cannot run local networks at once. Stop the
+      # other one (`icp network stop`) rather than changing this — predictability is
+      # worth more here than parallel networks.
+      port: 8000
+
+environments:
+  # Mainnet deploys the product and nothing else. Listing the canisters explicitly
+  # is what keeps the local-only `xrc` mock off mainnet structurally, rather than
+  # relying on whoever runs the deploy remembering not to: an unlisted canister is
+  # never created, never installed, and its `PUBLIC_CANISTER_ID:` is never injected,
+  # so the backend falls back to the real Exchange Rate Canister.
+  #
+  # The RUNBOOK's `-e ic` commands resolve against this.
+  - name: ic
+    network: ic
+    canisters: [backend, frontend]

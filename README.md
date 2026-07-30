@@ -1,27 +1,51 @@
 # CyclePay — Fully On-Chain Cycles Gateway
 
-A "buy cycles with fiat or stablecoins" service that runs entirely on the
-Internet Computer: a single verifiable Motoko backend canister plus an asset
-canister serving the frontend. Two payment rails — **Card** (Stripe webhook,
-inbound only, no `sk_live` ever leaves the user's browser flow) and
-**ck-USDC** (ICRC-2 approve → pull) — converge on a unified mint through the
-Cycles Minting Canister from an operator ICP float. Purchases are
+**Buy cycles with a credit card.** No ICP, no wallet, no exchange account — which
+is the whole point: it exists to get a developer from "I have a card" to "my
+canister has cycles" without first solving crypto onboarding.
+
+It runs entirely on the Internet Computer: a single verifiable Motoko backend
+canister plus an asset canister serving the frontend. The **Card** rail (Stripe
+webhook, inbound only — there is no Stripe API key anywhere in the system) mints
+through the Cycles Minting Canister from an operator ICP float. Purchases are
 Internet-Identity-authenticated, one-shot, and delivered either to a canister
 (`notify_top_up`) or a cycles-ledger account (`notify_mint_cycles`).
 
+A second rail, **ck-USDC** (ICRC-2 approve → pull), is implemented and tested but
+**ships disabled**. It shares the same money-out path and exists as a fallback if
+the card processor ever becomes unavailable; it is not the product.
+
+**Pricing is derived on-chain and reproducible by anyone.** Two rates, both read
+from canisters — USD/ICP from the Exchange Rate Canister, XDR/ICP from the CMC —
+so the canister makes no outbound HTTPS at all.
+
+The buyer sees the cycle quantity **before** committing (`quote_previews`, a
+public query running the same code that locks the price), the quoted figure is
+**pinned server-side** at creation so an order can never lock less than they were
+shown, and afterwards `receipt(orderId)` hands them both rate inputs so they can
+recompute the price themselves rather than take our word for it.
+
 The design bar is "production money-handler from day one": full idempotency,
-write-intent-before-call replay safety, a bounded error queue with defined
-money positions for every failure, and a reproducible build so anyone can
-verify the deployed module hash against a tagged commit.
+write-intent-before-call replay safety, an error queue that never drops an
+unresolved obligation and carries a defined money position for every failure, and
+a reproducible build so anyone can verify the deployed module hash against a
+tagged commit.
 
 Key documents:
 
 | Document | What it is |
 |----------|------------|
-| `design-docs/ONCHAIN_GATEWAY_SPEC.md` | The decision record (spec v2.1) — canonical source for all design decisions |
-| [GitHub Issues](https://github.com/raymondk/cyclepay/issues) | Task and progress tracking (source of truth; `PRD.md` and `progress.txt` are frozen historical artifacts) |
-| `RUNBOOK.md` | Operations: go-live checklist, secret rotation, error-queue triage |
+| `design-docs/ONCHAIN_GATEWAY_SPEC.md` | The decision record — *why* it is built this way. Non-binding rationale; the implementation wins where they disagree |
+| `docs/STRIPE.md` | **Start here.** The Card rail end to end, written from the code: ingress, signature verification, attribution, dedup, pricing, retention, refunds, the secret, and the local Stripe-sandbox loop |
+| `docs/TEST-COVERAGE.md` | What is tested, how, and what is not — one place to answer "is X covered?" |
+| `docs/SANDBOX-TESTPLAN.md` | The manual Stripe-sandbox verification pass required before go-live, and an explicit statement of what a green run does not prove |
+| `RUNBOOK.md` | Operations, authoritative for procedure: go-live checklist, secret rotation, rate diagnosis, treasury levers, error-queue triage, monitoring plan |
 | `RELEASE.md` | Reproducible build and module-hash verification procedure |
+| `AGENTS.md` | Agent instructions: ICP skills setup, conventions, the verification gate |
+
+Task and progress tracking lives in **GitHub Issues** (see
+`docs/agents/issue-tracker.md`). `PRD.md` and `progress.txt` are frozen
+historical artifacts and are not updated.
 
 ## Prerequisites
 
@@ -77,19 +101,44 @@ plugin on every dev/build run — if you change the backend API, run
 `mops build` to refresh the `.did`, and the frontend will pick it up (or fail
 to typecheck, which is the point).
 
+## Testing the Stripe rail locally
+
+Against a **Stripe sandbox account**, with the real Stripe CLI forwarding real
+signed webhooks into a local replica:
+
+```sh
+brew install stripe/stripe-cli/stripe
+stripe login                 # choose a SANDBOX account, never a live one
+
+icp network start -d && icp deploy backend
+scripts/stripe-dev.sh        # bootstraps dev config, wires the signing secret, forwards
+```
+
+Then, in another terminal, `stripe trigger checkout.session.completed`. See
+`docs/STRIPE.md` §15 for the happy-path walkthrough and the two gotchas
+(`stripe trigger` sends no `client_reference_id`; the canister checks the
+signature timestamp against its own clock).
+
 ## Tests
 
+```sh
+scripts/test-all.sh          # the whole gate, fail-fast
+scripts/test-all.sh --fast   # skip PocketIC (needs a 4 KiB-page host)
+```
+
+See `docs/TEST-COVERAGE.md` for what each suite covers and what is not covered.
 There are three suites:
 
-**1. Motoko unit tests** (`test/*.test.mo`) — pure-logic coverage per module
-(state machine, idempotency, HMAC/Stripe signatures, HTTP routing, forex,
+**1. Motoko unit tests** (`test/*.test.mo`) — one suite per module, pure-logic
+(state machine, idempotency, HMAC/Stripe signatures, HTTP routing, pricing,
 treasury caps, …):
 
 ```sh
 mops test
 ```
 
-**2. Frontend tests** (`src/frontend`):
+**2. Frontend tests** (`src/frontend`) — pure-function tests, plus jsdom tests
+driving `main.ts` against the real `index.html`:
 
 ```sh
 npm --prefix src/frontend run test        # vitest unit tests
@@ -98,13 +147,16 @@ npm --prefix src/frontend run typecheck
 
 **3. PocketIC integration suite** (`test/integration`) — the **go-live bar**
 (spec §9): end-to-end scenarios against the real ICP ledger, CMC, cycles
-ledger, and ck-USDC ledger Wasms, with crafted HMAC-signed Stripe webhooks,
-mocked forex outcalls, time control, and upgrade-mid-flight replay checks:
+ledger, and ck-USDC ledger Wasms, plus the released XRC mock at the mainnet XRC
+id — HMAC-signed Stripe webhooks (over a real HTTP gateway in scenario 55), time
+control, outage injection against the real NNS canisters, and upgrade-mid-flight
+replay checks:
 
 ```sh
 cd test/integration
 npm ci
-npm test        # pretest fetches the sha256-pinned ledger wasm + builds the backend
+npm test        # pretest fetches the sha256-pinned wasms + builds the backend
+                # never `npx vitest run` — it skips pretest and tests a stale wasm
 ```
 
 Requirements: Node ≥ 20.11, `mops` on PATH, and a **4 KiB-page kernel** —

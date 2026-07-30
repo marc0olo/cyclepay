@@ -4,7 +4,7 @@
 // fetch (a fetched root key on mainnet is a MITM vector).
 import { safeGetCanisterEnv } from "@icp-sdk/core/agent/canister-env";
 import type { Identity } from "@icp-sdk/core/agent";
-import { createActor } from "./bindings/backend";
+import { createActor, Rail } from "./bindings/backend";
 
 const canisterEnv = safeGetCanisterEnv();
 export const backendCanisterId = canisterEnv?.["PUBLIC_CANISTER_ID:backend"];
@@ -38,5 +38,9 @@ export type Tier = Awaited<ReturnType<Backend["card_tiers"]>>[number];
 export type Destination = Parameters<Backend["create_order"]>[1];
 export type CreateOrderResult = Awaited<ReturnType<Backend["create_order"]>>;
 export type TreasuryStatus = Awaited<ReturnType<Backend["treasury_status"]>>;
-export type ForexStatus = Awaited<ReturnType<Backend["forex_status"]>>;
+export type PricingStatus = Awaited<ReturnType<Backend["pricing_status"]>>;
 export type CkUsdcConfig = Awaited<ReturnType<Backend["ck_usdc_config"]>>;
+// Payload-less Candid variants surface as string enums; re-exported so callers
+// name the rail instead of hand-building a variant record.
+export { Rail };
+export type QuotePreview = Awaited<ReturnType<Backend["quote_previews"]>>["quotes"][number];

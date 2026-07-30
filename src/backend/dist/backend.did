@@ -1,5 +1,10 @@
 type ValidateError = 
  variant {
+   aboveCeiling: record {
+                   id: text;
+                   maxUsdCents: nat;
+                   usdCents: nat;
+                 };
    duplicateTierId: text;
    emptyTierId;
    zeroUsdCents: text;
@@ -24,6 +29,7 @@ type Status__1 =
    heldOrders: nat;
    lastObservedFloat: opt FloatObservation;
    lowFloat: bool;
+   paidOrders: nat;
  };
 type Status = 
  record {
@@ -37,22 +43,22 @@ type SetError = variant {tooShort: record {
                                    };};
 type Result_9 = 
  variant {
-   err: CreateOrderError;
-   ok: CreatedOrder;
- };
-type Result_8 = 
- variant {
-   err: ProcessOrderError;
-   ok: Order;
- };
-type Result_7 = 
- variant {
    err: ResolveError;
    ok: Entry;
  };
-type Result_6 = 
+type Result_8 = 
  variant {
    err: ValidateError;
+   ok;
+ };
+type Result_7 = 
+ variant {
+   err: ConfigError__4;
+   ok;
+ };
+type Result_6 = 
+ variant {
+   err: ConfigError__3;
    ok;
  };
 type Result_5 = 
@@ -62,12 +68,12 @@ type Result_5 =
  };
 type Result_4 = 
  variant {
-   err: ConfigError__1;
+   err: IntervalError;
    ok;
  };
 type Result_3 = 
  variant {
-   err: IntervalError;
+   err: ConfigError__1;
    ok;
  };
 type Result_2 = 
@@ -75,15 +81,40 @@ type Result_2 =
    err: ConfigError;
    ok;
  };
-type Result_11 = 
+type Result_16 = 
+ variant {
+   err: AttachPaymentError;
+   ok: Order;
+ };
+type Result_15 = 
+ variant {
+   err: Reason;
+   ok;
+ };
+type Result_14 = 
+ variant {
+   err: text;
+   ok: Order;
+ };
+type Result_13 = 
  variant {
    err: ClaimCkUsdcError;
    ok: Order;
  };
-type Result_10 = 
+type Result_12 = 
  variant {
    err: CreateCkUsdcOrderError;
    ok: CreatedCkUsdcOrder;
+ };
+type Result_11 = 
+ variant {
+   err: CreateOrderError;
+   ok: CreatedOrder;
+ };
+type Result_10 = 
+ variant {
+   err: ProcessOrderError;
+   ok: Order;
  };
 type Result_1 = 
  variant {
@@ -114,15 +145,74 @@ type Request =
    method: text;
    url: text;
  };
-type Rate = 
+type Receipt = 
+ record {
+   cyclesMinted: opt nat;
+   mintBlockIndex: opt nat;
+   order: Order;
+   paidUsdCents: opt nat;
+   verification:
+    record {
+      netCents: opt nat;
+      rateQueriedSources: nat;
+      rateReceivedRates: nat;
+      usdPerIcpMicros: nat;
+      xdrPermyriadPerIcp: nat;
+    };
+ };
+type Reason = 
+ variant {
+   amountAboveMax: record {
+                     maxUsdCents: nat;
+                     usdCents: nat;
+                   };
+   burnCapExhausted: record {
+                       burnedE8s: nat;
+                       capE8s: nat;
+                     };
+   canisterCyclesLow: record {
+                        balance: nat;
+                        min: nat;
+                      };
+   floatLow: record {
+               observedE8s: opt nat;
+               thresholdE8s: nat;
+             };
+   tooManyOpenOrders: record {
+                        max: nat;
+                        open: nat;
+                      };
+ };
+type Rates = 
  record {
    fetchedAtNs: int;
-   xdrPerUsdMicros: nat;
+   quality: Quality;
+   usdPerIcpMicros: nat;
+   xdrPermyriadPerIcp: nat;
  };
 type Rail = 
  variant {
    card;
    ckUsdc;
+ };
+type QuotePreviews = 
+ record {
+   cyclesLedgerDepositFee: nat;
+   quotes: vec QuotePreview;
+   rates: opt Rates;
+ };
+type QuotePreview = 
+ record {
+   cycles: opt nat;
+   feeCents: nat;
+   netCents: opt nat;
+   usdCents: nat;
+ };
+type Quality = 
+ record {
+   queriedSources: nat;
+   receivedRates: nat;
+   standardDeviation: nat;
  };
 type PullIntent = 
  record {
@@ -150,8 +240,17 @@ type Pricing =
  record {
    feeBps: nat;
    feeFixedCents: nat;
+   rateQueriedSources: nat;
+   rateReceivedRates: nat;
+   rateStandardDeviation: nat;
    usdCents: nat;
-   xdrPerUsdMicros: nat;
+   usdPerIcpMicros: nat;
+   xdrPermyriadPerIcp: nat;
+ };
+type Page = 
+ record {
+   entries: vec Entry;
+   nextCursor: opt nat;
  };
 type Owner = variant {ii: principal;};
 type OrderStatus = 
@@ -173,6 +272,7 @@ type Order =
    id: OrderId;
    lockedCycles: nat;
    owner: Owner;
+   paidUsdCents: opt nat;
    pricing: Pricing;
    rail: Rail;
    status: OrderStatus;
@@ -180,10 +280,27 @@ type Order =
  };
 type Kind = 
  variant {
+   abandoned: record {
+                orderId: OrderId;
+                reason: text;
+              };
+   deliveryDelayed: record {
+                      orderId: OrderId;
+                      sinceNs: int;
+                      stage: text;
+                    };
    duplicate: record {
                 orderId: OrderId;
                 paymentRef: text;
               };
+   refundAfterDelivery:
+    record {
+      cycles: nat;
+      fullRefund: bool;
+      orderId: OrderId;
+      paymentRef: text;
+      refundedCents: nat;
+    };
    stuckMint: record {
                 orderId: OrderId;
                 stage: text;
@@ -195,6 +312,10 @@ type Kind =
    undeliverable: record {
                     cycles: nat;
                     orderId: OrderId;
+                  };
+   unprocessable: record {
+                    eventId: text;
+                    field: text;
                   };
  };
 type JournalEntry = 
@@ -212,18 +333,8 @@ type JournalEntry =
 type IntervalError = 
  variant {
    intervalTooLong: record {maxNs: nat;};
+   intervalTooShort: record {minNs: nat;};
    zeroInterval;
- };
-type HttpRequestResult = 
- record {
-   body: blob;
-   headers: vec HttpHeader;
-   status: nat;
- };
-type HttpHeader = 
- record {
-   name: text;
-   value: text;
  };
 type HeaderField = 
  record {
@@ -271,6 +382,11 @@ type CreateOrderError =
  variant {
    anonymous;
    idGeneration;
+   notAdmitted: Reason;
+   quoteChanged: record {
+                   minimum: nat;
+                   quoted: nat;
+                 };
    rateUnavailable;
    tierBelowFees: text;
    unknownTier: text;
@@ -282,11 +398,16 @@ type CreateCkUsdcOrderError =
    anonymous;
    belowMinimum: nat;
    idGeneration;
+   notAdmitted: Reason;
+   quoteChanged: record {
+                   minimum: nat;
+                   quoted: nat;
+                 };
    railDisabled;
    rateUnavailable;
    zeroAmount;
  };
-type Config__2 = 
+type Config__4 = 
  record {
    feeBps: nat;
    feeFixedCents: nat;
@@ -294,31 +415,56 @@ type Config__2 =
    maxUsdCents: nat;
    minUsdCents: nat;
  };
-type Config__1 = 
+type Config__3 = 
+ record {
+   maxOpenOrdersPerPrincipal: nat;
+   maxPurchaseUsdCents: nat;
+   minCanisterCycles: nat;
+ };
+type Config__2 = 
  record {
    feeBps: nat;
    feeFixedCents: nat;
    maxAgeNs: int;
-   url: text;
+   maxRateDeltaBps: nat;
+   minRateSources: nat;
  };
-type ConfigError__2 = 
+type Config__1 = record {orderTtlNs: nat;};
+type ConfigError__4 = 
  variant {
    feeBpsTooHigh;
    minAboveMax;
  };
-type ConfigError__1 = 
+type ConfigError__3 = 
+ variant {
+   zeroOpenOrderCap;
+   zeroPurchaseCeiling;
+ };
+type ConfigError__2 = 
  variant {
    feeBpsTooHigh;
+   maxAgeTooLong: record {
+                    allowedNs: int;
+                    maxAgeNs: int;
+                  };
    nonPositiveMaxAge;
-   notHttps;
+   zeroRateDelta;
+   zeroRateSources;
  };
+type ConfigError__1 = variant {zeroTtl;};
 type ConfigError = 
  variant {
+   alertNotBeforeMaxHold: record {
+                            alertAfterNs: int;
+                            maxHoldNs: int;
+                          };
+   nonPositiveAlertAfter;
    nonPositiveBurnWindow;
    nonPositiveMaxHold;
  };
 type Config = 
  record {
+   alertAfterNs: int;
    burnCapE8s: nat;
    burnWindowNs: int;
    lowFloatThresholdE8s: nat;
@@ -344,6 +490,20 @@ type ClaimCkUsdcError =
    staleIntent;
    wrongRail;
  };
+type AttachPaymentError = 
+ variant {
+   aboveCeiling: record {
+                   maxUsdCents: nat;
+                   paidUsdCents: nat;
+                 };
+   alreadyCredited: text;
+   belowFeeFloor: nat;
+   noOrder: OrderId;
+   notClaimable: text;
+   transitionRefused: text;
+   unusableSnapshot;
+   wrongRail;
+ };
 type Account = 
  record {
    owner: principal;
@@ -353,17 +513,77 @@ type Account =
 /// 
 /// See design-docs/ONCHAIN_GATEWAY_SPEC.md (spec v2.1) and PRD.md for the
 /// module layout this actor grows into: Orders.mo wiring, rails/, Cmc.mo,
-/// Forex.mo, Treasury.mo, ErrorQueue.mo, Auth.mo.
+/// Pricing.mo, Treasury.mo, ErrorQueue.mo, Auth.mo.
 service : {
+  abandon_order: (id: OrderId, reason: text) -> (Result_14);
+  /// Credit a Stripe charge the canister never saw (admin, §6.1).
+  /// 
+  /// The recovery path for the one card-rail failure that otherwise has none:
+  /// **the webhook never arrived.** Stripe retries a failed delivery for about
+  /// three days and then stops; we hold no API key, so we never poll. Past that
+  /// horizon the charge exists in Stripe with no on-chain trace at all, the
+  /// buyer's money is gone, and their order reads "Awaiting payment" forever.
+  /// 
+  /// Also rescues an unattributed payment the operator *can* identify — turning
+  /// "refund and ask them to re-order at today's price" into "deliver what they
+  /// bought". Any open Type 1 entry for the charge is resolved, since attaching
+  /// it discharges that obligation.
+  /// 
+  /// The operator supplies the amount because Stripe is the authority on it, and
+  /// it is honoured through exactly the same helper the webhook uses.
+  /// 
+  /// This is a money-creating lever, so: controller-only, dedup-guarded against
+  /// double credit, and audited with the calling principal.
+  attach_payment: (paymentRef: text, id: OrderId, paidUsdCents: nat) ->
+   (Result_16);
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
   audit_log: () -> (vec Event) query;
+  /// Admission preflight, public: lets the frontend disable the buy button with
+  /// a real reason (and lets an operator ask "would a purchase go through right
+  /// now?") without creating an order. `usdCents` is the gross amount to test.
+  /// 
+  /// The answer is advisory — it can go stale between this call and
+  /// `create_order`, which re-checks. It is not an authorization decision, so
+  /// anonymous callers may ask: it reveals only operational state that
+  /// `treasury_status` already publishes. Answered for the *calling* principal,
+  /// so the open-order cap it reports is the caller's own.
+  can_purchase: (usdCents: nat) -> (Result_15) query;
+  /// Stop trying to deliver an order (admin, §7) — **the only path to a
+  /// terminal non-delivered state.**
+  /// 
+  /// Nothing in the system gives up on a purchase automatically: a delay raises
+  /// `#deliveryDelayed` and keeps retrying, because its causes are all
+  /// operator-fixable. This is the deliberate human decision that a purchase
+  /// will not be completed, and it demands a reason so the trail records *why*
+  /// alongside *who*.
+  /// 
+  /// Only reachable from a pre-delivery money-bearing state. A `#created` order
+  /// has taken no money and needs no decision; a `#delivered` one is done.
+  /// Let a buyer give up on their own unpaid order (owner-scoped).
+  /// 
+  /// `Gate.maxOpenOrdersPerPrincipal` counts `#created` orders, and its refusal
+  /// tells the user to pay or abandon one — advice they could not follow without
+  /// this: `abandon_order` is admin-only and only accepts *paid* orders. A buyer
+  /// who opened the cap's worth of checkouts and completed none would be locked
+  /// out until the TTL expired them.
+  /// 
+  /// Marks the order `#expired`, which is the existing retention transition, not
+  /// a new state. Two consequences, both wanted: the slot frees immediately, and
+  /// a payment that arrives anyway is **still honoured** at the locked quantity,
+  /// because `#expired` is payable (§4). So this can never strand a payment that
+  /// was already in flight when the buyer clicked cancel.
+  /// 
+  /// No error-queue entry: nothing is owed. The record and the audit line are the
+  /// trail, and queueing an obligation for an order where no money moved is
+  /// exactly the orphan state the queue must not accumulate.
+  cancel_order: (id: OrderId) -> (Result_14);
   /// Public — the frontend renders tiers and their Payment Links from this.
   card_tiers: () -> (vec Tier) query;
   /// Public — bounds and fee formula are what users are charged (the same
   /// transparency stance as forex_status); the frontend renders the rail
   /// panel (or its disabled state) from this.
-  ck_usdc_config: () -> (Config__2) query;
+  ck_usdc_config: () -> (Config__4) query;
   /// Money-IN journal for one order (admin, ops parity with mint_journal).
   ck_usdc_pull: (id: OrderId) -> (opt PullEntry) query;
   /// §6.2 pull: after `icrc2_approve` (≥ the order's approveUnits, spender =
@@ -372,15 +592,16 @@ service : {
   /// lost responses (the persisted intent replays bit-identically; the ledger
   /// dedups on created_at_time). On success the order is `#paid` and the
   /// mint pipeline is kicked — the same money-out path as the card rail.
-  claim_ck_usdc_order: (id: OrderId) -> (Result_11);
+  claim_ck_usdc_order: (id: OrderId) -> (Result_13);
   /// Create a ck-USDC order (§6.2): user-chosen amount within operator
   /// bounds — nothing structural pins the amount the way a card Payment Link
   /// does, and the canister pulls the exact price itself. Same §3 quote path
   /// as the card rail (locked cycle quantity, fail-closed on a stale rate),
   /// priced with this rail's own fee formula. The flow after this:
   /// `icrc2_approve` (user → ledger, ≥ approveUnits) then `claim_ck_usdc_order`.
-  create_ck_usdc_order: (usdCents: nat, destination: Destination) ->
-   (Result_10);
+  /// `minCycles` behaves exactly as on `create_order` — see it for the reasoning.
+  create_ck_usdc_order: (usdCents: nat, destination: Destination, minCycles:
+   opt nat) -> (Result_12);
   /// Create a card-rail order: II caller becomes the owner (ownership is
   /// captured here at the API edge, seam §11.1.3), the tier's USD amount is
   /// quoted into a locked cycle *quantity* (§3, net of fees at the cached
@@ -389,25 +610,61 @@ service : {
   /// before the refresh await, so one order is always priced from one
   /// consistent epoch even when a refresh interleaves with a config change;
   /// the store write after the awaits is atomic.
-  create_order: (tierId: text, destination: Destination) -> (Result_9);
-  /// §4.1 operator worklist + retained history. Admin: entries carry
+  /// `minCycles` pins the quantity the caller was shown (§3).
+  /// 
+  /// The rate refresh runs on a timer, so a figure quoted to a buyer can move
+  /// before they commit — and a client-side re-check cannot close that window,
+  /// because a query and this update are separate messages. Pinning the
+  /// expectation here makes the check atomic with the lock, so no order can ever
+  /// be created at a quantity the buyer was not shown.
+  /// 
+  /// A **minimum**, deliberately, not an equality: a rate move in the buyer's
+  /// favour passes through and they keep the extra cycles. The guard can only
+  /// ever protect the buyer. `null` opts out entirely.
+  create_order: (tierId: text, destination: Destination, minCycles:
+   opt nat) -> (Result_11);
+  /// §5.2 liveness observability, public (operational transparency, same
+  /// stance as treasury_status): cadence + last completed timer sweep. A
+  /// null or stale `lastSweep` means recovery is not running.
+  /// This canister's OWN cycle balance and the floor the admission gate holds
+  /// it against (public — the same operational-transparency stance as
+  /// `treasury_status`; it is visible via `canister_status` regardless).
+  /// 
+  /// Distinct from the ICP float in every way: this is gas. Below the freezing
+  /// threshold the canister stops accepting updates; at zero it is uninstalled
+  /// and the order store, journals, and dedup sets go with it. Monitor it
+  /// separately, and alert well above `minCanisterCycles` — that gate stops
+  /// *sales*, it does not stop the burn. A sudden acceleration here is the
+  /// signature of a cycle-drain attempt.
+  cycles_status: () -> (record {
+                          balance: nat;
+                          floor: nat;
+                        }) query;
+  /// §4.1 retained history, oldest first, **paged**. Admin: entries carry
   /// payment references and claimed-but-bogus URL params.
-  error_queue: () -> (vec Entry) query;
-  /// Cache + params, public: the rate is market data and the fee formula is
-  /// what users are charged — nothing here is secret, and transparency is
-  /// the product thesis.
-  forex_status: () -> (record {
-                         config: Config__1;
-                         rate: opt Rate;
-                       }) query;
-  /// §3.1 coarse-rounding transform: every replica reduces its raw response
-  /// to a tiny canonical body (rounded micro-XDR/USD, or empty on parse
-  /// failure), so consensus is over `"737000"`, not 4 KiB of live JSON.
-  forex_transform: (args:
-   record {
-     context: blob;
-     response: HttpRequestResult;
-   }) -> (HttpRequestResult) query;
+  /// 
+  /// Paged because unresolved obligations are never evicted, so the queue can
+  /// grow — and an unpaginated read would eventually exceed Candid's 2 MB
+  /// message limit, i.e. the record would become unreadable exactly when it
+  /// mattered most. Pass `null` to start; feed `nextCursor` back until it is
+  /// null. `limit` is capped at `ErrorQueue.maxPageSize`.
+  error_queue: (afterId: opt nat, limit: nat) -> (Page) query;
+  /// Open-obligation depth, public.
+  /// 
+  /// Unresolved entries are never evicted, so this number only ever comes down
+  /// by the operator working it. A climbing value means dollars are arriving
+  /// that nobody has dealt with — the single most important operational number
+  /// on the money path, and it is public because §9's transparency stance says
+  /// operational state is not secret.
+  error_queue_depth: () -> (record {
+                              retained: nat;
+                              unresolved: nat;
+                            }) query;
+  /// The operator worklist: open obligations only, paged. Filtered server-side
+  /// so a large body of resolved history never stands between the operator and
+  /// the dollars that still need an answer.
+  error_queue_unresolved: (afterId: opt nat, limit: nat) -> (Page) query;
+  expected_livemode: () -> (opt bool) query;
   /// §2 query authz: `caller == order.owner`, null otherwise — existence is
   /// not revealed to non-owners. Anonymous callers own nothing by
   /// construction (create_order rejects them), so they always get null.
@@ -422,17 +679,85 @@ service : {
   /// dispatcher re-applies every guard; the route handlers themselves are
   /// payload-authenticated (HMAC), never caller-authenticated.
   http_request_update: (req: Request) -> (Response);
+  /// Public: the frontend needs the ceiling to bound its amount input, and the
+  /// TTL to tell the user how long an order stays live. Same transparency
+  /// stance as `forex_status` and `treasury_status` — these are the rules users
+  /// are held to, not secrets.
+  lifecycle_config: () ->
+   (record {
+      gate: Config__3;
+      retention: Config__1;
+    }) query;
   /// Order history for the caller (§2, fixes the lost-receipt problem).
   list_orders: () -> (vec Order) query;
   /// Money-out journal for one order (admin, §4.2) — intent, block_index,
   /// minted cycles, retries.
   mint_journal: (id: OrderId) -> (opt JournalEntry) query;
+  /// Which order did this Stripe `payment_intent` pay for (admin, §4.2)? The
+  /// reconciliation lookup: given a charge in the Stripe Dashboard, find the
+  /// order it funded. Null means the payment was never attributed to an order
+  /// here — check the error queue for a Type 1 entry carrying it.
+  order_for_payment: (paymentRef: text) -> (opt OrderId) query;
+  /// Rates + params + refresh liveness, public: both rates are market data any
+  /// third party can query for themselves, and the fee formula is what users
+  /// are charged. Nothing here is secret, and reproducibility is the point.
+  pricing_status: () ->
+   (record {
+      config: Config__2;
+      lastAttempt: opt record {
+                         atNs: int;
+                         detail: text;
+                         ok: bool;
+                       };
+      rates: opt Rates;
+      xrcCanisterId: text;
+    }) query;
   /// Manual mint kick (admin, §7) — ops lever for a stuck-looking order;
   /// safe to spam, every step is deduped/idempotent/single-flighted.
-  process_order: (id: OrderId) -> (Result_8);
-  /// §5.2 liveness observability, public (operational transparency, same
-  /// stance as treasury_status): cadence + last completed timer sweep. A
-  /// null or stale `lastSweep` means recovery is not running.
+  process_order: (id: OrderId) -> (Result_10);
+  /// Batch pre-purchase quote, public.
+  /// 
+  /// This exists so the price a buyer is shown is **computed by the same code
+  /// that prices the order** — `quoteCents`, the identical function
+  /// `create_order` and `create_ck_usdc_order` call. A client reimplementing the
+  /// formula would be one refactor away from quoting a number the gateway does
+  /// not honour, and the buyer would have no way to tell which was wrong.
+  /// 
+  /// Batched because the tier grid needs every price in one round trip.
+  /// 
+  /// **Unbounded input on purpose**, unlike the paged queries. Those cap `limit`
+  /// because a tiny request makes them scan a large store — cheap to invoke,
+  /// expensive to serve. Here the work is constant per element the caller already
+  /// had to transmit, there is no state scan and no amplification, so the ingress
+  /// size limit already bounds it. A cap would only buy silent truncation, which
+  /// is a worse failure than the one it prevents: a caller passing more tiers
+  /// than the cap would get a short array back with no signal that anything was
+  /// dropped.
+  /// 
+  /// `rail` selects the fee formula — the two rails price the same rate cache
+  /// with different fees (§6.1, §6.2).
+  quote_previews: (rail: Rail, amounts: vec nat) -> (QuotePreviews) query;
+  /// Everything the **buyer** needs to verify their own purchase (§2 authz:
+  /// `caller == order.owner`).
+  /// 
+  /// The order already carried enough to reproduce the price; nothing surfaced
+  /// it, and the delivery proof was admin-only. A buyer could see *that* we
+  /// claimed to deliver, never check it. Now they can: recompute the quote from
+  /// the two recorded rate inputs, and look up the block index on the ICP ledger.
+  /// 
+  /// `mint_journal` stays admin-only — it carries retries and raw transfer
+  /// intents, which are operational rather than the buyer's business.
+  receipt: (id: OrderId) -> (opt Receipt) query;
+  /// Rebuild the per-status tallies from the order store (admin, §7).
+  /// 
+  /// The tallies are maintained incrementally so the public status queries stay
+  /// O(1); this is the O(n) reconciliation lever for the case where they are
+  /// ever suspected of having drifted. Admin-only precisely because it is the
+  /// expensive path. Returns the rebuilt counts.
+  recount_orders: () -> (vec record {
+                               text;
+                               nat;
+                             });
   recovery_status: () ->
    (record {
       intervalNs: nat;
@@ -446,6 +771,9 @@ service : {
   /// cycles on ledger calls). The mint pre-gate refreshes the observation as
   /// a side effect; this is the ops lever between mints.
   refresh_float: () -> (nat);
+  /// Force a rate refresh now (admin) — the ops lever after retuning config or
+  /// while diagnosing a stale rate, without waiting for the next tick.
+  refresh_rates: () -> (opt Rates);
   /// §5.3 manual override: clear the rolling window's consumption after
   /// confirming the traffic was legitimate (or rotating a leaked secret).
   /// Returns the e8s of consumption cleared. Held orders resume on the next
@@ -460,20 +788,62 @@ service : {
   /// Manual resolution (§4.1/§7): refund issued off-chain, or Type 2 cycles
   /// re-delivered/refunded. (`charge.refunded` resolves Type 1 entries
   /// automatically; this is the fallback and the only path for Type 2.)
-  resolve_error: (id: nat) -> (Result_7);
+  resolve_error: (id: nat) -> (Result_9);
+  /// Retention counters for monitoring (public, same stance as
+  /// `treasury_status`).
+  /// 
+  /// `openOrders` climbing while `delivered` does not is the signature of
+  /// order-creation abuse; the lever is `Gate.maxOpenOrdersPerPrincipal`.
+  /// `totalOrders` and `paidIntentsIndexed` should grow together — a divergence
+  /// means an index and its records disagree.
+  retention_status: () ->
+   (record {
+      config: Config__1;
+      expiredOrders: nat;
+      openOrders: nat;
+      paidIntentsIndexed: nat;
+      totalOrders: nat;
+    }) query;
+  /// Manual retention kick (admin, §7) — ops lever to apply a retuned TTL
+  /// immediately instead of waiting up to a full sweep interval. Safe to spam:
+  /// the band is an absolute age, so a second run is a no-op.
+  /// 
+  /// Returns `scanned` alongside `expired` because the sweep is bounded per call
+  /// (`maxRetentionScanPerSweep`) and resumes from a cursor: on a large store it
+  /// takes several calls to cover everything, and `scanned` is how an operator
+  /// tells "nothing left to expire" from "did not look at everything yet".
+  run_retention: () -> (record {
+                          expired: nat;
+                          scanned: nat;
+                        });
   /// Replace the card tier config (§3/§7 — admin, validated atomically: a
   /// bad config never partially applies).
-  set_card_tiers: (tiers: vec Tier) -> (Result_6);
+  set_card_tiers: (tiers: vec Tier) -> (Result_8);
   /// Adjust the rail config (§7): amount bounds, fee formula, ledger fee.
   /// Validated atomically — a bad config never partially applies.
-  set_ck_usdc_config: (config: Config__2) -> (Result_5);
-  /// Adjust forex params (§7): fee formula, staleness window, source URL.
+  set_ck_usdc_config: (config: Config__4) -> (Result_7);
+  /// Adjust the admission gate (§7): open-order cap, own-cycles floor,
+  /// per-purchase ceiling. Validated atomically — a bad config never partially
+  /// applies. Lowering `maxPurchaseUsdCents` below an existing tier does NOT
+  /// retroactively invalidate that tier's registration, but the next
+  /// `set_card_tiers` will reject it and the webhook will refuse to mint a
+  /// payment above the new ceiling.
+  /// Declare which Stripe mode this gateway serves (admin).
+  /// 
+  /// Set it to `?true` before taking real payments and `?false` on a sandbox
+  /// deployment. `null` restores "accept either", which only makes sense while
+  /// nothing of value is at stake.
+  set_expected_livemode: (expected: opt bool) -> ();
+  set_gate_config: (config: Config__3) -> (Result_6);
+  /// Adjust pricing params (§7): fee formula, staleness window, delta guard.
   /// Validated atomically — a bad config never partially applies.
-  set_forex_config: (config: Config__1) -> (Result_4);
+  set_pricing_config: (config: Config__2) -> (Result_5);
   /// Tune the sweep cadence (admin, §7) — re-arms immediately, no redeploy.
   /// Validated against the §5.1 bound: the cadence must stay well inside
   /// the ledger dedup window or replay loses its safety margin.
-  set_recovery_interval: (intervalNs: nat) -> (Result_3);
+  set_recovery_interval: (intervalNs: nat) -> (Result_4);
+  /// Adjust retention (§4/§4.2): the `#created` TTL and the delete horizon.
+  set_retention_config: (config: Config__1) -> (Result_3);
   /// Adjust treasury policy (§5.3/§7): burn cap, window, max hold, alert
   /// threshold. Validated atomically — a bad config never partially applies.
   set_treasury_config: (config: Config) -> (Result_2);

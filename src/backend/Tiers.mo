@@ -23,16 +23,24 @@ module {
     #emptyTierId;
     #duplicateTierId : Text;
     #zeroUsdCents : Text;
+    /// Above `Gate.Config.maxPurchaseUsdCents`. The ceiling exists to catch an
+    /// operator typo — a tier registered at 100× its intended price would
+    /// otherwise be quoted and minted without complaint, and the burn cap
+    /// would only notice after the money arrived.
+    #aboveCeiling : { id : Text; usdCents : Nat; maxUsdCents : Nat };
   };
 
   /// Config-time sanity: ids non-empty and unique (lookup keys), amounts
-  /// non-zero (a $0 tier would mint on nothing). O(n²) is fine — tiers are a
-  /// handful of entries by design.
-  public func validate(tiers : [Tier]) : Result.Result<(), ValidateError> {
+  /// non-zero (a $0 tier would mint on nothing) and within the per-purchase
+  /// ceiling. O(n²) is fine — tiers are a handful of entries by design.
+  public func validate(tiers : [Tier], maxUsdCents : Nat) : Result.Result<(), ValidateError> {
     var i = 0;
     for (tier in tiers.values()) {
       if (tier.id == "") return #err(#emptyTierId);
       if (tier.usdCents == 0) return #err(#zeroUsdCents(tier.id));
+      if (tier.usdCents > maxUsdCents) {
+        return #err(#aboveCeiling({ id = tier.id; usdCents = tier.usdCents; maxUsdCents }));
+      };
       var j = 0;
       for (other in tiers.values()) {
         if (j > i and other.id == tier.id) {
