@@ -10,11 +10,31 @@
 /// for the life of the canister, which is what keeps `paidIntents` entries
 /// pointing at records that still exist.
 ///
-/// Growth is bounded at its source rather than by retention:
-/// `Gate.Config.maxOpenOrdersPerPrincipal` bounds the records a user can create
-/// for free, and the burn cap bounds legitimate volume. An order is a few
-/// hundred bytes, so a million of them is a few hundred MB — and a million
-/// orders is millions of dollars of volume.
+/// **What actually bounds growth**, since retention does not:
+///
+/// - Legitimate volume is bounded by the burn cap.
+/// - `Gate.Config.maxOpenOrdersPerPrincipal` bounds *concurrent* unpaid orders
+///   per principal — but **not** the lifetime total, because `cancel_order`
+///   frees a slot immediately and self-authenticating principals are free to
+///   mint. A create→cancel loop can therefore accrete `#expired` records without
+///   any per-principal ceiling, and a per-principal cap would not help: the
+///   attacker rotates keys.
+/// - What genuinely bounds it is the **cycles cost of the update calls**. Every
+///   record costs the canister two update calls to create and cancel, and
+///   `Gate.Config.minCanisterCycles` fails the whole rail closed once the balance
+///   falls below the floor. That trips long before an order store of a few
+///   hundred bytes per record threatens memory: adding a GB takes millions of
+///   orders, and the calls to create them cost far more cycles than the floor
+///   allows to be spent.
+///
+/// So the exposure is **availability, not memory** — a funded attacker can stop
+/// the rail selling, which is the same exposure `create_order` has on its own and
+/// is why `cycles_status` is monitored (RUNBOOK §9). It is not a path to
+/// unbounded state or an unupgradeable canister.
+///
+/// The sweep is nevertheless bounded per tick (`maxRetentionScanPerSweep`), so a
+/// large store cannot make each tick progressively more expensive and compound
+/// the drain.
 ///
 /// If retention ever genuinely binds, archival to a separate canister preserves
 /// the record; deletion does not.

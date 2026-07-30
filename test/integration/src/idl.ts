@@ -72,7 +72,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   });
   const RetentionConfig = IDL.Record({ orderTtlNs: IDL.Nat });
   const RetentionConfigError = IDL.Variant({ zeroTtl: IDL.Null });
-  const RetentionSweepResult = IDL.Record({ expired: IDL.Nat });
+  const RetentionSweepResult = IDL.Record({ expired: IDL.Nat, scanned: IDL.Nat });
   const CreateOrderError = IDL.Variant({
     anonymous: IDL.Null,
     idGeneration: IDL.Null,
@@ -106,8 +106,11 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       cycles: IDL.Nat,
       orderId: IDL.Text,
       paymentRef: IDL.Text,
+      refundedCents: IDL.Nat,
+      fullRefund: IDL.Bool,
     }),
     abandoned: IDL.Record({ orderId: IDL.Text, reason: IDL.Text }),
+    unprocessable: IDL.Record({ eventId: IDL.Text, field: IDL.Text }),
     deliveryDelayed: IDL.Record({
       orderId: IDL.Text,
       sinceNs: IDL.Int,
@@ -196,6 +199,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     paidOrders: IDL.Nat,
   });
   const IntervalError = IDL.Variant({
+    intervalTooShort: IDL.Record({ minNs: IDL.Nat }),
     intervalTooLong: IDL.Record({ maxNs: IDL.Nat }),
     zeroInterval: IDL.Null,
   });
@@ -299,6 +303,8 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Variant({ ok: CreatedOrder, err: CreateOrderError })],
       [],
     ),
+    set_expected_livemode: IDL.Func([IDL.Opt(IDL.Bool)], [], []),
+    expected_livemode: IDL.Func([], [IDL.Opt(IDL.Bool)], ['query']),
     cancel_order: IDL.Func(
       [IDL.Text],
       [IDL.Variant({ ok: Order, err: IDL.Text })],

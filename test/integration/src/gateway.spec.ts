@@ -11,7 +11,7 @@ import { Principal } from '@icp-sdk/core/principal';
 import {
   CYCLES_LEDGER_DEPOSIT_FEE, ICP_FEE_E8S, ICP_USD_RATE, ORDER_E8S,
   TIER_LOCKED_CYCLES, TIER_USD_CENTS, WEBHOOK_SECRET, XDR_PERMYRIAD_PER_ICP, user,
-  bigIntReplacer,
+  bigIntReplacer, partialRefundBody,
   Gateway, setupGateway, teardownGateway, upgradeBackendMidFlight,
   setCmcRate, fundFloat, floatBalance,
   checkoutSessionBody, chargeRefundedBody, deliverWebhook, stripeSignature,
@@ -1513,4 +1513,193 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
   expect((await openErrorEntries(gw)).some(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes(mine.order.id),
   )).toBe(false);
+});
+
+test('43 — a partial refund never settles a full obligation', async () => {
+  // Stripe fires charge.refunded for ANY refund, so reading it as "settled"
+  // means a $5 courtesy refund would auto-resolve a $500 obligation and the
+  // unrefunded remainder would exist nowhere but the droppable audit ring.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+
+  // An unattributable payment: fiat in, nothing minted, Type 1 open.
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_partial_in',
+    paymentIntent: 'pi_partial',
+    clientReferenceId: 'not-a-real-reference',
+    amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  const entry = (await openErrorEntries(gw)).find(
+    (e) => JSON.stringify(e.kind, bigIntReplacer).includes('pi_partial'),
+  )!;
+  expect(entry).toBeDefined();
+
+  // A small refund against the same charge must leave it open.
+  expect(await deliverWebhook(
+    gw, partialRefundBody('evt_partial_1', 'pi_partial', 100n, TIER_USD_CENTS),
+  )).toMatchObject({ status_code: 200 });
+  const stillOpen = (await allErrorEntries(gw)).find((e) => e.id === entry.id)!;
+  expect(stillOpen.resolvedAtNs).toHaveLength(0);
+
+  // Completing the refund settles it — the auto-resolve still works, it is just
+  // conditioned on the amount now.
+  expect(await deliverWebhook(
+    gw, partialRefundBody('evt_partial_2', 'pi_partial', TIER_USD_CENTS, TIER_USD_CENTS),
+  )).toMatchObject({ status_code: 200 });
+  const settled = (await allErrorEntries(gw)).find((e) => e.id === entry.id)!;
+  expect(settled.resolvedAtNs).toHaveLength(1);
+});
+
+test('44 — a verified event we cannot process is acked, not retried forever', async () => {
+  // A checkout session with no payment_intent is reachable in production via a
+  // subscription-mode link or a 100%-off promo code. Answering non-2xx would
+  // fail identically on every Stripe retry for ~3 days, and Stripe can DISABLE
+  // an endpoint that keeps failing — which would then lose every legitimate
+  // webhook after it. The obligation goes on the worklist instead.
+  const body = JSON.stringify({
+    id: 'evt_nopi',
+    type: 'checkout.session.completed',
+    livemode: true,
+    data: {
+      object: {
+        payment_intent: null,
+        client_reference_id: null,
+        amount_total: Number(TIER_USD_CENTS),
+        currency: 'usd',
+        payment_status: 'paid',
+      },
+    },
+  });
+  expect(await deliverWebhook(gw, body)).toMatchObject({ status_code: 200 });
+  const queued = (await openErrorEntries(gw)).filter(
+    (e) => JSON.stringify(e.kind, bigIntReplacer).includes('evt_nopi'),
+  );
+  expect(queued).toHaveLength(1);
+  expect(queued[0]!.kind).toMatchObject({ unprocessable: { eventId: 'evt_nopi' } });
+
+  // Stripe retries the identical event; the obligation must not duplicate.
+  expect(await deliverWebhook(gw, body)).toMatchObject({ status_code: 200 });
+  expect((await openErrorEntries(gw)).filter(
+    (e) => JSON.stringify(e.kind, bigIntReplacer).includes('evt_nopi'),
+  )).toHaveLength(1);
+
+  // Unverifiable input still gets a non-2xx: there, retrying is exactly right.
+  const unsigned = await gw.asAnon.http_request_update({
+    method: 'POST',
+    url: '/webhook/stripe',
+    headers: [],
+    body: new TextEncoder().encode(body),
+  });
+  expect(unsigned.status_code).toBe(400);
+});
+
+test('45 — a delayed async payment still mints when it settles', async () => {
+  // The `completed` event for a delayed method carries payment_status != paid and
+  // no money. Settlement arrives later as async_payment_succeeded. Handling only
+  // `completed` means fiat in, nothing minted, nothing on the worklist.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  await fundFloat(gw, ORDER_E8S * 4n + ICP_FEE_E8S * 4n);
+
+  const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }, []));
+
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_async_pending',
+    paymentIntent: 'pi_async',
+    clientReferenceId: created.clientReferenceId,
+    amountCents: TIER_USD_CENTS,
+    paymentStatus: 'unpaid',
+  }))).toMatchObject({ status_code: 200 });
+  expect(await orderStatus(gw, created.order.id)).toBe('created');
+
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_async_settled',
+    paymentIntent: 'pi_async',
+    clientReferenceId: created.clientReferenceId,
+    amountCents: TIER_USD_CENTS,
+    eventType: 'checkout.session.async_payment_succeeded',
+  }))).toMatchObject({ status_code: 200 });
+  expect(await tickUntilStatus(gw, created.order.id, ['delivered'])).toBe('delivered');
+});
+
+test('46 — a test-mode payment cannot mint on a gateway declared live', async () => {
+  // The slip this catches: a test-mode signing secret pasted into a canister
+  // holding a real ICP float. The secret is the only thing separating the two.
+  expect(await gw.asAdmin.expected_livemode()).toHaveLength(0);
+  await gw.asAdmin.set_expected_livemode([true]);
+  expect(await gw.asAdmin.expected_livemode()).toEqual([true]);
+
+  const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }, []));
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_testmode',
+    paymentIntent: 'pi_testmode',
+    clientReferenceId: created.clientReferenceId,
+    amountCents: TIER_USD_CENTS,
+    livemode: false,
+  }))).toMatchObject({ status_code: 200 });
+  // Not minted, and no obligation — a test payment owes nobody anything.
+  expect(await orderStatus(gw, created.order.id)).toBe('created');
+
+  // A live payment for the same order goes through normally.
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_livemode',
+    paymentIntent: 'pi_livemode',
+    clientReferenceId: created.clientReferenceId,
+    amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  expect(await tickUntilStatus(gw, created.order.id, ['delivered'])).toBe('delivered');
+
+  await gw.asAdmin.set_expected_livemode([]);
+});
+
+test('47 — a delay alert never outlives the delay, even when the order escalates', async () => {
+  // The invariant the code states for itself: an open worklist entry must
+  // describe a live problem. A #deliveryDelayed alert says "it delivers on the
+  // next sweep" — the moment the order escalates instead, that becomes a false
+  // promise sitting next to the real entry, plus a leaked delayedAlerts mapping
+  // that nothing can ever clear.
+  //
+  // Scenario 33 covers the happy exit (fixed → delivered → alert resolved). This
+  // is the unhappy one: alerted, then terminated.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+
+  const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }, []));
+  const doomed = created.order;
+
+  // Park it in #paid: a stale CMC rate stops the mint before it starts.
+  await gw.pic.advanceTime(20 * 60 * 1_000);
+  await gw.pic.tick(3);
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_orphan', paymentIntent: 'pi_orphan', clientReferenceId: created.clientReferenceId,
+    amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  await gw.pic.tick(10);
+  expect(await orderStatus(gw, doomed.id)).toBe('paid');
+
+  // Past the 2 h alert threshold: the delay alert opens.
+  await gw.pic.advanceTime(3 * 3_600 * 1_000);
+  await gw.pic.tick(5);
+  const alert = (await openErrorEntries(gw)).find(
+    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === doomed.id,
+  )!;
+  expect(alert).toBeDefined();
+
+  // Now terminate it instead of fixing it. abandon_order is the operator's
+  // explicit "stop trying", and it drives the order to #errorQueue.
+  expectOk(await gw.asAdmin.abandon_order(doomed.id, 'operator gave up (test)'));
+  expect(await orderStatus(gw, doomed.id)).toBe('errorQueue');
+
+  // THE ASSERTION: the delay alert is closed, not left promising delivery.
+  const after = (await allErrorEntries(gw)).find((e) => e.id === alert.id)!;
+  expect(after.resolvedAtNs).toHaveLength(1);
+  // And exactly one entry for this order remains open — the abandonment itself.
+  const openForOrder = (await openErrorEntries(gw)).filter(
+    (e) => JSON.stringify(e.kind, bigIntReplacer).includes(doomed.id),
+  );
+  expect(openForOrder).toHaveLength(1);
+  expect(openForOrder[0]!.kind).toMatchObject({ abandoned: { orderId: doomed.id } });
 });

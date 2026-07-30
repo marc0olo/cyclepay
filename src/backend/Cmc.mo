@@ -113,6 +113,23 @@ module {
   /// surface as `#BadFee` → escalation, never a silent wrong transfer.
   public let icpTransferFeeE8s : Nat = 10_000;
 
+  /// How far the CMC's mint may fall short of the locked quantity before the
+  /// order is escalated instead of delivered.
+  ///
+  /// `icpE8sForCycles` rounds **up**, so the ICP sent normally mints slightly
+  /// *more* than the locked quantity. A shortfall therefore means the CMC's rate
+  /// moved unfavourably between sizing the transfer and notifying it — up to
+  /// 15 min under the staleness guard, or arbitrarily long when a recovery sweep
+  /// notifies a transfer stranded by an outage.
+  ///
+  /// A gap of a few cycles is still tolerated because the rate is quantised per
+  /// e8s and putting a human on single cycles is absurd. A *material* gap is a
+  /// real rate move, and covering it silently would subsidise the buyer out of
+  /// this canister's gas without limit — invisible, unbudgeted, and eventually a
+  /// trap when the balance cannot cover it. 1 G cycles is ~0.001 XDR: far above
+  /// quantisation, far below anything worth absorbing.
+  public let maxMintShortfallCycles : Nat = 1_000_000_000;
+
   /// Cycles the cycles ledger deducts from a `deposit`. A
   /// `#cyclesLedgerAccount` destination therefore receives this much less than
   /// the order's locked quantity; a `#canister` top-up pays nothing.

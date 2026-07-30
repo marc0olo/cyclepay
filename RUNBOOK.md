@@ -81,10 +81,18 @@ consciously set. Work the list in order:
    ```bash
    icp canister settings update backend --freezing-threshold 7776000 -e ic  # 90 days
    ```
-11. **Add a backup controller.** A single controller identity with no backup
+11. **Declare the Stripe mode**:
+   `icp canister call backend set_expected_livemode '(opt true)' -e ic --identity <operator>`.
+   Until this is set, a test-mode webhook secret would mint **real** cycles for
+   payments that never happened. Verify with `expected_livemode`.
+12. **Pin the Payment Link to card-only** in the Stripe Dashboard. Links enable
+   several delayed payment methods by default. Delayed settlement *is* handled
+   (`checkout.session.async_payment_succeeded` mints correctly), but card-only
+   keeps money-in synchronous and the timeline predictable.
+13. **Add a backup controller.** A single controller identity with no backup
    means a lost key makes the canister permanently un-upgradeable; there is no
    recovery path (§0 covers the trust model this implies).
-12. **Smoke-check the public surface**: `pricing_status` — both rates must be
+14. **Smoke-check the public surface**: `pricing_status` — both rates must be
    populated and `lastAttempt.ok` true. The rate timer warms itself on install,
    so this should be true within seconds; if it is not, `lastAttempt.detail`
    names the failing guard (§4) and **no order can be created until it clears**
@@ -392,8 +400,12 @@ icp canister call backend mint_journal '("<orderId>")' -e ic --identity <operato
 
 The queue is the **operator worklist** — resolution lives on the entry and
 never transitions an order (`errorQueue` status is terminal).
-`charge.refunded` webhooks auto-resolve Type 1 entries by payment_intent;
-`#deliveryDelayed` self-resolves on delivery; everything else is manual.
+**Only a *full* `charge.refunded` auto-resolves a Type 1 entry** — Stripe fires
+the same event for partial refunds, so the canister compares `amount_refunded`
+against the charge's `amount`. A partial refund leaves the entry open and audits
+`stripe.refundPartial`; finish the refund in the Dashboard (or close the entry by
+hand once reconciled). `#deliveryDelayed` self-resolves on delivery *or*
+escalation; everything else is manual.
 
 **Only resolved entries are ever evicted.** The soft cap is 1,000, but an
 unresolved entry is an open obligation — usually someone's money — so the queue
@@ -423,9 +435,11 @@ icp canister call backend resolve_error '(137 : nat)' -e ic --identity <operator
 | `#stuckMint{stage="staleIntent"}` | Uncertain: ICP transfer intent aged past the 24 h ledger dedup window with no recorded block — the original transfer's fate is unknowable, auto-replay risks double-spend (§5.1) | Read `mint_journal(orderId)` for the intent (amount, `created_at_time`, CMC top-up subaccount). Check the ICP ledger for a matching transfer from the backend account. **Executed** → the ICP sits at the CMC under the backend's top-up subaccount; call `notify_top_up` on the CMC with the found block index (anyone may notify; if the CMC refuses an old block, contact DFINITY ops — the ICP is parked, not lost) and reconcile. **Not executed** → fiat in, nothing moved: refund in Stripe. Either way `resolve_error`; never rebuild a fresh intent. |
 | `#stuckMint{stage="retriesExhausted"}` | ICP transferred to the CMC (block recorded), `notify_top_up` failed 25 times | Almost certainly a prolonged CMC outage. The block index is in `mint_journal`; the order is terminal (`process_order` will not retry an escalated order) — notify the CMC manually with the journaled block once the outage clears, or contact DFINITY ops. The ICP is parked at the CMC top-up subaccount, not lost. |
 | `#stuckMint{stage="ambiguousForward"}` | Cycles minted; forward may or may not have reached the destination (died between the pre-forward marker and delivery) | Check the destination: canister cycle balance delta / cycles-ledger account balance vs `mint_journal.cyclesMinted`. **Arrived** → done, `resolve_error`. **Not arrived** → cycles are in the backend's balance; deliver manually as for Type 2. Never re-forwarded automatically — double delivery is the risk being avoided. |
+| `#stuckMint{stage="mintShortfall"}` | Cycles minted, but **fewer than the order locked** — the CMC's rate moved between sizing the ICP transfer and notifying it (up to 15 min normally, longer if a recovery sweep notified a transfer stranded by an outage). The minted cycles are in this canister's balance; nothing was forwarded | Read `mint_journal(orderId).cyclesMinted` for the real figure. Either forward that amount and tell the buyer, or top up to `lockedCycles` from operator funds — a business call, not a technical one. **Never** just re-run the mint: the ICP is already spent. Deliberately not absorbed automatically, because covering the gap from the canister's own gas is an unbudgeted subsidy that grows with volatility. `resolve_error` once delivered. |
 | `#stuckMint{stage="missingJournal"}` | Order status implies money-out state the journal doesn't have | Invariant breach — should be unreachable. Reconstruct from `audit_log` + ledgers; treat as a bug, file it. |
 | `#stuckMint{stage="stalePullIntent"}` (ck-USDC) | Uncertain, money-IN: a `icrc2_transfer_from` pull intent aged past 24 h with no recorded block; the order deliberately stays `created` and further claims are blocked | See §7 below — this one has dedicated levers. |
-| `#refundAfterDelivery {orderId; paymentRef; cycles}` | **A loss, not a recoverable position**: the fiat was refunded (or charged back) *after* the cycles were forwarded to an arbitrary destination. Cycles cannot be clawed back. | There is nothing to recover on-chain. Reconcile in the Stripe Dashboard by `paymentRef` to see whether this was your own refund (a support decision — expected) or a customer-initiated dispute (fraud signal). For repeated disputes, tighten Stripe Radar rules and lower the per-purchase ceiling (§5a); the burn cap does **not** bound this, because each payment is individually legitimate. `resolve_error` once reconciled — nothing auto-resolves it, deliberately: the refund is what created the entry. |
+| `#unprocessable {eventId; field}` | **Unknown — establish it first.** A verified Stripe event was missing a required field, so the canister could not tell whether money moved | Look the `eventId` up in the Stripe Dashboard. Paid → identify the order and `attach_payment`, or refund. Not paid (e.g. a 100%-off promo, or a subscription-mode link) → nothing happened; `resolve_error`. Then fix the Dashboard config that produced it: this is almost always a link mode or promo-code setting, and it will recur until changed. |
+| `#refundAfterDelivery {orderId; paymentRef; cycles; refundedCents; fullRefund}` | **A loss, not a recoverable position**: the fiat was refunded (or charged back) *after* the cycles were forwarded to an arbitrary destination. Cycles cannot be clawed back. | There is nothing to recover on-chain. Reconcile in the Stripe Dashboard by `paymentRef` to see whether this was your own refund (a support decision — expected) or a customer-initiated dispute (fraud signal). For repeated disputes, tighten Stripe Radar rules and lower the per-purchase ceiling (§5a); the burn cap does **not** bound this, because each payment is individually legitimate. `resolve_error` once reconciled — nothing auto-resolves it, deliberately: the refund is what created the entry. |
 
 ### Rescuing an `#unattributed` payment with `attach_payment`
 
@@ -570,6 +584,12 @@ Daily (or alerting on, if you wire these queries up externally):
   from the ICP float: this is the canister's own gas, and losing it uninstalls
   the canister and its money-bearing state. Alert well above `minCanisterCycles`
   (§5a), since that gate stops *sales* but does not stop the burn.
+- **`audit_log` tags worth alerting on**, beyond queue depth:
+  `stripe.livemodeMismatch` (misconfigured mode — real money may be landing in
+  the wrong account), `stripe.unprocessable` and `stripe.unhandledType` (a
+  Dashboard config producing events this gateway cannot use, which will recur
+  until changed), `stripe.refundPartial` (an obligation deliberately left open),
+  and `mint.stuck` with `mintShortfall`.
 - `pricing_status` — **`lastAttempt.ok` is the single most important alarm on
   the rail.** Refresh is timer-driven, so unlike an on-demand fetch, a stale
   `fetchedAtNs` is never "normal": it means the timer is dead or every tick is

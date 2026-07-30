@@ -60,16 +60,34 @@ module {
     #signatureMismatch;
   };
 
+  /// Cap on the `Stripe-Signature` header. A real one is ~100 bytes per `v1=`
+  /// plus the timestamp; 4 KiB leaves room for a deep rotation overlap.
+  public let maxSignatureHeaderBytes : Nat = 4_096;
+
+  /// Cap on `v1=` candidates actually verified. Stripe documents at most one per
+  /// active secret, and only two are active during a rotation.
+  public let maxV1Candidates : Nat = 8;
+
   /// Parse a `Stripe-Signature` header: comma-separated `key=value` elements,
   /// e.g. `t=1492774577,v1=5257a8...,v0=6ffbb5...`. Per Stripe's reference
   /// parsers: unknown schemes (`v0=`...) and unparseable elements are
   /// ignored; only the first `t=` counts. Null when no usable `t=`/`v1=`
   /// remain — the verifier treats that as malformed.
+  ///
+  /// ⚠️ **Bounded on both header length and candidate count.** The route's 64 KiB
+  /// guard covers only the *body*, so a caller could otherwise send a ~2 MB
+  /// signature header stuffed with tens of thousands of `v1=` values and make an
+  /// unauthenticated update call do orders of magnitude more hashing than any
+  /// real delivery — each candidate costs a constant-time compare against a
+  /// freshly computed MAC. Stripe sends one `v1=` normally and a handful during a
+  /// rotation overlap, so both bounds are far above legitimate traffic.
   public func parseSignatureHeader(header : Text) : ?ParsedSignature {
+    if (header.size() > maxSignatureHeaderBytes) return null;
     var timestampSeconds : ?Nat = null;
     var sawTimestamp = false;
     let v1 = List.empty<Blob>();
     for (element in header.split(#char ',')) {
+      if (v1.size() >= maxV1Candidates) continue;
       let parts = element.trim(#char ' ').split(#char '=').toArray();
       if (parts.size() != 2) continue;
       if (parts[0] == "t") {
@@ -128,27 +146,55 @@ module {
     /// `amount_total` in the currency's smallest unit (cents for usd).
     amountTotalCents : Nat;
     currency : Text;
-    /// `payment_status == "paid"`. False = async payment method still
-    /// pending — out of scope for card-only Payment Links (§6.1).
+    /// `payment_status == "paid"`. False = an async payment method has not
+    /// settled yet; the money may still arrive, and when it does Stripe sends
+    /// `checkout.session.async_payment_succeeded`, which is parsed into this
+    /// same shape (see `parseEvent`).
     paid : Bool;
+    /// Stripe's `livemode`. A test-mode event carries `false`; accepting one on
+    /// a canister funded with a real ICP float would mint real cycles for a
+    /// payment that never happened.
+    livemode : Bool;
+  };
+
+  /// `charge.refunded` carries a **charge**, so `amount` is the charge total and
+  /// `amount_refunded` is the cumulative amount refunded against it.
+  public type ChargeRefunded = {
+    eventId : Text;
+    paymentIntent : Text;
+    /// Cumulative refunded, smallest currency unit.
+    amountRefundedCents : Nat;
+    /// The charge's own total, for deciding whether the refund is complete.
+    chargeAmountCents : Nat;
+  };
+
+  /// A refund settles the whole charge only when the cumulative refunded amount
+  /// reaches the charge total. A partial refund must never be read as a full one:
+  /// auto-resolving a Type 1 obligation on a $5 courtesy refund of a $500
+  /// payment would discard the record of the remaining $495.
+  public func isFullRefund(refund : ChargeRefunded) : Bool {
+    refund.chargeAmountCents > 0 and refund.amountRefundedCents >= refund.chargeAmountCents;
   };
 
   public type Event = {
     #checkoutCompleted : CheckoutCompleted;
-    #chargeRefunded : { eventId : Text; paymentIntent : Text };
+    #chargeRefunded : ChargeRefunded;
+    /// An async payment method failed for good — the session will never pay.
+    #asyncPaymentFailed : { eventId : Text; paymentIntent : Text };
     /// Recognized envelope, event type we don't handle — acked and dropped
-    /// (Stripe endpoints should be subscribed to only the two above, but an
-    /// extra type must not look like a delivery failure).
+    /// (an extra subscribed type must not look like a delivery failure).
     #unhandled : { eventId : Text; eventType : Text };
   };
 
   public type ParseError = {
     #invalidJson;
     /// A handled event type missing a field we require — e.g. a checkout
-    /// session without a `payment_intent` (subscription-mode link). 400s
-    /// so the failure is visible in the Stripe dashboard, not silently
-    /// acked into the void.
-    #missingField : Text;
+    /// session without a `payment_intent` (reachable via a subscription-mode
+    /// link or a 100%-off promo code).
+    ///
+    /// `eventId` when the envelope itself parsed, which is what lets the
+    /// handler dedup the entry it queues across Stripe's retries.
+    #missingField : { field : Text; eventId : ?Text };
   };
 
   /// Parse a verified webhook body. Only called *after* `verify` — the JSON
@@ -158,15 +204,26 @@ module {
   public func parseEvent(body : Blob) : Result.Result<Event, ParseError> {
     let ?text = body.decodeUtf8() else return #err(#invalidJson);
     let ?json = Json.parse(text) else return #err(#invalidJson);
-    let ?eventId = Json.textAt(json, "id") else return #err(#missingField("id"));
-    let ?eventType = Json.textAt(json, "type") else return #err(#missingField("type"));
+    // The envelope itself: without an id there is nothing to dedup on, so these
+    // two carry no eventId of their own.
+    let ?eventId = Json.textAt(json, "id") else return #err(#missingField({ field = "id"; eventId = null }));
+    let ?eventType = Json.textAt(json, "type") else {
+      return #err(#missingField({ field = "type"; eventId = null }));
+    };
     func required(path : Text) : Result.Result<Text, ParseError> {
       switch (Json.textAt(json, path)) {
         case (?value) #ok(value);
-        case (null) #err(#missingField(path));
+        case (null) #err(#missingField({ field = path; eventId = ?eventId }));
       };
     };
-    if (eventType == "checkout.session.completed") {
+    // `async_payment_succeeded` carries the same session object as `completed`
+    // and is how a delayed payment method reports that money actually arrived.
+    // Without it, a session acked as unpaid would settle later with no trace
+    // anywhere: fiat in, nothing minted, nothing on the worklist.
+    if (
+      eventType == "checkout.session.completed"
+      or eventType == "checkout.session.async_payment_succeeded"
+    ) {
       let paymentIntent = switch (required("data.object.payment_intent")) {
         case (#ok(v)) v;
         case (#err(e)) return #err(e);
@@ -180,11 +237,12 @@ module {
         case (#err(e)) return #err(e);
       };
       let ?amountTotalCents = Json.natAt(json, "data.object.amount_total") else {
-        return #err(#missingField("data.object.amount_total"));
+        return #err(#missingField({ field = "data.object.amount_total"; eventId = ?eventId }));
       };
       #ok(#checkoutCompleted({
         eventId;
         paymentIntent;
+        livemode = Json.boolAt(json, "livemode") == ?true;
         // Absent and JSON-null both mean "no reference" (Stripe sends null
         // when the link was opened without the param).
         clientReferenceId = Json.textAt(json, "data.object.client_reference_id");
@@ -193,8 +251,20 @@ module {
         paid = paymentStatus == "paid";
       }));
     } else if (eventType == "charge.refunded") {
+      let paymentIntent = switch (required("data.object.payment_intent")) {
+        case (#ok(v)) v;
+        case (#err(e)) return #err(e);
+      };
+      let ?amountRefundedCents = Json.natAt(json, "data.object.amount_refunded") else {
+        return #err(#missingField({ field = "data.object.amount_refunded"; eventId = ?eventId }));
+      };
+      let ?chargeAmountCents = Json.natAt(json, "data.object.amount") else {
+        return #err(#missingField({ field = "data.object.amount"; eventId = ?eventId }));
+      };
+      #ok(#chargeRefunded({ eventId; paymentIntent; amountRefundedCents; chargeAmountCents }));
+    } else if (eventType == "checkout.session.async_payment_failed") {
       switch (required("data.object.payment_intent")) {
-        case (#ok(paymentIntent)) #ok(#chargeRefunded({ eventId; paymentIntent }));
+        case (#ok(paymentIntent)) #ok(#asyncPaymentFailed({ eventId; paymentIntent }));
         case (#err(e)) #err(e);
       };
     } else {
@@ -211,6 +281,9 @@ module {
     dedup : Idempotency.Store;
     errorQueue : ErrorQueue.Store;
     errorQueueCapacity : Nat;
+    /// Operator's declared Stripe mode; null = unset, which accepts either and
+    /// says so in the audit trail. The go-live checklist sets it.
+    expectLivemode : ?Bool;
     auditLog : AuditLog.Log;
     auditLogCapacity : Nat;
     /// `payment_intent` → order it paid for. Written when an order is marked
@@ -308,15 +381,42 @@ module {
   /// `charge.refunded` (§4.1): auto-resolve every unresolved Type 1 entry
   /// carrying this payment_intent. No matches is fine — operators may
   /// refund payments that never queued.
-  func handleRefund(deps : Deps, refund : { eventId : Text; paymentIntent : Text }, nowNs : Int) : Outcome {
+  func handleRefund(deps : Deps, refund : ChargeRefunded, nowNs : Int) : Outcome {
     if (not Idempotency.recordStripeEvent(deps.dedup, refund.eventId, nowNs)) {
       return ack(Http.text(200, "duplicate event"));
     };
-    let resolved = ErrorQueue.resolveByPaymentRef(deps.errorQueue, refund.paymentIntent, nowNs);
-    for (entry in resolved.values()) {
-      audit(deps, nowNs, "stripe.refundResolved", "entry " # entry.id.toText() # " auto-resolved by refund of " # refund.paymentIntent);
+    let full = isFullRefund(refund);
+    let amounts =
+      refund.amountRefundedCents.toText() # " of " # refund.chargeAmountCents.toText() # " cents";
+
+    // Only a full refund settles the obligation. A partial one leaves the
+    // remainder owed, so auto-resolving on it would erase the record of what is
+    // still outstanding — the entry stays open and the operator decides.
+    if (not full) {
+      let open = ErrorQueue.unresolvedByPaymentRef(deps.errorQueue, refund.paymentIntent);
+      for (entry in open.values()) {
+        audit(
+          deps,
+          nowNs,
+          "stripe.refundPartial",
+          "entry " # entry.id.toText() # " left OPEN: partial refund of " # refund.paymentIntent
+          # " (" # amounts # ") does not settle it",
+        );
+      };
+      if (open.size() == 0) {
+        audit(deps, nowNs, "stripe.refundPartial", "partial refund of " # refund.paymentIntent # " (" # amounts # ") matched no open entry");
+      };
+      // Fall through: a partial refund on a *delivered* order is still a
+      // realised loss and must be recorded as one, sized to what went back.
     };
-    if (resolved.size() > 0) return ack(Http.text(200, "ok"));
+
+    if (full) {
+      let resolved = ErrorQueue.resolveByPaymentRef(deps.errorQueue, refund.paymentIntent, nowNs);
+      for (entry in resolved.values()) {
+        audit(deps, nowNs, "stripe.refundResolved", "entry " # entry.id.toText() # " auto-resolved by full refund of " # refund.paymentIntent # " (" # amounts # ")");
+      };
+      if (resolved.size() > 0) return ack(Http.text(200, "ok"));
+    };
 
     // Nothing resolved. Usually benign — operators may refund a payment that
     // never queued — but it is also how a refund of an already-delivered order
@@ -324,7 +424,7 @@ module {
     switch (deps.paidIntents.get(refund.paymentIntent)) {
       case null {
         // Genuinely unknown payment — never attributed to an order here.
-        audit(deps, nowNs, "stripe.refundUnmatched", "refund of " # refund.paymentIntent # " matched no queue entry and no paid order");
+        audit(deps, nowNs, "stripe.refundUnmatched", "refund of " # refund.paymentIntent # " (" # amounts # ") matched no queue entry and no paid order");
       };
       case (?orderId) {
         switch (Orders.get(deps.orders, orderId)) {
@@ -343,17 +443,21 @@ module {
                     orderId;
                     paymentRef = refund.paymentIntent;
                     cycles = order.lockedCycles;
+                    refundedCents = refund.amountRefundedCents;
+                    fullRefund = full;
                   }),
-                  "refund/chargeback on a DELIVERED order: " # order.lockedCycles.toText() # " cycles already forwarded and cannot be recovered — reconcile against Stripe and decide whether to restrict the payer",
+                  (if (full) "FULL" else "PARTIAL") # " refund/chargeback on a DELIVERED order: " # amounts
+                  # " returned against " # order.lockedCycles.toText()
+                  # " cycles already forwarded, which cannot be recovered — reconcile against Stripe and decide whether to restrict the payer",
                   nowNs,
                 );
-                audit(deps, nowNs, "stripe.refundAfterDelivery", orderId # ": " # refund.paymentIntent # " refunded after " # order.lockedCycles.toText() # " cycles were delivered");
+                audit(deps, nowNs, "stripe.refundAfterDelivery", orderId # ": " # refund.paymentIntent # " refunded (" # amounts # ") after " # order.lockedCycles.toText() # " cycles were delivered");
               };
               case (status) {
                 // Paid but not yet delivered — the money-out pipeline may
                 // still be mid-flight, so this is a race the operator must
                 // look at rather than a settled loss.
-                audit(deps, nowNs, "stripe.refundBeforeDelivery", orderId # ": " # refund.paymentIntent # " refunded while order was " # Types.statusToText(status));
+                audit(deps, nowNs, "stripe.refundBeforeDelivery", orderId # ": " # refund.paymentIntent # " refunded (" # amounts # ") while order was " # Types.statusToText(status));
               };
             };
           };
@@ -370,11 +474,41 @@ module {
     if (not Idempotency.recordStripeEvent(deps.dedup, session.eventId, nowNs)) {
       return ack(Http.text(200, "duplicate event"));
     };
+    // A test-mode event on a canister holding a real ICP float would mint real
+    // cycles for a payment that never happened. The secret is the only thing
+    // standing between the two, and provisioning the wrong one is a plausible
+    // operator slip, so the event says which world it came from and we check.
+    switch (deps.expectLivemode) {
+      case (?expected) if (session.livemode != expected) {
+        audit(
+          deps,
+          nowNs,
+          "stripe.livemodeMismatch",
+          "intent " # session.paymentIntent # ": livemode=" # (if (session.livemode) "true" else "false")
+          # " but this gateway expects " # (if (expected) "true" else "false") # " — NOT minted",
+        );
+        // Queue it only when real money is involved: a live payment reaching a
+        // test-configured gateway is an obligation. The reverse is a test event
+        // and owes nobody anything.
+        if (session.livemode) {
+          ignore ErrorQueue.add(
+            deps.errorQueue,
+            deps.errorQueueCapacity,
+            #card,
+            #unattributed({ claimedRef = "livemode mismatch"; paymentRef = session.paymentIntent }),
+            "LIVE payment arrived but this gateway is configured for test mode — money is in the live Stripe account and nothing was minted; fix the configuration, then attach_payment or refund",
+            nowNs,
+          );
+        };
+        return ack(Http.text(200, "acknowledged: livemode mismatch logged"));
+      };
+      case null {};
+    };
     if (not session.paid) {
-      // Async payment method on a link that should be card-only — money may
-      // arrive later via an event type we don't handle, so make the config
-      // problem visible instead of silently acking it.
-      audit(deps, nowNs, "stripe.unpaidSession", "payment_status not paid for intent " # session.paymentIntent);
+      // An async payment method has not settled. Money may still arrive, and it
+      // is caught then: `checkout.session.async_payment_succeeded` parses into
+      // this same shape and runs this same handler.
+      audit(deps, nowNs, "stripe.unpaidSession", "payment_status not paid for intent " # session.paymentIntent # " — awaiting async settlement");
       return ack(Http.text(200, "ignored: payment not completed"));
     };
     // payment_intent second: one mint per payment even across distinct
@@ -474,11 +608,72 @@ module {
     // verifies, so unauthenticated traffic cannot drive it.
     ignore Idempotency.pruneStripe(deps.dedup, nowNs);
     switch (parseEvent(req.body)) {
-      case (#err(_)) ack(Http.text(400, "unparseable event"));
-      case (#ok(#unhandled(_))) ack(Http.text(200, "ignored"));
+      case (#err(#invalidJson)) {
+        // The MAC verified, so this really came from Stripe — but we cannot read
+        // it and never will. 200 for the same reason as `#missingField` below.
+        audit(deps, nowNs, "stripe.unparseable", "verified event body is not valid JSON");
+        ack(Http.text(200, "acknowledged: unreadable body logged for operator review"));
+      };
+      case (#err(#missingField({ field; eventId }))) handleUnprocessable(deps, field, eventId, nowNs);
+      case (#ok(#unhandled({ eventId; eventType }))) {
+        // Audited rather than silently dropped: an event type arriving here that
+        // nobody subscribed to is a Stripe-config surprise, and the only way an
+        // operator learns of it is this line.
+        if (Idempotency.recordStripeEvent(deps.dedup, eventId, nowNs)) {
+          audit(deps, nowNs, "stripe.unhandledType", eventType # " (" # eventId # ")");
+        };
+        ack(Http.text(200, "ignored"));
+      };
+      case (#ok(#asyncPaymentFailed({ eventId; paymentIntent }))) {
+        if (Idempotency.recordStripeEvent(deps.dedup, eventId, nowNs)) {
+          audit(deps, nowNs, "stripe.asyncPaymentFailed", "intent " # paymentIntent # " will never pay");
+        };
+        ack(Http.text(200, "ok"));
+      };
       case (#ok(#chargeRefunded(refund))) handleRefund(deps, refund, nowNs);
       case (#ok(#checkoutCompleted(session))) handleCheckout(deps, session, nowNs);
     };
+  };
+
+  /// A verified event we cannot process — e.g. a checkout session with no
+  /// `payment_intent`, reachable through a subscription-mode link or a 100%-off
+  /// promo code.
+  ///
+  /// **Acked 200, not 400.** Parsing is deterministic, so a 400 here would repeat
+  /// on every Stripe retry for the full ~3-day horizon; Stripe warns about and can
+  /// **disable** an endpoint that keeps failing, and a disabled endpoint loses
+  /// every *legitimate* webhook after it. Refusing delivery of a message that can
+  /// never succeed trades a permanent outage for no benefit. Non-2xx stays for
+  /// input we cannot authenticate and for the unprovisioned-secret case, where
+  /// retrying is exactly what we want.
+  ///
+  /// The obligation goes on the worklist instead, deduped on the event id so
+  /// Stripe's retries do not pile up copies.
+  func handleUnprocessable(deps : Deps, field : Text, eventId : ?Text, nowNs : Int) : Outcome {
+    let detail = "verified Stripe event is missing " # field
+      # " — cannot be processed; inspect it in the Stripe Dashboard and reconcile by hand";
+    switch (eventId) {
+      case (?id) {
+        if (not Idempotency.recordStripeEvent(deps.dedup, id, nowNs)) {
+          return ack(Http.text(200, "duplicate event"));
+        };
+        ignore ErrorQueue.add(
+          deps.errorQueue,
+          deps.errorQueueCapacity,
+          #card,
+          #unprocessable({ eventId = id; field }),
+          detail,
+          nowNs,
+        );
+        audit(deps, nowNs, "stripe.unprocessable", id # ": " # detail);
+      };
+      case null {
+        // No id parsed, so nothing to dedup on and nothing stable to key an
+        // entry to. The audit line is the whole trail here.
+        audit(deps, nowNs, "stripe.unprocessable", detail);
+      };
+    };
+    ack(Http.text(200, "acknowledged: queued for operator review"));
   };
 
 };

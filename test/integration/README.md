@@ -111,6 +111,16 @@ git commit && git push   # needs a workflow-scoped token (a normal `gh auth` tok
 | 41 | a +40% ICP move → `#quoteChanged` naming the new figure, nothing created; the new figure is accepted; a favourable move never refuses; `null` opts out | server-side quote pinning |
 | 42 | owner-only `cancel_order` frees a slot, is idempotent, refuses a paid order, and a payment racing the cancel **still delivers** | buyer never locked out |
 
+### Added from the code review
+
+| # | Scenario | Coverage |
+|---|----------|----------|
+| 43 | a partial `charge.refunded` leaves the Type 1 obligation **open**; completing it settles | refund amount fidelity |
+| 44 | a verified-but-unprocessable event is acked 200 and queued once; unverifiable input still 400s | endpoint-disable avoidance |
+| 45 | `checkout.session.async_payment_succeeded` mints a payment that `completed` reported unpaid | delayed payment methods |
+| 46 | a test-mode event cannot mint on a gateway declared live; a live one still does | livemode gate |
+| 47 | a `#deliveryDelayed` alert is resolved when the order **escalates**, not only when it delivers | no orphan worklist entries |
+
 ⚠️ Scenario 41 moves the rate **40%, not 100%**. A bigger jump is rejected by
 §3.1's own guards (`maxRateDeltaBps` caps a move at 50%; the implied-XDR/USD
 cross-check floors at 0.5), which would leave the previous quote serving and make

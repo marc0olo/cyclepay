@@ -137,7 +137,7 @@ npm --prefix src/frontend run typecheck
 ```
 
 **3. PocketIC integration suite** (`test/integration`) — the **go-live bar**
-(spec §9): 33 end-to-end scenarios against the real ICP ledger, CMC, cycles
+(spec §9): 38 end-to-end scenarios against the real ICP ledger, CMC, cycles
 ledger, and ck-USDC ledger Wasms, plus the released XRC mock at the mainnet XRC
 id, with crafted HMAC-signed Stripe webhooks, time control, and
 upgrade-mid-flight replay checks:

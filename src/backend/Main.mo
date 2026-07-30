@@ -98,8 +98,8 @@ persistent actor CyclesGateway {
   /// canister rather than protect it.
   var gateConfig : Gate.Config = Gate.defaultConfig();
 
-  /// Order-lifecycle retention policy (Retention.mo) — the `#created` TTL and
-  /// the delete-and-tombstone horizon.
+  /// Order-lifecycle retention policy (Retention.mo) — the `#created` TTL, which
+  /// is retention's only effect. Nothing deletes orders.
   var retentionConfig : Retention.Config = Retention.defaultConfig();
 
   /// `payment_intent` → the order it paid for. Financial record, never pruned;
@@ -119,6 +119,19 @@ persistent actor CyclesGateway {
   /// and CMC ids are pinned in their modules, because a settable rate source is
   /// a money lever that does not look like one.
   var pricingConfig : Pricing.Config = Pricing.defaultConfig();
+
+  /// Which Stripe world this gateway belongs to, or null for "not declared".
+  ///
+  /// A test-mode webhook secret provisioned against a canister holding a real
+  /// ICP float would mint real cycles for payments that never happened — the
+  /// secret is the only thing separating the two, and provisioning the wrong one
+  /// is an ordinary operator slip. Declaring the expectation lets the canister
+  /// refuse the mismatch instead of trusting that nobody pasted the wrong value.
+  ///
+  /// Null rather than `?true` by default so a fresh local install works against
+  /// a Stripe sandbox without configuration; the go-live checklist sets it, and
+  /// while it is unset every payment records `stripe.livemodeUnset`.
+  var expectLivemode : ?Bool = null;
 
   transient let xrc = actor (Xrc.canisterId) : Xrc.Service;
 
@@ -209,7 +222,14 @@ persistent actor CyclesGateway {
       // Reject an implausible *move* against the last good price, keeping the
       // previous rate serving until it goes stale rather than pricing on a
       // suspected glitch.
-      let previous = switch (Pricing.lastRates(rateCache)) {
+      //
+      // Only a rate that is still *fresh* is a valid baseline. A stale one is not
+      // evidence about the current market, and comparing against it deadlocks:
+      // after an outage spanning a move larger than the delta bound, every
+      // refresh would be rejected against an ancient price that itself can never
+      // be replaced, so orders stay refused until an operator widens the config.
+      // Guarding a move only makes sense between two observations close in time.
+      let previous = switch (Pricing.freshRates(rateCache, pricingConfig.maxAgeNs, Time.now())) {
         case (?prior) ?prior.usdPerIcpMicros;
         case null null;
       };
@@ -557,6 +577,29 @@ persistent actor CyclesGateway {
   /// retroactively invalidate that tier's registration, but the next
   /// `set_card_tiers` will reject it and the webhook will refuse to mint a
   /// payment above the new ceiling.
+  /// Declare which Stripe mode this gateway serves (admin).
+  ///
+  /// Set it to `?true` before taking real payments and `?false` on a sandbox
+  /// deployment. `null` restores "accept either", which only makes sense while
+  /// nothing of value is at stake.
+  public shared ({ caller }) func set_expected_livemode(expected : ?Bool) : async () {
+    requireAdmin(caller);
+    expectLivemode := expected;
+    auditAdmin(
+      caller,
+      "stripe.expectLivemodeSet",
+      switch (expected) {
+        case (?true) "true — only live-mode payments will mint";
+        case (?false) "false — only test-mode payments will mint";
+        case null "unset — either mode will mint";
+      },
+    );
+  };
+
+  public query func expected_livemode() : async ?Bool {
+    expectLivemode;
+  };
+
   public shared ({ caller }) func set_gate_config(config : Gate.Config) : async Result.Result<(), Gate.ConfigError> {
     requireAdmin(caller);
     switch (Gate.validateConfig(config)) {
@@ -708,6 +751,7 @@ persistent actor CyclesGateway {
       dedup;
       errorQueue;
       errorQueueCapacity;
+      expectLivemode;
       auditLog;
       auditLogCapacity;
       paidIntents;
@@ -986,6 +1030,11 @@ persistent actor CyclesGateway {
   func escalateStuckMint(order : Types.Order, stage : Text, detail : Text) {
     ignore tryTransition(order.id, #errorQueue);
     Cmc.patch(mintJournal, order.id, { status = ?#errorQueue; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+    // Before queueing the escalation: any open delay alert for this order says
+    // "it delivers on the next sweep", which just stopped being true. Leaving it
+    // open would put a false promise on the worklist next to the real problem,
+    // and leak its `delayedAlerts` entry forever.
+    clearDelayed(order.id);
     ignore queueMintError(order.rail, #stuckMint({ orderId = order.id; stage }), detail);
     audit("mint.stuck", order.id # " [" # stage # "]: " # detail);
   };
@@ -1189,6 +1238,28 @@ persistent actor CyclesGateway {
               // operator checks the destination — at-most-once delivery,
               // never an auto-double-forward.
               Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = ?cycles; bumpRetries = false }, Time.now());
+              // What the CMC actually minted can fall short of what was locked:
+              // the e8s were sized from a CMC rate up to 15 min old, and after an
+              // outage the recovery sweep may notify a transfer days later at a
+              // materially worse rate. Forwarding lockedCycles regardless would
+              // quietly cover the gap out of this canister's own gas — an
+              // unbudgeted, invisible subsidy that grows with rate volatility,
+              // and eventually a trap when gas cannot cover it.
+              //
+              // Deliver what was actually bought and escalate, rather than
+              // silently over- or under-delivering. The operator decides whether
+              // to top the buyer up; the position is fully recoverable and the
+              // cycles are real.
+              if (cycles + Cmc.maxMintShortfallCycles < order.lockedCycles) {
+                escalateStuckMint(
+                  order,
+                  "mintShortfall",
+                  "CMC minted " # cycles.toText() # " cycles but the order locked "
+                  # order.lockedCycles.toText()
+                  # " — the conversion rate moved between quoting and notifying. The minted cycles are in this canister's balance; deliver them (or top up to the locked quantity from operator funds) and resolve.",
+                );
+                return;
+              };
             };
             case (#retriable(detail)) {
               Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
@@ -1212,6 +1283,8 @@ persistent actor CyclesGateway {
               // app balance — minted money exists, delivery didn't happen.
               ignore tryTransition(orderId, #errorQueue);
               Cmc.patch(mintJournal, orderId, { status = ?#errorQueue; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+              // Same reason as escalateStuckMint: the delay is over, badly.
+              clearDelayed(orderId);
               ignore queueMintError(order.rail, #undeliverable({ orderId; cycles = order.lockedCycles }), detail);
               audit("mint.undeliverable", orderId # ": " # detail);
             };
@@ -1291,20 +1364,27 @@ persistent actor CyclesGateway {
     rebuilt;
   };
 
-  /// Manual retention kick (admin, §7) — ops lever to apply the current TTL and
-  /// horizon immediately after retuning them, instead of waiting up to a full
-  /// sweep interval. Returns what it did. Safe to spam: the bands are computed
-  /// from absolute ages, so a second run is a no-op.
-  public shared ({ caller }) func run_retention() : async { expired : Nat } {
+  /// Manual retention kick (admin, §7) — ops lever to apply a retuned TTL
+  /// immediately instead of waiting up to a full sweep interval. Safe to spam:
+  /// the band is an absolute age, so a second run is a no-op.
+  ///
+  /// Returns `scanned` alongside `expired` because the sweep is bounded per call
+  /// (`maxRetentionScanPerSweep`) and resumes from a cursor: on a large store it
+  /// takes several calls to cover everything, and `scanned` is how an operator
+  /// tells "nothing left to expire" from "did not look at everything yet".
+  public shared ({ caller }) func run_retention() : async { expired : Nat; scanned : Nat } {
     requireAdmin(caller);
     auditAdmin(caller, "retention.manualSweep", "operator-triggered");
     retentionSweep();
   };
 
   /// Retention counters for monitoring (public, same stance as
-  /// `treasury_status`): how many orders are in each band right now, and how
-  /// many ids have been tombstoned. `openOrders` growing without `delivered`
-  /// growing is the signature of order-creation abuse.
+  /// `treasury_status`).
+  ///
+  /// `openOrders` climbing while `delivered` does not is the signature of
+  /// order-creation abuse; the lever is `Gate.maxOpenOrdersPerPrincipal`.
+  /// `totalOrders` and `paidIntentsIndexed` should grow together — a divergence
+  /// means an index and its records disagree.
   public query func retention_status() : async {
     config : Retention.Config;
     openOrders : Nat;
@@ -1568,24 +1648,49 @@ persistent actor CyclesGateway {
   /// "is it actually firing" must be observable).
   var lastRecoverySweep : ?{ atNs : Int; pending : Nat } = null;
 
-  /// Retention pass (Retention.mo): flip lapsed `#created` orders to
-  /// `#expired`, and delete-and-tombstone `#expired` orders past the horizon.
-  /// Synchronous and awaitless, so it cannot interleave with the money path.
+  /// Retention pass (Retention.mo): flip lapsed `#created` orders to `#expired`.
+  /// That is the whole job — no order is ever deleted, so there is nothing here
+  /// that has to be guarded against destroying a financial record.
   ///
-  /// The band-3 delete is guarded by more than status and age: an order with a
-  /// mint journal entry or a ck-USDC pull entry has touched money, so it is
-  /// never deleted no matter how old — `Retention.bandOf` only sees status and
-  /// age, and this is the other half of that contract.
+  /// Synchronous and awaitless, so it cannot interleave with the money path.
   /// Retention pass: flip lapsed `#created` orders to `#expired` (§4).
   ///
   /// Synchronous and awaitless, so it cannot interleave with the money path.
   /// Nothing is ever deleted — see Retention.mo for why an earlier
   /// delete-past-a-horizon design was dropped.
-  func retentionSweep() : { expired : Nat } {
+  /// Cap on orders inspected per sweep.
+  ///
+  /// Only `#created` orders can expire, but the store is not indexed by status,
+  /// so finding them means a scan. Left unbounded, every tick would cost O(all
+  /// orders forever) — which grows without limit, since orders are never deleted,
+  /// and makes each tick more expensive exactly when the canister is under the
+  /// order-creation pressure that made the store large.
+  ///
+  /// Bounding the work is safe because **expiry is advisory** (§4): an order that
+  /// expires a few ticks late is still payable and nothing downstream reads the
+  /// flip. Correctness does not depend on promptness here, so throughput is the
+  /// right thing to trade away.
+  transient let maxRetentionScanPerSweep : Nat = 2_000;
+
+  /// Where the last sweep stopped, so successive ticks cover the whole store
+  /// instead of rescanning the same prefix forever.
+  var retentionCursor : Nat = 0;
+
+  func retentionSweep() : { expired : Nat; scanned : Nat } {
+    // O(1) short-circuit, mirroring the mint sweep: no `#created` order means
+    // nothing can expire, so the scan is pure waste.
+    if (Orders.countOf(orderStore, #created) == 0) return { expired = 0; scanned = 0 };
     let now = Time.now();
     var expired = 0;
+    var scanned = 0;
     // Materialise ids first — the loop mutates the store.
-    for (id in Orders.allIds(orderStore).values()) {
+    let ids = Orders.allIds(orderStore);
+    if (retentionCursor >= ids.size()) retentionCursor := 0;
+    let start = retentionCursor;
+    while (scanned < maxRetentionScanPerSweep and scanned < ids.size()) {
+      let index = (start + scanned) % ids.size();
+      scanned += 1;
+      let id = ids[index];
       let ?order = Orders.get(orderStore, id) else continue;
       switch (Retention.bandOf(order.status, order.createdAtNs, now, retentionConfig)) {
         case (#keep) {};
@@ -1594,10 +1699,11 @@ persistent actor CyclesGateway {
         };
       };
     };
+    retentionCursor := if (ids.size() == 0) 0 else (start + scanned) % ids.size();
     if (expired > 0) {
       audit("retention.sweep", expired.toText() # " order(s) marked expired (still payable, §4)");
     };
-    { expired };
+    { expired; scanned };
   };
 
   /// The timer job. Correctness against concurrent drivers is processMint's

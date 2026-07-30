@@ -51,7 +51,17 @@ module {
     ///
     /// Chargeback *prevention* belongs in Stripe (Radar rules, 3DS) and in the
     /// `Gate` per-purchase ceiling, not in Motoko.
-    #refundAfterDelivery : { orderId : Types.OrderId; paymentRef : Text; cycles : Nat };
+    #refundAfterDelivery : {
+      orderId : Types.OrderId;
+      paymentRef : Text;
+      cycles : Nat;
+      /// Cumulative cents returned to the payer. Sized, because a partial
+      /// refund is a partial loss and the operator reconciles against Stripe by
+      /// amount, not by the existence of an entry.
+      refundedCents : Nat;
+      /// Whether that settled the whole charge.
+      fullRefund : Bool;
+    };
     /// **An alert, not a failure.** Money is in and delivery has not happened
     /// yet for a reason that is always operator-fixable: the burn window is
     /// spent, the ICP float is short, or the CMC is unreachable. The order stays
@@ -70,13 +80,23 @@ module {
     /// A human decided to stop trying. The **only** path to a terminal
     /// non-delivered state — nothing automatic ends here.
     #abandoned : { orderId : Types.OrderId; reason : Text };
+    /// A **verified** Stripe event the canister cannot process — a required
+    /// field is absent (e.g. a checkout session with no `payment_intent`, which
+    /// a subscription-mode link or a 100%-off promo code produces).
+    ///
+    /// Queued rather than refused: parsing is deterministic, so answering non-2xx
+    /// would fail identically on every retry for Stripe's full retry horizon and
+    /// risk the endpoint being disabled — which would then lose every legitimate
+    /// webhook. Money position is unknown from here; the event id is what the
+    /// operator looks up in the Dashboard.
+    #unprocessable : { eventId : Text; field : Text };
   };
 
   public func isType1(kind : Kind) : Bool {
     switch (kind) {
       case (#duplicate(_) or #unattributed(_)) true;
       case (#undeliverable(_) or #stuckMint(_) or #refundAfterDelivery(_)) false;
-      case (#deliveryDelayed(_) or #abandoned(_)) false;
+      case (#deliveryDelayed(_) or #abandoned(_) or #unprocessable(_)) false;
     };
   };
 
@@ -104,9 +124,10 @@ module {
       // auto-resolving on it would close the loss the instant it was recorded.
       // Only a human closes this one.
       case (#undeliverable(_) or #stuckMint(_) or #refundAfterDelivery(_)) null;
-      // Neither is settled by a refund landing: a delay wants its cause fixed,
-      // and an abandonment was already a conscious decision.
-      case (#deliveryDelayed(_) or #abandoned(_)) null;
+      // None of these is settled by a refund landing: a delay wants its cause
+      // fixed, an abandonment was already a conscious decision, and an
+      // unprocessable event has no established money position to settle.
+      case (#deliveryDelayed(_) or #abandoned(_) or #unprocessable(_)) null;
     };
   };
 
@@ -227,6 +248,15 @@ module {
   /// entries never match (no paymentRef) — minted cycles are not a refund's
   /// business. Empty result = refund for something not in the queue (fine:
   /// operators may refund proactively).
+  /// Unresolved entries carrying this `payment_intent`, without touching them.
+  /// Used by the partial-refund path, which must report what is still owed
+  /// rather than settle it.
+  public func unresolvedByPaymentRef(store : Store, paymentRef : Text) : [Entry] {
+    store.entries.values().filter(
+      func(e) = e.resolvedAtNs == null and paymentRefOf(e.kind) == ?paymentRef
+    ).toArray();
+  };
+
   public func resolveByPaymentRef(store : Store, paymentRef : Text, nowNs : Int) : [Entry] {
     let matches = store.entries.values().filter(
       func(e) = e.resolvedAtNs == null and paymentRefOf(e.kind) == ?paymentRef

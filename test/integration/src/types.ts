@@ -149,7 +149,8 @@ export type ErrorKind =
   | { unattributed: { claimedRef: string; paymentRef: string } }
   | { undeliverable: { orderId: string; cycles: bigint } }
   | { stuckMint: { orderId: string; stage: string } }
-  | { refundAfterDelivery: { orderId: string; paymentRef: string; cycles: bigint } }
+  | { refundAfterDelivery: { orderId: string; paymentRef: string; cycles: bigint; refundedCents: bigint; fullRefund: boolean } }
+  | { unprocessable: { eventId: string; field: string } }
   | { deliveryDelayed: { orderId: string; stage: string; sinceNs: bigint } }
   | { abandoned: { orderId: string; reason: string } };
 
@@ -281,6 +282,8 @@ export interface BackendService {
   create_order(tierId: string, destination: Destination, minCycles: [] | [bigint]): Promise<Result<CreatedOrder, CreateOrderError>>;
   quote_previews(rail: Rail, amounts: bigint[]): Promise<QuotePreviews>;
   cancel_order(id: string): Promise<Result<Order, string>>;
+  set_expected_livemode(expected: [] | [boolean]): Promise<void>;
+  expected_livemode(): Promise<[] | [boolean]>;
   can_purchase(usdCents: bigint): Promise<Result<null, GateReason>>;
   error_queue(afterId: Opt<bigint>, limit: bigint): Promise<ErrorQueuePage>;
   error_queue_unresolved(afterId: Opt<bigint>, limit: bigint): Promise<ErrorQueuePage>;
@@ -292,7 +295,7 @@ export interface BackendService {
   retention_status(): Promise<RetentionStatus>;
   cycles_status(): Promise<{ balance: bigint; floor: bigint }>;
   recount_orders(): Promise<Array<[string, bigint]>>;
-  run_retention(): Promise<{ expired: bigint }>;
+  run_retention(): Promise<{ expired: bigint; scanned: bigint }>;
   receipt(id: string): Promise<Opt<{
     order: Order;
     paidUsdCents: Opt<bigint>;

@@ -296,8 +296,10 @@ type Kind =
    refundAfterDelivery:
     record {
       cycles: nat;
+      fullRefund: bool;
       orderId: OrderId;
       paymentRef: text;
+      refundedCents: nat;
     };
    stuckMint: record {
                 orderId: OrderId;
@@ -310,6 +312,10 @@ type Kind =
    undeliverable: record {
                     cycles: nat;
                     orderId: OrderId;
+                  };
+   unprocessable: record {
+                    eventId: text;
+                    field: text;
                   };
  };
 type JournalEntry = 
@@ -327,6 +333,7 @@ type JournalEntry =
 type IntervalError = 
  variant {
    intervalTooLong: record {maxNs: nat;};
+   intervalTooShort: record {minNs: nat;};
    zeroInterval;
  };
 type HeaderField = 
@@ -657,6 +664,7 @@ service : {
   /// so a large body of resolved history never stands between the operator and
   /// the dollars that still need an answer.
   error_queue_unresolved: (afterId: opt nat, limit: nat) -> (Page) query;
+  expected_livemode: () -> (opt bool) query;
   /// §2 query authz: `caller == order.owner`, null otherwise — existence is
   /// not revealed to non-owners. Anonymous callers own nothing by
   /// construction (create_order rejects them), so they always get null.
@@ -781,9 +789,12 @@ service : {
   /// automatically; this is the fallback and the only path for Type 2.)
   resolve_error: (id: nat) -> (Result_9);
   /// Retention counters for monitoring (public, same stance as
-  /// `treasury_status`): how many orders are in each band right now, and how
-  /// many ids have been tombstoned. `openOrders` growing without `delivered`
-  /// growing is the signature of order-creation abuse.
+  /// `treasury_status`).
+  /// 
+  /// `openOrders` climbing while `delivered` does not is the signature of
+  /// order-creation abuse; the lever is `Gate.maxOpenOrdersPerPrincipal`.
+  /// `totalOrders` and `paidIntentsIndexed` should grow together — a divergence
+  /// means an index and its records disagree.
   retention_status: () ->
    (record {
       config: Config__1;
@@ -792,11 +803,18 @@ service : {
       paidIntentsIndexed: nat;
       totalOrders: nat;
     }) query;
-  /// Manual retention kick (admin, §7) — ops lever to apply the current TTL and
-  /// horizon immediately after retuning them, instead of waiting up to a full
-  /// sweep interval. Returns what it did. Safe to spam: the bands are computed
-  /// from absolute ages, so a second run is a no-op.
-  run_retention: () -> (record {expired: nat;});
+  /// Manual retention kick (admin, §7) — ops lever to apply a retuned TTL
+  /// immediately instead of waiting up to a full sweep interval. Safe to spam:
+  /// the band is an absolute age, so a second run is a no-op.
+  /// 
+  /// Returns `scanned` alongside `expired` because the sweep is bounded per call
+  /// (`maxRetentionScanPerSweep`) and resumes from a cursor: on a large store it
+  /// takes several calls to cover everything, and `scanned` is how an operator
+  /// tells "nothing left to expire" from "did not look at everything yet".
+  run_retention: () -> (record {
+                          expired: nat;
+                          scanned: nat;
+                        });
   /// Replace the card tier config (§3/§7 — admin, validated atomically: a
   /// bad config never partially applies).
   set_card_tiers: (tiers: vec Tier) -> (Result_8);
@@ -809,6 +827,12 @@ service : {
   /// retroactively invalidate that tier's registration, but the next
   /// `set_card_tiers` will reject it and the webhook will refuse to mint a
   /// payment above the new ceiling.
+  /// Declare which Stripe mode this gateway serves (admin).
+  /// 
+  /// Set it to `?true` before taking real payments and `?false` on a sandbox
+  /// deployment. `null` restores "accept either", which only makes sense while
+  /// nothing of value is at stake.
+  set_expected_livemode: (expected: opt bool) -> ();
   set_gate_config: (config: Config__3) -> (Result_6);
   /// Adjust pricing params (§7): fee formula, staleness window, delta guard.
   /// Validated atomically — a bad config never partially applies.

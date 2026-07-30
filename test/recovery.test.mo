@@ -16,8 +16,32 @@ suite("validateInterval", func() {
     assert Recovery.validateInterval(0, dayNs) == #err(#zeroInterval);
   });
 
-  test("accepts the minimum positive interval", func() {
-    assert Recovery.validateInterval(1, dayNs) == #ok;
+  test("rejects a cadence so fine the retry budget stops spanning the window", func() {
+    // A 1 ns interval is "positive" but useless: maxMintRetries sweeps would
+    // elapse instantly, so the first transient CMC failure would burn the whole
+    // budget and escalate an order that had ~24 h of replay left. The validator
+    // owns BOTH sides of the retries × cadence > window invariant, because a
+    // retuned cadence is exactly how an operator breaks it by accident.
+    let minNs = Int.abs(dayNs) / Recovery.maxMintRetries + 1;
+    assert Recovery.validateInterval(1, dayNs) == #err(#intervalTooShort({ minNs }));
+    assert Recovery.validateInterval(minNs / 2, dayNs) == #err(#intervalTooShort({ minNs }));
+  });
+
+  test("a cadence an operator would actually reach for during an incident is legal", func() {
+    // The invariant must not make the cadence unadjustable. With a tight retry
+    // budget the shortest legal interval would be over 14 min, so nobody could
+    // speed the sweep up while working an outage — the budget is sized to keep
+    // this range open.
+    assert Recovery.validateInterval(60_000_000_000, dayNs) == #ok; // 1 min
+    assert Recovery.validateInterval(300_000_000_000, dayNs) == #ok; // 5 min
+  });
+
+  test("boundary: the shortest legal cadence keeps the budget wider than the window", func() {
+    let minNs = Int.abs(dayNs) / Recovery.maxMintRetries + 1;
+    assert Recovery.validateInterval(minNs, dayNs) == #ok;
+    assert Recovery.validateInterval(minNs - 1, dayNs) == #err(#intervalTooShort({ minNs }));
+    // And the accepted boundary really does satisfy the invariant it guards.
+    assert Recovery.maxMintRetries * minNs > Int.abs(dayNs);
   });
 
   test("boundary: exactly window/4 passes, one ns more fails", func() {

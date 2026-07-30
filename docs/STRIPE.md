@@ -1,7 +1,8 @@
 # The Stripe (Card) rail, end to end
 
-How fiat becomes cycles. Written from the code — every claim here has a
-`file:line` anchor you can check. The *why* behind the design decisions lives in
+How fiat becomes cycles. Written from the code — every claim names the module it
+came from, so you can check it. (Module names, not line numbers: a stale line
+number is worse than no line number, and they drift on every edit.) The *why* behind the design decisions lives in
 `design-docs/ONCHAIN_GATEWAY_SPEC.md` (spec v2.1); this document is the *what*.
 
 - [1. The one-sentence version](#1-the-one-sentence-version)
@@ -60,10 +61,10 @@ problem, and no operator-settable rate source to audit.
                         └──────────────────────────┬───────────────────────────────┘
                                                    │ set_card_tiers (admin, on-chain)
                                                    ▼
- user ──II login──▶ create_order(tierId, destination)         Main.mo:339
-                       │  admission gate                       Main.mo:278 → Gate.mo
+ user ──II login──▶ create_order(tierId, destination)         Main.mo
+                       │  admission gate                       Main.mo → Gate.mo
                        │  quote: lock the CYCLE QUANTITY       Pricing.mo (cached XRC+CMC)
-                       │  raw_rand order id                    Orders.mo:30
+                       │  raw_rand order id                    Orders.mo
                        ▼
                     #created  +  clientReferenceId = <principal>_<orderId>
                        │
@@ -73,10 +74,10 @@ problem, and no operator-settable rate source to audit.
                        │
  Stripe ───────────────┤ POST /webhook/stripe   (anonymous principal)
                        ▼
-                    http_request  → upgrade = ?true            Main.mo:1395
-                    http_request_update → route table          Main.mo:1402, 1377
+                    http_request  → upgrade = ?true            Main.mo
+                    http_request_update → route table          Main.mo
                        ▼
-                    Card.handleWebhook                          Card.mo:417
+                    Card.handleWebhook                          Card.mo
                        │ 1. secret provisioned?      → else 503 (Stripe retries)
                        │ 2. HMAC verify + ±300 s     → else 400
                        │ 3. parse event (tree parse) → else 400
@@ -112,7 +113,7 @@ That forces exactly two ingress paths:
 | **One HTTP route** | HMAC over the payload | `POST /webhook/stripe` only |
 
 `Http.mo` dispatches off a route *table* with a per-route `upgrade` flag
-(`Main.mo:1377`). The query half returns `upgrade = ?true` **without running the
+(`Main.mo`). The query half returns `upgrade = ?true` **without running the
 handler** — the gateway discards that response and re-issues the request to
 `http_request_update` through consensus, so response certification is moot.
 
@@ -120,8 +121,8 @@ Two details that matter:
 
 - `http_request_update` is **callable directly via Candid by anyone**, so the
   dispatcher re-applies every guard rather than trusting that the query half ran
-  first (`Main.mo:1402`).
-- `Http.pathOf` strips the query string before matching (`Http.mo:53`), so a
+  first (`Main.mo`).
+- `Http.pathOf` strips the query string before matching (`Http.mo`), so a
   gateway URL carrying `?canisterId=…` still routes — which is what makes §15's
   local setup work.
 
@@ -132,31 +133,31 @@ oversized payloads never pay for consensus).
 
 ## 5. Signature verification
 
-`Card.verify` (`Card.mo:101`) implements Stripe's scheme exactly:
+`Card.verify` (`Card.mo`) implements Stripe's scheme exactly:
 
-1. **Parse `Stripe-Signature`** (`Card.mo:69`) — comma-separated `key=value`
+1. **Parse `Stripe-Signature`** (`Card.mo`) — comma-separated `key=value`
    elements, e.g. `t=1492774577,v1=5257a8…,v0=6ffbb5…`. Per Stripe's reference
    parsers: only the first `t=` counts, unknown schemes (`v0=`) are ignored, and
    unparseable elements are skipped. **Multiple `v1=` values are collected** —
    Stripe sends one per active secret during a rotation overlap, and any single
    match verifies. That is what makes rotation zero-downtime with only one
    secret stored.
-2. **Timestamp window** — `|now − t| > 300 s` → reject (`Card.mo:43` for the
+2. **Timestamp window** — `|now − t| > 300 s` → reject (`Card.mo` for the
    tolerance). `t` is signed into the payload, so it cannot be forged to defeat
    this. Stripe re-signs on every retry with a fresh `t`, so retries are never
    rejected by the window.
-3. **MAC** over `"<t>." ++ raw_body` (`Card.mo:95`). The body must be the
+3. **MAC** over `"<t>." ++ raw_body` (`Card.mo`). The body must be the
    **exact bytes received** — re-serialised JSON will not verify.
-4. **Constant-time compare** (`Hmac.mo:34`) — accumulates XOR across all bytes
+4. **Constant-time compare** (`Hmac.mo`) — accumulates XOR across all bytes
    instead of returning at the first difference. A short-circuiting compare
    would be a timing oracle that leaks the expected MAC byte by byte and lets an
    attacker forge "paid" webhooks *without* the secret.
 
-Header names are matched case-insensitively (`Http.mo:63`) because proxies
+Header names are matched case-insensitively (`Http.mo`) because proxies
 re-case them.
 
 Only after verification is the body parsed, and it is parsed as a **tree**
-(`Json.mo`), never scanned for substrings (`Card.mo:159`) — the JSON is authentic
+(`Json.mo`), never scanned for substrings (`Card.mo`) — the JSON is authentic
 Stripe output, but string values inside it still carry user-influenced content.
 
 The canister subscribes to exactly two event types. Anything else is
@@ -170,7 +171,7 @@ Payment Link is always live, so anyone can pay it with any reference they like.
 Every dollar that arrives must therefore resolve to one of: delivery, Type 1, or
 Type 2 — never to a silent accept.
 
-`handleCheckout` (`Card.mo:314`) re-derives and checks everything:
+`handleCheckout` (`Card.mo`) re-derives and checks everything:
 
 | Check | Failure |
 |---|---|
@@ -186,11 +187,11 @@ Type 2 — never to a silent accept.
 Note the owner check: the reference *claims* a principal, and it must equal the
 order's actual owner. `Orders.parseClientReferenceId` compares principal text
 rather than calling `Principal.fromText`, because that traps on garbage and a
-trapped webhook is a 5xx that Stripe would retry forever (`Orders.mo:52`).
+trapped webhook is a 5xx that Stripe would retry forever (`Orders.mo`).
 
 Type 1 entries are always answered **HTTP 200**. The payment *is* handled — by
 the operator's refund queue rather than by delivery — and a non-2xx would make
-Stripe redeliver an event that has already been routed (`Card.mo:241`).
+Stripe redeliver an event that has already been routed (`Card.mo`).
 
 The stored `claimedRef` is length-capped at 128 bytes
 (`ErrorQueue.maxClaimedRefBytes`) so an attacker cannot stuff arbitrary data
@@ -198,7 +199,7 @@ into admin-visible stable state one webhook at a time.
 
 ## 7. Dedup: two layers, and what they do not protect against
 
-In order (`Card.mo:314`):
+In order (`Card.mo`):
 
 1. **`event.id`** — catches Stripe *redelivering one event*. Stripe's delivery is
    at-least-once and it retries for ~3 days.
@@ -221,7 +222,7 @@ webhook.
 The order stores a **pricing snapshot** at creation (`Types.Pricing`): the gross
 cents, **both rate inputs** (`usdPerIcpMicros` from the XRC, `xdrPermyriadPerIcp`
 from the CMC) with the XRC quality signal, and the fee formula. The webhook
-honours the **actual paid amount** (`Card.mo:314`):
+honours the **actual paid amount** (`Card.mo`):
 
 - Paid amount **equals** the quoted tier → deliver `lockedCycles` verbatim.
 - Paid amount **differs** → reprice from the order's own snapshot, never from a
@@ -311,7 +312,7 @@ spec §8 — a gateway confirming its own arithmetic proves nothing.
 ## 9. Admission: the pre-creation gate
 
 `create_order` refuses before quoting when fulfilment is already impossible
-(`Main.mo:278` → `Gate.mo`). Checked cheapest-first, before any pricing work:
+(`Main.mo` → `Gate.mo`). Checked cheapest-first, before any pricing work:
 
 | Check | Refusal | Meaning |
 |---|---|---|
@@ -352,7 +353,7 @@ order past `orderTtlNs` flips to `#expired`.
 | `#expired` | ≥ TTL, forever | **yes** | kept forever |
 
 **Expiry is advisory.** An `#expired` order is still fully payable and a late
-genuine payment is honoured at the locked quantity (`Card.mo:314` accepts
+genuine payment is honoured at the locked quantity (`Card.mo` accepts
 `#created or #expired`; `Orders.mo` allows `#expired → #paid`). The flip is
 bookkeeping — it makes an abandoned attempt visibly stale rather than
 indistinguishable from a live one.
@@ -408,7 +409,19 @@ synchronously and before the money sweep so it cannot interleave with an await.
 
 **Refunds are always manual, in the Stripe Dashboard.** No `sk_live` means the
 canister cannot issue one. What the canister does is *react* to
-`charge.refunded` (`Card.mo:257`):
+`charge.refunded` (`Card.mo`).
+
+⚠️ **Only a *full* refund settles an obligation.** Stripe fires `charge.refunded`
+for **any** refund, and the event carries a *charge*: `amount` is the charge total
+and `amount_refunded` is the cumulative amount returned. A refund is complete only
+when the second reaches the first (`Card.isFullRefund`).
+
+A partial refund therefore leaves the Type 1 entry **open** and audits
+`stripe.refundPartial`. Reading it as settled would auto-resolve a $500
+obligation on a $5 courtesy refund, and the unrefunded $495 would exist nowhere
+but the audit ring — which drops. `#refundAfterDelivery` likewise records
+`refundedCents` and `fullRefund`, because a partial refund after delivery is a
+partial loss and reconciliation happens by amount.
 
 ⚠️ **Prefer delivering to refunding whenever the buyer is identifiable.** A
 refund makes the customer start over, and a customer who has paid and received
@@ -458,7 +471,11 @@ rail-specific summary:
 | Secret not provisioned | 503 | nothing happened | provision; Stripe retries |
 | Missing/bad signature, stale `t` | 400 | nothing happened | none — not from Stripe |
 | Unparseable body | 400 | nothing happened | visible in the Dashboard's delivery log |
-| Unhandled event type | 200 | nothing happened | none |
+| Unhandled event type | 200 | nothing happened | audited `stripe.unhandledType` — an unsubscribed type arriving is a Dashboard-config surprise worth seeing |
+| Verified but unprocessable (e.g. no `payment_intent`) | **200** | unknown — inspect in Stripe | queued `#unprocessable`; see below |
+| `checkout.session.async_payment_succeeded` | 200 | **fiat in** | mints exactly like `completed` |
+| `checkout.session.async_payment_failed` | 200 | nothing happened | audited; the order stays payable |
+| livemode mismatch | 200 | depends which way | audited `stripe.livemodeMismatch`; a *live* payment on a test-configured gateway is queued as an obligation |
 | Redelivered `event.id` / `payment_intent` | 200 | already handled | none |
 | `payment_status ≠ paid` | 200 | no money yet | audited `stripe.unpaidSession`; check the link is card-only |
 | Type 1 `#unattributed` | 200 | **fiat in, nothing minted** | `attach_payment` if you can identify the order; refund if not |
@@ -473,6 +490,42 @@ yet alerts the operator at 2 h while the position is still fully recoverable, an
 terminates at 72 h into `#stuckMint{stage="treasuryWaitExceeded"}` — fiat in,
 nothing minted, refund. Three days is the outer bound on "paid and heard
 nothing", and the operator has 70 hours of warning to make it not happen.
+
+### Why a verified event is never answered with a 4xx
+
+Once the MAC verifies, the event genuinely came from Stripe. If we then cannot
+process it — a session with no `payment_intent`, reachable via a subscription-mode
+link or a 100%-off promo code — parsing will fail **identically on every retry**,
+for Stripe's full ~3-day horizon. Stripe warns about, and can **disable**, an
+endpoint that keeps failing; a disabled endpoint then loses every *legitimate*
+webhook after it. Trading a permanent outage for a refusal that can never succeed
+is strictly worse, so these are acked 200 and queued as `#unprocessable`.
+
+Non-2xx is reserved for the two cases where retrying is exactly what we want:
+input we cannot authenticate (400) and an unprovisioned secret (503).
+
+⚠️ `RUNBOOK.md`'s "nothing is lost while you fix it" holds for *transient*
+failures. A permanent one used to be the dangerous case; it is now acked.
+
+### Async payment methods
+
+A Payment Link can offer delayed methods, and several are enabled by default in
+the Dashboard — which the canister cannot enforce. The sequence is:
+`checkout.session.completed` with `payment_status != "paid"` (no money yet), then
+`checkout.session.async_payment_succeeded` when it settles.
+
+Both parse into the same shape and run the same handler, so a delayed payment
+mints correctly. Handling only `completed` would mean fiat arriving with nothing
+minted and nothing on the worklist. **Still pin the link to card-only** (§14
+checklist) — this handles the case, it does not make it desirable.
+
+### Test-mode/live-mode confusion
+
+`set_expected_livemode(?Bool)` declares which Stripe world this gateway serves.
+A test-mode signing secret pasted into a canister holding a real ICP float would
+otherwise mint real cycles for payments that never happened, and the secret is the
+only thing separating the two. Unset by default so a sandbox works without
+configuration; the go-live checklist sets it to `?true`.
 
 ## 13. The secret
 
@@ -492,7 +545,7 @@ What actually protects it:
 | **Provisioning channel** | Known-exposed: `set_webhook_secret`'s argument transits the TLS-terminating boundary node as ordinary ingress. Treat the first set over any untrusted path as burned and rotate. |
 | **ICP burn cap** | The always-on backstop, independent of SEV. Bounds how much a forger can drain per window. |
 
-Interface (`Main.mo:63`):
+Interface (`Main.mo`):
 
 - `set_webhook_secret(text)` — controller-only, traps otherwise. Rejects under
   16 bytes and leaves a working secret untouched on rejection, so a
@@ -571,7 +624,7 @@ query themselves and confirm they were charged correctly.
 `scripts/stripe-dev.sh` automates this; the mechanics are below.
 
 The precondition that makes it work: `Http.pathOf` strips the query string
-(`Http.mo:53`), so the local gateway's `?canisterId=…` parameter does not break
+(`Http.mo`), so the local gateway's `?canisterId=…` parameter does not break
 route matching.
 
 ```sh

@@ -440,10 +440,17 @@ export function checkoutSessionBody(args: {
   amountCents: bigint;
   currency?: string;
   paymentStatus?: string;
+  /// Defaults to `checkout.session.completed`; pass
+  /// `checkout.session.async_payment_succeeded` to model a delayed method
+  /// settling, which carries the identical session object.
+  eventType?: string;
+  /// Defaults to live. Only the livemode-gate scenario varies it.
+  livemode?: boolean;
 }): string {
   return JSON.stringify({
     id: args.eventId,
-    type: 'checkout.session.completed',
+    type: args.eventType ?? 'checkout.session.completed',
+    livemode: args.livemode ?? true,
     data: {
       object: {
         payment_intent: args.paymentIntent,
@@ -456,11 +463,33 @@ export function checkoutSessionBody(args: {
   });
 }
 
+/// A **full** refund of the standard tier charge — cumulative refunded equals
+/// the charge total, which is what settles an obligation.
 export function chargeRefundedBody(eventId: string, paymentIntent: string): string {
+  return partialRefundBody(eventId, paymentIntent, TIER_USD_CENTS, TIER_USD_CENTS);
+}
+
+/// `charge.refunded` carries a **charge**: `amount` is its total and
+/// `amount_refunded` is the cumulative amount returned. Stripe fires the same
+/// event type for a partial refund, so the two are only distinguishable by
+/// comparing them.
+export function partialRefundBody(
+  eventId: string,
+  paymentIntent: string,
+  refundedCents: bigint,
+  chargeTotalCents: bigint,
+): string {
   return JSON.stringify({
     id: eventId,
     type: 'charge.refunded',
-    data: { object: { payment_intent: paymentIntent } },
+    livemode: true,
+    data: {
+      object: {
+        payment_intent: paymentIntent,
+        amount: Number(chargeTotalCents),
+        amount_refunded: Number(refundedCents),
+      },
+    },
   });
 }
 
