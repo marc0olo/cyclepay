@@ -1122,29 +1122,14 @@ persistent actor CyclesGateway {
               // buyer left waiting files a chargeback — which costs more than a
               // refund. Terminating so the operator refunds is the protective act.
               //
-              // The escalation differs by status because the **money position**
-              // does, and the position is what determines the operator's action:
-              //
-              // - `#paid`: fiat in, no ICP moved → refund.
-              // - `#icpAtCmc`: the ICP is already at the CMC under our top-up
-              //   subaccount. Refunding the fiat here would leave that ICP
-              //   parked, so the recovery is to notify manually with the
-              //   journaled block — which is exactly `retriesExhausted`.
-              // - `#minting`: bounded earlier by `#staleIntent` once the intent
-              //   passes the ledger dedup window, so reaching the max wait here
-              //   means an intent still inside the window; treat it as the
-              //   uncertain-transfer case rather than inventing a stage.
-              switch (order.status) {
-                case (#icpAtCmc) {
-                  escalateStuckMint(order, "retriesExhausted", "ICP is at the CMC and notify_top_up did not succeed within the max wait — notify manually with the block index in mint_journal; the ICP is parked, not lost");
-                };
-                case (#minting) {
-                  escalateStuckMint(order, "staleIntent", "ICP transfer unconfirmed past the max wait — establish the transfer's fate on the ICP ledger before doing anything else; never rebuild the intent");
-                };
-                case (_) {
-                  escalateStuckMint(order, "mintWaitExceeded", "paid but unminted past the max wait: fiat received, nothing minted — refund in the Stripe Dashboard");
-                };
-              };
+              // The escalation comes from `Cmc.terminationFor`, which reads the
+              // **journal** and not just the status: the status says where the
+              // order stopped, the journal says where the money is, and the money
+              // position is what the operator acts on. Deciding this inline off
+              // status alone is what produced three rounds of defects — see that
+              // function's doc for the specific dangerous cell it closes.
+              let termination = Cmc.terminationFor(order.status, mintJournal.get(orderId));
+              escalateStuckMint(order, termination.stage, termination.detail);
               clearDelayed(orderId);
               mintBlockedAudited.remove(orderId);
               return;
@@ -1164,9 +1149,11 @@ persistent actor CyclesGateway {
               #begin;
             };
             case (#terminate) {
-              // §5.3: the money position is certain (fiat in, nothing minted),
-              // and refunding beats letting the buyer charge back.
-              escalateStuckMint(order, "treasuryWaitExceeded", "held past the max wait: fiat received, nothing minted — refund in the Stripe Dashboard");
+              // §5.3: same decision function as every other terminate, so there
+              // is exactly one place that maps a money position to an
+              // instruction.
+              let termination = Cmc.terminationFor(order.status, mintJournal.get(orderId));
+              escalateStuckMint(order, termination.stage, termination.detail);
               clearDelayed(orderId);
               mintBlockedAudited.remove(orderId);
               return;
@@ -1296,7 +1283,7 @@ persistent actor CyclesGateway {
               // silently over- or under-delivering. The operator decides whether
               // to top the buyer up; the position is fully recoverable and the
               // cycles are real.
-              if (cycles + Cmc.maxMintShortfallCycles < order.lockedCycles) {
+              if (Cmc.isMaterialShortfall(cycles, order.lockedCycles)) {
                 escalateStuckMint(
                   order,
                   "mintShortfall",

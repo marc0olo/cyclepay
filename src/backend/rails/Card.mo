@@ -403,11 +403,16 @@ module {
           # " (" # amounts # ") does not settle it",
         );
       };
-      if (open.size() == 0) {
-        audit(deps, nowNs, "stripe.refundPartial", "partial refund of " # refund.paymentIntent # " (" # amounts # ") matched no open entry");
+      if (open.size() > 0) {
+        // Symmetric with the full-refund path: having reported the obligations
+        // this refund does NOT settle, stop. Continuing would also audit
+        // "matched no queue entry", contradicting the line just written.
+        return ack(Http.text(200, "partial refund recorded; obligation left open"));
       };
-      // Fall through: a partial refund on a *delivered* order is still a
-      // realised loss and must be recorded as one, sized to what went back.
+      audit(deps, nowNs, "stripe.refundPartial", "partial refund of " # refund.paymentIntent # " (" # amounts # ") matched no open entry");
+      // Fall through only when nothing was open: a partial refund on a
+      // *delivered* order is still a realised loss and must be recorded as one,
+      // sized to what went back.
     };
 
     if (full) {
@@ -453,6 +458,13 @@ module {
                 );
                 audit(deps, nowNs, "stripe.refundAfterDelivery", orderId # ": " # refund.paymentIntent # " refunded (" # amounts # ") after " # order.lockedCycles.toText() # " cycles were delivered");
               };
+              case (#errorQueue) {
+                // Terminal and already on the worklist: a refund here is the
+                // *expected* resolution, not a race to investigate. Saying
+                // "the pipeline may still be mid-flight" would send an operator
+                // looking for an in-flight mint that cannot exist.
+                audit(deps, nowNs, "stripe.refundOfEscalated", orderId # ": " # refund.paymentIntent # " refunded (" # amounts # ") — the expected resolution for an escalated order; resolve its queue entry once reconciled");
+              };
               case (status) {
                 // Paid but not yet delivered — the money-out pipeline may
                 // still be mid-flight, so this is a race the operator must
@@ -473,6 +485,17 @@ module {
     // event.id first: catches Stripe redelivering this exact event.
     if (not Idempotency.recordStripeEvent(deps.dedup, session.eventId, nowNs)) {
       return ack(Http.text(200, "duplicate event"));
+    };
+    if (not session.paid) {
+      // An async payment method has not settled. Money may still arrive, and it
+      // is caught then: `checkout.session.async_payment_succeeded` parses into
+      // this same shape and runs this same handler.
+      //
+      // Checked BEFORE the livemode gate: an unsettled session is not money in
+      // any Stripe mode, so raising a livemode obligation here would claim a
+      // payment that has not happened and may never happen.
+      audit(deps, nowNs, "stripe.unpaidSession", "payment_status not paid for intent " # session.paymentIntent # " — awaiting async settlement");
+      return ack(Http.text(200, "ignored: payment not completed"));
     };
     // A test-mode event on a canister holding a real ICP float would mint real
     // cycles for a payment that never happened. The secret is the only thing
@@ -495,8 +518,17 @@ module {
             deps.errorQueue,
             deps.errorQueueCapacity,
             #card,
-            #unattributed({ claimedRef = "livemode mismatch"; paymentRef = session.paymentIntent }),
-            "LIVE payment arrived but this gateway is configured for test mode — money is in the live Stripe account and nothing was minted; fix the configuration, then attach_payment or refund",
+            // The real reference, not a placeholder: it is the only field that
+            // identifies WHICH order to rescue once the config is fixed, and
+            // discarding it would turn a recoverable misconfiguration into a
+            // manual hunt through the Stripe Dashboard.
+            #unattributed({
+              claimedRef = ErrorQueue.truncateClaimedRef(
+                switch (session.clientReferenceId) { case (?r) r; case null "(no client_reference_id)" }
+              );
+              paymentRef = session.paymentIntent;
+            }),
+            "LIVE payment arrived but this gateway is configured for test mode — money is in the live Stripe account and nothing was minted; fix set_expected_livemode, then attach_payment to the referenced order or refund",
             nowNs,
           );
         };
@@ -515,13 +547,6 @@ module {
           "intent " # session.paymentIntent # " honoured without a declared Stripe mode — set_expected_livemode is unset",
         );
       };
-    };
-    if (not session.paid) {
-      // An async payment method has not settled. Money may still arrive, and it
-      // is caught then: `checkout.session.async_payment_succeeded` parses into
-      // this same shape and runs this same handler.
-      audit(deps, nowNs, "stripe.unpaidSession", "payment_status not paid for intent " # session.paymentIntent # " — awaiting async settlement");
-      return ack(Http.text(200, "ignored: payment not completed"));
     };
     // payment_intent second: one mint per payment even across distinct
     // event deliveries for the same intent (§4.2).
@@ -549,8 +574,33 @@ module {
     switch (order.status) {
       case (#created or #expired) {}; // §4: late payment on an expired order is still honored
       case (status) {
-        // Distinct payment_intent for an already-handled order = a genuine
-        // second payment (§4.1: Stripe dedup ≠ double-pay protection).
+        // ⚠️ Before calling this a second payment, ask whether it is the SAME
+        // payment arriving again.
+        //
+        // Both dedup sets are pruned at ~7 days, which automatic Stripe retries
+        // (~3 days) can never outlive — but a manual "resend" from the Dashboard
+        // can, and resending an event to confirm it was processed is an ordinary
+        // operator move. With the keys gone, attribution succeeds and this branch
+        // would report a second payment for a charge that was already delivered,
+        // inviting a refund of legitimate revenue.
+        //
+        // `paidIntents` is the permanent record of which intent funded which
+        // order and is never pruned, so it can still answer the question.
+        switch (deps.paidIntents.get(session.paymentIntent)) {
+          case (?credited) if (credited == orderId) {
+            audit(
+              deps,
+              nowNs,
+              "stripe.replayedAfterPruning",
+              "intent " # session.paymentIntent # " was already credited to order " # orderId
+              # " (status " # Types.statusToText(status) # ") and its dedup keys have been pruned — treated as a redelivery, not a second payment",
+            );
+            return ack(Http.text(200, "already credited"));
+          };
+          case (_) {};
+        };
+        // A genuinely distinct payment for an already-handled order (§4.1:
+        // Stripe dedup ≠ double-pay protection).
         return ack(queueType1(
           deps,
           #duplicate({ orderId; paymentRef = session.paymentIntent }),

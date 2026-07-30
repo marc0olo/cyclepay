@@ -121,6 +121,14 @@ git commit && git push   # needs a workflow-scoped token (a normal `gh auth` tok
 | 46 | a test-mode event cannot mint on a gateway declared live; a live one still does | livemode gate |
 | 47 | a `#deliveryDelayed` alert is resolved when the order **escalates**, not only when it delivers | no orphan worklist entries |
 | 48 | the alert/terminate timeline covers every in-flight status; a delivered order is never caught by it; the terminal stage matches the money position | notify stage bounded by time |
+| 49 | `async_payment_succeeded` arriving **before** `completed` still mints once; the later event raises no obligation | out-of-order events |
+| 50 | the bounded retention sweep expires **every** lapsed order across ticks, settles to `scanned == 0`, and an expired order is still payable | cursor completeness |
+
+⚠️ The per-`(status × journal × age)` terminal-stage mapping is pinned
+**exhaustively in the `Cmc.terminationFor` unit suite**, not here. PocketIC cannot
+stall the real NNS ledger or CMC, so an integration test cannot park an order in
+`#minting`/`#icpAtCmc` long enough to trip the bound — scenario 48 pins the one
+row it can reach and the unit suite covers all eight.
 
 ⚠️ Scenario 41 moves the rate **40%, not 100%**. A bigger jump is rejected by
 §3.1's own guards (`maxRateDeltaBps` caps a move at 50%; the implied-XDR/USD

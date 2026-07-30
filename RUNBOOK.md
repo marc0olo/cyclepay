@@ -298,11 +298,35 @@ cap is unbounded loss. Start tight.
   **The terminal stage differs by status, because the money position does**, and
   the position is what determines the action:
 
-  | Stuck in | Escalates as | Because |
-  |---|---|---|
-  | `paid` / `awaitingTreasury` | `mintWaitExceeded` / `treasuryWaitExceeded` | fiat in, no ICP moved → **refund** |
-  | `minting` | `staleIntent` | the transfer's fate is uncertain → establish it on the ICP ledger first, **never** rebuild the intent |
-  | `icpAtCmc` | `retriesExhausted` | the ICP is already at the CMC under our top-up subaccount → **notify manually** with the journaled block; refunding alone would leave that ICP parked |
+  ⚠️ **The stage is derived from the mint journal, not from the status** — the
+  status says where the order stopped, the journal says where the *money* is, and
+  only the money position determines your action (`Cmc.terminationFor`):
+
+  | Stuck in | Journal says | Escalates as | Action |
+  |---|---|---|---|
+  | `paid` | — | `mintWaitExceeded` | fiat in, no ICP moved → **refund** |
+  | `awaitingTreasury` | — | `treasuryWaitExceeded` | fiat in, no ICP moved → **refund** |
+  | `minting` | no `blockIndex` | `staleIntent` | transfer fate unknown → establish it on the ICP ledger first; **never** rebuild the intent |
+  | `minting` | `blockIndex` set | `retriesExhausted` | transfer confirmed → **notify manually** with that block |
+  | `icpAtCmc` | no `cyclesMinted` | `retriesExhausted` | ICP parked at the CMC → **notify manually** with the journaled block |
+  | `icpAtCmc` | **`cyclesMinted` set** | `ambiguousForward` | ⚠️ the ICP is **already consumed** and cycles exist → **check the destination**; never re-forward, never re-notify |
+
+  That last row is why this is journal-derived: read off the status alone it looks
+  like "notify never completed", and following that instruction would re-notify an
+  already-spent transfer and risk double delivery.
+
+  ### Per-stage clocks are cumulative
+
+  ⚠️ Each transition resets `updatedAtNs`, so the 72 h bound applies **per state**,
+  not to the whole order. An order that lingers in `paid`, then `minting`, then
+  `icpAtCmc` can therefore take longer than 72 h end to end — worst case on the
+  order of a week and a half.
+
+  This is deliberate: each state is a distinct failure mode with a distinct
+  recovery, and an order that *just* progressed is making progress and should not
+  be terminated on a clock started before its current problem existed. But it means
+  "72 h" is the bound on **being stuck in one place**, not on total time to
+  resolution — and the 2 h alert is what you actually operate against.
 
   The 2 h alert is the one to act on: it fires while the position is still fully
   recoverable, and clearing the underlying cause (refill the float, widen the
@@ -447,8 +471,11 @@ icp canister call backend resolve_error '(137 : nat)' -e ic --identity <operator
 | `#undeliverable {orderId; cycles}` (Type 2) | Cycles minted, forward *cleanly rejected* — the cycles sit in the backend's own cycle balance | Fix the destination problem (e.g. the target canister was deleted/frozen). There is no automatic re-forward lever; either deliver manually from operator funds (`icp canister top-up <canister> --amount …` for a canister destination, a cycles-ledger transfer for an account destination — the stranded balance reimburses you) or refund the fiat in Stripe. Then `resolve_error`. |
 | `#stuckMint{stage="treasuryWaitExceeded"}` | Certain: fiat in, nothing minted | Refund in the Stripe Dashboard → `resolve_error`. |
 | `#stuckMint{stage="staleIntent"}` | Uncertain: ICP transfer intent aged past the 24 h ledger dedup window with no recorded block — the original transfer's fate is unknowable, auto-replay risks double-spend (§5.1) | Read `mint_journal(orderId)` for the intent (amount, `created_at_time`, CMC top-up subaccount). Check the ICP ledger for a matching transfer from the backend account. **Executed** → the ICP sits at the CMC under the backend's top-up subaccount; call `notify_top_up` on the CMC with the found block index (anyone may notify; if the CMC refuses an old block, contact DFINITY ops — the ICP is parked, not lost) and reconcile. **Not executed** → fiat in, nothing moved: refund in Stripe. Either way `resolve_error`; never rebuild a fresh intent. |
-| `#stuckMint{stage="retriesExhausted"}` | ICP transferred to the CMC (block recorded), `notify_top_up` failed 25 times | Almost certainly a prolonged CMC outage. The block index is in `mint_journal`; the order is terminal (`process_order` will not retry an escalated order) — notify the CMC manually with the journaled block once the outage clears, or contact DFINITY ops. The ICP is parked at the CMC top-up subaccount, not lost. |
-| `#stuckMint{stage="ambiguousForward"}` | Cycles minted; forward may or may not have reached the destination (died between the pre-forward marker and delivery) | Check the destination: canister cycle balance delta / cycles-ledger account balance vs `mint_journal.cyclesMinted`. **Arrived** → done, `resolve_error`. **Not arrived** → cycles are in the backend's balance; deliver manually as for Type 2. Never re-forwarded automatically — double delivery is the risk being avoided. |
+| `#stuckMint{stage="retriesExhausted"}` | ICP transferred to the CMC (**block recorded**), `notify_top_up` never succeeded — either the retry budget ran out or the max wait elapsed | Almost certainly a prolonged CMC outage. The block index is in `mint_journal`; the order is terminal (`process_order` will not retry an escalated order) — notify the CMC manually with the journaled block once the outage clears (notify is idempotent), or contact DFINITY ops. The ICP is parked at the CMC top-up subaccount, not lost. |
+| `#stuckMint{stage="mintWaitExceeded"}` | Certain: fiat in, **no ICP moved** | Refund in the Stripe Dashboard → `resolve_error`. Same position as `treasuryWaitExceeded`; this one means the mint could not even start (stale CMC rate, unpriceable amount, float read failing) rather than being held by the burn cap. |
+| `#stuckMint{stage="transferRejected"}` | Certain: the ICP ledger **refused** the transfer, so nothing moved | Read the detail for the ledger's reason. `#InsufficientFunds` → refill the float (the order is terminal, so re-drive it by hand or refund). `#BadFee` → the protocol fee changed; that is a code fix, and every order will fail until it lands. Fiat is in and nothing was minted, so refunding is always a valid resolution. |
+| `#stuckMint{stage="notifyRejected"}` | **ICP is gone from the float and the CMC refused to mint** — usually `#Refunded`, meaning the CMC returned the ICP | Read the detail. `#Refunded{block_index}` → the ICP came back to this canister's ledger account; confirm on the ICP ledger, then refund the fiat (net-neutral) or re-drive a fresh order. `#InvalidTransaction`/`#Other` → establish where the ICP is on the ledger **before** refunding, or you may refund fiat *and* lose the ICP. |
+| `#stuckMint{stage="ambiguousForward"}` | Cycles minted; forward may or may not have reached the destination (died between the pre-forward marker and delivery) | Check the destination: canister cycle balance delta / cycles-ledger account balance vs `mint_journal.cyclesMinted`. **Arrived** → done, `resolve_error`. **Not arrived** → cycles are in the backend's balance; deliver manually as for Type 2. Never re-forwarded automatically — double delivery is the risk being avoided. ⚠️ **Do not notify the CMC again**: the ICP is already consumed. This stage is also what the 72 h bound produces for an `#icpAtCmc` order that has `cyclesMinted` journaled, precisely so that case is never mistaken for `retriesExhausted`. |
 | `#stuckMint{stage="mintShortfall"}` | Cycles minted, but **fewer than the order locked** — the CMC's rate moved between sizing the ICP transfer and notifying it (up to 15 min normally, longer if a recovery sweep notified a transfer stranded by an outage). The minted cycles are in this canister's balance; nothing was forwarded | Read `mint_journal(orderId).cyclesMinted` for the real figure. Either forward that amount and tell the buyer, or top up to `lockedCycles` from operator funds — a business call, not a technical one. **Never** just re-run the mint: the ICP is already spent. Deliberately not absorbed automatically, because covering the gap from the canister's own gas is an unbudgeted subsidy that grows with volatility. `resolve_error` once delivered. |
 | `#stuckMint{stage="missingJournal"}` | Order status implies money-out state the journal doesn't have | Invariant breach — should be unreachable. Reconstruct from `audit_log` + ledgers; treat as a bug, file it. |
 | `#stuckMint{stage="stalePullIntent"}` (ck-USDC) | Uncertain, money-IN: a `icrc2_transfer_from` pull intent aged past 24 h with no recorded block; the order deliberately stays `created` and further claims are blocked | See §7 below — this one has dedicated levers. |

@@ -1763,11 +1763,111 @@ test('48 — the notify stage is bounded by time, not only by the retry count', 
   )!;
   expect(terminal).toBeDefined();
   if ('stuckMint' in terminal.kind) {
-    expect(['mintWaitExceeded', 'treasuryWaitExceeded']).toContain(terminal.kind.stuckMint.stage);
+    // Exact, not a set: this order never moved any ICP (the burn cap stopped it
+    // before the transfer), so the position is certain and the instruction must
+    // be the refundable one. Accepting either stage here would let the
+    // journal-derived mapping regress silently — the per-status arms are pinned
+    // exhaustively in the Cmc.terminationFor unit suite.
+    // #paid, not #awaitingTreasury: a zero burn cap refuses inside the mint
+    // pre-gate, so the order never transitions into the hold state. Either way
+    // no ICP moved, which is what the stage has to say.
+    expect(terminal.kind.stuckMint.stage).toBe('mintWaitExceeded');
+    expect(terminal.detail).toContain('nothing minted');
   }
   // And the delay alert did not survive the escalation.
   const afterAlert = (await allErrorEntries(gw)).find((e) => e.id === stuckAlert.id)!;
   expect(afterAlert.resolvedAtNs).toHaveLength(1);
 
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+});
+
+test('49 — an out-of-order async settlement still mints exactly once', async () => {
+  // Stripe does not guarantee ordering. If async_payment_succeeded arrives BEFORE
+  // the completed event (or the completed event never arrives), the money is real
+  // and must still mint — and the later completed event must not double-credit.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  await fundFloat(gw, ORDER_E8S * 2n + ICP_FEE_E8S * 2n);
+
+  const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }, []));
+
+  // Settlement first.
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_oo_settled',
+    paymentIntent: 'pi_oo',
+    clientReferenceId: created.clientReferenceId,
+    amountCents: TIER_USD_CENTS,
+    eventType: 'checkout.session.async_payment_succeeded',
+  }))).toMatchObject({ status_code: 200 });
+  expect(await tickUntilStatus(gw, created.order.id, ['delivered'])).toBe('delivered');
+
+  // The completed event arrives afterwards, same intent: deduped, no obligation.
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_oo_completed',
+    paymentIntent: 'pi_oo',
+    clientReferenceId: created.clientReferenceId,
+    amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  const spurious = (await openErrorEntries(gw)).filter(
+    (e) => JSON.stringify(e.kind, bigIntReplacer).includes('pi_oo'),
+  );
+  expect(spurious).toHaveLength(0);
+  expect(await orderStatus(gw, created.order.id)).toBe('delivered');
+});
+
+test('50 — retention covers every order across ticks and resets its cursor', async () => {
+  // The sweep is bounded per tick and resumes from an id cursor, so the property
+  // that matters is that repeated runs eventually expire EVERY lapsed order and
+  // then settle to doing nothing.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+
+  const before = await gw.asAnon.retention_status();
+  const ids: string[] = [];
+  for (let i = 0; i < 5; i++) {
+    ids.push(expectOk(
+      await gw.asUser.create_order('tier5', { canister: destinationId }, []),
+    ).order.id);
+  }
+  expect((await gw.asAnon.retention_status()).openOrders).toBe(before.openOrders + 5n);
+
+  // Past the TTL (48 h default).
+  await gw.pic.advanceTime(50 * 3_600 * 1_000);
+  await gw.pic.tick(3);
+
+  // Drive the sweep to completion; several calls may be needed on a large store.
+  let guard = 0;
+  while (guard < 20) {
+    const swept = await gw.asAdmin.run_retention();
+    guard += 1;
+    if (swept.scanned === 0n) break;
+  }
+  expect(guard).toBeLessThan(20);
+
+  // Every one of them expired — none skipped by the cursor.
+  for (const id of ids) {
+    expect(await orderStatus(gw, id)).toBe('expired');
+  }
+  expect((await gw.asAnon.retention_status()).openOrders).toBe(0n);
+
+  // And an expired order is STILL payable, which is what makes bounding the
+  // sweep safe: lateness costs nothing.
+  // Advancing 50 h staled both rates; re-arm before quoting again.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  const late = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }, []));
+  await gw.pic.advanceTime(50 * 3_600 * 1_000);
+  await gw.pic.tick(3);
+  let g2 = 0;
+  while (g2 < 20 && (await gw.asAdmin.run_retention()).scanned !== 0n) g2 += 1;
+  expect(await orderStatus(gw, late.order.id)).toBe('expired');
+  await fundFloat(gw, ORDER_E8S * 2n + ICP_FEE_E8S * 2n);
+  await ensureRates(gw);
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_late_pay', paymentIntent: 'pi_late_pay',
+    clientReferenceId: late.clientReferenceId, amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  expect(await tickUntilStatus(gw, late.order.id, ['delivered'])).toBe('delivered');
 });

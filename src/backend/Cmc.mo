@@ -130,6 +130,16 @@ module {
   /// quantisation, far below anything worth absorbing.
   public let maxMintShortfallCycles : Nat = 1_000_000_000;
 
+  /// Did the CMC mint materially less than the order locked?
+  ///
+  /// Pure so the boundary is pinned by test rather than by reading the call site:
+  /// the consequence of getting it wrong in either direction is silent — too
+  /// strict escalates healthy orders, too loose subsidises buyers from this
+  /// canister's gas.
+  public func isMaterialShortfall(minted : Nat, locked : Nat) : Bool {
+    minted + maxMintShortfallCycles < locked;
+  };
+
   /// Cycles the cycles ledger deducts from a `deposit`. A
   /// `#cyclesLedgerAccount` destination therefore receives this much less than
   /// the order's locked quantity; a `#canister` top-up pays nothing.
@@ -363,6 +373,89 @@ module {
     /// block_index, §5.2), then forward.
     #notifyCmc : Nat;
     #escalate : EscalateReason;
+  };
+
+  /// What to escalate when a **time bound** terminates an order, and the exact
+  /// instruction to hand the operator.
+  ///
+  /// ⚠️ **Derived from the journal, not from the status.** The status says where
+  /// the order stopped; the *journal* says where the money is, and the money
+  /// position is what determines the operator's action. Three consecutive defects
+  /// in this codebase came from deciding an escalation off status alone, so the
+  /// decision lives here as one pure function with every arm pinned by unit test
+  /// — the composition is what kept going wrong, not the pieces.
+  ///
+  /// The dangerous cell, and the reason this exists: an `#icpAtCmc` order whose
+  /// notify already succeeded (`cyclesMinted` journaled) died mid-forward. Read
+  /// off the status it looks like "notify never completed", and the instruction
+  /// "notify manually, the ICP is parked" is then **factually wrong** — the ICP
+  /// was consumed, the cycles exist, and they may already be at the destination.
+  /// Following it invites exactly the double delivery `#ambiguousForward` exists
+  /// to prevent.
+  public func terminationFor(
+    status : Types.OrderStatus,
+    entry : ?Types.JournalEntry,
+  ) : { stage : Text; detail : Text } {
+    switch (status) {
+      case (#icpAtCmc) {
+        let ?e = entry else {
+          return {
+            stage = escalateReasonToText(#missingJournal);
+            detail = "order is #icpAtCmc with no money-out journal — invariant breach, should be unreachable. Reconstruct from audit_log and the ICP ledger before moving any money.";
+          };
+        };
+        // Pre-forward marker set: the mint happened and the forward's fate is
+        // unknown. Never re-forward automatically, and never tell anyone the ICP
+        // is recoverable — it is already spent.
+        if (e.cyclesMinted != null) {
+          return {
+            stage = escalateReasonToText(#ambiguousForward);
+            detail = "cycles WERE minted and the forward outcome is unknown — check the destination balance against mint_journal.cyclesMinted BEFORE anything else. Do not re-forward and do not notify the CMC again: the ICP is already consumed. Arrived -> resolve. Not arrived -> the cycles are in this canister's balance; deliver them manually.";
+          };
+        };
+        {
+          stage = escalateReasonToText(#retriesExhausted);
+          detail = "ICP reached the CMC but notify_top_up did not succeed within the max wait — notify manually with mint_journal.blockIndex (notify is idempotent). The ICP is parked at the CMC top-up subaccount, not lost.";
+        };
+      };
+      case (#minting) {
+        let ?e = entry else {
+          return {
+            stage = escalateReasonToText(#missingJournal);
+            detail = "order is #minting with no money-out journal — invariant breach, should be unreachable. Reconstruct from audit_log and the ICP ledger before moving any money.";
+          };
+        };
+        switch (e.blockIndex) {
+          // Transfer confirmed, only the notify outstanding — same position as
+          // #icpAtCmc without cycles, so the same instruction.
+          case (?_) {
+            {
+              stage = escalateReasonToText(#retriesExhausted);
+              detail = "the ICP transfer IS confirmed (block index in mint_journal) but notify_top_up did not complete within the max wait — notify manually with that block. The ICP is parked at the CMC, not lost.";
+            };
+          };
+          // No block: whether the transfer executed is unknown.
+          case null {
+            {
+              stage = escalateReasonToText(#staleIntent);
+              detail = "ICP transfer unconfirmed past the max wait — establish its fate on the ICP ledger (match mint_journal.transferIntent by created_at_time) before moving any money. Executed -> the ICP is at the CMC, notify with the found block. Not executed -> fiat in, nothing moved, refund. NEVER rebuild the intent.";
+            };
+          };
+        };
+      };
+      case (#awaitingTreasury) {
+        {
+          stage = "treasuryWaitExceeded";
+          detail = "held past the max wait: fiat received, nothing minted — refund in the Stripe Dashboard.";
+        };
+      };
+      case (_) {
+        {
+          stage = "mintWaitExceeded";
+          detail = "paid but unminted past the max wait: fiat received, nothing minted — refund in the Stripe Dashboard.";
+        };
+      };
+    };
   };
 
   /// Decide the next move. Pure — the §5.1/§5.2 resume semantics in one

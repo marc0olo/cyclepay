@@ -306,6 +306,48 @@ suite("handleWebhook: envelope guards", func() {
   });
 });
 
+suite("a resent webhook is never a second payment", func() {
+  test("an intent already credited is a redelivery even with both dedup keys gone", func() {
+    // Automatic Stripe retries (~3 days) can never outlive the ~7-day dedup
+    // retention — but a manual "resend" from the Dashboard can, and resending an
+    // event to confirm it was processed is an ordinary operator move. With the
+    // keys pruned, attribution succeeds again and the old code reported a second
+    // payment for an already-delivered charge, inviting a refund of legitimate
+    // revenue. paidIntents is permanent and answers the real question.
+    let deps = freshDeps();
+    withOrder(deps, #card);
+    assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
+    assert statusOf(deps) == #paid;
+
+    // Simulate the pruning by starting from a store with only paidIntents intact:
+    // a fresh dedup set is exactly what >7 days of pruning leaves behind.
+    let replayed : Card.Deps = { deps with dedup = Idempotency.emptyStore() };
+    let resp = deliver(replayed, paidBody("evt_1", "pi_1", ?goodRef, 500));
+    assert resp.status_code == 200;
+    assert bodyText(resp) == "already credited";
+    // No obligation invented, and nothing minted twice.
+    assert ErrorQueue.unresolved(replayed.errorQueue).size() == 0;
+    assert AuditLog.events(replayed.auditLog).find(
+      func(e) = e.tag == "stripe.replayedAfterPruning"
+    ) != null;
+  });
+
+  test("a genuinely different intent for a handled order IS still a duplicate", func() {
+    // The protection must not swallow real second payments — that is the whole
+    // reason #duplicate exists (§4.1: Stripe dedup ≠ double-pay protection).
+    let deps = freshDeps();
+    withOrder(deps, #card);
+    assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
+    assert deliver(deps, paidBody("evt_2", "pi_2", ?goodRef, 500)).status_code == 200;
+    let open = ErrorQueue.unresolved(deps.errorQueue);
+    assert open.size() == 1;
+    switch (open[0].kind) {
+      case (#duplicate({ paymentRef; orderId = _ })) assert paymentRef == "pi_2";
+      case (_) Runtime.trap("expected #duplicate");
+    };
+  });
+});
+
 suite("charge.refunded: partial vs full", func() {
   test("isFullRefund is cumulative-vs-total, and a zero-total charge is never full", func() {
     assert Card.isFullRefund({ eventId = "e"; paymentIntent = "p"; amountRefundedCents = 500; chargeAmountCents = 500 });
@@ -328,6 +370,10 @@ suite("charge.refunded: partial vs full", func() {
     assert deliver(deps, partialRefundBody("evt_2", "pi_1", 5, 500)).status_code == 200;
     assert ErrorQueue.unresolved(deps.errorQueue).size() == 1;
     assert AuditLog.events(deps.auditLog).find(func(e) = e.tag == "stripe.refundPartial") != null;
+    // ...and it does NOT also claim the refund matched nothing. Two audit lines
+    // contradicting each other is worse than either alone: an operator reading
+    // the trail cannot tell which is true.
+    assert AuditLog.events(deps.auditLog).find(func(e) = e.tag == "stripe.refundUnmatched") == null;
 
     // Completing the refund settles it.
     assert deliver(deps, partialRefundBody("evt_3", "pi_1", 500, 500)).status_code == 200;
@@ -398,6 +444,68 @@ suite("handleWebhook: livemode gate", func() {
     assert deliver(deps, body).status_code == 200;
     assert statusOf(deps) == #created;
     assert ErrorQueue.unresolved(deps.errorQueue).size() == 1;
+  });
+
+  test("an UNSETTLED session raises no livemode obligation — no money has moved", func() {
+    // The bug this pins: the mismatch check used to run before the paid check, so
+    // an unpaid async session on a mode-mismatched gateway queued an entry
+    // claiming "LIVE payment arrived — money is in the live Stripe account" when
+    // nothing had settled and possibly never would. And if it later settled, the
+    // mismatch branch returned before intent dedup, so it queued a SECOND
+    // obligation for the same intent.
+    let deps = depsExpecting(?false);
+    withOrder(deps, #card);
+    let pending = typedCheckoutBody(
+      "checkout.session.completed", "evt_1", "pi_1", ?goodRef, 500, "usd", "unpaid", true,
+    );
+    assert deliver(deps, pending).status_code == 200;
+    assert ErrorQueue.unresolved(deps.errorQueue).size() == 0;
+    assert AuditLog.events(deps.auditLog).find(func(e) = e.tag == "stripe.unpaidSession") != null;
+    assert AuditLog.events(deps.auditLog).find(func(e) = e.tag == "stripe.livemodeMismatch") == null;
+
+    // Settlement now raises exactly ONE obligation, not a second copy.
+    let settled = typedCheckoutBody(
+      "checkout.session.async_payment_succeeded", "evt_2", "pi_1", ?goodRef, 500, "usd", "paid", true,
+    );
+    assert deliver(deps, settled).status_code == 200;
+    assert ErrorQueue.unresolved(deps.errorQueue).size() == 1;
+  });
+
+  test("a live-on-test obligation keeps the real reference, not a placeholder", func() {
+    // The reference is the only field identifying WHICH order to rescue once the
+    // configuration is fixed; discarding it turns a recoverable misconfiguration
+    // into a manual hunt through the Stripe Dashboard.
+    let deps = depsExpecting(?false);
+    withOrder(deps, #card);
+    let body = typedCheckoutBody(
+      "checkout.session.completed", "evt_1", "pi_1", ?goodRef, 500, "usd", "paid", true,
+    );
+    assert deliver(deps, body).status_code == 200;
+    let open = ErrorQueue.unresolved(deps.errorQueue);
+    assert open.size() == 1;
+    switch (open[0].kind) {
+      case (#unattributed({ claimedRef; paymentRef })) {
+        assert claimedRef == goodRef;
+        assert paymentRef == "pi_1";
+      };
+      case (_) Runtime.trap("expected #unattributed");
+    };
+  });
+
+  test("an unset expectation is audited on every honoured payment", func() {
+    // A gateway taking payments without a declared mode has no defence against a
+    // test-mode secret minting real cycles. The nudge stops once it is declared.
+    let deps = depsExpecting(null);
+    withOrder(deps, #card);
+    assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
+    assert statusOf(deps) == #paid;
+    assert AuditLog.events(deps.auditLog).find(func(e) = e.tag == "stripe.livemodeUnset") != null;
+
+    // Declared: no nudge.
+    let declared = depsExpecting(?true);
+    withOrder(declared, #card);
+    assert deliver(declared, paidBody("evt_2", "pi_2", ?goodRef, 500)).status_code == 200;
+    assert AuditLog.events(declared.auditLog).find(func(e) = e.tag == "stripe.livemodeUnset") == null;
   });
 
   test("matching modes mint normally, and an unset expectation accepts either", func() {

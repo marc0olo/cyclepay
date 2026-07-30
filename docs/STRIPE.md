@@ -493,9 +493,14 @@ retry *count* is not a time bound: bounding the notify stage by retries alone le
 an order sit paid-and-undelivered for as long as the budget lasted, with no alert
 and no escalation.
 
-The terminal escalation names the stage, because the money position differs by
-where it stopped — fiat-in-nothing-minted is a refund, ICP-already-at-the-CMC is a
-manual notify. `RUNBOOK.md` §5 carries the mapping.
+The terminal escalation names the stage, and the stage is derived from the **mint
+journal** rather than the order status: the status says where the order stopped,
+the journal says where the money is, and only the money position determines the
+recovery. `RUNBOOK.md` §5 carries the full mapping.
+
+⚠️ The clocks are **per state**, not per order — each transition resets the age —
+so total time to resolution can exceed 72 h even though no single state does. The
+2 h alert is what an operator works against.
 
 ### Why a verified event is never answered with a 4xx
 
