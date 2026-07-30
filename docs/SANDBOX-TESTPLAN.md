@@ -14,19 +14,46 @@ go-live approval.** It is not one.
 
 | Phase | Setup | Covers | Cost |
 |---|---|---|---|
-| **A** | local `icp network` + Stripe **test** mode via `stripe listen` | money-**in** end to end. Nothing after `#paid` | free |
+| **A** | local `icp network` + Stripe **test** mode via `stripe listen` | signatures, transport, and every error-queue path that needs **no order** — see the box below | free |
 | **B** | backend on **mainnet** + Stripe **test** mode (`set_expected_livemode '(opt false)'`) | the **full** flow: real CMC mint, real cycles delivered, receipts, refund-after-delivery | real ICP (small) |
 | **C** | mainnet + Stripe **live**, tight caps, one real card | payouts, Radar, 3DS, account restrictions | real money |
 
-⚠️ **Phase A cannot reach `#delivered`.** A local network runs only this project's
-canisters — no ICP ledger, no CMC, no cycles ledger — so an order parks at `#paid`
-with `mint.rateFetchFailed` audited. That is correct fail-closed behaviour, not a
-failure. Anything below marked **[B]** needs Phase B.
+### ⚠️ What a local network actually provides (verified, not assumed)
 
-Phase B is the important insight: Stripe test mode against a mainnet canister is
-the only configuration that exercises real Stripe *and* real money-out. Use a live
-Payment Link in test mode and point the Dashboard endpoint straight at
-`https://<backend-id>.raw.icp0.io/webhook/stripe` — no CLI forwarding needed.
+An earlier version of this file claimed a local network "runs only this project's
+canisters — no ICP ledger, no CMC, no cycles ledger". **That is wrong.** Probed
+against `icp network start -d` on icp-cli 0.3.x:
+
+| Canister | Local | Notes |
+|---|---|---|
+| ICP ledger `ryjl3-…` | ✅ present, seeded | answers `icrc1_name` → "Internet Computer" |
+| Cycles ledger `um5iw-…` | ✅ present | answers `icrc1_name` → "Trillion Cycles" |
+| CMC `rkp4c-…` | ✅ present | returns a rate — but see below |
+| **XRC `uf6dk-…`** | ❌ **absent** | `refresh_rates` → `"xrc call rejected: Canister uf6dk-… not found"` |
+
+So the local ceiling is **lower** than the old claim, for two independent reasons:
+
+1. **No XRC ⇒ no price ⇒ no order.** `create_order` answers `rateUnavailable`, so
+   nothing that needs an *existing order* can be tested locally at all. And
+   icp-cli 0.3.x has no `--specified-id`, so the sha256-pinned `xrc_mock` the
+   PocketIC suite uses cannot be installed at that id to work around it.
+2. **The seeded CMC rate is stamped May 2021** (`timestamp_seconds = 1_620_633_601`)
+   and only the governance principal `rrkah-fqaaa-aaaaa-aaaaq-cai` may update it —
+   which cannot be impersonated on a real replica (that is a PocketIC-only
+   capability). Against the 15-minute staleness guard the rate is permanently
+   stale, so even with an order the mint would block on `mint.rateStale`.
+
+**What Phase A therefore covers:** everything that does *not* require an order —
+signature and transport (A1–A3, A6), unattributed payments (B2), unhandled and
+unprocessable events (G1–G2), and refunds of unattributed entries (E1–E4). That is
+still the entire signature/transport and error-queue-without-an-order surface.
+
+**Everything else needs Phase B.** Stripe test mode against a mainnet canister is
+the only configuration with a working XRC and a live CMC rate, so it is the only
+place the full flow runs. Use a test-mode Payment Link and point the Dashboard
+endpoint straight at `https://<backend-id>.raw.icp0.io/webhook/stripe` — no CLI
+forwarding needed. Scenarios marked **[B]** require it; so does anything in B1,
+B3–B6, C, D and F.
 
 ### Phase A setup
 

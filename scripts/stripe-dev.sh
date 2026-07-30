@@ -163,17 +163,17 @@ Two things to expect locally:
    tolerance. If local time has drifted further than that from real time, every
    live webhook is rejected with a 400.
 
-2. **Money-OUT will not complete on this network.** A local `icp network` runs
-   only this project's canisters — there is no ICP ledger, no CMC and no cycles
-   ledger — so an order reaches `#paid` and then parks there, with
-   `mint.rateFetchFailed` in the audit log, because the CMC rate read has nothing
-   to call. That is the correct fail-closed behaviour, not a bug.
+2. **create_order will fail here with `rateUnavailable`.** The local network seeds
+   the ICP ledger, the CMC and the cycles ledger, but NOT the Exchange Rate
+   Canister — `refresh_rates` reports `xrc call rejected: Canister uf6dk-… not
+   found`. No price means no order, by design.
 
-   Everything up to and including `#paid` is genuinely exercised here: real Stripe
-   signatures, real event JSON, attribution, dedup, amount honouring, the error
-   queue. For the mint/deliver half use the PocketIC suite
-   (`cd test/integration && npm test`), which deploys the real ledger, CMC and
-   cycles ledger and can even stop them to simulate outages.
+   So this loop exercises everything that needs no order: real Stripe signatures,
+   real event JSON, unattributed payments, unhandled/unprocessable events, and
+   refunds of those entries. For attribution success, amount honouring, dedup and
+   the mint/deliver half, use either the PocketIC suite
+   (`cd test/integration && npm test`, which installs a pinned XRC mock) or a
+   mainnet canister in Stripe test mode — see docs/SANDBOX-TESTPLAN.md.
 
 Starting the forwarder (Ctrl-C to stop)...
 NOTES
