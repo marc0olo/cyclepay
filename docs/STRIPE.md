@@ -634,6 +634,11 @@ query themselves and confirm they were charged correctly.
 
 `scripts/stripe-dev.sh` automates this; the mechanics are below.
 
+📋 **For the go-live verification pass, follow `docs/SANDBOX-TESTPLAN.md`** — the
+enumerated scenario list (signatures, attribution, amounts, dedup, refunds
+including the partial-refund case, async methods, the frontend) plus what a green
+run does *not* prove.
+
 The precondition that makes it work: `Http.pathOf` strips the query string
 (`Http.mo`), so the local gateway's `?canisterId=…` parameter does not break
 route matching.

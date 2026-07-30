@@ -50,6 +50,11 @@ cycles).
 
 ## 1. Go-live checklist (fresh deployment)
 
+⚠️ **Before any of this**, work `docs/SANDBOX-TESTPLAN.md` to green. Every Stripe
+payload in the automated suites is hand-crafted; that plan is the only thing that
+verifies the real wire format, and its closing section lists what remains open
+even after a clean run.
+
 Everything money-touching **fails closed by default** — a freshly deployed
 gateway accepts no orders and mints nothing until each lever below is
 consciously set. Work the list in order:
