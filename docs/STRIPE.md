@@ -664,22 +664,12 @@ stripe trigger checkout.session.completed
 This exercises the genuine path: real Stripe signatures, real event JSON, real
 retry behaviour on non-2xx.
 
-⚠️ **No order can be created on a local `icp network`.** The local network *does*
-seed the ICP ledger, the CMC and the cycles ledger — but **not the XRC**, so
-`refresh_rates` fails with `xrc call rejected: Canister uf6dk-… not found` and
-`create_order` answers `rateUnavailable`. Fail-closed, working as designed.
-
-(And even with an order, the seeded CMC rate is stamped May 2021 and only the
-governance principal may update it, so the 15-minute staleness guard would block
-the mint. Impersonating governance is a PocketIC-only capability.)
-
-So the local loop covers the order-free surface: real signatures, real event JSON,
-unattributed payments, unhandled and unprocessable events, and refunds of those
-entries. Anything needing an existing order — attribution success, amount
-honouring, dedup, async settlement — needs a **mainnet** canister in Stripe test
-mode. See `docs/SANDBOX-TESTPLAN.md` for the phase split. The mint/deliver half is
-otherwise the PocketIC suite's job, which installs a pinned XRC mock and can stop
-the real NNS canisters to simulate outages (scenarios 51–54).
+⚠️ **Two setup steps this script does not do**, without which `create_order` fails:
+top up the backend past the admission gate's own-cycles floor, and give the local CMC
+a current rate (its seeded rate is stamped 2021 and only governance may change it).
+Both are in `docs/SANDBOX-TESTPLAN.md`, which has a verified end-to-end walkthrough —
+a local network *can* run the whole good path, including the real CMC mint and cycles
+delivery, with local cycles and no mainnet.
 
 Two further caveats:
 

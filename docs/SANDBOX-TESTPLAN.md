@@ -10,28 +10,112 @@ go-live approval.** It is not one.
 
 ---
 
-## Where to run it: PocketIC, not a local network
+## Two places to run it, and both do the whole good path
 
-**One environment covers essentially everything: PocketIC in live mode + the Stripe
-CLI.** No local `icp network`, no mainnet, no real ICP. Proven by integration
-scenario 55, which POSTs a signed webhook over a real HTTP gateway and watches the
-order reach `#delivered`.
+**Either works end to end. Neither needs mainnet or real money.**
 
-Why PocketIC and not a local network — both verified, not assumed:
-
-| | PocketIC | local `icp network` |
+| | PocketIC suite | local `icp network` |
 |---|---|---|
-| ICP ledger / CMC / cycles ledger | ✅ real wasms | ✅ present and seeded |
-| **XRC** | ✅ pinned `xrc_mock` at the mainnet id | ❌ **absent** → `create_order` = `rateUnavailable` |
-| **CMC rate settable** | ✅ (governance impersonation) | ❌ seeded at **May 2021**, governance-only → permanently stale |
-| Clock | ✅ `setTime` to now, then `advanceTime` | ❌ real time only |
-| Real HTTP gateway | ✅ `makeLive()` | ✅ |
-| Stop the ledger/CMC to force outages | ✅ | ❌ |
+| ICP ledger / CMC / cycles ledger | ✅ real wasms | ✅ seeded |
+| XRC | ✅ pinned `xrc_mock` | ✅ the `xrc` canister in `icp.yaml` |
+| Fresh CMC rate | ✅ built in | ✅ via the PocketIC API (below) |
+| Real Stripe events | ✅ `makeLive()` + `stripe listen` | ✅ `stripe listen` at the gateway |
+| Time travel / outage injection | ✅ first-class | ✅ via the PocketIC API |
+| **Frontend in a browser** | ❌ no `ic_env` cookie | ✅ **only here** |
+| Repeatable, scripted, in CI | ✅ | ❌ manual |
 
-A local network therefore cannot create an order at all, and even with one the mint
-would block on `mint.rateStale`. PocketIC has neither limitation *and* keeps time
-control, which is what makes the 2 h alert and 72 h terminate reachable in seconds.
+Pick the **PocketIC suite** for anything you want to keep (it is committed, scripted
+and runs in CI). Pick a **local network** when you need the real UI in a browser,
+which is the one thing PocketIC cannot serve.
 
+⚠️ Earlier versions of this file claimed a local network could not do this — twice,
+both wrong. What makes it work: `icp network start` runs **PocketIC**, and its
+control API is reachable. `lsof` on the launcher shows two listening ports — the HTTP
+gateway that `icp network status` reports, and the PocketIC API alongside it. So a
+local network has the two powers that look like they should be missing: **arbitrary
+sender impersonation** and **time control**.
+
+⚠️ **That is not a supported `icp` interface.** It depends on the launcher being
+PocketIC and on that port being open, and either could change between releases. The
+committed suites deliberately do not rely on it — it is a manual-testing convenience.
+
+### Local good-path walkthrough (verified end to end)
+
+```sh
+npm --prefix test/integration run fetch:wasm    # the pinned xrc_mock
+icp network start -d && icp deploy              # backend + xrc + frontend
+
+# The admission gate checks the canister's OWN cycles before pricing, and a fresh
+# deploy sits under the 5 T floor.
+icp canister top-up backend --amount 20t
+
+# Config. The webhook secret has a 16-character minimum; shorter is rejected.
+icp canister call backend set_webhook_secret '("whsec_local_test_1234567890")'
+icp canister call backend set_card_tiers \
+  '(vec { record { id = "tier5"; usdCents = 500 : nat; paymentLinkUrl = "https://buy.stripe.com/test_x" } })'
+icp canister call backend set_treasury_config \
+  '(record { burnCapE8s = 10_000_000_000 : nat; burnWindowNs = 86_400_000_000_000 : int;
+             alertAfterNs = 120_000_000_000 : int; maxHoldNs = 259_200_000_000_000 : int;
+             lowFloatThresholdE8s = 0 : nat })'
+icp canister call backend set_expected_livemode '(opt false)'
+
+# Fund the ICP float: the backend's own default account on the ICP ledger.
+BID=$(icp canister status backend --json | jq -r '.id')
+icp canister call ryjl3-tyaaa-aaaaa-aaaba-cai icrc1_transfer \
+  "(record { to = record { owner = principal \"$BID\"; subaccount = null };
+             amount = 500_000_000 : nat; fee = opt (10_000 : nat);
+             memo = null; from_subaccount = null; created_at_time = null })"
+icp canister call backend refresh_float '()'
+
+# Give the CMC a current rate (next section), then:
+icp canister call backend refresh_rates '()'
+icp canister call backend pricing_status '()' --query   # expect ok = true
+```
+
+Create an order, append its `clientReferenceId` to your test-mode Payment Link as
+`?client_reference_id=<ref>`, pay with `4242 4242 4242 4242`, and watch `get_order`
+reach `delivered`. `process_order` kicks the mint without waiting for the sweep.
+`mint_journal` and `receipt` then carry the real ICP block index and minted quantity.
+
+#### Giving the local CMC a current rate
+
+The seeded rate is stamped **May 2021** and only governance may change it, so it
+fails the 15-minute staleness guard and pricing reports
+`"cmc rate is stale or zero"`. Impersonate governance through the PocketIC API:
+
+```js
+// run from test/integration/ so the imports resolve
+import { Principal } from '@icp-sdk/core/principal';
+import { IDL } from '@icp-sdk/core/candid';
+
+// Find the PocketIC port — it is the OTHER port the launcher listens on:
+//   lsof -nP -iTCP -sTCP:LISTEN -a -p "$(pgrep -f 'pocket-ic --ttl')"
+const PIC = 'http://127.0.0.1:<pic-port>/instances/0';
+const b64 = (u8) => Buffer.from(u8).toString('base64');
+const Arg = IDL.Record({
+  data_source: IDL.Text, timestamp_seconds: IDL.Nat64, xdr_permyriad_per_icp: IDL.Nat64,
+});
+const t = await fetch(`${PIC}/read/get_time`).then((r) => r.json());
+const payload = new Uint8Array(IDL.encode([Arg], [{
+  data_source: 'local-dev',
+  timestamp_seconds: BigInt(Math.floor(Number(t.nanos_since_epoch) / 1e9)),
+  xdr_permyriad_per_icp: 35_000n,
+}]));
+await fetch(`${PIC}/update/submit_ingress_message`, {
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({
+    sender: b64(Principal.fromText('rrkah-fqaaa-aaaaa-aaaaq-cai').toUint8Array()),
+    canister_id: b64(Principal.fromText('rkp4c-7iaaa-aaaaa-aaaca-cai').toUint8Array()),
+    method: 'set_icp_xdr_conversion_rate',
+    payload: b64(payload),
+    effective_principal: { None: null },
+  }),
+});
+```
+
+`/update/set_time`, `/update/set_certified_time` and `/update/tick` on the same
+instance give time travel, so the 2 h alert and 72 h terminate are reachable locally
+too.
 ### One command: `npm --prefix test/integration run sandbox`
 
 Boots PocketIC with everything, aligns the clock, bootstraps dev config, goes live,
@@ -79,23 +163,18 @@ rejected with a 400.
 | Need | Where | Why |
 |---|---|---|
 | Completing a **hosted Checkout page** | a browser | Stripe deliberately has no headless path. `stripe trigger --override checkout_session:client_reference_id=<ref>` gets you a real *signed event* with the right reference, which covers attribution without the UI |
-| **Frontend click-through** (group H) | ⚠️ **mainnet + Stripe test mode** | see below |
+| **Frontend click-through** (group H) | ✅ a **local network** — see the walkthrough above | the asset canister serves the `ic_env` cookie the page needs; PocketIC does not |
 | Live-mode behaviour: Radar, 3DS, payouts, disputes, account restrictions | mainnet + Stripe **live**, tight caps | unmockable |
 
-⚠️ **Why the UI still needs a mainnet deploy.** Two things are missing locally, and
-neither is Stripe's fault. The page needs the backend id and root key, which the
-asset canister normally supplies through an `ic_env` cookie that PocketIC does not
-set. And a local Internet Identity — the `ii` ICP feature — currently makes PocketIC
-close the connection during instance creation, so it is disabled with the error
-recorded in `harness.ts`. (Mainnet II itself is fine: both a local network and
-PocketIC trust mainnet signatures. `VITE_II_URL` is already wired as the override
-for when a local II works.)
+Group H runs against a **local network**, not mainnet: the asset canister serves the
+`ic_env` cookie the page reads for the backend id and root key, and mainnet II works
+against a local replica. The frontend *state logic* is separately covered headlessly
+by `src/frontend/src/main.test.ts` (jsdom), so what a browser adds is rendering and
+the real login, not behaviour.
 
-Group H is therefore the one part of this plan that wants a mainnet canister in
-**Stripe test mode** — real cycles, but test payments, and cheap at one $5 tier.
-The frontend *state logic* is separately covered headlessly by
-`src/frontend/src/main.test.ts` (jsdom), so what a browser adds is
-rendering and the real login, not behaviour.
+**Nothing in this plan requires a mainnet deploy.** Only live-mode Stripe behaviour
+does — Radar, 3DS, payouts, account restrictions — and that is a separate decision
+from verifying the build.
 
 Everything else — signatures, attribution, amounts, dedup, refunds, async methods,
 event types, livemode, **and full delivery** — runs in PocketIC.

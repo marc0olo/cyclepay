@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # Local Stripe-sandbox loop against a local `icp network`.
 #
-# ⚠️ PREFER `npm --prefix test/integration run sandbox`. That runs the same real
-# Stripe forwarder against PocketIC, which — unlike a local network — has a working
-# XRC and a settable CMC rate, so orders can actually be created and DELIVERED. On
-# a local network there is no XRC, so create_order answers `rateUnavailable` and
-# this script can only exercise the order-free surface (signatures, unattributed
-# payments, unhandled/unprocessable events, refunds of those entries).
+# A local network CAN run the whole good path, including delivery — see
+# docs/SANDBOX-TESTPLAN.md for the verified walkthrough. Two steps this script does
+# not do for you:
 #
-# This script remains useful for one thing PocketIC cannot do: serving the frontend
-# with an `ic_env` cookie, so the UI loads. See docs/SANDBOX-TESTPLAN.md.
+#   1. `icp canister top-up backend --amount 20t` — a fresh deploy is under the
+#      admission gate's own-cycles floor.
+#   2. Give the CMC a current rate. Its seeded rate is stamped 2021 and only
+#      governance may change it, so pricing fails until you impersonate governance
+#      through the local network's PocketIC control API (recipe in the test plan).
+#
+# `npm --prefix test/integration run sandbox` is the scripted alternative when you do
+# not need the frontend in a browser — it handles all of the above itself.
 #
 # Wires the Stripe CLI's webhook forwarder to a locally deployed backend so the
 # real §6.1 path runs end to end: genuine Stripe signatures, genuine event JSON,
@@ -173,17 +176,11 @@ Two things to expect locally:
    tolerance. If local time has drifted further than that from real time, every
    live webhook is rejected with a 400.
 
-2. **create_order will fail here with `rateUnavailable`.** The local network seeds
-   the ICP ledger, the CMC and the cycles ledger, but NOT the Exchange Rate
-   Canister — `refresh_rates` reports `xrc call rejected: Canister uf6dk-… not
-   found`. No price means no order, by design.
-
-   So this loop exercises everything that needs no order: real Stripe signatures,
-   real event JSON, unattributed payments, unhandled/unprocessable events, and
-   refunds of those entries. For attribution success, amount honouring, dedup and
-   the mint/deliver half, use either the PocketIC suite
-   (`cd test/integration && npm test`, which installs a pinned XRC mock) or a
-   mainnet canister in Stripe test mode — see docs/SANDBOX-TESTPLAN.md.
+2. **`create_order` needs two more things than this script sets up**, or it answers
+   `notAdmitted(canisterCyclesLow)` and then `rateUnavailable`:
+   top up the backend (`icp canister top-up backend --amount 20t`), and give the CMC
+   a current rate. Both are in docs/SANDBOX-TESTPLAN.md's local walkthrough. With
+   them done, the full path runs here — including the real CMC mint and delivery.
 
 Starting the forwarder (Ctrl-C to stop)...
 NOTES
