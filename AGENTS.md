@@ -94,16 +94,29 @@ Default vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`,
 
 ## Verifying your work
 
-Never report a task done on a build alone. The full gate:
+Never report a task done on a build alone. **One command runs the whole gate:**
+
+```sh
+scripts/test-all.sh          # everything, in dependency order, fail-fast
+scripts/test-all.sh --fast   # skips the PocketIC suite (see the host note below)
+```
+
+It also asserts the committed `.did` is current, which a hand-run sequence
+silently skips. The individual steps, if you need to run one in isolation:
 
 ```sh
 mops check                                   # lint + typecheck
-mops test                                    # Motoko unit suites
+mops test                                    # Motoko unit suites (21)
 mops build                                   # refreshes the committed .did
-npm --prefix src/frontend run typecheck      # needs bindings — run vitest first on a clean tree
-npm --prefix src/frontend run test
-cd test/integration && npm test              # the go-live bar (spec §9)
+npm --prefix src/frontend run build          # regenerates bindings
+npm --prefix src/frontend run typecheck
+npm --prefix src/frontend run test           # 69, all pure functions
+npm --prefix test/integration test           # 67 PocketIC scenarios — the go-live bar
 ```
+
+⚠️ **`npm test`, never `npx vitest run`** for the integration suite: the latter
+skips `pretest`, which fetches the sha256-pinned wasms and rebuilds the backend —
+so it silently tests a stale wasm and passes.
 
 The PocketIC suite needs a **4 KiB-page host** (macOS or x86_64 Linux). It
 cannot run in arm64 Linux guests with 16 KiB pages — the replica hard-asserts

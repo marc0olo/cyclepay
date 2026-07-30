@@ -1,5 +1,8 @@
 # PocketIC integration suite — the Card and ck-USDC go-live bars (spec §9)
 
+> **Looking for what is tested where, across all suites?** See
+> `docs/TEST-COVERAGE.md`. This file documents the PocketIC suite specifically.
+
 End-to-end scenarios against PocketIC instances running the **real**
 canisters: the ICP ledger, the cycles minting canister, and the cycles ledger
 are deployed at their mainnet IDs by PocketIC's `icpFeatures` (the same Wasms

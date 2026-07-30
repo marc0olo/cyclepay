@@ -1,4 +1,4 @@
-name: mops test
+name: verification gate
 
 on:
   push:
@@ -8,9 +8,9 @@ on:
   pull_request:
 
 jobs:
-  test:
+  # Motoko lint + unit suites. Fast, so it stays its own job and fails early.
+  motoko:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
       - uses: caffeinelabs/setup-mops@v1
@@ -23,5 +23,62 @@ jobs:
       - name: type-check and lint
         run: mops check
 
-      - name: run tests
+      - name: run unit tests
         run: mops test
+
+      # The committed .did is both the embedded candid:service metadata and the
+      # frontend's bindgen source. A stale one means the frontend typechecks
+      # against an interface the canister does not have.
+      - name: committed .did is current
+        run: |
+          mops build
+          git diff --exit-code -- src/backend/dist/backend.did
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: install
+        run: npm --prefix src/frontend ci
+
+      # Build first: it regenerates the bindings the typecheck needs.
+      - name: build (regenerates bindings)
+        run: npm --prefix src/frontend run build
+
+      - name: typecheck
+        run: npm --prefix src/frontend run typecheck
+
+      - name: unit tests
+        run: npm --prefix src/frontend run test
+
+  # The go-live bar (spec §9). ubuntu-latest because the IC replica's memory
+  # tracker hard-asserts 4096-byte pages: x86_64 Linux and macOS are fine, arm64
+  # Linux guests with 16 KiB pages are not.
+  #
+  # `npm test`, never `npx vitest run` — the latter skips pretest, which fetches
+  # the sha256-pinned wasms and rebuilds the backend, so it would silently test a
+  # stale wasm and pass.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: caffeinelabs/setup-mops@v1
+        with:
+          mops-version: 2
+
+      - name: install mops packages
+        run: mops install
+
+      - name: install integration deps
+        run: npm --prefix test/integration ci
+
+      - name: PocketIC suite
+        run: npm --prefix test/integration test

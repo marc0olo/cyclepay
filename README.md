@@ -37,6 +37,7 @@ Key documents:
 |----------|------------|
 | `design-docs/ONCHAIN_GATEWAY_SPEC.md` | The decision record — *why* it is built this way. Non-binding rationale; the implementation wins where they disagree |
 | `docs/STRIPE.md` | **Start here.** The Card rail end to end, written from the code: ingress, signature verification, attribution, dedup, pricing, retention, refunds, the secret, and the local Stripe-sandbox loop |
+| `docs/TEST-COVERAGE.md` | What is tested, how, and what is not — one place to answer "is X covered?" |
 | `docs/SANDBOX-TESTPLAN.md` | The manual Stripe-sandbox verification pass required before go-live, and an explicit statement of what a green run does not prove |
 | `RUNBOOK.md` | Operations, authoritative for procedure: go-live checklist, secret rotation, rate diagnosis, treasury levers, error-queue triage, monitoring plan |
 | `RELEASE.md` | Reproducible build and module-hash verification procedure |
@@ -120,6 +121,12 @@ signature timestamp against its own clock).
 
 ## Tests
 
+```sh
+scripts/test-all.sh          # the whole gate, fail-fast
+scripts/test-all.sh --fast   # skip PocketIC (needs a 4 KiB-page host)
+```
+
+See `docs/TEST-COVERAGE.md` for what each suite covers and what is not covered.
 There are three suites:
 
 **1. Motoko unit tests** (`test/*.test.mo`) — 21 suites of pure-logic coverage
