@@ -134,7 +134,32 @@ persistent actor CyclesGateway {
   /// nudge that stops as soon as the expectation is declared.
   var expectLivemode : ?Bool = null;
 
-  transient let xrc = actor (Xrc.canisterId) : Xrc.Service;
+  /// Which XRC this gateway prices from.
+  ///
+  /// Read **lazily on every use, never cached at init**, per the icp-cli guidance:
+  /// on a first deploy a sibling canister may not exist yet when this one
+  /// initialises, and `--mode reinstall` wipes anything held in state while the
+  /// automatic variables are re-stamped on every deploy. A lazy read self-heals.
+  ///
+  /// Absent variable → the mainnet XRC, so a production deploy that injects
+  /// nothing is correct by default.
+  /// The id the last refresh actually used, for `pricing_status`.
+  ///
+  /// Mirrored into a var because reading an environment variable needs the
+  /// `system` capability, which a query does not have — and "which XRC am I
+  /// pricing from?" has to be answerable from a query, since a mainnet deploy
+  /// wrongly pointed at a mock is otherwise completely silent. The refresh timer
+  /// warms within seconds of install, so this is accurate almost immediately.
+  transient var lastXrcCanisterId : Text = Xrc.mainnetCanisterId;
+
+  func xrcActor<system>() : Xrc.Service {
+    let id = switch (Runtime.envVar<system>(Xrc.canisterIdEnvVar)) {
+      case (?injected) injected;
+      case null Xrc.mainnetCanisterId;
+    };
+    lastXrcCanisterId := id;
+    actor (id);
+  };
 
   /// Single-flight guard for the refresh. Transient: a flag left true by an
   /// upgrade mid-call would deadlock refreshes forever.
@@ -188,7 +213,7 @@ persistent actor CyclesGateway {
       // ICP/USD from the XRC. Exactly 1 B cycles must be attached; the unused
       // remainder is refunded.
       let usdResult = try {
-        await (with cycles = Xrc.callCycles) xrc.get_exchange_rate(Xrc.icpUsdRequest());
+        await (with cycles = Xrc.callCycles) xrcActor<system>().get_exchange_rate(Xrc.icpUsdRequest());
       } catch (e) {
         recordRateAttempt(false, "xrc call rejected: " # e.message());
         return;
@@ -339,11 +364,17 @@ persistent actor CyclesGateway {
     rates : ?Pricing.Rates;
     config : Pricing.Config;
     lastAttempt : ?{ atNs : Int; ok : Bool; detail : Text };
+    /// Which Exchange Rate Canister the last refresh priced from. On mainnet this
+    /// MUST read `uf6dk-hyaaa-aaaaq-qaaaq-cai`; anything else means the deploy
+    /// injected `PUBLIC_CANISTER_ID:xrc` and prices are coming from somewhere
+    /// else. Alert on it (RUNBOOK §9).
+    xrcCanisterId : Text;
   } {
     {
       rates = Pricing.lastRates(rateCache);
       config = pricingConfig;
       lastAttempt = lastRateAttempt;
+      xrcCanisterId = lastXrcCanisterId;
     };
   };
 

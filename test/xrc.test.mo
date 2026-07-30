@@ -131,6 +131,13 @@ suite("call contract", func() {
   });
 
   test("the pinned canister id is the mainnet XRC", func() {
-    assert Xrc.canisterId == "uf6dk-hyaaa-aaaaq-qaaaq-cai";
+    assert Xrc.mainnetCanisterId == "uf6dk-hyaaa-aaaaq-qaaaq-cai";
+  });
+
+  test("the override key is the icp deploy convention for a canister named xrc", func() {
+    // Getting this wrong would silently fall back to mainnet everywhere, which
+    // looks like working code until someone tries to point a local deploy at a
+    // mock and cannot work out why nothing changes.
+    assert Xrc.canisterIdEnvVar == "PUBLIC_CANISTER_ID:xrc";
   });
 });

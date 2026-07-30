@@ -710,6 +710,7 @@ service : {
                          ok: bool;
                        };
       rates: opt Rates;
+      xrcCanisterId: text;
     }) query;
   /// Manual mint kick (admin, §7) — ops lever for a stuck-looking order;
   /// safe to spam, every step is deduped/idempotent/single-flighted.

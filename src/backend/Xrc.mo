@@ -27,11 +27,23 @@ import Nat64 "mo:core/Nat64";
 
 module {
 
-  /// Mainnet XRC. Hardcoded rather than configurable, matching `Cmc.mo` and
-  /// `CkUsdc.mo`: a settable rate-source principal would be a money lever that
-  /// doesn't look like one, which is the property that made the old forex
-  /// source URL a footgun.
-  public let canisterId : Text = "uf6dk-hyaaa-aaaaq-qaaaq-cai";
+  /// Mainnet XRC, and the default whenever nothing overrides it.
+  ///
+  /// The **override is a canister environment variable**
+  /// (`PUBLIC_CANISTER_ID:xrc`), which `icp deploy` stamps into canister settings
+  /// per environment — not an admin method. That distinction is what keeps this
+  /// from being the money lever the old settable forex URL was: changing it
+  /// requires controller rights, which already imply the power to upgrade and
+  /// drain, so it adds no new authority to anyone.
+  ///
+  /// Defaulting to mainnet means **silence is correct**: a production deploy that
+  /// injects nothing prices off the real XRC. The effective id is reported by
+  /// `pricing_status` so a monitor can assert it, because the failure that would
+  /// matter — a mainnet deploy pointed at a mock — is otherwise silent.
+  public let mainnetCanisterId : Text = "uf6dk-hyaaa-aaaaq-qaaaq-cai";
+
+  /// The settings key `icp deploy` injects for a project canister named `xrc`.
+  public let canisterIdEnvVar : Text = "PUBLIC_CANISTER_ID:xrc";
 
   /// Exactly this must be attached per request; the remainder is refunded.
   public let callCycles : Nat = 1_000_000_000;
