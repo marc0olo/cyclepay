@@ -79,9 +79,51 @@ reach `delivered`. `process_order` kicks the mint without waiting for the sweep.
 
 #### Giving the local CMC a current rate
 
-The seeded rate is stamped **May 2021** and only governance may change it, so it
-fails the 15-minute staleness guard and pricing reports
-`"cmc rate is stale or zero"`. Impersonate governance through the PocketIC API:
+**Why this is needed — and it is not "nobody updates the rate".** PocketIC has no
+API for setting the conversion rate (`IcpFeaturesConfig` has exactly one variant,
+`DefaultConfig`). It solves the problem a different way, documented on the
+`cyclesMinting` feature:
+
+> Deploys the NNS cycles minting canister, sets ICP/XDR conversion rate… **If
+> enabled, the default timestamp of a PocketIC instance is set to 10 May 2021
+> 10:00:01 AM CEST (the smallest value that is strictly larger than the default
+> timestamp hard-coded in the CMC state).**
+
+So the 2021 timestamp is not stale seeded data — **PocketIC deliberately pins the
+instance clock to 2021 so the CMC's hard-coded rate is fresh.** That alignment is
+why the committed integration suite works.
+
+A local `icp network` breaks it by running at **real wall-clock time** (verified:
+instance time reads as today while the CMC rate still reads 2021-05-10). Against the
+15-minute staleness guard the rate is then permanently stale, and pricing reports
+`"cmc rate is stale or zero"`.
+
+Two ways to restore the alignment:
+
+- **Move the rate forward** (below). Keeps real time, so real Stripe signatures
+  verify. This is what you want.
+- Move the *clock* back to 2021. Also works, and needs no impersonation — but then
+  every real Stripe signature is rejected, because the canister checks the signature
+  timestamp against its own clock with a ±300 s tolerance. It trades the CMC problem
+  for the Stripe problem.
+
+⚠️ **Impersonation itself is a first-class PocketIC feature, not a hack** — the
+committed suite does exactly the same thing through `gw.cmcAsGovernance`, a
+sender-scoped actor. The only unsupported part on a local network is *reaching* the
+control API, because icp-cli does not publish its port.
+
+⚠️ **The CMC requires a strictly greater timestamp** than the one it holds
+("Proposed conversion rate must have greater timestamp"), so a second call inside the
+same second fails. `setCmcRate` in the harness nudges time by 1 s first.
+
+⚠️ **The PocketIC port is dynamic even with a fixed gateway port.** With
+`gateway.port: 8000` the launcher listens on 8000 *and* an OS-picked port — the
+latter is the control API. Discover it:
+
+```sh
+PID=$(pgrep -f 'pocket-ic --ttl' | head -1)
+lsof -nP -iTCP -sTCP:LISTEN -a -p "$PID" | awk 'NR>1{print $9}' | grep -v ':8000$'
+```
 
 ```js
 // run from test/integration/ so the imports resolve
