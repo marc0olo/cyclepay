@@ -7,7 +7,8 @@ One place to answer "is X covered?". Run everything with `scripts/test-all.sh`.
 | Suite | Count | What it covers | How |
 |---|---|---|---|
 | **Motoko unit** (`test/*.test.mo`) | 21 files | pure logic: HMAC, the Stripe signature scheme, JSON parsing, fee/rate arithmetic, the §4 state machine, dedup, retention bands, the error queue, `Cmc.terminationFor`'s eight money positions, `stageOf`'s resume decisions | `mops test`. No IC environment — every module takes its dependencies as a record (`Card.Deps`), which is why the whole ingestion path is unit-testable |
-| **Frontend** (`src/frontend/src/format.test.ts`) | 69 tests | **pure functions only**: status mapping, cycle/USD formatting, the §3 pricing vector, slippage flooring, deposit-fee subtraction, receipt verification, every error-message mapping | `vitest`, no DOM |
+| **Frontend pure** (`format.test.ts`) | 69 tests | status mapping, cycle/USD formatting, the §3 pricing vector, slippage flooring, deposit-fee subtraction, receipt verification, every error-message mapping | `vitest` |
+| **Frontend DOM** (`main.test.ts`) | 13 tests | the real `index.html` body in jsdom with a stubbed backend: tier estimates, fee split, destination switch, the acknowledge-then-confirm quote flow, cancel visibility, the receipt render, the disabled ck panel | `vitest` + jsdom |
 | **PocketIC** (`test/integration/src/*.spec.ts`) | 67 scenarios | end-to-end against the **real** ICP ledger, CMC and cycles ledger, plus a sha256-pinned XRC mock at the mainnet id | `npm --prefix test/integration test` |
 
 ### What makes the PocketIC suite the real bar
@@ -45,16 +46,21 @@ One place to answer "is X covered?". Run everything with `scripts/test-all.sh`.
 
 ## What is not covered, and why
 
-### 1. The frontend beyond pure functions — the largest gap
+### 1. The frontend in a real browser
 
-`src/frontend/src/main.ts` (~800 lines) has **zero automated coverage**. All 69
-frontend tests exercise `format.ts`. Untested: the acknowledge-then-confirm quote
-flow, `pinFor`, the cancel button's visibility rules, the receipt render, the
-destination-driven re-render, every DOM wiring.
+`main.ts` now has 13 jsdom tests (`main.test.ts`) covering its state machine — the
+quote-confirm flow, cancel visibility, the receipt render, destination switching —
+against the **real `index.html` body**, so a renamed id fails the test. The backend
+is stubbed deliberately: its behaviour is already proven by 67 PocketIC scenarios,
+and a stub is the only way to drive a `#quoteChanged` or a delivered receipt
+on demand.
 
-It typechecks and every `el(...)` id resolves against `index.html` (checked), but
-that is not the same as working. **Nobody has rendered the page.** Group H of
-`docs/SANDBOX-TESTPLAN.md` is the manual substitute.
+What jsdom cannot show: real layout and CSS, the real Internet Identity login, and
+that the Candid shapes match reality in a browser. **Nobody has rendered the page
+in a browser yet.** Group H of `docs/SANDBOX-TESTPLAN.md` covers that, and it needs
+a mainnet deploy in Stripe test mode — PocketIC does not set the `ic_env` cookie the
+page reads, and the local-II feature currently breaks instance creation (recorded in
+`harness.ts`).
 
 ### 2. Structural limits in PocketIC — verified, not assumed
 

@@ -159,10 +159,19 @@ export function estimateLine(
   }
   const landing = cyclesAtDestination(cycles, destination, depositFee);
   if (destination === "cyclesLedgerAccount" && landing !== null) {
-    return (
-      `≈ ${formatCycles(landing)} cycles credited ` +
-      `(${formatCycles(cycles)} minted, less the cycles ledger's ${formatCycles(depositFee)} deposit fee)`
-    );
+    // Only spell out the split when the two figures actually *read* differently.
+    // `formatCycles` shows three decimals, so on a multi-trillion order the
+    // deposit fee rounds away entirely — and "3.5 T credited (3.5 T minted, less
+    // the 100 M deposit fee)" reads as a contradiction rather than a disclosure.
+    // The fee is still disclosed unconditionally next to the destination choice.
+    const shown = formatCycles(landing);
+    if (shown !== formatCycles(cycles)) {
+      return (
+        `≈ ${shown} cycles credited ` +
+        `(${formatCycles(cycles)} minted, less the cycles ledger's ${formatCycles(depositFee)} deposit fee)`
+      );
+    }
+    return `≈ ${shown} cycles credited (after the cycles ledger's ${formatCycles(depositFee)} deposit fee)`;
   }
   return `≈ ${formatCycles(cycles)} cycles`;
 }

@@ -77,6 +77,9 @@ else
   # `npm test` and never `npx vitest run`: the latter skips pretest, which fetches
   # the sha256-pinned wasms and rebuilds the backend — so it would silently test a
   # stale wasm and pass.
+  # Typecheck the suite too: vitest does not, so a broken spec would otherwise
+  # only surface as a runtime failure — or not at all for an unused helper.
+  run "integration typecheck" npm --prefix test/integration run typecheck
   run "PocketIC integration suite — the go-live bar" \
     npm --prefix test/integration test
 fi

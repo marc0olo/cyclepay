@@ -32,7 +32,23 @@ A local network therefore cannot create an order at all, and even with one the m
 would block on `mint.rateStale`. PocketIC has neither limitation *and* keeps time
 control, which is what makes the 2 h alert and 72 h terminate reachable in seconds.
 
-### The setup
+### One command: `npm --prefix test/integration run sandbox`
+
+Boots PocketIC with everything, aligns the clock, bootstraps dev config, goes live,
+prints the webhook URL and a ready-made order, and stays up until Ctrl-C.
+
+```sh
+stripe login                                  # a SANDBOX account, never live
+STRIPE_WEBHOOK_SECRET="$(stripe listen --print-secret)" \
+  npm --prefix test/integration run sandbox
+# then, second terminal:
+stripe listen --forward-to '<the URL it prints>'
+```
+
+Everything is fake money and real plumbing: real ICP ledger, real CMC mint, real
+cycles delivery, genuine signed Stripe events over a genuine HTTP gateway.
+
+### The setup, if you are writing your own spec
 
 ```ts
 await pic.setTime(new Date());            // so real Stripe signatures verify (±300 s)
@@ -63,8 +79,23 @@ rejected with a 400.
 | Need | Where | Why |
 |---|---|---|
 | Completing a **hosted Checkout page** | a browser | Stripe deliberately has no headless path. `stripe trigger --override checkout_session:client_reference_id=<ref>` gets you a real *signed event* with the right reference, which covers attribution without the UI |
-| **Frontend** (group H) | a browser against a served asset canister | `main.ts` has zero automated coverage |
+| **Frontend click-through** (group H) | ⚠️ **mainnet + Stripe test mode** | see below |
 | Live-mode behaviour: Radar, 3DS, payouts, disputes, account restrictions | mainnet + Stripe **live**, tight caps | unmockable |
+
+⚠️ **Why the UI still needs a mainnet deploy.** Two things are missing locally, and
+neither is Stripe's fault. The page needs the backend id and root key, which the
+asset canister normally supplies through an `ic_env` cookie that PocketIC does not
+set. And a local Internet Identity — the `ii` ICP feature — currently makes PocketIC
+close the connection during instance creation, so it is disabled with the error
+recorded in `harness.ts`. (Mainnet II itself is fine: both a local network and
+PocketIC trust mainnet signatures. `VITE_II_URL` is already wired as the override
+for when a local II works.)
+
+Group H is therefore the one part of this plan that wants a mainnet canister in
+**Stripe test mode** — real cycles, but test payments, and cheap at one $5 tier.
+The frontend *state logic* is separately covered headlessly by
+`src/frontend/src/main.test.ts` (13 jsdom tests), so what a browser adds is
+rendering and the real login, not behaviour.
 
 Everything else — signatures, attribution, amounts, dedup, refunds, async methods,
 event types, livemode, **and full delivery** — runs in PocketIC.

@@ -49,4 +49,9 @@ export default defineConfig(({ command, mode }) => ({
     }),
   ],
   ...(command === "serve" && mode !== "test" ? { server: getDevServerConfig() } : {}),
+  test: {
+    // main.ts is a DOM script, so its suite needs a document. format.test.ts is
+    // pure and unaffected by running in jsdom.
+    environment: "jsdom",
+  },
 }));

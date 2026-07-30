@@ -191,6 +191,23 @@ export async function setupGateway(): Promise<Gateway> {
       icpToken: IcpFeaturesConfig.DefaultConfig,
       cyclesMinting: IcpFeaturesConfig.DefaultConfig,
       cyclesToken: IcpFeaturesConfig.DefaultConfig,
+      // ⚠️ `ii: IcpFeaturesConfig.DefaultConfig` would give this instance its own
+      // Internet Identity, which is what a fully local browser flow needs. It is
+      // deliberately NOT enabled: adding it makes the PocketIC server close the
+      // connection during instance creation —
+      //   TypeError: fetch failed … SocketError: other side closed
+      // — so every suite fails at setup. The instance never comes up, so there is
+      // no server log to read either.
+      //
+      // Likely cause, unconfirmed: depending on the PocketIC version, II is split
+      // into separate backend and frontend canisters, so `DefaultConfig` here may
+      // not match what this server build expects. Whoever picks this up should
+      // check the server's own version against the `IcpFeatures` shape rather than
+      // assume the flag is a one-liner.
+      //
+      // Until then the browser flow signs in against mainnet II, which both a
+      // local network and PocketIC trust (see src/frontend/src/auth.ts). The
+      // `VITE_II_URL` override is already in place for when a local II works.
     },
   });
   await pic.setTime(BASE_TIME);
@@ -289,6 +306,9 @@ export async function upgradeBackendMidFlight(gw: Gateway): Promise<void> {
 /// to impersonate governance. So the real NNS canisters CAN be taken out of
 /// service, which is what makes the money-out failure paths reachable end to end.
 export const NNS_ROOT = Principal.fromText('r7inp-6aaaa-aaaaa-aaabq-cai');
+
+/// Internet Identity, deployed locally by the `ii` ICP feature at its mainnet id.
+export const II_ID = Principal.fromText('rdmx6-jaaaa-aaaaa-aaadq-cai');
 
 /// Take an NNS canister out of service. Calls into it are then rejected, which is
 /// how a real ledger or CMC outage looks to the backend.

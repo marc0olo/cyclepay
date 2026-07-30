@@ -8,11 +8,15 @@
     "build:backend": "cd ../.. && mops build",
     "fetch:wasm": "node scripts/fetch-wasms.mjs",
     "pretest": "npm run fetch:wasm && npm run build:backend",
-    "test": "vitest run"
+    "test": "vitest run",
+    "presandbox": "npm run fetch:wasm && npm run build:backend",
+    "sandbox": "npx tsx src/sandbox.ts",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@dfinity/pic": "0.22.0",
     "@types/node": "^25.9.2",
+    "tsx": "^4.23.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   }

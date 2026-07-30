@@ -80,5 +80,8 @@ jobs:
       - name: install integration deps
         run: npm --prefix test/integration ci
 
+      - name: typecheck
+        run: npm --prefix test/integration run typecheck
+
       - name: PocketIC suite
         run: npm --prefix test/integration test
