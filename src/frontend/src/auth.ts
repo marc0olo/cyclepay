@@ -14,8 +14,31 @@ import type { Identity } from "@icp-sdk/core/agent";
 
 const EIGHT_HOURS_NS = 8n * 3_600_000_000_000n;
 
-const IDENTITY_PROVIDER =
-  (import.meta.env?.VITE_II_URL as string | undefined) ?? "https://id.ai/authorize";
+/// Where to send the user to authenticate.
+///
+/// Mainnet II by default, which works even against a local replica: pocket-ic
+/// (icp-cli >= 0.2.4) trusts mainnet subnet signatures, so real `id.ai` delegations
+/// are accepted locally too.
+///
+/// On a local network with `ii: true` the II canisters are served alongside the app,
+/// and using them is what makes sign-in **automatable** — the real II UI needs a
+/// real passkey, which a headless browser cannot produce, while local II mocks it.
+///
+/// The local URL is derived from the page's own origin rather than configured: the
+/// gateway port is OS-picked (`gateway.port: 0`), so hardcoding 8000 — as the II
+/// skill's example does — only works for the default port. Guarded on a
+/// `.localhost` hostname so a production origin can never take this branch.
+function identityProvider(): string {
+  const explicit = import.meta.env?.VITE_II_URL as string | undefined;
+  if (explicit) return explicit;
+  const { hostname, port, protocol } = window.location;
+  if (hostname.endsWith(".localhost")) {
+    return `${protocol}//id.ai.localhost${port ? `:${port}` : ""}/authorize`;
+  }
+  return "https://id.ai/authorize";
+}
+
+const IDENTITY_PROVIDER = identityProvider();
 
 const authClient = new AuthClient({
   identityProvider: IDENTITY_PROVIDER,

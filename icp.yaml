@@ -68,8 +68,23 @@ canisters:
 networks:
   - name: local
     mode: managed
+    # Deploys the II canisters with the network, so sign-in works fully offline and
+    # can be automated. The default (no flag) is to use mainnet II even locally —
+    # pocket-ic trusts mainnet subnet signatures — but that needs the real II UI and
+    # a real passkey, which a headless test cannot drive.
+    ii: true
     gateway:
-      port: 0 # OS picks a free port — avoids collisions across worktrees/projects
+      # Fixed rather than OS-picked, so every local URL is predictable: the app at
+      # http://frontend.local.localhost:8000, Internet Identity at
+      # http://id.ai.localhost:8000, and the webhook route at
+      # http://127.0.0.1:8000/webhook/stripe?canisterId=<id>. A browser test can
+      # hardcode those instead of discovering them, and the II skill's documented
+      # URL works verbatim.
+      #
+      # Trade-off accepted: two projects cannot run local networks at once. Stop the
+      # other one (`icp network stop`) rather than changing this — predictability is
+      # worth more here than parallel networks.
+      port: 8000
 
 environments:
   # Mainnet deploys the product and nothing else. Listing the canisters explicitly
