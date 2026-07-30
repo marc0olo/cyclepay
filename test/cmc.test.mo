@@ -230,6 +230,7 @@ suite("journal", func() {
   feeBps = 290;
   feeFixedCents = 30;
 };
+      paidUsdCents = null;
       status = #paid;
       createdAtNs = 1;
       updatedAtNs = 2;

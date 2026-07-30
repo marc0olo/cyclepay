@@ -201,6 +201,7 @@ module {
       lockedCycles;
       pricing;
       status = #created;
+      paidUsdCents = null;
       createdAtNs = nowNs;
       updatedAtNs = nowNs;
     };
@@ -241,14 +242,16 @@ module {
     };
   };
 
-  /// Webhook money-in (§6.1): `#created`/`#expired` → `#paid`, honoring the
-  /// **actual** paid amount — `lockedCycles` is replaced by `honoredCycles`
-  /// (equal to the original when the paid amount matches the quoted tier;
-  /// repriced from the order's `pricing` snapshot when it doesn't).
+  /// Webhook money-in (§6.1): `#created`/`#expired` → `#paid`.
+  ///
+  /// `honoredCycles` replaces the locked quantity (equal to it when the paid
+  /// amount matches the quote, repriced from the order's own snapshot when it
+  /// does not), and `paidUsdCents` records what actually arrived.
   public func markPaid(
     store : Store,
     id : Types.OrderId,
     honoredCycles : Nat,
+    paidUsdCents : Nat,
     nowNs : Int,
   ) : Result.Result<Types.Order, TransitionError> {
     switch (store.orders.get(id)) {
@@ -256,7 +259,7 @@ module {
       case (?order) {
         switch (transition(order, #paid, nowNs)) {
           case (#ok(updated)) {
-            let paid = { updated with lockedCycles = honoredCycles };
+            let paid = { updated with lockedCycles = honoredCycles; paidUsdCents = ?paidUsdCents };
             store.orders.add(id, paid);
             // markPaid writes status directly rather than going through
             // applyTransition, so it maintains the counts itself.

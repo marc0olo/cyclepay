@@ -57,6 +57,7 @@ export interface PricingConfig {
 }
 
 export interface Order {
+  paidUsdCents: Opt<bigint>;
   id: string;
   owner: { ii: Principal };
   rail: Partial<Record<'card' | 'ckUsdc', null>>;
@@ -270,6 +271,7 @@ export interface BackendService {
   lifecycle_config(): Promise<{ gate: GateConfig; retention: RetentionConfig }>;
   order_for_payment(paymentRef: string): Promise<Opt<string>>;
   abandon_order(id: string, reason: string): Promise<Result<Order, string>>;
+  attach_payment(paymentRef: string, id: string, paidUsdCents: bigint): Promise<Result<Order, Record<string, unknown>>>;
   retention_status(): Promise<RetentionStatus>;
   cycles_status(): Promise<{ balance: bigint; floor: bigint }>;
   recount_orders(): Promise<Array<[string, bigint]>>;

@@ -1238,3 +1238,121 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
   await ensureRates(gw);
 });
+
+test('36 — attach_payment rescues a charge the webhook never delivered', async () => {
+  // The one card-rail failure that otherwise has NO recovery: Stripe retries a
+  // failed webhook for ~3 days then stops, and we hold no API key so we never
+  // poll. Past that horizon the charge exists in Stripe with no on-chain trace,
+  // the buyer's money is gone, and their order reads "Awaiting payment" forever.
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+
+  const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }));
+  const orphan = created.order;
+  // No webhook is delivered at all — this is the whole point.
+  expect(await orderStatus(gw, orphan.id)).toBe('created');
+  expect(orphan.paidUsdCents).toEqual([]);
+
+  // Admin-gated: this creates money, so it is not a user-facing lever.
+  await expect(gw.asUser.attach_payment('pi_lost', orphan.id, TIER_USD_CENTS))
+    .rejects.toThrow(/not a controller/);
+
+  const attached = expectOk(await gw.asAdmin.attach_payment('pi_lost', orphan.id, TIER_USD_CENTS));
+  expect(statusKey(attached)).toBe('paid');
+  // The actual amount paid is now ON the order, not only in a ring buffer.
+  expect(attached.paidUsdCents).toEqual([TIER_USD_CENTS]);
+  expect(attached.lockedCycles).toBe(TIER_LOCKED_CYCLES);
+
+  // Reconciliation works both ways afterwards.
+  expect(await gw.asAdmin.order_for_payment('pi_lost')).toEqual([orphan.id]);
+
+  // The audit trail names who did it and what it was worth.
+  const line = (await gw.asAdmin.audit_log()).find(
+    (e) => e.tag === 'payment.attached' && e.detail.includes(orphan.id),
+  );
+  expect(line).toBeDefined();
+  expect(line!.detail).toContain('by ');
+  expect(line!.detail).toContain('pi_lost');
+
+  // And it delivers through the ordinary money-out path.
+  expect(await tickUntilStatus(gw, orphan.id, ['delivered'])).toBe('delivered');
+});
+
+test('37 — a charge can never be credited twice, by either route', async () => {
+  // The dangerous property of a money-creating lever. attach_payment shares the
+  // webhook's dedup set, so the same payment_intent cannot be credited via both.
+  await ensureRates(gw);
+  const first = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }));
+  const second = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }));
+
+  expectOk(await gw.asAdmin.attach_payment('pi_once', first.order.id, TIER_USD_CENTS));
+
+  // Same intent, different order → refused.
+  const reused = expectErr(await gw.asAdmin.attach_payment('pi_once', second.order.id, TIER_USD_CENTS));
+  expect(reused).toHaveProperty('alreadyCredited');
+  expect(await orderStatus(gw, second.order.id)).toBe('created');
+
+  // And the webhook cannot credit it either — one dedup set, both routes.
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_once', paymentIntent: 'pi_once', clientReferenceId: second.clientReferenceId,
+    amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  expect(await orderStatus(gw, second.order.id)).toBe('created');
+
+  // Attaching to an order past money-in is refused rather than double-crediting.
+  const late = expectErr(await gw.asAdmin.attach_payment('pi_other', first.order.id, TIER_USD_CENTS));
+  expect(late).toHaveProperty('notClaimable');
+});
+
+test('38 — attaching an identified payment closes its Type 1 obligation', async () => {
+  // Turns "refund and ask them to re-order at today's price" into "deliver what
+  // they bought" — and the open obligation must not survive as an orphan.
+  await ensureRates(gw);
+  const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }));
+
+  // A payment arrives with an unusable reference → Type 1 unattributed.
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_mangled', paymentIntent: 'pi_mangled', clientReferenceId: 'not-a-reference',
+    amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  const obligation = (await openErrorEntries(gw)).find(
+    (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_mangled',
+  ) as ErrorEntry;
+  expect(obligation).toBeDefined();
+
+  // The operator identifies the buyer in Stripe and attaches it.
+  expectOk(await gw.asAdmin.attach_payment('pi_mangled', created.order.id, TIER_USD_CENTS));
+
+  // The Type 1 entry is resolved, not left open describing a settled matter.
+  expect((await openErrorEntries(gw)).find((e) => e.id === obligation.id)).toBeUndefined();
+  expect(await tickUntilStatus(gw, created.order.id, ['delivered'])).toBe('delivered');
+});
+
+test('39 — attach_payment enforces the same amount rules as the webhook', async () => {
+  await ensureRates(gw);
+  const { gate } = await gw.asAnon.lifecycle_config();
+
+  const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }));
+  // Above the per-purchase ceiling — repricing is an upward path, so a manual
+  // rescue must not become a way around the bound.
+  const over = expectErr(await gw.asAdmin.attach_payment(
+    'pi_toobig', created.order.id, gate.maxPurchaseUsdCents + 1n,
+  ));
+  expect(over).toHaveProperty('aboveCeiling');
+
+  // Below the fee floor — nothing can be minted from it.
+  const tiny = expectErr(await gw.asAdmin.attach_payment('pi_tiny', created.order.id, 5n));
+  expect(tiny).toHaveProperty('belowFeeFloor');
+
+  // A refused attach must not consume the intent, or a corrected retry would be
+  // permanently blocked.
+  const fixed = expectOk(await gw.asAdmin.attach_payment('pi_toobig', created.order.id, TIER_USD_CENTS));
+  expect(statusKey(fixed)).toBe('paid');
+
+  // A different amount than quoted is repriced from the order's OWN snapshot.
+  const other = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }));
+  const repriced = expectOk(await gw.asAdmin.attach_payment('pi_double', other.order.id, TIER_USD_CENTS * 2n));
+  expect(repriced.paidUsdCents).toEqual([TIER_USD_CENTS * 2n]);
+  expect(repriced.lockedCycles).toBeGreaterThan(TIER_LOCKED_CYCLES);
+  expect(await tickUntilStatus(gw, other.order.id, ['delivered'])).toBe('delivered');
+});

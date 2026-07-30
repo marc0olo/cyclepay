@@ -254,6 +254,45 @@ module {
     ignore AuditLog.append(deps.auditLog, deps.auditLogCapacity, nowNs, tag, detail);
   };
 
+  /// How many cycles a given paid amount is worth for this order (§3/§6.1).
+  ///
+  /// Extracted so the webhook path and the operator's `attach_payment` lever
+  /// share one implementation. They must agree exactly: two copies of money
+  /// arithmetic on a payment path is how a manual rescue silently credits a
+  /// different quantity than the automatic path would have.
+  public type Honored = {
+    /// The amount matched the quote, so the locked quantity stands verbatim.
+    #asQuoted : Nat;
+    /// A different amount, repriced from the order's OWN rate snapshot — never
+    /// a fresh rate, so "no quote drift" holds off the happy path too.
+    #repriced : Nat;
+    /// The fee formula swallows the amount; nothing can be minted.
+    #belowFeeFloor;
+    /// Above the per-purchase ceiling. Repricing is an upward path, so without
+    /// this a tampered link or a mis-set Stripe price would mint arbitrarily.
+    #aboveCeiling : { paidUsdCents : Nat; maxUsdCents : Nat };
+    /// The order's rate snapshot cannot produce a quantity (zero ICP price).
+    #unusableSnapshot;
+  };
+
+  public func honoredCycles(
+    order : Types.Order,
+    paidUsdCents : Nat,
+    maxPurchaseUsdCents : Nat,
+  ) : Honored {
+    if (paidUsdCents > maxPurchaseUsdCents) {
+      return #aboveCeiling({ paidUsdCents; maxUsdCents = maxPurchaseUsdCents });
+    };
+    if (paidUsdCents == order.pricing.usdCents) return #asQuoted(order.lockedCycles);
+    let ?net = Pricing.netCents(order.pricing, paidUsdCents) else return #belowFeeFloor;
+    let ?repriced = Pricing.cyclesForCents(
+      net,
+      order.pricing.xdrPermyriadPerIcp,
+      order.pricing.usdPerIcpMicros,
+    ) else return #unusableSnapshot;
+    #repriced(repriced);
+  };
+
   /// Queue a Type 1 entry (§4.1: fiat exists, nothing minted — operator
   /// refunds in the Stripe Dashboard). Always 200: the payment is handled,
   /// just not by delivery; a non-2xx would make Stripe redeliver an event
@@ -389,47 +428,30 @@ module {
     if (session.currency != "usd") {
       return unattributed("unexpected currency " # session.currency # " for order " # orderId);
     };
-    // ── §3/§6.1: honor the ACTUAL paid amount. The expected tier amount
-    // uses the locked quantity verbatim; anything else (user pasted the
-    // reference onto a different tier's link) is repriced from the order's
-    // creation pricing snapshot — never from a fresh rate.
-    //
-    // The ceiling applies here as well as at tier-config time: repricing is an
-    // *upward* path when more was paid than quoted, so an implausible amount
-    // (a tampered link, a misconfigured Stripe price) would otherwise mint an
-    // arbitrary quantity. Over the ceiling we refuse to mint and let the money
-    // land as Type 1 — the §4.1 rule that dedup gates the mint, applied to
-    // amount as well as identity.
-    if (session.amountTotalCents > deps.maxPurchaseUsdCents) {
-      return unattributed(
-        "paid amount " # session.amountTotalCents.toText() # " cents exceeds the per-purchase ceiling of "
-        # deps.maxPurchaseUsdCents.toText() # " cents for order " # orderId # " — not minted; refund or raise the ceiling"
-      );
-    };
-    let honoredCycles = if (session.amountTotalCents == order.pricing.usdCents) {
-      order.lockedCycles;
-    } else {
-      let ?net = Pricing.netCents(order.pricing, session.amountTotalCents) else {
+    // ── §3/§6.1: honor the ACTUAL paid amount, through the shared helper so
+    // this path and `attach_payment` cannot diverge.
+    let honored = switch (honoredCycles(order, session.amountTotalCents, deps.maxPurchaseUsdCents)) {
+      case (#asQuoted(cycles) or #repriced(cycles)) cycles;
+      case (#belowFeeFloor) {
         return unattributed("paid amount " # session.amountTotalCents.toText() # " cents is below the fee floor of order " # orderId);
       };
-      // Repriced from the order's own rate snapshot, never a fresh rate — both
-      // inputs were captured at creation for exactly this.
-      let ?repriced = Pricing.cyclesForCents(
-        net,
-        order.pricing.xdrPermyriadPerIcp,
-        order.pricing.usdPerIcpMicros,
-      ) else {
+      case (#aboveCeiling({ paidUsdCents; maxUsdCents })) {
+        return unattributed(
+          "paid amount " # paidUsdCents.toText() # " cents exceeds the per-purchase ceiling of "
+          # maxUsdCents.toText() # " cents for order " # orderId # " — not minted; refund or raise the ceiling"
+        );
+      };
+      case (#unusableSnapshot) {
         return unattributed("order " # orderId # " carries an unusable rate snapshot; cannot reprice " # session.amountTotalCents.toText() # " cents");
       };
-      repriced;
     };
-    switch (Orders.markPaid(deps.orders, orderId, honoredCycles, nowNs)) {
+    switch (Orders.markPaid(deps.orders, orderId, honored, session.amountTotalCents, nowNs)) {
       case (#ok(_)) {
         // Link the payment to the order it funded, so a later refund of this
         // intent can tell whether cycles were already delivered.
         deps.paidIntents.add(session.paymentIntent, orderId);
-        if (honoredCycles != order.lockedCycles) {
-          audit(deps, nowNs, "stripe.amountMismatch", "order " # orderId # " honored at " # session.amountTotalCents.toText() # " cents = " # honoredCycles.toText() # " cycles (quoted " # order.pricing.usdCents.toText() # " cents)");
+        if (honored != order.lockedCycles) {
+          audit(deps, nowNs, "stripe.amountMismatch", "order " # orderId # " honored at " # session.amountTotalCents.toText() # " cents = " # honored.toText() # " cycles (quoted " # order.pricing.usdCents.toText() # " cents)");
         };
         // The one path that creates money-out work.
         { response = Http.text(200, "ok"); paidOrder = ?orderId };

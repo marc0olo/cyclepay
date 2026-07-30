@@ -110,6 +110,18 @@ module {
     lockedCycles : Nat;
     pricing : Pricing;
     status : OrderStatus;
+    /// What the buyer **actually paid**, in USD cents. Null until paid.
+    ///
+    /// Distinct from `pricing.usdCents`, which is what the order was *quoted*
+    /// for. The two differ whenever a card payment arrives for a different
+    /// amount, and the fact of that difference used to live only in the audit
+    /// ring buffer — a buffer that drops. A fact about money belongs on the
+    /// money record, so "what did this buyer pay?" is answerable from state
+    /// forever rather than for as long as the telemetry survives.
+    ///
+    /// On the ck-USDC rail this always equals `pricing.usdCents`: the canister
+    /// pulls the exact quoted price, so a mismatch is structurally impossible.
+    paidUsdCents : ?Nat;
     createdAtNs : Int;
     updatedAtNs : Int;
   };

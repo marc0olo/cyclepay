@@ -339,7 +339,7 @@ suite("markPaid (§6.1 amount honoring)", func() {
   test("created -> paid, lockedCycles replaced by the honored quantity", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    switch (Orders.markPaid(store, "ord-1", 42, 300)) {
+    switch (Orders.markPaid(store, "ord-1", 42, 500, 300)) {
       case (#ok(paid)) {
         assert paid.status == #paid;
         assert paid.lockedCycles == 42;
@@ -358,7 +358,7 @@ suite("markPaid (§6.1 amount honoring)", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
     drive(store, "ord-1", [#expired]);
-    switch (Orders.markPaid(store, "ord-1", 7, 300)) {
+    switch (Orders.markPaid(store, "ord-1", 7, 500, 300)) {
       case (#ok(paid)) assert paid.status == #paid;
       case (#err(_)) assert false;
     };
@@ -367,11 +367,11 @@ suite("markPaid (§6.1 amount honoring)", func() {
   test("already-paid order refuses a second markPaid, store unchanged", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    switch (Orders.markPaid(store, "ord-1", 42, 300)) {
+    switch (Orders.markPaid(store, "ord-1", 42, 500, 300)) {
       case (#ok(_)) {};
       case (#err(_)) assert false;
     };
-    switch (Orders.markPaid(store, "ord-1", 99, 400)) {
+    switch (Orders.markPaid(store, "ord-1", 99, 500, 400)) {
       case (#err(#illegalTransition({ from = #paid; to = #paid }))) {};
       case _ assert false;
     };
@@ -383,7 +383,7 @@ suite("markPaid (§6.1 amount honoring)", func() {
 
   test("unknown order id returns notFound", func() {
     let store = Orders.emptyStore();
-    switch (Orders.markPaid(store, "missing", 1, 100)) {
+    switch (Orders.markPaid(store, "missing", 1, 500, 100)) {
       case (#err(#notFound("missing"))) {};
       case _ assert false;
     };
@@ -416,7 +416,7 @@ suite("openOrderCount — the Gate admission input", func() {
     // would lock themselves out permanently.
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    ignore Orders.markPaid(store, "ord-1", 1, 200);
+    ignore Orders.markPaid(store, "ord-1", 1, 500, 200);
     assert Orders.openOrderCount(store, alice) == 0;
   });
 });
@@ -485,7 +485,7 @@ suite("status counts — the O(1) query inputs", func() {
     // this is the path most likely to be forgotten.
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    ignore Orders.markPaid(store, "ord-1", 1, 200);
+    ignore Orders.markPaid(store, "ord-1", 1, 500, 200);
     assert Orders.countOf(store, #created) == 0;
     // #paid is untracked, so nothing else moved.
     assert Orders.countOf(store, #expired) == 0;
@@ -495,7 +495,7 @@ suite("status counts — the O(1) query inputs", func() {
   test("the awaitingTreasury hold is tracked in both directions", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    ignore Orders.markPaid(store, "ord-1", 1, 200);
+    ignore Orders.markPaid(store, "ord-1", 1, 500, 200);
     ignore Orders.applyTransition(store, "ord-1", #awaitingTreasury, 300);
     assert Orders.countOf(store, #awaitingTreasury) == 1;
     ignore Orders.applyTransition(store, "ord-1", #minting, 400);

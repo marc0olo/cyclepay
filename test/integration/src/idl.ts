@@ -43,6 +43,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   });
   const Order = IDL.Record({
     createdAtNs: IDL.Int,
+    paidUsdCents: IDL.Opt(IDL.Nat),
     destination: Destination,
     id: IDL.Text,
     lockedCycles: IDL.Nat,
@@ -327,6 +328,23 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       ['query'],
     ),
     order_for_payment: IDL.Func([IDL.Text], [IDL.Opt(IDL.Text)], ['query']),
+    attach_payment: IDL.Func(
+      [IDL.Text, IDL.Text, IDL.Nat],
+      [IDL.Variant({
+        ok: Order,
+        err: IDL.Variant({
+          aboveCeiling: IDL.Record({ maxUsdCents: IDL.Nat, paidUsdCents: IDL.Nat }),
+          alreadyCredited: IDL.Text,
+          belowFeeFloor: IDL.Nat,
+          noOrder: IDL.Text,
+          notClaimable: IDL.Text,
+          transitionRefused: IDL.Text,
+          unusableSnapshot: IDL.Null,
+          wrongRail: IDL.Null,
+        }),
+      })],
+      [],
+    ),
     abandon_order: IDL.Func(
       [IDL.Text, IDL.Text],
       [IDL.Variant({ ok: Order, err: IDL.Text })],

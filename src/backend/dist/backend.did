@@ -81,9 +81,14 @@ type Result_2 =
    err: ConfigError;
    ok;
  };
-type Result_15 = 
+type Result_16 = 
  variant {
    err: text;
+   ok: Order;
+ };
+type Result_15 = 
+ variant {
+   err: AttachPaymentError;
    ok: Order;
  };
 type Result_14 = 
@@ -239,6 +244,7 @@ type Order =
    id: OrderId;
    lockedCycles: nat;
    owner: Owner;
+   paidUsdCents: opt nat;
    pricing: Pricing;
    rail: Rail;
    status: OrderStatus;
@@ -452,6 +458,20 @@ type ClaimCkUsdcError =
    staleIntent;
    wrongRail;
  };
+type AttachPaymentError = 
+ variant {
+   aboveCeiling: record {
+                   maxUsdCents: nat;
+                   paidUsdCents: nat;
+                 };
+   alreadyCredited: text;
+   belowFeeFloor: nat;
+   noOrder: OrderId;
+   notClaimable: text;
+   transitionRefused: text;
+   unusableSnapshot;
+   wrongRail;
+ };
 type Account = 
  record {
    owner: principal;
@@ -474,7 +494,27 @@ service : {
   /// 
   /// Only reachable from a pre-delivery money-bearing state. A `#created` order
   /// has taken no money and needs no decision; a `#delivered` one is done.
-  abandon_order: (id: OrderId, reason: text) -> (Result_15);
+  abandon_order: (id: OrderId, reason: text) -> (Result_16);
+  /// Credit a Stripe charge the canister never saw (admin, §6.1).
+  /// 
+  /// The recovery path for the one card-rail failure that otherwise has none:
+  /// **the webhook never arrived.** Stripe retries a failed delivery for about
+  /// three days and then stops; we hold no API key, so we never poll. Past that
+  /// horizon the charge exists in Stripe with no on-chain trace at all, the
+  /// buyer's money is gone, and their order reads "Awaiting payment" forever.
+  /// 
+  /// Also rescues an unattributed payment the operator *can* identify — turning
+  /// "refund and ask them to re-order at today's price" into "deliver what they
+  /// bought". Any open Type 1 entry for the charge is resolved, since attaching
+  /// it discharges that obligation.
+  /// 
+  /// The operator supplies the amount because Stripe is the authority on it, and
+  /// it is honoured through exactly the same helper the webhook uses.
+  /// 
+  /// This is a money-creating lever, so: controller-only, dedup-guarded against
+  /// double credit, and audited with the calling principal.
+  attach_payment: (paymentRef: text, id: OrderId, paidUsdCents: nat) ->
+   (Result_15);
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
   audit_log: () -> (vec Event) query;

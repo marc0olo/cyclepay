@@ -1256,6 +1256,93 @@ persistent actor CyclesGateway {
     paidIntents.get(paymentRef);
   };
 
+  public type AttachPaymentError = {
+    #noOrder : Types.OrderId;
+    #wrongRail;
+    /// Past money-in already; attaching again would credit twice.
+    #notClaimable : Text;
+    /// This `payment_intent` was already credited — the dedup set is the same
+    /// one the webhook path uses, so a charge can never be counted twice
+    /// whichever route it arrives by.
+    #alreadyCredited : Text;
+    #belowFeeFloor : Nat;
+    #aboveCeiling : { paidUsdCents : Nat; maxUsdCents : Nat };
+    #unusableSnapshot;
+    #transitionRefused : Text;
+  };
+
+  /// Credit a Stripe charge the canister never saw (admin, §6.1).
+  ///
+  /// The recovery path for the one card-rail failure that otherwise has none:
+  /// **the webhook never arrived.** Stripe retries a failed delivery for about
+  /// three days and then stops; we hold no API key, so we never poll. Past that
+  /// horizon the charge exists in Stripe with no on-chain trace at all, the
+  /// buyer's money is gone, and their order reads "Awaiting payment" forever.
+  ///
+  /// Also rescues an unattributed payment the operator *can* identify — turning
+  /// "refund and ask them to re-order at today's price" into "deliver what they
+  /// bought". Any open Type 1 entry for the charge is resolved, since attaching
+  /// it discharges that obligation.
+  ///
+  /// The operator supplies the amount because Stripe is the authority on it, and
+  /// it is honoured through exactly the same helper the webhook uses.
+  ///
+  /// This is a money-creating lever, so: controller-only, dedup-guarded against
+  /// double credit, and audited with the calling principal.
+  public shared ({ caller }) func attach_payment(
+    paymentRef : Text,
+    id : Types.OrderId,
+    paidUsdCents : Nat,
+  ) : async Result.Result<Types.Order, AttachPaymentError> {
+    requireAdmin(caller);
+    let ?order = Orders.get(orderStore, id) else return #err(#noOrder(id));
+    if (order.rail != #card) return #err(#wrongRail);
+    switch (order.status) {
+      case (#created or #expired) {};
+      case (status) return #err(#notClaimable(Types.statusToText(status)));
+    };
+    let honored = switch (Card.honoredCycles(order, paidUsdCents, gateConfig.maxPurchaseUsdCents)) {
+      case (#asQuoted(cycles) or #repriced(cycles)) cycles;
+      case (#belowFeeFloor) return #err(#belowFeeFloor(paidUsdCents));
+      case (#aboveCeiling(bound)) return #err(#aboveCeiling(bound));
+      case (#unusableSnapshot) return #err(#unusableSnapshot);
+    };
+    // Guard on `paidIntents`, NOT on the dedup set.
+    //
+    // The two answer different questions. The dedup set means "this webhook has
+    // been processed" — and `handleCheckout` records the intent *before*
+    // attribution, so an unattributed payment is already in it. Guarding on that
+    // would make the primary rescue case unreachable: the operator could never
+    // attach the very payments that need attaching.
+    //
+    // `paidIntents` is only written when an order is actually marked paid, so it
+    // is the authority on "has this charge been credited", which is the thing
+    // that must never happen twice.
+    if (paidIntents.containsKey(paymentRef)) return #err(#alreadyCredited(paymentRef));
+    switch (Orders.markPaid(orderStore, id, honored, paidUsdCents, Time.now())) {
+      case (#err(e)) {
+        auditAdmin(caller, "payment.attachFailed", id # ": transition refused for " # paymentRef);
+        #err(#transitionRefused(debug_show (e)));
+      };
+      case (#ok(paid)) {
+        paidIntents.add(paymentRef, id);
+        // Claim the intent in the webhook's dedup set too. If the charge was
+        // attached before its webhook ever landed, a late delivery is then
+        // cleanly deduped rather than raising a spurious #duplicate obligation
+        // against an order that is already paid.
+        ignore Idempotency.recordStripeIntent(dedup, paymentRef, Time.now());
+        // Attaching the charge discharges any Type 1 obligation it raised.
+        for (entry in ErrorQueue.resolveByPaymentRef(errorQueue, paymentRef, Time.now()).values()) {
+          audit("errorQueue.resolvedByAttach", "entry " # entry.id.toText() # " closed by attaching " # paymentRef);
+        };
+        auditAdmin(caller, "payment.attached", id # ": " # paymentRef # " at " # paidUsdCents.toText() # " cents = " # honored.toText() # " cycles");
+        // Same detached money-out kick the webhook uses.
+        ignore async { await* processMint(id) };
+        #ok(paid);
+      };
+    };
+  };
+
   /// Stop trying to deliver an order (admin, §7) — **the only path to a
   /// terminal non-delivered state.**
   ///
@@ -1549,7 +1636,14 @@ persistent actor CyclesGateway {
       };
       CkUsdc.recordPullBlock(ckUsdcPulls, orderId, block, Time.now());
     };
-    switch (Orders.applyTransition(orderStore, orderId, #paid, Time.now())) {
+    // The pull is always for the exact quoted price, so a mismatch is
+    // structurally impossible on this rail — record it explicitly rather than
+    // leaving paidUsdCents null and making a reader wonder.
+    let quoted = switch (Orders.get(orderStore, orderId)) {
+      case (?order) order.pricing.usdCents;
+      case null 0;
+    };
+    switch (Orders.markPaid(orderStore, orderId, lockedOf(orderId), quoted, Time.now())) {
       case (#ok(paid)) {
         audit("ckusdc.paid", orderId # ": block " # block.toText());
         #ok(paid);
@@ -1560,6 +1654,15 @@ persistent actor CyclesGateway {
         audit("ckusdc.paidTransitionRefused", orderId # ": block " # block.toText());
         #err(#retryable("payment recorded; retry to finalize"));
       };
+    };
+  };
+
+  /// The order's current locked quantity — ck-USDC credits do not reprice, so
+  /// markPaid is handed back exactly what was locked at creation.
+  func lockedOf(orderId : Types.OrderId) : Nat {
+    switch (Orders.get(orderStore, orderId)) {
+      case (?order) order.lockedCycles;
+      case null 0;
     };
   };
 
