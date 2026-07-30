@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
+  gateReasonMessage,
+  type GateReason,
   STEPS,
   approveErrorMessage,
   ckUnitsForCents,
@@ -275,5 +277,52 @@ describe("approveErrorMessage", () => {
   });
   test("unknown variants surface their tag", () => {
     expect(approveErrorMessage({ Expired: { ledger_time: 1n } })).toContain("Expired");
+  });
+});
+
+describe("gateReasonMessage", () => {
+  test("amountAboveMax tells the user what the limit is", () => {
+    const msg = gateReasonMessage({
+      __kind__: "amountAboveMax",
+      amountAboveMax: { usdCents: 200_000n, maxUsdCents: 100_000n },
+    });
+    // formatUsdCents does not group thousands — assert what it actually emits.
+    expect(msg).toContain("$1000.00");
+  });
+
+  test("tooManyOpenOrders tells the user what to do about it", () => {
+    const msg = gateReasonMessage({
+      __kind__: "tooManyOpenOrders",
+      tooManyOpenOrders: { open: 20n, max: 20n },
+    });
+    expect(msg).toContain("20");
+    expect(msg.toLowerCase()).toMatch(/pay or abandon/);
+  });
+
+  test("operational refusals promise nothing was charged", () => {
+    // These are all pre-payment refusals, so the copy must say so — otherwise a
+    // user seeing "unavailable" mid-purchase assumes money may have moved.
+    const operational: GateReason[] = [
+      { __kind__: "burnCapExhausted", burnCapExhausted: { burnedE8s: 1n, capE8s: 1n } },
+      { __kind__: "floatLow", floatLow: { thresholdE8s: 1n } },
+      { __kind__: "canisterCyclesLow", canisterCyclesLow: { balance: 0n, min: 1n } },
+    ];
+    for (const reason of operational) {
+      expect(gateReasonMessage(reason)).toContain("Nothing was charged");
+    }
+  });
+
+  test("floatLow renders with no observation present", () => {
+    // observedE8s is absent when the float has never been read.
+    expect(gateReasonMessage({
+      __kind__: "floatLow",
+      floatLow: { thresholdE8s: 1_000n },
+    })).not.toBe("");
+  });
+});
+
+describe("createOrderErrorMessage: notAdmitted", () => {
+  test("the key-only path still says nothing was charged", () => {
+    expect(createOrderErrorMessage("notAdmitted")).toContain("nothing was charged");
   });
 });

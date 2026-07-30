@@ -31,8 +31,13 @@ controller identity — never anonymous):
 icp canister call backend <method> '(<candid args>)' -e ic --identity <operator>
 ```
 
+**Always pass an explicit `'()'` for zero-argument methods.** Omitting the
+argument makes `icp canister call` ask *"Do you want to send this message?
+[y/N]"* and read stdin — which hangs any script, cron job, or CI step.
+
 Public queries (`treasury_status`, `forex_status`, `recovery_status`,
-`card_tiers`, `ck_usdc_config`, `health`) work from any identity and are the
+`card_tiers`, `ck_usdc_config`, `lifecycle_config`, `retention_status`,
+`can_purchase`, `was_swept`, `health`) work from any identity and are the
 monitoring surface (§9 transparency stance — operational state is public,
 the webhook secret is the only secret in the system).
 
@@ -66,10 +71,24 @@ consciously set. Work the list in order:
    a webhook destination `https://<backend-canister-id>.icp0.io/webhook/stripe`
    sending exactly the events `checkout.session.completed` and
    `charge.refunded`. (Other event types are acked and ignored.)
-9. **Smoke-check the public surface**: `forex_status` (rate populates on
+9. **Review the admission gate** (§5a below). The defaults are non-zero and
+   usable, but `maxPurchaseUsdCents` should sit just above your largest tier,
+   and `minCanisterCycles` should suit how closely you monitor this canister.
+10. **Raise the freezing threshold.** This canister holds money-bearing state,
+   so the 30-day default is thin — losing it to a cycle drain destroys the
+   order store, journals, and dedup sets:
+   ```bash
+   icp canister settings update backend --freezing-threshold 7776000 -e ic  # 90 days
+   ```
+11. **Add a backup controller.** A single controller identity with no backup
+   means a lost key makes the canister permanently un-upgradeable; there is no
+   recovery path (§0 covers the trust model this implies).
+12. **Smoke-check the public surface**: `forex_status` (rate populates on
    the first order attempt — creation before the first successful refresh
    correctly answers `rateUnavailable`), `treasury_status`,
-   `recovery_status` (sweep timer armed), `card_tiers`.
+   `recovery_status` (sweep timer armed), `card_tiers`,
+   `can_purchase '(<your smallest tier's cents>)'` — the last one should
+   answer `ok` before you announce the service.
 
 ## 2. Webhook secret — provisioning & rotation (§7)
 
@@ -82,7 +101,7 @@ until the burn cap stops them. It is stored **plaintext by design**
 
 ```bash
 icp canister call backend set_webhook_secret '("whsec_…")' -e ic --identity <operator>
-icp canister call backend webhook_secret_status -e ic --identity <operator>
+icp canister call backend webhook_secret_status '()' -e ic --identity <operator>
 ```
 
 - Pass the **full `whsec_…` string** from the Stripe Dashboard — the whole
@@ -135,8 +154,9 @@ icp canister call backend set_card_tiers \
   -e ic --identity <operator>
 ```
 
-Validation is atomic — non-empty unique ids, non-zero amounts, or the whole
-call rejects and the live tier list is untouched. `card_tiers` is the public
+Validation is atomic — non-empty unique ids, non-zero amounts, every amount
+within `maxPurchaseUsdCents` (§5a), or the whole call rejects and the live tier
+list is untouched. `card_tiers` is the public
 query the frontend renders. Setting an **empty vector disables card order
 creation** (the rail-level pause lever; in-flight orders are unaffected).
 
@@ -149,7 +169,7 @@ from a fresh rate.
 ## 4. Forex (§3.1)
 
 ```bash
-icp canister call backend forex_status -e ic   # public: cached rate + config
+icp canister call backend forex_status '()' -e ic   # public: cached rate + config
 icp canister call backend set_forex_config \
   '(record { url = "https://open.er-api.com/v6/latest/USD"; feeBps = 290; feeFixedCents = 30; maxAgeNs = 3_600_000_000_000 })' \
   -e ic --identity <operator>
@@ -219,10 +239,92 @@ cap is unbounded loss. Start tight.
 frontend's soft gate and an audit-log alert on the crossing. It never
 blocks mints by itself — the hard float check is in the pre-gate.
 
+## 5a. Admission gate: who is allowed to start an order
+
+Order creation is refused before any quote when fulfilment is already
+impossible. This is separate from, and in addition to, the mint-time pre-gate in
+§5 — the point is to refuse *before* the customer pays Stripe.
+
+```bash
+icp canister call backend lifecycle_config '()' -e ic     # public: current bounds
+icp canister call backend can_purchase '(500 : nat)' -e ic  # public: would this be admitted?
+icp canister call backend set_gate_config \
+  '(record { maxOpenOrdersPerPrincipal = 20 : nat; minCanisterCycles = 5_000_000_000_000 : nat; maxPurchaseUsdCents = 100_000 : nat })' \
+  -e ic --identity <operator>
+```
+
+| Lever | Default | What it protects | Sizing |
+|---|---|---|---|
+| `maxOpenOrdersPerPrincipal` | 20 | Unbounded state growth. Abandoned orders are the only thing a user can create for free, so this is the real bound — retention sweeping (§5b) is cleanup, not protection. | Raise for legitimate power users. Must be > 0; 0 is rejected as config. |
+| `minCanisterCycles` | 5 T | **This canister's own gas.** Below the freezing threshold it stops accepting updates; at zero it is uninstalled and its state is gone. | Keep well above the freezing threshold (default ~30 days of idle burn) so there is room to notice and top up. `0` disables the check. |
+| `maxPurchaseUsdCents` | 100 000 (\$1 000) | Operator typo in a tier, and the webhook's upward repricing path. | Set just above your largest tier. `set_card_tiers` rejects any tier above it, and the webhook refuses to mint a payment above it. |
+
+**These three deliberately default to non-zero**, unlike the burn cap and the
+ck-USDC bound. Those are money decisions that must ship dark; these are safety
+limits where a 0 default would brick the canister rather than protect it. The
+card rail's actual on/off switch remains the tier list.
+
+`can_purchase` returns the same decision `create_order` would make, so it is
+both the frontend's button-gating call and the operator's "would a purchase go
+through right now?" check. Two operational gotchas:
+
+- **`floatLow` with no observation.** Once `lowFloatThresholdE8s > 0`, a float
+  that has *never been read* fails the check — "enforce this" plus "I have never
+  looked" is not a state to sell into. Call `refresh_float` after funding. This
+  is why it is step 2 of the go-live checklist.
+- **`burnCapExhausted` is the most likely reason the rail goes quiet.** A cap
+  that fills mid-window silently stops new sales until the window rolls. Watch
+  `treasury_status.burnedInWindowE8s` against `burnCapE8s`, and note that
+  `reset_burn_window` re-opens sales immediately.
+
+## 5b. Order retention: expiry and sweeping
+
+```bash
+icp canister call backend retention_status '()' -e ic      # public counters
+icp canister call backend was_swept '("<orderId>")' -e ic  # public
+icp canister call backend set_retention_config \
+  '(record { orderTtlNs = 172_800_000_000_000 : nat; retentionHorizonNs = 7_776_000_000_000_000 : nat })' \
+  -e ic --identity <operator>
+icp canister call backend run_retention '()' -e ic --identity <operator>
+```
+
+Three bands, keyed on age from **creation**:
+
+| Band | Status | Age | Payable? |
+|---|---|---|---|
+| 1 — live | `created` | < `orderTtlNs` (default 48 h) | yes |
+| 2 — expired | `expired` | TTL → horizon | **yes** — expiry is advisory (§4) |
+| 3 — swept | record deleted, id tombstoned | > `retentionHorizonNs` (default 90 d) | becomes Type 1 |
+
+Sizing rules:
+
+- **`orderTtlNs` must exceed the Stripe Checkout Session lifetime (24 h)**, or a
+  customer can watch their order expire while still on the payment page. The
+  48 h default is 2×.
+- **The horizon must exceed the TTL** — config validation enforces it. Equal
+  values would delete orders the moment they expired, destroying the §4
+  late-payment guarantee.
+- A Payment Link is permanent, so a payment can arrive for a swept order forever.
+  It lands as Type 1 with a detail saying **"was SWEPT as abandoned"** (§6) —
+  a refund, never a loss.
+
+The sweep runs inside the recovery timer (hourly by default). `run_retention`
+applies retuned bands immediately instead of waiting a cycle; it is safe to
+spam, since the bands are absolute ages.
+
+**Nothing that touched money is ever deleted.** Only `expired` orders with no
+mint journal entry and no ck-USDC pull entry are removed; `delivered` and
+`errorQueue` are financial records kept indefinitely, and their volume is
+bounded by real sales (which the burn cap bounds).
+
+Monitor `retention_status.openOrders` — climbing while `delivered` orders do not
+is the signature of order-creation abuse, and the lever is
+`maxOpenOrdersPerPrincipal` (§5a).
+
 ## 6. Error queue — triage (§4.1)
 
 ```bash
-icp canister call backend error_queue -e ic --identity <operator>
+icp canister call backend error_queue '()' -e ic --identity <operator>
 icp canister call backend resolve_error '(42)' -e ic --identity <operator>
 icp canister call backend mint_journal '("<orderId>")' -e ic --identity <operator>
 ```
@@ -245,6 +347,24 @@ everything else is manual.
 | `#stuckMint{stage="ambiguousForward"}` | Cycles minted; forward may or may not have reached the destination (died between the pre-forward marker and delivery) | Check the destination: canister cycle balance delta / cycles-ledger account balance vs `mint_journal.cyclesMinted`. **Arrived** → done, `resolve_error`. **Not arrived** → cycles are in the backend's balance; deliver manually as for Type 2. Never re-forwarded automatically — double delivery is the risk being avoided. |
 | `#stuckMint{stage="missingJournal"}` | Order status implies money-out state the journal doesn't have | Invariant breach — should be unreachable. Reconstruct from `audit_log` + ledgers; treat as a bug, file it. |
 | `#stuckMint{stage="stalePullIntent"}` (ck-USDC) | Uncertain, money-IN: a `icrc2_transfer_from` pull intent aged past 24 h with no recorded block; the order deliberately stays `created` and further claims are blocked | See §7 below — this one has dedicated levers. |
+| `#refundAfterDelivery {orderId; paymentRef; cycles}` | **A loss, not a recoverable position**: the fiat was refunded (or charged back) *after* the cycles were forwarded to an arbitrary destination. Cycles cannot be clawed back. | There is nothing to recover on-chain. Reconcile in the Stripe Dashboard by `paymentRef` to see whether this was your own refund (a support decision — expected) or a customer-initiated dispute (fraud signal). For repeated disputes, tighten Stripe Radar rules and lower the per-purchase ceiling (§5a); the burn cap does **not** bound this, because each payment is individually legitimate. `resolve_error` once reconciled — nothing auto-resolves it, deliberately: the refund is what created the entry. |
+
+Attribution failures now distinguish two cases that both surface as
+`#unattributed`. If the detail says the order **"was SWEPT as abandoned"**, this
+is a genuine late payment for an order the retention sweep deliberately deleted
+past the horizon (§5b) — refund it; the customer did nothing wrong. Without that
+wording the reference simply never resolved, which is also what a forged or
+mistyped URL parameter looks like.
+
+To go the other way — from a charge in the Stripe Dashboard to the order it
+funded — use the reconciliation lookup:
+
+```bash
+icp canister call backend order_for_payment '("pi_3Q...")' -e ic --identity <operator>
+```
+
+`null` means the payment was never attributed to an order here; check the queue
+for a Type 1 entry carrying it.
 
 ## 7. ck-USDC rail (§6.2)
 
@@ -302,7 +422,7 @@ It re-arms **automatically on every upgrade** (transient initializer — a
 deploy can never leave recovery dead).
 
 ```bash
-icp canister call backend recovery_status -e ic                 # public
+icp canister call backend recovery_status '()' -e ic            # public
 icp canister call backend set_recovery_interval '(3_600_000_000_000)' -e ic --identity <operator>
 icp canister call backend process_order '("<orderId>")' -e ic --identity <operator>
 ```
@@ -327,6 +447,16 @@ Daily (or alerting on, if you wire these queries up externally):
   small), `burnedInWindowE8s` tracking expected volume (a jump = §2 leak
   procedure), `lastObservedFloat.atNs` recent.
 - `recovery_status` — `lastSweep.atNs` within ~2 intervals.
+- `retention_status` — `openOrders` climbing while `delivered` orders do not is
+  order-creation abuse; the lever is `maxOpenOrdersPerPrincipal` (§5a).
+- `can_purchase '(<smallest tier cents>)'` — the single best "is the rail
+  actually selling?" check. It answers with the *reason* it would refuse, which
+  is usually `burnCapExhausted` (window filled) or `floatLow` (needs a refill or
+  a `refresh_float`).
+- **Canister cycle balance** — `icp canister status backend -e ic`. Distinct
+  from the ICP float: this is the canister's own gas, and losing it uninstalls
+  the canister and its money-bearing state. Alert well above `minCanisterCycles`
+  (§5a), since that gate stops *sales* but does not stop the burn.
 - `forex_status` — rate timestamp within `maxAgeNs` of recent order
   activity (it only refreshes on demand; staleness with no orders is
   normal).
@@ -381,12 +511,51 @@ section, its own dedup set, and its own go-live checklist entry here.
 `icp canister status` matching the published hash**. Operational notes the
 release doc doesn't cover:
 
-- Upgrades are **safe mid-flight by design** (§5.1): in-flight mints
-  resume from the persisted journal via the re-armed timer; an upgrade
-  mid-money-movement degrades to a recoverable stage (`staleIntent` /
-  `ambiguousForward` worst case), never a double-spend. No drain/pause is
-  required before upgrading — but an idle moment is still politer to
-  users.
+- **Stop the canister before upgrading. This is mandatory, not advisory.**
+  The IC rejects an upgrade while the canister has outstanding message
+  callbacks:
+
+  ```
+  canister_pre_upgrade attempted with outstanding message callbacks
+  (try stopping the canister before upgrade)
+  ```
+
+  So the procedure is always:
+
+  ```bash
+  icp canister stop backend -e ic --identity <operator>
+  icp deploy -e ic --mode upgrade
+  icp canister start backend -e ic --identity <operator>
+  ```
+
+  `icp deploy --mode upgrade` sets the `wasm_memory_persistence = keep`
+  option that enhanced orthogonal persistence requires; a hand-rolled
+  `install_code` without it is rejected with *"Enhanced orthogonal
+  persistence requires the `wasm_memory_persistence` upgrade option"* — and
+  `replace` would discard every order, journal, and dedup set.
+
+- **Stopping drains in-flight calls, it does not drop them.** The canister
+  enters `Stopping`, the IC delivers the replies to its outstanding calls,
+  and only once every call context is closed does it reach `Stopped`. That
+  is why the stop-first procedure is also the *safe* one: an in-flight mint
+  or ck-USDC pull completes before the upgrade happens, so a controlled
+  upgrade cannot strand money. Verified by `test/integration` scenarios 12
+  and 13 and ck-08.
+
+  Consequence: `ambiguousForward` and `stalePullIntent` are **not** reachable
+  through a controlled upgrade. They cover genuine faults — a callee that
+  never replies, a subnet incident, running out of cycles mid-call — and
+  §8's triage rules still apply when they appear.
+
+- **A call that never replies blocks the stop, and therefore the upgrade.**
+  If `icp canister stop` hangs, the canister is waiting on an outstanding
+  call. Check `recovery_status.sweepInFlight` and the audit log for a stage
+  that keeps retrying; the money path is journalled at every step, so
+  waiting is safe.
+
+- In-flight mints resume from the persisted journal via the re-armed timer
+  (§5.1), so an interrupted money movement degrades to a recoverable stage,
+  never a double-spend.
 - Persistent state (orders, journals, dedup sets, configs, secret, cap
   consumption) survives upgrades via orthogonal persistence. **Transient
   knobs reset on upgrade**: error-queue capacity (1,000), audit-log

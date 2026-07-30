@@ -134,6 +134,34 @@ export function parseUsdAmount(input: string): UsdAmountParse {
   return { ok: true, cents };
 }
 
+/// Gate.mo admission refusal. Every case is a *temporary operational* state
+/// except `amountAboveMax`, so the copy has to tell the user whether to change
+/// something or come back later — a generic failure would leave them retrying a
+/// button that cannot succeed.
+export type GateReason =
+  | { __kind__: "tooManyOpenOrders"; tooManyOpenOrders: { open: bigint; max: bigint } }
+  | { __kind__: "canisterCyclesLow"; canisterCyclesLow: { balance: bigint; min: bigint } }
+  | { __kind__: "burnCapExhausted"; burnCapExhausted: { burnedE8s: bigint; capE8s: bigint } }
+  // `observedE8s` is an `opt nat`, which the bindgen wrapper models as an
+  // optional property rather than a 0/1-element tuple.
+  | { __kind__: "floatLow"; floatLow: { observedE8s?: bigint; thresholdE8s: bigint } }
+  | { __kind__: "amountAboveMax"; amountAboveMax: { usdCents: bigint; maxUsdCents: bigint } };
+
+export function gateReasonMessage(reason: GateReason): string {
+  switch (reason.__kind__) {
+    case "amountAboveMax":
+      return `The maximum for a single purchase is ${formatUsdCents(reason.amountAboveMax.maxUsdCents)}.`;
+    case "tooManyOpenOrders":
+      return `You already have ${reason.tooManyOpenOrders.open} unpaid orders open (limit ${reason.tooManyOpenOrders.max}). Pay or abandon one before starting another.`;
+    case "burnCapExhausted":
+      // The operator's rolling blast-radius bound is spent for this window.
+      return "Purchases are paused right now — the gateway has hit its limit for this period. Nothing was charged; please try again later.";
+    case "floatLow":
+    case "canisterCyclesLow":
+      return "Purchases are temporarily unavailable while the gateway is topped up. Nothing was charged; please try again later.";
+  }
+}
+
 export type CkCreateError =
   | { __kind__: "anonymous" }
   | { __kind__: "idGeneration" }
@@ -142,7 +170,8 @@ export type CkCreateError =
   | { __kind__: "zeroAmount" }
   | { __kind__: "amountBelowFees" }
   | { __kind__: "belowMinimum"; belowMinimum: bigint }
-  | { __kind__: "aboveMaximum"; aboveMaximum: bigint };
+  | { __kind__: "aboveMaximum"; aboveMaximum: bigint }
+  | { __kind__: "notAdmitted"; notAdmitted: GateReason };
 
 export function createCkOrderErrorMessage(err: CkCreateError): string {
   switch (err.__kind__) {
@@ -162,6 +191,8 @@ export function createCkOrderErrorMessage(err: CkCreateError): string {
       return "Sign in with Internet Identity first.";
     case "idGeneration":
       return "Could not generate an order id — try again.";
+    case "notAdmitted":
+      return gateReasonMessage(err.notAdmitted);
   }
 }
 
@@ -255,8 +286,14 @@ export function approveErrorMessage(err: Record<string, unknown>): string {
 }
 
 /// User-facing messages for create_order errors (variant key → text).
+///
+/// `notAdmitted` carries a payload, so callers with the full error value should
+/// pass its reason to `gateReasonMessage` instead of only the key — the key
+/// alone cannot say whether the user should change the amount or wait.
 export function createOrderErrorMessage(key: string): string {
   switch (key) {
+    case "notAdmitted":
+      return "Purchases are temporarily unavailable — nothing was charged. Please try again later.";
     case "rateUnavailable":
       // §3.1 fail-closed: never price on a stale rate.
       return "Exchange rate temporarily unavailable — nothing was charged. Try again in a minute.";

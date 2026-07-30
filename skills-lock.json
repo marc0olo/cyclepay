@@ -5,7 +5,7 @@
       "source": "dfinity/icskills",
       "sourceType": "github",
       "skillPath": "skills/asset-canister/SKILL.md",
-      "computedHash": "9c7d9f132a00440288123f76af21a50977178b65d3bd56d4077250ec008c71e7"
+      "computedHash": "2b27caf9680ad5226fbf6a758066516e3a4c4434ff6039641bc3fb8081626466"
     },
     "autosync-ic-skills": {
       "source": "dfinity/icskills",
@@ -29,7 +29,7 @@
       "source": "dfinity/icskills",
       "sourceType": "github",
       "skillPath": "skills/certified-variables/SKILL.md",
-      "computedHash": "9c099d6cf8cebdb4dd7ee97f4f9fe200ea0e8c297b9c6bc062a8d9c6c8978d5a"
+      "computedHash": "607178e7294406cb328d1f760bf33f8cf42d386863163e7222c9a31e84252312"
     },
     "ckbtc": {
       "source": "dfinity/icskills",
@@ -41,13 +41,13 @@
       "source": "dfinity/icskills",
       "sourceType": "github",
       "skillPath": "skills/custom-domains/SKILL.md",
-      "computedHash": "005687085a6e2e57f7c3bb35481f6f1c2689a33c32b3ae1d58a7cf0ecec645f2"
+      "computedHash": "a7cfd4178d1d24bebd432d5c723ac12d6a0ffa6323123c7110a645b42657a9ae"
     },
     "cycles-management": {
       "source": "dfinity/icskills",
       "sourceType": "github",
       "skillPath": "skills/cycles-management/SKILL.md",
-      "computedHash": "4b8f9ac545376886b6473084ae5de6c77edc4856c2da339f95d3a0b22528068d"
+      "computedHash": "1b07969a39b849ffd73f777ec2f9bc95a4923afea7c40626e821ab29c5c7493d"
     },
     "evm-rpc": {
       "source": "dfinity/icskills",
@@ -59,7 +59,7 @@
       "source": "mattpocock/skills",
       "sourceType": "github",
       "skillPath": "skills/productivity/grill-me/SKILL.md",
-      "computedHash": "784f0dbb7403b0f00324bce9a112f715342777a0daee7bbb7385f9c6f0a170ea"
+      "computedHash": "f361db4e15e6bfd562a9282b1dccda513910a50061f9e838ce017be9c69dde3f"
     },
     "https-outcalls": {
       "source": "dfinity/icskills",
@@ -77,7 +77,7 @@
       "source": "dfinity/icskills",
       "sourceType": "github",
       "skillPath": "skills/icp-cli/SKILL.md",
-      "computedHash": "ae12383d4605471b6b8071ab0376856ca0789f8c9146cc4dc8e3bfad66695d48"
+      "computedHash": "92a38a3d867130d81df8b8d539a47f0f3dbc1a54e49722c544675fcd8a34bdd6"
     },
     "icrc-ledger": {
       "source": "dfinity/icskills",
@@ -89,13 +89,13 @@
       "source": "dfinity/icskills",
       "sourceType": "github",
       "skillPath": ".agents/skills/improve-ic-skill/SKILL.md",
-      "computedHash": "eb96d515968842884ad9e175e5a6372cc67e0cdb8b0b47a9600e1459026cdc9a"
+      "computedHash": "7e46c64af6dba6b2735630e3575a0c261f02882664a4f423cb2071665b1858b4"
     },
     "internet-identity": {
       "source": "dfinity/icskills",
       "sourceType": "github",
       "skillPath": "skills/internet-identity/SKILL.md",
-      "computedHash": "c72b05ba9b44173e050b6d50b89c44654fc906dd0d4ebd264ccf5d2452dea84a"
+      "computedHash": "9455fe0380e319b7afe0ccbd60729fa6e454a72409d70d89eea267a6d1d609ed"
     },
     "migrating-motoko": {
       "source": "dfinity/icskills",
@@ -113,7 +113,7 @@
       "source": "dfinity/icskills",
       "sourceType": "github",
       "skillPath": "skills/mops-cli/SKILL.md",
-      "computedHash": "8dc49e796c33b8a7f9afaf710633ae7368c652f306e4cdacb5247a7372432e0d"
+      "computedHash": "728dc0b32fc8b3d45f960eb9348d765fd2862074fc95b5fbf2fa1447ff106d4b"
     },
     "motoko": {
       "source": "dfinity/icskills",

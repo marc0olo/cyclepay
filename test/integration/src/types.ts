@@ -24,9 +24,36 @@ export type StatusVariant = Partial<Record<OrderStatusKey, null>>;
 
 export interface Pricing {
   usdCents: bigint;
-  xdrPerUsdMicros: bigint;
+  /// Both rate inputs are stored so a quote is reproducible from first
+  /// principles against the XRC and the CMC.
+  usdPerIcpMicros: bigint;
+  xdrPermyriadPerIcp: bigint;
+  rateStandardDeviation: bigint;
+  rateReceivedRates: bigint;
+  rateQueriedSources: bigint;
   feeBps: bigint;
   feeFixedCents: bigint;
+}
+
+export interface PricingQuality {
+  standardDeviation: bigint;
+  receivedRates: bigint;
+  queriedSources: bigint;
+}
+
+export interface PricingRates {
+  usdPerIcpMicros: bigint;
+  xdrPermyriadPerIcp: bigint;
+  fetchedAtNs: bigint;
+  quality: PricingQuality;
+}
+
+export interface PricingConfig {
+  feeBps: bigint;
+  feeFixedCents: bigint;
+  maxAgeNs: bigint;
+  maxRateDeltaBps: bigint;
+  minRateSources: bigint;
 }
 
 export interface Order {
@@ -46,12 +73,42 @@ export interface CreatedOrder {
   clientReferenceId: string;
 }
 
+/// Gate.mo admission refusal — each case carries the observed value and the
+/// bound that refused it.
+export type GateReason =
+  | { tooManyOpenOrders: { open: bigint; max: bigint } }
+  | { canisterCyclesLow: { balance: bigint; min: bigint } }
+  | { burnCapExhausted: { burnedE8s: bigint; capE8s: bigint } }
+  | { floatLow: { observedE8s: Opt<bigint>; thresholdE8s: bigint } }
+  | { amountAboveMax: { usdCents: bigint; maxUsdCents: bigint } };
+
+export interface GateConfig {
+  maxOpenOrdersPerPrincipal: bigint;
+  minCanisterCycles: bigint;
+  maxPurchaseUsdCents: bigint;
+}
+
+export interface RetentionConfig {
+  orderTtlNs: bigint;
+  retentionHorizonNs: bigint;
+}
+
+export interface RetentionStatus {
+  config: RetentionConfig;
+  openOrders: bigint;
+  expiredOrders: bigint;
+  totalOrders: bigint;
+  tombstones: bigint;
+  paidIntentsIndexed: bigint;
+}
+
 export type CreateOrderError =
   | { anonymous: null }
   | { unknownTier: string }
   | { tierBelowFees: string }
   | { rateUnavailable: null }
-  | { idGeneration: null };
+  | { idGeneration: null }
+  | { notAdmitted: GateReason };
 
 export interface TransferIntent {
   to: Account;
@@ -76,7 +133,8 @@ export type ErrorKind =
   | { duplicate: { orderId: string; paymentRef: string } }
   | { unattributed: { claimedRef: string; paymentRef: string } }
   | { undeliverable: { orderId: string; cycles: bigint } }
-  | { stuckMint: { orderId: string; stage: string } };
+  | { stuckMint: { orderId: string; stage: string } }
+  | { refundAfterDelivery: { orderId: string; paymentRef: string; cycles: bigint } };
 
 export interface ErrorEntry {
   id: bigint;
@@ -100,12 +158,6 @@ export interface Tier {
   paymentLinkUrl: string;
 }
 
-export interface ForexConfig {
-  url: string;
-  feeBps: bigint;
-  feeFixedCents: bigint;
-  maxAgeNs: bigint;
-}
 
 export interface TreasuryConfig {
   burnCapE8s: bigint;
@@ -120,6 +172,7 @@ export interface TreasuryStatus {
   lastObservedFloat: Opt<{ e8s: bigint; atNs: bigint }>;
   lowFloat: boolean;
   heldOrders: bigint;
+  paidOrders: bigint;
 }
 
 export interface CkUsdcConfig {
@@ -202,8 +255,24 @@ export interface BackendService {
   claim_ck_usdc_order(id: string): Promise<Result<Order, ClaimCkUsdcError>>;
   create_ck_usdc_order(usdCents: bigint, destination: Destination): Promise<Result<CreatedCkUsdcOrder, CreateCkUsdcOrderError>>;
   create_order(tierId: string, destination: Destination): Promise<Result<CreatedOrder, CreateOrderError>>;
+  can_purchase(usdCents: bigint): Promise<Result<null, GateReason>>;
   error_queue(): Promise<ErrorEntry[]>;
-  forex_status(): Promise<{ rate: Opt<{ xdrPerUsdMicros: bigint; fetchedAtNs: bigint }>; config: ForexConfig }>;
+  lifecycle_config(): Promise<{ gate: GateConfig; retention: RetentionConfig }>;
+  order_for_payment(paymentRef: string): Promise<Opt<string>>;
+  retention_status(): Promise<RetentionStatus>;
+  cycles_status(): Promise<{ balance: bigint; floor: bigint }>;
+  recount_orders(): Promise<Array<[string, bigint]>>;
+  run_retention(): Promise<{ expired: bigint; swept: bigint }>;
+  set_gate_config(config: GateConfig): Promise<Result<null, unknown>>;
+  set_retention_config(config: RetentionConfig): Promise<Result<null, unknown>>;
+  was_swept(id: string): Promise<boolean>;
+  pricing_status(): Promise<{
+    rates: Opt<PricingRates>;
+    config: PricingConfig;
+    lastAttempt: Opt<{ atNs: bigint; ok: boolean; detail: string }>;
+  }>;
+  refresh_rates(): Promise<Opt<PricingRates>>;
+  set_pricing_config(config: PricingConfig): Promise<Result<null, unknown>>;
   get_order(id: string): Promise<Opt<Order>>;
   health(): Promise<boolean>;
   http_request(req: HttpRequest): Promise<HttpResponse>;
@@ -218,7 +287,6 @@ export interface BackendService {
   resolve_error(id: bigint): Promise<Result<ErrorEntry, { notFound: bigint } | { alreadyResolved: bigint }>>;
   set_card_tiers(tiers: Tier[]): Promise<Result<null, unknown>>;
   set_ck_usdc_config(config: CkUsdcConfig): Promise<Result<null, CkUsdcConfigError>>;
-  set_forex_config(config: ForexConfig): Promise<Result<null, unknown>>;
   set_recovery_interval(intervalNs: bigint): Promise<Result<null, unknown>>;
   set_treasury_config(config: TreasuryConfig): Promise<Result<null, unknown>>;
   set_webhook_secret(secret: string): Promise<Result<null, unknown>>;

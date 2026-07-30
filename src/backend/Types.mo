@@ -75,8 +75,22 @@ module {
   public type Pricing = {
     /// Gross USD cents the order was quoted for (the tier price).
     usdCents : Nat;
-    /// XDR-per-USD rate (micros, Forex.mo) locked at creation.
-    xdrPerUsdMicros : Nat;
+    /// USD per ICP × 10⁶ as read from the Exchange Rate Canister at creation.
+    usdPerIcpMicros : Nat;
+    /// XDR per ICP × 10⁴ as read from the Cycles Minting Canister at creation.
+    ///
+    /// Both rate inputs are stored rather than the derived result, so the quote
+    /// is reproducible from first principles: anyone can query the XRC and the
+    /// CMC and recompute `netCents × xdrPermyriadPerIcp × 10¹² /
+    /// usdPerIcpMicros`. Storing only the derived number would make the price
+    /// checkable but not *auditable*.
+    xdrPermyriadPerIcp : Nat;
+    /// XRC quality signal for the ICP price above: how many sources answered
+    /// out of how many were asked, and their spread. A price assembled from two
+    /// sources is not the same product as one from twelve.
+    rateStandardDeviation : Nat;
+    rateReceivedRates : Nat;
+    rateQueriedSources : Nat;
     /// §3 fee formula at creation.
     feeBps : Nat;
     feeFixedCents : Nat;

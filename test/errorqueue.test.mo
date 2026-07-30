@@ -1,4 +1,5 @@
 import { test; suite } "mo:test";
+import Nat "mo:core/Nat";
 import ErrorQueue "../src/backend/ErrorQueue";
 
 // Unit suite for the §4.1 bounded error queue: exactly two types, bounded
@@ -72,17 +73,43 @@ suite("add", func() {
 });
 
 suite("bounded eviction", func() {
-  test("over capacity evicts the oldest when nothing is resolved", func() {
+  test("an unresolved obligation is NEVER evicted — the queue grows instead", func() {
+    // Each unresolved entry is a dollar that arrived and has not been dealt
+    // with. Dropping one would break the §4.1 invariant silently, since the only
+    // trace would be an audit line in a ring buffer that also drops. So the
+    // queue is allowed to exceed capacity rather than forget.
     let store = ErrorQueue.emptyStore();
     ignore addDuplicate(store, "o1", "pi_1", 100);
     ignore addDuplicate(store, "o2", "pi_2", 200);
     ignore addDuplicate(store, "o3", "pi_3", 300);
     let r = addDuplicate(store, "o4", "pi_4", 400);
-    assert r.evicted.size() == 1;
-    assert r.evicted[0].id == 0; // oldest unresolved is the fallback victim
-    assert ErrorQueue.size(store) == cap;
-    assert ErrorQueue.get(store, 0) == null;
-    assert ErrorQueue.get(store, 3) == ?r.entry;
+    assert r.evicted.size() == 0;
+    assert ErrorQueue.size(store) == cap + 1;
+    assert ErrorQueue.get(store, 0) != null; // the oldest obligation survives
+    assert ErrorQueue.unresolvedCount(store) == cap + 1;
+  });
+
+  test("growth is bounded by resolution, not by capacity", func() {
+    // The operator working the queue down is what shrinks it — and once an
+    // entry is resolved it becomes evictable history.
+    let store = ErrorQueue.emptyStore();
+    for (i in Nat.range(0, cap + 3)) {
+      ignore addDuplicate(store, "o" # i.toText(), "pi_" # i.toText(), 100 + i);
+    };
+    assert ErrorQueue.size(store) == cap + 3;
+    assert ErrorQueue.unresolvedCount(store) == cap + 3;
+    // Resolve the two oldest; the next add can now trim them as history.
+    for (id in ([0, 1] : [Nat]).values()) {
+      switch (ErrorQueue.resolve(store, id, 900)) {
+        case (#ok(_)) {};
+        case (#err(_)) assert false;
+      };
+    };
+    let r = addDuplicate(store, "oX", "pi_X", 999);
+    assert r.evicted.size() == 2;
+    assert r.evicted[0].id == 0;
+    assert r.evicted[1].id == 1;
+    assert ErrorQueue.unresolvedCount(store) == cap + 2;
   });
 
   test("resolved entries are evicted before older unresolved ones", func() {
@@ -101,14 +128,15 @@ suite("bounded eviction", func() {
     assert ErrorQueue.get(store, 0) != null;
   });
 
-  test("ids are never reused after eviction", func() {
+  test("ids are never reused, whether or not anything was evicted", func() {
     let store = ErrorQueue.emptyStore();
     for (i in [1, 2, 3, 4, 5].values()) {
       ignore addDuplicate(store, "o", "pi", 100 * i);
     };
     let r = addDuplicate(store, "last", "pi_last", 600);
     assert r.entry.id == 5;
-    assert ErrorQueue.size(store) == cap;
+    // All six are unresolved obligations, so none were dropped.
+    assert ErrorQueue.size(store) == 6;
   });
 });
 

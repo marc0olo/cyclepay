@@ -15,6 +15,7 @@ import List "mo:core/List";
 import Iter "mo:core/Iter";
 import Nat "mo:core/Nat";
 import Result "mo:core/Result";
+import Text "mo:core/Text";
 import Types "Types";
 
 module {
@@ -40,13 +41,36 @@ module {
     /// `stage` = Cmc.EscalateReason text, "treasuryWaitExceeded", or
     /// "stalePullIntent".
     #stuckMint : { orderId : Types.OrderId; stage : Text };
+    /// Neither Type 1 nor Type 2 — the money moved *both* ways. A
+    /// `charge.refunded` arrived for a payment that had already been delivered
+    /// as cycles, so the fiat went back to the payer and the cycles are
+    /// irreversibly gone to an arbitrary destination. **Not automatically
+    /// resolvable and not automatically preventable**: the canister cannot claw
+    /// cycles back, so this records a loss for the operator to reconcile rather
+    /// than starting a recovery flow.
+    ///
+    /// Chargeback *prevention* belongs in Stripe (Radar rules, 3DS) and in the
+    /// `Gate` per-purchase ceiling, not in Motoko.
+    #refundAfterDelivery : { orderId : Types.OrderId; paymentRef : Text; cycles : Nat };
   };
 
   public func isType1(kind : Kind) : Bool {
     switch (kind) {
       case (#duplicate(_) or #unattributed(_)) true;
-      case (#undeliverable(_) or #stuckMint(_)) false;
+      case (#undeliverable(_) or #stuckMint(_) or #refundAfterDelivery(_)) false;
     };
+  };
+
+  /// Bound on attacker-supplied text stored in an entry. `claimedRef` comes
+  /// straight off a URL parameter, so without a cap an attacker could stuff
+  /// arbitrary data into admin-visible stable state one webhook at a time
+  /// (`canister-security`: validate input sizes). Long enough for a legitimate
+  /// `<principal>_<orderId>` (≈ 63 + 1 + 32) with room to show what was sent.
+  public let maxClaimedRefBytes : Nat = 128;
+
+  public func truncateClaimedRef(claimedRef : Text) : Text {
+    if (claimedRef.size() <= maxClaimedRefBytes) return claimedRef;
+    Text.fromIter(claimedRef.chars().take(maxClaimedRefBytes)) # "…(truncated)";
   };
 
   /// The payment reference a `charge.refunded` resolves — Type 1 only.
@@ -56,7 +80,11 @@ module {
     switch (kind) {
       case (#duplicate({ paymentRef; orderId = _ })) ?paymentRef;
       case (#unattributed({ paymentRef; claimedRef = _ })) ?paymentRef;
-      case (#undeliverable(_) or #stuckMint(_)) null;
+      // #refundAfterDelivery carries a paymentRef but must NOT be reachable
+      // from `resolveByPaymentRef`: the refund is what created the entry, so
+      // auto-resolving on it would close the loss the instant it was recorded.
+      // Only a human closes this one.
+      case (#undeliverable(_) or #stuckMint(_) or #refundAfterDelivery(_)) null;
     };
   };
 
@@ -82,11 +110,18 @@ module {
 
   public type AddResult = {
     entry : Entry;
-    /// Evicted to honor the bound — oldest resolved first; only when nothing
-    /// is resolved does the oldest *unresolved* entry go (the bound exists so
-    /// spammed unattributed payments can't grow state without limit). The
-    /// caller must audit-log unresolved evictions: each is a live money
-    /// obligation dropped from on-chain state.
+    /// Evicted to honour the bound. **Only resolved entries are ever evicted.**
+    ///
+    /// An unresolved entry is a live money obligation: a dollar arrived and has
+    /// not yet been dealt with. Dropping one breaks the §4.1 invariant that
+    /// every verified dollar resolves to delivery, Type 1, or Type 2 — and it
+    /// breaks it silently, because the only trace would be an audit line in a
+    /// ring buffer that itself drops.
+    ///
+    /// So the queue grows past `capacity` rather than forgetting an obligation.
+    /// That is safe in a way unbounded *order* growth is not: every unresolved
+    /// entry requires a real payment to exist, so growth costs an attacker
+    /// actual money per entry. `unresolvedCount` is the number to watch.
     evicted : [Entry];
   };
 
@@ -110,29 +145,40 @@ module {
     store.nextId += 1;
     store.entries.add(entry.id, entry);
     let evicted = List.empty<Entry>();
-    while (store.entries.size() > capacity) {
-      switch (oldestPreferResolved(store)) {
+    // Trim only *resolved* history. If nothing resolved is left to drop, the
+    // queue exceeds capacity and stays that way until the operator works it
+    // down — a visibly growing worklist is strictly better than a forgotten
+    // obligation.
+    label trim while (store.entries.size() > capacity) {
+      switch (oldestResolved(store)) {
         case (?victim) {
           store.entries.remove(victim.id);
           evicted.add(victim);
         };
-        case null {}; // unreachable: size > capacity ≥ 0 means non-empty
+        case null break trim;
       };
     };
     { entry; evicted = evicted.toArray() };
   };
 
-  /// Eviction victim: oldest resolved entry, else oldest entry outright.
-  /// Scans oldest-first (ids are monotonic, the map iterates in key order).
-  func oldestPreferResolved(store : Store) : ?Entry {
-    var oldest : ?Entry = null;
+  /// Oldest *resolved* entry, or null when none is resolved. Scans oldest-first
+  /// (ids are monotonic, so the map iterates in arrival order).
+  func oldestResolved(store : Store) : ?Entry {
     for ((_, entry) in store.entries.entries()) {
-      switch (entry.resolvedAtNs) {
-        case (?_) return ?entry;
-        case null { if (oldest == null) oldest := ?entry };
-      };
+      if (entry.resolvedAtNs != null) return ?entry;
     };
-    oldest;
+    null;
+  };
+
+  /// Live obligations. The operator's worklist depth, and the number that must
+  /// not be allowed to grow unbounded — not because state is precious, but
+  /// because each one is money someone is owed an answer about.
+  public func unresolvedCount(store : Store) : Nat {
+    var open = 0;
+    for ((_, entry) in store.entries.entries()) {
+      if (entry.resolvedAtNs == null) open += 1;
+    };
+    open;
   };
 
   public type ResolveError = { #notFound : Nat; #alreadyResolved : Nat };

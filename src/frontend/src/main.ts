@@ -24,6 +24,8 @@ import {
   claimErrorInfo,
   createCkOrderErrorMessage,
   createOrderErrorMessage,
+  gateReasonMessage,
+  type GateReason,
   formatCkUsdcUnits,
   formatCycles,
   formatUsdCents,
@@ -136,22 +138,29 @@ function setIdentity(next: Identity | null): void {
 // --- tiers + gates -------------------------------------------------------
 
 async function loadMarket(): Promise<void> {
-  const [tierList, treasury, forex, ck] = await Promise.all([
+  const [tierList, treasury, pricing, ck] = await Promise.all([
     backend.card_tiers(),
     backend.treasury_status(),
-    backend.forex_status(),
+    backend.pricing_status(),
     backend.ck_usdc_config(),
   ]);
   tiers = tierList;
   lowFloat = treasury.lowFloat;
   ckConfig = ck;
 
+  // Both rate inputs are shown, because both are needed to reproduce a quote —
+  // the ICP price from the Exchange Rate Canister and the XDR/ICP rate the CMC
+  // will actually mint at. A buyer can query either canister and check us.
   const rateLine = el("rate-line");
-  if (forex.rate) {
-    const xdrPerUsd = (Number(forex.rate.xdrPerUsdMicros) / 1e6).toFixed(3);
-    rateLine.textContent = `Rate: ${xdrPerUsd} XDR/USD · fee ${Number(forex.config.feeBps) / 100}% + ${formatUsdCents(forex.config.feeFixedCents)} · cycles are locked at order creation`;
+  if (pricing.rates) {
+    const usdPerIcp = (Number(pricing.rates.usdPerIcpMicros) / 1e6).toFixed(2);
+    const xdrPerIcp = (Number(pricing.rates.xdrPermyriadPerIcp) / 1e4).toFixed(4);
+    const fee = `fee ${Number(pricing.config.feeBps) / 100}% + ${formatUsdCents(pricing.config.feeFixedCents)}`;
+    rateLine.textContent =
+      `ICP $${usdPerIcp} · ${xdrPerIcp} XDR/ICP · ${fee} · cycles are locked at order creation`;
   } else {
-    rateLine.textContent = "No exchange rate cached yet — order creation will fetch one.";
+    rateLine.textContent =
+      "No exchange rate available yet — orders are paused until one is fetched.";
   }
 
   const gate = el("gate-notice");
@@ -317,7 +326,11 @@ async function createCardOrder(dest: Destination): Promise<void> {
   }
   const result = await backend.create_order(tier.id, dest);
   if (result.__kind__ === "err") {
-    showFormError(createOrderErrorMessage(result.err.__kind__));
+    showFormError(
+      result.err.__kind__ === "notAdmitted"
+        ? gateReasonMessage(result.err.notAdmitted as GateReason)
+        : createOrderErrorMessage(result.err.__kind__),
+    );
     return;
   }
   const created = result.ok;

@@ -194,6 +194,9 @@ module {
     lowFloat : Bool;
     /// Orders currently sitting in `#awaitingTreasury`.
     heldOrders : Nat;
+    /// Orders that are `#paid` but not yet minted (§5). Transient in normal
+    /// operation; a persistent count means money-out is blocked.
+    paidOrders : Nat;
   };
 
 };

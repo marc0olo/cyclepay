@@ -220,7 +220,16 @@ suite("journal", func() {
       rail = #card;
       destination = #canister(Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai"));
       lockedCycles = 1_000_000_000_000;
-      pricing = { usdCents = 500; xdrPerUsdMicros = 737_000; feeBps = 290; feeFixedCents = 30 };
+      pricing = {
+  usdCents = 500;
+  usdPerIcpMicros = 4_550_000; // $4.55 per ICP
+  xdrPermyriadPerIcp = 35_000; // 3.5 XDR per ICP
+  rateStandardDeviation = 0;
+  rateReceivedRates = 5;
+  rateQueriedSources = 5;
+  feeBps = 290;
+  feeFixedCents = 30;
+};
       status = #paid;
       createdAtNs = 1;
       updatedAtNs = 2;

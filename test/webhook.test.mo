@@ -1,7 +1,10 @@
 import { test; suite } "mo:test";
+import Array "mo:core/Array";
+import Map "mo:core/Map";
 import Nat "mo:core/Nat";
 import Principal "mo:core/Principal";
 import Runtime "mo:core/Runtime";
+import Set "mo:core/Set";
 import Text "mo:core/Text";
 import AuditLog "../src/backend/AuditLog";
 import ErrorQueue "../src/backend/ErrorQueue";
@@ -27,15 +30,21 @@ let alice = Principal.fromText("aaaaa-aa");
 let orderId = "000102030405060708090a0b0c0d0e0f";
 let goodRef = "aaaaa-aa_" # orderId;
 
-// Matches the forex.test.mo quote vector: 500¢ gross, fee ⌈500·290/104⌉+30
-// = 45¢, net 455¢ @ 737_000 micros → 3_353_350_000_000 cycles.
+// The shared §3 vector, chosen so the at-cost property is visible: 500¢ gross,
+// fee ⌈500·290/10⁴⌉+30 = 45¢, net 455¢. At $4.55/ICP that net buys exactly one
+// ICP, which mints 35_000 × 10⁸ = 3.5 T cycles. Money in, exactly that much ICP
+// out — if those two ever disagree, the formula is wrong.
 let pricing : Types.Pricing = {
   usdCents = 500;
-  xdrPerUsdMicros = 737_000;
+  usdPerIcpMicros = 4_550_000; // $4.55 per ICP
+  xdrPermyriadPerIcp = 35_000; // 3.5 XDR per ICP
+  rateStandardDeviation = 0;
+  rateReceivedRates = 5;
+  rateQueriedSources = 5;
   feeBps = 290;
   feeFixedCents = 30;
 };
-let lockedCycles : Nat = 3_353_350_000_000;
+let lockedCycles : Nat = 3_500_000_000_000;
 
 func freshDeps() : Card.Deps {
   {
@@ -45,6 +54,11 @@ func freshDeps() : Card.Deps {
     errorQueueCapacity = 10;
     auditLog = AuditLog.emptyLog();
     auditLogCapacity = 100;
+    sweptOrders = Set.empty<Types.OrderId>();
+    paidIntents = Map.empty<Text, Types.OrderId>();
+    // Well above the 500¢ tier these tests use, so the ceiling is out of the
+    // way except where a test deliberately probes it.
+    maxPurchaseUsdCents = 100_000;
   };
 };
 
@@ -91,8 +105,12 @@ func signedReq(body : Blob) : Http.Request {
   };
 };
 
-func deliver(deps : Card.Deps, body : Blob) : Http.Response {
+func deliverFull(deps : Card.Deps, body : Blob) : Card.Outcome {
   Card.handleWebhook(deps, ?secret, signedReq(body), nowNs, Card.defaultToleranceSeconds);
+};
+
+func deliver(deps : Card.Deps, body : Blob) : Http.Response {
+  deliverFull(deps, body).response;
 };
 
 func bodyText(resp : Http.Response) : Text {
@@ -183,13 +201,13 @@ suite("parseEvent", func() {
 
 suite("handleWebhook: envelope guards", func() {
   test("unprovisioned secret answers 503 (Stripe keeps retrying)", func() {
-    let resp = Card.handleWebhook(freshDeps(), null, signedReq(paidBody("evt_1", "pi_1", ?goodRef, 500)), nowNs, Card.defaultToleranceSeconds);
+    let resp = Card.handleWebhook(freshDeps(), null, signedReq(paidBody("evt_1", "pi_1", ?goodRef, 500)), nowNs, Card.defaultToleranceSeconds).response;
     assert resp.status_code == 503;
   });
 
   test("missing Stripe-Signature header is 400", func() {
     let req = { signedReq(paidBody("evt_1", "pi_1", ?goodRef, 500)) with headers = [] : [Http.HeaderField] };
-    assert Card.handleWebhook(freshDeps(), ?secret, req, nowNs, Card.defaultToleranceSeconds).status_code == 400;
+    assert Card.handleWebhook(freshDeps(), ?secret, req, nowNs, Card.defaultToleranceSeconds).response.status_code == 400;
   });
 
   test("bad signature is 400 and touches no state", func() {
@@ -197,7 +215,7 @@ suite("handleWebhook: envelope guards", func() {
     withOrder(deps, #card);
     let body = paidBody("evt_1", "pi_1", ?goodRef, 500);
     let forged = { signedReq(body) with body = paidBody("evt_1", "pi_1", ?goodRef, 9_999) };
-    assert Card.handleWebhook(deps, ?secret, forged, nowNs, Card.defaultToleranceSeconds).status_code == 400;
+    assert Card.handleWebhook(deps, ?secret, forged, nowNs, Card.defaultToleranceSeconds).response.status_code == 400;
     assert statusOf(deps) == #created;
     // the rejected delivery consumed nothing: the genuine one still lands
     assert deliver(deps, body).status_code == 200;
@@ -346,13 +364,14 @@ suite("handleWebhook: actual paid amount is honored (§3/§6.1)", func() {
   test("mismatched amount is repriced from the creation pricing snapshot", func() {
     let deps = freshDeps();
     withOrder(deps, #card);
-    // 1000¢ ≠ the 500¢ tier: fee = ⌈1000·290/10_000⌉ + 30 = 59, net 941¢
-    // @ 737_000 micros → 941 · 7_370_000_000 cycles.
+    // 1000¢ ≠ the 500¢ tier: fee = ⌈1000·290/10⁴⌉ + 30 = 59, net 941¢, repriced
+    // from the order's OWN rate snapshot (not a fresh rate):
+    // 941 · 35_000 · 10¹² / 4_550_000, floored.
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 1_000)).status_code == 200;
     switch (Orders.get(deps.orders, orderId)) {
       case (?order) {
         assert order.status == #paid;
-        assert order.lockedCycles == 6_935_170_000_000;
+        assert order.lockedCycles == 7_238_461_538_461;
       };
       case (null) assert false;
     };
@@ -389,5 +408,178 @@ suite("handleWebhook: charge.refunded auto-resolve (§4.1)", func() {
     let resp = deliver(freshDeps(), refundBody("evt_1", "pi_unknown"));
     assert resp.status_code == 200;
     assert bodyText(resp) == "ok";
+  });
+
+  test("an unmatched refund is audited rather than passing silently", func() {
+    let deps = freshDeps();
+    assert deliver(deps, refundBody("evt_1", "pi_unknown")).status_code == 200;
+    assert AuditLog.events(deps.auditLog).find(
+      func(e) = e.tag == "stripe.refundUnmatched"
+    ) != null;
+  });
+
+  test("a paid payment is indexed so a later refund can find its order", func() {
+    let deps = freshDeps();
+    withOrder(deps, #card);
+    assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
+    assert deps.paidIntents.get("pi_1") == ?orderId;
+  });
+
+  test("refund of a DELIVERED order queues #refundAfterDelivery", func() {
+    let deps = freshDeps();
+    withOrder(deps, #card);
+    assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
+    // Drive the order to its terminal delivered state the way money-out does.
+    for (to in ([#minting, #icpAtCmc, #delivered] : [Types.OrderStatus]).values()) {
+      switch (Orders.applyTransition(deps.orders, orderId, to, nowNs)) {
+        case (#ok(_)) {};
+        case (#err(_)) Runtime.trap("could not drive the order to #delivered");
+      };
+    };
+
+    assert deliver(deps, refundBody("evt_2", "pi_1")).status_code == 200;
+
+    let open = ErrorQueue.unresolved(deps.errorQueue);
+    assert open.size() == 1;
+    switch (open[0].kind) {
+      case (#refundAfterDelivery({ orderId = queued; paymentRef; cycles })) {
+        assert queued == orderId;
+        assert paymentRef == "pi_1";
+        assert cycles == lockedCycles;
+      };
+      case (_) Runtime.trap("expected #refundAfterDelivery");
+    };
+    assert AuditLog.events(deps.auditLog).find(
+      func(e) = e.tag == "stripe.refundAfterDelivery"
+    ) != null;
+  });
+
+  test("#refundAfterDelivery is never auto-resolved by the refund that made it", func() {
+    // The refund is what created the entry, so resolving on its paymentRef
+    // would close the loss the instant it was recorded. Only a human closes it.
+    assert ErrorQueue.paymentRefOf(#refundAfterDelivery({
+      orderId; paymentRef = "pi_1"; cycles = lockedCycles;
+    })) == null;
+  });
+
+  test("refund of a paid-but-undelivered order is audited, not queued as a loss", func() {
+    let deps = freshDeps();
+    withOrder(deps, #card);
+    assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
+    assert deliver(deps, refundBody("evt_2", "pi_1")).status_code == 200;
+    // Money-out may still be mid-flight — a race for the operator to look at,
+    // not a settled loss.
+    assert ErrorQueue.unresolved(deps.errorQueue).size() == 0;
+    assert AuditLog.events(deps.auditLog).find(
+      func(e) = e.tag == "stripe.refundBeforeDelivery"
+    ) != null;
+  });
+});
+
+suite("handleWebhook: swept orders and the purchase ceiling", func() {
+  test("a payment for a swept order names it as swept, not as unknown", func() {
+    let deps = freshDeps();
+    // No order in the store, but the id is tombstoned: a genuine late payment
+    // for an order deliberately deleted past the retention horizon.
+    deps.sweptOrders.add(orderId);
+    assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
+    let open = ErrorQueue.unresolved(deps.errorQueue);
+    assert open.size() == 1;
+    assert open[0].detail.contains(#text "SWEPT");
+    assert ErrorQueue.isType1(open[0].kind);
+  });
+
+  test("an untombstoned unknown reference stays the generic unattributed case", func() {
+    let deps = freshDeps();
+    assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
+    let open = ErrorQueue.unresolved(deps.errorQueue);
+    assert open.size() == 1;
+    assert not open[0].detail.contains(#text "SWEPT");
+  });
+
+  test("a payment above the ceiling is not minted — Type 1 instead", func() {
+    let deps = { freshDeps() with maxPurchaseUsdCents = 1_000 };
+    withOrder(deps, #card);
+    // Repricing is an upward path, so without the ceiling this would mint an
+    // arbitrary quantity off a tampered or misconfigured Stripe price.
+    assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 5_000)).status_code == 200;
+    assert statusOf(deps) == #created; // never marked paid
+    let open = ErrorQueue.unresolved(deps.errorQueue);
+    assert open.size() == 1;
+    assert open[0].detail.contains(#text "exceeds the per-purchase ceiling");
+  });
+
+  test("a payment exactly at the ceiling is honored", func() {
+    let deps = { freshDeps() with maxPurchaseUsdCents = 500 };
+    withOrder(deps, #card);
+    assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
+    assert statusOf(deps) == #paid;
+  });
+
+  test("an over-long claimed reference is truncated before it is stored", func() {
+    let deps = freshDeps();
+    var long = "";
+    for (_ in Nat.range(0, 40)) long #= "0123456789";
+    assert deliver(deps, paidBody("evt_1", "pi_1", ?long, 500)).status_code == 200;
+    let open = ErrorQueue.unresolved(deps.errorQueue);
+    assert open.size() == 1;
+    switch (open[0].kind) {
+      case (#unattributed({ claimedRef; paymentRef = _ })) {
+        assert claimedRef.size() < long.size();
+        assert claimedRef.contains(#text "truncated");
+      };
+      case (_) Runtime.trap("expected #unattributed");
+    };
+  });
+});
+
+
+suite("handleWebhook: only a real payment creates money-out work", func() {
+  // The webhook route is unauthenticated by necessity, so whatever it triggers
+  // is free for anyone to invoke. `paidOrder` is what the caller gates the mint
+  // kick on, and it must be null on every path except an actual #paid.
+  test("a verified payment reports the order it paid", func() {
+    let deps = freshDeps();
+    withOrder(deps, #card);
+    let outcome = deliverFull(deps, paidBody("evt_1", "pi_1", ?goodRef, 500));
+    assert outcome.response.status_code == 200;
+    assert outcome.paidOrder == ?orderId;
+  });
+
+  test("no other path reports one", func() {
+    // Each of these is a distinct exit from handleWebhook.
+    let cases : [(Text, Card.Deps -> Card.Outcome)] = [
+      ("unparseable body", func(deps) = deliverFull(deps, "{ not json".encodeUtf8())),
+      ("unhandled event type", func(deps) = deliverFull(deps, ("{\"id\":\"e\",\"type\":\"invoice.paid\",\"data\":{\"object\":{}}}").encodeUtf8())),
+      ("missing reference", func(deps) = deliverFull(deps, paidBody("evt_1", "pi_1", null, 500))),
+      ("unknown order", func(deps) = deliverFull(deps, paidBody("evt_1", "pi_1", ?goodRef, 500))),
+      ("payment not completed", func(deps) = deliverFull(deps, checkoutBody("evt_1", "pi_1", ?goodRef, 500, "usd", "unpaid"))),
+      ("refund", func(deps) = deliverFull(deps, refundBody("evt_1", "pi_1"))),
+    ];
+    for ((name, run) in cases.values()) {
+      let outcome = run(freshDeps());
+      if (outcome.paidOrder != null) Runtime.trap("path reported a paid order: " # name);
+    };
+  });
+
+  test("an unsigned request reports none and touches nothing", func() {
+    let deps = freshDeps();
+    withOrder(deps, #card);
+    let unsigned : Http.Request = {
+      method = "POST";
+      url = "/webhook/stripe";
+      headers = [];
+      body = paidBody("evt_1", "pi_1", ?goodRef, 500);
+    };
+    let outcome = Card.handleWebhook(deps, ?secret, unsigned, nowNs, Card.defaultToleranceSeconds);
+    assert outcome.response.status_code == 400;
+    assert outcome.paidOrder == null;
+    assert statusOf(deps) == #created;
+  });
+
+  test("an unprovisioned secret reports none", func() {
+    let outcome = Card.handleWebhook(freshDeps(), null, signedReq(paidBody("e", "p", null, 500)), nowNs, Card.defaultToleranceSeconds);
+    assert outcome.response.status_code == 503;
+    assert outcome.paidOrder == null;
   });
 });

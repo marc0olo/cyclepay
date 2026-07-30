@@ -397,6 +397,93 @@ crypto are parked until/unless Base returns; see §11.)
   (§2), `Http.mo` route table, ownership captured at the API edge, expiry
   semantics per-rail. Keeps a future Base return additive, not a refactor.
 
+## 10a. Resolved since v2.1 (the spec's own gaps, now closed)
+
+Decisions taken after v2.1 shipped, recorded here because they change behaviour
+the sections above describe. Implementation and operator procedure live in
+`docs/STRIPE.md` and `RUNBOOK.md`.
+
+- **Order expiry is enforced, not just legal.** §4 defined
+  `#created → #expired` and made expiry advisory, but nothing ever performed the
+  transition. `Retention.mo` now owns three bands: live (`#created`, < TTL,
+  default 48 h), **expired-but-honoured** (`#expired`, still fully payable — the
+  §4 guarantee is unchanged), and **swept** (past a 90-day horizon the record is
+  deleted and the id kept in a permanent `sweptOrders` tombstone set).
+  - A payment for a swept order is Type 1 `#unattributed` with an explicit
+    "was SWEPT" reason, preserving the §4.1 invariant that every verified dollar
+    resolves to delivery, Type 1, or Type 2. It degrades to a **refund, not a
+    loss**.
+  - **Nothing that touched money is ever deleted**: an order with a mint journal
+    entry or a ck-USDC pull entry is retained regardless of age, and
+    `#delivered`/`#errorQueue` are records kept indefinitely. Their volume is
+    bounded by real sales, which the burn cap bounds.
+  - Sweeping is cleanup, not protection — see the admission gate below for the
+    bound that actually stops state growth.
+
+- **Admission gate before quoting (`Gate.mo`).** §3 and §5.3 checked float and
+  burn-cap headroom only at *mint* time, i.e. after the customer had paid.
+  `create_order` (both rails) now refuses first, carrying the observed value and
+  the bound so the frontend can explain the refusal: per-principal open-order
+  cap, this canister's **own** cycle-balance floor, burn-cap window headroom,
+  ICP float threshold, and a per-purchase ceiling. `Treasury.gate` remains the
+  authoritative money check at mint time.
+  - ⚠️ **Deliberately an admission gate, not a capacity reservation.** A
+    reservation would need reserved-but-unpaid accounting plus a release path for
+    abandoned orders, and it still could not guarantee delivery (the operator can
+    withdraw the float; the CMC rate moves). Nothing is escrowed at creation —
+    `lockedCycles` is a **price, not a hold** — so a lapsed order releases
+    nothing.
+  - ⚠️ **These three defaults are non-zero**, unlike the burn cap and the
+    ck-USDC bound. Those are money decisions that must ship dark; these are
+    safety limits where a 0 default would brick the canister rather than protect
+    it. The card rail's on/off switch remains the empty tier list.
+  - **Two distinct resources.** The canister's own cycle balance (its gas —
+    exhaustion freezes then uninstalls it) was previously never read at all. It
+    is unrelated to the ICP float, which buys cycles for customers.
+
+- **Per-purchase ceiling.** `Tiers.validate` rejects a tier above it (the
+  operator-typo guard), and webhook amount-honouring refuses to mint a payment
+  above it — §6.1's repricing is an *upward* path, so an untampered ceiling is
+  what keeps a tampered link or a mis-set Stripe price from minting an arbitrary
+  quantity.
+
+- **Refund-after-delivery is recorded (`#refundAfterDelivery`).** §4.1 covered
+  refunds only as the *resolution* of a Type 1 entry. A `charge.refunded` for an
+  order already `#delivered` is a fourth position — fiat out **and** cycles out —
+  and is now queued and audited via a `payment_intent → orderId` index. It is
+  neither Type 1 nor Type 2, is never auto-resolved (the refund is what created
+  it), and is **not recoverable**: the canister cannot claw back forwarded cycles.
+  - ⚠️ **`charge.dispute.*` remains unsubscribed, by decision.** Feasible but not
+    actionable for the same reason. Chargeback exposure is managed by Stripe
+    Radar/3DS and by the per-purchase ceiling; the burn cap does **not** bound it,
+    because each payment is individually legitimate.
+
+- **Upgrades require stopping the canister first.** §5.1 stated upgrades were
+  safe mid-flight; the mechanism is different from what was assumed. The IC
+  *rejects* an upgrade while callbacks are outstanding, and `stop_canister`
+  **drains** in-flight calls rather than dropping them. The stop-first procedure
+  is therefore both mandatory and the safe one: a controlled upgrade cannot
+  strand money.
+  - Consequence: `ambiguousForward` and `stalePullIntent` are unreachable through
+    a controlled upgrade. They cover genuine faults (a callee that never replies,
+    a subnet incident, cycle exhaustion mid-call) and remain unit-tested.
+  - Motoko's enhanced orthogonal persistence additionally requires
+    `wasm_memory_persistence = keep` on the upgrade.
+
+- **Cycles-ledger delivery nets the ledger's deposit fee.** The two §5 forward
+  arms are asymmetric: a `#canister` destination receives the full locked
+  quantity, a `#cyclesLedgerAccount` destination receives it minus the ledger's
+  100 M-cycle deposit fee. ⚠️ **Deliberately not grossed up** — paying it from the
+  app's own balance would make every such order a subsidy, i.e. a griefable
+  gas-drain vector. The user chose the delivery rail and bears its fee.
+
+- **SEV-SNP subnet availability is confirmed.** §7 and §11 treated it as an open
+  question. Two sub-caveats remain open and unchanged: whether
+  **checkpoints/state-sync are also confidential** on the target subnet (memory
+  encryption alone does not cover state at rest — verify this hardest), and the
+  **provisioning exposure** of `set_webhook_secret` through the TLS-terminating
+  boundary node. The ICP burn cap remains the always-on backstop regardless.
+
 ## 11. Deferred / future (non-blocking)
 
 - **Base/x402 rail** — the original 3rd rail, dropped (§6.3). Open question to

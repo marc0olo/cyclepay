@@ -38,5 +38,5 @@ export type Tier = Awaited<ReturnType<Backend["card_tiers"]>>[number];
 export type Destination = Parameters<Backend["create_order"]>[1];
 export type CreateOrderResult = Awaited<ReturnType<Backend["create_order"]>>;
 export type TreasuryStatus = Awaited<ReturnType<Backend["treasury_status"]>>;
-export type ForexStatus = Awaited<ReturnType<Backend["forex_status"]>>;
+export type PricingStatus = Awaited<ReturnType<Backend["pricing_status"]>>;
 export type CkUsdcConfig = Awaited<ReturnType<Backend["ck_usdc_config"]>>;

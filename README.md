@@ -19,9 +19,14 @@ Key documents:
 | Document | What it is |
 |----------|------------|
 | `design-docs/ONCHAIN_GATEWAY_SPEC.md` | The decision record (spec v2.1) — canonical source for all design decisions |
-| [GitHub Issues](https://github.com/raymondk/cyclepay/issues) | Task and progress tracking (source of truth; `PRD.md` and `progress.txt` are frozen historical artifacts) |
-| `RUNBOOK.md` | Operations: go-live checklist, secret rotation, error-queue triage |
+| `docs/STRIPE.md` | The Card rail end to end, written from the code: ingress, signature verification, attribution, dedup, retention, refunds, the secret, and the local Stripe-sandbox loop |
+| `RUNBOOK.md` | Operations: go-live checklist, secret rotation, admission gate, retention, error-queue triage |
 | `RELEASE.md` | Reproducible build and module-hash verification procedure |
+| `AGENTS.md` | Agent instructions: ICP skills setup, conventions, the verification gate |
+
+Task and progress tracking lives in **GitHub Issues** (see
+`docs/agents/issue-tracker.md`). `PRD.md` and `progress.txt` are frozen
+historical artifacts and are not updated.
 
 ## Prerequisites
 
@@ -77,6 +82,24 @@ plugin on every dev/build run — if you change the backend API, run
 `mops build` to refresh the `.did`, and the frontend will pick it up (or fail
 to typecheck, which is the point).
 
+## Testing the Stripe rail locally
+
+Against a **Stripe sandbox account**, with the real Stripe CLI forwarding real
+signed webhooks into a local replica:
+
+```sh
+brew install stripe/stripe-cli/stripe
+stripe login                 # choose a SANDBOX account, never a live one
+
+icp network start -d && icp deploy backend
+scripts/stripe-dev.sh        # bootstraps dev config, wires the signing secret, forwards
+```
+
+Then, in another terminal, `stripe trigger checkout.session.completed`. See
+`docs/STRIPE.md` §15 for the happy-path walkthrough and the two gotchas
+(`stripe trigger` sends no `client_reference_id`; the canister checks the
+signature timestamp against its own clock).
+
 ## Tests
 
 There are three suites:
@@ -97,7 +120,7 @@ npm --prefix src/frontend run typecheck
 ```
 
 **3. PocketIC integration suite** (`test/integration`) — the **go-live bar**
-(spec §9): end-to-end scenarios against the real ICP ledger, CMC, cycles
+(spec §9): 30 end-to-end scenarios against the real ICP ledger, CMC, cycles
 ledger, and ck-USDC ledger Wasms, with crafted HMAC-signed Stripe webhooks,
 mocked forex outcalls, time control, and upgrade-mid-flight replay checks:
 

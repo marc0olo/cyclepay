@@ -2,8 +2,11 @@
 ///
 /// See design-docs/ONCHAIN_GATEWAY_SPEC.md (spec v2.1) and PRD.md for the
 /// module layout this actor grows into: Orders.mo wiring, rails/, Cmc.mo,
-/// Forex.mo, Treasury.mo, ErrorQueue.mo, Auth.mo.
+/// Pricing.mo, Treasury.mo, ErrorQueue.mo, Auth.mo.
+import Array "mo:core/Array";
+import Cycles "mo:core/Cycles";
 import Error "mo:core/Error";
+import Int "mo:core/Int";
 import List "mo:core/List";
 import Map "mo:core/Map";
 import Nat "mo:core/Nat";
@@ -16,17 +19,18 @@ import Text "mo:core/Text";
 import Time "mo:core/Time";
 import Timer "mo:core/Timer";
 import { ic } "mo:ic";
-import Call "mo:ic/Call";
-import IC "mo:ic/Types";
 import AuditLog "AuditLog";
 import Auth "Auth";
 import Cmc "Cmc";
 import ErrorQueue "ErrorQueue";
-import Forex "Forex";
+import Pricing "Pricing";
+import Xrc "Xrc";
+import Gate "Gate";
 import Http "Http";
 import Idempotency "Idempotency";
 import Orders "Orders";
 import Recovery "Recovery";
+import Retention "Retention";
 import Card "rails/Card";
 import CkUsdc "rails/CkUsdc";
 import Secret "Secret";
@@ -59,7 +63,16 @@ persistent actor CyclesGateway {
   /// exposure); rotate after provisioning over an untrusted path.
   public shared ({ caller }) func set_webhook_secret(secret : Text) : async Result.Result<(), Secret.SetError> {
     requireAdmin(caller);
-    Secret.set(webhookSecret, secret.encodeUtf8(), Time.now());
+    let result = Secret.set(webhookSecret, secret.encodeUtf8(), Time.now());
+    switch (result) {
+      case (#ok) {
+        // The secret itself is never logged — only that it changed, by whom,
+        // and to which generation, which is what a rotation audit needs.
+        auditAdmin(caller, "secret.set", "generation " # Secret.status(webhookSecret).generation.toText());
+      };
+      case (#err(_)) auditAdmin(caller, "secret.setRejected", "rejected as too short; the working secret is untouched");
+    };
+    result;
   };
 
   /// Provisioning state only — the secret itself is never readable back
@@ -79,91 +92,252 @@ persistent actor CyclesGateway {
   /// until first `set_card_tiers` — no made-up default prices.
   var cardTiers : [Tiers.Tier] = [];
 
-  // ── Forex (task 7, §3.1) ────────────────────────────────────────────────
+  /// Pre-creation admission policy (Gate.mo) — open-order cap, own-cycles
+  /// floor, per-purchase ceiling. Unlike the burn cap these default to real
+  /// values: they are safety limits, and a zero default would brick the
+  /// canister rather than protect it.
+  var gateConfig : Gate.Config = Gate.defaultConfig();
 
-  /// §3.1 stable `{rate, ts}` cache — orders read this; only staleness
-  /// triggers an outcall. Survives upgrades, so a redeploy doesn't force a
-  /// refresh before the first order.
-  let forexCache : Forex.Cache = Forex.emptyCache();
+  /// Order-lifecycle retention policy (Retention.mo) — the `#created` TTL and
+  /// the delete-and-tombstone horizon.
+  var retentionConfig : Retention.Config = Retention.defaultConfig();
 
-  /// §3 fee formula + §3.1 staleness window + source URL. Admin-adjustable
-  /// (§7 "adjust forex params") without a redeploy.
-  var forexConfig : Forex.Config = Forex.defaultConfig();
+  /// Retention band-3 tombstones: ids of orders deliberately deleted as
+  /// abandoned. Permanent and tiny (an id, not a record) — a Payment Link is
+  /// always live, so a payment can arrive for a swept order forever, and this
+  /// is what turns "no such order" into "we swept this on purpose".
+  let sweptOrders = Set.empty<Types.OrderId>();
 
-  /// §3.1 single-flight guard: at most one outcall in flight; a burst
-  /// hitting a stale cache fails closed (#rateUnavailable, retry shortly)
-  /// instead of stampeding the source. Transient on purpose — a persistent
-  /// flag left true by an upgrade mid-outcall would deadlock refreshes
-  /// forever; an upgrade resets it.
-  transient var forexRefreshInFlight = false;
+  /// `payment_intent` → the order it paid for. Financial record, never pruned;
+  /// the only way `charge.refunded` can tell whether the refunded payment had
+  /// already been delivered as cycles.
+  let paidIntents = Map.empty<Text, Types.OrderId>();
 
-  /// §3.1 in-call retry cap — consensus boundary-splits often clear on an
-  /// immediate retry; API-down does not, so we bound the attempts and fail
-  /// closed.
-  transient let forexMaxAttempts : Nat = 3;
+  // ── Pricing rates (§3/§3.1) ─────────────────────────────────────────────
 
-  /// The default source's USD-base body is ~4 KiB; cycles are charged on
-  /// this ceiling, not the actual size, so keep it tight.
-  transient let forexMaxResponseBytes : Nat64 = 16_000;
+  /// Both §3 rate inputs, cached together. Persistent, so a redeploy does not
+  /// blank the price — an upgrade only costs pricing if it outlasts the
+  /// staleness window, which the one-shot refresh below covers.
+  let rateCache : Pricing.Cache = Pricing.emptyCache();
 
-  /// §3.1 coarse-rounding transform: every replica reduces its raw response
-  /// to a tiny canonical body (rounded micro-XDR/USD, or empty on parse
-  /// failure), so consensus is over `"737000"`, not 4 KiB of live JSON.
-  public query func forex_transform(args : { context : Blob; response : IC.HttpRequestResult }) : async IC.HttpRequestResult {
-    { args.response with headers = []; body = Forex.transformBody(args.response.body) };
+  /// §3 fee formula + staleness window + the delta guard. Admin-adjustable
+  /// without a redeploy. There is deliberately no rate-source setting: the XRC
+  /// and CMC ids are pinned in their modules, because a settable rate source is
+  /// a money lever that does not look like one.
+  var pricingConfig : Pricing.Config = Pricing.defaultConfig();
+
+  transient let xrc = actor (Xrc.canisterId) : Xrc.Service;
+
+  /// Single-flight guard for the refresh. Transient: a flag left true by an
+  /// upgrade mid-call would deadlock refreshes forever.
+  transient var rateRefreshInFlight = false;
+
+  /// Consecutive refresh failures, for backoff. Transient — an upgrade is a
+  /// fine moment to retry immediately.
+  transient var rateRefreshFailures : Nat = 0;
+
+  /// Ticks to skip after a failure, doubling to this cap. XRC answers
+  /// `RateLimited` if we hammer it, so backing off is both cheaper and the
+  /// behaviour that recovers fastest.
+  transient let rateBackoffMaxTicks : Nat = 8;
+
+  /// Remaining ticks to skip before the next attempt.
+  transient var rateTicksToSkip : Nat = 0;
+
+  /// Liveness for ops. A stale rate is ambiguous between "the timer is dead"
+  /// and "XRC is erroring", and those want different responses — so both the
+  /// last attempt and the last error are recorded.
+  var lastRateAttempt : ?{ atNs : Int; ok : Bool; detail : Text } = null;
+
+  /// Is the rail live enough to be worth spending cycles keeping a rate warm?
+  /// A dark gateway refreshes nothing.
+  func railsLive() : Bool {
+    cardTiers.size() > 0 or ckUsdcConfig.maxUsdCents > 0;
   };
 
-  /// §3.1 lazy refresh: fire the outcall (≤ forexMaxAttempts), record the
-  /// rate on success. Returns the fresh micro-rate, or null for the caller
-  /// to fail closed. Never traps on outcall failure — the error becomes a
-  /// blocked order, not a 5xx.
-  func refreshForexRate() : async* ?Nat {
-    if (forexRefreshInFlight) return null;
-    forexRefreshInFlight := true;
-    try {
-      var attempts = 0;
-      while (attempts < forexMaxAttempts) {
-        let micros = try {
-          let response = await Call.httpRequest({
-            url = forexConfig.url;
-            method = #get;
-            max_response_bytes = ?forexMaxResponseBytes;
-            body = null;
-            headers = [
-              { name = "Host"; value = Forex.hostOf(forexConfig.url) },
-              { name = "User-Agent"; value = "cycles-gateway" },
-            ];
-            transform = ?{ function = forex_transform; context = "".encodeUtf8() };
-            is_replicated = null;
-          });
-          if (response.status == 200) Forex.parseCanonicalMicros(response.body) else null;
-        } catch (_) null;
-        switch (micros) {
-          case (?m) { Forex.record(forexCache, m, Time.now()); return ?m };
-          case null attempts += 1;
-        };
-      };
-      null;
-    } finally {
-      forexRefreshInFlight := false;
+  func recordRateAttempt(ok : Bool, detail : Text) {
+    lastRateAttempt := ?{ atNs = Time.now(); ok; detail };
+    if (ok) {
+      rateRefreshFailures := 0;
+    } else {
+      if (rateRefreshFailures < rateBackoffMaxTicks) rateRefreshFailures += 1;
+      audit("rates.refreshFailed", detail);
     };
   };
 
-  /// Adjust forex params (§7): fee formula, staleness window, source URL.
+  /// Read both §3 rate inputs and cache them together.
+  ///
+  /// Only ever called from the refresh timer — never from a user-facing method.
+  /// The XRC charges per request, so a call reachable from `create_order` would
+  /// be an operation that is free to invoke and expensive to serve; worse, a
+  /// failing XRC would leave the cache stale and let every subsequent order
+  /// retry, which is a self-reinforcing drain. Orders read the cache and fail
+  /// closed instead.
+  func refreshRates() : async* () {
+    if (rateRefreshInFlight) return;
+    rateRefreshInFlight := true;
+    try {
+      // ICP/USD from the XRC. Exactly 1 B cycles must be attached; the unused
+      // remainder is refunded.
+      let usdResult = try {
+        await (with cycles = Xrc.callCycles) xrc.get_exchange_rate(Xrc.icpUsdRequest());
+      } catch (e) {
+        recordRateAttempt(false, "xrc call rejected: " # e.message());
+        return;
+      };
+      let rate = switch (usdResult) {
+        case (#Ok(rate)) rate;
+        case (#Err(error)) {
+          recordRateAttempt(false, "xrc: " # Xrc.errorToText(error));
+          return;
+        };
+      };
+      let ?usdPerIcpMicros = Xrc.toMicros(rate) else {
+        recordRateAttempt(false, "xrc returned an unusable rate scale");
+        return;
+      };
+      if (not Pricing.plausibleUsdPerIcp(usdPerIcpMicros)) {
+        recordRateAttempt(false, "implausible ICP price: " # usdPerIcpMicros.toText() # " micro-USD");
+        return;
+      };
+      // The one-exchange case: XRC's own consistency check cannot catch it,
+      // because a single rate cannot disagree with itself.
+      let quality = Xrc.qualityOf(rate);
+      if (quality.receivedRates < pricingConfig.minRateSources) {
+        recordRateAttempt(
+          false,
+          "too few rate sources: " # quality.receivedRates.toText() # " of "
+          # quality.queriedSources.toText() # " answered, need "
+          # pricingConfig.minRateSources.toText(),
+        );
+        return;
+      };
+      // Reject an implausible *move* against the last good price, keeping the
+      // previous rate serving until it goes stale rather than pricing on a
+      // suspected glitch.
+      let previous = switch (Pricing.lastRates(rateCache)) {
+        case (?prior) ?prior.usdPerIcpMicros;
+        case null null;
+      };
+      if (not Pricing.withinDelta(previous, usdPerIcpMicros, pricingConfig.maxRateDeltaBps)) {
+        recordRateAttempt(false, "ICP price moved beyond the delta guard: " # usdPerIcpMicros.toText() # " micro-USD");
+        return;
+      };
+      // XDR/ICP from the CMC — the rate the CMC will actually honour, so it is
+      // read from the CMC and nowhere else. Same tick as the ICP price above,
+      // which is what makes the pair time-aligned.
+      let cmcRate = try { await cmc.get_icp_xdr_conversion_rate() } catch (e) {
+        recordRateAttempt(false, "cmc call rejected: " # e.message());
+        return;
+      };
+      let ?permyriad = Cmc.freshCmcRate(cmcRate.data, Time.now(), Cmc.cmcRateMaxAgeNs) else {
+        recordRateAttempt(false, "cmc rate is stale or zero");
+        return;
+      };
+      // Cross-check the two independent sources against each other. Dividing
+      // them yields an implied XDR/USD, and XDR/USD is stable enough that an
+      // implausible value means one of the two is wrong — which the wide band on
+      // the ICP price alone would not catch.
+      let ?implied = Pricing.impliedXdrPerUsdMicros(permyriad, usdPerIcpMicros) else {
+        recordRateAttempt(false, "cannot derive an implied XDR/USD from the rate pair");
+        return;
+      };
+      if (not Pricing.plausibleImpliedXdrPerUsd(implied)) {
+        recordRateAttempt(
+          false,
+          "rate pair disagrees: implied " # implied.toText() # " micro-XDR/USD from "
+          # usdPerIcpMicros.toText() # " micro-USD/ICP and " # permyriad.toText()
+          # " permyriad XDR/ICP",
+        );
+        return;
+      };
+      Pricing.record(
+        rateCache,
+        {
+          usdPerIcpMicros;
+          xdrPermyriadPerIcp = permyriad;
+          fetchedAtNs = Time.now();
+          quality;
+        },
+      );
+      recordRateAttempt(true, usdPerIcpMicros.toText() # " micro-USD/ICP, " # permyriad.toText() # " permyriad XDR/ICP");
+    } finally {
+      rateRefreshInFlight := false;
+    };
+  };
+
+  /// The rate timer's job: refresh unless backing off, and only while a rail is
+  /// actually selling.
+  ///
+  /// Refreshing on a timer rather than on demand is what makes the XRC's
+  /// per-request fee independent of call volume — no user-facing method can
+  /// trigger it, so no caller can drive our cycle spend. The cost is that a
+  /// live gateway pays continuously whether or not anyone buys, which is why
+  /// `railsLive` gates it: a dark gateway spends nothing.
+  func rateTimerJob() : async () {
+    if (not railsLive()) return;
+    if (rateTicksToSkip > 0) {
+      rateTicksToSkip -= 1;
+      return;
+    };
+    await* refreshRates();
+    // Exponential-ish backoff after a failure so an XRC outage neither burns
+    // cycles nor earns us `RateLimited`.
+    if (rateRefreshFailures > 0) {
+      var skip = 1;
+      var n = rateRefreshFailures;
+      while (n > 1 and skip < rateBackoffMaxTicks) { skip *= 2; n -= 1 };
+      rateTicksToSkip := if (skip > rateBackoffMaxTicks) rateBackoffMaxTicks else skip;
+    };
+  };
+
+  /// Refresh cadence. Derived from the staleness window rather than configured
+  /// separately, so the two can never be set inconsistently — a cadence longer
+  /// than the window would let the cache lapse between ticks and refuse orders.
+  func rateIntervalNs() : Nat {
+    let half = Int.abs(pricingConfig.maxAgeNs) / 2;
+    if (half < 30_000_000_000) 30_000_000_000 else half;
+  };
+
+  /// Adjust pricing params (§7): fee formula, staleness window, delta guard.
   /// Validated atomically — a bad config never partially applies.
-  public shared ({ caller }) func set_forex_config(config : Forex.Config) : async Result.Result<(), Forex.ConfigError> {
+  public shared ({ caller }) func set_pricing_config(config : Pricing.Config) : async Result.Result<(), Pricing.ConfigError> {
     requireAdmin(caller);
-    switch (Forex.validateConfig(config)) {
-      case (#ok) { forexConfig := config; #ok };
+    switch (Pricing.validateConfig(config)) {
+      case (#ok) {
+        pricingConfig := config;
+        // The cadence is derived from maxAgeNs, so re-arm rather than waiting
+        // for the old interval to elapse under the new window.
+        Timer.cancelTimer(rateTimerId);
+        rateTimerId := Timer.recurringTimer<system>(#nanoseconds(rateIntervalNs()), rateTimerJob);
+        auditAdmin(caller, "rates.configSet", "maxAgeNs=" # config.maxAgeNs.toText() # " deltaBps=" # config.maxRateDeltaBps.toText());
+        #ok;
+      };
       case (#err(e)) #err(e);
     };
   };
 
-  /// Cache + params, public: the rate is market data and the fee formula is
-  /// what users are charged — nothing here is secret, and transparency is
-  /// the product thesis.
-  public query func forex_status() : async { rate : ?Forex.Rate; config : Forex.Config } {
-    { rate = forexCache.rate; config = forexConfig };
+  /// Rates + params + refresh liveness, public: both rates are market data any
+  /// third party can query for themselves, and the fee formula is what users
+  /// are charged. Nothing here is secret, and reproducibility is the point.
+  public query func pricing_status() : async {
+    rates : ?Pricing.Rates;
+    config : Pricing.Config;
+    lastAttempt : ?{ atNs : Int; ok : Bool; detail : Text };
+  } {
+    {
+      rates = Pricing.lastRates(rateCache);
+      config = pricingConfig;
+      lastAttempt = lastRateAttempt;
+    };
+  };
+
+  /// Force a rate refresh now (admin) — the ops lever after retuning config or
+  /// while diagnosing a stale rate, without waiting for the next tick.
+  public shared ({ caller }) func refresh_rates() : async ?Pricing.Rates {
+    requireAdmin(caller);
+    await* refreshRates();
+    Pricing.lastRates(rateCache);
   };
 
   // ── Orders: create/query (task 6) ───────────────────────────────────────
@@ -191,6 +365,9 @@ persistent actor CyclesGateway {
     #rateUnavailable;
     /// Entropy source misbehaved (short blob or repeated collisions).
     #idGeneration;
+    /// Gate.mo admission refusal — carries the observed value and the bound so
+    /// the frontend can say *why* rather than failing generically.
+    #notAdmitted : Gate.Reason;
   };
 
   public type CreatedOrder = {
@@ -201,47 +378,74 @@ persistent actor CyclesGateway {
   };
 
   /// One quote = one consistent epoch: the caller snapshots the rail's fee
-  /// formula *before* any await and the cached rate is read once here; the
-  /// §6.1 pricing snapshot persisted on the order is built from that same
-  /// epoch — the webhook reprices a mismatched paid amount from it, never a
-  /// fresh rate. The fee is a parameter because each rail prices with its
-  /// own formula (card = forexConfig's Stripe formula, ck-USDC = its rail
-  /// config) over the one shared rate cache.
+  /// formula *before* any await, and both rates are read once from the cache
+  /// here. The §6.1 pricing snapshot persisted on the order carries both rate
+  /// inputs from that same epoch — the webhook reprices a mismatched paid
+  /// amount from it, never from a fresh rate.
+  ///
+  /// Synchronous and awaitless by design: the rates come from the cache the
+  /// refresh timer maintains, never from a call. That is what keeps a
+  /// user-facing method from being able to trigger a paid XRC request.
+  ///
+  /// The fee is a parameter because each rail prices with its own formula (card
+  /// = the Stripe formula in `pricingConfig`, ck-USDC = its rail config) over
+  /// the one shared rate cache.
   func quoteCents(fee : { feeBps : Nat; feeFixedCents : Nat }, usdCents : Nat) : {
     #ok : (Nat, Types.Pricing);
     #stale;
     #unpriceable;
   } {
-    let ?net = Forex.netCents(fee, usdCents) else return #unpriceable;
-    let ?micros = Forex.freshMicros(forexCache, forexConfig.maxAgeNs, Time.now()) else return #stale;
-    #ok((
-      Forex.cyclesForCents(net, micros),
-      {
-        usdCents;
-        xdrPerUsdMicros = micros;
-        feeBps = fee.feeBps;
-        feeFixedCents = fee.feeFixedCents;
-      },
-    ));
+    switch (Pricing.quote(rateCache, fee, pricingConfig.maxAgeNs, usdCents, Time.now())) {
+      case (#stale) #stale;
+      case (#unpriceable) #unpriceable;
+      case (#ok({ cycles; rates })) {
+        #ok((
+          cycles,
+          {
+            usdCents;
+            usdPerIcpMicros = rates.usdPerIcpMicros;
+            xdrPermyriadPerIcp = rates.xdrPermyriadPerIcp;
+            rateStandardDeviation = rates.quality.standardDeviation;
+            rateReceivedRates = rates.quality.receivedRates;
+            rateQueriedSources = rates.quality.queriedSources;
+            feeBps = fee.feeBps;
+            feeFixedCents = fee.feeFixedCents;
+          },
+        ));
+      };
+    };
   };
 
-  /// §3.1 quote with lazy refresh: a stale cache triggers (at most) one
-  /// refresh outcall, then re-quotes; a failed refresh fails closed.
-  func quoteWithRefresh(fee : { feeBps : Nat; feeFixedCents : Nat }, usdCents : Nat) : async* {
-    #ok : (Nat, Types.Pricing);
-    #unpriceable;
-    #rateUnavailable;
-  } {
-    switch (quoteCents(fee, usdCents)) {
-      case (#ok(quoted)) return #ok(quoted);
-      case (#unpriceable) return #unpriceable;
-      case (#stale) {};
+  /// Read every admission input, synchronously, immediately before deciding —
+  /// no awaits in between, so there is no TOCTOU window between observing and
+  /// admitting. `Cycles.balance()` is this canister's own gas; the float comes
+  /// from the last observation because a query cannot call the ledger (§5.3),
+  /// and the authoritative float check remains the mint-time pre-gate.
+  func gateObservation(caller : Principal) : Gate.Observation {
+    {
+      openOrders = Orders.openOrderCount(orderStore, caller);
+      canisterCycles = Cycles.balance();
+      burnedInWindowE8s = Treasury.burnedInWindow(burnLedger, treasuryConfig.burnWindowNs, Time.now());
+      burnCapE8s = treasuryConfig.burnCapE8s;
+      observedFloatE8s = switch (lastFloatObservation) {
+        case (?observation) ?observation.e8s;
+        case null null;
+      };
+      lowFloatThresholdE8s = treasuryConfig.lowFloatThresholdE8s;
     };
-    ignore await* refreshForexRate();
-    switch (quoteCents(fee, usdCents)) {
-      case (#ok(quoted)) #ok(quoted);
-      case (#unpriceable) #unpriceable;
-      case (#stale) #rateUnavailable;
+  };
+
+  /// The §5.3-adjacent admission gate: refuse to *quote* when fulfilment is
+  /// already known to be impossible, rather than taking the user's money and
+  /// discovering it at mint time. Audited on refusal — a rail that has quietly
+  /// stopped selling is something the operator must be able to see.
+  func admit(caller : Principal, usdCents : Nat) : Result.Result<(), Gate.Reason> {
+    switch (Gate.admit(gateConfig, gateObservation(caller), usdCents)) {
+      case (#ok) #ok;
+      case (#err(reason)) {
+        audit("order.notAdmitted", Gate.reasonToText(reason));
+        #err(reason);
+      };
     };
   };
 
@@ -285,11 +489,19 @@ persistent actor CyclesGateway {
       case (#ok) {};
     };
     let ?tier = Tiers.find(cardTiers, tierId) else return #err(#unknownTier(tierId));
-    let fee = { feeBps = forexConfig.feeBps; feeFixedCents = forexConfig.feeFixedCents };
-    let (lockedCycles, pricing) = switch (await* quoteWithRefresh(fee, tier.usdCents)) {
+    // Admission BEFORE the quote: the quote can fire an HTTPS outcall, so a
+    // spamming principal must be turned away before it can make us spend
+    // cycles (`canister-security`: anyone can burn your cycles with update
+    // calls).
+    switch (admit(caller, tier.usdCents)) {
+      case (#err(reason)) return #err(#notAdmitted(reason));
+      case (#ok) {};
+    };
+    let fee = { feeBps = pricingConfig.feeBps; feeFixedCents = pricingConfig.feeFixedCents };
+    let (lockedCycles, pricing) = switch (quoteCents(fee, tier.usdCents)) {
       case (#ok(quoted)) quoted;
       case (#unpriceable) return #err(#tierBelowFees(tierId));
-      case (#rateUnavailable) return #err(#rateUnavailable);
+      case (#stale) return #err(#rateUnavailable);
     };
     let owner : Types.Owner = #ii(caller);
     switch (await* createOrderWithFreshId(owner, #card, destination, lockedCycles, pricing)) {
@@ -314,10 +526,69 @@ persistent actor CyclesGateway {
   /// bad config never partially applies).
   public shared ({ caller }) func set_card_tiers(tiers : [Tiers.Tier]) : async Result.Result<(), Tiers.ValidateError> {
     requireAdmin(caller);
-    switch (Tiers.validate(tiers)) {
-      case (#ok) { cardTiers := tiers; #ok };
+    switch (Tiers.validate(tiers, gateConfig.maxPurchaseUsdCents)) {
+      case (#ok) {
+        cardTiers := tiers;
+        auditAdmin(caller, "tiers.set", tiers.size().toText() # " tier(s)" # (if (tiers.size() == 0) " — CARD RAIL PAUSED" else ""));
+        #ok;
+      };
       case (#err(e)) #err(e);
     };
+  };
+
+  /// Adjust the admission gate (§7): open-order cap, own-cycles floor,
+  /// per-purchase ceiling. Validated atomically — a bad config never partially
+  /// applies. Lowering `maxPurchaseUsdCents` below an existing tier does NOT
+  /// retroactively invalidate that tier's registration, but the next
+  /// `set_card_tiers` will reject it and the webhook will refuse to mint a
+  /// payment above the new ceiling.
+  public shared ({ caller }) func set_gate_config(config : Gate.Config) : async Result.Result<(), Gate.ConfigError> {
+    requireAdmin(caller);
+    switch (Gate.validateConfig(config)) {
+      case (#ok) {
+        gateConfig := config;
+        auditAdmin(caller, "gate.configSet", "openOrderCap=" # config.maxOpenOrdersPerPrincipal.toText()
+          # " minCycles=" # config.minCanisterCycles.toText()
+          # " maxPurchaseCents=" # config.maxPurchaseUsdCents.toText());
+        #ok;
+      };
+      case (#err(e)) #err(e);
+    };
+  };
+
+  /// Adjust retention (§4/§4.2): the `#created` TTL and the delete horizon.
+  public shared ({ caller }) func set_retention_config(config : Retention.Config) : async Result.Result<(), Retention.ConfigError> {
+    requireAdmin(caller);
+    switch (Retention.validateConfig(config)) {
+      case (#ok) {
+        retentionConfig := config;
+        auditAdmin(caller, "retention.configSet", "ttlNs=" # config.orderTtlNs.toText()
+          # " horizonNs=" # config.retentionHorizonNs.toText());
+        #ok;
+      };
+      case (#err(e)) #err(e);
+    };
+  };
+
+  /// Public: the frontend needs the ceiling to bound its amount input, and the
+  /// TTL to tell the user how long an order stays live. Same transparency
+  /// stance as `forex_status` and `treasury_status` — these are the rules users
+  /// are held to, not secrets.
+  public query func lifecycle_config() : async { gate : Gate.Config; retention : Retention.Config } {
+    { gate = gateConfig; retention = retentionConfig };
+  };
+
+  /// Admission preflight, public: lets the frontend disable the buy button with
+  /// a real reason (and lets an operator ask "would a purchase go through right
+  /// now?") without creating an order. `usdCents` is the gross amount to test.
+  ///
+  /// The answer is advisory — it can go stale between this call and
+  /// `create_order`, which re-checks. It is not an authorization decision, so
+  /// anonymous callers may ask: it reveals only operational state that
+  /// `treasury_status` already publishes. Answered for the *calling* principal,
+  /// so the open-order cap it reports is the caller's own.
+  public shared query ({ caller }) func can_purchase(usdCents : Nat) : async Result.Result<(), Gate.Reason> {
+    Gate.admit(gateConfig, gateObservation(caller), usdCents);
   };
 
   /// Public — the frontend renders tiers and their Payment Links from this.
@@ -344,13 +615,35 @@ persistent actor CyclesGateway {
   transient let errorQueueCapacity : Nat = 1_000;
   transient let auditLogCapacity : Nat = 4_096;
 
-  transient let webhookDeps : Card.Deps = {
-    orders = orderStore;
-    dedup;
-    errorQueue;
-    errorQueueCapacity;
-    auditLog;
-    auditLogCapacity;
+  /// Built per request rather than held in a transient field: it carries
+  /// `maxPurchaseUsdCents` from the live gate config, so a ceiling change takes
+  /// effect on the very next webhook.
+  func webhookDeps() : Card.Deps {
+    {
+      orders = orderStore;
+      dedup;
+      errorQueue;
+      errorQueueCapacity;
+      auditLog;
+      auditLogCapacity;
+      sweptOrders;
+      paidIntents;
+      maxPurchaseUsdCents = gateConfig.maxPurchaseUsdCents;
+    };
+  };
+
+  /// Open-obligation depth, public.
+  ///
+  /// Unresolved entries are never evicted, so this number only ever comes down
+  /// by the operator working it. A climbing value means dollars are arriving
+  /// that nobody has dealt with — the single most important operational number
+  /// on the money path, and it is public because §9's transparency stance says
+  /// operational state is not secret.
+  public query func error_queue_depth() : async { unresolved : Nat; retained : Nat } {
+    {
+      unresolved = ErrorQueue.unresolvedCount(errorQueue);
+      retained = ErrorQueue.size(errorQueue);
+    };
   };
 
   /// §4.1 operator worklist + retained history. Admin: entries carry
@@ -365,7 +658,12 @@ persistent actor CyclesGateway {
   /// automatically; this is the fallback and the only path for Type 2.)
   public shared ({ caller }) func resolve_error(id : Nat) : async Result.Result<ErrorQueue.Entry, ErrorQueue.ResolveError> {
     requireAdmin(caller);
-    ErrorQueue.resolve(errorQueue, id, Time.now());
+    let resolved = ErrorQueue.resolve(errorQueue, id, Time.now());
+    switch (resolved) {
+      case (#ok(entry)) auditAdmin(caller, "errorQueue.resolved", "entry " # id.toText() # ": " # entry.detail);
+      case (#err(_)) {};
+    };
+    resolved;
   };
 
   /// §4.2 operational trail, newest-last. Admin: details reference payment
@@ -396,6 +694,19 @@ persistent actor CyclesGateway {
   /// window doesn't already bound (notify_top_up could otherwise retry
   /// forever). Sweep cadence (task 11) makes 25 retries ≫ a day of outage.
   transient let maxMintRetries : Nat = 25;
+
+  /// Orders already audited for a blocked `#begin` this session, so a stuck
+  /// order contributes one audit line rather than one per sweep. Transient: the
+  /// durable record of a stuck order is its error-queue entry once the max-wait
+  /// bound trips, not this.
+  transient let mintBlockedAudited = Set.empty<Types.OrderId>();
+
+  /// Audit a blocked mint at most once per order per session.
+  func auditMintBlockedOnce(orderId : Types.OrderId, tag : Text, detail : Text) {
+    if (mintBlockedAudited.contains(orderId)) return;
+    mintBlockedAudited.add(orderId);
+    audit(tag, detail);
+  };
 
   func selfPrincipal() : Principal = Principal.fromActor(CyclesGateway);
 
@@ -434,7 +745,13 @@ persistent actor CyclesGateway {
   public shared ({ caller }) func set_treasury_config(config : Treasury.Config) : async Result.Result<(), Treasury.ConfigError> {
     requireAdmin(caller);
     switch (Treasury.validateConfig(config)) {
-      case (#ok) { treasuryConfig := config; #ok };
+      case (#ok) {
+        treasuryConfig := config;
+        auditAdmin(caller, "treasury.configSet", "burnCap=" # config.burnCapE8s.toText()
+          # " e8s/window, lowFloatThreshold=" # config.lowFloatThresholdE8s.toText()
+          # ", maxHold=" # config.maxHoldNs.toText() # "ns");
+        #ok;
+      };
       case (#err(e)) #err(e);
     };
   };
@@ -447,7 +764,7 @@ persistent actor CyclesGateway {
     requireAdmin(caller);
     let cleared = Treasury.burnedInWindow(burnLedger, treasuryConfig.burnWindowNs, Time.now());
     Treasury.reset(burnLedger);
-    audit("treasury.burnWindowReset", cleared.toText() # " e8s of window consumption cleared by operator");
+    auditAdmin(caller, "treasury.burnWindowReset", cleared.toText() # " e8s of window consumption cleared");
     cleared;
   };
 
@@ -466,21 +783,35 @@ persistent actor CyclesGateway {
   /// thesis), not a secret. The float observation may be stale — `atNs` says
   /// how stale; `refresh_float` is the admin lever for a fresh read.
   public query func treasury_status() : async Treasury.Status {
-    var held = 0;
-    for ((_, order) in orderStore.orders.entries()) {
-      if (order.status == #awaitingTreasury) held += 1;
-    };
     {
       config = treasuryConfig;
       burnedInWindowE8s = Treasury.burnedInWindow(burnLedger, treasuryConfig.burnWindowNs, Time.now());
       lastObservedFloat = lastFloatObservation;
       lowFloat = Treasury.lowFloatSignal(treasuryConfig, lastFloatObservation);
-      heldOrders = held;
+      // O(1) off the maintained tally — this query is public and
+      // unauthenticated, so it must not scan the order store.
+      heldOrders = Orders.countOf(orderStore, #awaitingTreasury);
+      // Money in, not yet minted. A non-transient value here means the mint is
+      // blocked upstream (a stale CMC rate, a CMC outage) and orders are on the
+      // clock toward `mintWaitExceeded` — visible without reading the audit log,
+      // which is a ring buffer that drops.
+      paidOrders = Orders.countOf(orderStore, #paid);
     };
   };
 
   func audit(tag : Text, detail : Text) {
     ignore AuditLog.append(auditLog, auditLogCapacity, Time.now(), tag, detail);
+  };
+
+  /// Audit an admin action, recording **which principal took it**.
+  ///
+  /// §7's trust model is a flat controller allowlist with equal privileges —
+  /// "any one can upgrade-then-drain". With several controllers and no caller
+  /// recorded, the trail can say the burn cap was raised but not by whom, which
+  /// is the one thing it most needs to say. Every admin mutation goes through
+  /// this.
+  func auditAdmin(caller : Principal, tag : Text, detail : Text) {
+    audit(tag, "by " # caller.toText() # ": " # detail);
   };
 
   /// Driver-side transition helper: the pipeline only requests legal edges,
@@ -548,6 +879,30 @@ persistent actor CyclesGateway {
       // the single decision point for cap/float, so a rolled window or a
       // refill clears the hold with no second code path. updatedAtNs is the
       // hold start (the hold transition is the last one the order took).
+      // Bound the time an order may sit with money in and nothing minted,
+      // whatever the reason.
+      //
+      // `#begin` has several paths that return without transitioning — the CMC
+      // call failing, its rate being stale, the float read failing, an
+      // underivable e8s amount. Each leaves the order `#paid` and relies on the
+      // next sweep, so a persistent upstream problem parked an order forever:
+      // no bound, no error-queue entry, and the only trace was one audit line
+      // per sweep in a ring buffer that both floods and drops.
+      //
+      // The money position is identical to `treasuryWaitExceeded` — fiat in,
+      // nothing minted, refund in the Stripe Dashboard — so it is bounded by the
+      // same `maxHoldNs` and escalated the same way. Orders that are actually
+      // progressing bump `updatedAtNs` on every transition, so only a genuinely
+      // stuck one trips this.
+      if (order.status == #paid) {
+        switch (Treasury.holdStage(order.updatedAtNs, Time.now(), treasuryConfig.maxHoldNs)) {
+          case (#escalate) {
+            escalateStuckMint(order, "mintWaitExceeded", "paid but unable to mint past max wait: fiat received, nothing minted — refund via Stripe Dashboard");
+            return;
+          };
+          case (#retry) {};
+        };
+      };
       let stage : Cmc.Stage = switch (order.status) {
         case (#awaitingTreasury) {
           switch (Treasury.holdStage(order.updatedAtNs, Time.now(), treasuryConfig.maxHoldNs)) {
@@ -573,11 +928,11 @@ persistent actor CyclesGateway {
         case (#begin) {
           // §5 rate derivation: fresh CMC ICP/XDR rate, staleness-guarded.
           let rate = try { await cmc.get_icp_xdr_conversion_rate() } catch (e) {
-            audit("mint.rateFetchFailed", orderId # ": " # e.message());
+            auditMintBlockedOnce(orderId, "mint.rateFetchFailed", orderId # ": " # e.message());
             return; // stays #paid; the next sweep retries
           };
           let ?permyriad = Cmc.freshCmcRate(rate.data, Time.now(), Cmc.cmcRateMaxAgeNs) else {
-            audit("mint.rateStale", orderId);
+            auditMintBlockedOnce(orderId, "mint.rateStale", orderId);
             return;
           };
           // §5.3 pre-gate input: the live float balance (also feeds the
@@ -585,7 +940,7 @@ persistent actor CyclesGateway {
           let floatE8s = try {
             await icpLedger.icrc1_balance_of({ owner = selfPrincipal(); subaccount = null });
           } catch (e) {
-            audit("mint.balanceFetchFailed", orderId # ": " # e.message());
+            auditMintBlockedOnce(orderId, "mint.balanceFetchFailed", orderId # ": " # e.message());
             return; // status untouched; the next sweep retries
           };
           observeFloat(floatE8s);
@@ -596,7 +951,11 @@ persistent actor CyclesGateway {
             case (#paid or #awaitingTreasury) {};
             case (_) continue drive;
           };
-          let ?e8s = Cmc.icpE8sForCycles(fresh.lockedCycles, permyriad) else return;
+          let ?e8s = Cmc.icpE8sForCycles(fresh.lockedCycles, permyriad) else {
+            // Previously returned silently, leaving no trace at all.
+            auditMintBlockedOnce(orderId, "mint.unpriceable", orderId # ": cannot derive e8s for " # fresh.lockedCycles.toText() # " cycles at " # permyriad.toText() # " permyriad");
+            return;
+          };
           // §5.3 pre-gate: burn cap (blast-radius bound, checked first —
           // it must hold mints even when the float could fund them), then
           // float sufficiency. A held order stays put on re-hold (no
@@ -631,6 +990,8 @@ persistent actor CyclesGateway {
           };
           switch (Cmc.interpretTransfer(result)) {
             case (#blockIndex(block)) {
+              // Progress: allow a future block on this order to be audited again.
+              mintBlockedAudited.remove(orderId);
               // §5.1 step 2 — block_index + #icpAtCmc in one sync block.
               ignore tryTransition(orderId, #icpAtCmc);
               Cmc.patch(mintJournal, orderId, { status = ?#icpAtCmc; blockIndex = ?block; cyclesMinted = null; bumpRetries = false }, Time.now());
@@ -724,6 +1085,7 @@ persistent actor CyclesGateway {
   /// safe to spam, every step is deduped/idempotent/single-flighted.
   public shared ({ caller }) func process_order(id : Types.OrderId) : async Result.Result<Types.Order, ProcessOrderError> {
     requireAdmin(caller);
+    auditAdmin(caller, "mint.manualKick", id);
     if (Orders.get(orderStore, id) == null) return #err(#notFound);
     if (mintsInFlight.contains(id)) return #err(#inFlight);
     await* processMint(id);
@@ -731,6 +1093,70 @@ persistent actor CyclesGateway {
       case (?order) #ok(order);
       case null #err(#notFound);
     };
+  };
+
+  /// Rebuild the per-status tallies from the order store (admin, §7).
+  ///
+  /// The tallies are maintained incrementally so the public status queries stay
+  /// O(1); this is the O(n) reconciliation lever for the case where they are
+  /// ever suspected of having drifted. Admin-only precisely because it is the
+  /// expensive path. Returns the rebuilt counts.
+  public shared ({ caller }) func recount_orders() : async [(Text, Nat)] {
+    requireAdmin(caller);
+    let rebuilt = Orders.recount(orderStore);
+    let rendered = rebuilt.map(func((status, n)) = status # "=" # n.toText());
+    auditAdmin(caller, "orders.recounted", rendered.values().join(", "));
+    rebuilt;
+  };
+
+  /// Manual retention kick (admin, §7) — ops lever to apply the current TTL and
+  /// horizon immediately after retuning them, instead of waiting up to a full
+  /// sweep interval. Returns what it did. Safe to spam: the bands are computed
+  /// from absolute ages, so a second run is a no-op.
+  public shared ({ caller }) func run_retention() : async { expired : Nat; swept : Nat } {
+    requireAdmin(caller);
+    auditAdmin(caller, "retention.manualSweep", "operator-triggered");
+    retentionSweep();
+  };
+
+  /// Was this order deliberately deleted as abandoned? Public and unauthorized
+  /// on purpose: it answers only "did we sweep this id", which a user needs to
+  /// understand why their order vanished from history, and which leaks nothing
+  /// (ids are random and carry no balance or ownership).
+  public query func was_swept(id : Types.OrderId) : async Bool {
+    sweptOrders.contains(id);
+  };
+
+  /// Retention counters for monitoring (public, same stance as
+  /// `treasury_status`): how many orders are in each band right now, and how
+  /// many ids have been tombstoned. `openOrders` growing without `delivered`
+  /// growing is the signature of order-creation abuse.
+  public query func retention_status() : async {
+    config : Retention.Config;
+    openOrders : Nat;
+    expiredOrders : Nat;
+    totalOrders : Nat;
+    tombstones : Nat;
+    paidIntentsIndexed : Nat;
+  } {
+    {
+      config = retentionConfig;
+      // O(1), same reasoning as treasury_status.
+      openOrders = Orders.countOf(orderStore, #created);
+      expiredOrders = Orders.countOf(orderStore, #expired);
+      totalOrders = orderStore.orders.size();
+      tombstones = sweptOrders.size();
+      paidIntentsIndexed = paidIntents.size();
+    };
+  };
+
+  /// Which order did this Stripe `payment_intent` pay for (admin, §4.2)? The
+  /// reconciliation lookup: given a charge in the Stripe Dashboard, find the
+  /// order it funded. Null means the payment was never attributed to an order
+  /// here — check the error queue for a Type 1 entry carrying it.
+  public shared query ({ caller }) func order_for_payment(paymentRef : Text) : async ?Types.OrderId {
+    requireAdmin(caller);
+    paidIntents.get(paymentRef);
   };
 
   /// Money-out journal for one order (admin, §4.2) — intent, block_index,
@@ -759,28 +1185,61 @@ persistent actor CyclesGateway {
   /// "is it actually firing" must be observable).
   var lastRecoverySweep : ?{ atNs : Int; pending : Nat } = null;
 
+  /// Retention pass (Retention.mo): flip lapsed `#created` orders to
+  /// `#expired`, and delete-and-tombstone `#expired` orders past the horizon.
+  /// Synchronous and awaitless, so it cannot interleave with the money path.
+  ///
+  /// The band-3 delete is guarded by more than status and age: an order with a
+  /// mint journal entry or a ck-USDC pull entry has touched money, so it is
+  /// never deleted no matter how old — `Retention.bandOf` only sees status and
+  /// age, and this is the other half of that contract.
+  func retentionSweep() : { expired : Nat; swept : Nat } {
+    let now = Time.now();
+    var expired = 0;
+    var swept = 0;
+    // Materialise ids first — the loop mutates the store.
+    for (id in Orders.allIds(orderStore).values()) {
+      let ?order = Orders.get(orderStore, id) else continue;
+      switch (Retention.bandOf(order.status, order.createdAtNs, now, retentionConfig)) {
+        case (#keep) {};
+        case (#expire) {
+          if (tryTransition(id, #expired) != null) expired += 1;
+        };
+        case (#sweep) {
+          // Money-touched orders are financial records — never swept.
+          if (mintJournal.get(id) != null or ckUsdcPulls.get(id) != null) continue;
+          ignore Orders.remove(orderStore, id);
+          sweptOrders.add(id);
+          swept += 1;
+        };
+      };
+    };
+    if (expired > 0 or swept > 0) {
+      audit("retention.sweep", expired.toText() # " expired, " # swept.toText() # " swept and tombstoned");
+    };
+    { expired; swept };
+  };
+
   /// The timer job. Correctness against concurrent drivers is processMint's
   /// per-order single-flight; this flag only stops sweep pile-up. The
   /// webhook kick deliberately bypasses it — a just-paid order must not
   /// wait a full interval because a background sweep (which enumerated
   /// `pending` before that order turned #paid) was still in flight.
+  ///
+  /// Retention runs FIRST and synchronously: it must not race the money sweep's
+  /// awaits, and expiring an order is a no-op for money-out (`#expired` is not
+  /// sweepable, and a late payment on it is still honoured per §4).
   func recoverySweep() : async () {
     if (recoverySweepInFlight) return;
     recoverySweepInFlight := true;
     try {
+      ignore retentionSweep();
       let pending = await* sweepMintable();
       lastRecoverySweep := ?{ atNs = Time.now(); pending };
     } finally {
       recoverySweepInFlight := false;
     };
   };
-
-  /// §5.2 the timer itself. Transient initializer = runs on install AND on
-  /// every upgrade (postupgrade re-initialization), so a deploy can never
-  /// leave recovery dead; the IC drops timers across upgrades, so there is
-  /// no stale duplicate to cancel.
-  transient var recoveryTimerId : Timer.TimerId =
-    Timer.recurringTimer<system>(#nanoseconds(recoverySweepIntervalNs), recoverySweep);
 
   /// Tune the sweep cadence (admin, §7) — re-arms immediately, no redeploy.
   /// Validated against the §5.1 bound: the cadence must stay well inside
@@ -793,7 +1252,7 @@ persistent actor CyclesGateway {
         recoverySweepIntervalNs := intervalNs;
         Timer.cancelTimer(recoveryTimerId);
         recoveryTimerId := Timer.recurringTimer<system>(#nanoseconds(intervalNs), recoverySweep);
-        audit("recovery.intervalSet", "sweep cadence set to " # intervalNs.toText() # " ns");
+        auditAdmin(caller, "recovery.intervalSet", "sweep cadence set to " # intervalNs.toText() # " ns");
         #ok;
       };
     };
@@ -802,6 +1261,20 @@ persistent actor CyclesGateway {
   /// §5.2 liveness observability, public (operational transparency, same
   /// stance as treasury_status): cadence + last completed timer sweep. A
   /// null or stale `lastSweep` means recovery is not running.
+  /// This canister's OWN cycle balance and the floor the admission gate holds
+  /// it against (public — the same operational-transparency stance as
+  /// `treasury_status`; it is visible via `canister_status` regardless).
+  ///
+  /// Distinct from the ICP float in every way: this is gas. Below the freezing
+  /// threshold the canister stops accepting updates; at zero it is uninstalled
+  /// and the order store, journals, and dedup sets go with it. Monitor it
+  /// separately, and alert well above `minCanisterCycles` — that gate stops
+  /// *sales*, it does not stop the burn. A sudden acceleration here is the
+  /// signature of a cycle-drain attempt.
+  public query func cycles_status() : async { balance : Nat; floor : Nat } {
+    { balance = Cycles.balance(); floor = gateConfig.minCanisterCycles };
+  };
+
   public query func recovery_status() : async {
     intervalNs : Nat;
     lastSweep : ?{ atNs : Int; pending : Nat };
@@ -847,6 +1320,11 @@ persistent actor CyclesGateway {
     /// §3.1 fail-closed: no fresh rate and the refresh failed.
     #rateUnavailable;
     #idGeneration;
+    /// Gate.mo admission refusal — the same pre-creation gate the card rail
+    /// uses. Both rails converge on one ICP float and one burn cap, so both
+    /// must be refused when fulfilment is impossible; gating only one would
+    /// leave the other as a way around the own-cycles floor.
+    #notAdmitted : Gate.Reason;
   };
 
   public type CreatedCkUsdcOrder = {
@@ -881,11 +1359,16 @@ persistent actor CyclesGateway {
       case (#err(#aboveMaximum(max))) return #err(#aboveMaximum(max));
       case (#ok) {};
     };
+    // Same pre-quote admission gate as the card rail (see create_order).
+    switch (admit(caller, usdCents)) {
+      case (#err(reason)) return #err(#notAdmitted(reason));
+      case (#ok) {};
+    };
     let fee = { feeBps = config.feeBps; feeFixedCents = config.feeFixedCents };
-    let (lockedCycles, pricing) = switch (await* quoteWithRefresh(fee, usdCents)) {
+    let (lockedCycles, pricing) = switch (quoteCents(fee, usdCents)) {
       case (#ok(quoted)) quoted;
       case (#unpriceable) return #err(#amountBelowFees);
-      case (#rateUnavailable) return #err(#rateUnavailable);
+      case (#stale) return #err(#rateUnavailable);
     };
     switch (await* createOrderWithFreshId(#ii(caller), #ckUsdc, destination, lockedCycles, pricing)) {
       case (?order) {
@@ -1068,7 +1551,12 @@ persistent actor CyclesGateway {
   public shared ({ caller }) func set_ck_usdc_config(config : CkUsdc.Config) : async Result.Result<(), CkUsdc.ConfigError> {
     requireAdmin(caller);
     switch (CkUsdc.validateConfig(config)) {
-      case (#ok) { ckUsdcConfig := config; #ok };
+      case (#ok) {
+        ckUsdcConfig := config;
+        auditAdmin(caller, "ckusdc.configSet", "maxUsdCents=" # config.maxUsdCents.toText()
+          # (if (config.maxUsdCents == 0) " — RAIL DISABLED" else ""));
+        #ok;
+      };
       case (#err(e)) #err(e);
     };
   };
@@ -1097,7 +1585,7 @@ persistent actor CyclesGateway {
       case (?entry) {
         if (entry.blockIndex != null) return false;
         CkUsdc.dropPull(ckUsdcPulls, id);
-        audit("ckusdc.pullReset", id # ": intent cleared by operator after ledger verification");
+        auditAdmin(caller, "ckusdc.pullReset", id # ": intent cleared after ledger verification");
         true;
       };
       case null false;
@@ -1125,7 +1613,7 @@ persistent actor CyclesGateway {
     };
     switch (result) {
       case (#Ok(block)) {
-        audit("ckusdc.withdraw", amountUnits.toText() # " units to " # to.owner.toText() # ", block " # block.toText());
+        auditAdmin(caller, "ckusdc.withdraw", amountUnits.toText() # " units to " # to.owner.toText() # ", block " # block.toText());
         #ok(block);
       };
       case (#Err(error)) #err(CkUsdc.transferErrorToText(error));
@@ -1133,6 +1621,13 @@ persistent actor CyclesGateway {
   };
 
   // ── HTTP ingress ────────────────────────────────────────────────────────
+
+  /// Set by the webhook route handler when a delivery marks an order `#paid`,
+  /// read by `http_request_update` immediately afterwards to decide whether to
+  /// kick money-out. Transient: it only carries a value within one message
+  /// execution, and the §5.2 recovery timer is the backstop if an upgrade lands
+  /// between the write and the read.
+  transient var webhookPaidOrder : ?Types.OrderId = null;
 
   /// §6.0 body-size guard. Stripe events are a few KiB; 64 KiB is generous
   /// headroom and far below the 2 MiB ingress cap. Transient so a redeploy
@@ -1148,13 +1643,20 @@ persistent actor CyclesGateway {
       method = "POST";
       path = "/webhook/stripe";
       upgrade = true;
-      handler = func req = Card.handleWebhook(
-        webhookDeps,
-        Secret.get(webhookSecret),
-        req,
-        Time.now(),
-        Card.defaultToleranceSeconds,
-      );
+      handler = func req {
+        let outcome = Card.handleWebhook(
+          webhookDeps(),
+          Secret.get(webhookSecret),
+          req,
+          Time.now(),
+          Card.defaultToleranceSeconds,
+        );
+        // Handed to http_request_update, which runs in the same atomic block
+        // (the dispatch is synchronous and nothing awaits in between), so this
+        // cannot be read by a different message than the one that set it.
+        webhookPaidOrder := outcome.paidOrder;
+        outcome.response;
+      };
     },
   ];
 
@@ -1170,11 +1672,24 @@ persistent actor CyclesGateway {
   /// payload-authenticated (HMAC), never caller-authenticated.
   public func http_request_update(req : Http.Request) : async Http.Response {
     let response = Http.handleUpdate(routes, req, maxRequestBodyBytes);
-    // A verified checkout marked its order #paid synchronously inside the
-    // dispatch above; kick money-out (§5) as a detached self-message so the
-    // Stripe ack is never held hostage by ledger/CMC latency. The §5.2
-    // recovery timer is the backstop if this detached message dies.
-    ignore async { ignore await* sweepMintable() };
+    // Kick money-out (§5) as a detached self-message ONLY when this delivery
+    // actually marked an order #paid, and drive just that order rather than
+    // sweeping every one. `webhookPaidOrder` is set inside the dispatch above
+    // and consumed here.
+    //
+    // This route is unauthenticated by necessity (Stripe cannot sign in), so
+    // anything it triggers is free for anyone on the internet to invoke. A
+    // sweep over all orders — which makes paid inter-canister calls per
+    // sweepable order — must therefore never be reachable from a 404, a bad
+    // signature, or an unprovisioned-secret 503. The §5.2 recovery timer
+    // remains the backstop if this detached message dies.
+    switch (webhookPaidOrder) {
+      case (?orderId) {
+        webhookPaidOrder := null;
+        ignore async { await* processMint(orderId) };
+      };
+      case null {};
+    };
     response;
   };
 
@@ -1182,4 +1697,35 @@ persistent actor CyclesGateway {
   public query func health() : async Bool {
     true;
   };
+
+  /// §5.2 the timer itself. Transient initializer = runs on install AND on
+  /// every upgrade (postupgrade re-initialization), so a deploy can never
+  /// leave recovery dead; the IC drops timers across upgrades, so there is
+  /// no stale duplicate to cancel.
+  ///
+  /// Declared last in the actor body: the initializer evaluates during actor
+  /// init and `recoverySweep` reaches the order store, the mint journal, and
+  /// the ck-USDC pull journal, all of which must already be initialized
+  /// (M0016 otherwise).
+  transient var recoveryTimerId : Timer.TimerId =
+    Timer.recurringTimer<system>(#nanoseconds(recoverySweepIntervalNs), recoverySweep);
+
+  /// §3 rate refresh. Same transient-initializer pattern as the recovery timer:
+  /// it runs on install AND on every upgrade, which is what the IC requires
+  /// (global timers are deactivated when the Wasm module changes) without an
+  /// explicit `postupgrade` hook — which enhanced orthogonal persistence
+  /// forbids anyway. Do not "improve" this by adding one.
+  ///
+  /// A dead rate timer is an availability failure, not an exploitable one: the
+  /// cache goes stale and orders are refused. `Pricing.Config.maxAgeNs` is the
+  /// control that guarantees that, which is why it is bounded.
+  transient var rateTimerId : Timer.TimerId =
+    Timer.recurringTimer<system>(#nanoseconds(rateIntervalNs()), rateTimerJob);
+
+  /// Refresh immediately rather than after a full interval. The rate cache is
+  /// persistent so an upgrade does not blank the price, but a stop→upgrade→start
+  /// can outlast a 5-minute window; this closes that gap on install and upgrade
+  /// alike.
+  transient let _rateWarmup : Timer.TimerId =
+    Timer.setTimer<system>(#nanoseconds(0), rateTimerJob);
 };

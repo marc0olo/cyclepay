@@ -38,6 +38,21 @@ npm test        # pretest fetches the pinned ledger wasm + builds the backend
 Requirements: Node ≥ 20.11 and `mops` on PATH. The PocketIC server binary
 ships with the `@dfinity/pic` npm package.
 
+Two API traps this suite has to work around, both easy to hit again:
+
+- **The outcall reject mock's `statusCode` is an IC reject code, not an HTTP
+  status.** `@dfinity/pic` names the field `statusCode`, but its encoder maps it
+  to `CanisterHttpReject.reject_code`, so it must be 1..5. Passing `503` makes
+  the server answer `InvalidRejectCode(503)` and the mock never lands. See
+  `REJECT_CODE_SYS_TRANSIENT` in `harness.ts`.
+- **Upgrading requires stopping first, and an explicit EOP option.** A canister
+  with outstanding message callbacks cannot be upgraded, and Motoko's enhanced
+  orthogonal persistence requires
+  `upgradeModeOptions: { wasm_memory_persistence: [{ keep: null }] }`. Both are
+  handled by `upgradeBackendMidFlight`. (The Rust `pocket-ic` crate has an
+  `upgrade_eop_canister` helper for the second half; the TS client at 0.22.0
+  does not, so the option is set explicitly.)
+
 **The host must run a 4 KiB-page kernel** — macOS (Intel or Apple Silicon)
 and x86_64 Linux are fine. The IC replica's memory tracker hard-asserts
 4096-byte pages, so the suite cannot run inside arm64 Linux VMs with 16 KiB
@@ -72,9 +87,13 @@ git commit && git push   # needs a workflow-scoped token (a normal `gh auth` tok
 | 10 | delivery to a real cycles-ledger account | happy path (2nd forward arm) |
 | 11 | forward to a nonexistent canister → Type 2, cycles refunded to app balance | Type 2 |
 | 12 | upgrade mid-transfer → §5.1 intent replay, exactly-one ledger debit, timer re-arm | upgrade-mid-flight, ambiguous-transfer recovery, postupgrade re-arm |
-| 13 | upgrade mid-forward → `#ambiguousForward` escalation, never re-forwards | ambiguous-transfer recovery |
+| 13 | upgrade mid-forward → the stop-first procedure drains the forward, delivering exactly once | upgrade-mid-flight |
 | 14 | treasury max-wait → `treasuryWaitExceeded` escalation | AwaitingTreasury |
 | 15 | audit-log seq monotonicity + error-queue accounting | — |
+| 16 | admission gate: no burn-cap headroom refuses the quote; `can_purchase` agrees; restoring headroom re-opens the rail | pre-creation gate |
+| 17 | per-purchase ceiling bounds both tier registration and the amount | pre-creation gate |
+| 18 | retention: created → expired → swept, and a late payment names the tombstone | retention bands |
+| 19 | retention never deletes an order that has touched money; `order_for_payment` still resolves | retention bands |
 
 ## Scenario map — ck-USDC go-live bar (`ckusdc.spec.ts`, task 15)
 
@@ -90,7 +109,7 @@ at `xevnm-gaaaa-aaaar-qafnq-cai` with ICRC-2 enabled and a 10_000-unit fee.
 | ck-05 | short approval → `insufficientAllowance` with `required`; full approve → pull → `Paid`; exact ledger accounting; cap-0 hold | amount-short mismatch, approve/pull happy path, treasury interplay |
 | ck-06 | cap sized → held ck order resumes → real CMC mint → delivery; settled pull never resettable | treasury interplay, shared money-out |
 | ck-07 | balance short of the pull → definite rejection, order stays claimable | amount-short (funds arm) |
-| ck-08 | upgrade mid-pull → intent replays bit-identically → ledger `#Duplicate` → debited exactly once | dedup/replay (§5.1 money-in) |
+| ck-08 | upgrade mid-pull → the stop drains the pull, debited exactly once, re-claim refused | dedup/replay (§5.1 money-in) |
 | ck-09 | 24 h stale intent → once-only `stalePullIntent` escalation, order stays `Created`; `reset_ck_usdc_pull` re-opens; settles after | stale-intent escalation + ops levers |
 | ck-10 | `withdraw_ck_usdc` moves the accrued balance; over-withdraw surfaces the ledger error | hold-ckUSDC posture |
 | ck-11 | audit tags + error-queue accounting across the rail | — |

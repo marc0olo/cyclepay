@@ -1,4 +1,5 @@
 import { test; suite } "mo:test";
+import Array "mo:core/Array";
 import Principal "mo:core/Principal";
 import Runtime "mo:core/Runtime";
 import Types "../src/backend/Types";
@@ -28,6 +29,7 @@ let legalTransitions : [(Types.OrderStatus, Types.OrderStatus)] = [
   (#expired, #paid),
   (#paid, #minting),
   (#paid, #awaitingTreasury),
+  (#paid, #errorQueue),
   (#awaitingTreasury, #minting),
   (#awaitingTreasury, #errorQueue),
   (#minting, #icpAtCmc),
@@ -46,11 +48,15 @@ func isExpectedLegal(from : Types.OrderStatus, to : Types.OrderStatus) : Bool {
 let alice = Principal.fromText("aaaaa-aa");
 let bob = Principal.fromText("2vxsx-fae");
 
-// §6.1 pricing snapshot used across the store tests; the values match the
-// forex.test.mo quote vector (500¢ @ 737_000 micros, 290 bps + 30¢).
+// §6.1 pricing snapshot used across the store tests — the shared §3 vector
+// (500¢ gross at $4.55/ICP and 3.5 XDR/ICP; see pricing.test.mo).
 let pricing : Types.Pricing = {
   usdCents = 500;
-  xdrPerUsdMicros = 737_000;
+  usdPerIcpMicros = 4_550_000; // $4.55 per ICP
+  xdrPermyriadPerIcp = 35_000; // 3.5 XDR per ICP
+  rateStandardDeviation = 0;
+  rateReceivedRates = 5;
+  rateQueriedSources = 5;
   feeBps = 290;
   feeFixedCents = 30;
 };
@@ -97,14 +103,14 @@ suite("legal-transition matrix (exhaustive, 8×8)", func() {
     };
   };
 
-  test("exactly 11 legal transitions exist", func() {
+  test("exactly 12 legal transitions exist", func() {
     var count = 0;
     for (from in allStatuses.values()) {
       for (to in allStatuses.values()) {
         if (Orders.isLegalTransition(from, to)) count += 1;
       };
     };
-    assert count == 11;
+    assert count == 12;
   });
 
   test("delivered and errorQueue are terminal", func() {
@@ -380,6 +386,173 @@ suite("markPaid (§6.1 amount honoring)", func() {
     switch (Orders.markPaid(store, "missing", 1, 100)) {
       case (#err(#notFound("missing"))) {};
       case _ assert false;
+    };
+  });
+});
+
+suite("openOrderCount — the Gate admission input", func() {
+  test("counts only #created orders for the given principal", func() {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore newOrder(store, "ord-2", alice);
+    ignore newOrder(store, "ord-3", bob);
+    assert Orders.openOrderCount(store, alice) == 2;
+    assert Orders.openOrderCount(store, bob) == 1;
+  });
+
+  test("a principal with no orders counts zero", func() {
+    assert Orders.openOrderCount(Orders.emptyStore(), alice) == 0;
+  });
+
+  test("an expired order no longer occupies a slot", func() {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore Orders.applyTransition(store, "ord-1", #expired, 200);
+    assert Orders.openOrderCount(store, alice) == 0;
+  });
+
+  test("anything past #created no longer occupies a slot", func() {
+    // Money in play is a record, not an open slot — otherwise a busy buyer
+    // would lock themselves out permanently.
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore Orders.markPaid(store, "ord-1", 1, 200);
+    assert Orders.openOrderCount(store, alice) == 0;
+  });
+});
+
+suite("remove — retention band 3", func() {
+  test("removes the record and drops it from the owner's history", func() {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore newOrder(store, "ord-2", alice);
+    switch (Orders.remove(store, "ord-1")) {
+      case (?removed) assert removed.id == "ord-1";
+      case null assert false;
+    };
+    assert Orders.get(store, "ord-1") == null;
+    assert Orders.ordersFor(store, alice).map<Types.Order, Types.OrderId>(func(o) = o.id) == ["ord-2"];
+  });
+
+  test("removing an unknown id is a no-op returning null", func() {
+    assert Orders.remove(Orders.emptyStore(), "missing") == null;
+  });
+
+  test("one owner's removal leaves another owner's history untouched", func() {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore newOrder(store, "ord-2", bob);
+    ignore Orders.remove(store, "ord-1");
+    assert Orders.ordersFor(store, bob).size() == 1;
+    assert Orders.ordersFor(store, alice).size() == 0;
+  });
+
+  test("allIds materialises so the caller can mutate while iterating", func() {
+    // The retention sweep expires and deletes as it goes, which would
+    // invalidate a live iterator over the store.
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore newOrder(store, "ord-2", alice);
+    let ids = Orders.allIds(store);
+    assert ids.size() == 2;
+    for (id in ids.values()) ignore Orders.remove(store, id);
+    assert Orders.allIds(store).size() == 0;
+  });
+});
+
+suite("status counts — the O(1) query inputs", func() {
+  // The public status queries read these instead of scanning the store, so a
+  // drift here silently misreports operational state. Every write path that
+  // touches a status is covered.
+  test("create increments #created", func() {
+    let store = Orders.emptyStore();
+    assert Orders.countOf(store, #created) == 0;
+    ignore newOrder(store, "ord-1", alice);
+    ignore newOrder(store, "ord-2", bob);
+    assert Orders.countOf(store, #created) == 2;
+  });
+
+  test("applyTransition moves the count between tracked statuses", func() {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore Orders.applyTransition(store, "ord-1", #expired, 200);
+    assert Orders.countOf(store, #created) == 0;
+    assert Orders.countOf(store, #expired) == 1;
+  });
+
+  test("markPaid decrements without going through applyTransition", func() {
+    // markPaid writes status directly, so it maintains the counts itself —
+    // this is the path most likely to be forgotten.
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore Orders.markPaid(store, "ord-1", 1, 200);
+    assert Orders.countOf(store, #created) == 0;
+    // #paid is untracked, so nothing else moved.
+    assert Orders.countOf(store, #expired) == 0;
+    assert Orders.countOf(store, #awaitingTreasury) == 0;
+  });
+
+  test("the awaitingTreasury hold is tracked in both directions", func() {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore Orders.markPaid(store, "ord-1", 1, 200);
+    ignore Orders.applyTransition(store, "ord-1", #awaitingTreasury, 300);
+    assert Orders.countOf(store, #awaitingTreasury) == 1;
+    ignore Orders.applyTransition(store, "ord-1", #minting, 400);
+    assert Orders.countOf(store, #awaitingTreasury) == 0;
+  });
+
+  test("a refused transition leaves the counts alone", func() {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    // #created → #delivered is illegal.
+    switch (Orders.applyTransition(store, "ord-1", #delivered, 200)) {
+      case (#err(_)) {};
+      case (#ok(_)) assert false;
+    };
+    assert Orders.countOf(store, #created) == 1;
+  });
+
+  test("remove decrements", func() {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore Orders.remove(store, "ord-1");
+    assert Orders.countOf(store, #created) == 0;
+  });
+
+  test("recount rebuilds from the store and is idempotent", func() {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore newOrder(store, "ord-2", alice);
+    ignore newOrder(store, "ord-3", bob);
+    ignore Orders.applyTransition(store, "ord-3", #expired, 200);
+
+    let first = Orders.recount(store);
+    assert Orders.countOf(store, #created) == 2;
+    assert Orders.countOf(store, #expired) == 1;
+    // Running it again must not double-count.
+    assert Orders.recount(store) == first;
+  });
+
+  test("recount repairs a drifted count", func() {
+    // The reconciliation lever exists precisely because incremental
+    // maintenance can be wrong; prove it actually converges.
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore Orders.applyTransition(store, "ord-1", #expired, 200);
+    ignore Orders.applyTransition(store, "ord-1", #paid, 300);
+    // #paid is untracked, so nothing should remain counted.
+    ignore Orders.recount(store);
+    assert Orders.countOf(store, #created) == 0;
+    assert Orders.countOf(store, #expired) == 0;
+    assert Orders.countOf(store, #awaitingTreasury) == 0;
+  });
+
+  test("untracked statuses always read zero", func() {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    for (status in ([#paid, #minting, #icpAtCmc, #delivered, #errorQueue] : [Types.OrderStatus]).values()) {
+      assert Orders.countOf(store, status) == 0;
     };
   });
 });

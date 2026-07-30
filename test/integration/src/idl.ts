@@ -34,8 +34,12 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   const Pricing = IDL.Record({
     feeBps: IDL.Nat,
     feeFixedCents: IDL.Nat,
+    rateQueriedSources: IDL.Nat,
+    rateReceivedRates: IDL.Nat,
+    rateStandardDeviation: IDL.Nat,
     usdCents: IDL.Nat,
-    xdrPerUsdMicros: IDL.Nat,
+    usdPerIcpMicros: IDL.Nat,
+    xdrPermyriadPerIcp: IDL.Nat,
   });
   const Order = IDL.Record({
     createdAtNs: IDL.Int,
@@ -49,9 +53,35 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     updatedAtNs: IDL.Int,
   });
   const CreatedOrder = IDL.Record({ clientReferenceId: IDL.Text, order: Order });
+  const GateReason = IDL.Variant({
+    amountAboveMax: IDL.Record({ maxUsdCents: IDL.Nat, usdCents: IDL.Nat }),
+    burnCapExhausted: IDL.Record({ burnedE8s: IDL.Nat, capE8s: IDL.Nat }),
+    canisterCyclesLow: IDL.Record({ balance: IDL.Nat, min: IDL.Nat }),
+    floatLow: IDL.Record({ observedE8s: IDL.Opt(IDL.Nat), thresholdE8s: IDL.Nat }),
+    tooManyOpenOrders: IDL.Record({ max: IDL.Nat, open: IDL.Nat }),
+  });
+  const GateConfig = IDL.Record({
+    maxOpenOrdersPerPrincipal: IDL.Nat,
+    maxPurchaseUsdCents: IDL.Nat,
+    minCanisterCycles: IDL.Nat,
+  });
+  const GateConfigError = IDL.Variant({
+    zeroOpenOrderCap: IDL.Null,
+    zeroPurchaseCeiling: IDL.Null,
+  });
+  const RetentionConfig = IDL.Record({
+    orderTtlNs: IDL.Nat,
+    retentionHorizonNs: IDL.Nat,
+  });
+  const RetentionConfigError = IDL.Variant({
+    horizonNotAfterTtl: IDL.Record({ orderTtlNs: IDL.Nat, retentionHorizonNs: IDL.Nat }),
+    zeroTtl: IDL.Null,
+  });
+  const RetentionSweepResult = IDL.Record({ expired: IDL.Nat, swept: IDL.Nat });
   const CreateOrderError = IDL.Variant({
     anonymous: IDL.Null,
     idGeneration: IDL.Null,
+    notAdmitted: GateReason,
     rateUnavailable: IDL.Null,
     tierBelowFees: IDL.Text,
     unknownTier: IDL.Text,
@@ -75,6 +105,11 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   });
   const Kind = IDL.Variant({
     duplicate: IDL.Record({ orderId: IDL.Text, paymentRef: IDL.Text }),
+    refundAfterDelivery: IDL.Record({
+      cycles: IDL.Nat,
+      orderId: IDL.Text,
+      paymentRef: IDL.Text,
+    }),
     stuckMint: IDL.Record({ orderId: IDL.Text, stage: IDL.Text }),
     unattributed: IDL.Record({ claimedRef: IDL.Text, paymentRef: IDL.Text }),
     undeliverable: IDL.Record({ cycles: IDL.Nat, orderId: IDL.Text }),
@@ -100,22 +135,41 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     usdCents: IDL.Nat,
   });
   const TiersValidateError = IDL.Variant({
+    aboveCeiling: IDL.Record({
+      id: IDL.Text,
+      maxUsdCents: IDL.Nat,
+      usdCents: IDL.Nat,
+    }),
     duplicateTierId: IDL.Text,
     emptyTierId: IDL.Null,
     zeroUsdCents: IDL.Text,
   });
-  const ForexRate = IDL.Record({ fetchedAtNs: IDL.Int, xdrPerUsdMicros: IDL.Nat });
-  const ForexConfig = IDL.Record({
+  const Quality = IDL.Record({
+    queriedSources: IDL.Nat,
+    receivedRates: IDL.Nat,
+    standardDeviation: IDL.Nat,
+  });
+  const Rates = IDL.Record({
+    fetchedAtNs: IDL.Int,
+    quality: Quality,
+    usdPerIcpMicros: IDL.Nat,
+    xdrPermyriadPerIcp: IDL.Nat,
+  });
+  const PricingConfig = IDL.Record({
     feeBps: IDL.Nat,
     feeFixedCents: IDL.Nat,
     maxAgeNs: IDL.Int,
-    url: IDL.Text,
+    maxRateDeltaBps: IDL.Nat,
+    minRateSources: IDL.Nat,
   });
-  const ForexConfigError = IDL.Variant({
+  const PricingConfigError = IDL.Variant({
     feeBpsTooHigh: IDL.Null,
+    maxAgeTooLong: IDL.Record({ allowedNs: IDL.Int, maxAgeNs: IDL.Int }),
     nonPositiveMaxAge: IDL.Null,
-    notHttps: IDL.Null,
+    zeroRateDelta: IDL.Null,
+    zeroRateSources: IDL.Null,
   });
+  const RateAttempt = IDL.Record({ atNs: IDL.Int, detail: IDL.Text, ok: IDL.Bool });
   const TreasuryConfig = IDL.Record({
     burnCapE8s: IDL.Nat,
     burnWindowNs: IDL.Int,
@@ -133,6 +187,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     heldOrders: IDL.Nat,
     lastObservedFloat: IDL.Opt(FloatObservation),
     lowFloat: IDL.Bool,
+    paidOrders: IDL.Nat,
   });
   const IntervalError = IDL.Variant({
     intervalTooLong: IDL.Record({ maxNs: IDL.Nat }),
@@ -169,6 +224,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     anonymous: IDL.Null,
     belowMinimum: IDL.Nat,
     idGeneration: IDL.Null,
+    notAdmitted: GateReason,
     railDisabled: IDL.Null,
     rateUnavailable: IDL.Null,
     zeroAmount: IDL.Null,
@@ -215,11 +271,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     upgrade: IDL.Opt(IDL.Bool),
   });
   const HttpHeader = IDL.Record({ name: IDL.Text, value: IDL.Text });
-  const HttpRequestResult = IDL.Record({
-    body: IDL.Vec(IDL.Nat8),
-    headers: IDL.Vec(HttpHeader),
-    status: IDL.Nat,
-  });
 
   return IDL.Service({
     audit_log: IDL.Func([], [IDL.Vec(AuditEvent)], ['query']),
@@ -241,16 +292,64 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Variant({ ok: CreatedOrder, err: CreateOrderError })],
       [],
     ),
-    error_queue: IDL.Func([], [IDL.Vec(ErrorEntry)], ['query']),
-    forex_status: IDL.Func(
-      [],
-      [IDL.Record({ config: ForexConfig, rate: IDL.Opt(ForexRate) })],
+    can_purchase: IDL.Func(
+      [IDL.Nat],
+      [IDL.Variant({ ok: IDL.Null, err: GateReason })],
       ['query'],
     ),
-    forex_transform: IDL.Func(
-      [IDL.Record({ context: IDL.Vec(IDL.Nat8), response: HttpRequestResult })],
-      [HttpRequestResult],
+    error_queue: IDL.Func([], [IDL.Vec(ErrorEntry)], ['query']),
+    lifecycle_config: IDL.Func(
+      [],
+      [IDL.Record({ gate: GateConfig, retention: RetentionConfig })],
       ['query'],
+    ),
+    order_for_payment: IDL.Func([IDL.Text], [IDL.Opt(IDL.Text)], ['query']),
+    retention_status: IDL.Func(
+      [],
+      [
+        IDL.Record({
+          config: RetentionConfig,
+          expiredOrders: IDL.Nat,
+          openOrders: IDL.Nat,
+          paidIntentsIndexed: IDL.Nat,
+          tombstones: IDL.Nat,
+          totalOrders: IDL.Nat,
+        }),
+      ],
+      ['query'],
+    ),
+    cycles_status: IDL.Func(
+      [],
+      [IDL.Record({ balance: IDL.Nat, floor: IDL.Nat })],
+      ['query'],
+    ),
+    recount_orders: IDL.Func([], [IDL.Vec(IDL.Tuple(IDL.Text, IDL.Nat))], []),
+    run_retention: IDL.Func([], [RetentionSweepResult], []),
+    set_gate_config: IDL.Func(
+      [GateConfig],
+      [IDL.Variant({ ok: IDL.Null, err: GateConfigError })],
+      [],
+    ),
+    set_retention_config: IDL.Func(
+      [RetentionConfig],
+      [IDL.Variant({ ok: IDL.Null, err: RetentionConfigError })],
+      [],
+    ),
+    was_swept: IDL.Func([IDL.Text], [IDL.Bool], ['query']),
+    pricing_status: IDL.Func(
+      [],
+      [IDL.Record({
+        config: PricingConfig,
+        lastAttempt: IDL.Opt(RateAttempt),
+        rates: IDL.Opt(Rates),
+      })],
+      ['query'],
+    ),
+    refresh_rates: IDL.Func([], [IDL.Opt(Rates)], []),
+    set_pricing_config: IDL.Func(
+      [PricingConfig],
+      [IDL.Variant({ ok: IDL.Null, err: PricingConfigError })],
+      [],
     ),
     get_order: IDL.Func([IDL.Text], [IDL.Opt(Order)], ['query']),
     health: IDL.Func([], [IDL.Bool], ['query']),
@@ -290,11 +389,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     set_ck_usdc_config: IDL.Func(
       [CkUsdcConfig],
       [IDL.Variant({ ok: IDL.Null, err: CkUsdcConfigError })],
-      [],
-    ),
-    set_forex_config: IDL.Func(
-      [ForexConfig],
-      [IDL.Variant({ ok: IDL.Null, err: ForexConfigError })],
       [],
     ),
     set_recovery_interval: IDL.Func(
@@ -538,3 +632,86 @@ export const cmcIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     ),
   });
 };
+
+// ── XRC mock (dfinity/exchange-rate-canister src/xrc_mock) ─────────────────
+
+const xrcAssetClass = IDL.Variant({ Cryptocurrency: IDL.Null, FiatCurrency: IDL.Null });
+const xrcAsset = IDL.Record({ symbol: IDL.Text, class: xrcAssetClass });
+const xrcMetadata = IDL.Record({
+  decimals: IDL.Nat32,
+  base_asset_num_received_rates: IDL.Nat64,
+  base_asset_num_queried_sources: IDL.Nat64,
+  quote_asset_num_received_rates: IDL.Nat64,
+  quote_asset_num_queried_sources: IDL.Nat64,
+  standard_deviation: IDL.Nat64,
+  forex_timestamp: IDL.Opt(IDL.Nat64),
+});
+const xrcError = IDL.Variant({
+  AnonymousPrincipalNotAllowed: IDL.Null,
+  Pending: IDL.Null,
+  CryptoBaseAssetNotFound: IDL.Null,
+  CryptoQuoteAssetNotFound: IDL.Null,
+  StablecoinRateNotFound: IDL.Null,
+  StablecoinRateTooFewRates: IDL.Null,
+  StablecoinRateZeroRate: IDL.Null,
+  ForexInvalidTimestamp: IDL.Null,
+  ForexBaseAssetNotFound: IDL.Null,
+  ForexQuoteAssetNotFound: IDL.Null,
+  ForexAssetsNotFound: IDL.Null,
+  RateLimited: IDL.Null,
+  NotEnoughCycles: IDL.Null,
+  FailedToAcceptCycles: IDL.Null,
+  InconsistentRatesReceived: IDL.Null,
+  Other: IDL.Record({ code: IDL.Nat32, description: IDL.Text }),
+});
+/// The mock's `Response` — the shape its init argument carries.
+const xrcMockResponse = IDL.Variant({
+  ExchangeRate: IDL.Record({
+    base_asset: IDL.Opt(xrcAsset),
+    quote_asset: IDL.Opt(xrcAsset),
+    metadata: IDL.Opt(xrcMetadata),
+    rate: IDL.Nat64,
+  }),
+  Error: xrcError,
+});
+const xrcMockInit = IDL.Record({ response: xrcMockResponse });
+
+export const xrcMockIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
+  const AssetClass = IDL.Variant({ Cryptocurrency: IDL.Null, FiatCurrency: IDL.Null });
+  const Asset = IDL.Record({ symbol: IDL.Text, class: AssetClass });
+  return IDL.Service({
+    get_exchange_rate: IDL.Func(
+      [IDL.Record({ base_asset: Asset, quote_asset: Asset, timestamp: IDL.Opt(IDL.Nat64) })],
+      [IDL.Variant({ Ok: IDL.Unknown, Err: IDL.Unknown })],
+      [],
+    ),
+  });
+};
+
+/// Encode the mock's init argument. A `rate` response supplies explicit
+/// metadata so the quality fields the backend records on an order are
+/// deterministic rather than whatever the mock defaults to.
+export function encodeXrcMockInit(response:
+  | { kind: 'rate'; rate: bigint; decimals?: number; receivedRates?: bigint; queriedSources?: bigint; standardDeviation?: bigint }
+  | { kind: 'error'; error: string },
+): Uint8Array {
+  const value = response.kind === 'rate'
+    ? {
+        ExchangeRate: {
+          base_asset: [],
+          quote_asset: [],
+          metadata: [{
+            decimals: response.decimals ?? 9,
+            base_asset_num_received_rates: response.receivedRates ?? 5n,
+            base_asset_num_queried_sources: response.queriedSources ?? 6n,
+            quote_asset_num_received_rates: response.receivedRates ?? 5n,
+            quote_asset_num_queried_sources: response.queriedSources ?? 6n,
+            standard_deviation: response.standardDeviation ?? 0n,
+            forex_timestamp: [],
+          }],
+          rate: response.rate,
+        },
+      }
+    : { Error: { [response.error]: null } };
+  return new Uint8Array(IDL.encode([xrcMockInit], [{ response: value }]));
+}

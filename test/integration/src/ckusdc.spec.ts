@@ -14,13 +14,12 @@ import { afterAll, beforeAll, expect, test } from 'vitest';
 import { Principal } from '@icp-sdk/core/principal';
 import type { Actor } from '@dfinity/pic';
 import {
-  BACKEND_WASM, CK_ORDER_APPROVE_UNITS, CK_ORDER_E8S, CK_ORDER_LOCKED_CYCLES,
-  CK_ORDER_UNITS, CK_ORDER_USD_CENTS, CKUSDC_FEE_UNITS, FOREX_BODY_OK,
+  CK_ORDER_APPROVE_UNITS, CK_ORDER_E8S, CK_ORDER_LOCKED_CYCLES,
+  CK_ORDER_UNITS, CK_ORDER_USD_CENTS, CKUSDC_FEE_UNITS,
   ICP_FEE_E8S, XDR_PERMYRIAD_PER_ICP, admin, poorUser, user,
-  Gateway, setupGateway, teardownGateway,
-  setCmcRate, fundFloat, floatBalance,
+  Gateway, setupGateway, teardownGateway, upgradeBackendMidFlight,
+  setCmcRate, fundFloat, floatBalance, setXrcRate, warmRates, ensureRates,
   CkLedger, installCkUsdcLedger, approveCkUsdc, ckBalance,
-  createCkOrderWithForexMocks,
   orderStatus, statusKey, tickUntilStatus, expectOk, expectErr,
 } from './harness';
 import { backendIdlFactory } from './idl';
@@ -53,6 +52,17 @@ const RAIL_CONFIG = {
   ledgerFeeUnits: CKUSDC_FEE_UNITS,
 };
 
+/// Cap sized so the admission gate admits and mints can proceed.
+const WORKING_TREASURY = {
+  burnCapE8s: 10_000_000_000n, // 100 ICP / 24 h
+  burnWindowNs: 86_400_000_000_000n,
+  lowFloatThresholdE8s: 0n,
+  maxHoldNs: 259_200_000_000_000n, // 72 h
+};
+
+/// The §5.3 pause lever: cap 0 holds every mint.
+const PAUSED_TREASURY = { ...WORKING_TREASURY, burnCapE8s: 0n };
+
 beforeAll(async () => {
   gw = await setupGateway();
   ck = await installCkUsdcLedger(gw, [
@@ -68,13 +78,20 @@ beforeAll(async () => {
   });
   await setCmcRate(gw);
   await fundFloat(gw, FLOAT_E8S);
-  // One fetched rate prices the whole suite (the card twin does the same);
-  // the CMC's 15-min rate window stays the live constraint on mints.
-  expectOk(await gw.asAdmin.set_forex_config({
-    url: 'https://open.er-api.com/v6/latest/USD',
-    feeBps: 290n,
-    feeFixedCents: 30n,
-    maxAgeNs: 2_592_000_000_000_000n, // 30 days
+  // DFINITY's xrc_mock supplies the ICP price; the refresh timer caches it
+  // alongside the CMC rate. Installing it here is enough — the timer will not
+  // actually refresh until a rail is enabled (`railsLive`), which ck-01 does,
+  // so ck-03 warms the cache once there is something to sell.
+  await setXrcRate(gw);
+  // The admission gate refuses to quote with no burn-cap headroom, and the
+  // fail-closed default cap is 0 — so a sized cap is a precondition for
+  // creating any order on either rail. ck-06 re-sizes it as part of its own
+  // treasury-interplay assertions.
+  expectOk(await gw.asAdmin.set_treasury_config({
+    burnCapE8s: 10_000_000_000n, // 100 ICP / 24 h
+    burnWindowNs: 86_400_000_000_000n,
+    lowFloatThresholdE8s: 0n,
+    maxHoldNs: 259_200_000_000_000n, // 72 h
   }));
 });
 
@@ -135,16 +152,22 @@ test('ck-02 — amount bounds fail closed before any quote (§6.2)', async () =>
 });
 
 test('ck-03 — order priced through the shared §3 quote path with this rail\'s fee formula', async () => {
-  const created = expectOk(await createCkOrderWithForexMocks(
-    gw, CK_ORDER_USD_CENTS, { canister: destinationId },
-    [{ kind: 'success', body: FOREX_BODY_OK }],
+  // ck-01 enabled the rail, so the refresh timer will now do work.
+  await warmRates(gw);
+
+  const created = expectOk(await gw.asUser.create_ck_usdc_order(
+    CK_ORDER_USD_CENTS, { canister: destinationId },
   ));
   order1 = created.order;
 
-  // 500¢ at the rail's 0 bps / 0¢ formula nets 500¢ — at 737_000
-  // micro-XDR/USD that locks 3_685_000_000_000 cycles (the card rail's same
-  // 500¢ tier nets 455¢ → 3.35T: one quote path, per-rail fee formulas).
+  // 500¢ at the rail's 0 bps / 0¢ formula nets 500¢ — at $4.55/ICP and
+  // 3.5 XDR/ICP that locks 3_846_153_846_153 cycles. The card rail's same 500¢
+  // tier nets 455¢ → 3.5 T: one quote path, per-rail fee formulas, and this rail
+  // buys more because no card processor takes a cut.
   expect(order1.lockedCycles).toBe(CK_ORDER_LOCKED_CYCLES);
+  // Same rate snapshot as the card rail — one shared cache.
+  expect(order1.pricing.usdPerIcpMicros).toBe(4_550_000n);
+  expect(order1.pricing.xdrPermyriadPerIcp).toBe(XDR_PERMYRIAD_PER_ICP);
   expect(order1.rail).toEqual({ ckUsdc: null });
   expect(statusKey(order1)).toBe('created');
   // The exact pull and the approval bound the frontend shows the user.
@@ -187,6 +210,11 @@ test('ck-04 — claim guards: authz, rail match, and the no-approval definite re
 test('ck-05 — §6.2 amount-short mismatch, then approve→pull lands the order Paid', async () => {
   const userBefore = await ckBalance(ck, user.getPrincipal());
 
+  // order1 was created while the cap had headroom (the admission gate requires
+  // it). Pause minting now so money-IN can be observed settling on its own,
+  // with money-OUT held — ck-06 then resumes it.
+  expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
+
   // Approval covers the amount but not the ledger fee — the §6.2 mismatch.
   await approveCkUsdc(ck.asUser, gw.backendId, CK_ORDER_UNITS);
   expect(expectErr(await gw.asUser.claim_ck_usdc_order(order1.id))).toEqual({
@@ -217,18 +245,13 @@ test('ck-05 — §6.2 amount-short mismatch, then approve→pull lands the order
   expect(pull.intent.memo).toHaveLength(32); // order id UTF-8, the audit link
 
   // Money-out is rail-agnostic from #paid: the detached mint kick runs the
-  // pre-gate and the default cap of 0 holds it (§5.3 fail-closed).
+  // pre-gate and the paused cap holds it (§5.3).
   expect(await tickUntilStatus(gw, order1.id, ['awaitingTreasury'])).toBe('awaitingTreasury');
   expect((await gw.asAnon.treasury_status()).heldOrders).toBe(1n);
 });
 
 test('ck-06 — treasury interplay: cap sized → held ck order resumes → real CMC mint delivers (§5.3/§5)', async () => {
-  expectOk(await gw.asAdmin.set_treasury_config({
-    burnCapE8s: 10_000_000_000n, // 100 ICP / 24 h
-    burnWindowNs: 86_400_000_000_000n,
-    lowFloatThresholdE8s: 0n,
-    maxHoldNs: 259_200_000_000_000n, // 72 h
-  }));
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
   const floatBefore = await floatBalance(gw);
   const destBefore = await gw.pic.getCyclesBalance(destinationId);
@@ -281,35 +304,47 @@ test('ck-08 — upgrade mid-pull: the §5.1 money-IN intent replays, the user is
   await approveCkUsdc(ck.asUser, gw.backendId, CK_ORDER_APPROVE_UNITS);
   const userBefore = await ckBalance(ck, user.getPrincipal());
 
-  // Submit the claim, interrupt the instant the intent is journaled: the
-  // transfer_from is in flight to the fiduciary subnet — its fate is exactly
-  // what §5.1 calls unknowable.
+  // Submit the claim and interrupt the instant the intent is journaled — the
+  // transfer_from is in flight to the fiduciary subnet.
   const execute = await gw.deferredUser.claim_ck_usdc_order(order2.id);
   await tickUntilPullIntent(order2.id);
-  await gw.pic.upgradeCanister({
-    canisterId: gw.backendId,
-    wasm: BACKEND_WASM,
-    sender: admin.getPrincipal(),
-  });
-  await execute().catch(() => undefined); // the upgrade dropped the callback
+  await upgradeBackendMidFlight(gw);
+  // The claim's own reply is gone (the ingress call outlived the upgrade), but
+  // the *inter-canister* pull was drained by the stop — see below.
+  await execute().catch(() => undefined);
 
-  // The ledger still executed the orphaned pull: money moved, the order
-  // doesn't know it yet, and the persisted intent is the only record.
+  // `stop_canister` drains outstanding callbacks rather than dropping them (the
+  // canister sits in `Stopping` until every call context closes), and an
+  // upgrade with outstanding callbacks is rejected outright — so the
+  // stop-first procedure means the pull completes across the upgrade rather
+  // than being orphaned. An operator following it cannot leave a user debited
+  // with the order unaware.
+  //
+  // The `#Duplicate`-replay and `stalePullIntent` branches cover genuine faults
+  // instead. They are pinned by unit tests in test/ckusdc.test.mo
+  // (`CkUsdc.claimStage` / `interpretPull` → `#uncertain`), and by ck-09 below,
+  // which manufactures a truly orphaned intent by stopping the *ledger*.
   await gw.pic.tick(5);
-  expect(await ckBalance(ck, user.getPrincipal())).toBe(userBefore - CK_ORDER_APPROVE_UNITS);
-  expect(await orderStatus(gw, order2.id)).toBe('created');
-  expect((await gw.asAdmin.ck_usdc_pull(order2.id))[0]!.blockIndex).toHaveLength(0);
 
-  // THE §6.2 invariant: re-claiming replays the bit-identical intent; the
-  // ledger answers #Duplicate with the original block — credited once,
-  // debited once, never pulled twice.
-  const paid = expectOk(await gw.asUser.claim_ck_usdc_order(order2.id));
-  expect(statusKey(paid)).toBe('paid');
+  // THE §6.2 invariant that matters either way: debited exactly once.
   expect(await ckBalance(ck, user.getPrincipal())).toBe(userBefore - CK_ORDER_APPROVE_UNITS);
+  expect(await orderStatus(gw, order2.id)).toBe('paid');
   expect((await gw.asAdmin.ck_usdc_pull(order2.id))[0]!.blockIndex).toHaveLength(1);
 
+  // Re-claiming a settled order is refused, not re-pulled — no second debit.
+  expectErr(await gw.asUser.claim_ck_usdc_order(order2.id));
+  expect(await ckBalance(ck, user.getPrincipal())).toBe(userBefore - CK_ORDER_APPROVE_UNITS);
+
+  // The claim's detached money-out kick did not survive the upgrade, so the
+  // order sits `#paid` until something drives it. The §5.2 timer is the
+  // backstop (proven in gateway.spec scenario 12, which advances past the 1 h
+  // cadence); here the admin kick is the deterministic equivalent and is the
+  // documented ops lever for exactly this situation (RUNBOOK §9).
   await setCmcRate(gw); // ticks may have aged the 15-min CMC window
-  expect(await tickUntilStatus(gw, order2.id, ['delivered'])).toBe('delivered');
+  const driven = expectOk(await gw.asAdmin.process_order(order2.id));
+  expect(statusKey(driven)).toBe('delivered');
+  // Still exactly one debit after money-out completes.
+  expect(await ckBalance(ck, user.getPrincipal())).toBe(userBefore - CK_ORDER_APPROVE_UNITS);
 });
 
 test('ck-09 — stale intent escalates once, order stays Created, operator reset re-opens the claim (§5.1/§6.2)', async () => {
@@ -410,4 +445,41 @@ test('ck-11 — operational trail is coherent across the rail (§4.2)', async ()
   const open = (await gw.asAdmin.error_queue()).filter((e) => e.resolvedAtNs.length === 0);
   expect(open).toHaveLength(0);
   expect((await gw.asAnon.treasury_status()).heldOrders).toBe(0n);
+});
+
+test('ck-12 — the per-order single-flight guard rejects a concurrent claim', async () => {
+  // Two concurrent claims for one order would both pass the status gate before
+  // the ledger await, and the guard is what stops that. It had no coverage — the
+  // `#inFlight` variant existed only in type declarations.
+  await ensureRates(gw);
+  const created = expectOk(await gw.asUser.create_ck_usdc_order(
+    CK_ORDER_USD_CENTS, { canister: destinationId },
+  ));
+  const order = created.order;
+  await approveCkUsdc(ck.asUser, gw.backendId, CK_ORDER_APPROVE_UNITS);
+  const userBefore = await ckBalance(ck, user.getPrincipal());
+
+  // Submit BOTH claims before letting either execute. Awaiting the first and
+  // then calling again does not work: the rounds needed to submit the second
+  // let the first finish, so it returns `notClaimable` instead. Two pending
+  // ingress messages genuinely interleave — one takes the guard at the ledger
+  // await, the other sees it held.
+  const first = await gw.deferredUser.claim_ck_usdc_order(order.id);
+  const second = await gw.deferredUser.claim_ck_usdc_order(order.id);
+  const results = [await first(), await second()];
+
+  // Exactly one is refused as in-flight; which one is not deterministic.
+  const refused = results.filter((r) => 'err' in r && 'inFlight' in (r.err as object));
+  const settled = results.filter((r) => 'ok' in r);
+  expect(refused).toHaveLength(1);
+  expect(settled).toHaveLength(1);
+  expect(await orderStatus(gw, order.id)).toBe('paid');
+  expect(await ckBalance(ck, user.getPrincipal())).toBe(userBefore - CK_ORDER_APPROVE_UNITS);
+  expect((await gw.asAdmin.ck_usdc_pull(order.id))[0]!.blockIndex).toHaveLength(1);
+
+  // Once settled, a further claim is refused as not-claimable rather than
+  // re-pulling.
+  const afterSettle = expectErr(await gw.asUser.claim_ck_usdc_order(order.id));
+  expect(afterSettle).toHaveProperty('notClaimable');
+  expect(await ckBalance(ck, user.getPrincipal())).toBe(userBefore - CK_ORDER_APPROVE_UNITS);
 });
