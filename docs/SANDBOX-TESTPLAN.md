@@ -165,6 +165,33 @@ converts "our reading of the docs" into "the actual wire format", permanently.
 
 ---
 
+## How this relates to `RUNBOOK.md`
+
+They answer different questions and neither replaces the other:
+
+| | This plan | `RUNBOOK.md` |
+|---|---|---|
+| Question | *Does this build behave correctly?* | *How do I operate a live system?* |
+| When | **once**, before the rail carries money — and again after material changes to it | continuously, especially during incidents |
+| Audience | whoever is validating the build | the on-call operator |
+| Output | a green run, plus captured fixtures | a resolved incident |
+
+The plan is a **precondition** to `RUNBOOK.md` §1: the go-live checklist assumes
+the rail has already been shown to work.
+
+⚠️ **Configuration is not duplicated, and the values differ on purpose.**
+`scripts/stripe-dev.sh` bootstraps *dev* values — 10-minute TTL, 2-minute alert
+threshold, float gating off, `expected_livemode = false` — so failure modes are
+reachable inside a session. **None of them are safe on mainnet.** `RUNBOOK.md` §1
+is the sole authority for go-live configuration.
+
+Where this plan states an *expected outcome* (a Type 1 entry, a `#unprocessable`,
+a `stripe.refundPartial`), `RUNBOOK.md` §6 states what to *do* about it. That makes
+the run a useful check on the runbook itself: if a scenario here produces an entry
+whose §6 row is missing, wrong, or unfollowable, the runbook is the thing to fix —
+that is exactly how the "failed 25 times" and missing `transferRejected` rows were
+found.
+
 ## What this cannot tell you
 
 **A green run on this plan is not go-live approval.** It closes the biggest
@@ -176,18 +203,20 @@ converts "our reading of the docs" into "the actual wire format", permanently.
 2. **Disputes produce no on-chain signal.** Only `charge.refunded` is subscribed.
    A lost chargeback is invisible to the canister — accepted, documented, and
    managed by Dashboard vigilance.
-3. **The SEV-SNP question is unresolved** (spec §7, marked *"verify this
-   hardest"*): memory encryption protects RAM, but canister state is checkpointed
-   to disk and state-synced. If those are not confidential on the target subnet,
-   the webhook secret leaks through that path and SEV buys nothing. This is the
-   single most consequential open item and no Stripe test touches it.
+3. **The SEV-SNP question is unresolved.** Memory encryption protects RAM, but
+   canister state is checkpointed to disk and state-synced; if those are not
+   confidential on the target subnet, the webhook secret leaks through that path
+   and SEV buys nothing. The single most consequential open item, and no Stripe
+   test touches it. **Owned by `RUNBOOK.md` §10** (the checklist to work through)
+   and spec §7 (why it matters) — not restated here.
 4. **Flat controller allowlist.** Any one controller can upgrade-then-drain. An
    honest trust model, but it is the model you would launch with.
 5. **The reproducible-build gate has never run against a real deployment** —
    `RELEASE.md`'s publish-and-verify procedure is untested end to end.
-6. **No monitoring exists.** `RUNBOOK.md` §9 says what to watch; nothing watches
-   it. At minimum wire alerts on `error_queue_depth`, `pricing_status.lastAttempt.ok`,
-   `can_purchase`, and the canister cycle balance **before** taking money.
+6. **No monitoring exists.** Every safety mechanism here is a number someone has
+   to go and look at; an alert nobody receives is not an alert. **`RUNBOOK.md` §9
+   owns the list** of what to watch and at what cadence — wire it before taking
+   money.
 7. **No external security audit** (spec §8 explicitly does not gate v1 on one).
 8. **The deferred tail**, all real and none money-losing: gate-config/tier
    cross-check, `let #ii(owner)` trap, counts-map reconcile, the once-per-order
