@@ -110,7 +110,8 @@ mops test                                    # Motoko unit suites (21)
 mops build                                   # refreshes the committed .did
 npm --prefix src/frontend run build          # regenerates bindings
 npm --prefix src/frontend run typecheck
-npm --prefix src/frontend run test           # 69, all pure functions
+npm --prefix src/frontend run test           # 82 — 69 pure + 13 jsdom (main.ts)
+npm --prefix test/integration run typecheck   # vitest does not typecheck
 npm --prefix test/integration test           # 67 PocketIC scenarios — the go-live bar
 ```
 

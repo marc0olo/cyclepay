@@ -137,7 +137,8 @@ treasury caps, …):
 mops test
 ```
 
-**2. Frontend tests** (`src/frontend`):
+**2. Frontend tests** (`src/frontend`) — 69 pure-function tests plus 13 jsdom
+tests driving `main.ts` against the real `index.html`:
 
 ```sh
 npm --prefix src/frontend run test        # vitest unit tests
@@ -145,10 +146,11 @@ npm --prefix src/frontend run typecheck
 ```
 
 **3. PocketIC integration suite** (`test/integration`) — the **go-live bar**
-(spec §9): 46 end-to-end scenarios against the real ICP ledger, CMC, cycles
+(spec §9): 67 end-to-end scenarios against the real ICP ledger, CMC, cycles
 ledger, and ck-USDC ledger Wasms, plus the released XRC mock at the mainnet XRC
-id, with crafted HMAC-signed Stripe webhooks, time control, and
-upgrade-mid-flight replay checks:
+id — HMAC-signed Stripe webhooks (over a real HTTP gateway in scenario 55), time
+control, outage injection against the real NNS canisters, and upgrade-mid-flight
+replay checks:
 
 ```sh
 cd test/integration

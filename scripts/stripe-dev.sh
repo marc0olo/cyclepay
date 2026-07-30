@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
-# Local Stripe-sandbox development loop for the Card rail.
+# Local Stripe-sandbox loop against a local `icp network`.
+#
+# ⚠️ PREFER `npm --prefix test/integration run sandbox`. That runs the same real
+# Stripe forwarder against PocketIC, which — unlike a local network — has a working
+# XRC and a settable CMC rate, so orders can actually be created and DELIVERED. On
+# a local network there is no XRC, so create_order answers `rateUnavailable` and
+# this script can only exercise the order-free surface (signatures, unattributed
+# payments, unhandled/unprocessable events, refunds of those entries).
+#
+# This script remains useful for one thing PocketIC cannot do: serving the frontend
+# with an `ic_env` cookie, so the UI loads. See docs/SANDBOX-TESTPLAN.md.
 #
 # Wires the Stripe CLI's webhook forwarder to a locally deployed backend so the
 # real §6.1 path runs end to end: genuine Stripe signatures, genuine event JSON,

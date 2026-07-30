@@ -261,8 +261,8 @@ found.
 *unknown*, not the remaining *known* gaps:
 
 1. **Sandbox ≠ live.** No real Radar rules, no real 3DS challenges, no payout
-   mechanics, no account-restriction behaviour. Phase C is the only place those
-   appear, and disputes cannot be rehearsed at all.
+   mechanics, no account-restriction behaviour. Only a mainnet deploy in **live**
+   mode shows those, and disputes cannot be rehearsed at all.
 2. **Disputes produce no on-chain signal.** Only `charge.refunded` is subscribed.
    A lost chargeback is invisible to the canister — accepted, documented, and
    managed by Dashboard vigilance.
