@@ -128,6 +128,23 @@ git commit && git push   # needs a workflow-scoped token (a normal `gh auth` tok
 | 53 | CMC stopped *after* the transfer → order parks at `#icpAtCmc` with a block and no minted cycles → `notifyDelayed` alert → terminates as `retriesExhausted` **carrying the real block index** | notify stall, end to end |
 | 54 | the CMC rate halves between transfer and notify → `mintShortfall` escalation, minted quantity preserved, buyer not subsidised from canister gas | rate move mid-mint |
 
+### Live HTTP gateway (`live-gateway.spec.ts`)
+
+`pic.makeLive()` starts a **real HTTP gateway** on a real port, so the webhook route
+can be exercised over genuine HTTP rather than only through a Candid call to
+`http_request_update`. Scenario 55 does exactly that and then watches the order
+reach `#delivered`.
+
+That is also the setup for a manual Stripe run: `setTime(new Date())` so real
+signature timestamps verify, then
+`stripe listen --forward-to http://127.0.0.1:<port>/webhook/stripe?canisterId=<id>`.
+The spec logs the URL. **So a full end-to-end Stripe test needs no local network and
+no mainnet** — see `docs/SANDBOX-TESTPLAN.md`.
+
+⚠️ Its own instance and its own spec file, because `makeLive` enables auto-progress,
+which is incompatible with the `advanceTime` control every other scenario uses.
+Call `stopLive()` before any time travel.
+
 ### Failure injection against the real NNS canisters
 
 ⚠️ **Correction.** This file previously claimed PocketIC "cannot stall the real

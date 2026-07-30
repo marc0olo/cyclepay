@@ -10,73 +10,78 @@ go-live approval.** It is not one.
 
 ---
 
-## Phases, and why there are three
+## Where to run it: PocketIC, not a local network
 
-| Phase | Setup | Covers | Cost |
-|---|---|---|---|
-| **A** | local `icp network` + Stripe **test** mode via `stripe listen` | signatures, transport, and every error-queue path that needs **no order** — see the box below | free |
-| **B** | backend on **mainnet** + Stripe **test** mode (`set_expected_livemode '(opt false)'`) | the **full** flow: real CMC mint, real cycles delivered, receipts, refund-after-delivery | real ICP (small) |
-| **C** | mainnet + Stripe **live**, tight caps, one real card | payouts, Radar, 3DS, account restrictions | real money |
+**One environment covers essentially everything: PocketIC in live mode + the Stripe
+CLI.** No local `icp network`, no mainnet, no real ICP. Proven by integration
+scenario 55, which POSTs a signed webhook over a real HTTP gateway and watches the
+order reach `#delivered`.
 
-### ⚠️ What a local network actually provides (verified, not assumed)
+Why PocketIC and not a local network — both verified, not assumed:
 
-An earlier version of this file claimed a local network "runs only this project's
-canisters — no ICP ledger, no CMC, no cycles ledger". **That is wrong.** Probed
-against `icp network start -d` on icp-cli 0.3.x:
-
-| Canister | Local | Notes |
+| | PocketIC | local `icp network` |
 |---|---|---|
-| ICP ledger `ryjl3-…` | ✅ present, seeded | answers `icrc1_name` → "Internet Computer" |
-| Cycles ledger `um5iw-…` | ✅ present | answers `icrc1_name` → "Trillion Cycles" |
-| CMC `rkp4c-…` | ✅ present | returns a rate — but see below |
-| **XRC `uf6dk-…`** | ❌ **absent** | `refresh_rates` → `"xrc call rejected: Canister uf6dk-… not found"` |
+| ICP ledger / CMC / cycles ledger | ✅ real wasms | ✅ present and seeded |
+| **XRC** | ✅ pinned `xrc_mock` at the mainnet id | ❌ **absent** → `create_order` = `rateUnavailable` |
+| **CMC rate settable** | ✅ (governance impersonation) | ❌ seeded at **May 2021**, governance-only → permanently stale |
+| Clock | ✅ `setTime` to now, then `advanceTime` | ❌ real time only |
+| Real HTTP gateway | ✅ `makeLive()` | ✅ |
+| Stop the ledger/CMC to force outages | ✅ | ❌ |
 
-So the local ceiling is **lower** than the old claim, for two independent reasons:
+A local network therefore cannot create an order at all, and even with one the mint
+would block on `mint.rateStale`. PocketIC has neither limitation *and* keeps time
+control, which is what makes the 2 h alert and 72 h terminate reachable in seconds.
 
-1. **No XRC ⇒ no price ⇒ no order.** `create_order` answers `rateUnavailable`, so
-   nothing that needs an *existing order* can be tested locally at all. And
-   icp-cli 0.3.x has no `--specified-id`, so the sha256-pinned `xrc_mock` the
-   PocketIC suite uses cannot be installed at that id to work around it.
-2. **The seeded CMC rate is stamped May 2021** (`timestamp_seconds = 1_620_633_601`)
-   and only the governance principal `rrkah-fqaaa-aaaaa-aaaaq-cai` may update it —
-   which cannot be impersonated on a real replica (that is a PocketIC-only
-   capability). Against the 15-minute staleness guard the rate is permanently
-   stale, so even with an order the mint would block on `mint.rateStale`.
+### The setup
 
-**What Phase A therefore covers:** everything that does *not* require an order —
-signature and transport (A1–A3, A6), unattributed payments (B2), unhandled and
-unprocessable events (G1–G2), and refunds of unattributed entries (E1–E4). That is
-still the entire signature/transport and error-queue-without-an-order surface.
-
-**Everything else needs Phase B.** Stripe test mode against a mainnet canister is
-the only configuration with a working XRC and a live CMC rate, so it is the only
-place the full flow runs. Use a test-mode Payment Link and point the Dashboard
-endpoint straight at `https://<backend-id>.raw.icp0.io/webhook/stripe` — no CLI
-forwarding needed. Scenarios marked **[B]** require it; so does anything in B1,
-B3–B6, C, D and F.
-
-### Phase A setup
-
-```sh
-brew install stripe/stripe-cli/stripe jq
-stripe login                       # choose a SANDBOX account, never live
-icp network start -d && icp deploy backend
-scripts/stripe-dev.sh              # bootstraps config, wires the session secret, forwards
+```ts
+await pic.setTime(new Date());            // so real Stripe signatures verify (±300 s)
+await pic.setCertifiedTime(new Date());
+await setXrcRate(gw); await setCmcRate(gw);   // working price inputs
+const port = await pic.makeLive();        // real HTTP gateway
 ```
 
-You also need **your own test-mode Payment Link** for the happy path — `stripe
-trigger` builds a synthetic session with no `client_reference_id` and cannot test
-attribution success.
+Then point the Stripe CLI at it:
+
+```sh
+stripe login                              # SANDBOX account, never live
+stripe listen --forward-to "http://127.0.0.1:<port>/webhook/stripe?canisterId=<backendId>"
+```
+
+`src/live-gateway.spec.ts` already does the canister half and logs the exact URL —
+run it, copy the line, and drive real events at it. Call `pic.stopLive()` when you
+need time control back for the delay/terminate scenarios.
+
+⚠️ **Two gotchas.** `makeLive` enables auto-progress, which is incompatible with
+`advanceTime` — hence the separate spec file, and `stopLive()` before any
+time-travel. And the clock alignment is not optional: a PocketIC instance starts
+years away from now, so without `setTime` every genuine Stripe signature is
+rejected with a 400.
+
+### What still needs somewhere else
+
+| Need | Where | Why |
+|---|---|---|
+| Completing a **hosted Checkout page** | a browser | Stripe deliberately has no headless path. `stripe trigger --override checkout_session:client_reference_id=<ref>` gets you a real *signed event* with the right reference, which covers attribution without the UI |
+| **Frontend** (group H) | a browser against a served asset canister | `main.ts` has zero automated coverage |
+| Live-mode behaviour: Radar, 3DS, payouts, disputes, account restrictions | mainnet + Stripe **live**, tight caps | unmockable |
+
+Everything else — signatures, attribution, amounts, dedup, refunds, async methods,
+event types, livemode, **and full delivery** — runs in PocketIC.
 
 ### Verification commands used throughout
+
+Against PocketIC these are actor calls from the spec rather than `icp canister
+call`; the method names and shapes are the same. Shown as CLI for readability, and
+they work verbatim against a deployed canister.
 
 ```sh
 icp canister call backend audit_log '()'
 icp canister call backend error_queue_unresolved '(null, 50)'
 icp canister call backend get_order '("<orderId>")'
 icp canister call backend order_for_payment '("pi_...")'
-icp canister call backend mint_journal '("<orderId>")'      # [B]
-icp canister call backend receipt '("<orderId>")'           # [B], owner identity only
+icp canister call backend mint_journal '("<orderId>")'
+icp canister call backend receipt '("<orderId>")'           # owner identity only
 ```
 
 ---
@@ -96,7 +101,7 @@ icp canister call backend receipt '("<orderId>")'           # [B], owner identit
 
 | # | Scenario | How | Expect |
 |---|---|---|---|
-| B1 | Happy path | your link + `?client_reference_id=<ref>` from `create_order`, card `4242 4242 4242 4242` | order → `#paid`; **[B]** → `#delivered` |
+| B1 | Happy path | your link + `?client_reference_id=<ref>` from `create_order`, card `4242 4242 4242 4242` | order → `#paid`; → `#delivered` |
 | B2 | No reference | `stripe trigger checkout.session.completed` | `200`; Type 1 `#unattributed`, `claimedRef` empty |
 | B3 | Forged owner | hand-edit the ref to another principal, same order id | Type 1 — "claimed owner does not match" |
 | B4 | Malformed reference | ref = `garbage` | Type 1 — "malformed" |
@@ -134,7 +139,7 @@ refunds, not crafted events** — the whole point is confirming Stripe's
 | E2 | **Partial refund** | refund e.g. $1 of a $5 charge | entry stays **OPEN**; `stripe.refundPartial`; **no** `refundUnmatched` line |
 | E3 | Partial then completed | refund the remaining $4 | entry now resolves |
 | E4 | Two partials summing to full | $2 then $3 | resolves on the second — Stripe's `amount_refunded` is cumulative |
-| E5 | Refund **after delivery** **[B]** | deliver an order, then refund | `#refundAfterDelivery` with `refundedCents` and `fullRefund` set; never auto-resolves |
+| E5 | Refund **after delivery** | deliver an order, then refund | `#refundAfterDelivery` with `refundedCents` and `fullRefund` set; never auto-resolves |
 | E6 | Refund of an escalated order | force an escalation, then refund | `stripe.refundOfEscalated`, not "pipeline may be mid-flight" |
 
 ## F. Async / delayed payment methods
@@ -172,7 +177,7 @@ Everything here is genuinely unverified.
 | H4 | ck-USDC panel | disabled notice shown (the rail ships off) |
 | H5 | Quote moved | lower `maxRateDeltaBps`/force a rate move between page load and submit → "Confirm at the new rate", then a second click succeeds |
 | H6 | Cancel | button appears only pre-payment; frees the slot |
-| H7 | Receipt **[B]** | after delivery, the verification line recomputes and reports ✓ |
+| H7 | Receipt | after delivery, the verification line recomputes and reports ✓ |
 | H8 | Order history | survives sign-out/in; a reopened order still shows its timeline |
 
 ## I. Fixture capture — do this while you are in there
