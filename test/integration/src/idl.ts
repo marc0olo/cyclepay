@@ -70,15 +70,9 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     zeroOpenOrderCap: IDL.Null,
     zeroPurchaseCeiling: IDL.Null,
   });
-  const RetentionConfig = IDL.Record({
-    orderTtlNs: IDL.Nat,
-    retentionHorizonNs: IDL.Nat,
-  });
-  const RetentionConfigError = IDL.Variant({
-    horizonNotAfterTtl: IDL.Record({ orderTtlNs: IDL.Nat, retentionHorizonNs: IDL.Nat }),
-    zeroTtl: IDL.Null,
-  });
-  const RetentionSweepResult = IDL.Record({ expired: IDL.Nat, swept: IDL.Nat });
+  const RetentionConfig = IDL.Record({ orderTtlNs: IDL.Nat });
+  const RetentionConfigError = IDL.Variant({ zeroTtl: IDL.Null });
+  const RetentionSweepResult = IDL.Record({ expired: IDL.Nat });
   const CreateOrderError = IDL.Variant({
     anonymous: IDL.Null,
     idGeneration: IDL.Null,
@@ -358,7 +352,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
           expiredOrders: IDL.Nat,
           openOrders: IDL.Nat,
           paidIntentsIndexed: IDL.Nat,
-          tombstones: IDL.Nat,
           totalOrders: IDL.Nat,
         }),
       ],
@@ -371,6 +364,23 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     ),
     recount_orders: IDL.Func([], [IDL.Vec(IDL.Tuple(IDL.Text, IDL.Nat))], []),
     run_retention: IDL.Func([], [RetentionSweepResult], []),
+    receipt: IDL.Func(
+      [IDL.Text],
+      [IDL.Opt(IDL.Record({
+        cyclesMinted: IDL.Opt(IDL.Nat),
+        mintBlockIndex: IDL.Opt(IDL.Nat),
+        order: Order,
+        paidUsdCents: IDL.Opt(IDL.Nat),
+        verification: IDL.Record({
+          netCents: IDL.Opt(IDL.Nat),
+          rateQueriedSources: IDL.Nat,
+          rateReceivedRates: IDL.Nat,
+          usdPerIcpMicros: IDL.Nat,
+          xdrPermyriadPerIcp: IDL.Nat,
+        }),
+      }))],
+      ['query'],
+    ),
     set_gate_config: IDL.Func(
       [GateConfig],
       [IDL.Variant({ ok: IDL.Null, err: GateConfigError })],
@@ -381,7 +391,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Variant({ ok: IDL.Null, err: RetentionConfigError })],
       [],
     ),
-    was_swept: IDL.Func([IDL.Text], [IDL.Bool], ['query']),
     pricing_status: IDL.Func(
       [],
       [IDL.Record({

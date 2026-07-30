@@ -24,7 +24,6 @@ import Nat "mo:core/Nat";
 import Principal "mo:core/Principal";
 import Result "mo:core/Result";
 import Runtime "mo:core/Runtime";
-import Set "mo:core/Set";
 import Text "mo:core/Text";
 import AuditLog "../AuditLog";
 import ErrorQueue "../ErrorQueue";
@@ -214,10 +213,6 @@ module {
     errorQueueCapacity : Nat;
     auditLog : AuditLog.Log;
     auditLogCapacity : Nat;
-    /// Retention band-3 tombstones (Retention.mo). A payment quoting a swept
-    /// order still becomes Type 1, but with a *certain* reason instead of the
-    /// generic "no such order" that a forged reference also produces.
-    sweptOrders : Set.Set<Types.OrderId>;
     /// `payment_intent` → order it paid for. Written when an order is marked
     /// paid; the only way a later `charge.refunded` can tell whether the
     /// refunded payment had already been delivered as cycles. A financial
@@ -399,16 +394,9 @@ module {
     let ?(claimedOwnerText, orderId) = Orders.parseClientReferenceId(ref) else {
       return unattributed("malformed client_reference_id");
     };
-    let ?order = Orders.get(deps.orders, orderId) else {
-      // Retention band 3 (Retention.mo): distinguish "we deliberately swept an
-      // abandoned order" from "this reference never existed". Same Type 1
-      // outcome and the same manual refund, but the operator gets certainty
-      // instead of having to guess whether it was a forged parameter.
-      if (deps.sweptOrders.contains(orderId)) {
-        return unattributed("order " # orderId # " was SWEPT as abandoned past the retention horizon — this is a genuine late payment for an order we deliberately deleted; refund it");
-      };
-      return unattributed("no order " # orderId);
-    };
+    // Orders are never deleted, so an unresolvable id means the reference was
+    // never valid — not that we forgot the order.
+    let ?order = Orders.get(deps.orders, orderId) else return unattributed("no order " # orderId);
     let #ii(owner) = order.owner;
     if (owner.toText() != claimedOwnerText) return unattributed("claimed owner does not match order " # orderId);
     if (order.rail != #card) return unattributed("order " # orderId # " is not a card order");

@@ -298,30 +298,9 @@ module {
     };
   };
 
-  /// Delete an order record and drop it from its owner's history index
-  /// (Retention.mo band 3). Returns the removed order, or null if it was not
-  /// there. The caller owns the tombstone: this module does not know about
-  /// `sweptOrders`, and a delete without a tombstone would make a later
-  /// payment indistinguishable from a forged reference.
-  public func remove(store : Store, id : Types.OrderId) : ?Types.Order {
-    let ?order = store.orders.get(id) else return null;
-    store.orders.remove(id);
-    bump(store, order.status, -1);
-    let principal = switch (order.owner) { case (#ii(p)) p };
-    switch (store.principalsToOrders.get(principal)) {
-      case (?ids) {
-        let kept = ids.values().filter(func(other) = other != id).toArray();
-        ids.clear();
-        for (other in kept.values()) ids.add(other);
-      };
-      case null {};
-    };
-    ?order;
-  };
-
-  /// Every order id in the store, materialised so a caller can mutate the
-  /// store while iterating (the retention sweep expires and deletes as it
-  /// goes, which would otherwise invalidate a live iterator).
+  /// Every order id in the store, materialised so a caller can mutate the store
+  /// while iterating (the retention sweep transitions orders as it goes, which
+  /// would otherwise invalidate a live iterator).
   public func allIds(store : Store) : [Types.OrderId] {
     store.orders.keys().toArray();
   };

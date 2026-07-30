@@ -4,7 +4,6 @@ import Map "mo:core/Map";
 import Nat "mo:core/Nat";
 import Principal "mo:core/Principal";
 import Runtime "mo:core/Runtime";
-import Set "mo:core/Set";
 import Text "mo:core/Text";
 import AuditLog "../src/backend/AuditLog";
 import ErrorQueue "../src/backend/ErrorQueue";
@@ -54,7 +53,6 @@ func freshDeps() : Card.Deps {
     errorQueueCapacity = 10;
     auditLog = AuditLog.emptyLog();
     auditLogCapacity = 100;
-    sweptOrders = Set.empty<Types.OrderId>();
     paidIntents = Map.empty<Text, Types.OrderId>();
     // Well above the 500¢ tier these tests use, so the ceiling is out of the
     // way except where a test deliberately probes it.
@@ -476,25 +474,13 @@ suite("handleWebhook: charge.refunded auto-resolve (§4.1)", func() {
   });
 });
 
-suite("handleWebhook: swept orders and the purchase ceiling", func() {
-  test("a payment for a swept order names it as swept, not as unknown", func() {
-    let deps = freshDeps();
-    // No order in the store, but the id is tombstoned: a genuine late payment
-    // for an order deliberately deleted past the retention horizon.
-    deps.sweptOrders.add(orderId);
-    assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
-    let open = ErrorQueue.unresolved(deps.errorQueue);
-    assert open.size() == 1;
-    assert open[0].detail.contains(#text "SWEPT");
-    assert ErrorQueue.isType1(open[0].kind);
-  });
-
-  test("an untombstoned unknown reference stays the generic unattributed case", func() {
+suite("handleWebhook: the purchase ceiling", func() {
+  test("an unknown reference is the generic unattributed case", func() {
     let deps = freshDeps();
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
     let open = ErrorQueue.unresolved(deps.errorQueue);
     assert open.size() == 1;
-    assert not open[0].detail.contains(#text "SWEPT");
+    assert open[0].detail.contains(#text "no order");
   });
 
   test("a payment above the ceiling is not minted — Type 1 instead", func() {

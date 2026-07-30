@@ -102,12 +102,6 @@ persistent actor CyclesGateway {
   /// the delete-and-tombstone horizon.
   var retentionConfig : Retention.Config = Retention.defaultConfig();
 
-  /// Retention band-3 tombstones: ids of orders deliberately deleted as
-  /// abandoned. Permanent and tiny (an id, not a record) — a Payment Link is
-  /// always live, so a payment can arrive for a swept order forever, and this
-  /// is what turns "no such order" into "we swept this on purpose".
-  let sweptOrders = Set.empty<Types.OrderId>();
-
   /// `payment_intent` → the order it paid for. Financial record, never pruned;
   /// the only way `charge.refunded` can tell whether the refunded payment had
   /// already been delivered as cycles.
@@ -562,8 +556,7 @@ persistent actor CyclesGateway {
     switch (Retention.validateConfig(config)) {
       case (#ok) {
         retentionConfig := config;
-        auditAdmin(caller, "retention.configSet", "ttlNs=" # config.orderTtlNs.toText()
-          # " horizonNs=" # config.retentionHorizonNs.toText());
+        auditAdmin(caller, "retention.configSet", "ttlNs=" # config.orderTtlNs.toText());
         #ok;
       };
       case (#err(e)) #err(e);
@@ -626,7 +619,6 @@ persistent actor CyclesGateway {
       errorQueueCapacity;
       auditLog;
       auditLogCapacity;
-      sweptOrders;
       paidIntents;
       maxPurchaseUsdCents = gateConfig.maxPurchaseUsdCents;
     };
@@ -1210,18 +1202,10 @@ persistent actor CyclesGateway {
   /// horizon immediately after retuning them, instead of waiting up to a full
   /// sweep interval. Returns what it did. Safe to spam: the bands are computed
   /// from absolute ages, so a second run is a no-op.
-  public shared ({ caller }) func run_retention() : async { expired : Nat; swept : Nat } {
+  public shared ({ caller }) func run_retention() : async { expired : Nat } {
     requireAdmin(caller);
     auditAdmin(caller, "retention.manualSweep", "operator-triggered");
     retentionSweep();
-  };
-
-  /// Was this order deliberately deleted as abandoned? Public and unauthorized
-  /// on purpose: it answers only "did we sweep this id", which a user needs to
-  /// understand why their order vanished from history, and which leaks nothing
-  /// (ids are random and carry no balance or ownership).
-  public query func was_swept(id : Types.OrderId) : async Bool {
-    sweptOrders.contains(id);
   };
 
   /// Retention counters for monitoring (public, same stance as
@@ -1233,7 +1217,6 @@ persistent actor CyclesGateway {
     openOrders : Nat;
     expiredOrders : Nat;
     totalOrders : Nat;
-    tombstones : Nat;
     paidIntentsIndexed : Nat;
   } {
     {
@@ -1242,7 +1225,6 @@ persistent actor CyclesGateway {
       openOrders = Orders.countOf(orderStore, #created);
       expiredOrders = Orders.countOf(orderStore, #expired);
       totalOrders = orderStore.orders.size();
-      tombstones = sweptOrders.size();
       paidIntentsIndexed = paidIntents.size();
     };
   };
@@ -1377,6 +1359,60 @@ persistent actor CyclesGateway {
     #ok(abandoned);
   };
 
+  public type Receipt = {
+    order : Types.Order;
+    /// What the buyer actually paid, if they have.
+    paidUsdCents : ?Nat;
+    /// The ICP ledger block that funded the mint — the on-chain proof that the
+    /// cycles were bought, checkable by anyone against the ledger.
+    mintBlockIndex : ?Nat;
+    /// Cycles the CMC reported minting.
+    cyclesMinted : ?Nat;
+    /// Recompute the quote from these and it must equal `order.lockedCycles`:
+    ///   netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros
+    /// where netCents = usdCents − (⌈usdCents·feeBps/10⁴⌉ + feeFixedCents).
+    /// Both rate inputs are queryable from the XRC and the CMC, so the price is
+    /// reproducible from first principles rather than merely asserted by us.
+    verification : {
+      netCents : ?Nat;
+      usdPerIcpMicros : Nat;
+      xdrPermyriadPerIcp : Nat;
+      rateReceivedRates : Nat;
+      rateQueriedSources : Nat;
+    };
+  };
+
+  /// Everything the **buyer** needs to verify their own purchase (§2 authz:
+  /// `caller == order.owner`).
+  ///
+  /// The order already carried enough to reproduce the price; nothing surfaced
+  /// it, and the delivery proof was admin-only. A buyer could see *that* we
+  /// claimed to deliver, never check it. Now they can: recompute the quote from
+  /// the two recorded rate inputs, and look up the block index on the ICP ledger.
+  ///
+  /// `mint_journal` stays admin-only — it carries retries and raw transfer
+  /// intents, which are operational rather than the buyer's business.
+  public shared query ({ caller }) func receipt(id : Types.OrderId) : async ?Receipt {
+    let ?order = Orders.getOwned(orderStore, id, caller) else return null;
+    let journal = mintJournal.get(id);
+    ?{
+      order;
+      paidUsdCents = order.paidUsdCents;
+      mintBlockIndex = switch (journal) { case (?entry) entry.blockIndex; case null null };
+      cyclesMinted = switch (journal) { case (?entry) entry.cyclesMinted; case null null };
+      verification = {
+        netCents = Pricing.netCents(order.pricing, switch (order.paidUsdCents) {
+          case (?paid) paid;
+          case null order.pricing.usdCents;
+        });
+        usdPerIcpMicros = order.pricing.usdPerIcpMicros;
+        xdrPermyriadPerIcp = order.pricing.xdrPermyriadPerIcp;
+        rateReceivedRates = order.pricing.rateReceivedRates;
+        rateQueriedSources = order.pricing.rateQueriedSources;
+      };
+    };
+  };
+
   /// Money-out journal for one order (admin, §4.2) — intent, block_index,
   /// minted cycles, retries.
   public shared query ({ caller }) func mint_journal(id : Types.OrderId) : async ?Types.JournalEntry {
@@ -1411,10 +1447,14 @@ persistent actor CyclesGateway {
   /// mint journal entry or a ck-USDC pull entry has touched money, so it is
   /// never deleted no matter how old — `Retention.bandOf` only sees status and
   /// age, and this is the other half of that contract.
-  func retentionSweep() : { expired : Nat; swept : Nat } {
+  /// Retention pass: flip lapsed `#created` orders to `#expired` (§4).
+  ///
+  /// Synchronous and awaitless, so it cannot interleave with the money path.
+  /// Nothing is ever deleted — see Retention.mo for why an earlier
+  /// delete-past-a-horizon design was dropped.
+  func retentionSweep() : { expired : Nat } {
     let now = Time.now();
     var expired = 0;
-    var swept = 0;
     // Materialise ids first — the loop mutates the store.
     for (id in Orders.allIds(orderStore).values()) {
       let ?order = Orders.get(orderStore, id) else continue;
@@ -1423,19 +1463,12 @@ persistent actor CyclesGateway {
         case (#expire) {
           if (tryTransition(id, #expired) != null) expired += 1;
         };
-        case (#sweep) {
-          // Money-touched orders are financial records — never swept.
-          if (mintJournal.get(id) != null or ckUsdcPulls.get(id) != null) continue;
-          ignore Orders.remove(orderStore, id);
-          sweptOrders.add(id);
-          swept += 1;
-        };
       };
     };
-    if (expired > 0 or swept > 0) {
-      audit("retention.sweep", expired.toText() # " expired, " # swept.toText() # " swept and tombstoned");
+    if (expired > 0) {
+      audit("retention.sweep", expired.toText() # " order(s) marked expired (still payable, §4)");
     };
-    { expired; swept };
+    { expired };
   };
 
   /// The timer job. Correctness against concurrent drivers is processMint's

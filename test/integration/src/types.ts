@@ -91,7 +91,6 @@ export interface GateConfig {
 
 export interface RetentionConfig {
   orderTtlNs: bigint;
-  retentionHorizonNs: bigint;
 }
 
 export interface RetentionStatus {
@@ -99,7 +98,6 @@ export interface RetentionStatus {
   openOrders: bigint;
   expiredOrders: bigint;
   totalOrders: bigint;
-  tombstones: bigint;
   paidIntentsIndexed: bigint;
 }
 
@@ -275,10 +273,22 @@ export interface BackendService {
   retention_status(): Promise<RetentionStatus>;
   cycles_status(): Promise<{ balance: bigint; floor: bigint }>;
   recount_orders(): Promise<Array<[string, bigint]>>;
-  run_retention(): Promise<{ expired: bigint; swept: bigint }>;
+  run_retention(): Promise<{ expired: bigint }>;
+  receipt(id: string): Promise<Opt<{
+    order: Order;
+    paidUsdCents: Opt<bigint>;
+    mintBlockIndex: Opt<bigint>;
+    cyclesMinted: Opt<bigint>;
+    verification: {
+      netCents: Opt<bigint>;
+      usdPerIcpMicros: bigint;
+      xdrPermyriadPerIcp: bigint;
+      rateReceivedRates: bigint;
+      rateQueriedSources: bigint;
+    };
+  }>>;
   set_gate_config(config: GateConfig): Promise<Result<null, unknown>>;
   set_retention_config(config: RetentionConfig): Promise<Result<null, unknown>>;
-  was_swept(id: string): Promise<boolean>;
   pricing_status(): Promise<{
     rates: Opt<PricingRates>;
     config: PricingConfig;

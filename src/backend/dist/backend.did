@@ -145,6 +145,21 @@ type Request =
    method: text;
    url: text;
  };
+type Receipt = 
+ record {
+   cyclesMinted: opt nat;
+   mintBlockIndex: opt nat;
+   order: Order;
+   paidUsdCents: opt nat;
+   verification:
+    record {
+      netCents: opt nat;
+      rateQueriedSources: nat;
+      rateReceivedRates: nat;
+      usdPerIcpMicros: nat;
+      xdrPermyriadPerIcp: nat;
+    };
+ };
 type Reason = 
  variant {
    amountAboveMax: record {
@@ -386,11 +401,7 @@ type Config__2 =
    maxRateDeltaBps: nat;
    minRateSources: nat;
  };
-type Config__1 = 
- record {
-   orderTtlNs: nat;
-   retentionHorizonNs: nat;
- };
+type Config__1 = record {orderTtlNs: nat;};
 type ConfigError__4 = 
  variant {
    feeBpsTooHigh;
@@ -412,14 +423,7 @@ type ConfigError__2 =
    zeroRateDelta;
    zeroRateSources;
  };
-type ConfigError__1 = 
- variant {
-   horizonNotAfterTtl: record {
-                         orderTtlNs: nat;
-                         retentionHorizonNs: nat;
-                       };
-   zeroTtl;
- };
+type ConfigError__1 = variant {zeroTtl;};
 type ConfigError = 
  variant {
    alertNotBeforeMaxHold: record {
@@ -650,6 +654,17 @@ service : {
   /// Manual mint kick (admin, §7) — ops lever for a stuck-looking order;
   /// safe to spam, every step is deduped/idempotent/single-flighted.
   process_order: (id: OrderId) -> (Result_10);
+  /// Everything the **buyer** needs to verify their own purchase (§2 authz:
+  /// `caller == order.owner`).
+  /// 
+  /// The order already carried enough to reproduce the price; nothing surfaced
+  /// it, and the delivery proof was admin-only. A buyer could see *that* we
+  /// claimed to deliver, never check it. Now they can: recompute the quote from
+  /// the two recorded rate inputs, and look up the block index on the ICP ledger.
+  /// 
+  /// `mint_journal` stays admin-only — it carries retries and raw transfer
+  /// intents, which are operational rather than the buyer's business.
+  receipt: (id: OrderId) -> (opt Receipt) query;
   /// Rebuild the per-status tallies from the order store (admin, §7).
   /// 
   /// The tallies are maintained incrementally so the public status queries stay
@@ -701,17 +716,13 @@ service : {
       expiredOrders: nat;
       openOrders: nat;
       paidIntentsIndexed: nat;
-      tombstones: nat;
       totalOrders: nat;
     }) query;
   /// Manual retention kick (admin, §7) — ops lever to apply the current TTL and
   /// horizon immediately after retuning them, instead of waiting up to a full
   /// sweep interval. Returns what it did. Safe to spam: the bands are computed
   /// from absolute ages, so a second run is a no-op.
-  run_retention: () -> (record {
-                          expired: nat;
-                          swept: nat;
-                        });
+  run_retention: () -> (record {expired: nat;});
   /// Replace the card tier config (§3/§7 — admin, validated atomically: a
   /// bad config never partially applies).
   set_card_tiers: (tiers: vec Tier) -> (Result_8);
@@ -748,11 +759,6 @@ service : {
   /// thesis), not a secret. The float observation may be stale — `atNs` says
   /// how stale; `refresh_float` is the admin lever for a fresh read.
   treasury_status: () -> (Status__1) query;
-  /// Was this order deliberately deleted as abandoned? Public and unauthorized
-  /// on purpose: it answers only "did we sweep this id", which a user needs to
-  /// understand why their order vanished from history, and which leaks nothing
-  /// (ids are random and carry no balance or ownership).
-  was_swept: (id: OrderId) -> (bool) query;
   /// Provisioning state only — the secret itself is never readable back
   /// out, even by controllers. `generation` confirms a rotation landed.
   webhook_secret_status: () -> (Status) query;

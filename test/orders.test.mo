@@ -421,45 +421,6 @@ suite("openOrderCount — the Gate admission input", func() {
   });
 });
 
-suite("remove — retention band 3", func() {
-  test("removes the record and drops it from the owner's history", func() {
-    let store = Orders.emptyStore();
-    ignore newOrder(store, "ord-1", alice);
-    ignore newOrder(store, "ord-2", alice);
-    switch (Orders.remove(store, "ord-1")) {
-      case (?removed) assert removed.id == "ord-1";
-      case null assert false;
-    };
-    assert Orders.get(store, "ord-1") == null;
-    assert Orders.ordersFor(store, alice).map<Types.Order, Types.OrderId>(func(o) = o.id) == ["ord-2"];
-  });
-
-  test("removing an unknown id is a no-op returning null", func() {
-    assert Orders.remove(Orders.emptyStore(), "missing") == null;
-  });
-
-  test("one owner's removal leaves another owner's history untouched", func() {
-    let store = Orders.emptyStore();
-    ignore newOrder(store, "ord-1", alice);
-    ignore newOrder(store, "ord-2", bob);
-    ignore Orders.remove(store, "ord-1");
-    assert Orders.ordersFor(store, bob).size() == 1;
-    assert Orders.ordersFor(store, alice).size() == 0;
-  });
-
-  test("allIds materialises so the caller can mutate while iterating", func() {
-    // The retention sweep expires and deletes as it goes, which would
-    // invalidate a live iterator over the store.
-    let store = Orders.emptyStore();
-    ignore newOrder(store, "ord-1", alice);
-    ignore newOrder(store, "ord-2", alice);
-    let ids = Orders.allIds(store);
-    assert ids.size() == 2;
-    for (id in ids.values()) ignore Orders.remove(store, id);
-    assert Orders.allIds(store).size() == 0;
-  });
-});
-
 suite("status counts — the O(1) query inputs", func() {
   // The public status queries read these instead of scanning the store, so a
   // drift here silently misreports operational state. Every write path that
@@ -511,13 +472,6 @@ suite("status counts — the O(1) query inputs", func() {
       case (#ok(_)) assert false;
     };
     assert Orders.countOf(store, #created) == 1;
-  });
-
-  test("remove decrements", func() {
-    let store = Orders.emptyStore();
-    ignore newOrder(store, "ord-1", alice);
-    ignore Orders.remove(store, "ord-1");
-    assert Orders.countOf(store, #created) == 0;
   });
 
   test("recount rebuilds from the store and is idempotent", func() {

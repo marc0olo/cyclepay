@@ -633,77 +633,72 @@ test('17 — admission gate: the per-purchase ceiling bounds tiers and amounts',
   expectOk(await gw.asAdmin.set_gate_config(gate));
 });
 
-test('18 — retention: created → expired → swept, and a late payment names the tombstone', async () => {
-  const before = await gw.asAnon.retention_status();
-
+test('18 — retention expires an abandoned order but never deletes it', async () => {
   await ensureRates(gw);
   const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }));
-  const doomed = created.order;
-  const doomedRef = created.clientReferenceId;
+  const lapsed = created.order;
+  const lapsedRef = created.clientReferenceId;
 
-  // Short bands so the sweep is observable. The horizon must exceed the TTL —
-  // band 2 is where a late payment is still honoured.
-  expectOk(await gw.asAdmin.set_retention_config({
-    orderTtlNs: 3_600_000_000_000n, // 1 h
-    retentionHorizonNs: 7_200_000_000_000n, // 2 h
-  }));
+  // Short TTL so the flip is observable.
+  expectOk(await gw.asAdmin.set_retention_config({ orderTtlNs: 3_600_000_000_000n })); // 1 h
 
-  // Assertions track `doomed` specifically rather than the global counters:
-  // this suite shares one instance, and the §5.2 timer runs the same retention
-  // pass on its own hourly cadence over every order earlier scenarios left
-  // behind.
-  //
-  // Band 1: inside the TTL, the order is untouched however often the sweep runs.
+  // Inside the TTL nothing happens, however often the sweep runs.
   await gw.asAdmin.run_retention();
-  expect(await orderStatus(gw, doomed.id)).toBe('created');
+  expect(await orderStatus(gw, lapsed.id)).toBe('created');
 
-  // Band 2: past the TTL the order expires — still payable, record intact.
-  await gw.pic.advanceTime(3_600_000 + 60_000); // 1 h 1 min
+  // Past the TTL it is marked expired — and STAYS, because expiry is advisory.
+  await gw.pic.advanceTime(3_600_000 + 60_000);
   await gw.pic.tick();
   await gw.asAdmin.run_retention();
-  expect(await orderStatus(gw, doomed.id)).toBe('expired');
-  expect(await gw.asAnon.was_swept(doomed.id)).toBe(false);
+  expect(await orderStatus(gw, lapsed.id)).toBe('expired');
 
-  // Band 3: past the horizon the record is deleted and the id tombstoned.
-  await gw.pic.advanceTime(7_200_000);
+  // No horizon deletes it. Age it enormously and it is still there — a deleted
+  // financial record would contradict every other retention rule here, and it
+  // would orphan the paidIntents entry a later payment creates.
+  await gw.pic.advanceTime(365 * 86_400_000);
   await gw.pic.tick();
   await gw.asAdmin.run_retention();
-  expect(await gw.asUser.get_order(doomed.id)).toHaveLength(0);
-  expect((await gw.asUser.list_orders()).map((o) => o.id)).not.toContain(doomed.id);
-  expect(await gw.asAnon.was_swept(doomed.id)).toBe(true);
-  expect((await gw.asAnon.retention_status()).tombstones)
-    .toBeGreaterThan(before.tombstones);
+  await gw.asAdmin.run_retention();
+  expect(await gw.asUser.get_order(lapsed.id)).toHaveLength(1);
+  expect((await gw.asUser.list_orders()).map((o) => o.id)).toContain(lapsed.id);
 
-  // A Payment Link is permanent, so the payment can still arrive. It becomes
-  // Type 1 — money visible, refundable — and the detail says SWEPT, so the
-  // operator knows this was a deliberate deletion rather than a forged param.
-  const response = await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_swept', paymentIntent: 'pi_swept', clientReferenceId: doomedRef,
+  // And §4's promise holds: a late genuine payment is still honoured at the
+  // locked quantity, a year later.
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_late', paymentIntent: 'pi_late', clientReferenceId: lapsedRef,
     amountCents: TIER_USD_CENTS,
-  }));
-  expect(response.status_code).toBe(200);
-  const entry = (await allErrorEntries(gw)).find(
-    (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_swept',
-  ) as ErrorEntry;
-  expect(entry).toBeDefined();
-  expect(entry.detail).toContain('SWEPT');
+  }))).toMatchObject({ status_code: 200 });
+  expect(await tickUntilStatus(gw, lapsed.id, ['delivered'])).toBe('delivered');
+  const settled = (await gw.asUser.get_order(lapsed.id))[0]!;
+  expect(settled.lockedCycles).toBe(TIER_LOCKED_CYCLES);
 });
 
-test('19 — retention never deletes an order that has touched money', async () => {
-  // orderA is #delivered with a mint journal entry; orderC is #errorQueue
-  // (Type 2). Both are financial records, so no horizon may remove them.
-  await gw.pic.advanceTime(30 * 86_400_000); // 30 days, far past the 2 h horizon
-  await gw.pic.tick();
-  await gw.asAdmin.run_retention();
+test('19 — a buyer can verify their own purchase from the receipt', async () => {
+  // Everything needed to check us, scoped to the owner. The order already held
+  // the inputs; nothing surfaced them, and the delivery proof was admin-only.
+  await ensureRates(gw);
+  const receipt = (await gw.asUser.receipt(orderA.id))[0]!;
 
-  expect(await orderStatus(gw, orderA.id)).toBe('delivered');
-  expect(await orderStatus(gw, orderC.id)).toBe('errorQueue');
-  expect(await gw.asAnon.was_swept(orderA.id)).toBe(false);
-  expect(await gw.asAnon.was_swept(orderC.id)).toBe(false);
-  expect((await gw.asAdmin.mint_journal(orderA.id))).toHaveLength(1);
+  // Authz: only the owner. Not even an admin.
+  expect(await gw.asAdmin.receipt(orderA.id)).toHaveLength(0);
+  expect(await gw.asAnon.receipt(orderA.id)).toHaveLength(0);
 
-  // The reconciliation lookup still resolves the payment that funded it.
-  expect(await gw.asAdmin.order_for_payment('pi_a')).toEqual([orderA.id]);
+  expect(receipt.paidUsdCents).toEqual([TIER_USD_CENTS]);
+  // The on-chain delivery proof: a real ICP ledger block anyone can look up.
+  expect(receipt.mintBlockIndex).toHaveLength(1);
+  expect(receipt.cyclesMinted).toEqual([TIER_LOCKED_CYCLES]);
+
+  // THE POINT: recompute the price from the two recorded rate inputs and it must
+  // equal what was locked. Both are queryable from the XRC and the CMC, so this
+  // is reproducible rather than merely asserted by us.
+  const v = receipt.verification;
+  const net = v.netCents[0]!;
+  expect(net * v.xdrPermyriadPerIcp * 10n ** 12n / v.usdPerIcpMicros)
+    .toBe(receipt.order.lockedCycles);
+  // And the quality of the rate that priced it is visible.
+  expect(v.rateQueriedSources).toBeGreaterThanOrEqual(v.rateReceivedRates);
 });
 
 test('20 — an unauthenticated webhook that pays nothing triggers no sweep (DoS)', async () => {
