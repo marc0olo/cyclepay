@@ -215,8 +215,8 @@ found.
    `RELEASE.md`'s publish-and-verify procedure is untested end to end.
 6. **No monitoring exists.** Every safety mechanism here is a number someone has
    to go and look at; an alert nobody receives is not an alert. **`RUNBOOK.md` §9
-   owns the list** of what to watch and at what cadence — wire it before taking
-   money.
+   owns the plan** — metric table with thresholds and severities, and the reason the
+   ICP float has to be *pushed* rather than polled. Wire it before taking money.
 7. **No external security audit** (spec §8 explicitly does not gate v1 on one).
 8. **The deferred tail**, all real and none money-losing: gate-config/tier
    cross-check, `let #ii(owner)` trap, counts-map reconcile, the once-per-order

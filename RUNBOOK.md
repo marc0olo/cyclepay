@@ -97,7 +97,11 @@ consciously set. Work the list in order:
 13. **Add a backup controller.** A single controller identity with no backup
    means a lost key makes the canister permanently un-upgradeable; there is no
    recovery path (§0 covers the trust model this implies).
-14. **Smoke-check the public surface**: `pricing_status` — both rates must be
+14. **Wire monitoring (§9) before announcing the service**, not after. The whole
+   alerting layer polls public queries and needs no key; the one exception is the
+   scheduled `refresh_float`, without which the float metric is stale exactly when
+   the system is idle.
+15. **Smoke-check the public surface**: `pricing_status` — both rates must be
    populated and `lastAttempt.ok` true. The rate timer warms itself on install,
    so this should be true within seconds; if it is not, `lastAttempt.detail`
    names the failing guard (§4) and **no order can be created until it clears**
@@ -611,46 +615,115 @@ icp canister call backend process_order '("<orderId>")' -e ic --identity <operat
   driven). Use it to resume a specific held order immediately after a
   float refill or cap change instead of waiting for the sweep.
 
-## 9. Monitoring cadence
+## 9. Monitoring plan
 
-Daily (or alerting on, if you wire these queries up externally):
+Every safety mechanism in this system is a **number someone has to look at**. The
+2 h delay alert, the error queue, the rate-refresh liveness — none of them page
+anybody. An alert nobody receives is not an alert, so wire this before taking
+money.
 
-- `error_queue` — unresolved count should be **zero**; anything else is
-  the §6 worklist.
-- `treasury_status` — `lowFloat` false, `heldOrders` 0 (or transiently
-  small), `burnedInWindowE8s` tracking expected volume (a jump = §2 leak
-  procedure), `lastObservedFloat.atNs` recent.
-- `recovery_status` — `lastSweep.atNs` within ~2 intervals.
-- `retention_status` — `openOrders` climbing while `delivered` orders do not is
-  order-creation abuse; the lever is `maxOpenOrdersPerPrincipal` (§5a).
-- `can_purchase '(<smallest tier cents>)'` — the single best "is the rail
-  actually selling?" check. It answers with the *reason* it would refuse, which
-  is usually `burnCapExhausted` (window filled) or `floatLow` (needs a refill or
-  a `refresh_float`).
-- **Canister cycle balance** — `icp canister status backend -e ic`. Distinct
-  from the ICP float: this is the canister's own gas, and losing it uninstalls
-  the canister and its money-bearing state. Alert well above `minCanisterCycles`
-  (§5a), since that gate stops *sales* but does not stop the burn.
-- **`audit_log` tags worth alerting on**, beyond queue depth:
-  `stripe.livemodeMismatch` (misconfigured mode — real money may be landing in
-  the wrong account), `stripe.unprocessable` and `stripe.unhandledType` (a
-  Dashboard config producing events this gateway cannot use, which will recur
-  until changed), `stripe.refundPartial` (an obligation deliberately left open),
-  and `mint.stuck` with `mintShortfall`.
-- `pricing_status` — **`lastAttempt.ok` is the single most important alarm on
-  the rail.** Refresh is timer-driven, so unlike an on-demand fetch, a stale
-  `fetchedAtNs` is never "normal": it means the timer is dead or every tick is
-  being rejected, and once it passes `maxAgeNs` **order creation stops**. Alert
-  on `lastAttempt.ok == false` for two consecutive ticks and on `fetchedAtNs`
-  older than `maxAgeNs`. Watch `rates.quality.receivedRates` too — a price built
-  from 2 sources is not the same product as one from 12.
-- `audit_log` — gaps in `seq` mean the 4,096-entry ring dropped events
-  (read it more often or treat as a volume signal); the log is the
-  operational trail, the order store + error queue are the records of
-  money.
-- Off-chain: Stripe Dashboard event deliveries (a stretch of failed
-  deliveries = the secret got out of sync or the gateway is unhealthy —
-  Stripe retries non-2xx for days, so nothing is lost while you fix it).
+### The whole alerting layer needs no credentials
+
+These are public queries, so a monitor can poll them anonymously — no controller
+key on a monitoring box:
+
+`health` · `cycles_status` · `treasury_status` · `pricing_status` ·
+`recovery_status` · `retention_status` · `error_queue_depth`
+
+`can_purchase` is also callable anonymously and is worth special mention: the
+anonymous principal owns no orders, so `tooManyOpenOrders` can never trip for it.
+That makes **anonymous `can_purchase '(<smallest tier cents>)'` a pure global-health
+probe** — it answers with the reason the rail would refuse a sale, and every reason
+it can give is a global one (`burnCapExhausted`, `floatLow`, `canisterCyclesLow`).
+It is the single best "is the rail actually selling?" check.
+
+### ⚠️ The ICP float is the one metric you cannot poll honestly
+
+You are right that it is crucial, and it is also the trickiest.
+
+`treasury_status` is a **query**, and queries cannot make inter-canister calls. So
+it does not read the ledger — it returns `lastObservedFloat`, a *cached*
+observation, refreshed only when something calls the ledger:
+
+- every mint pre-gate (so it is fresh while orders are flowing), or
+- `refresh_float`, an **admin update call**.
+
+The consequence: **the float reading goes stale exactly when the system is idle**,
+which is precisely when a drained or mis-funded float would otherwise go unnoticed
+until the next buyer arrives. `lowFloat` is derived from the same cached value, so
+it inherits the staleness — and so does the admission gate, which means a stale-high
+observation can admit orders the float cannot cover.
+
+**So a float monitor must push, not just poll:** run `refresh_float` on a schedule
+(hourly is plenty when idle) and alert on both the returned value *and*
+`lastObservedFloat.atNs` falling behind. Checking `atNs` alone tells you the number
+is old; it does not make it fresh.
+
+⚠️ **This is the one place monitoring needs a privileged key**, and under the flat
+controller model (§0) that key can also upgrade and drain the canister. Options, in
+descending preference: run the scheduled `refresh_float` from a tightly-scoped
+environment and treat that key as production-critical; or accept poll-only
+staleness and compensate by alerting hard on `atNs` age; or keep a small
+synthetic order flowing, which refreshes the observation as a side effect. Do not
+put a controller key on a general-purpose monitoring host.
+
+### Metric table
+
+Severity: **P1** = wake someone; **P2** = same working day; **P3** = review weekly.
+
+| Metric | Alert when | Sev | Action |
+|---|---|---|---|
+| `pricing_status.lastAttempt.ok` | false on two consecutive ticks | **P1** | §4 — order creation stops once the cache passes `maxAgeNs`. `detail` names the failing guard |
+| `pricing_status.rates.fetchedAtNs` | older than `maxAgeNs` | **P1** | the rail has stopped selling. Timer dead or every tick rejected |
+| `cycles_status.balance` | below 3× `minCanisterCycles` | **P1** | top up. At zero the canister is **uninstalled** and money-bearing state is lost. Note the XRC needs 1 B attached per refresh, so pricing dies before the gate does |
+| `refresh_float` result | below ~2× the largest tier's ICP cost | **P1** | refill (§5). Held orders resume on the next sweep |
+| `lastObservedFloat.atNs` | older than 2× your refresh schedule | **P1** | the float number is not trustworthy — see above |
+| anonymous `can_purchase` | returns `#err` | **P1** | the rail is refusing sales; the reason says which lever |
+| `error_queue_depth.unresolved` | `> 0` | **P2** | §6 triage. Depth climbing past 1,000 means work is accumulating faster than it clears |
+| `treasury_status.paidOrders` | non-transient `> 0` | **P2** | money in, nothing minted — orders are on the clock toward `mintWaitExceeded` |
+| `treasury_status.heldOrders` | non-transient `> 0` | **P2** | burn cap or float; both are §5 levers |
+| `treasury_status.burnedInWindowE8s` | jumps beyond expected volume | **P1** | possible leaked secret → §2 procedure, cap to 0 first |
+| `recovery_status.lastSweep.atNs` | older than 2 intervals | **P2** | the sweep timer is not running; nothing recovers while it is dead |
+| `retention_status.openOrders` | climbing while `delivered` does not | **P3** | order-creation abuse; lever is `maxOpenOrdersPerPrincipal` (§5a) |
+| `pricing_status.rates.quality.receivedRates` | drops to `minRateSources` | **P3** | thin market — a price from 2 sources is not one from 12 |
+| `health` | unreachable | **P1** | canister stopped, frozen, or out of cycles |
+
+### Needs a controller key
+
+- **`audit_log` tags** worth alerting on: `stripe.livemodeMismatch` (real money may
+  be landing in the wrong Stripe account), `stripe.creditedElsewhere`,
+  `stripe.unprocessable` / `stripe.unhandledType` (a Dashboard config producing
+  events this gateway cannot use — it will recur until changed),
+  `stripe.refundPartial` (an obligation deliberately left open), and `mint.stuck`.
+- **`error_queue_unresolved`** for the entries themselves. `error_queue_depth` is
+  public, so **alert on the public depth and only fetch details when it fires** —
+  that keeps the key out of the polling loop.
+- ⚠️ Gaps in `audit_log`'s `seq` mean the 4,096-entry ring dropped events. Read it
+  often enough that it doesn't, and remember it is *telemetry*: the order store,
+  mint journal and error queue are the records of money.
+
+### Off-chain
+
+- **Stripe Dashboard → event deliveries.** A run of failures means the secret is
+  out of sync or the gateway is unhealthy. Stripe retries non-2xx for ~3 days, so
+  transient failures lose nothing — but a *permanent* 4xx can get the endpoint
+  disabled, which is why verified-but-unprocessable events are acked 200 (§6).
+- **Stripe payouts and disputes.** Disputes produce **no on-chain signal** (only
+  `charge.refunded` is subscribed), so the Dashboard is the only control.
+
+### Do you need a dashboard?
+
+**Alerting first, dashboard second** — and the order matters. The failure modes
+here are slow (a 2 h alert window, a 72 h terminate bound), so what you need is
+something that reaches a human at 03:00, not a page someone visits. A cron job
+polling the public queries and posting to Slack/PagerDuty covers the entire table
+above except the audit tags, and needs no credentials.
+
+A dashboard earns its place afterwards, for the things alerts are bad at: float and
+burn-rate trends, order volume, delivered-vs-open ratios, rate quality over time.
+Everything it needs is a public query, and the frontend already reads
+`treasury_status` for its low-float soft gate — so a read-only operator page is
+straightforward. It is a convenience, not a control.
 
 ## 10. Confidential-subnet checklist (§7, §11.1)
 

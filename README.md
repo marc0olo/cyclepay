@@ -38,7 +38,7 @@ Key documents:
 | `design-docs/ONCHAIN_GATEWAY_SPEC.md` | The decision record — *why* it is built this way. Non-binding rationale; the implementation wins where they disagree |
 | `docs/STRIPE.md` | **Start here.** The Card rail end to end, written from the code: ingress, signature verification, attribution, dedup, pricing, retention, refunds, the secret, and the local Stripe-sandbox loop |
 | `docs/SANDBOX-TESTPLAN.md` | The manual Stripe-sandbox verification pass required before go-live, and an explicit statement of what a green run does not prove |
-| `RUNBOOK.md` | Operations, authoritative for procedure: go-live checklist, secret rotation, rate diagnosis, treasury levers, error-queue triage |
+| `RUNBOOK.md` | Operations, authoritative for procedure: go-live checklist, secret rotation, rate diagnosis, treasury levers, error-queue triage, monitoring plan |
 | `RELEASE.md` | Reproducible build and module-hash verification procedure |
 | `AGENTS.md` | Agent instructions: ICP skills setup, conventions, the verification gate |
 
