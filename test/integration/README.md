@@ -4,18 +4,22 @@ End-to-end scenarios against PocketIC instances running the **real**
 canisters: the ICP ledger, the cycles minting canister, and the cycles ledger
 are deployed at their mainnet IDs by PocketIC's `icpFeatures` (the same Wasms
 mainnet runs, kept in sync with the instance topology by the server), and the
-ck-USDC suite installs the real `ic-icrc1-ledger` (pinned release,
-sha256-verified by `scripts/fetch-ledger-wasm.mjs` in pretest) at the exact
-mainnet ck-USDC id on the fiduciary subnet, whose canister range mirrors
-mainnet's. The suite plays every external role itself:
+ck-USDC suite installs the real `ic-icrc1-ledger` at the exact mainnet ck-USDC id
+on the fiduciary subnet, whose canister range mirrors mainnet's. Both that ledger
+and the **released XRC mock** are pinned by sha256 and fetched by
+`scripts/fetch-wasms.mjs` in pretest. The suite plays every external role
+itself:
 
 - **Stripe** — crafted `checkout.session.completed` / `charge.refunded`
   payloads, HMAC-SHA256-signed exactly per the `Stripe-Signature` scheme,
   delivered through the canister's real HTTP ingress path.
-- **The forex source** — `create_order`'s HTTPS outcall is intercepted with
-  PocketIC's pending-outcall API and answered with mock bodies (success,
-  malformed, and outage cases); the canister's own `forex_transform` runs
-  for real.
+- **The Exchange Rate Canister** — the **released `xrc_mock` Wasm** is installed
+  at the mainnet XRC id (`uf6dk-hyaaa-aaaaq-qaaaq-cai`, whose range lives on the
+  **II subnet** — found by searching the topology rather than assumed, see
+  `subnetHosting`). `setXrcResponse` drives it to return a specific rate, quality
+  signal, or any of the 16 error variants. ⚠️ **The mock's response is
+  init-only**, so changing it means a *reinstall*, which `setXrcResponse` does.
+  There is no HTTPS outcall to intercept: pricing is entirely inter-canister.
 - **NNS governance** — the CMC's ICP/XDR conversion rate is set by calling
   `set_icp_xdr_conversion_rate` with the governance canister principal as
   sender (PocketIC permits arbitrary senders).
@@ -40,11 +44,6 @@ ships with the `@dfinity/pic` npm package.
 
 Two API traps this suite has to work around, both easy to hit again:
 
-- **The outcall reject mock's `statusCode` is an IC reject code, not an HTTP
-  status.** `@dfinity/pic` names the field `statusCode`, but its encoder maps it
-  to `CanisterHttpReject.reject_code`, so it must be 1..5. Passing `503` makes
-  the server answer `InvalidRejectCode(503)` and the mock never lands. See
-  `REJECT_CODE_SYS_TRANSIENT` in `harness.ts`.
 - **Upgrading requires stopping first, and an explicit EOP option.** A canister
   with outstanding message callbacks cannot be upgraded, and Motoko's enhanced
   orthogonal persistence requires
@@ -52,6 +51,15 @@ Two API traps this suite has to work around, both easy to hit again:
   handled by `upgradeBackendMidFlight`. (The Rust `pocket-ic` crate has an
   `upgrade_eop_canister` helper for the second half; the TS client at 0.22.0
   does not, so the option is set explicitly.)
+- ⚠️ **`stopCanister` drains outstanding callbacks rather than discarding
+  them.** That is what makes the stop-then-upgrade sequence work at all, and it
+  means an upgrade cannot be used to interrupt a call mid-await. The mid-flight
+  scenarios therefore assert the *stronger* property — that state after the drain
+  is consistent and the §5.1 ambiguity rules still hold — rather than pretending
+  a callback vanished.
+- **Run `npm test`, never `npx vitest run`.** The latter skips `pretest`, so the
+  suite silently runs against a **stale backend Wasm** — a green suite that proves
+  nothing about the code you just changed.
 
 **The host must run a 4 KiB-page kernel** — macOS (Intel or Apple Silicon)
 and x86_64 Linux are fine. The IC replica's memory tracker hard-asserts
@@ -77,8 +85,8 @@ git commit && git push   # needs a workflow-scoped token (a normal `gh auth` tok
 |---|----------|---------|
 | 01 | 503 before secret provisioning, controller-gated admin API | — |
 | 02 | tier config gating | — |
-| 03 | empty cache + failing refresh → `#rateUnavailable` (3-attempt cap) | forex fail-closed |
-| 04 | mocked outcall through the real transform; §3 pricing vector; order authz | happy path (pricing half) |
+| 03 | empty cache + a failing XRC → `#rateUnavailable`; every rate guard rejects in isolation | pricing fail-closed |
+| 04 | XRC + CMC through the real derivation; §3 pricing vector; order authz | happy path (pricing half) |
 | 05 | signature/window/404/405/413 guards on the live route table | duplicate/replay (guards) |
 | 06 | default burn cap 0 holds the mint | AwaitingTreasury |
 | 07 | cap sized → resume → real ledger transfer → CMC mint → forward | happy path |
@@ -92,10 +100,15 @@ git commit && git push   # needs a workflow-scoped token (a normal `gh auth` tok
 | 15 | audit-log seq monotonicity + error-queue accounting | — |
 | 16 | admission gate: no burn-cap headroom refuses the quote; `can_purchase` agrees; restoring headroom re-opens the rail | pre-creation gate |
 | 17 | per-purchase ceiling bounds both tier registration and the amount | pre-creation gate |
-| 18 | retention: created → expired → swept, and a late payment names the tombstone | retention bands |
-| 19 | retention never deletes an order that has touched money; `order_for_payment` still resolves | retention bands |
+| 18 | expiry: created → expired, survives a simulated year, and **still honours a late payment** | retention |
+| 19 | owner-only `receipt`; recomputes `net × P × 10¹² / U == lockedCycles` from it | price verifiability |
 
 ## Scenario map — ck-USDC go-live bar (`ckusdc.spec.ts`, task 15)
+
+⚠️ **The ck-USDC rail ships disabled** (`maxUsdCents = 0`) and receives no new
+feature work — the Card rail is the product. This suite is maintained so the rail
+stays a working fallback if Stripe ever restricts the account; ck-01 asserts the
+disabled default, and every other scenario enables the rail first.
 
 Own instance (vitest runs spec files sequentially); real `ic-icrc1-ledger`
 at `xevnm-gaaaa-aaaar-qafnq-cai` with ICRC-2 enabled and a 10_000-unit fee.

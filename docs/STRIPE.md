@@ -45,8 +45,11 @@ This is the decision the rest of the design hangs off:
 | No subscriptions or auto-refill | Both require charging a stored payment method, i.e. an outbound API key. Explicitly out of scope. |
 | Payment amounts are pinned by URL | The canister cannot create prices, so tiers are permanent Payment Links the operator makes in the Dashboard and registers on-chain. |
 
-The only outbound HTTPS the canister makes at all is the USD↔XDR forex fetch
-(`Forex.mo`), and that is a keyless public endpoint.
+**The canister makes no outbound HTTPS at all.** Not to Stripe, and not to
+anything else: pricing reads two on-chain canisters — the Exchange Rate Canister
+for USD/ICP and the CMC for XDR/ICP (§8) — so every outbound call is an
+inter-canister call. There is no `transform` function, no replica-divergence
+problem, and no operator-settable rate source to audit.
 
 ## 3. The full happy path
 
@@ -58,7 +61,7 @@ The only outbound HTTPS the canister makes at all is the USD↔XDR forex fetch
                                                    ▼
  user ──II login──▶ create_order(tierId, destination)         Main.mo:339
                        │  admission gate                       Main.mo:278 → Gate.mo
-                       │  quote: lock the CYCLE QUANTITY       Forex.mo
+                       │  quote: lock the CYCLE QUANTITY       Pricing.mo (cached XRC+CMC)
                        │  raw_rand order id                    Orders.mo:30
                        ▼
                     #created  +  clientReferenceId = <principal>_<orderId>
@@ -172,7 +175,7 @@ Type 2 — never to a silent accept.
 |---|---|
 | reference present | Type 1 `#unattributed` — "missing client_reference_id" |
 | parses as `<principal>_<orderId>` | Type 1 — "malformed" |
-| order exists | Type 1 — "no order X", or **"was SWEPT as abandoned"** if the id is tombstoned (§10) |
+| order exists | Type 1 — "no order X". Orders are never deleted (§10), so this means the reference never resolved: a forged, mistyped, or stripped URL parameter |
 | claimed principal **matches the stored owner** | Type 1 — "claimed owner does not match" |
 | order's rail is `#card` | Type 1 — "is not a card order" |
 | status is `#created` or `#expired` | Type 1 `#duplicate` otherwise |
@@ -215,8 +218,9 @@ webhook.
 ## 8. Amount honouring
 
 The order stores a **pricing snapshot** at creation (`Types.Pricing`): the gross
-cents, the XDR/USD rate in micros, and the fee formula. The webhook honours the
-**actual paid amount** (`Card.mo:314`):
+cents, **both rate inputs** (`usdPerIcpMicros` from the XRC, `xdrPermyriadPerIcp`
+from the CMC) with the XRC quality signal, and the fee formula. The webhook
+honours the **actual paid amount** (`Card.mo:314`):
 
 - Paid amount **equals** the quoted tier → deliver `lockedCycles` verbatim.
 - Paid amount **differs** → reprice from the order's own snapshot, never from a
@@ -227,11 +231,20 @@ cents, the XDR/USD rate in micros, and the fee formula. The webhook honours the
 That last case exists because repricing is an *upward* path: without a ceiling, a
 tampered link or a misconfigured Stripe price would mint an arbitrary quantity.
 
+**What was actually paid is stored on the order** (`paidUsdCents`), not only in
+the audit log. The audit ring buffer drops its oldest entries, so a fact about
+money cannot live only there — "what did this buyer pay?" has to be answerable
+from state for the life of the canister.
+
+The same honouring logic serves `attach_payment`, the admin lever that credits an
+order for a payment the webhook could not attribute (§12). One code path, so a
+rescued payment is priced exactly as a normal one would have been — from the
+order's own snapshot, however long ago it was created.
+
 ## 9. Admission: the pre-creation gate
 
 `create_order` refuses before quoting when fulfilment is already impossible
-(`Main.mo:278` → `Gate.mo`). Checked cheapest-first, and **before** the forex
-quote so a spamming principal cannot make the canister spend cycles on outcalls:
+(`Main.mo:278` → `Gate.mo`). Checked cheapest-first, before any pricing work:
 
 | Check | Refusal | Meaning |
 |---|---|---|
@@ -263,36 +276,40 @@ frontend can disable the button with a real reason instead of failing at submit.
 
 ## 10. Order lifecycle and retention
 
-`Retention.mo` defines three bands, keyed on age from **creation**:
+**Orders are never deleted.** `Retention.mo` has exactly one effect: a `#created`
+order past `orderTtlNs` flips to `#expired`.
 
-| Band | Status | Age | Payable? | Record |
-|---|---|---|---|---|
-| 1 — live | `#created` | < `orderTtlNs` (default 48 h) | yes | intact |
-| 2 — expired | `#expired` | TTL → `retentionHorizonNs` (default 90 d) | **yes** | intact |
-| 3 — swept | deleted | > horizon | becomes Type 1 | id tombstoned |
+| Status | Age | Payable? | Record |
+|---|---|---|---|
+| `#created` | < `orderTtlNs` (default 48 h) | yes | kept forever |
+| `#expired` | ≥ TTL, forever | **yes** | kept forever |
 
 **Expiry is advisory.** An `#expired` order is still fully payable and a late
 genuine payment is honoured at the locked quantity (`Card.mo:314` accepts
-`#created or #expired`; `Orders.mo` allows `#expired → #paid`). The flip exists
-to make state legible and to define what eventually becomes sweepable.
+`#created or #expired`; `Orders.mo` allows `#expired → #paid`). The flip is
+bookkeeping — it makes an abandoned attempt visibly stale rather than
+indistinguishable from a live one.
 
-**Band 3 and the "we lost track" worry.** A Payment Link is permanent, so a
-payment can arrive for an order abandoned months ago from a bookmarked URL.
-Deleting the record cannot lose money: the payment resolves to no order and
-becomes Type 1 `#unattributed`, acked 200, sitting in the error queue with its
-`payment_intent` for the operator to refund — which `charge.refunded` then
-auto-resolves. It degrades to **a refund, not a loss.**
+**The "we lost track" worry, resolved by not losing track.** A Payment Link is
+permanent, so a payment can arrive for an order abandoned months or years ago
+from a bookmarked URL. Because the record is still there, that payment is
+**delivered** — at the quantity locked when the order was created. It does not
+degrade to a refund, because there is nothing to degrade: the §4 late-payment
+guarantee holds for the life of the canister.
 
-The `sweptOrders` tombstone set makes that diagnosis certain rather than
-ambiguous: 32 bytes per id turns "no such order" (indistinguishable from a forged
-parameter) into "we deliberately deleted this one". `was_swept(id)` is a public
-query so a user can see why their order vanished from history.
+Deleting records past a horizon — even with a tombstone set, so a late payment
+could at least be *diagnosed* before being refunded — would contradict the
+standard applied everywhere else here: unresolved obligations are never evicted,
+and money facts live on permanent records. It would also create orphans,
+`paidIntents` entries pointing at records that no longer exist.
 
-**The binding rule on deletion** (`Main.mo:958`): only orders that are
-`#expired`, have **no mint journal entry**, and have **no ck-USDC pull entry**
-are ever removed. `#delivered` and `#errorQueue` are financial records kept
-forever — their volume is bounded by real sales, which the burn cap bounds, so
-they can never be a growth vector.
+**Growth is bounded at its source, which is why retention never needed to bound
+it.** `Gate.maxOpenOrdersPerPrincipal` (default 20) bounds the records a user can
+create for free — abandoned orders are the only ones that cost them nothing — and
+the burn cap bounds legitimate volume. An order is a few hundred bytes, so a
+million is a few hundred MB, and a million orders is millions of dollars of
+volume. If retention ever genuinely binds, archival to a separate canister
+preserves the record; deletion does not.
 
 **Sweeping is cleanup, not protection.** The bound that actually stops unbounded
 state growth is `maxOpenOrdersPerPrincipal`, because abandoned orders are the
@@ -307,6 +324,13 @@ synchronously and before the money sweep so it cannot interleave with an await.
 **Refunds are always manual, in the Stripe Dashboard.** No `sk_live` means the
 canister cannot issue one. What the canister does is *react* to
 `charge.refunded` (`Card.mo:257`):
+
+⚠️ **Prefer delivering to refunding whenever the buyer is identifiable.** A
+refund makes the customer start over, and a customer who has paid and received
+nothing files a chargeback — which costs more than the refund and counts against
+the Stripe account. For a payment that arrived but could not be attributed,
+`attach_payment` credits the order the buyer meant, at that order's own
+creation-time price (§8). Refund only when you cannot tell what they bought.
 
 1. Resolve every unresolved **Type 1** entry carrying that `payment_intent`. This
    closes the normal loop: duplicate/unattributed payment → operator refunds →
@@ -341,7 +365,8 @@ that limits exposure per fraudulent transaction.
 
 ## 12. Every failure and its money position
 
-`RUNBOOK.md` §8 is the operator triage table. This is the rail-specific summary:
+`RUNBOOK.md` §6 is the authoritative operator triage table. This is the
+rail-specific summary:
 
 | Outcome | HTTP | Money position | Resolution |
 |---|---|---|---|
@@ -351,11 +376,18 @@ that limits exposure per fraudulent transaction.
 | Unhandled event type | 200 | nothing happened | none |
 | Redelivered `event.id` / `payment_intent` | 200 | already handled | none |
 | `payment_status ≠ paid` | 200 | no money yet | audited `stripe.unpaidSession`; check the link is card-only |
-| Type 1 `#unattributed` | 200 | **fiat in, nothing minted** | refund in Dashboard |
+| Type 1 `#unattributed` | 200 | **fiat in, nothing minted** | `attach_payment` if you can identify the order; refund if not |
 | Type 1 `#duplicate` | 200 | **fiat in ×2, minted ×1** | refund the second charge |
 | Type 2 `#undeliverable` | 200 | **cycles minted, in the app's own balance** | re-deliver or refund |
-| `#stuckMint` | 200 | **uncertain** — see the stage | per-stage rules in RUNBOOK §8 |
+| `#stuckMint` | 200 | **uncertain** — see the stage | per-stage rules in RUNBOOK §6 |
 | `#refundAfterDelivery` | 200 | **fiat out, cycles out** — a loss | reconcile; consider restricting the payer |
+| `#deliveryDelayed` | 200 | **fiat in, mint still retrying** — nothing lost | an alert at 2 h, not a failure: clear the cause (float, burn cap) and it **self-resolves on delivery** |
+
+**The buyer is never left waiting indefinitely.** A paid order that cannot mint
+yet alerts the operator at 2 h while the position is still fully recoverable, and
+terminates at 72 h into `#stuckMint{stage="treasuryWaitExceeded"}` — fiat in,
+nothing minted, refund. Three days is the outer bound on "paid and heard
+nothing", and the operator has 70 hours of warning to make it not happen.
 
 ## 13. The secret
 
@@ -407,21 +439,34 @@ privileges — any controller can do any of this):
 | `webhook_secret_status` | confirm a rotation landed |
 | `set_card_tiers` | register Payment Links; **empty vector disables the rail** |
 | `set_gate_config` | open-order cap, own-cycles floor, per-purchase ceiling |
-| `set_retention_config` | TTL and delete horizon |
-| `set_forex_config` | fee formula, staleness window, rate source |
-| `set_treasury_config` | burn cap, window, max hold, low-float threshold |
+| `set_retention_config` | order TTL (the expiry flip; nothing is deleted) |
+| `set_pricing_config` | fee formula, staleness window (capped at 1 h), delta bound, minimum rate sources |
+| `refresh_rates` | force a rate tick now instead of waiting for the timer |
+| `set_treasury_config` | burn cap, window, alert-after, max hold, low-float threshold |
 | `error_queue` / `resolve_error` | the operator worklist |
 | `order_for_payment` | reconciliation: Stripe charge → order it funded |
 | `mint_journal` | money-out record for one order |
 | `audit_log` | operational trail; gaps in `seq` mean ring-buffer drops |
 | `process_order` | manual mint kick; safe to spam |
-| `run_retention` | apply retuned retention bands now |
+| `run_retention` | apply a retuned TTL now |
+| `attach_payment` | credit an unattributable payment to the order it was meant for (§12) |
+| `abandon_order` | void an unpaid order, with the reason recorded in the audit trail |
+| `recount_orders` | rebuild the O(1) per-status counters from the store |
 | `refresh_float` | refresh the float observation the gate reads |
 | `reset_burn_window` | clear window consumption after verifying traffic |
 
 Public queries (transparency is the product thesis): `card_tiers`,
-`forex_status`, `treasury_status`, `recovery_status`, `lifecycle_config`,
-`retention_status`, `can_purchase`, `was_swept`, `health`.
+`pricing_status`, `treasury_status`, `recovery_status`, `lifecycle_config`,
+`retention_status`, `can_purchase`, `cycles_status`, `error_queue_depth`,
+`health`.
+
+**Owner-scoped, not admin-scoped:** `get_order`, `list_orders`, and
+`receipt(orderId)` answer only for `caller == order.owner` — not even a
+controller can read someone else's receipt. The receipt returns the paid amount,
+the ICP block index that funded the mint, the cycles minted, and both rate inputs
+with their XRC quality signal, so a buyer can recompute
+`netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros` from canisters they
+query themselves and confirm they were charged correctly.
 
 ### Stripe Dashboard setup
 

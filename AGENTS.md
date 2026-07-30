@@ -31,16 +31,52 @@ recorded reasoning — don't "fix" them without reading the rationale:
   the whole ingestion path unit-tests without an IC environment. Equivalent
   separation, deliberately chosen.
 
+## Scope: the Card rail is the product
+
+CyclePay onboards developers who have **no ICP, no wallet, and no exchange
+account**. That is the whole point, and it is why the Stripe rail gets the
+attention: for that user a stablecoin rail is not an option, because acquiring
+the stablecoin is the same problem over again.
+
+**ck-USDC is frozen, not deleted.** It is code-complete, tested (11 PocketIC
+scenarios), and **disabled by default** (`maxUsdCents = 0`). Keep it compiling and
+keep its suite green; do not add features to it. It exists because a payments
+dependency with no alternative is a single point of failure — if Stripe ever
+restricts the account, the rail is a config change away from live.
+
+Work on the Card rail unless asked otherwise. When a change touches shared
+money-out, verify both suites.
+
 ## Project conventions
 
 - **`icp-cli`, never `dfx`.** Project config is `icp.yaml`; Motoko deps are
   `mops.toml` / `mops.lock`.
+- **Comments document what the code does.** Not what it used to do, and not a
+  judgement on an earlier implementation. Design history belongs in
+  `design-docs/`, where it is dated and attributable; a comment saying "this was
+  previously wrong" is noise to everyone who reads the file later.
 - The committed `src/backend/dist/backend.did` is the embedded `candid:service`
   metadata *and* the frontend's bindgen source. Run `mops build` after any
   backend API change, and commit the regenerated `.did`.
-- Money-path invariants live in `design-docs/ONCHAIN_GATEWAY_SPEC.md` (spec
-  v2.1, the decision record). It is the canonical source for *why*; the code is
-  the source for *what*.
+- **Where to look for what:**
+
+  | Question | Source |
+  |---|---|
+  | What does it do? | the code, and `docs/STRIPE.md` for the Card rail end to end |
+  | How do I operate it? | `RUNBOOK.md` — authoritative for procedure |
+  | Why is it built this way? | `design-docs/ONCHAIN_GATEWAY_SPEC.md` |
+
+  ⚠️ The spec is **non-binding rationale, not a contract.** Several of its
+  decisions have been superseded; those sections say so inline and keep the
+  original reasoning for provenance. **The implementation wins where they
+  disagree** — never "fix" code to match the spec without checking whether the
+  spec is the stale side.
+
+- **Any fact about money lives on a permanent record.** The audit log is a
+  4,096-entry ring buffer and drops its oldest entries, so it is telemetry only.
+  If a new behaviour produces a fact someone could need in six months — what was
+  paid, what was minted, which block funded it — put it on the order or the
+  journal, not only in an audit tag.
 
 ## Issue tracker
 

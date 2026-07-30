@@ -6,23 +6,18 @@
 /// abandoned attempts are visibly stale rather than indistinguishable from live
 /// ones.
 ///
-/// **Orders are never deleted.** An earlier design swept them past a longer
-/// horizon, with a tombstone set so a late payment could still be diagnosed.
-/// That is dropped: deleting a financial record contradicts the standard applied
-/// everywhere else here (unresolved obligations are never evicted, money facts
-/// live on permanent records), and the growth it guarded against is already
-/// bounded at its source by `Gate.Config.maxOpenOrdersPerPrincipal` — abandoned
-/// orders are the only records a user can create for free, and legitimate volume
-/// is bounded by the burn cap.
+/// **Orders are never deleted.** Every order is a financial record and is kept
+/// for the life of the canister, which is what keeps `paidIntents` entries
+/// pointing at records that still exist.
 ///
-/// Deleting also created orphans: a `paidIntents` entry pointing at an order
-/// that no longer exists. Keeping the record is both cheaper to reason about and
-/// cheaper than the alternative — an order is a few hundred bytes, so a million
-/// of them is a few hundred MB, and a million orders is millions of dollars of
-/// volume.
+/// Growth is bounded at its source rather than by retention:
+/// `Gate.Config.maxOpenOrdersPerPrincipal` bounds the records a user can create
+/// for free, and the burn cap bounds legitimate volume. An order is a few
+/// hundred bytes, so a million of them is a few hundred MB — and a million
+/// orders is millions of dollars of volume.
 ///
-/// If retention ever genuinely binds, the answer is archival to a separate
-/// canister — which preserves the record — not deletion.
+/// If retention ever genuinely binds, archival to a separate canister preserves
+/// the record; deletion does not.
 import Result "mo:core/Result";
 import Types "Types";
 
@@ -32,7 +27,8 @@ module {
     /// Age past which a `#created` order flips to `#expired`.
     /// Advisory only, per §4: an expired order is still fully payable and a
     /// late genuine payment is still honoured at the locked quantity. The flip
-    /// exists to make state legible and to define what becomes sweepable.
+    /// makes an abandoned attempt visibly stale rather than indistinguishable
+    /// from a live one.
     /// Size it past the Stripe Checkout Session lifetime (24 h) plus delivery
     /// slack, so a user who is mid-checkout never sees their order expire.
     orderTtlNs : Nat;

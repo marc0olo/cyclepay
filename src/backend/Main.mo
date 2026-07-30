@@ -1023,7 +1023,9 @@ persistent actor CyclesGateway {
             case (_) continue drive;
           };
           let ?e8s = Cmc.icpE8sForCycles(fresh.lockedCycles, permyriad) else {
-            // Previously returned silently, leaving no trace at all.
+            // Audited, not silent: the order stays #paid and the next sweep
+            // retries, so without a trace this looks like a mint that simply
+            // never ran.
             auditMintBlockedOnce(orderId, "mint.unpriceable", orderId # ": cannot derive e8s for " # fresh.lockedCycles.toText() # " cycles at " # permyriad.toText() # " permyriad");
             return;
           };
