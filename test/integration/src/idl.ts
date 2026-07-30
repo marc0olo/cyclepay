@@ -76,6 +76,8 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   const CreateOrderError = IDL.Variant({
     anonymous: IDL.Null,
     idGeneration: IDL.Null,
+    quoteChanged: IDL.Record({ minimum: IDL.Nat, quoted: IDL.Nat }),
+
     notAdmitted: GateReason,
     rateUnavailable: IDL.Null,
     tierBelowFees: IDL.Text,
@@ -229,6 +231,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     belowMinimum: IDL.Nat,
     idGeneration: IDL.Null,
     notAdmitted: GateReason,
+    quoteChanged: IDL.Record({ minimum: IDL.Nat, quoted: IDL.Nat }),
     railDisabled: IDL.Null,
     rateUnavailable: IDL.Null,
     zeroAmount: IDL.Null,
@@ -287,18 +290,41 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [],
     ),
     create_ck_usdc_order: IDL.Func(
-      [IDL.Nat, Destination],
+      [IDL.Nat, Destination, IDL.Opt(IDL.Nat)],
       [IDL.Variant({ ok: CreatedCkUsdcOrder, err: CreateCkUsdcOrderError })],
       [],
     ),
     create_order: IDL.Func(
-      [IDL.Text, Destination],
+      [IDL.Text, Destination, IDL.Opt(IDL.Nat)],
       [IDL.Variant({ ok: CreatedOrder, err: CreateOrderError })],
+      [],
+    ),
+    cancel_order: IDL.Func(
+      [IDL.Text],
+      [IDL.Variant({ ok: Order, err: IDL.Text })],
       [],
     ),
     can_purchase: IDL.Func(
       [IDL.Nat],
       [IDL.Variant({ ok: IDL.Null, err: GateReason })],
+      ['query'],
+    ),
+    quote_previews: IDL.Func(
+      [IDL.Variant({ card: IDL.Null, ckUsdc: IDL.Null }), IDL.Vec(IDL.Nat)],
+      [
+        IDL.Record({
+          quotes: IDL.Vec(
+            IDL.Record({
+              usdCents: IDL.Nat,
+              feeCents: IDL.Nat,
+              netCents: IDL.Opt(IDL.Nat),
+              cycles: IDL.Opt(IDL.Nat),
+            }),
+          ),
+          rates: IDL.Opt(Rates),
+          cyclesLedgerDepositFee: IDL.Nat,
+        }),
+      ],
       ['query'],
     ),
     error_queue: IDL.Func(

@@ -290,7 +290,7 @@ module {
         for (id in ids.values()) {
           switch (store.orders.get(id)) {
             case (?order) { if (order.status == #created) open += 1 };
-            case null {}; // swept (Retention.mo band 3)
+            case null {}; // id indexed without a record — cannot happen
           };
         };
         open;

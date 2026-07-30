@@ -12,6 +12,7 @@ How fiat becomes cycles. Written from the code — every claim here has a
 - [6. Attribution: claimed, not trusted](#6-attribution-claimed-not-trusted)
 - [7. Dedup: two layers, and what they do not protect against](#7-dedup-two-layers-and-what-they-do-not-protect-against)
 - [8. Amount honouring](#8-amount-honouring)
+- [8a. What the buyer sees before paying](#8a-what-the-buyer-sees-before-paying)
 - [9. Admission: the pre-creation gate](#9-admission-the-pre-creation-gate)
 - [10. Order lifecycle and retention](#10-order-lifecycle-and-retention)
 - [11. Refunds, disputes, and what is not automated](#11-refunds-disputes-and-what-is-not-automated)
@@ -241,6 +242,72 @@ order for a payment the webhook could not attribute (§12). One code path, so a
 rescued payment is priced exactly as a normal one would have been — from the
 order's own snapshot, however long ago it was created.
 
+## 8a. What the buyer sees before paying
+
+Three guarantees, in the order they matter.
+
+### The cycle quantity is shown before anything is committed
+
+`quote_previews(rail, amounts)` is a **public query** returning, per amount, the
+fee, the net, and the cycle quantity — plus the rate pair it used and the cycles
+ledger's deposit fee. The tier grid is one round trip.
+
+⚠️ **It calls the same `quoteCents` that `create_order` calls.** Not the same
+formula reimplemented — the same function. A client computing its own estimate
+would be one refactor away from displaying a number the gateway does not honour,
+and the buyer would have no way to tell which side was wrong.
+
+Being a query, it costs nothing and needs no login: you can see exactly what your
+money buys before signing in. It takes no cap on the input array, deliberately —
+work is constant per element the caller already had to transmit, so the only
+thing a cap would buy is silent truncation.
+
+### The rate is locked at creation, and the lock is enforced
+
+`create_order(tierId, destination, minCycles)` takes an **optional minimum**.
+If the current rate no longer clears it, the call returns
+`#quoteChanged {quoted; minimum}` and **creates nothing** — no half-finished
+order to clean up — carrying what the amount buys now so the client can show a
+real figure rather than a bare failure.
+
+⚠️ **Why this must be in the update and not the client.** A client-side re-check
+is a *query*; the creation is an *update*. Two messages, so the rate can refresh
+between them. Pinning the expectation inside the same call that locks the price
+is the only way to close that window, and it makes the guarantee hold for every
+caller rather than for one polite frontend.
+
+⚠️ **A minimum, not an equality.** A move in the buyer's favour passes through
+and they keep the extra cycles. The guard can only ever protect the buyer, never
+the operator. Passing `null` opts out.
+
+The **tolerance is the client's choice, not the backend's** — the backend enforces
+exactly the minimum it is handed, so a script that needs an exact quantity can
+pin one. The frontend's policy is **5%**: rates refresh on a timer, so an exact
+match would bounce purchases over moves too small to care about, and every bounce
+is a buyer wondering whether their card was charged. Inside tolerance the order
+is created and the UI **states the actual locked figure**, including when it
+drifted in the buyer's favour. Silence would be the surprise.
+
+Once locked, nothing re-reads a rate: money-out uses the stored snapshot, so
+market movement after creation changes nothing, however long the buyer takes to
+pay (§10 — even a year).
+
+### The cycles-ledger deposit fee is disclosed, not absorbed
+
+A `#cyclesLedgerAccount` destination loses **100 M cycles** to the ledger's
+deposit fee; a `#canister` top-up loses nothing. The estimate follows the
+destination toggle and names the deduction.
+
+⚠️ **Deliberately not grossed up into the price.** Minting extra to cover a
+per-order fee would let anyone drain the operator by opening account-destination
+orders — a griefable gas drain. Disclosure is the honest fix.
+
+### Afterwards: a receipt the buyer can check
+
+`receipt(orderId)` is owner-scoped (§14) and returns both rate inputs, so the
+price recomputes on the buyer's machine from canisters they query themselves. See
+spec §8 — a gateway confirming its own arithmetic proves nothing.
+
 ## 9. Admission: the pre-creation gate
 
 `create_order` refuses before quoting when fulfilment is already impossible
@@ -302,6 +369,24 @@ could at least be *diagnosed* before being refunded — would contradict the
 standard applied everywhere else here: unresolved obligations are never evicted,
 and money facts live on permanent records. It would also create orphans,
 `paidIntents` entries pointing at records that no longer exist.
+
+### A buyer can give up on an unpaid order
+
+`cancel_order(id)` is owner-scoped and marks a `#created` order `#expired`. It is
+idempotent, and it is refused for a paid order — that one is going to deliver, and
+offering a cancel would promise something untrue.
+
+⚠️ **It exists because the open-order cap counts unpaid orders.** The gate's
+refusal tells the user to pay or abandon one, and `abandon_order` is admin-only
+and only accepts a *paid* order — so without this, someone who opened the cap's
+worth of checkouts and finished none would be locked out until the 48 h TTL
+expired them, reading advice they could not follow.
+
+⚠️ **Cancelling can never strand a payment.** `#expired` stays payable, so a
+payment already in flight when they clicked cancel still delivers at the locked
+quantity. No error-queue entry is created either: nothing is owed, and an entry
+with no obligation behind it is exactly the orphan the queue must not accumulate.
+The audit trail carries `order.cancelled`.
 
 **Growth is bounded at its source, which is why retention never needed to bound
 it.** `Gate.maxOpenOrdersPerPrincipal` (default 20) bounds the records a user can
@@ -450,18 +535,19 @@ privileges — any controller can do any of this):
 | `process_order` | manual mint kick; safe to spam |
 | `run_retention` | apply a retuned TTL now |
 | `attach_payment` | credit an unattributable payment to the order it was meant for (§12) |
+| `set_pricing_config` | fee formula, staleness window, delta bound, minimum rate sources |
 | `abandon_order` | void an unpaid order, with the reason recorded in the audit trail |
 | `recount_orders` | rebuild the O(1) per-status counters from the store |
 | `refresh_float` | refresh the float observation the gate reads |
 | `reset_burn_window` | clear window consumption after verifying traffic |
 
 Public queries (transparency is the product thesis): `card_tiers`,
-`pricing_status`, `treasury_status`, `recovery_status`, `lifecycle_config`,
-`retention_status`, `can_purchase`, `cycles_status`, `error_queue_depth`,
-`health`.
+`pricing_status`, `quote_previews`, `treasury_status`, `recovery_status`,
+`lifecycle_config`, `retention_status`, `can_purchase`, `cycles_status`,
+`error_queue_depth`, `health`.
 
-**Owner-scoped, not admin-scoped:** `get_order`, `list_orders`, and
-`receipt(orderId)` answer only for `caller == order.owner` — not even a
+**Owner-scoped, not admin-scoped:** `get_order`, `list_orders`, `cancel_order`,
+and `receipt(orderId)` answer only for `caller == order.owner` — not even a
 controller can read someone else's receipt. The receipt returns the paid amount,
 the ICP block index that funded the mint, the cycles minted, and both rate inputs
 with their XRC quality signal, so a buyer can recompute

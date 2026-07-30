@@ -357,6 +357,10 @@ persistent actor CyclesGateway {
     /// §3.1 fail-closed: no fresh rate and the refresh failed (or one is
     /// already in flight), so no price, so no order. Retry shortly.
     #rateUnavailable;
+    /// The caller pinned a minimum cycle quantity and the current rate no
+    /// longer clears it. Carries what the amount buys now, so the caller can
+    /// show the buyer the real figure and let them decide.
+    #quoteChanged : { quoted : Nat; minimum : Nat };
     /// Entropy source misbehaved (short blob or repeated collisions).
     #idGeneration;
     /// Gate.mo admission refusal — carries the observed value and the bound so
@@ -474,19 +478,30 @@ persistent actor CyclesGateway {
   /// before the refresh await, so one order is always priced from one
   /// consistent epoch even when a refresh interleaves with a config change;
   /// the store write after the awaits is atomic.
+  /// `minCycles` pins the quantity the caller was shown (§3).
+  ///
+  /// The rate refresh runs on a timer, so a figure quoted to a buyer can move
+  /// before they commit — and a client-side re-check cannot close that window,
+  /// because a query and this update are separate messages. Pinning the
+  /// expectation here makes the check atomic with the lock, so no order can ever
+  /// be created at a quantity the buyer was not shown.
+  ///
+  /// A **minimum**, deliberately, not an equality: a rate move in the buyer's
+  /// favour passes through and they keep the extra cycles. The guard can only
+  /// ever protect the buyer. `null` opts out entirely.
   public shared ({ caller }) func create_order(
     tierId : Text,
     destination : Types.Destination,
+    minCycles : ?Nat,
   ) : async Result.Result<CreatedOrder, CreateOrderError> {
     switch (Auth.checkUser(caller)) {
       case (#err(#anonymous)) return #err(#anonymous);
       case (#ok) {};
     };
     let ?tier = Tiers.find(cardTiers, tierId) else return #err(#unknownTier(tierId));
-    // Admission BEFORE the quote: the quote can fire an HTTPS outcall, so a
-    // spamming principal must be turned away before it can make us spend
-    // cycles (`canister-security`: anyone can burn your cycles with update
-    // calls).
+    // Admission BEFORE the quote, so a spamming principal is turned away before
+    // it can make the canister do work (`canister-security`: anyone can burn
+    // your cycles with update calls).
     switch (admit(caller, tier.usdCents)) {
       case (#err(reason)) return #err(#notAdmitted(reason));
       case (#ok) {};
@@ -496,6 +511,12 @@ persistent actor CyclesGateway {
       case (#ok(quoted)) quoted;
       case (#unpriceable) return #err(#tierBelowFees(tierId));
       case (#stale) return #err(#rateUnavailable);
+    };
+    switch (minCycles) {
+      case (?minimum) if (lockedCycles < minimum) {
+        return #err(#quoteChanged({ quoted = lockedCycles; minimum }));
+      };
+      case null {};
     };
     let owner : Types.Owner = #ii(caller);
     switch (await* createOrderWithFreshId(owner, #card, destination, lockedCycles, pricing)) {
@@ -587,6 +608,76 @@ persistent actor CyclesGateway {
   /// Public — the frontend renders tiers and their Payment Links from this.
   public query func card_tiers() : async [Tiers.Tier] {
     cardTiers;
+  };
+
+  /// What a given amount buys right now (§3), before anyone commits to an order.
+  public type QuotePreview = {
+    usdCents : Nat;
+    /// Payment-processing fee at the rail's current formula, rounded up.
+    feeCents : Nat;
+    /// What is left to buy cycles with. Null when the fee swallows the amount.
+    netCents : ?Nat;
+    /// The §3 quantity this amount would lock. Null exactly when `create_order`
+    /// would refuse to price it — no rates, stale rates, or fee-swallowed — so a
+    /// caller that shows `cycles` never promises a purchase that cannot happen.
+    cycles : ?Nat;
+  };
+
+  public type QuotePreviews = {
+    quotes : [QuotePreview];
+    /// The rate pair the quotes came from, so a caller can reproduce the
+    /// arithmetic without a second call. Null when nothing usable is cached.
+    rates : ?Pricing.Rates;
+    /// Deducted by the cycles ledger from a `#cyclesLedgerAccount` delivery; a
+    /// `#canister` top-up receives the full quantity.
+    cyclesLedgerDepositFee : Nat;
+  };
+
+  /// Batch pre-purchase quote, public.
+  ///
+  /// This exists so the price a buyer is shown is **computed by the same code
+  /// that prices the order** — `quoteCents`, the identical function
+  /// `create_order` and `create_ck_usdc_order` call. A client reimplementing the
+  /// formula would be one refactor away from quoting a number the gateway does
+  /// not honour, and the buyer would have no way to tell which was wrong.
+  ///
+  /// Batched because the tier grid needs every price in one round trip.
+  ///
+  /// **Unbounded input on purpose**, unlike the paged queries. Those cap `limit`
+  /// because a tiny request makes them scan a large store — cheap to invoke,
+  /// expensive to serve. Here the work is constant per element the caller already
+  /// had to transmit, there is no state scan and no amplification, so the ingress
+  /// size limit already bounds it. A cap would only buy silent truncation, which
+  /// is a worse failure than the one it prevents: a caller passing more tiers
+  /// than the cap would get a short array back with no signal that anything was
+  /// dropped.
+  ///
+  /// `rail` selects the fee formula — the two rails price the same rate cache
+  /// with different fees (§6.1, §6.2).
+  public query func quote_previews(rail : Types.Rail, amounts : [Nat]) : async QuotePreviews {
+    let fee : { feeBps : Nat; feeFixedCents : Nat } = switch (rail) {
+      case (#card) { { feeBps = pricingConfig.feeBps; feeFixedCents = pricingConfig.feeFixedCents } };
+      case (#ckUsdc) { { feeBps = ckUsdcConfig.feeBps; feeFixedCents = ckUsdcConfig.feeFixedCents } };
+    };
+    let quotes = Array.map<Nat, QuotePreview>(
+      amounts,
+      func(usdCents) {
+        {
+          usdCents;
+          feeCents = Pricing.feeCents(fee, usdCents);
+          netCents = Pricing.netCents(fee, usdCents);
+          cycles = switch (quoteCents(fee, usdCents)) {
+            case (#ok((cycles, _))) ?cycles;
+            case (#stale or #unpriceable) null;
+          };
+        };
+      },
+    );
+    {
+      quotes;
+      rates = Pricing.lastRates(rateCache);
+      cyclesLedgerDepositFee = Cmc.cyclesLedgerDepositFee;
+    };
   };
 
   // ── Webhook ingestion state (task 8, §4.1/§4.2) ─────────────────────────
@@ -1338,6 +1429,42 @@ persistent actor CyclesGateway {
   ///
   /// Only reachable from a pre-delivery money-bearing state. A `#created` order
   /// has taken no money and needs no decision; a `#delivered` one is done.
+  /// Let a buyer give up on their own unpaid order (owner-scoped).
+  ///
+  /// `Gate.maxOpenOrdersPerPrincipal` counts `#created` orders, and its refusal
+  /// tells the user to pay or abandon one — advice they could not follow without
+  /// this: `abandon_order` is admin-only and only accepts *paid* orders. A buyer
+  /// who opened the cap's worth of checkouts and completed none would be locked
+  /// out until the TTL expired them.
+  ///
+  /// Marks the order `#expired`, which is the existing retention transition, not
+  /// a new state. Two consequences, both wanted: the slot frees immediately, and
+  /// a payment that arrives anyway is **still honoured** at the locked quantity,
+  /// because `#expired` is payable (§4). So this can never strand a payment that
+  /// was already in flight when the buyer clicked cancel.
+  ///
+  /// No error-queue entry: nothing is owed. The record and the audit line are the
+  /// trail, and queueing an obligation for an order where no money moved is
+  /// exactly the orphan state the queue must not accumulate.
+  public shared ({ caller }) func cancel_order(id : Types.OrderId) : async Result.Result<Types.Order, Text> {
+    let ?order = Orders.getOwned(orderStore, id, caller) else return #err("no order " # id);
+    switch (order.status) {
+      case (#created) {};
+      case (#expired) return #ok(order); // idempotent: already given up on
+      case (status) {
+        return #err(
+          "order " # id # " is " # Types.statusToText(status)
+          # "; a paid order cannot be cancelled — it will deliver, or contact support"
+        );
+      };
+    };
+    let ?cancelled = tryTransition(id, #expired) else {
+      return #err("order " # id # " refused the transition to expired");
+    };
+    audit("order.cancelled", id # " cancelled by owner");
+    #ok(cancelled);
+  };
+
   public shared ({ caller }) func abandon_order(
     id : Types.OrderId,
     reason : Text,
@@ -1572,6 +1699,8 @@ persistent actor CyclesGateway {
     #amountBelowFees;
     /// §3.1 fail-closed: no fresh rate and the refresh failed.
     #rateUnavailable;
+    /// See `CreateOrderError.quoteChanged`.
+    #quoteChanged : { quoted : Nat; minimum : Nat };
     #idGeneration;
     /// Gate.mo admission refusal — the same pre-creation gate the card rail
     /// uses. Both rails converge on one ICP float and one burn cap, so both
@@ -1595,9 +1724,11 @@ persistent actor CyclesGateway {
   /// as the card rail (locked cycle quantity, fail-closed on a stale rate),
   /// priced with this rail's own fee formula. The flow after this:
   /// `icrc2_approve` (user → ledger, ≥ approveUnits) then `claim_ck_usdc_order`.
+  /// `minCycles` behaves exactly as on `create_order` — see it for the reasoning.
   public shared ({ caller }) func create_ck_usdc_order(
     usdCents : Nat,
     destination : Types.Destination,
+    minCycles : ?Nat,
   ) : async Result.Result<CreatedCkUsdcOrder, CreateCkUsdcOrderError> {
     switch (Auth.checkUser(caller)) {
       case (#err(#anonymous)) return #err(#anonymous);
@@ -1622,6 +1753,12 @@ persistent actor CyclesGateway {
       case (#ok(quoted)) quoted;
       case (#unpriceable) return #err(#amountBelowFees);
       case (#stale) return #err(#rateUnavailable);
+    };
+    switch (minCycles) {
+      case (?minimum) if (lockedCycles < minimum) {
+        return #err(#quoteChanged({ quoted = lockedCycles; minimum }));
+      };
+      case null {};
     };
     switch (await* createOrderWithFreshId(#ii(caller), #ckUsdc, destination, lockedCycles, pricing)) {
       case (?order) {

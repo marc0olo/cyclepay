@@ -113,6 +113,16 @@ module {
   /// surface as `#BadFee` → escalation, never a silent wrong transfer.
   public let icpTransferFeeE8s : Nat = 10_000;
 
+  /// Cycles the cycles ledger deducts from a `deposit`. A
+  /// `#cyclesLedgerAccount` destination therefore receives this much less than
+  /// the order's locked quantity; a `#canister` top-up pays nothing.
+  ///
+  /// Deliberately **not** grossed up into the quote: minting extra cycles to
+  /// cover a per-order fee would let anyone drain the operator by opening
+  /// account-destination orders, so the fee is disclosed to the buyer rather
+  /// than absorbed. Exposed through `quote_previews` for exactly that purpose.
+  public let cyclesLedgerDepositFee : Nat = 100_000_000;
+
   /// The CMC recognizes a top-up by this icrc1 memo: the 8-byte little-endian
   /// encoding of 0x50555054 ("TPUP"). Pinned by test vector.
   public let topUpMemo : Blob = "\54\50\55\50\00\00\00\00";

@@ -121,12 +121,14 @@ test('ck-01 — rail fails closed by default; config is admin-gated and validate
   // maxUsdCents = 0 default: the rail is disabled until the operator sizes it.
   const disabled = await gw.asUser.create_ck_usdc_order(
     CK_ORDER_USD_CENTS, { canister: destinationId },
+  [],
   );
   expect(expectErr(disabled)).toEqual({ railDisabled: null });
 
   // Anonymous callers can never own orders.
   const anon = await gw.asAnon.create_ck_usdc_order(
     CK_ORDER_USD_CENTS, { canister: destinationId },
+  [],
   );
   expect(expectErr(anon)).toEqual({ anonymous: null });
 
@@ -145,11 +147,11 @@ test('ck-01 — rail fails closed by default; config is admin-gated and validate
 });
 
 test('ck-02 — amount bounds fail closed before any quote (§6.2)', async () => {
-  const zero = await gw.asUser.create_ck_usdc_order(0n, { canister: destinationId });
+  const zero = await gw.asUser.create_ck_usdc_order(0n, { canister: destinationId }, []);
   expect(expectErr(zero)).toEqual({ zeroAmount: null });
-  const low = await gw.asUser.create_ck_usdc_order(99n, { canister: destinationId });
+  const low = await gw.asUser.create_ck_usdc_order(99n, { canister: destinationId }, []);
   expect(expectErr(low)).toEqual({ belowMinimum: RAIL_CONFIG.minUsdCents });
-  const high = await gw.asUser.create_ck_usdc_order(100_001n, { canister: destinationId });
+  const high = await gw.asUser.create_ck_usdc_order(100_001n, { canister: destinationId }, []);
   expect(expectErr(high)).toEqual({ aboveMaximum: RAIL_CONFIG.maxUsdCents });
 });
 
@@ -159,6 +161,7 @@ test('ck-03 — order priced through the shared §3 quote path with this rail\'s
 
   const created = expectOk(await gw.asUser.create_ck_usdc_order(
     CK_ORDER_USD_CENTS, { canister: destinationId },
+  [],
   ));
   order1 = created.order;
 
@@ -193,7 +196,7 @@ test('ck-04 — claim guards: authz, rail match, and the no-approval definite re
   expectOk(await gw.asAdmin.set_card_tiers([
     { id: 'tier5', usdCents: 500n, paymentLinkUrl: 'https://buy.stripe.com/test_tier5' },
   ]));
-  const cardOrder = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }));
+  const cardOrder = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }, []));
   expect(expectErr(await gw.asUser.claim_ck_usdc_order(cardOrder.order.id)))
     .toEqual({ wrongRail: null });
 
@@ -285,6 +288,7 @@ test('ck-06 — treasury interplay: cap sized → held ck order resumes → real
 test('ck-07 — insufficient funds is a definite rejection: clean error, no stuck order (§6.2)', async () => {
   const created = expectOk(await asPoor.create_ck_usdc_order(
     CK_ORDER_USD_CENTS, { canister: destinationId },
+  [],
   ));
   // The allowance may exceed the balance — approving only costs the fee.
   await approveCkUsdc(ck.asPoorUser, gw.backendId, CK_ORDER_APPROVE_UNITS);
@@ -301,6 +305,7 @@ test('ck-07 — insufficient funds is a definite rejection: clean error, no stuc
 test('ck-08 — upgrade mid-pull: the §5.1 money-IN intent replays, the user is debited exactly once', async () => {
   const created = expectOk(await gw.asUser.create_ck_usdc_order(
     CK_ORDER_USD_CENTS, { canister: destinationId },
+  [],
   ));
   order2 = created.order;
   await approveCkUsdc(ck.asUser, gw.backendId, CK_ORDER_APPROVE_UNITS);
@@ -352,6 +357,7 @@ test('ck-08 — upgrade mid-pull: the §5.1 money-IN intent replays, the user is
 test('ck-09 — stale intent escalates once, order stays Created, operator reset re-opens the claim (§5.1/§6.2)', async () => {
   const created = expectOk(await gw.asUser.create_ck_usdc_order(
     CK_ORDER_USD_CENTS, { canister: destinationId },
+  [],
   ));
   order3 = created.order;
   await approveCkUsdc(ck.asUser, gw.backendId, CK_ORDER_APPROVE_UNITS);
@@ -456,6 +462,7 @@ test('ck-12 — the per-order single-flight guard rejects a concurrent claim', a
   await ensureRates(gw);
   const created = expectOk(await gw.asUser.create_ck_usdc_order(
     CK_ORDER_USD_CENTS, { canister: destinationId },
+  [],
   ));
   const order = created.order;
   await approveCkUsdc(ck.asUser, gw.backendId, CK_ORDER_APPROVE_UNITS);

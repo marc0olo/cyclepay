@@ -178,6 +178,7 @@ XDR/ICP. There is no HTTPS outcall and no settable rate source.
 
 ```bash
 icp canister call backend pricing_status '()' -e ic   # public: both rates, config, last refresh
+icp canister call backend quote_previews '(variant { card }, vec { 500 : nat })' -e ic  # public: what an amount buys
 icp canister call backend refresh_rates '()' -e ic --identity <operator>   # force a tick now
 icp canister call backend set_pricing_config \
   '(record { feeBps = 290 : nat; feeFixedCents = 30 : nat; maxAgeNs = 300_000_000_000 : nat; maxRateDeltaBps = 5_000 : nat; minRateSources = 2 : nat })' \
@@ -187,7 +188,10 @@ icp canister call backend set_pricing_config \
 Defaults: 290 bps + 30¢ (Stripe's fee, recovered net-of-fees per §3), a **5-min**
 staleness window, a 50% delta bound, and a 2-source minimum.
 
-`pricing_status` is the one command to run first. `rates` carries both values
+`quote_previews` is the fastest "is the rail actually quoting?" check — it runs
+the same pricing code `create_order` runs, so a `cycles = null` there is exactly
+what a buyer would hit. `pricing_status` is the one command to run first for
+*why*. `rates` carries both values
 plus `fetchedAtNs` and the XRC `quality` (received/queried source counts and the
 spread); `lastAttempt` carries `{atNs; ok; detail}` — **`detail` names the
 rejecting guard**, which is what tells you whether the XRC answered at all.
@@ -343,7 +347,10 @@ icp canister call backend run_retention '()' -e ic --identity <operator>
 ```
 
 **Orders are never deleted.** Retention has exactly one effect: a `created`
-order past `orderTtlNs` flips to `expired`.
+order past `orderTtlNs` flips to `expired`. Buyers can also trigger that flip
+themselves with `cancel_order` (owner-scoped) to free an open-order slot — an
+`expired` order is still payable, so cancelling never strands an in-flight
+payment, and it creates no error-queue entry because nothing is owed.
 
 | Status | Age | Payable? |
 |---|---|---|

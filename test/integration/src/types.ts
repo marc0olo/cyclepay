@@ -106,8 +106,24 @@ export type CreateOrderError =
   | { unknownTier: string }
   | { tierBelowFees: string }
   | { rateUnavailable: null }
+  | { quoteChanged: { quoted: bigint; minimum: bigint } }
   | { idGeneration: null }
   | { notAdmitted: GateReason };
+
+export type Rail = { card: null } | { ckUsdc: null };
+
+export interface QuotePreview {
+  usdCents: bigint;
+  feeCents: bigint;
+  netCents: [] | [bigint];
+  cycles: [] | [bigint];
+}
+
+export interface QuotePreviews {
+  quotes: QuotePreview[];
+  rates: [] | [PricingRates];
+  cyclesLedgerDepositFee: bigint;
+}
 
 export interface TransferIntent {
   to: Account;
@@ -208,6 +224,7 @@ export type CreateCkUsdcOrderError =
   | { aboveMaximum: bigint }
   | { amountBelowFees: null }
   | { rateUnavailable: null }
+  | { quoteChanged: { quoted: bigint; minimum: bigint } }
   | { idGeneration: null };
 
 export type ClaimCkUsdcError =
@@ -260,8 +277,10 @@ export interface BackendService {
   ck_usdc_config(): Promise<CkUsdcConfig>;
   ck_usdc_pull(id: string): Promise<Opt<PullEntry>>;
   claim_ck_usdc_order(id: string): Promise<Result<Order, ClaimCkUsdcError>>;
-  create_ck_usdc_order(usdCents: bigint, destination: Destination): Promise<Result<CreatedCkUsdcOrder, CreateCkUsdcOrderError>>;
-  create_order(tierId: string, destination: Destination): Promise<Result<CreatedOrder, CreateOrderError>>;
+  create_ck_usdc_order(usdCents: bigint, destination: Destination, minCycles: [] | [bigint]): Promise<Result<CreatedCkUsdcOrder, CreateCkUsdcOrderError>>;
+  create_order(tierId: string, destination: Destination, minCycles: [] | [bigint]): Promise<Result<CreatedOrder, CreateOrderError>>;
+  quote_previews(rail: Rail, amounts: bigint[]): Promise<QuotePreviews>;
+  cancel_order(id: string): Promise<Result<Order, string>>;
   can_purchase(usdCents: bigint): Promise<Result<null, GateReason>>;
   error_queue(afterId: Opt<bigint>, limit: bigint): Promise<ErrorQueuePage>;
   error_queue_unresolved(afterId: Opt<bigint>, limit: bigint): Promise<ErrorQueuePage>;

@@ -74,12 +74,196 @@ export function formatUsdCents(cents: bigint): string {
   return `$${cents / 100n}.${(cents % 100n).toString().padStart(2, "0")}`;
 }
 
+// --- pricing (§3) ------------------------------------------------------------
+//
+// The backend prices everything. `quote_previews` runs the *same* `quoteCents`
+// function `create_order` runs, so a quoted figure and the order that follows it
+// cannot disagree — nothing here reimplements the formula.
+//
+// The one deliberate exception is `cyclesForCents` below, used only to re-derive
+// a *finished* order's price from its receipt. That duplication is the point: a
+// backend confirming its own arithmetic proves nothing, so verification has to
+// happen somewhere the operator does not control.
+
+export interface FeeConfig {
+  feeBps: bigint;
+  feeFixedCents: bigint;
+}
+
+/// `netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros`, floored — mirrors
+/// `Pricing.cyclesForCents`. Receipt verification only; see the note above.
+export function cyclesForCents(
+  net: bigint,
+  xdrPermyriadPerIcp: bigint,
+  usdPerIcpMicros: bigint,
+): bigint | null {
+  if (usdPerIcpMicros === 0n) return null;
+  return (net * xdrPermyriadPerIcp * 1_000_000_000_000n) / usdPerIcpMicros;
+}
+
+/// The fee split in words, from the backend's own numbers. Ends with the margin
+/// statement because "what is the operator taking?" is the question a fee line
+/// actually raises — and on this gateway the answer is nothing.
+export function feeBreakdown(
+  grossCents: bigint,
+  feeCents: bigint,
+  netCents: bigint | undefined,
+  fee: FeeConfig,
+): string {
+  if (netCents === undefined) {
+    return `Payment processing (${formatUsdCents(feeCents)}) would exceed ${formatUsdCents(grossCents)} — pick a larger amount.`;
+  }
+  const rate = fee.feeBps === 0n && fee.feeFixedCents === 0n
+    ? "no processor fee"
+    : `${Number(fee.feeBps) / 100}% + ${formatUsdCents(fee.feeFixedCents)}`;
+  return (
+    `${formatUsdCents(grossCents)} charged · ${formatUsdCents(feeCents)} payment processing (${rate}) · ` +
+    `${formatUsdCents(netCents)} buys cycles · operator margin: none`
+  );
+}
+
+export type DestinationKind = "canister" | "cyclesLedgerAccount";
+
+/// What actually lands, given where it is going. The cycles ledger charges a
+/// flat fee to accept a deposit, so an account destination receives less than a
+/// canister top-up. Not grossed up on-chain by design (minting extra to cover a
+/// per-order fee would be griefable), so it has to be shown here instead.
+///
+/// `depositFee` comes from `quote_previews` rather than a constant in this file —
+/// it is the ledger's number, not ours.
+export function cyclesAtDestination(
+  cycles: bigint | null,
+  destination: DestinationKind,
+  depositFee: bigint,
+): bigint | null {
+  if (cycles === null) return null;
+  if (destination === "canister") return cycles;
+  return cycles > depositFee ? cycles - depositFee : 0n;
+}
+
+/// The line under an amount, stating what arrives and that the rate is now
+/// locked once the order exists.
+///
+/// **The rate is what gets locked, not the quantity.** Money-out never re-reads
+/// a rate, so market movement after creation changes nothing — but if a payment
+/// arrives for a different amount than quoted, the quantity is re-derived at
+/// that same locked rate. Saying "cycles are locked" would be wrong in that one
+/// case; saying the rate is locked is always true.
+export function estimateLine(
+  cycles: bigint | null,
+  destination: DestinationKind,
+  depositFee: bigint,
+): string {
+  if (cycles === null) {
+    return "No exchange rate available right now — orders are paused until one is.";
+  }
+  const landing = cyclesAtDestination(cycles, destination, depositFee);
+  if (destination === "cyclesLedgerAccount" && landing !== null) {
+    return (
+      `≈ ${formatCycles(landing)} cycles credited ` +
+      `(${formatCycles(cycles)} minted, less the cycles ledger's ${formatCycles(depositFee)} deposit fee)`
+    );
+  }
+  return `≈ ${formatCycles(cycles)} cycles`;
+}
+
+/// Tolerance the UI allows between the figure a buyer was shown and the one the
+/// gateway locks: 5%.
+///
+/// Rates refresh on a timer, so an exact match would bounce a purchase for a
+/// move too small to care about — and every bounce is a buyer wondering whether
+/// their card was charged. 5% is wide enough that ordinary drift passes and
+/// narrow enough that a real dislocation still stops and asks.
+///
+/// Only ever applied downward: more cycles than shown is never a reason to
+/// refuse. The tolerance lives here, not in the backend, because it is a
+/// *client policy* — the backend enforces exactly the minimum it is handed, so a
+/// caller that needs an exact quantity can pin one.
+export const QUOTE_SLIPPAGE_BPS = 500n;
+
+/// The `minCycles` to pin for a displayed estimate.
+export function minAcceptableCycles(shown: bigint): bigint {
+  return (shown * (10_000n - QUOTE_SLIPPAGE_BPS)) / 10_000n;
+}
+
+/// Stated when the locked quantity differs from the estimate the buyer saw —
+/// within tolerance, so the order went through. Silence here would be the
+/// surprise; the number changed and they should hear it from us.
+export function lockedVsEstimate(locked: bigint, shown: bigint | null): string | null {
+  if (shown === null || locked === shown) return null;
+  const direction = locked > shown ? "more" : "fewer";
+  return (
+    `The rate moved slightly between the estimate and the lock: this order is for ` +
+    `${formatCycles(locked)} cycles, ${direction} than the ${formatCycles(shown)} shown. ` +
+    `This is the locked quantity and it will not change again.`
+  );
+}
+
+/// Why the estimate carries a "≈" before the order exists, and stops once it
+/// does. Shown next to the estimate so nobody has to guess whether the number
+/// they are looking at can still move.
+export const RATE_LOCK_NOTE =
+  "The exchange rate is locked when you create the order — it never changes afterwards, however long you take to pay or however far the market moves.";
+
 export function shortPrincipal(text: string): string {
   return text.length <= 16 ? text : `${text.slice(0, 5)}…${text.slice(-5)}`;
 }
 
 export function nsToMillis(ns: bigint): number {
   return Number(ns / 1_000_000n);
+}
+
+// --- receipts (§8) -----------------------------------------------------------
+
+export interface ReceiptVerification {
+  netCents?: bigint;
+  usdPerIcpMicros: bigint;
+  xdrPermyriadPerIcp: bigint;
+  rateReceivedRates: bigint;
+  rateQueriedSources: bigint;
+}
+
+export interface ReceiptCheck {
+  /// The quantity recomputed from the receipt's own inputs.
+  recomputed: bigint | null;
+  /// Whether it equals the cycles the order locked.
+  matches: boolean;
+  /// One line stating the arithmetic, with the numbers filled in.
+  formula: string;
+}
+
+/// Recompute the quote from a receipt and compare it to what was locked.
+///
+/// The point is that this runs on the buyer's machine from values they can fetch
+/// from the XRC and the CMC themselves — so "you were charged correctly" is
+/// something they check, not something the operator asserts.
+export function checkReceipt(v: ReceiptVerification, lockedCycles: bigint): ReceiptCheck {
+  const net = v.netCents;
+  if (net === undefined) {
+    return {
+      recomputed: null,
+      matches: false,
+      formula: "This order has no net amount — the fee formula would have consumed it.",
+    };
+  }
+  const recomputed = cyclesForCents(net, v.xdrPermyriadPerIcp, v.usdPerIcpMicros);
+  const usdPerIcp = (Number(v.usdPerIcpMicros) / 1e6).toFixed(2);
+  const xdrPerIcp = (Number(v.xdrPermyriadPerIcp) / 1e4).toFixed(4);
+  return {
+    recomputed,
+    matches: recomputed !== null && recomputed === lockedCycles,
+    formula:
+      `${formatUsdCents(net)} net × ${xdrPerIcp} XDR/ICP ÷ $${usdPerIcp}/ICP × 10¹² = ` +
+      `${recomputed === null ? "—" : formatCycles(recomputed)}`,
+  };
+}
+
+/// How well-sourced the quoted ICP price was. A rate assembled from two
+/// exchanges is not the same product as one from twelve, and the difference is
+/// otherwise invisible to the buyer.
+export function rateSourceNote(received: bigint, queried: bigint): string {
+  if (queried === 0n) return "";
+  return `priced from ${received} of ${queried} exchange sources`;
 }
 
 export type SubaccountParse =
@@ -266,6 +450,21 @@ export function claimErrorInfo(err: ClaimError): ClaimErrorInfo {
   }
 }
 
+/// The `#quoteChanged` refusal, in the buyer's terms. Leads with "nothing was
+/// charged" because that is the first thing someone wants to know when a payment
+/// flow refuses.
+export function quoteChangedMessage(
+  quoted: bigint,
+  destination: DestinationKind,
+  depositFee: bigint,
+): string {
+  return (
+    `The exchange rate moved while this page was open — nothing was charged. ` +
+    `This amount now buys ${estimateLine(quoted, destination, depositFee)}. ` +
+    `Click again to create the order and lock that rate.`
+  );
+}
+
 /// icrc2_approve errors come from the raw (non-bindgen) ledger actor, so the
 /// variant is a one-key record — key on it structurally.
 export function approveErrorMessage(err: Record<string, unknown>): string {
@@ -292,6 +491,10 @@ export function approveErrorMessage(err: Record<string, unknown>): string {
 /// alone cannot say whether the user should change the amount or wait.
 export function createOrderErrorMessage(key: string): string {
   switch (key) {
+    case "quoteChanged":
+      // Callers with the full error should use `quoteChangedMessage` — the key
+      // alone cannot say what the amount buys now.
+      return "The exchange rate moved past the accepted tolerance — nothing was charged. Check the updated amount and confirm.";
     case "notAdmitted":
       return "Purchases are temporarily unavailable — nothing was charged. Please try again later.";
     case "rateUnavailable":

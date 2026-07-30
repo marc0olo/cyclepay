@@ -17,9 +17,13 @@ the card processor ever becomes unavailable; it is not the product.
 
 **Pricing is derived on-chain and reproducible by anyone.** Two rates, both read
 from canisters — USD/ICP from the Exchange Rate Canister, XDR/ICP from the CMC —
-so the canister makes no outbound HTTPS at all. Each order stores both inputs, and
-`receipt(orderId)` hands the buyer everything needed to recompute their own price
-from canisters they query themselves.
+so the canister makes no outbound HTTPS at all.
+
+The buyer sees the cycle quantity **before** committing (`quote_previews`, a
+public query running the same code that locks the price), the quoted figure is
+**pinned server-side** at creation so an order can never lock less than they were
+shown, and afterwards `receipt(orderId)` hands them both rate inputs so they can
+recompute the price themselves rather than take our word for it.
 
 The design bar is "production money-handler from day one": full idempotency,
 write-intent-before-call replay safety, an error queue that never drops an
@@ -133,7 +137,7 @@ npm --prefix src/frontend run typecheck
 ```
 
 **3. PocketIC integration suite** (`test/integration`) — the **go-live bar**
-(spec §9): 30 end-to-end scenarios against the real ICP ledger, CMC, cycles
+(spec §9): 33 end-to-end scenarios against the real ICP ledger, CMC, cycles
 ledger, and ck-USDC ledger Wasms, plus the released XRC mock at the mainnet XRC
 id, with crafted HMAC-signed Stripe webhooks, time control, and
 upgrade-mid-flight replay checks:

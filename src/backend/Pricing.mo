@@ -222,9 +222,16 @@ module {
   /// The fee argument is the narrowed shape so both a live `Config` and an
   /// order's creation-time snapshot fit (§6.1 amount honouring).
   public func netCents(fee : { feeBps : Nat; feeFixedCents : Nat }, grossCents : Nat) : ?Nat {
-    let total = (grossCents * fee.feeBps + 9_999) / 10_000 + fee.feeFixedCents;
+    let total = feeCents(fee, grossCents);
     if (total >= grossCents) return null;
     ?(grossCents - total);
+  };
+
+  /// The fee itself, split out so it can be shown to a buyer without
+  /// recomputing it: `netCents` is defined as `grossCents - feeCents` whenever
+  /// that is positive, and the two must never disagree.
+  public func feeCents(fee : { feeBps : Nat; feeFixedCents : Nat }, grossCents : Nat) : Nat {
+    (grossCents * fee.feeBps + 9_999) / 10_000 + fee.feeFixedCents;
   };
 
   /// The §3 locked cycle quantity for an already-netted amount. Integer

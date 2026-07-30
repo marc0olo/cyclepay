@@ -83,18 +83,18 @@ type Result_2 =
  };
 type Result_16 = 
  variant {
-   err: text;
+   err: AttachPaymentError;
    ok: Order;
  };
 type Result_15 = 
  variant {
-   err: AttachPaymentError;
-   ok: Order;
+   err: Reason;
+   ok;
  };
 type Result_14 = 
  variant {
-   err: Reason;
-   ok;
+   err: text;
+   ok: Order;
  };
 type Result_13 = 
  variant {
@@ -194,6 +194,19 @@ type Rail =
  variant {
    card;
    ckUsdc;
+ };
+type QuotePreviews = 
+ record {
+   cyclesLedgerDepositFee: nat;
+   quotes: vec QuotePreview;
+   rates: opt Rates;
+ };
+type QuotePreview = 
+ record {
+   cycles: opt nat;
+   feeCents: nat;
+   netCents: opt nat;
+   usdCents: nat;
  };
 type Quality = 
  record {
@@ -363,6 +376,10 @@ type CreateOrderError =
    anonymous;
    idGeneration;
    notAdmitted: Reason;
+   quoteChanged: record {
+                   minimum: nat;
+                   quoted: nat;
+                 };
    rateUnavailable;
    tierBelowFees: text;
    unknownTier: text;
@@ -375,6 +392,10 @@ type CreateCkUsdcOrderError =
    belowMinimum: nat;
    idGeneration;
    notAdmitted: Reason;
+   quoteChanged: record {
+                   minimum: nat;
+                   quoted: nat;
+                 };
    railDisabled;
    rateUnavailable;
    zeroAmount;
@@ -487,18 +508,7 @@ type Account =
 /// module layout this actor grows into: Orders.mo wiring, rails/, Cmc.mo,
 /// Pricing.mo, Treasury.mo, ErrorQueue.mo, Auth.mo.
 service : {
-  /// Stop trying to deliver an order (admin, §7) — **the only path to a
-  /// terminal non-delivered state.**
-  /// 
-  /// Nothing in the system gives up on a purchase automatically: a delay raises
-  /// `#deliveryDelayed` and keeps retrying, because its causes are all
-  /// operator-fixable. This is the deliberate human decision that a purchase
-  /// will not be completed, and it demands a reason so the trail records *why*
-  /// alongside *who*.
-  /// 
-  /// Only reachable from a pre-delivery money-bearing state. A `#created` order
-  /// has taken no money and needs no decision; a `#delivered` one is done.
-  abandon_order: (id: OrderId, reason: text) -> (Result_16);
+  abandon_order: (id: OrderId, reason: text) -> (Result_14);
   /// Credit a Stripe charge the canister never saw (admin, §6.1).
   /// 
   /// The recovery path for the one card-rail failure that otherwise has none:
@@ -518,7 +528,7 @@ service : {
   /// This is a money-creating lever, so: controller-only, dedup-guarded against
   /// double credit, and audited with the calling principal.
   attach_payment: (paymentRef: text, id: OrderId, paidUsdCents: nat) ->
-   (Result_15);
+   (Result_16);
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
   audit_log: () -> (vec Event) query;
@@ -531,7 +541,36 @@ service : {
   /// anonymous callers may ask: it reveals only operational state that
   /// `treasury_status` already publishes. Answered for the *calling* principal,
   /// so the open-order cap it reports is the caller's own.
-  can_purchase: (usdCents: nat) -> (Result_14) query;
+  can_purchase: (usdCents: nat) -> (Result_15) query;
+  /// Stop trying to deliver an order (admin, §7) — **the only path to a
+  /// terminal non-delivered state.**
+  /// 
+  /// Nothing in the system gives up on a purchase automatically: a delay raises
+  /// `#deliveryDelayed` and keeps retrying, because its causes are all
+  /// operator-fixable. This is the deliberate human decision that a purchase
+  /// will not be completed, and it demands a reason so the trail records *why*
+  /// alongside *who*.
+  /// 
+  /// Only reachable from a pre-delivery money-bearing state. A `#created` order
+  /// has taken no money and needs no decision; a `#delivered` one is done.
+  /// Let a buyer give up on their own unpaid order (owner-scoped).
+  /// 
+  /// `Gate.maxOpenOrdersPerPrincipal` counts `#created` orders, and its refusal
+  /// tells the user to pay or abandon one — advice they could not follow without
+  /// this: `abandon_order` is admin-only and only accepts *paid* orders. A buyer
+  /// who opened the cap's worth of checkouts and completed none would be locked
+  /// out until the TTL expired them.
+  /// 
+  /// Marks the order `#expired`, which is the existing retention transition, not
+  /// a new state. Two consequences, both wanted: the slot frees immediately, and
+  /// a payment that arrives anyway is **still honoured** at the locked quantity,
+  /// because `#expired` is payable (§4). So this can never strand a payment that
+  /// was already in flight when the buyer clicked cancel.
+  /// 
+  /// No error-queue entry: nothing is owed. The record and the audit line are the
+  /// trail, and queueing an obligation for an order where no money moved is
+  /// exactly the orphan state the queue must not accumulate.
+  cancel_order: (id: OrderId) -> (Result_14);
   /// Public — the frontend renders tiers and their Payment Links from this.
   card_tiers: () -> (vec Tier) query;
   /// Public — bounds and fee formula are what users are charged (the same
@@ -553,8 +592,9 @@ service : {
   /// as the card rail (locked cycle quantity, fail-closed on a stale rate),
   /// priced with this rail's own fee formula. The flow after this:
   /// `icrc2_approve` (user → ledger, ≥ approveUnits) then `claim_ck_usdc_order`.
-  create_ck_usdc_order: (usdCents: nat, destination: Destination) ->
-   (Result_12);
+  /// `minCycles` behaves exactly as on `create_order` — see it for the reasoning.
+  create_ck_usdc_order: (usdCents: nat, destination: Destination, minCycles:
+   opt nat) -> (Result_12);
   /// Create a card-rail order: II caller becomes the owner (ownership is
   /// captured here at the API edge, seam §11.1.3), the tier's USD amount is
   /// quoted into a locked cycle *quantity* (§3, net of fees at the cached
@@ -563,7 +603,19 @@ service : {
   /// before the refresh await, so one order is always priced from one
   /// consistent epoch even when a refresh interleaves with a config change;
   /// the store write after the awaits is atomic.
-  create_order: (tierId: text, destination: Destination) -> (Result_11);
+  /// `minCycles` pins the quantity the caller was shown (§3).
+  /// 
+  /// The rate refresh runs on a timer, so a figure quoted to a buyer can move
+  /// before they commit — and a client-side re-check cannot close that window,
+  /// because a query and this update are separate messages. Pinning the
+  /// expectation here makes the check atomic with the lock, so no order can ever
+  /// be created at a quantity the buyer was not shown.
+  /// 
+  /// A **minimum**, deliberately, not an equality: a rate move in the buyer's
+  /// favour passes through and they keep the extra cycles. The guard can only
+  /// ever protect the buyer. `null` opts out entirely.
+  create_order: (tierId: text, destination: Destination, minCycles:
+   opt nat) -> (Result_11);
   /// §5.2 liveness observability, public (operational transparency, same
   /// stance as treasury_status): cadence + last completed timer sweep. A
   /// null or stale `lastSweep` means recovery is not running.
@@ -654,6 +706,28 @@ service : {
   /// Manual mint kick (admin, §7) — ops lever for a stuck-looking order;
   /// safe to spam, every step is deduped/idempotent/single-flighted.
   process_order: (id: OrderId) -> (Result_10);
+  /// Batch pre-purchase quote, public.
+  /// 
+  /// This exists so the price a buyer is shown is **computed by the same code
+  /// that prices the order** — `quoteCents`, the identical function
+  /// `create_order` and `create_ck_usdc_order` call. A client reimplementing the
+  /// formula would be one refactor away from quoting a number the gateway does
+  /// not honour, and the buyer would have no way to tell which was wrong.
+  /// 
+  /// Batched because the tier grid needs every price in one round trip.
+  /// 
+  /// **Unbounded input on purpose**, unlike the paged queries. Those cap `limit`
+  /// because a tiny request makes them scan a large store — cheap to invoke,
+  /// expensive to serve. Here the work is constant per element the caller already
+  /// had to transmit, there is no state scan and no amplification, so the ingress
+  /// size limit already bounds it. A cap would only buy silent truncation, which
+  /// is a worse failure than the one it prevents: a caller passing more tiers
+  /// than the cap would get a short array back with no signal that anything was
+  /// dropped.
+  /// 
+  /// `rail` selects the fee formula — the two rails price the same rate cache
+  /// with different fees (§6.1, §6.2).
+  quote_previews: (rail: Rail, amounts: vec nat) -> (QuotePreviews) query;
   /// Everything the **buyer** needs to verify their own purchase (§2 authz:
   /// `caller == order.owner`).
   /// 

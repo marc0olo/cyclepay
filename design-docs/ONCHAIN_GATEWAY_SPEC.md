@@ -160,6 +160,19 @@ canisters and reproduce a quote.
   is only safe because a stale cache *refuses to price*. An unbounded window would
   let orders be priced indefinitely off a frozen rate — precisely the gap that
   timer-reinstantiation guidance warns about.
+- ⚠️ **The quoted quantity is pinned at creation, enforced server-side.**
+  `create_order` takes an optional `minCycles`; a rate that no longer clears it
+  returns `#quoteChanged` and creates nothing. A client-side re-check cannot give
+  this guarantee — a query and the creating update are separate messages, so the
+  rate can refresh between them. It is a **minimum**, not an equality, so a move
+  in the buyer's favour passes through: the guard can only ever protect the buyer.
+  The *tolerance* is the caller's policy (the frontend uses 5%); the canister
+  enforces exactly the bound it is handed, so a caller needing an exact quantity
+  can pin one.
+- **The price is public before it is committed.** `quote_previews` is an
+  unauthenticated query running the same `quoteCents` the order path runs, so no
+  client has to reimplement §3 — and one that did could show a figure the gateway
+  would not honour.
 - **Fail-closed:** every implausible, stale, or missing input blocks order
   creation. Nothing is priced on a guess. An extended outage means no new orders,
   while in-flight paid orders still fulfil (fulfilment uses the locked quantity,
@@ -562,6 +575,13 @@ the sections above describe. Implementation and operator procedure live in
     hundred bytes, so a million is a few hundred MB — and a million orders is
     millions of dollars of volume. If retention ever genuinely binds, archival to
     a separate canister preserves the record; deletion does not.
+  - ⚠️ **A buyer can cancel their own unpaid order** (`cancel_order`, owner-scoped,
+    `#created → #expired`, idempotent). The open-order cap counts unpaid orders and
+    its refusal says to pay or abandon one — but `abandon_order` is admin-only and
+    accepts only *paid* orders, so without this a buyer who opened the cap's worth
+    of checkouts and finished none was locked out until the TTL expired them. Since
+    `#expired` stays payable, cancelling can never strand a payment already in
+    flight; and no error-queue entry is created, because nothing is owed.
   - A late payment against an expired order is therefore **delivered, not
     refunded**: the record is still there, so the §4 late-payment guarantee holds
     for the life of the canister rather than for 90 days.
