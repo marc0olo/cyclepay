@@ -111,6 +111,14 @@ test('03 — pricing fails closed: an XRC error leaves no rate and blocks orders
 
   const status = await gw.asAnon.pricing_status();
   expect(status.rates).toEqual([]);
+  // Which XRC are we pricing from? This suite installs the mock AT the mainnet id,
+  // so no `PUBLIC_CANISTER_ID:xrc` is injected and the resolver takes its FALLBACK
+  // branch. Pinning it here means a changed default — or a broken lookup — fails a
+  // test instead of silently pricing a mainnet deploy off the wrong canister, which
+  // is the one failure mode that would otherwise be invisible.
+  //
+  // The override branch is only reachable on a local `icp network`; see issue #7.
+  expect(status.xrcCanisterId).toBe('uf6dk-hyaaa-aaaaq-qaaaq-cai');
   // The failure is diagnosable — "timer dead" and "XRC erroring" must not look
   // the same to an operator.
   expect(status.lastAttempt[0]!.ok).toBe(false);
