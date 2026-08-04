@@ -1,0 +1,2 @@
+# Real Stripe event bodies, captured with scripts/capture-stripe-fixtures.sh
+!*.json
