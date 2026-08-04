@@ -568,10 +568,13 @@ module {
     // Orders are never deleted, so an unresolvable id means the reference was
     // never valid — not that we forgot the order.
     let ?order = Orders.get(deps.orders, orderId) else return unattributed("no order " # orderId);
-    // Exhaustive match, not `let #ii(owner) = …`. A refutable pattern here traps
-    // the day a second `Owner` variant is added (the §11.1.1 Base seam), and a trap
-    // on this path is a 5xx that Stripe retries for ~3 days — so a routine type
-    // extension would look like an outage. Cheap to make impossible.
+    // A `switch` rather than a refutable `let #ii(owner) = …`, matching every other
+    // authz site. Both forms warn (M0145) and both trap at runtime when a second
+    // `Owner` case reaches them, so this buys **consistency, not safety** — the
+    // safety would come from making M0145 an error, tracked separately.
+    //
+    // Why it matters here at all: a trap on this path is a 5xx, which Stripe retries
+    // for ~3 days, so whoever takes up the §11.1.1 Base seam must update this site.
     let owner = switch (order.owner) { case (#ii(p)) p };
     if (owner.toText() != claimedOwnerText) return unattributed("claimed owner does not match order " # orderId);
     if (order.rail != #card) return unattributed("order " # orderId # " is not a card order");

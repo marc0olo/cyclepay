@@ -13,8 +13,18 @@ module {
   /// every authz site. Pattern-match at every authz check.
   public type Owner = { #ii : Principal };
 
-  /// Query authz is `caller == order.owner` (§2). Centralised pattern match;
-  /// new owner cases make this a compile error rather than a silent assumption.
+  /// Query authz is `caller == order.owner` (§2). Centralised pattern match.
+  ///
+  /// ⚠️ **Adding an `Owner` case is a compiler _warning_ (M0145), not an error** —
+  /// verified by adding `#evmAddress` and observing `mops check` still succeed. So
+  /// this does not force an audit of every authz site the way the wording here used
+  /// to claim; it only flags them, and a flagged site still traps at runtime if the
+  /// new case reaches it.
+  ///
+  /// Five sites would warn: here, `Orders.mo` (×2), `Card.mo`, and `Main.mo`. Every
+  /// one must be updated when the §11.1.1 Base seam is taken up. See the tracking
+  /// issue on making M0145 an error project-wide (`moc -Werror`), which would make
+  /// the original claim true.
   public func isOwnedBy(owner : Owner, caller : Principal) : Bool {
     switch (owner) {
       case (#ii(p)) p == caller;
