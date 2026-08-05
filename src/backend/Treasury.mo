@@ -196,15 +196,6 @@ module {
     #proceed;
   };
 
-  /// What the driver does with an `#awaitingTreasury` order (§5.3): retry
-  /// the pre-gate (refill/window-roll may have cleared it), or — at/after
-  /// the max wait (age ≥ bound, house convention) — escalate to the error
-  /// queue. `heldSinceNs` is the order's `updatedAtNs`: the hold transition
-  /// is the last one it took.
-  public func holdStage(heldSinceNs : Int, nowNs : Int, maxHoldNs : Int) : { #retry; #escalate } {
-    if (nowNs - heldSinceNs >= maxHoldNs) #escalate else #retry;
-  };
-
   /// The §5.3 timeline for an order with money in and nothing delivered.
   ///
   /// Three outcomes, not two: quiet retry while it is probably transient, then

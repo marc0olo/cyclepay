@@ -116,18 +116,49 @@ module {
     };
   };
 
-  /// Rebuild every tracked count from `orders` — the O(n) reconciliation path,
-  /// for an admin lever rather than a query. Returns the rebuilt counts.
-  public func recount(store : Store) : [(Text, Nat)] {
+  /// Every tracked status paired with its current tally, in `trackedStatuses`
+  /// order — so two snapshots can be compared index-by-index.
+  func snapshotCounts(store : Store) : [(Text, Nat)] {
+    let out = List.empty<(Text, Nat)>();
+    for (status in trackedStatuses.values()) {
+      out.add((Types.statusToText(status), countOf(store, status)));
+    };
+    out.toArray();
+  };
+
+  /// A tracked count that did not match the order store: what it said, and what
+  /// the orders actually add up to.
+  public type Drift = { status : Text; was : Nat; is : Nat };
+
+  /// Rebuild every tracked count from `orders` — the O(n) reconciliation path.
+  ///
+  /// Returns the rebuilt counts **and** every count that had to move. The drift
+  /// list is the point: `bump` clamps at zero and the counts feed the admission
+  /// gate, so a repair that silently succeeded would hide the very bug that made
+  /// it necessary. A caller that reports nothing on empty drift and reports the
+  /// deltas otherwise turns this from a repair into a detector.
+  public func reconcile(store : Store) : { counts : [(Text, Nat)]; drift : [Drift] } {
+    let before = snapshotCounts(store);
     for (status in trackedStatuses.values()) {
       store.counts.add(Types.statusToText(status), 0);
     };
     for ((_, order) in store.orders.entries()) {
       bump(store, order.status, 1);
     };
-    trackedStatuses.values().map<Types.OrderStatus, (Text, Nat)>(
-      func(status) = (Types.statusToText(status), countOf(store, status))
-    ).toArray();
+    let counts = snapshotCounts(store);
+    let drift = List.empty<Drift>();
+    for (i in before.keys()) {
+      let (status, was) = before[i];
+      let (_, is_) = counts[i];
+      if (was != is_) drift.add({ status; was; is = is_ });
+    };
+    { counts; drift = drift.toArray() };
+  };
+
+  /// Counts-only form of `reconcile`, for callers that report the tallies rather
+  /// than the drift.
+  public func recount(store : Store) : [(Text, Nat)] {
+    reconcile(store).counts;
   };
 
   public type CreateError = {

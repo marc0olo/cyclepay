@@ -479,6 +479,57 @@ module {
     ack(Http.text(200, "ok"));
   };
 
+  /// An intent that has already funded an order arrived again. Two shapes:
+  ///
+  /// - **names the same order** → a redelivery past the dedup retention. Ack it.
+  /// - **names anything else** → an `attach_payment` went to the wrong order, or the
+  ///   reference is wrong. Never mint (the money is spent), but surface the
+  ///   contradiction — it used to be entirely silent.
+  ///
+  /// Reads the order id straight from `clientReferenceId` rather than taking a
+  /// resolved order, so it stays reachable when the reference is unusable. That is
+  /// precisely the case that previously filed a false `#unattributed` obligation.
+  func alreadyCredited(
+    deps : Deps,
+    session : CheckoutCompleted,
+    credited : Types.OrderId,
+    nowNs : Int,
+  ) : Http.Response {
+    let named = switch (session.clientReferenceId) {
+      case (?ref) switch (Orders.parseClientReferenceId(ref)) {
+        case (?(_, orderId)) ?orderId;
+        case null null;
+      };
+      case null null;
+    };
+    if (named == ?credited) {
+      audit(
+        deps,
+        nowNs,
+        "stripe.replayedAfterPruning",
+        "intent " # session.paymentIntent # " was already credited to order " # credited
+        # " and its dedup keys have been pruned — treated as a redelivery, not a second payment",
+      );
+      return Http.text(200, "already credited");
+    };
+    let namedText = switch (named) { case (?o) o; case null "(no usable reference)" };
+    audit(
+      deps,
+      nowNs,
+      "stripe.creditedElsewhere",
+      "intent " # session.paymentIntent # " names " # namedText
+      # " but was already credited to order " # credited # " — NOT minted again",
+    );
+    queueType1(
+      deps,
+      #duplicate({ orderId = credited; paymentRef = session.paymentIntent }),
+      "intent " # session.paymentIntent # " was credited to order " # credited
+      # " but its Stripe session names " # namedText
+      # " — an attach_payment went to the wrong order, or the reference is wrong. Nothing was minted twice. Decide which order the buyer paid for; if it is not the credited one, deliver that one from operator funds and reconcile.",
+      nowNs,
+    );
+  };
+
   /// `checkout.session.completed` (§6.1): dedup → attribute (claimed, not
   /// trusted) → honor the actual paid amount → `#paid`, or Type 1.
   func handleCheckout(deps : Deps, session : CheckoutCompleted, nowNs : Int) : Outcome {
@@ -553,6 +604,21 @@ module {
     if (not Idempotency.recordStripeIntent(deps.dedup, session.paymentIntent, nowNs)) {
       return ack(Http.text(200, "duplicate payment intent"));
     };
+    // ⚠️ **One intent, one credit — asked before the reference is even read.**
+    //
+    // `paidIntents` is the permanent record of which intent funded which order, and
+    // answering from it needs only the payment_intent. Asking here rather than after
+    // attribution matters when BOTH are wrong: an intent already credited elsewhere,
+    // arriving with an unusable reference, would otherwise fall through to the
+    // unattributed path and file an obligation for money that is already spent.
+    //
+    // The dedup sets prune at ~7 days, which automatic Stripe retries (~3 days)
+    // cannot outlive — but a manual Dashboard resend can, and resending an event to
+    // confirm it was processed is an ordinary operator move.
+    switch (deps.paidIntents.get(session.paymentIntent)) {
+      case (?credited) return ack(alreadyCredited(deps, session, credited, nowNs));
+      case null {};
+    };
     // ── Attribution (§4.1: claimed, not trusted). Failures are Type 1
     // #unattributed: fiat arrived, nothing will be minted.
     let claimedRef = ErrorQueue.truncateClaimedRef(
@@ -578,58 +644,9 @@ module {
     let owner = switch (order.owner) { case (#ii(p)) p };
     if (owner.toText() != claimedOwnerText) return unattributed("claimed owner does not match order " # orderId);
     if (order.rail != #card) return unattributed("order " # orderId # " is not a card order");
-    // ⚠️ **One intent, one credit — checked unconditionally, against the
-    // permanent record.**
-    //
-    // This has to run BEFORE the status switch, not inside one of its arms. The
-    // dedup sets prune at ~7 days; automatic Stripe retries (~3 days) can never
-    // outlive that, but a manual "resend" from the Dashboard can, and resending
-    // an event to confirm it was processed is an ordinary operator move. With
-    // both keys gone, attribution succeeds again — and if the resolved order is
-    // still `#created`, a status-scoped check would not fire and the intent would
-    // mint a **second** time.
-    //
-    // `paidIntents` is never pruned, so it can always answer "has this intent
-    // already been credited, and to what?". `attach_payment` enforces exactly
-    // this invariant; the two credit paths must not disagree about it.
-    switch (deps.paidIntents.get(session.paymentIntent)) {
-      case (?credited) {
-        if (credited == orderId) {
-          audit(
-            deps,
-            nowNs,
-            "stripe.replayedAfterPruning",
-            "intent " # session.paymentIntent # " was already credited to order " # orderId
-            # " and its dedup keys have been pruned — treated as a redelivery, not a second payment",
-          );
-          return ack(Http.text(200, "already credited"));
-        };
-        // Credited to a DIFFERENT order than this session names. The only way to
-        // reach this is an operator having attached the payment elsewhere, and
-        // until now that disagreement was completely silent: the genuine webhook
-        // was swallowed with no record that the reference and the credit
-        // disagreed. Never mint — the money is already spent on another order —
-        // but put the contradiction somewhere a human will see it.
-        audit(
-          deps,
-          nowNs,
-          "stripe.creditedElsewhere",
-          "intent " # session.paymentIntent # " names order " # orderId
-          # " but was already credited to order " # credited
-          # " — NOT minted again; reconcile which order the buyer actually paid for",
-        );
-        return ack(queueType1(
-          deps,
-          #duplicate({ orderId = credited; paymentRef = session.paymentIntent }),
-          "intent " # session.paymentIntent # " was credited to order " # credited
-          # " but its Stripe session names order " # orderId
-          # " — an attach_payment went to the wrong order, or the reference is wrong. Nothing was minted twice. Decide which order the buyer paid for; if it is "
-          # orderId # ", deliver that one from operator funds and refund/reconcile the other.",
-          nowNs,
-        ));
-      };
-      case null {};
-    };
+    // The already-credited question was answered BEFORE attribution (see the
+    // `paidIntents` lookup above), so reaching here means this intent has never
+    // funded an order.
     switch (order.status) {
       case (#created or #expired) {}; // §4: late payment on an expired order is still honored
       case (status) {
@@ -754,6 +771,16 @@ module {
       case (?id) {
         if (not Idempotency.recordStripeEvent(deps.dedup, id, nowNs)) {
           return ack(Http.text(200, "duplicate event"));
+        };
+        // Past the ~7-day dedup retention the check above no longer recognises a
+        // resend, so the worklist itself is the second line of defence: one
+        // unreadable event must not become two items to reconcile.
+        switch (ErrorQueue.unresolvedUnprocessable(deps.errorQueue, id)) {
+          case (?_) {
+            audit(deps, nowNs, "stripe.unprocessableResend", id # " already on the worklist");
+            return ack(Http.text(200, "already queued"));
+          };
+          case null {};
         };
         ignore ErrorQueue.add(
           deps.errorQueue,

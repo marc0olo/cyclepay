@@ -315,7 +315,7 @@ export interface BackendService {
     rates: Opt<PricingRates>;
     config: PricingConfig;
     lastAttempt: Opt<{ atNs: bigint; ok: boolean; detail: string }>;
-    xrcCanisterId: string;
+    xrcCanisterId: Opt<string>;
   }>;
   refresh_rates(): Promise<Opt<PricingRates>>;
   set_pricing_config(config: PricingConfig): Promise<Result<null, unknown>>;
@@ -326,7 +326,12 @@ export interface BackendService {
   list_orders(): Promise<Order[]>;
   mint_journal(id: string): Promise<Opt<JournalEntry>>;
   process_order(id: string): Promise<Result<Order, { notFound: null } | { inFlight: null }>>;
-  recovery_status(): Promise<{ intervalNs: bigint; lastSweep: Opt<{ atNs: bigint; pending: bigint }>; sweepInFlight: boolean }>;
+  recovery_status(): Promise<{
+    intervalNs: bigint;
+    lastCountReconcile: Opt<{ atNs: bigint; drift: { status: string; was: bigint; is: bigint }[] }>;
+    lastSweep: Opt<{ atNs: bigint; pending: bigint }>;
+    sweepInFlight: boolean;
+  }>;
   refresh_float(): Promise<bigint>;
   reset_burn_window(): Promise<bigint>;
   reset_ck_usdc_pull(id: string): Promise<boolean>;

@@ -24,10 +24,12 @@ const EIGHT_HOURS_NS = 8n * 3_600_000_000_000n;
 /// and using them is what makes sign-in **automatable** — the real II UI needs a
 /// real passkey, which a headless browser cannot produce, while local II mocks it.
 ///
-/// The local URL is derived from the page's own origin rather than configured: the
-/// gateway port is OS-picked (`gateway.port: 0`), so hardcoding 8000 — as the II
-/// skill's example does — only works for the default port. Guarded on a
-/// `.localhost` hostname so a production origin can never take this branch.
+/// The local URL is derived from the page's own origin rather than configured.
+/// `icp.yaml` currently pins `gateway.port: 8000`, so the II skill's hardcoded
+/// `:8000` example would work today — deriving it means this keeps working if that
+/// pin changes or the app is served through a different gateway, without a
+/// second place to update. Guarded on a `.localhost` hostname so a production
+/// origin can never take this branch.
 function identityProvider(): string {
   const explicit = import.meta.env?.VITE_II_URL as string | undefined;
   if (explicit) return explicit;

@@ -148,16 +148,21 @@ persistent actor CyclesGateway {
   /// Mirrored into a var because reading an environment variable needs the
   /// `system` capability, which a query does not have — and "which XRC am I
   /// pricing from?" has to be answerable from a query, since a mainnet deploy
-  /// wrongly pointed at a mock is otherwise completely silent. The refresh timer
-  /// warms within seconds of install, so this is accurate almost immediately.
-  transient var lastXrcCanisterId : Text = Xrc.mainnetCanisterId;
+  /// wrongly pointed at a mock is otherwise completely silent.
+  ///
+  /// **Null until an XRC call has actually resolved the id**, and transient, so it
+  /// is null again after every upgrade until the refresh timer warms (seconds).
+  /// Defaulting it to the mainnet id instead would make the one signal that
+  /// detects a mock read *all-clear* during exactly the window an operator checks
+  /// a fresh deploy — an alert that is silent when unverified is worse than none.
+  transient var lastXrcCanisterId : ?Text = null;
 
   func xrcActor<system>() : Xrc.Service {
     let id = switch (Runtime.envVar<system>(Xrc.canisterIdEnvVar)) {
       case (?injected) injected;
       case null Xrc.mainnetCanisterId;
     };
-    lastXrcCanisterId := id;
+    lastXrcCanisterId := ?id;
     actor (id);
   };
 
@@ -364,11 +369,15 @@ persistent actor CyclesGateway {
     rates : ?Pricing.Rates;
     config : Pricing.Config;
     lastAttempt : ?{ atNs : Int; ok : Bool; detail : Text };
-    /// Which Exchange Rate Canister the last refresh priced from. On mainnet this
-    /// MUST read `uf6dk-hyaaa-aaaaq-qaaaq-cai`; anything else means the deploy
-    /// injected `PUBLIC_CANISTER_ID:xrc` and prices are coming from somewhere
-    /// else. Alert on it (RUNBOOK §9).
-    xrcCanisterId : Text;
+    /// Which Exchange Rate Canister the last refresh actually priced from. On
+    /// mainnet this MUST read `uf6dk-hyaaa-aaaaq-qaaaq-cai`; anything else means
+    /// the deploy injected `PUBLIC_CANISTER_ID:xrc` and prices are coming from
+    /// somewhere else. Alert on it (RUNBOOK §9).
+    ///
+    /// **Null means no refresh has resolved it yet** — not that it is the mainnet
+    /// canister. Null is the expected reading for the first seconds after an
+    /// install or upgrade, and it is a "check again", never a pass.
+    xrcCanisterId : ?Text;
   } {
     {
       rates = Pricing.lastRates(rateCache);
@@ -634,7 +643,10 @@ persistent actor CyclesGateway {
 
   public shared ({ caller }) func set_gate_config(config : Gate.Config) : async Result.Result<(), Gate.ConfigError> {
     requireAdmin(caller);
-    switch (Gate.validateConfig(config)) {
+    // Cross-check against live tiers: lowering the ceiling under a registered tier
+    // would leave it sellable but unpayable (see Gate.ConfigError.tierAboveCeiling).
+    let tierPrices = Array.map<Tiers.Tier, (Text, Nat)>(cardTiers, func(t) = (t.id, t.usdCents));
+    switch (Gate.validateConfig(config, tierPrices)) {
       case (#ok) {
         gateConfig := config;
         auditAdmin(caller, "gate.configSet", "openOrderCap=" # config.maxOpenOrdersPerPrincipal.toText()
@@ -888,7 +900,13 @@ persistent actor CyclesGateway {
   /// The *entry id* rather than a timestamp, because the alert has to be closed
   /// when the delay ends: an order that eventually delivers must not leave an
   /// open obligation on the worklist describing a problem that no longer exists.
-  let delayedAlerts = Map.empty<Types.OrderId, Nat>();
+  /// order id → (error-queue entry id, the stage that alert described).
+  ///
+  /// The stage is kept so a *changed* stall can refresh the entry. An order that
+  /// alerts while `#paid` and later stalls in `#icpAtCmc` is a different problem with
+  /// a different recovery, and leaving the first wording in place would have the
+  /// operator chasing a cause that has moved on.
+  let delayedAlerts = Map.empty<Types.OrderId, (Nat, Text)>();
 
   /// Raise the §5 delivery-delayed alert for an order, at most once.
   ///
@@ -896,13 +914,28 @@ persistent actor CyclesGateway {
   /// and the order must stay sweepable so that fixing it delivers with no
   /// further intervention. Only `abandon_order` ends an order without delivery.
   func alertDelayed(order : Types.Order, stage : Text, detail : Text) {
-    if (delayedAlerts.containsKey(order.id)) return;
+    // The guard lives inside the body rather than on a `case ... if`: a guarded
+    // case is irrefutable to the coverage checker, so the second `?` case would
+    // be reported as unmatched (M0146) even though it is reached.
+    switch (delayedAlerts.get(order.id)) {
+      case (?(staleId, reported)) {
+        // Same stall, already reported. Staying silent is the point: re-raising
+        // on every sweep would flood the worklist and the audit ring.
+        if (reported == stage) return;
+        // A *different* stall. Close the stale entry and raise one that describes
+        // where the order actually is now, rather than leaving day-one wording on
+        // the worklist.
+        ignore ErrorQueue.resolve(errorQueue, staleId, Time.now());
+        audit("mint.delayedStageChanged", order.id # ": " # reported # " → " # stage);
+      };
+      case null {};
+    };
     let entryId = queueMintError(
       order.rail,
       #deliveryDelayed({ orderId = order.id; stage; sinceNs = order.updatedAtNs }),
       detail,
     );
-    delayedAlerts.add(order.id, entryId);
+    delayedAlerts.add(order.id, (entryId, stage));
     audit("mint.delayed", order.id # " [" # stage # "]: " # detail);
   };
 
@@ -913,7 +946,7 @@ persistent actor CyclesGateway {
   /// worklist, and the worklist is only useful if everything on it is live.
   func clearDelayed(orderId : Types.OrderId) {
     switch (delayedAlerts.get(orderId)) {
-      case (?entryId) {
+      case (?(entryId, _)) {
         ignore ErrorQueue.resolve(errorQueue, entryId, Time.now());
         delayedAlerts.remove(orderId);
       };
@@ -1774,6 +1807,36 @@ persistent actor CyclesGateway {
   /// so resuming from one visits every order exactly once per pass.
   var retentionCursor : ?Types.OrderId = null;
 
+  /// How often the sweep reconciles the per-status tallies against the order
+  /// store. Daily, not per-sweep: the reconcile is O(orders) while the tallies
+  /// exist precisely so the hot queries are O(1), and drift can only come from a
+  /// bookkeeping bug, which does not need a 15-minute detection window.
+  let countReconcileIntervalNs : Nat = 24 * 3_600 * 1_000_000_000;
+
+  /// When the tallies were last rebuilt, and what had to move if anything.
+  /// Surfaced on `recovery_status` so "the counts are trustworthy" is an
+  /// observable fact rather than an assumption — a null here on a canister that
+  /// has been up for days means the sweep is not running.
+  var lastCountReconcile : ?{ atNs : Int; drift : [Orders.Drift] } = null;
+
+  /// Rebuild the tallies if the cadence is due. Audits **only on drift**: a
+  /// clean reconcile every day would bury the one line that matters, and drift
+  /// is a bug in the incremental bookkeeping that an operator must see.
+  func reconcileCountsIfDue(nowNs : Int) {
+    switch (lastCountReconcile) {
+      case (?last) if (nowNs - last.atNs < countReconcileIntervalNs) return;
+      case null {};
+    };
+    let { drift; counts = _ } = Orders.reconcile(orderStore);
+    lastCountReconcile := ?{ atNs = nowNs; drift };
+    if (drift.size() > 0) {
+      let rendered = drift.map(
+        func(d : Orders.Drift) : Text = d.status # " " # d.was.toText() # "→" # d.is.toText()
+      );
+      audit("orders.countDrift", rendered.values().join(", "));
+    };
+  };
+
   func retentionSweep() : { expired : Nat; scanned : Nat } {
     // O(1) short-circuit, mirroring the mint sweep: no `#created` order means
     // nothing can expire, so the scan is pure waste.
@@ -1822,6 +1885,10 @@ persistent actor CyclesGateway {
     recoverySweepInFlight := true;
     try {
       ignore retentionSweep();
+      // Synchronous and before the awaits, for the same reason retention is:
+      // it reads the whole order store, and doing that across an await would
+      // race the money sweep's own transitions and manufacture false drift.
+      reconcileCountsIfDue(Time.now());
       let pending = await* sweepMintable();
       lastRecoverySweep := ?{ atNs = Time.now(); pending };
     } finally {
@@ -1867,11 +1934,17 @@ persistent actor CyclesGateway {
     intervalNs : Nat;
     lastSweep : ?{ atNs : Int; pending : Nat };
     sweepInFlight : Bool;
+    /// Last tally reconciliation. A non-empty `drift` means the incremental
+    /// counts had diverged from the orders and were repaired — the tallies are
+    /// correct again, but the bug that moved them is not fixed. `recount_orders`
+    /// is the on-demand form of the same repair.
+    lastCountReconcile : ?{ atNs : Int; drift : [Orders.Drift] };
   } {
     {
       intervalNs = recoverySweepIntervalNs;
       lastSweep = lastRecoverySweep;
       sweepInFlight = recoverySweepInFlight;
+      lastCountReconcile;
     };
   };
 

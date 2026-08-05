@@ -5,6 +5,8 @@ import Nat "mo:core/Nat";
 import Principal "mo:core/Principal";
 import Runtime "mo:core/Runtime";
 import Types "../src/backend/Types";
+import Map "mo:core/Map";
+import Text "mo:core/Text";
 import Orders "../src/backend/Orders";
 
 // Unit suite for the §4 order state machine and the Orders store.
@@ -490,23 +492,75 @@ suite("status counts — the O(1) query inputs", func() {
     assert Orders.recount(store) == first;
   });
 
-  test("recount repairs a drifted count", func() {
-    // The reconciliation lever exists precisely because incremental
-    // maintenance can be wrong; prove it actually converges.
+  test("recount lands an order in exactly one bucket after a transition chain", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
     ignore Orders.applyTransition(store, "ord-1", #expired, 200);
+    // A late payment on an expired order is honoured (§4), so this chain is a
+    // real one, not a contrived sequence.
     ignore Orders.applyTransition(store, "ord-1", #paid, 300);
-    // #paid is untracked, so nothing should remain counted.
     ignore Orders.recount(store);
+    // One order, one bucket: the statuses it passed through must be vacated.
     assert Orders.countOf(store, #created) == 0;
     assert Orders.countOf(store, #expired) == 0;
+    assert Orders.countOf(store, #paid) == 1;
     assert Orders.countOf(store, #awaitingTreasury) == 0;
   });
 
-  test("untracked statuses always read zero", func() {
+  test("reconcile reports no drift while the incremental counts are correct", func() {
+    // What the daily sweep asserts. Drift can only come from a bug in `bump`, so
+    // it cannot be manufactured through the public API — which is exactly why the
+    // useful direction to pin is the negative one: a representative chain of
+    // transitions must leave the tallies agreeing with the store, so a future
+    // `bump` that forgets a status makes this fail.
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
+    ignore newOrder(store, "ord-2", alice);
+    ignore newOrder(store, "ord-3", bob);
+    ignore Orders.applyTransition(store, "ord-1", #paid, 200);
+    ignore Orders.applyTransition(store, "ord-1", #minting, 300);
+    ignore Orders.applyTransition(store, "ord-2", #expired, 300);
+    ignore Orders.applyTransition(store, "ord-3", #paid, 300);
+    ignore Orders.applyTransition(store, "ord-3", #awaitingTreasury, 400);
+
+    let result = Orders.reconcile(store);
+    assert result.drift.size() == 0;
+    // And the tallies it reports are the ones the queries serve.
+    for ((status, n) in result.counts.values()) {
+      assert n == (switch (status) {
+        case ("Minting" or "AwaitingTreasury" or "Expired") 1;
+        case (_) 0;
+      });
+    };
+  });
+
+  test("reconcile reports the delta when a tally is stale", func() {
+    // A `bump` bug is the only way a tally drifts, so this writes the wrong value
+    // straight into the counts map to stand in for one. What matters is that the
+    // drift list names the status and *both* values: a repair that silently
+    // succeeded would hide the bug that made it necessary, and the daily sweep
+    // audits nothing when this list is empty.
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore newOrder(store, "ord-2", alice);
+    Map.add(store.counts, Text.compare, "Created", 99);
+
+    let result = Orders.reconcile(store);
+    assert result.drift.size() == 1;
+    assert result.drift[0].status == "Created";
+    assert result.drift[0].was == 99;
+    assert result.drift[0].is == 2;
+    // Repaired, not just reported.
+    assert Orders.countOf(store, #created) == 2;
+    // And a second pass is clean, so the sweep does not re-audit the same drift.
+    assert Orders.reconcile(store).drift.size() == 0;
+  });
+
+  test("a status no order is in reads zero", func() {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    // #delivered and #errorQueue are untracked by design (terminal or worklist-
+    // owned); the rest are tracked but empty here.
     for (status in ([#paid, #minting, #icpAtCmc, #delivered, #errorQueue] : [Types.OrderStatus]).values()) {
       assert Orders.countOf(store, status) == 0;
     };

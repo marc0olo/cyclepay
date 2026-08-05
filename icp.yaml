@@ -37,6 +37,12 @@ canisters:
     # so this is the rate every local order prices from. $4.55/ICP at 9 decimals —
     # the same vector the PocketIC suite pins, so local and CI agree. To simulate a
     # different rate, edit this and `icp deploy --mode reinstall xrc`.
+    #
+    # ⚠️ It keeps the response in heap only, so a routine `icp deploy` **upgrades**
+    # this canister and the response is lost — every later rate call then traps with
+    # "Response has not been set" and the backend reports a fetch failure that looks
+    # like a bug in the rate path. Reinstall it after any deploy that touched it;
+    # `scripts/e2e-local.sh` does that unconditionally.
     init_args:
       value: >-
         (record { response = variant { ExchangeRate = record {

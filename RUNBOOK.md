@@ -489,14 +489,14 @@ icp canister call backend resolve_error '(137 : nat)' -e ic --identity <operator
 | `#stuckMint{stage="missingJournal"}` | Order status implies money-out state the journal doesn't have | Invariant breach — should be unreachable. Reconstruct from `audit_log` + ledgers; treat as a bug, file it. |
 | `#stuckMint{stage="stalePullIntent"}` (ck-USDC) | Uncertain, money-IN: a `icrc2_transfer_from` pull intent aged past 24 h with no recorded block; the order deliberately stays `created` and further claims are blocked | See §7 below — this one has dedicated levers. |
 | `#duplicate` naming an order the session did **not** reference | An intent already credited to a *different* order — an `attach_payment` went to the wrong order, or the reference is wrong. **Nothing was minted twice** | Decide which order the buyer actually paid for. Cross-check `order_for_payment` against the session's `client_reference_id` in the Stripe Dashboard. If the session's order is the right one, deliver it from operator funds and reconcile the wrongly-credited order; otherwise just resolve. The audit tag is `stripe.creditedElsewhere`. |
-| `#unprocessable {eventId; field}` | **Unknown — establish it first.** A verified Stripe event was missing a required field, so the canister could not tell whether money moved | Look the `eventId` up in the Stripe Dashboard. Paid → identify the order and `attach_payment`, or refund. Not paid (e.g. a 100%-off promo, or a subscription-mode link) → nothing happened; `resolve_error`. Then fix the Dashboard config that produced it: this is almost always a link mode or promo-code setting, and it will recur until changed. |
+| `#unprocessable {eventId; field}` | **Unknown — establish it first.** A verified Stripe event was missing a required field, so the canister could not tell whether money moved | Look the `eventId` up in the Stripe Dashboard. Paid → identify the order and `attach_payment`, or refund. Not paid (e.g. a 100%-off promo, or a subscription-mode link) → nothing happened; `resolve_error`. Then fix the Dashboard config that produced it: this is almost always a link mode or promo-code setting, and it will recur until changed. One event never becomes two entries: a Dashboard resend inside the ~7-day event-dedup window is dropped there, and past it the worklist itself is checked (audited `stripe.unprocessableResend`). Once you `resolve_error` it, a later resend is allowed to file again — so resolve only after you have established the money position. |
 | `#refundAfterDelivery {orderId; paymentRef; cycles; refundedCents; fullRefund}` | **A loss, not a recoverable position**: the fiat was refunded (or charged back) *after* the cycles were forwarded to an arbitrary destination. Cycles cannot be clawed back. | There is nothing to recover on-chain. Reconcile in the Stripe Dashboard by `paymentRef` to see whether this was your own refund (a support decision — expected) or a customer-initiated dispute (fraud signal). For repeated disputes, tighten Stripe Radar rules and lower the per-purchase ceiling (§5a); the burn cap does **not** bound this, because each payment is individually legitimate. `resolve_error` once reconciled — nothing auto-resolves it, deliberately: the refund is what created the entry. |
 
 ### Rescuing an `#unattributed` payment with `attach_payment`
 
 ```bash
 icp canister call backend attach_payment \
-  '("pi_3Q...", "<orderId>", opt (2_000 : nat))' \
+  '("pi_3Q...", "<orderId>", 2_000 : nat)' \
   -e ic --identity <operator>
 ```
 
@@ -504,9 +504,12 @@ This is the buyer-first resolution for a payment that arrived but could not be
 matched — a mistyped or stripped `client_reference_id`, or a webhook the canister
 never received. The order is credited exactly as the webhook would have credited
 it: **priced from that order's own creation-time snapshot**, never from today's
-rate, so a rescue weeks later delivers what the buyer bought. Pass
-`paidUsdCents` when the amount differs from the quoted tier; omit it to honour
-the tier price.
+rate, so a rescue weeks later delivers what the buyer bought.
+
+⚠️ **`paidUsdCents` is required, not optional** — pass what Stripe actually shows for
+that charge. There is no "use the tier price" shorthand, deliberately: the amount is
+the one thing that must come from the Dashboard rather than from an assumption, since
+the whole reason this lever exists is that the canister never saw the payment.
 
 It refuses a `paymentRef` already credited (so re-running it cannot double-mint),
 refuses an order that is not awaiting payment, and records the calling principal
@@ -610,6 +613,12 @@ icp canister call backend process_order '("<orderId>")' -e ic --identity <operat
   dedups). Default 1 h; re-arms immediately on change.
 - `recovery_status.lastSweep` not advancing past ~2 intervals = the timer
   is wedged — an upgrade re-arms it, but investigate first.
+- The sweep also **reconciles the per-status tallies once a day** and reports the
+  result on `recovery_status.lastCountReconcile`. The tallies are maintained
+  incrementally so the admission-gate queries stay O(1); the reconcile is the
+  O(orders) check that they still match. It audits `orders.countDrift` **only when
+  something moved** — a clean line every day would bury the one that matters.
+  `recount_orders` is the same repair on demand.
 - `process_order` is the safe-to-spam manual kick for one order
   (per-order single-flight; `#inFlight` just means it's already being
   driven). Use it to resume a specific held order immediately after a
@@ -684,7 +693,10 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | `treasury_status.heldOrders` | non-transient `> 0` | **P2** | burn cap or float; both are §5 levers |
 | `treasury_status.burnedInWindowE8s` | jumps beyond expected volume | **P1** | possible leaked secret → §2 procedure, cap to 0 first |
 | `recovery_status.lastSweep.atNs` | older than 2 intervals | **P2** | the sweep timer is not running; nothing recovers while it is dead |
+| `recovery_status.lastCountReconcile.drift` | non-empty | **P2** | the per-status tallies had diverged from the order store and were repaired. The counts are correct again; the bookkeeping bug that moved them is not fixed. They gate admission, so a drifted count refuses or admits the wrong orders |
+| `recovery_status.lastCountReconcile.atNs` | older than ~48 h | **P3** | the reconcile is daily, so this stopping while `lastSweep` advances means the cadence check itself is wrong |
 | `retention_status.openOrders` | climbing while `delivered` does not | **P3** | order-creation abuse; lever is `maxOpenOrdersPerPrincipal` (§5a) |
+| `pricing_status.xrcCanisterId` | anything other than `uf6dk-hyaaa-aaaaq-qaaaq-cai` | **P1** | **on mainnet this must be the real Exchange Rate Canister.** The id is resolved from a `PUBLIC_CANISTER_ID:xrc` canister environment variable so a local network can point at a mock; a mainnet canister reporting any other id is pricing real sales off something that is not the market. Only a controller can inject it, so this reads as either a misconfigured deploy or a compromised controller. Cap the burn to 0 (§2) before investigating. **`null` is not a pass** — it means no refresh has reached the XRC call at all (expected for seconds after an install or upgrade, since the value is transient). Do **not** wait on `lastAttempt` becoming non-null: that field is persistent, so it survives the upgrade and is already set while this one is still null. Re-read until `lastAttempt.atNs` post-dates the deploy. A *failing* refresh never shows null here — the id is recorded when the call is constructed, so a rejected call reads as a non-null id plus `lastAttempt.ok = false` |
 | `pricing_status.rates.quality.receivedRates` | drops to `minRateSources` | **P3** | thin market — a price from 2 sources is not one from 12 |
 | `health` | unreachable | **P1** | canister stopped, frozen, or out of cycles |
 
@@ -694,6 +706,7 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
   be landing in the wrong Stripe account), `stripe.creditedElsewhere`,
   `stripe.unprocessable` / `stripe.unhandledType` (a Dashboard config producing
   events this gateway cannot use — it will recur until changed),
+  `orders.countDrift` (the status tallies were wrong; see the table above),
   `stripe.refundPartial` (an obligation deliberately left open), and `mint.stuck`.
 - **`error_queue_unresolved`** for the entries themselves. `error_queue_depth` is
   public, so **alert on the public depth and only fetch details when it fires** —

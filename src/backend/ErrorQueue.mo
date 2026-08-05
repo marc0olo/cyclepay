@@ -89,6 +89,13 @@ module {
     /// risk the endpoint being disabled — which would then lose every legitimate
     /// webhook. Money position is unknown from here; the event id is what the
     /// operator looks up in the Dashboard.
+    ///
+    /// Growth is bounded by Stripe, not by a caller: reaching this requires a body
+    /// that passes HMAC verification, so only the holder of the signing secret can
+    /// produce one, and `unresolvedUnprocessable` keeps a resend of the same event
+    /// from filing twice. Like every unresolved entry it is never evicted — the
+    /// event id is the only pointer the canister keeps to a dollar it could not
+    /// account for.
     #unprocessable : { eventId : Text; field : Text };
   };
 
@@ -187,28 +194,53 @@ module {
     };
     store.nextId += 1;
     store.entries.add(entry.id, entry);
-    let evicted = List.empty<Entry>();
-    // Trim only *resolved* history. If nothing resolved is left to drop, the
-    // queue exceeds capacity and stays that way until the operator works it
-    // down — a visibly growing worklist is strictly better than a forgotten
+    // Trim only *resolved* history, oldest first. If nothing resolved is left to
+    // drop, the queue exceeds capacity and stays that way until the operator works
+    // it down — a visibly growing worklist is strictly better than a forgotten
     // obligation.
-    label trim while (store.entries.size() > capacity) {
-      switch (oldestResolved(store)) {
-        case (?victim) {
-          store.entries.remove(victim.id);
-          evicted.add(victim);
+    //
+    // One pass, collecting victims before removing any: repeatedly re-scanning for
+    // the next-oldest resolved entry costs O(size) per eviction, and removing while
+    // iterating mutates the map under the iterator.
+    let evicted = List.empty<Entry>();
+    let size = store.entries.size();
+    if (size > capacity) {
+      var over = size - capacity;
+      let victims = List.empty<Nat>();
+      label scan for ((id, existing) in store.entries.entries()) {
+        if (over == 0) break scan;
+        if (existing.resolvedAtNs != null) {
+          victims.add(id);
+          evicted.add(existing);
+          over -= 1;
         };
-        case null break trim;
       };
+      for (id in victims.values()) store.entries.remove(id);
     };
     { entry; evicted = evicted.toArray() };
   };
 
-  /// Oldest *resolved* entry, or null when none is resolved. Scans oldest-first
-  /// (ids are monotonic, so the map iterates in arrival order).
-  func oldestResolved(store : Store) : ?Entry {
+  /// The unresolved `#unprocessable` entry for this Stripe event, if one is
+  /// already on the worklist.
+  ///
+  /// Webhook ingestion dedups on the event id, but that dedup set is pruned at
+  /// ~7 days (§4.2). A Dashboard resend after that window is a *new* event to the
+  /// dedup set and would file a second entry for one event — two worklist items
+  /// an operator has to recognise as the same thing and resolve twice.
+  ///
+  /// Scans the queue: `#unprocessable` is reached only from a signature-verified
+  /// event that failed to parse, which is rare and not attacker-drivable, so this
+  /// is not on any hot path.
+  public func unresolvedUnprocessable(store : Store, eventId : Text) : ?Entry {
     for ((_, entry) in store.entries.entries()) {
-      if (entry.resolvedAtNs != null) return ?entry;
+      if (entry.resolvedAtNs == null) {
+        switch (entry.kind) {
+          case (#unprocessable({ eventId = existing; field = _ })) {
+            if (existing == eventId) return ?entry;
+          };
+          case (_) {};
+        };
+      };
     };
     null;
   };
