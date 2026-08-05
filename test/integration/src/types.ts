@@ -315,6 +315,7 @@ export interface BackendService {
     rates: Opt<PricingRates>;
     config: PricingConfig;
     lastAttempt: Opt<{ atNs: bigint; ok: boolean; detail: string }>;
+    xrcCanisterId: string;
   }>;
   refresh_rates(): Promise<Opt<PricingRates>>;
   set_pricing_config(config: PricingConfig): Promise<Result<null, unknown>>;
