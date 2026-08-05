@@ -1,0 +1,133 @@
+{
+  "api_version": "2026-07-29.dahlia",
+  "created": 1785932685,
+  "data": {
+    "object": {
+      "amount": 500,
+      "amount_captured": 500,
+      "amount_refunded": 500,
+      "application": null,
+      "application_fee": null,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_3U13r2HaCNzOTFGb0gtQ92iw",
+      "billing_details": {
+        "address": {
+          "city": null,
+          "country": "DE",
+          "line1": null,
+          "line2": null,
+          "postal_code": null,
+          "state": null
+        },
+        "email": "buyer@example.com",
+        "name": "Test Buyer",
+        "phone": null,
+        "tax_id": null
+      },
+      "calculated_statement_descriptor": "Stripe",
+      "captured": true,
+      "created": 1785932608,
+      "currency": "usd",
+      "customer": null,
+      "description": null,
+      "destination": null,
+      "dispute": null,
+      "disputed": false,
+      "failure_balance_transaction": null,
+      "failure_code": null,
+      "failure_message": null,
+      "fraud_details": {},
+      "id": "ch_3U13r2HaCNzOTFGb0s4bLUz9",
+      "livemode": false,
+      "metadata": {},
+      "object": "charge",
+      "on_behalf_of": null,
+      "order": null,
+      "outcome": {
+        "advice_code": null,
+        "network_advice_code": null,
+        "network_decline_code": null,
+        "network_status": "approved_by_network",
+        "reason": null,
+        "risk_level": "normal",
+        "risk_score": 37,
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": true,
+      "payment_intent": "pi_3U13r2HaCNzOTFGb0C2c9SEK",
+      "payment_method": "pm_1U13r1HaCNzOTFGbk2EPrQOY",
+      "payment_method_details": {
+        "card": {
+          "amount_authorized": 500,
+          "authorization_code": "819770",
+          "brand": "visa",
+          "checks": {
+            "address_line1_check": null,
+            "address_postal_code_check": null,
+            "cvc_check": "pass"
+          },
+          "country": "US",
+          "exp_month": 8,
+          "exp_year": 2028,
+          "extended_authorization": {
+            "status": "disabled"
+          },
+          "fingerprint": "CYVvTn6BP7FBgtra",
+          "funding": "credit",
+          "incremental_authorization": {
+            "status": "unavailable"
+          },
+          "installments": null,
+          "last4": "4242",
+          "mandate": null,
+          "multicapture": {
+            "status": "unavailable"
+          },
+          "network": "visa",
+          "network_token": {
+            "used": false
+          },
+          "network_transaction_id": "678986118841105",
+          "overcapture": {
+            "maximum_amount_capturable": 500,
+            "status": "unavailable"
+          },
+          "regulated_status": "unregulated",
+          "three_d_secure": null,
+          "transaction_link_id": null,
+          "wallet": null
+        },
+        "type": "card"
+      },
+      "radar_options": {},
+      "receipt_email": null,
+      "receipt_number": null,
+      "receipt_url": "https://pay.stripe.com/receipts/payment/CAcaFwoVYWNjdF8xVTEzWnNIYUNOek9URkdiKI3XzNMGMgYScHDd64M6LBaWffASNTx1oxyq6kKvhLqadc3Vyd2WIqRYAtrx-H3O7LHbT9Dbgu_ig4QN",
+      "refunded": true,
+      "review": null,
+      "shipping": null,
+      "source": null,
+      "source_transfer": null,
+      "statement_descriptor": null,
+      "statement_descriptor_suffix": null,
+      "status": "succeeded",
+      "transfer_data": null,
+      "transfer_group": null
+    },
+    "previous_attributes": {
+      "amount_refunded": 0,
+      "receipt_url": "https://pay.stripe.com/receipts/payment/CAcaFwoVYWNjdF8xVTEzWnNIYUNOek9URkdiKIzXzNMGMgYmeQk-ge86LBY152K7OQ_LwqSm5BCziY6JdhV9r975bfs1lmEs9rjZOuzvv7lkd_wMFpya",
+      "refunded": false
+    }
+  },
+  "id": "evt_3U13r2HaCNzOTFGb0i8XCqie",
+  "livemode": false,
+  "object": "event",
+  "pending_webhooks": 2,
+  "request": {
+    "id": "req_bIA3dUYfice79Q",
+    "idempotency_key": "42e59b72-456b-4fd4-9b0a-269e67369816"
+  },
+  "type": "charge.refunded"
+}

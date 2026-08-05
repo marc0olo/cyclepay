@@ -118,6 +118,16 @@ NOTES
 stripe listen --print-json "${FORWARD_ARGS[@]}" 2>/dev/null | node -e '
 const fs = require("fs");
 const dir = process.argv[1];
+const WANTED = new Set([
+  "checkout.session.completed.paid",
+  "checkout.session.completed.unpaid",
+  "checkout.session.completed.no-intent",
+  "checkout.session.async_payment_succeeded",
+  "checkout.session.async_payment_failed",
+  "charge.refunded.full",
+  "charge.refunded.partial",
+  "charge.dispute.created",
+]);
 let buf = "";
 process.stdin.on("data", (chunk) => {
   buf += chunk;
@@ -137,9 +147,44 @@ process.stdin.on("data", (chunk) => {
     } else if (ev.type === "charge.refunded") {
       name += o.amount_refunded >= o.amount ? ".full" : ".partial";
     }
+    // Only the fixtures the parity suite asserts on. Stripe emits a dozen
+    // incidental events per checkout (product.created, charge.succeeded, …) and
+    // writing those files clutters the directory with payloads nothing reads.
+    if (!WANTED.has(name)) {
+      process.stdout.write(`  (ignored ${ev.type})\n`);
+      continue;
+    }
+    // Scrub identifying fields before writing. These fixtures get committed, and a
+    // sandbox checkout still records whatever real name and email you typed. The
+    // parser in Card.mo reads none of these, so replacing them cannot affect an
+    // assertion — and doing it on write means nobody has to remember to.
+    // (No apostrophes in here: this whole block lives inside node -e '...'.)
+    const SCRUB = {
+      email: "buyer@example.com",
+      name: "Test Buyer",
+      phone: null,
+      customer_email: null,
+      receipt_email: null,
+    };
+    const scrub = (n) => {
+      if (Array.isArray(n)) return n.map(scrub);
+      if (n && typeof n === "object") {
+        return Object.fromEntries(Object.entries(n).map(([k, v]) =>
+          [k, k in SCRUB && v !== null ? SCRUB[k] : scrub(v)]));
+      }
+      return n;
+    };
     const path = `${dir}/${name}.json`;
-    fs.writeFileSync(path, JSON.stringify(ev, null, 2) + "\n");
-    process.stdout.write(`  captured ${name}\n`);
+    fs.writeFileSync(path, JSON.stringify(scrub(ev), null, 2) + "\n");
+    const o2 = ev?.data?.object ?? {};
+    let note = "";
+    // Flag the capture that is easy to get wrong: a paid session with no
+    // client_reference_id means the URL parameter was not appended, and that
+    // fixture cannot verify attribution.
+    if (name === "checkout.session.completed.paid" && o2.client_reference_id == null) {
+      note = "  ⚠ client_reference_id is null — re-pay with ?client_reference_id=… appended";
+    }
+    process.stdout.write(`  captured ${name}${note}\n`);
   }
 });
 ' "$FIXTURES"
