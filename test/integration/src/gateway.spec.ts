@@ -2292,10 +2292,16 @@ test('60 — a stall that moves to a different stage re-raises the alert instead
   // worklist — the operator would read "fix the burn cap" for an order that had
   // long since moved on, or vice versa.
   //
-  // Both halves below are pinned by CAUSE, not by timing luck: the alert for an
-  // in-flight status is raised before the rate check, while the #awaitingTreasury
-  // alert is raised after it. So a stale rate produces exactly one of the two and
-  // a fresh rate the other, which is what makes the transition deterministic.
+  // Both halves below are pinned by CAUSE, not by timing luck — but the cause is
+  // the order's STATUS, not the alert sites. Both `alertDelayed` calls sit at the
+  // top of `driveMint`, before any rate fetch. What the rate gates is the
+  // *transition*: reaching the treasury gate (and its #hold) requires a fresh CMC
+  // rate, so
+  //   stale rate  ⇒ the order is pinned #paid            ⇒ only mintDelayed is reachable
+  //   fresh rate  ⇒ the hold transition to #awaitingTreasury ⇒ treasuryDelayed
+  // and that transition resets updatedAtNs, so the new stage has to re-age past
+  // the 2 h threshold before it can alert. That re-aging is what the second time
+  // jump below is for.
   await setCmcRate(gw);
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
@@ -2351,9 +2357,9 @@ test('60 — a stall that moves to a different stage re-raises the alert instead
   expect(await orderStatus(gw, orderId)).toBe('awaitingTreasury');
 
   // That transition reset updatedAtNs, so the new stage has to age past the
-  // threshold on its own before it can alert. Keeping the rate fresh is what
-  // makes the #awaitingTreasury arm — which lives after the rate check —
-  // reachable at all.
+  // threshold on its own before it can alert. The rate is kept fresh only so the
+  // sweep keeps making progress — the #awaitingTreasury alert itself fires before
+  // the rate fetch and does not depend on it.
   await gw.pic.advanceTime(3 * 3_600 * 1_000);
   await ensureRates(gw);
   await gw.pic.advanceTime(90_000);
