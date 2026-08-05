@@ -1,5 +1,6 @@
 import { test; suite } "mo:test";
 import Gate "../src/backend/Gate";
+import Text "mo:core/Text";
 
 // Unit suite for the pre-creation admission gate. Every case is pure
 // arithmetic over an Observation, so the whole admission policy is pinned here
@@ -29,16 +30,16 @@ suite("defaults", func() {
   });
 
   test("the default config validates", func() {
-    assert Gate.validateConfig(config) == #ok;
+    assert Gate.validateConfig(config, []) == #ok;
   });
 
   test("a zero open-order cap or purchase ceiling is refused as config", func() {
-    assert Gate.validateConfig({ config with maxOpenOrdersPerPrincipal = 0 }) == #err(#zeroOpenOrderCap);
-    assert Gate.validateConfig({ config with maxPurchaseUsdCents = 0 }) == #err(#zeroPurchaseCeiling);
+    assert Gate.validateConfig({ config with maxOpenOrdersPerPrincipal = 0 }, []) == #err(#zeroOpenOrderCap);
+    assert Gate.validateConfig({ config with maxPurchaseUsdCents = 0 }, []) == #err(#zeroPurchaseCeiling);
   });
 
   test("a zero own-cycles floor is allowed — opting out is a valid choice", func() {
-    assert Gate.validateConfig({ config with minCanisterCycles = 0 }) == #ok;
+    assert Gate.validateConfig({ config with minCanisterCycles = 0 }, []) == #ok;
   });
 });
 
@@ -130,5 +131,44 @@ suite("reasonToText", func() {
     };
     assert Gate.reasonToText(#floatLow({ observedE8s = null; thresholdE8s = 2 }))
       == "floatLow(never observed<2)";
+  });
+});
+
+suite("the ceiling cannot be lowered under a live tier", func() {
+  // `set_card_tiers` already refuses a tier above the ceiling. Without the inverse
+  // check, lowering the ceiling left that tier SELLABLE BUT UNPAYABLE: the buyer
+  // completes checkout and the webhook files a Type 1, and `attach_payment` then
+  // refuses to rescue it until the ceiling goes back up — so the operator has to
+  // connect a refused rescue to a config change made earlier.
+  let tiers : [(Text, Nat)] = [("tier5", 500), ("tier50", 5_000)];
+
+  test("a ceiling above every tier is fine", func() {
+    assert Gate.validateConfig({ config with maxPurchaseUsdCents = 5_000 }, tiers) == #ok;
+    assert Gate.validateConfig({ config with maxPurchaseUsdCents = 100_000 }, tiers) == #ok;
+  });
+
+  test("a ceiling below a tier is refused, and names which one", func() {
+    assert Gate.validateConfig({ config with maxPurchaseUsdCents = 4_999 }, tiers)
+      == #err(#tierAboveCeiling({ tierId = "tier50"; usdCents = 5_000; maxUsdCents = 4_999 }));
+  });
+
+  test("the boundary: equal to the most expensive tier is allowed", func() {
+    // The gate refuses `usdCents > ceiling`, so equality must pass or the most
+    // expensive tier could never be sold at all.
+    assert Gate.validateConfig({ config with maxPurchaseUsdCents = 5_000 }, tiers) == #ok;
+  });
+
+  test("no tiers registered means nothing to contradict", func() {
+    assert Gate.validateConfig({ config with maxPurchaseUsdCents = 1 }, []) == #ok;
+  });
+
+  test("the error carries what the operator needs to fix it", func() {
+    switch (Gate.validateConfig({ config with maxPurchaseUsdCents = 100 }, tiers)) {
+      case (#err(e)) {
+        let text = Gate.configErrorToText(e);
+        assert Text.contains(text, #text "tier5");
+      };
+      case (#ok) assert false;
+    };
   });
 });

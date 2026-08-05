@@ -284,4 +284,63 @@ suite("paging", func() {
     assert page.entries.size() == 0;
     assert page.nextCursor == null;
   });
+
+  test("one add evicts every entry it needs to, not just one", func() {
+    let store = ErrorQueue.emptyStore();
+    // Five resolved entries, then a capacity of 2: the single add below has to
+    // shed four at once. A trim that dropped one victim per add would leave the
+    // queue over capacity and only converge after three more arrivals.
+    fill(store, 5);
+    for (id in ([0, 1, 2, 3, 4] : [Nat]).values()) {
+      switch (ErrorQueue.resolve(store, id, 900)) {
+        case (#ok(_)) {};
+        case (#err(_)) assert false;
+      };
+    };
+    let result = ErrorQueue.add(store, 2, #card, #duplicate({ orderId = "o"; paymentRef = "pi" }), "2nd payment", 1_000);
+    assert result.evicted.size() == 4;
+    // Oldest-first: the survivors are the newest resolved entry and the new one.
+    assert result.evicted[0].id == 0;
+    assert result.evicted[3].id == 3;
+    assert ErrorQueue.size(store) == 2;
+  });
+
+  test("an unresolved entry is never evicted, however far over capacity", func() {
+    let store = ErrorQueue.emptyStore();
+    // Nothing resolved: capacity 1 cannot be honoured without dropping a live
+    // obligation, so the queue is allowed to exceed it instead.
+    ignore addDuplicate(store, "o1", "pi_1", 100);
+    ignore addDuplicate(store, "o2", "pi_2", 200);
+    let result = ErrorQueue.add(store, 1, #card, #duplicate({ orderId = "o3"; paymentRef = "pi_3" }), "2nd payment", 300);
+    assert result.evicted.size() == 0;
+    assert ErrorQueue.size(store) == 3;
+  });
+
+  test("an unprocessable event is recognised as already queued", func() {
+    let store = ErrorQueue.emptyStore();
+    ignore ErrorQueue.add(store, 10, #card, #unprocessable({ eventId = "evt_a"; field = "payment_intent" }), "missing field", 100);
+    // What ingestion checks before filing: the same event id, past the ~7-day
+    // dedup retention, must not become a second worklist item.
+    switch (ErrorQueue.unresolvedUnprocessable(store, "evt_a")) {
+      case (?found) assert found.id == 0;
+      case null assert false;
+    };
+    // A different event is a different obligation.
+    assert ErrorQueue.unresolvedUnprocessable(store, "evt_b") == null;
+    // And once an operator has closed it, a genuine re-report is allowed through
+    // rather than being suppressed forever by resolved history.
+    switch (ErrorQueue.resolve(store, 0, 900)) {
+      case (#ok(_)) {};
+      case (#err(_)) assert false;
+    };
+    assert ErrorQueue.unresolvedUnprocessable(store, "evt_a") == null;
+  });
+
+  test("only unprocessable entries answer the unprocessable lookup", func() {
+    let store = ErrorQueue.emptyStore();
+    // The lookup keys on an event id, and other kinds carry payment refs that
+    // could otherwise collide with one.
+    ignore addUnattributed(store, "evt_a", "evt_a", 100);
+    assert ErrorQueue.unresolvedUnprocessable(store, "evt_a") == null;
+  });
 });

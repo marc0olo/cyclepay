@@ -362,6 +362,12 @@ type Entry =
    rail: Rail;
    resolvedAtNs: opt int;
  };
+type Drift = 
+ record {
+   is: nat;
+   status: text;
+   was: nat;
+ };
 type Destination = 
  variant {
    canister: principal;
@@ -437,6 +443,11 @@ type ConfigError__4 =
  };
 type ConfigError__3 = 
  variant {
+   tierAboveCeiling: record {
+                       maxUsdCents: nat;
+                       tierId: text;
+                       usdCents: nat;
+                     };
    zeroOpenOrderCap;
    zeroPurchaseCeiling;
  };
@@ -761,6 +772,10 @@ service : {
   recovery_status: () ->
    (record {
       intervalNs: nat;
+      lastCountReconcile: opt record {
+                                atNs: int;
+                                drift: vec Drift;
+                              };
       lastSweep: opt record {
                        atNs: int;
                        pending: nat;

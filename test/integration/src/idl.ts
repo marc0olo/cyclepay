@@ -69,6 +69,11 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   const GateConfigError = IDL.Variant({
     zeroOpenOrderCap: IDL.Null,
     zeroPurchaseCeiling: IDL.Null,
+    tierAboveCeiling: IDL.Record({
+      tierId: IDL.Text,
+      usdCents: IDL.Nat,
+      maxUsdCents: IDL.Nat,
+    }),
   });
   const RetentionConfig = IDL.Record({ orderTtlNs: IDL.Nat });
   const RetentionConfigError = IDL.Variant({ zeroTtl: IDL.Null });
@@ -455,6 +460,12 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [
         IDL.Record({
           intervalNs: IDL.Nat,
+          lastCountReconcile: IDL.Opt(
+            IDL.Record({
+              atNs: IDL.Int,
+              drift: IDL.Vec(IDL.Record({ status: IDL.Text, was: IDL.Nat, is: IDL.Nat })),
+            }),
+          ),
           lastSweep: IDL.Opt(IDL.Record({ atNs: IDL.Int, pending: IDL.Nat })),
           sweepInFlight: IDL.Bool,
         }),

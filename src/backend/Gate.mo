@@ -62,11 +62,31 @@ module {
   public type ConfigError = {
     #zeroOpenOrderCap;
     #zeroPurchaseCeiling;
+    /// A registered card tier costs more than the new per-purchase ceiling.
+    ///
+    /// `set_card_tiers` already refuses a tier above the ceiling; without the
+    /// inverse check, lowering the ceiling leaves that tier **sellable but
+    /// unpayable**: the buyer completes checkout and the webhook files a Type 1,
+    /// because the honoured amount exceeds the ceiling. Worse, `attach_payment`
+    /// refuses to rescue it until the ceiling is raised back — so the operator has
+    /// to work out the connection between a refused rescue and a config change
+    /// made earlier.
+    #tierAboveCeiling : { tierId : Text; usdCents : Nat; maxUsdCents : Nat };
   };
 
-  public func validateConfig(config : Config) : Result.Result<(), ConfigError> {
+  /// `tierPrices` is every registered card tier, so the ceiling cannot be lowered
+  /// underneath one. Pass an empty array when there are no tiers to consider.
+  public func validateConfig(
+    config : Config,
+    tierPrices : [(Text, Nat)],
+  ) : Result.Result<(), ConfigError> {
     if (config.maxOpenOrdersPerPrincipal == 0) return #err(#zeroOpenOrderCap);
     if (config.maxPurchaseUsdCents == 0) return #err(#zeroPurchaseCeiling);
+    for ((tierId, usdCents) in tierPrices.values()) {
+      if (usdCents > config.maxPurchaseUsdCents) {
+        return #err(#tierAboveCeiling({ tierId; usdCents; maxUsdCents = config.maxPurchaseUsdCents }));
+      };
+    };
     // minCanisterCycles = 0 is permitted: it means "do not gate on my own
     // balance", which is a coherent (if unwise) operator choice and is the
     // only way to keep serving while deliberately running the canister down.
@@ -82,6 +102,22 @@ module {
     #burnCapExhausted : { burnedE8s : Nat; capE8s : Nat };
     #floatLow : { observedE8s : ?Nat; thresholdE8s : Nat };
     #amountAboveMax : { usdCents : Nat; maxUsdCents : Nat };
+  };
+
+  /// Renderable config-validation failure.
+  ///
+  /// `#tierAboveCeiling` names the offending tier and both numbers, because "your
+  /// ceiling is too low" without saying which tier collides is a message an operator
+  /// has to go and investigate.
+  public func configErrorToText(error : ConfigError) : Text {
+    switch (error) {
+      case (#zeroOpenOrderCap) "zeroOpenOrderCap";
+      case (#zeroPurchaseCeiling) "zeroPurchaseCeiling";
+      case (#tierAboveCeiling({ tierId; usdCents; maxUsdCents })) {
+        "tierAboveCeiling(tier " # tierId # " costs " # usdCents.toText()
+        # " cents, ceiling would be " # maxUsdCents.toText() # ")";
+      };
+    };
   };
 
   public func reasonToText(reason : Reason) : Text {

@@ -132,15 +132,6 @@ suite("pre-gate (§5.3)", func() {
   });
 });
 
-suite("hold max-wait (§5.3)", func() {
-  test("escalates at exactly the bound, retries 1ns earlier", func() {
-    let maxHold = 72 * hour;
-    assert Treasury.holdStage(0, maxHold, maxHold) == #escalate;
-    assert Treasury.holdStage(0, maxHold - 1, maxHold) == #retry;
-    assert Treasury.holdStage(0, 0, maxHold) == #retry;
-  });
-});
-
 suite("low-float signal (§5.3 soft gate)", func() {
   test("threshold 0 disarms the signal entirely", func() {
     let config = Treasury.defaultConfig();

@@ -326,7 +326,12 @@ export interface BackendService {
   list_orders(): Promise<Order[]>;
   mint_journal(id: string): Promise<Opt<JournalEntry>>;
   process_order(id: string): Promise<Result<Order, { notFound: null } | { inFlight: null }>>;
-  recovery_status(): Promise<{ intervalNs: bigint; lastSweep: Opt<{ atNs: bigint; pending: bigint }>; sweepInFlight: boolean }>;
+  recovery_status(): Promise<{
+    intervalNs: bigint;
+    lastCountReconcile: Opt<{ atNs: bigint; drift: { status: string; was: bigint; is: bigint }[] }>;
+    lastSweep: Opt<{ atNs: bigint; pending: bigint }>;
+    sweepInFlight: boolean;
+  }>;
   refresh_float(): Promise<bigint>;
   reset_burn_window(): Promise<bigint>;
   reset_ck_usdc_pull(id: string): Promise<boolean>;
