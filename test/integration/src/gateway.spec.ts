@@ -118,7 +118,11 @@ test('03 — pricing fails closed: an XRC error leaves no rate and blocks orders
   // is the one failure mode that would otherwise be invisible.
   //
   // The override branch is only reachable on a local `icp network`; see issue #7.
-  expect(status.xrcCanisterId).toBe('uf6dk-hyaaa-aaaaq-qaaaq-cai');
+  // Null would mean no refresh has resolved the id yet, which is not a pass —
+  // the whole point of the field is that a mainnet deploy pointed at a mock must
+  // not be able to look clean.
+  expect(status.xrcCanisterId).toHaveLength(1);
+  expect(status.xrcCanisterId[0]).toBe('uf6dk-hyaaa-aaaaq-qaaaq-cai');
   // The failure is diagnosable — "timer dead" and "XRC erroring" must not look
   // the same to an operator.
   expect(status.lastAttempt[0]!.ok).toBe(false);
@@ -2145,9 +2149,12 @@ test('57 — an already-credited intent is caught before attribution, not after'
   // money that was already spent.
   //
   // Reaching it requires the ~7-day dedup retention to have lapsed — inside that
-  // window `recordStripeIntent` catches the replay first, which is why this needs a
-  // time jump rather than an immediate redelivery. A manual Dashboard resend weeks
-  // later is exactly the real-world shape.
+  // window `recordStripeEvent` catches the replay first, which is why this needs a
+  // time jump rather than an immediate redelivery.
+  //
+  // This models the HARSHER case on purpose: a new event id carrying an intent
+  // that was already credited, plus a reference that cannot resolve. Scenario 59
+  // covers the literal same-id Dashboard resend.
   await setCmcRate(gw);
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
@@ -2276,4 +2283,118 @@ test('59 — a Stripe resend past the dedup window does not file a second unproc
   await gw.pic.tick(5);
   expect(await deliverWebhook(gw, body)).toMatchObject({ status_code: 200 });
   expect(await matching()).toHaveLength(1);
+});
+
+test('60 — a stall that moves to a different stage re-raises the alert instead of leaving stale wording', async () => {
+  // `alertDelayed` dedups per order so a persistent stall does not flood the
+  // worklist. That dedup used to be keyed on the entry id alone, so an order that
+  // stalled at one stage and then moved to another kept day-one wording on the
+  // worklist — the operator would read "fix the burn cap" for an order that had
+  // long since moved on, or vice versa.
+  //
+  // Both halves below are pinned by CAUSE, not by timing luck: the alert for an
+  // in-flight status is raised before the rate check, while the #awaitingTreasury
+  // alert is raised after it. So a stale rate produces exactly one of the two and
+  // a fresh rate the other, which is what makes the transition deterministic.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  await fundFloat(gw, ORDER_E8S * 2n + ICP_FEE_E8S * 2n);
+  // A 60 s cadence is what makes the second half possible at all: the sweep has
+  // to fire while the CMC rate is still inside its 15-min guard, so the time jump
+  // that triggers it must be small. On the default 1 h cadence any jump big
+  // enough to sweep also stales the rate.
+  expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n));
+
+  // Create before pausing: a zero burn cap also refuses order creation.
+  const created = expectOk(await gw.asUser.create_order('tier5', { canister: destinationId }, []));
+  const orderId = created.order.id;
+  expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_stagechange', paymentIntent: 'pi_stagechange',
+    clientReferenceId: created.clientReferenceId, amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+
+  const delayedFor = async (resolved: boolean) =>
+    (resolved ? await allErrorEntries(gw) : await openErrorEntries(gw)).filter(
+      (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === orderId,
+    );
+
+  // ── stage 1: #paid, rate stale ──────────────────────────────────────────────
+  // 3 h is past the 2 h alert threshold and also past the CMC's 15-min staleness
+  // guard, so the sweep returns at the rate check and the order stays #paid.
+  await gw.pic.advanceTime(3 * 3_600 * 1_000);
+  await gw.pic.tick(5);
+  expect(await orderStatus(gw, orderId)).toBe('paid');
+
+  const first = await delayedFor(false);
+  expect(first).toHaveLength(1);
+  if ('deliveryDelayed' in first[0]!.kind) {
+    expect(first[0]!.kind.deliveryDelayed.stage).toBe('mintDelayed');
+  }
+  const firstId = first[0]!.id;
+
+  // Repeated sweeps at the same stage stay silent — the dedup this test is about
+  // must still work in the direction it was written for.
+  await gw.pic.advanceTime(3 * 3_600 * 1_000);
+  await gw.pic.tick(5);
+  expect(await delayedFor(false)).toHaveLength(1);
+  expect((await delayedFor(false))[0]!.id).toBe(firstId);
+
+  // ── stage 2: the same stall moves to #awaitingTreasury ──────────────────────
+  // A fresh rate lets the sweep past the rate check and reach the treasury
+  // pre-gate, whose #hold branch transitions the order. The burn cap is still 0,
+  // so the order is no less stuck — only differently stuck.
+  await ensureRates(gw);
+  await gw.pic.advanceTime(90_000);
+  await gw.pic.tick(5);
+  expect(await orderStatus(gw, orderId)).toBe('awaitingTreasury');
+
+  // That transition reset updatedAtNs, so the new stage has to age past the
+  // threshold on its own before it can alert. Keeping the rate fresh is what
+  // makes the #awaitingTreasury arm — which lives after the rate check —
+  // reachable at all.
+  await gw.pic.advanceTime(3 * 3_600 * 1_000);
+  await ensureRates(gw);
+  await gw.pic.advanceTime(90_000);
+  await gw.pic.tick(5);
+
+  const log = await gw.asAdmin.audit_log();
+  const changed = log.find((e) => e.tag === 'mint.delayedStageChanged');
+  expect(changed).toBeDefined();
+  expect(changed!.detail).toContain(orderId);
+  expect(changed!.detail).toContain('mintDelayed');
+  expect(changed!.detail).toContain('treasuryDelayed');
+
+  // The stale entry is CLOSED, not left open beside the new one: two open alerts
+  // for one order is the same operator confusion in a different shape.
+  const stale = (await allErrorEntries(gw)).find((e) => e.id === firstId)!;
+  expect(stale.resolvedAtNs).toHaveLength(1);
+
+  const second = await delayedFor(false);
+  expect(second).toHaveLength(1);
+  expect(second[0]!.id).not.toBe(firstId);
+  if ('deliveryDelayed' in second[0]!.kind) {
+    expect(second[0]!.kind.deliveryDelayed.stage).toBe('treasuryDelayed');
+    // The wording an operator acts on now describes where the order actually is.
+    expect(second[0]!.detail).toContain('burn cap');
+  }
+
+  // ── the alert does not outlive the delay ────────────────────────────────────
+  // Lifting the hold delivers the order, and BOTH entries must end up closed —
+  // the refreshed one is the entry that would leak if the re-raise forgot it.
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  // `tickUntilStatus` only ticks rounds, so the 60 s timer needs an explicit jump
+  // to fire — and the rate has to be fresh when it does, hence the pairing.
+  for (let i = 0; i < 3; i += 1) {
+    await ensureRates(gw);
+    await gw.pic.advanceTime(90_000);
+    await gw.pic.tick(10);
+    if ((await orderStatus(gw, orderId)) === 'delivered') break;
+  }
+  expect(await orderStatus(gw, orderId)).toBe('delivered');
+  expect(await delayedFor(false)).toHaveLength(0);
+  const all = await delayedFor(true);
+  expect(all).toHaveLength(2);
+  for (const entry of all) expect(entry.resolvedAtNs).toHaveLength(1);
 });

@@ -148,16 +148,21 @@ persistent actor CyclesGateway {
   /// Mirrored into a var because reading an environment variable needs the
   /// `system` capability, which a query does not have — and "which XRC am I
   /// pricing from?" has to be answerable from a query, since a mainnet deploy
-  /// wrongly pointed at a mock is otherwise completely silent. The refresh timer
-  /// warms within seconds of install, so this is accurate almost immediately.
-  transient var lastXrcCanisterId : Text = Xrc.mainnetCanisterId;
+  /// wrongly pointed at a mock is otherwise completely silent.
+  ///
+  /// **Null until an XRC call has actually resolved the id**, and transient, so it
+  /// is null again after every upgrade until the refresh timer warms (seconds).
+  /// Defaulting it to the mainnet id instead would make the one signal that
+  /// detects a mock read *all-clear* during exactly the window an operator checks
+  /// a fresh deploy — an alert that is silent when unverified is worse than none.
+  transient var lastXrcCanisterId : ?Text = null;
 
   func xrcActor<system>() : Xrc.Service {
     let id = switch (Runtime.envVar<system>(Xrc.canisterIdEnvVar)) {
       case (?injected) injected;
       case null Xrc.mainnetCanisterId;
     };
-    lastXrcCanisterId := id;
+    lastXrcCanisterId := ?id;
     actor (id);
   };
 
@@ -364,11 +369,15 @@ persistent actor CyclesGateway {
     rates : ?Pricing.Rates;
     config : Pricing.Config;
     lastAttempt : ?{ atNs : Int; ok : Bool; detail : Text };
-    /// Which Exchange Rate Canister the last refresh priced from. On mainnet this
-    /// MUST read `uf6dk-hyaaa-aaaaq-qaaaq-cai`; anything else means the deploy
-    /// injected `PUBLIC_CANISTER_ID:xrc` and prices are coming from somewhere
-    /// else. Alert on it (RUNBOOK §9).
-    xrcCanisterId : Text;
+    /// Which Exchange Rate Canister the last refresh actually priced from. On
+    /// mainnet this MUST read `uf6dk-hyaaa-aaaaq-qaaaq-cai`; anything else means
+    /// the deploy injected `PUBLIC_CANISTER_ID:xrc` and prices are coming from
+    /// somewhere else. Alert on it (RUNBOOK §9).
+    ///
+    /// **Null means no refresh has resolved it yet** — not that it is the mainnet
+    /// canister. Null is the expected reading for the first seconds after an
+    /// install or upgrade, and it is a "check again", never a pass.
+    xrcCanisterId : ?Text;
   } {
     {
       rates = Pricing.lastRates(rateCache);

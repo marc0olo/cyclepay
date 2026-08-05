@@ -166,7 +166,10 @@ suite("the ceiling cannot be lowered under a live tier", func() {
     switch (Gate.validateConfig({ config with maxPurchaseUsdCents = 100 }, tiers)) {
       case (#err(e)) {
         let text = Gate.configErrorToText(e);
-        assert Text.contains(text, #text "tier5");
+        // The full rendered sentence, not a substring: `#text "tier5"` also
+        // matches a "tier50", so a passing assertion would not have told us the
+        // right tier was named.
+        assert text == "tierAboveCeiling(tier tier5 costs 500 cents, ceiling would be 100)";
       };
       case (#ok) assert false;
     };

@@ -434,7 +434,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
         config: PricingConfig,
         lastAttempt: IDL.Opt(RateAttempt),
         rates: IDL.Opt(Rates),
-        xrcCanisterId: IDL.Text,
+        xrcCanisterId: IDL.Opt(IDL.Text),
       })],
       ['query'],
     ),

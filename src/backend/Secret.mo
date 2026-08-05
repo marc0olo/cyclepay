@@ -24,10 +24,15 @@ import Result "mo:core/Result";
 
 module {
 
-  /// Reject obviously truncated provisioning. Real Stripe secrets are
-  /// `whsec_` + ≥32 chars (the whole string, prefix included, is the HMAC
-  /// key); a fat-fingered short paste should fail loudly at set time, not
-  /// silently 401 every webhook.
+  /// Reject obviously truncated provisioning: a fat-fingered short paste should
+  /// fail loudly at set time, not silently reject every webhook.
+  ///
+  /// 16, deliberately **below** the length of a real Stripe secret (`whsec_` plus
+  /// ~32 chars — the whole string, prefix included, is the HMAC key). The floor
+  /// only has to catch a truncated paste; keeping it under Stripe's real length
+  /// leaves shorter test secrets usable on a local network, where nothing is being
+  /// protected. It is not a strength check, and no length here makes a leaked
+  /// secret safe — see §2 of the RUNBOOK for rotation.
   public let minSecretBytes : Nat = 16;
 
   public type Store = {

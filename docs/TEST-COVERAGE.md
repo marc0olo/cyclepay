@@ -2,7 +2,7 @@
 
 One place to answer "is X covered?". Run everything with `scripts/test-all.sh`.
 
-## The three automated suites
+## The automated suites
 
 Counts are deliberately absent: they drifted in three separate documents over one
 week of work, and a wrong number is worse than no number. Run
@@ -74,7 +74,39 @@ page reads, and the local-II feature currently breaks instance creation (recorde
 | `#ambiguousForward` end to end | needs a callback *dropped* between the pre-forward marker and delivery; `stopCanister` **drains** callbacks rather than dropping them. Unit-pinned is the ceiling |
 | `stageOf`'s `#escalate` arm wiring | reaching `retriesExhausted` through it needs `maxMintRetries` (2,000) sweeps. The *terminate* route reaches the same money positions and is covered (53); the decision function is exhaustively unit-pinned. What no test exercises is the two-line expression handing it to the queue |
 
-### 3. Things only a real Stripe account can show
+### 3. The deployment layer — covered separately by `scripts/e2e-local.sh`
+
+The PocketIC suite installs wasms directly and **never runs `icp deploy`**, so
+nothing it does exercises the deploy pipeline. `scripts/e2e-local.sh` covers that
+against a real local network (`icp network start`), and is not part of
+`scripts/test-all.sh` because it needs one running:
+
+| What only this can prove | Why the PocketIC suite cannot |
+|---|---|
+| the deploy pipeline: recipes, `shrink: true`, embedded `candid:service`, the Candid compatibility check | it installs wasms directly |
+| the **`PUBLIC_CANISTER_ID:xrc` override branch** | in PocketIC the mock sits *at* the mainnet id, so no env var is injected and only the fallback branch ever runs |
+| the asset canister and its `ic_env` cookie (`ic_root_key` + the canister ids) | there is no asset canister and no HTTP gateway serving it |
+| local Internet Identity responding | `ii: true` is a network feature, not a canister one |
+| `icp.yaml` environment scoping — that `ic` lists only `backend` and `frontend`, keeping the mock off mainnet structurally | it is a config fact, not a canister behaviour |
+
+It also reports two conditions loudly rather than papering over them, because both
+look identical from inside a deploy and only one is safe: a **breaking Candid
+change** against the deployed canister, and a **stable-shape change** whose upgrade
+traps in `register_stable_type` (EOP refusing to reinterpret existing memory).
+Locally it retries with `--yes` and `--mode reinstall`; on mainnet those are a
+migration expression and a deliberate decision.
+
+Two gotchas it encodes, both found by running it:
+
+- The **xrc mock keeps its canned response in heap and sets it from `init_args` at
+  install time**, so a routine `icp deploy` upgrades it and every later rate call
+  traps with "Response has not been set". The script reinstalls it first.
+- **`rates` stays null locally** and that is expected, not a failure: caching a pair
+  also needs a fresh CMC rate, which needs governance impersonation through the
+  PocketIC control API — an unsupported interface the script deliberately avoids.
+  So local orders cannot be *priced*; the money path stays in the PocketIC suite.
+
+### 4. Things only a real Stripe account can show
 
 Covered by `docs/SANDBOX-TESTPLAN.md`, not by any suite:
 
@@ -87,7 +119,7 @@ Covered by `docs/SANDBOX-TESTPLAN.md`, not by any suite:
 - **Disputes.** Only `charge.refunded` is subscribed, so a chargeback produces no
   on-chain signal at all — accepted and documented, managed in the Dashboard.
 
-### 4. No coverage measurement
+### 5. No coverage measurement
 
 There is no instrumentation — no `c8`/istanbul for TypeScript, nothing for Motoko.
 The tables above are a qualitative map, deliberately: an unmeasured percentage
