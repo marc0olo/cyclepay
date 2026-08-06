@@ -1828,10 +1828,6 @@ persistent actor CyclesGateway {
   /// message, which commits regardless of what the detached reconcile does.
   var lastCountReconcileAttemptNs : Int = 0;
 
-  func countReconcileDue(nowNs : Int) : Bool {
-    lastCountReconcile == null or nowNs - lastCountReconcileAttemptNs >= countReconcileIntervalNs;
-  };
-
   /// Rebuild the tallies. Audits **only on drift**: a clean reconcile every day
   /// would bury the one line that matters, and drift is a bug in the incremental
   /// bookkeeping that an operator must see.
@@ -1915,7 +1911,7 @@ persistent actor CyclesGateway {
       // visibly stale `lastCountReconcile` (RUNBOOK §9), which is the right
       // signal — the tallies are unverified, not known-wrong.
       let now = Time.now();
-      if (countReconcileDue(now)) {
+      if (Recovery.reconcileDue(lastCountReconcileAttemptNs, now, countReconcileIntervalNs)) {
         lastCountReconcileAttemptNs := now;
         ignore async { reconcileCounts() };
       };
@@ -1964,17 +1960,23 @@ persistent actor CyclesGateway {
     intervalNs : Nat;
     lastSweep : ?{ atNs : Int; pending : Nat };
     sweepInFlight : Bool;
-    /// Last tally reconciliation. A non-empty `drift` means the incremental
-    /// counts had diverged from the orders and were repaired — the tallies are
-    /// correct again, but the bug that moved them is not fixed. `recount_orders`
-    /// is the on-demand form of the same repair.
+    /// Last **successful** tally reconciliation. A non-empty `drift` means the
+    /// incremental counts had diverged from the orders and were repaired — the
+    /// tallies are correct again, but the bug that moved them is not fixed.
+    /// `recount_orders` is the on-demand form of the same repair.
     lastCountReconcile : ?{ atNs : Int; drift : [Orders.Drift] };
+    /// When one was last *attempted*. Reported alongside the success timestamp so
+    /// "due tomorrow" and "attempted today and failed" are distinguishable without
+    /// correlating against the sweep clock: an attempt materially newer than the
+    /// success means the reconcile is trapping (RUNBOOK §9).
+    lastCountReconcileAttemptNs : Int;
   } {
     {
       intervalNs = recoverySweepIntervalNs;
       lastSweep = lastRecoverySweep;
       sweepInFlight = recoverySweepInFlight;
       lastCountReconcile;
+      lastCountReconcileAttemptNs;
     };
   };
 

@@ -1,5 +1,6 @@
 import { test; suite } "mo:test";
 import Int "mo:core/Int";
+import Nat "mo:core/Nat";
 import Cmc "../src/backend/Cmc";
 import Recovery "../src/backend/Recovery";
 import Types "../src/backend/Types";
@@ -95,5 +96,36 @@ suite("isSweepable", func() {
     };
     assert all.size() == 8;
     assert sweepable == 4;
+  });
+
+  test("a reconcile is due on a fresh canister, then not again until the interval", func() {
+    let day : Nat = 24 * 3_600 * 1_000_000_000;
+    // `lastAttemptNs` starts at 0 and `nowNs` is a real epoch time, so the very
+    // first tick is due through the attempt clock alone — which is why the
+    // predicate needs no "never succeeded" special case.
+    assert Recovery.reconcileDue(0, 1_780_000_000_000_000_000, day);
+    // Just attempted: not due, whatever else is true.
+    assert not Recovery.reconcileDue(1_780_000_000_000_000_000, 1_780_000_000_000_000_000, day);
+    // One nanosecond short of the interval, then exactly on it.
+    assert not Recovery.reconcileDue(0, day - 1, day);
+    assert Recovery.reconcileDue(0, day, day);
+  });
+
+  test("a reconcile that never succeeds still backs off to the interval", func() {
+    // THE case the attempt clock exists for. A trap rolls back the reconcile's own
+    // state, so it can never record a success — an earlier version short-circuited
+    // on "no success yet" and was therefore due on every single sweep tick,
+    // burning a full instruction budget each time on a canister that could least
+    // afford it. Success is not an input here, so that cannot come back.
+    let day : Nat = 24 * 3_600 * 1_000_000_000;
+    let attempted = 1_780_000_000_000_000_000;
+    // Sweeps run every 15 min; none of them may re-trigger the reconcile.
+    var t = attempted;
+    for (_ in Nat.range(0, 90)) {
+      t += 900_000_000_000;
+      assert not Recovery.reconcileDue(attempted, t, day);
+    };
+    // A full day later it retries — once.
+    assert Recovery.reconcileDue(attempted, attempted + day, day);
   });
 });
