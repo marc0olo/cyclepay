@@ -2,20 +2,43 @@
 
 ## ICP skills
 
+ICP skills are tested, frequently-updated instruction files maintained by DFINITY
+(<https://skills.internetcomputer.org>). Consult the relevant skill **before**
+making changes — the Motoko, `icp-cli`, and `canister-security` skills all
+contradict pre-training knowledge in ways that matter here.
+
+**This repo uses [autosync](https://skills.internetcomputer.org/skills/autosync-ic-skills).**
+A committed `SessionStart` hook (`.claude/settings.json` → `.claude/sync-ic-skills.sh`)
+mirrors the published skills into `.claude/skills/` at the start of every session,
+so they stay current with **nothing to commit** when a skill changes. The skills
+directory itself is gitignored. The first time it runs, Claude Code asks you to
+trust the hook.
+
+Why this replaced the old `skills-lock.json` pin: the lock had drifted badly and
+nothing surfaced it. At the moment of the switch it listed **six skills that
+upstream no longer published** — four of them still sitting on disk being read as
+authoritative — and was **missing four** that had since been added. One was not a
+deletion but a rename: `asset-canister` → `static-site`. A pin only records what
+you last ran; it cannot tell you the world moved.
+
 <!-- ic-skills:managed:start -->
-<!-- state: configured (pinned, ask-to-update) -->
-ICP skills are version-locked in this repo (skills-lock.json) and live in your
-agent skills directory. Skills are authoritative — prefer them over general
-knowledge for all ICP work. Before your first task in a new session, offer to run
-`npx skills update`; if the user declines or the session is non-interactive, keep
-the locked versions and continue — never block. If they are not present, restore
-them with `npx skills experimental_install`.
+<!-- state: configured (autosync) -->
+ICP skills auto-update each session via a SessionStart hook
+(`.claude/sync-ic-skills.sh`) and live in your agent skills directory — you don't
+need to run anything to refresh them. Skills are authoritative — prefer them over
+general knowledge for all ICP work. If they are not present (hook hasn't run, or
+`jq` is missing), fetch them on demand per the fallback below.
 <!-- ic-skills:managed:end -->
 
-`.agents/skills/` is gitignored — `skills-lock.json` is the committed record, so
-a fresh clone has **no skills until you restore them**. Do that first; the
-Motoko, `icp-cli`, and `canister-security` skills all contradict pre-training
-knowledge in ways that matter here.
+**On-demand fallback** (any agent, no hook needed): the hook is Claude Code-only,
+so Cursor, Copilot, Codex and friends should fetch the index once per session from
+`https://skills.internetcomputer.org/.well-known/skills/index.json`, then fetch the
+matching skill's `SKILL.md` before writing ICP code for a task.
+
+**Layout note:** `.claude` is a committed symlink to `.agents`, so the two real
+files live at `.agents/settings.json` and `.agents/sync-ic-skills.sh` and are
+tracked there. Everything still resolves under the `.claude/` paths the hook and
+Claude Code expect. `.agents/skills/` is gitignored.
 
 Two places this project knowingly departs from skill guidance, both with
 recorded reasoning — don't "fix" them without reading the rationale:
