@@ -316,12 +316,29 @@ rm -f "$BODY_FILE"
 ok "POST ${GATEWAY}/webhook/stripe → 200"
 
 # An unsigned body must NOT be accepted — otherwise the 200 above proves nothing.
+# This one has no Stripe-Signature header at all, so it covers the missing-header
+# branch.
 UNSIGNED_STATUS="$(printf '{}' | curl -sS -o /dev/null -w '%{http_code}' \
   -X POST "${GATEWAY}/webhook/stripe?canisterId=${BACKEND_ID}" \
   -H 'content-type: application/json' --data-binary @- || true)"
 [ "$UNSIGNED_STATUS" = "400" ] ||
   die "an unsigned body returned $UNSIGNED_STATUS, expected 400 — the route is not verifying signatures"
-ok "an unsigned body is refused 400"
+ok "a body with no signature header is refused 400"
+
+# And a WELL-FORMED header whose MAC does not verify — a different branch, and the
+# one that actually happens in production: a rotated secret, or a Payment Link
+# pointed at the wrong endpoint. The timestamp is current on purpose, so a refusal
+# is attributable to the MAC and not to the ±300 s tolerance window.
+BAD_SIG_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' \
+  -X POST "${GATEWAY}/webhook/stripe?canisterId=${BACKEND_ID}" \
+  -H 'content-type: application/json' \
+  -H "stripe-signature: t=$(date +%s),v1=$(printf 'f%.0s' $(seq 64))" \
+  --data-binary '{"id":"evt_bad_sig","type":"charge.dispute.created"}' || true)"
+[ "$BAD_SIG_STATUS" = "400" ] ||
+  die "a well-formed header with a non-verifying v1= returned $BAD_SIG_STATUS, expected 400.
+    200 here would mean the MAC is not actually being checked — the signed-200
+    above would then prove only that the route exists."
+ok "a well-formed header with a bad MAC is refused 400"
 
 # ── 7. environment scoping keeps the mock off mainnet ─────────────────────────
 step "7. the ic environment excludes the local-only xrc mock"
