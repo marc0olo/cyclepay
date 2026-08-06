@@ -72,6 +72,7 @@ page reads, and the local-II feature currently breaks instance creation (recorde
 | Not covered | Why |
 |---|---|
 | `#ambiguousForward` end to end | needs a callback *dropped* between the pre-forward marker and delivery; `stopCanister` **drains** callbacks rather than dropping them. Unit-pinned is the ceiling |
+| a **trapping** daily reconcile | the reconcile is detached into its own message precisely so a trap cannot stop the sweep, but nothing can inject that trap: it would take an order store large enough to exhaust the instruction limit. What *is* covered is that the detached message runs, commits, and is cadence-gated in both directions (scenario 58); the isolation itself rests on the message boundary, not on a test |
 | `stageOf`'s `#escalate` arm wiring | reaching `retriesExhausted` through it needs `maxMintRetries` (2,000) sweeps. The *terminate* route reaches the same money positions and is covered (53); the decision function is exhaustively unit-pinned. What no test exercises is the two-line expression handing it to the queue |
 
 ### 3. The deployment layer — covered separately by `scripts/e2e-local.sh`

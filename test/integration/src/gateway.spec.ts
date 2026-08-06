@@ -2234,6 +2234,14 @@ test('58 — the sweep reconciles the status tallies on its own cadence and repo
   // one line that matters.
   const fresh = (await gw.asAdmin.audit_log()).slice(auditBefore);
   expect(fresh.some((e) => e.tag === 'orders.countDrift')).toBe(false);
+
+  // The cadence holds in the other direction too: an hour of sweeps must not
+  // re-scan the store. The reconcile is detached into its own message, so a gate
+  // that failed open would spawn one per sweep — invisible except as cycles.
+  const settled = status.lastCountReconcile[0]!.atNs;
+  await gw.pic.advanceTime(3_600 * 1_000);
+  await gw.pic.tick(6);
+  expect((await gw.asAnon.recovery_status()).lastCountReconcile[0]!.atNs).toBe(settled);
 });
 
 test('59 — a Stripe resend past the dedup window does not file a second unprocessable', async () => {
