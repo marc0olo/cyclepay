@@ -18,6 +18,8 @@ import {
   type Tier,
 } from "./actor";
 import { currentIdentity, signIn, signOut } from "./auth";
+import { linkIdentityCommand } from "./config";
+import { type Audience, recall, remember, forget, suggestFrom } from "./audience";
 import { makeCkUsdcLedger } from "./ledger";
 import {
   RATE_LOCK_NOTE,
@@ -76,6 +78,13 @@ let tiers: Tier[] = [];
 let selectedTierId: string | null = null;
 let lowFloat = false;
 let activeRail: RailKey = "card";
+
+/// Null means "show the chooser". See audience.ts for why only "live" persists.
+let audience: Audience | null = null;
+/// The newcomer arm hides the destination question entirely; this opens the
+/// escape hatch for funding someone else's canister without promoting it to a
+/// co-equal choice.
+let newcomerAdvanced = false;
 let ckConfig: CkUsdcConfig | null = null;
 // Payment links keyed by order id — known only for orders created this
 // session (the backend stores no link; the tier carries it).
@@ -189,13 +198,13 @@ async function loadMarket(): Promise<void> {
       `ICP $${usdPerIcp} · ${xdrPerIcp} XDR/ICP · ${fee} · cycles are locked at order creation`;
   } else {
     rateLine.textContent =
-      "No exchange rate available yet — orders are paused until one is fetched.";
+      "No exchange rate available yet. Orders are paused until one is fetched.";
   }
 
   const gate = el("gate-notice");
   if (lowFloat) {
     gate.textContent =
-      "Operator float is low — new orders may queue until it is refilled. Paid orders always deliver at their locked quantity.";
+      "Operator float is low, so new orders may queue until it is refilled. Paid orders always deliver at their locked quantity.";
   }
   show("gate-notice", lowFloat);
 
@@ -209,6 +218,11 @@ async function loadMarket(): Promise<void> {
 /// Which destination the form is currently pointing at — the landing quantity
 /// differs by destination, so every estimate needs it.
 function selectedDestinationKind(): DestinationKind {
+  // On the newcomer arm the radios are not rendered at all: cycles go to the
+  // signed-in account unless the advanced disclosure is open.
+  if (audience === "newcomer") {
+    return newcomerAdvanced ? "canister" : "cyclesLedgerAccount";
+  }
   const checked = document.querySelector<HTMLInputElement>('input[name="dest-kind"]:checked');
   return checked?.value === "cyclesLedgerAccount" ? "cyclesLedgerAccount" : "canister";
 }
@@ -316,7 +330,7 @@ function renderTiers(): void {
   if (tiers.length === 0) {
     const p = document.createElement("p");
     p.className = "muted";
-    p.textContent = "No tiers configured yet — check back soon.";
+    p.textContent = "No amounts are configured yet.";
     container.append(p);
     return;
   }
@@ -333,7 +347,7 @@ function renderTiers(): void {
     label.className = "cycles";
     const quoted = tierQuotes.get(tier.id);
     label.textContent = quoted === undefined
-      ? "—"
+      ? "not yet"
       : estimateLine(quoted.cycles ?? null, destination, depositFee);
     btn.append(amount, label);
     btn.onclick = () => {
@@ -361,8 +375,49 @@ function renderTierDetail(): void {
   show("tier-detail", true);
 }
 
+/// Show the chooser, or the arm the visitor picked.
+///
+/// The two arms differ in what they ASK, not only in wording: the newcomer arm
+/// renders no destination question at all, because a canister-id field is
+/// unanswerable for someone whose first canister does not exist yet.
+function renderAudience(): void {
+  const chosen = audience !== null;
+  show("chooser", !chosen);
+  show("buy-flow", chosen);
+  show("chooser-back", audience === "live");
+
+  show("dest-newcomer", audience === "newcomer");
+  show("dest-choice", audience === "live");
+  show("dest-ledger-advanced", audience === "newcomer" ? newcomerAdvanced : false);
+
+  const kind = selectedDestinationKind();
+  show("dest-canister", chosen && kind === "canister");
+  if (audience === "live") {
+    show("dest-ledger-advanced", kind === "cyclesLedgerAccount");
+  }
+
+  // The rail nav is a nav only when there is something to navigate between.
+  // A single visible tab is noise, and a disabled second one promises a rail
+  // that may never ship.
+  show("rail-nav", !ckRailDisabled());
+  if (ckRailDisabled() && activeRail !== "card") setRail("card");
+
+  renderDestinationNote();
+}
+
+function chooseAudience(next: Audience): void {
+  audience = next;
+  newcomerAdvanced = false;
+  remember(next);
+  renderAudience();
+  renderTiers();
+  renderCkEstimate();
+  renderSubmitGate();
+}
+
 function renderSubmitGate(): void {
   const btn = el<HTMLButtonElement>("create-order");
+  show("signin-providers", !identity);
   if (!identity) {
     btn.disabled = true;
     btn.textContent = "Sign in to continue";
@@ -376,7 +431,7 @@ function renderSubmitGate(): void {
     // Pricing is unavailable, so create_order would refuse. Say that here
     // instead of letting the user find out by clicking.
     btn.disabled = true;
-    btn.textContent = "Pricing unavailable — try again shortly";
+    btn.textContent = "Pricing unavailable, try again shortly";
   } else if (acknowledgedQuote !== null) {
     btn.disabled = false;
     btn.textContent = "Confirm at the new rate";
@@ -436,7 +491,19 @@ function setRail(rail: RailKey): void {
 // --- order creation ------------------------------------------------------
 
 function readDestination(): { ok: true; value: Destination } | { ok: false; error: string } {
-  const kind = (document.querySelector('input[name="dest-kind"]:checked') as HTMLInputElement).value;
+  // Newcomer arm, default path: their own account. No field to fill in, and no
+  // way to mistype a principal, which is the whole point of hiding the question.
+  if (audience === "newcomer" && !newcomerAdvanced) {
+    if (!identity) return { ok: false, error: "Sign in to continue." };
+    return {
+      ok: true,
+      value: {
+        __kind__: "cyclesLedgerAccount",
+        cyclesLedgerAccount: { owner: identity.getPrincipal(), subaccount: undefined },
+      },
+    };
+  }
+  const kind = selectedDestinationKind();
   if (kind === "canister") {
     const text = el<HTMLInputElement>("canister-principal").value.trim();
     if (!text) return { ok: false, error: "Enter the canister id to top up." };
@@ -498,7 +565,7 @@ async function createCardOrder(dest: Destination): Promise<void> {
   if (selectedTierId === null) return;
   const tier = tiers.find((t) => t.id === selectedTierId);
   if (!tier) {
-    showFormError("Selected tier vanished — reload the page.");
+    showFormError("That amount is no longer offered. Reload the page.");
     return;
   }
   const shown = tierQuotes.get(tier.id)?.cycles ?? null;
@@ -626,6 +693,7 @@ function renderOrder(order: Order, clientReferenceId?: string): void {
   el<HTMLButtonElement>("cancel-order").disabled = false;
 
   show("active-order", true);
+  renderCliHandoff(order);
   void renderReceipt(order);
 }
 
@@ -635,6 +703,32 @@ function renderOrder(order: Order, clientReferenceId?: string): void {
 /// carries — both queryable from the XRC and the CMC. A gateway asserting its own
 /// price is correct proves nothing; recomputing it somewhere the operator does
 /// not control is the whole point.
+/// The two commands a buyer needs, on the screen where they need them.
+///
+/// For the newcomer arm this IS the deliverable: cycles sitting in an account
+/// they cannot reach from the CLI are worth nothing to them.
+///
+/// `--app` is always printed. The bare `icp identity link web dev` form derives
+/// a principal from a different origin, which lands the user on an empty balance
+/// — a failure that reads to them as "you took my money". The credited principal
+/// is shown beside it so a mismatch is self-diagnosable rather than a support
+/// ticket.
+function renderCliHandoff(order: Order): void {
+  // A canister top-up needs no CLI step: the cycles are already where they are
+  // being spent. Only account-funded orders get this.
+  const isAccount = "cyclesLedgerAccount" in order.destination;
+  const delivered = statusKeyOf(order) === "delivered";
+  if (!isAccount || !delivered) {
+    show("cli-handoff", false);
+    return;
+  }
+  const owner = (order.destination as { cyclesLedgerAccount: { owner: Principal } })
+    .cyclesLedgerAccount.owner;
+  el("credited-principal").textContent = owner.toText();
+  el("cmd-link").textContent = linkIdentityCommand();
+  show("cli-handoff", true);
+}
+
 async function renderReceipt(order: Order): Promise<void> {
   if (!identity || statusKeyOf(order) !== "delivered") {
     show("receipt-area", false);
@@ -653,23 +747,23 @@ async function renderReceipt(order: Order): Promise<void> {
   }
   const v = receipt.verification;
   el("receipt-paid").textContent = receipt.paidUsdCents === undefined
-    ? "—"
+    ? "not yet"
     : formatUsdCents(receipt.paidUsdCents);
   el("receipt-minted").textContent = receipt.cyclesMinted === undefined
-    ? "—"
+    ? "not yet"
     : formatCycles(receipt.cyclesMinted);
   el("receipt-block").textContent = receipt.mintBlockIndex === undefined
-    ? "—"
+    ? "not yet"
     : receipt.mintBlockIndex.toString();
   el("receipt-sources").textContent =
-    rateSourceNote(v.rateReceivedRates, v.rateQueriedSources) || "—";
+    rateSourceNote(v.rateReceivedRates, v.rateQueriedSources) || "not yet";
 
   const check = checkReceipt(v, receipt.order.lockedCycles);
   el("receipt-formula").textContent = check.formula;
   const verdict = el("receipt-verdict");
   verdict.textContent = check.matches
-    ? "✓ Recomputed from these inputs, the price matches the cycles this order locked."
-    : "⚠ Recomputing from these inputs does not match the locked quantity — please contact support with the order id.";
+    ? "Verified: recomputed from these inputs, the price matches the cycles this order locked."
+    : "Mismatch: recomputing from these inputs does not match the locked quantity. Please contact support with the order id.";
   verdict.className = check.matches ? "tone-ok" : "tone-err";
   show("receipt-area", true);
 }
@@ -735,7 +829,7 @@ async function onCkApprove(): Promise<void> {
   try {
     order = await backend.get_order(orderId);
   } catch {
-    setCkFlowStatus("Could not reach the gateway — try again.", "err");
+    setCkFlowStatus("Could not reach the gateway. Try again.", "err");
     return;
   }
   if (order === null) return;
@@ -758,7 +852,7 @@ async function onCkApprove(): Promise<void> {
       setCkFlowStatus(approveErrorMessage(result.Err), "err");
       return;
     }
-    setCkFlowStatus("Approved — claiming…");
+    setCkFlowStatus("Approved. Claiming…");
     await claimCkOrder(orderId);
   } catch (error) {
     setCkFlowStatus(
@@ -856,6 +950,18 @@ async function refreshHistory(): Promise<void> {
     return;
   }
   orders.sort((a, b) => (b.createdAtNs > a.createdAtNs ? 1 : -1));
+
+  // Post-sign-in there is a second signal beyond the stored preference: what
+  // this principal last bought. It PRE-SELECTS an arm; it never skips the
+  // chooser, because a returning buyer's intent legitimately differs between
+  // visits (last month a top-up, today a new project).
+  const latest = orders[0];
+  const suggestion = suggestFrom(
+    latest ? ("canister" in latest.destination ? "canister" : "cyclesLedgerAccount") : null,
+  );
+  el("choose-new").classList.toggle("suggested", suggestion === "newcomer");
+  el("choose-live").classList.toggle("suggested", suggestion === "live");
+
   const body = el("orders");
   body.replaceChildren();
   for (const order of orders) {
@@ -879,8 +985,120 @@ async function refreshHistory(): Promise<void> {
       lockNotice = null;
       openOrder(order);
     };
+
+    // Buy again: for an operator refilling the same canister every month this
+    // is the whole flow — one click plus payment.
+    const actions = document.createElement("td");
+    const again = document.createElement("button");
+    again.type = "button";
+    again.className = "buy-again";
+    again.textContent = "Buy again";
+    again.onclick = (event) => {
+      event.stopPropagation(); // the row itself opens the order
+      repeatOrder(order);
+    };
+    actions.append(again);
+    row.append(actions);
     body.append(row);
   }
+}
+
+/// Prefill a new order from an existing one: same amount, same destination.
+///
+/// Deliberately does NOT submit. The price is re-quoted at today's rate, and
+/// charging a card from a table row without showing the new figure would be the
+/// one place this app takes money without the buyer seeing the number first.
+function repeatOrder(order: Order): void {
+  lockNotice = null;
+  stopPolling();
+  show("active-order", false);
+
+  const toCanister = "canister" in order.destination;
+  audience = toCanister ? "live" : audience ?? "live";
+  newcomerAdvanced = false;
+  remember(audience);
+  renderAudience();
+
+  if (toCanister) {
+    const radio = document.querySelector<HTMLInputElement>('input[name="dest-kind"][value="canister"]');
+    if (radio) radio.checked = true;
+    el<HTMLInputElement>("canister-principal").value =
+      (order.destination as { canister: Principal }).canister.toText();
+  } else if (audience === "live") {
+    const radio = document.querySelector<HTMLInputElement>(
+      'input[name="dest-kind"][value="cyclesLedgerAccount"]',
+    );
+    if (radio) radio.checked = true;
+  }
+  renderAudience();
+
+  // Match the tier by price. A tier that no longer exists (retired, or repriced)
+  // simply leaves nothing selected rather than silently picking a neighbour.
+  const tier = tiers.find((t) => t.usdCents === order.pricing.usdCents);
+  selectedTierId = tier ? tier.id : null;
+  clearRequote();
+  renderTiers();
+  renderTierDetail();
+  renderSubmitGate();
+  el("card-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/// Copy-to-clipboard for the CLI commands. Falls back to selecting the text:
+/// clipboard access is refused in some browsers and over plain HTTP, and a
+/// button that silently does nothing is worse than one that selects for you.
+function wireCopyButtons(): void {
+  for (const btn of document.querySelectorAll<HTMLButtonElement>("button.copy")) {
+    btn.onclick = () => {
+      const target = document.getElementById(btn.dataset.copy ?? "");
+      if (!target) return;
+      const text = target.textContent ?? "";
+      const done = () => {
+        const original = btn.textContent;
+        btn.textContent = "Copied";
+        setTimeout(() => { btn.textContent = original; }, 1_500);
+      };
+      void navigator.clipboard?.writeText(text).then(done).catch(() => {
+        const range = document.createRange();
+        range.selectNodeContents(target);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      });
+    };
+  }
+}
+
+/// Light is the mandatory default and dark is opt-in, so this never consults
+/// prefers-color-scheme — the brand guidelines forbid auto-switching. The choice
+/// persists because a visitor who picked dark meant it.
+const THEME_KEY = "icp.theme";
+
+function applyTheme(dark: boolean): void {
+  document.documentElement.toggleAttribute("data-theme", false);
+  if (dark) document.documentElement.setAttribute("data-theme", "dark");
+  else document.documentElement.removeAttribute("data-theme");
+  const btn = el("theme-toggle");
+  btn.textContent = dark ? "Light" : "Dark";
+  btn.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
+}
+
+function wireThemeToggle(): void {
+  let dark = false;
+  try {
+    dark = window.localStorage.getItem(THEME_KEY) === "dark";
+  } catch {
+    /* storage disabled; light default stands */
+  }
+  applyTheme(dark);
+  el("theme-toggle").onclick = () => {
+    dark = !dark;
+    try {
+      window.localStorage.setItem(THEME_KEY, dark ? "dark" : "light");
+    } catch {
+      /* the toggle still works for this session */
+    }
+    applyTheme(dark);
+  };
 }
 
 // --- wiring ----------------------------------------------------------------
@@ -909,6 +1127,27 @@ async function init(): Promise<void> {
   el("cancel-order").onclick = () => void onCancelOrder();
   el("ck-approve").onclick = () => void onCkApprove();
   el("ck-claim").onclick = () => void onCkClaim();
+
+  el("choose-new").onclick = () => chooseAudience("newcomer");
+  el("choose-live").onclick = () => chooseAudience("live");
+  el("back-to-chooser").onclick = () => {
+    // Always available from the remembered arm, so the preference can never
+    // trap someone in a path that stopped fitting.
+    audience = null;
+    forget();
+    renderAudience();
+  };
+  el("show-advanced-dest").onclick = () => {
+    newcomerAdvanced = true;
+    renderAudience();
+    renderTiers();
+    renderSubmitGate();
+  };
+  wireCopyButtons();
+  wireThemeToggle();
+
+  audience = recall();
+  renderAudience();
 
   const restored = await currentIdentity();
   if (restored) setIdentity(restored);

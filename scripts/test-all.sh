@@ -78,6 +78,11 @@ run "frontend build — regenerate bindings" npm --prefix src/frontend run build
 run "frontend typecheck" npm --prefix src/frontend run typecheck
 run "frontend tests" npm --prefix src/frontend run test
 
+# Brand guidelines: the mechanically checkable rules only (banned characters,
+# banned vocabulary, hardcoded colour, the no-auto-dark rule). Typography and
+# hierarchy still need eyes.
+run "brand lint — user-facing copy and tokens" bash scripts/brand-lint.sh
+
 if [ "$FAST" -eq 1 ]; then
   printf '\n\033[33m⚠ skipped the PocketIC suite (--fast). The go-live bar is UNVERIFIED.\033[0m\n'
 else

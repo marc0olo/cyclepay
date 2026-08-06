@@ -230,8 +230,11 @@ describe("createCkOrderErrorMessage", () => {
     const msgs = errs.map(createCkOrderErrorMessage);
     expect(new Set(msgs).size).toBe(errs.length);
   });
+  // Case-insensitive throughout this file: the copy splits clauses into
+  // sentences (the brand guidelines ban the em-dash that used to join them), so
+  // the phrase now sometimes opens one. What matters is that the buyer is told.
   test("the fail-closed rate answer says nothing was charged", () => {
-    expect(createCkOrderErrorMessage({ __kind__: "rateUnavailable" })).toContain("nothing was charged");
+    expect(createCkOrderErrorMessage({ __kind__: "rateUnavailable" })).toMatch(/nothing was charged/i);
   });
 });
 
@@ -244,7 +247,7 @@ describe("claimErrorInfo", () => {
     expect(allowance.action).toBe("approve");
     expect(allowance.requiredUnits).toBe(5_010_000n);
     expect(allowance.message).toContain("5.01 ckUSDC");
-    expect(allowance.message).toContain("nothing was charged");
+    expect(allowance.message).toMatch(/nothing was charged/i);
 
     const funds = claimErrorInfo({
       __kind__: "insufficientFunds",
@@ -331,7 +334,7 @@ describe("gateReasonMessage", () => {
 
 describe("createOrderErrorMessage: notAdmitted", () => {
   test("the key-only path still says nothing was charged", () => {
-    expect(createOrderErrorMessage("notAdmitted")).toContain("nothing was charged");
+    expect(createOrderErrorMessage("notAdmitted")).toMatch(/nothing was charged/i);
   });
 });
 

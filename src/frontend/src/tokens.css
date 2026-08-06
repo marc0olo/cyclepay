@@ -1,0 +1,101 @@
+/* Internet Computer brand tokens — v2.30 of the guidelines.
+   The single source of colour, type and spacing values for this app. Nothing
+   below this file should contain a hardcoded hex; the review checklist in the
+   guidelines makes that an explicit rule and it is the only way the dark theme
+   stays correct.
+
+   Light (parchment) is the mandatory default. Dark is OPT-IN via
+   data-theme="dark" on <html> and must never be switched automatically from
+   prefers-color-scheme — the guidelines are explicit about that, so this file
+   deliberately contains no prefers-color-scheme block. */
+
+:root {
+  /* Surfaces and ink */
+  --icp-bg: #faf9f5;              /* parchment: page background */
+  --icp-bg-elev: #ffffff;         /* elevated surfaces, cards */
+  --icp-bg-sunk: #f3f1ea;         /* alternating sections, panels */
+  --icp-fg: #1a1a1a;              /* ink: body text, headings */
+  --icp-fg-secondary: #4b4943;    /* meta strips, labels */
+  --icp-fg-muted: #868078;        /* captions, attributions */
+  --icp-rule: #e7e3da;            /* 1px dividers — the only border colour */
+
+  /* One accent. Rust. */
+  --icp-accent: #a8482b;          /* emphasis, CTAs, focus */
+  --icp-accent-strong: #8e3b22;   /* hover / active */
+  --icp-accent-dim: rgba(168, 72, 43, 0.10); /* washes only, never text */
+
+  /* Category coding. Scoped to section stripes; not general-purpose colours. */
+  --icp-section-default: #a8482b;
+  --icp-section-teal: #0b5e5c;
+  --icp-section-blue: #1c3d5a;
+  --icp-indicator-teal: #14938e;
+
+  /* The CTA bar is theme-stable: near-black in BOTH themes, by rule. */
+  --icp-cta-bar: #1a1a1a;
+  --icp-cta-bar-fg: #ffffff;
+  /* Secondary ink ON the bar. Cannot be --icp-fg-muted: the bar is theme-stable,
+     so its muted tone must be too. */
+  --icp-cta-bar-muted: #b9b3a8;
+
+  /* Status. Not in the guidelines, which have no error/success vocabulary, but
+     an order pipeline cannot be honest without one. Chosen inside the palette's
+     temperature rather than borrowed from a generic UI kit: rust already means
+     "attention", so failure deepens it instead of introducing a red, and the
+     positive tone is the guidelines' own deep teal. */
+  --icp-ok: #0b5e5c;
+  --icp-warn: #8a5a1c;
+  --icp-err: #8e3b22;
+
+  /* Type. Three faces, no fourth. */
+  --font-display: 'Newsreader', Georgia, 'Times New Roman', serif;
+  --font-ui: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --tracking-display: -0.015em;   /* Newsreader display */
+  --tracking-body: 0;             /* Newsreader body */
+  --tracking-eyebrow: 0.18em;     /* Inter uppercase eyebrows */
+
+  /* Measure. Body prose never exceeds 720px. */
+  --measure: 720px;
+
+  /* Spacing. A 4px base, which is what the 24px grid tile divides into. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+
+  /* Radii. The pill is reserved for CTAs; everything else is nearly square,
+     because the guidelines allow no shadows to soften a rounded box. */
+  --radius-pill: 9999px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+
+  /* Grid paper: 24px tile, 4% ink. The one permitted texture. */
+  --grid-tile: 24px;
+  --grid-ink: rgba(26, 26, 26, 0.04);
+}
+
+:root[data-theme='dark'] {
+  --icp-bg: #14110d;              /* deep bark */
+  --icp-bg-elev: #1c1813;
+  --icp-bg-sunk: #191510;
+  --icp-fg: #f0ebe0;              /* bone */
+  --icp-fg-secondary: #c4bcac;
+  --icp-fg-muted: #8f867a;
+  --icp-rule: #2e2820;
+
+  /* Accent warms one notch for AA contrast on bark. */
+  --icp-accent: #c25a37;          /* ember */
+  --icp-accent-strong: #d66b45;   /* hover lightens on bark, rather than darkening */
+  --icp-accent-dim: rgba(194, 90, 55, 0.14);
+
+  --icp-ok: #14938e;
+  --icp-warn: #c79a4b;
+  --icp-err: #d97757;
+
+  --grid-ink: rgba(240, 235, 224, 0.04);
+}

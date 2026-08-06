@@ -140,9 +140,17 @@ vi.mock("./ledger", () => ({ makeCkUsdcLedger: () => ({ icrc2_approve: async () 
 /// against it. Using the shipped markup rather than a hand-written fixture is the
 /// point: a renamed id breaks the test, which is exactly the class of bug that a
 /// typecheck cannot see.
-async function mount(): Promise<void> {
-  // jsdom has no layout, so this is absent. main.ts calls it on openOrder.
+/// `arm` picks the audience the way a visitor does — by clicking the chooser.
+///
+/// Not optional, and not a convenience: the purchase flow is hidden until an arm
+/// is chosen, and jsdom neither renders nor respects `hidden`. A test that skips
+/// the click still finds every element and still passes, while asserting a path
+/// no real visitor can reach. Defaulting to "live" keeps the pre-existing tests
+/// on the arm whose markup they were written against (canister destination).
+async function mount(arm: "live" | "newcomer" | "none" = "live"): Promise<void> {
+  // jsdom has no layout, so these are absent. main.ts calls them.
   Element.prototype.scrollIntoView ??= () => undefined;
+  window.localStorage.clear();
   const html = readFileSync(resolve(__dirname, "..", "index.html"), "utf-8");
   const body = /<body>([\s\S]*)<\/body>/.exec(html);
   if (!body) throw new Error("could not extract <body> from index.html");
@@ -151,6 +159,10 @@ async function mount(): Promise<void> {
   await import("./main");
   // let init()'s awaits settle
   await new Promise((r) => setTimeout(r, 0));
+  if (arm !== "none") {
+    el(arm === "live" ? "choose-live" : "choose-new").click();
+    await new Promise((r) => setTimeout(r, 0));
+  }
 }
 
 function el<T extends HTMLElement>(id: string): T {
@@ -268,7 +280,7 @@ describe("quote pinning", () => {
     const notice = el("quote-notice");
     expect(notice.hidden).toBe(false);
     expect(notice.textContent).toContain("2.5 T");
-    expect(notice.textContent).toContain("nothing was charged");
+    expect(notice.textContent).toMatch(/nothing was charged/i);
     expect(el<HTMLButtonElement>("create-order").textContent).toContain("Confirm at the new rate");
 
     // Second click: pinned to the acknowledged figure, and it succeeds.
@@ -375,7 +387,7 @@ describe("receipt", () => {
     expect(el("receipt-area").hidden).toBe(false);
     expect(el("receipt-block").textContent).toBe("42");
     expect(el("receipt-sources").textContent).toContain("5 of 6");
-    expect(el("receipt-verdict").textContent).toContain("✓");
+    expect(el("receipt-verdict").textContent).toContain("Verified");
     expect(el("receipt-formula").textContent).toContain("3.5 T");
   });
 });
@@ -388,5 +400,172 @@ describe("ck-USDC panel", () => {
     expect(el("ck-disabled-notice").hidden).toBe(false);
     expect(el<HTMLInputElement>("ck-amount").disabled).toBe(true);
     expect(el<HTMLButtonElement>("create-order").textContent).toContain("not enabled");
+  });
+});
+
+// ── the two-audience flow (issue #21) ─────────────────────────────────────────
+
+describe("audience chooser", () => {
+  test("nothing is purchasable until an arm is chosen", async () => {
+    // The gate this whole section rests on. It is asserted first because jsdom
+    // ignores `hidden`: every other test in this file would still pass if the
+    // chooser stopped gating anything at all.
+    await mount("none");
+    expect(el("chooser").hidden).toBe(false);
+    expect(el("buy-flow").hidden).toBe(true);
+  });
+
+  test("the newcomer arm never renders a canister-id field", async () => {
+    // A newcomer's first canister does not exist yet, so the question is
+    // unanswerable. Showing it is what makes the page read as "not for me".
+    await mount("newcomer");
+    expect(el("buy-flow").hidden).toBe(false);
+    expect(el("dest-newcomer").hidden).toBe(false);
+    expect(el("dest-choice").hidden).toBe(true);
+    expect(el("dest-canister").hidden).toBe(true);
+  });
+
+  test("the already-live arm defaults to a canister, which is why they came", async () => {
+    await mount("live");
+    expect(el("dest-choice").hidden).toBe(false);
+    expect(el("dest-newcomer").hidden).toBe(true);
+    expect(el("dest-canister").hidden).toBe(false);
+    const checked = document.querySelector<HTMLInputElement>('input[name="dest-kind"]:checked');
+    expect(checked!.value).toBe("canister");
+  });
+
+  test("persistence is asymmetric: live is remembered, newcomer is not", async () => {
+    // Wrongly resuming the expert arm shows a canister field to someone with no
+    // canister. Wrongly re-asking an expert costs one click. The asymmetry is
+    // the point, so it is pinned in both directions.
+    await mount("live");
+    expect(window.localStorage.getItem("icp.audience")).toBe("live");
+
+    await mount("newcomer");
+    expect(window.localStorage.getItem("icp.audience")).toBeNull();
+  });
+
+  test("a remembered arm still offers a visible way back, and forgets on use", async () => {
+    await mount("live");
+    expect(el("chooser-back").hidden).toBe(false);
+    el("back-to-chooser").click();
+    await settle();
+    expect(el("chooser").hidden).toBe(false);
+    expect(el("buy-flow").hidden).toBe(true);
+    expect(window.localStorage.getItem("icp.audience")).toBeNull();
+  });
+
+  test("the newcomer escape hatch reveals a canister field without promoting it", async () => {
+    // "Sending to someone else's canister?" stays reachable, but as a link and
+    // not a co-equal radio.
+    await mount("newcomer");
+    expect(el("dest-canister").hidden).toBe(true);
+    el("show-advanced-dest").click();
+    await settle();
+    expect(el("dest-canister").hidden).toBe(false);
+    expect(el("dest-choice").hidden).toBe(true);
+  });
+});
+
+describe("disabled rail is invisible, not promised", () => {
+  test("the rail nav does not render while ck-USDC is off", async () => {
+    // The old copy said "not enabled yet — check back soon" for a rail that may
+    // never ship. Absent beats promised.
+    state.ckMaxUsdCents = 0n;
+    await mount("live");
+    expect(el("rail-nav").hidden).toBe(true);
+  });
+
+  test("the rail nav appears once the rail is actually sized", async () => {
+    state.ckMaxUsdCents = 10_000n;
+    await mount("live");
+    expect(el("rail-nav").hidden).toBe(false);
+  });
+});
+
+function accountOrder(status: string) {
+  // `anOrder` infers a canister destination, so this widens rather than
+  // reassigns — the stub mirrors the bindgen wrapper's variant shape, which the
+  // test fixtures type only structurally.
+  const order = anOrder(status) as Record<string, unknown>;
+  order.destination = {
+    __kind__: "cyclesLedgerAccount",
+    cyclesLedgerAccount: { owner: { toText: () => "bbbbb-bb" }, subaccount: undefined },
+  };
+  return order;
+}
+
+/// Open a past order the way a returning buyer does — from the history table.
+/// The purchase path cannot be used here: the create_order stub replaces
+/// state.order with a freshly `created` one, so a delivered fixture set before
+/// the click never survives it.
+async function openFromHistory(): Promise<void> {
+  const row = el("orders").querySelector("tr");
+  if (!row) throw new Error("no history row rendered");
+  row.click();
+  await settle();
+}
+
+describe("CLI handoff", () => {
+  test("a delivered account order prints --app and the credited principal", async () => {
+    // The failure this prevents: the bare `icp identity link web dev` form
+    // derives a principal from a different origin, so the buyer lands on an
+    // empty balance and reads it as theft.
+    state.order = accountOrder("delivered");
+    await mount("newcomer");
+    await openFromHistory();
+
+    expect(el("cli-handoff").hidden).toBe(false);
+    const cmd = el("cmd-link").textContent ?? "";
+    expect(cmd).toContain("icp identity link web");
+    expect(cmd).toContain(`--app ${window.location.origin}`);
+    // Never the bare form: that is the whole point of the assertion above.
+    expect(cmd.includes("--app")).toBe(true);
+    // The principal is shown beside it so a mismatch is self-diagnosable.
+    expect(el("credited-principal").textContent).toBe("bbbbb-bb");
+  });
+
+  test("a canister top-up gets no CLI commands, because it needs none", async () => {
+    // The cycles are already where they will be spent.
+    state.order = anOrder("delivered");
+    await mount("live");
+    await openFromHistory();
+    expect(el("cli-handoff").hidden).toBe(true);
+  });
+
+  test("an undelivered order shows no commands yet", async () => {
+    state.order = accountOrder("paid");
+    await mount("newcomer");
+    await openFromHistory();
+    expect(el("cli-handoff").hidden).toBe(true);
+  });
+});
+
+describe("buy again", () => {
+  test("prefills the amount and canister from a past order without submitting", async () => {
+    // One click plus payment is the shortest flow the design allows for an
+    // operator refilling the same canister monthly. It must NOT submit: the
+    // price is re-quoted at today's rate and the buyer has to see the number.
+    state.order = anOrder("delivered");
+    await mount("live");
+    const again = el("orders").querySelector<HTMLButtonElement>("button.buy-again");
+    expect(again).not.toBeNull();
+    again!.click();
+    await settle();
+
+    expect(el<HTMLInputElement>("canister-principal").value).toBe("aaaaa-aa");
+    expect(tierButton().classList.contains("selected")).toBe(true);
+    // Still on the form, not on a fresh order.
+    expect(el("buy-flow").hidden).toBe(false);
+  });
+
+  test("clicking buy again does not also open the order row", async () => {
+    // Both handlers live on the same row; without stopPropagation the prefill is
+    // immediately replaced by the order view.
+    state.order = anOrder("delivered");
+    await mount("live");
+    el("orders").querySelector<HTMLButtonElement>("button.buy-again")!.click();
+    await settle();
+    expect(el("active-order").hidden).toBe(true);
   });
 });

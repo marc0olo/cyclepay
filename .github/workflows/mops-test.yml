@@ -62,6 +62,11 @@ jobs:
       - name: unit tests
         run: npm --prefix src/frontend run test
 
+      # The brand rules that do not need eyes: banned characters and vocabulary,
+      # hardcoded colour, and the no-auto-dark rule.
+      - name: brand lint
+        run: bash scripts/brand-lint.sh
+
   # The go-live bar (spec §9). ubuntu-latest because the IC replica's memory
   # tracker hard-asserts 4096-byte pages: x86_64 Linux and macOS are fine, arm64
   # Linux guests with 16 KiB pages are not.

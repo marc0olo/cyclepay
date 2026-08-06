@@ -22,7 +22,7 @@ export function agentOptions(identity?: Identity) {
 export function makeBackend(identity?: Identity) {
   if (!backendCanisterId) {
     throw new Error(
-      "backend canister id missing from ic_env — deploy with `icp deploy` (or run `vite dev` against a started local network)",
+      "backend canister id missing from ic_env. Deploy with `icp deploy`, or run `vite dev` against a started local network.",
     );
   }
   // agentOptions, never a pre-built agent: passing { agent } to a bindgen
