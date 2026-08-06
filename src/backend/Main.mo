@@ -645,7 +645,7 @@ persistent actor CyclesGateway {
     requireAdmin(caller);
     // Cross-check against live tiers: lowering the ceiling under a registered tier
     // would leave it sellable but unpayable (see Gate.ConfigError.tierAboveCeiling).
-    let tierPrices = Array.map<Tiers.Tier, (Text, Nat)>(cardTiers, func(t) = (t.id, t.usdCents));
+    let tierPrices = cardTiers.map(func(t) = (t.id, t.usdCents));
     switch (Gate.validateConfig(config, tierPrices)) {
       case (#ok) {
         gateConfig := config;
@@ -746,8 +746,7 @@ persistent actor CyclesGateway {
       case (#card) { { feeBps = pricingConfig.feeBps; feeFixedCents = pricingConfig.feeFixedCents } };
       case (#ckUsdc) { { feeBps = ckUsdcConfig.feeBps; feeFixedCents = ckUsdcConfig.feeFixedCents } };
     };
-    let quotes = Array.map<Nat, QuotePreview>(
-      amounts,
+    let quotes = amounts.map(
       func(usdCents) {
         {
           usdCents;

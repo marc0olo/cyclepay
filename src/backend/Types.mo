@@ -15,16 +15,17 @@ module {
 
   /// Query authz is `caller == order.owner` (§2). Centralised pattern match.
   ///
-  /// ⚠️ **Adding an `Owner` case is a compiler _warning_ (M0145), not an error** —
-  /// verified by adding `#evmAddress` and observing `mops check` still succeed. So
-  /// this does not force an audit of every authz site the way the wording here used
-  /// to claim; it only flags them, and a flagged site still traps at runtime if the
-  /// new case reaches it.
+  /// **Adding an `Owner` case cannot compile until every authz site is updated.**
+  /// Five sites match on it — here, `Orders.mo` (×2), `Card.mo` and `Main.mo` — and
+  /// all five must be handled when the §11.1.1 Base seam is taken up.
   ///
-  /// Five sites would warn: here, `Orders.mo` (×2), `Card.mo`, and `Main.mo`. Every
-  /// one must be updated when the §11.1.1 Base seam is taken up. See the tracking
-  /// issue on making M0145 an error project-wide (`moc -Werror`), which would make
-  /// the original claim true.
+  /// That guarantee rests on `-Werror`, not on the language: a non-exhaustive match
+  /// is M0145, a *warning*, so a plain `mops check` reports all five and still
+  /// succeeds — leaving each unhandled site to trap at runtime when the new case
+  /// reaches it. On the webhook path that trap is a 5xx, which Stripe retries for
+  /// ~3 days. The gate therefore runs `mops check -- -Werror`
+  /// (scripts/test-all.sh and CI); verified by adding `#evmAddress` and watching
+  /// the build fail on exactly those five sites.
   public func isOwnedBy(owner : Owner, caller : Principal) : Bool {
     switch (owner) {
       case (#ii(p)) p == caller;

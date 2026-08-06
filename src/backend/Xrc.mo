@@ -21,6 +21,7 @@
 /// attach it, so `Gate.Config.minCanisterCycles` has to stay comfortably above
 /// it or pricing stops working (fail-closed, but the symptom looks like an
 /// unexplained rate outage).
+import Int "mo:core/Int";
 import Nat "mo:core/Nat";
 import Nat32 "mo:core/Nat32";
 import Nat64 "mo:core/Nat64";
@@ -131,7 +132,9 @@ module {
     let value = rate.rate.toNat();
     let decimals = rate.metadata.decimals.toNat();
     if (decimals >= 6) {
-      let divisor = 10 ** (decimals - 6);
+      // Int-subtract then abs: inside this branch `decimals >= 6`, but that is a
+      // property of the guard and not of the type, so the Nat form warns (M0155).
+      let divisor = 10 ** Int.abs(decimals.toInt() - 6);
       let micros = value / divisor;
       if (micros == 0) return null; // rounded away entirely
       ?micros;

@@ -23,8 +23,12 @@ jobs:
       - name: install mops packages
         run: mops install
 
-      - name: type-check and lint
-        run: mops check
+      # -Werror: M0145 (non-exhaustive match) is a warning, so without this a new
+      # `Types.Owner` case compiles green and traps at runtime on the authz path.
+      # Not in mops.toml, because `mops test` passes --hide-warnings and moc
+      # rejects the pair.
+      - name: type-check and lint (-Werror)
+        run: mops check -- -Werror
 
       - name: run unit tests
         run: mops test
