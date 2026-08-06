@@ -51,7 +51,14 @@ command -v mops >/dev/null 2>&1 || {
   exit 2
 }
 
-run "mops check — lint + typecheck" mops check
+# -Werror, not plain `mops check`. Motoko reports a non-exhaustive match (M0145)
+# as a WARNING, so adding a case to `Types.Owner` — the §11.1.1 Base seam — used
+# to leave five authz sites silently trapping at runtime while the build passed.
+# On the webhook path that trap is a 5xx and Stripe retries it for ~3 days.
+#
+# It lives here rather than in mops.toml's [moc] args because `mops test` passes
+# --hide-warnings, and moc rejects that combination outright.
+run "mops check — lint + typecheck (-Werror)" mops check -- -Werror
 run "mops test — Motoko unit suites" mops test
 
 # Before the frontend: the committed .did is both the embedded candid:service

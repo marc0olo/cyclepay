@@ -329,6 +329,7 @@ export interface BackendService {
   recovery_status(): Promise<{
     intervalNs: bigint;
     lastCountReconcile: Opt<{ atNs: bigint; drift: { status: string; was: bigint; is: bigint }[] }>;
+    lastCountReconcileAttemptNs: bigint;
     lastSweep: Opt<{ atNs: bigint; pending: bigint }>;
     sweepInFlight: boolean;
   }>;

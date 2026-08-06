@@ -49,9 +49,9 @@ die() {
 wanted() {
   cat <<'LIST'
 checkout.session.completed.paid|pay a test-mode Payment Link with 4242 4242 4242 4242
-checkout.session.completed.unpaid|pay with a DELAYED method (e.g. SEPA debit) enabled on the link
-checkout.session.completed.no-intent|use a 100%-off promo code, or a subscription-mode link
-checkout.session.async_payment_succeeded|let the delayed payment above settle
+checkout.session.completed.unpaid|MANUAL: pay with a DELAYED method (e.g. SEPA debit) enabled on the link
+checkout.session.completed.no-intent|MANUAL: use a 100%-off promo code, or a subscription-mode link
+checkout.session.async_payment_succeeded|stripe trigger checkout.session.async_payment_succeeded
 checkout.session.async_payment_failed|stripe trigger checkout.session.async_payment_failed
 charge.refunded.full|refund a charge IN FULL in the Dashboard
 charge.refunded.partial|refund PART of a charge (e.g. $1 of $5) — the case that survived 3 review rounds
@@ -107,6 +107,14 @@ report_status
 cat <<'NOTES'
 Perform the actions listed above. Each captured event is written as it arrives;
 re-running an action overwrites its fixture, so a bad capture is easy to redo.
+
+Anything shown as `stripe trigger …` needs no Dashboard setup — run it in another
+terminal while this is listening. Those bodies are Stripe's own canned fixtures
+rather than the output of a real payment, which is still far better than the
+hand-written JSON they replace, but note the distinction for the async pair: a
+real SEPA settlement is the thing group F of docs/SANDBOX-TESTPLAN.md exercises.
+
+Only the two marked MANUAL need a configured Payment Link.
 
 Ctrl-C when the list is complete.
 

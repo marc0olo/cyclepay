@@ -11,6 +11,22 @@ lintoko = "0.10.0"
 test = "2.1.2"
 
 [moc]
+# -Werror with no allow-list. The project compiles warning-free, so every entry
+# an allow-list would carry is a warning nobody has to think about again — and an
+# unexplained allow-list recreates the problem the flag is meant to solve.
+#
+# The reason this exists: `Types.Owner` is a deliberate single-case variant (the
+# §11.1.1 Base seam), and `Types.isOwnedBy` used to document that adding a case
+# "makes this a compile error". It did not — a non-exhaustive match is M0145, a
+# *warning*, and the build passed with five authz sites silently left to trap at
+# runtime. On the webhook path that trap is a 5xx, which Stripe retries for ~3
+# days, so a routine type extension would have presented as an outage.
+#
+# The -W list turns ON three style lints that are off by default. `-Werror` is
+# NOT set here: `mops test` passes `--hide-warnings`, and moc refuses the two
+# together ("--hide-warnings and -Werror together do not make sense"), which fails
+# every test file. It is applied where it belongs instead — `mops check -- -Werror`
+# in scripts/test-all.sh and in CI, the two places that gate a merge.
 args = [ "-W=M0223,M0236,M0237" ]
 
 [canisters.backend]

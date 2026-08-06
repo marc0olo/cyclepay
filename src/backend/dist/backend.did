@@ -776,6 +776,7 @@ service : {
                                 atNs: int;
                                 drift: vec Drift;
                               };
+      lastCountReconcileAttemptNs: int;
       lastSweep: opt record {
                        atNs: int;
                        pending: nat;

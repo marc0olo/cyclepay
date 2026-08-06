@@ -55,6 +55,15 @@ payload in the automated suites is hand-crafted; that plan is the only thing tha
 verifies the real wire format, and its closing section lists what remains open
 even after a clean run.
 
+⚠️ **Deploy only from a green `main`.** The `-Werror` gate that makes a
+non-exhaustive match (M0145) a build failure runs on `mops check` in
+`scripts/test-all.sh` and in CI — **not** on `mops build` or `icp deploy`, which
+compile the same code without it. `mops test` passes `--hide-warnings` and moc
+refuses that together with `-Werror`, so gate-side is the only place it can live.
+A direct-deploy hotfix therefore bypasses it entirely: a new `Owner` case, or any
+other non-exhaustive match, would ship and trap at runtime — on the webhook path
+that is a 5xx Stripe retries for ~3 days.
+
 Everything money-touching **fails closed by default** — a freshly deployed
 gateway accepts no orders and mints nothing until each lever below is
 consciously set. Work the list in order:
@@ -694,7 +703,7 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | `treasury_status.burnedInWindowE8s` | jumps beyond expected volume | **P1** | possible leaked secret → §2 procedure, cap to 0 first |
 | `recovery_status.lastSweep.atNs` | older than 2 intervals | **P2** | the sweep timer is not running; nothing recovers while it is dead |
 | `recovery_status.lastCountReconcile.drift` | non-empty | **P2** | the per-status tallies had diverged from the order store and were repaired. The counts are correct again; the bookkeeping bug that moved them is not fixed. They gate admission, so a drifted count refuses or admits the wrong orders |
-| `recovery_status.lastCountReconcile.atNs` | older than ~48 h | **P3** | the reconcile is daily, so this stopping while `lastSweep` advances means the cadence check itself is wrong |
+| `recovery_status.lastCountReconcile.atNs` | older than ~48 h while `lastSweep` advances, or materially older than `lastCountReconcileAttemptNs` | **P3** | the daily reconcile is failing. It runs in its own message, so it cannot take the sweep down with it — money-out and retention are unaffected — but the tallies are now **unverified**, not known-good. Written only on success, and the cadence is claimed by the sweep, so a reconcile that traps retries daily rather than every tick. `recount_orders` is the on-demand repair and will show the same failure if it is a real one |
 | `retention_status.openOrders` | climbing while `delivered` does not | **P3** | order-creation abuse; lever is `maxOpenOrdersPerPrincipal` (§5a) |
 | `pricing_status.xrcCanisterId` | anything other than `uf6dk-hyaaa-aaaaq-qaaaq-cai` | **P1** | **on mainnet this must be the real Exchange Rate Canister.** The id is resolved from a `PUBLIC_CANISTER_ID:xrc` canister environment variable so a local network can point at a mock; a mainnet canister reporting any other id is pricing real sales off something that is not the market. Only a controller can inject it, so this reads as either a misconfigured deploy or a compromised controller. Cap the burn to 0 (§2) before investigating. **`null` is not a pass** — it means no refresh has reached the XRC call at all (expected for seconds after an install or upgrade, since the value is transient). Do **not** wait on `lastAttempt` becoming non-null: that field is persistent, so it survives the upgrade and is already set while this one is still null. Re-read until `lastAttempt.atNs` post-dates the deploy. A *failing* refresh never shows null here — the id is recorded when the call is constructed, so a rejected call reads as a non-null id plus `lastAttempt.ok = false` |
 | `pricing_status.rates.quality.receivedRates` | drops to `minRateSources` | **P3** | thin market — a price from 2 sources is not one from 12 |

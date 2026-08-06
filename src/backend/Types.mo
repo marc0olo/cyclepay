@@ -15,16 +15,24 @@ module {
 
   /// Query authz is `caller == order.owner` (§2). Centralised pattern match.
   ///
-  /// ⚠️ **Adding an `Owner` case is a compiler _warning_ (M0145), not an error** —
-  /// verified by adding `#evmAddress` and observing `mops check` still succeed. So
-  /// this does not force an audit of every authz site the way the wording here used
-  /// to claim; it only flags them, and a flagged site still traps at runtime if the
-  /// new case reaches it.
+  /// **Adding an `Owner` case cannot compile until every match on it is updated.**
+  /// Deliberately not enumerated here — a hand-maintained list of call sites goes
+  /// stale silently, which is the same failure this comment used to have. Ask the
+  /// compiler: `mops check -- -Werror` names every one. Both forms are caught, the
+  /// `switch` and the refutable `let #ii(x) = …`.
   ///
-  /// Five sites would warn: here, `Orders.mo` (×2), `Card.mo`, and `Main.mo`. Every
-  /// one must be updated when the §11.1.1 Base seam is taken up. See the tracking
-  /// issue on making M0145 an error project-wide (`moc -Werror`), which would make
-  /// the original claim true.
+  /// That guarantee rests on `-Werror`, not on the language: a non-exhaustive match
+  /// is M0145, a *warning*, so a plain `mops check` reports them all and still
+  /// succeeds — leaving each unhandled site to trap at runtime when the new case
+  /// reaches it. On the webhook path that trap is a 5xx, which Stripe retries for
+  /// ~3 days. The gate therefore runs `-Werror` (scripts/test-all.sh and CI);
+  /// verified by adding `#evmAddress` and watching the build fail.
+  ///
+  /// ⚠️ What `-Werror` does **not** catch: `Orders.ordersFor` and
+  /// `Orders.openOrderCount` look owners up through `principalsToOrders`, a
+  /// Principal-keyed index, and never pattern-match. A future non-principal owner
+  /// would compile clean and silently return nothing for those two. Fail-closed —
+  /// no data is exposed — but the seam work has to reindex, not just re-match.
   public func isOwnedBy(owner : Owner, caller : Principal) : Bool {
     switch (owner) {
       case (#ii(p)) p == caller;

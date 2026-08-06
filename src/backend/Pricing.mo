@@ -31,6 +31,7 @@
 /// "no price", and no price blocks order creation. Nothing is ever priced on a
 /// guess. Main.mo owns the impure half — the XRC/CMC calls, the refresh timer,
 /// and the backoff — so everything here unit-tests without an IC environment.
+import Int "mo:core/Int";
 import Nat "mo:core/Nat";
 import Result "mo:core/Result";
 
@@ -213,7 +214,10 @@ module {
   public func withinDelta(previous : ?Nat, next : Nat, maxDeltaBps : Nat) : Bool {
     let ?prev = previous else return true;
     if (prev == 0) return true;
-    let diff = if (next > prev) next - prev else prev - next;
+    // Via Int so no subtraction can trap. The `if` below guarantees both branches
+    // are non-negative, but that is a fact about the guard rather than the types,
+    // and moc is right not to take it on trust (M0155).
+    let diff = Int.abs(next.toInt() - prev.toInt());
     // diff/prev ≤ maxDeltaBps/10_000, without floating point.
     diff * 10_000 <= prev * maxDeltaBps;
   };

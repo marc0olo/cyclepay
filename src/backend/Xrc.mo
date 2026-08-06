@@ -21,6 +21,7 @@
 /// attach it, so `Gate.Config.minCanisterCycles` has to stay comfortably above
 /// it or pricing stops working (fail-closed, but the symptom looks like an
 /// unexplained rate outage).
+import Int "mo:core/Int";
 import Nat "mo:core/Nat";
 import Nat32 "mo:core/Nat32";
 import Nat64 "mo:core/Nat64";
@@ -131,12 +132,22 @@ module {
     let value = rate.rate.toNat();
     let decimals = rate.metadata.decimals.toNat();
     if (decimals >= 6) {
-      let divisor = 10 ** (decimals - 6);
+      // Int-subtract then abs: inside this branch `decimals >= 6`, but that is a
+      // property of the guard and not of the type, so the Nat form warns (M0155).
+      //
+      // ⚠️ M0155 is syntactically selective — verified against moc 1.9.0, it flags
+      // the var-bound subtraction here but NOT the one in exponent position in the
+      // `else` branch below, which carries the identical guard-dependent trap
+      // class. Both are written the safe way for consistency; do not read a
+      // warning-free build as "no trapping arithmetic".
+      let divisor = 10 ** Int.abs(decimals.toInt() - 6);
       let micros = value / divisor;
       if (micros == 0) return null; // rounded away entirely
       ?micros;
     } else {
-      ?(value * 10 ** (6 - decimals));
+      // Safe inside this branch (`decimals < 6`) and unflagged by moc — written
+      // the same way as its sibling above so neither reads as the special case.
+      ?(value * 10 ** Int.abs(6 - decimals.toInt()));
     };
   };
 

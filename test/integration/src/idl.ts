@@ -466,6 +466,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
               drift: IDL.Vec(IDL.Record({ status: IDL.Text, was: IDL.Nat, is: IDL.Nat })),
             }),
           ),
+          lastCountReconcileAttemptNs: IDL.Int,
           lastSweep: IDL.Opt(IDL.Record({ atNs: IDL.Int, pending: IDL.Nat })),
           sweepInFlight: IDL.Bool,
         }),

@@ -645,7 +645,7 @@ persistent actor CyclesGateway {
     requireAdmin(caller);
     // Cross-check against live tiers: lowering the ceiling under a registered tier
     // would leave it sellable but unpayable (see Gate.ConfigError.tierAboveCeiling).
-    let tierPrices = Array.map<Tiers.Tier, (Text, Nat)>(cardTiers, func(t) = (t.id, t.usdCents));
+    let tierPrices = cardTiers.map(func(t) = (t.id, t.usdCents));
     switch (Gate.validateConfig(config, tierPrices)) {
       case (#ok) {
         gateConfig := config;
@@ -746,8 +746,7 @@ persistent actor CyclesGateway {
       case (#card) { { feeBps = pricingConfig.feeBps; feeFixedCents = pricingConfig.feeFixedCents } };
       case (#ckUsdc) { { feeBps = ckUsdcConfig.feeBps; feeFixedCents = ckUsdcConfig.feeFixedCents } };
     };
-    let quotes = Array.map<Nat, QuotePreview>(
-      amounts,
+    let quotes = amounts.map(
       func(usdCents) {
         {
           usdCents;
@@ -1813,22 +1812,36 @@ persistent actor CyclesGateway {
   /// bookkeeping bug, which does not need a 15-minute detection window.
   let countReconcileIntervalNs : Nat = 24 * 3_600 * 1_000_000_000;
 
-  /// When the tallies were last rebuilt, and what had to move if anything.
+  /// When the tallies were last **successfully** rebuilt, and what had to move.
   /// Surfaced on `recovery_status` so "the counts are trustworthy" is an
-  /// observable fact rather than an assumption — a null here on a canister that
-  /// has been up for days means the sweep is not running.
+  /// observable fact rather than an assumption. Written only on success, so it
+  /// falling behind while `lastSweep` advances is the signal that the reconcile
+  /// itself is failing (RUNBOOK §9).
   var lastCountReconcile : ?{ atNs : Int; drift : [Orders.Drift] } = null;
 
-  /// Rebuild the tallies if the cadence is due. Audits **only on drift**: a
-  /// clean reconcile every day would bury the one line that matters, and drift
-  /// is a bug in the incremental bookkeeping that an operator must see.
-  func reconcileCountsIfDue(nowNs : Int) {
-    switch (lastCountReconcile) {
-      case (?last) if (nowNs - last.atNs < countReconcileIntervalNs) return;
-      case null {};
-    };
+  /// When a reconcile was last *attempted*, which is what gates the cadence.
+  ///
+  /// Separate from the success timestamp on purpose. A trap rolls back every
+  /// state change in its own message, so a reconcile that traps cannot record
+  /// that it ran — gating on success alone would leave it due on the next tick
+  /// and every tick after, trapping forever. This is written by the **sweep's**
+  /// message, which commits regardless of what the detached reconcile does.
+  var lastCountReconcileAttemptNs : Int = 0;
+
+  /// Rebuild the tallies. Audits **only on drift**: a clean reconcile every day
+  /// would bury the one line that matters, and drift is a bug in the incremental
+  /// bookkeeping that an operator must see.
+  ///
+  /// Runs in its own message (see the call site) and takes no `await`, so it
+  /// still sees a consistent snapshot of the order store — chunking it across
+  /// messages would admit mutations mid-scan and manufacture false drift, which
+  /// is why this is not paged the way retention is.
+  func reconcileCounts() {
     let { drift; counts = _ } = Orders.reconcile(orderStore);
-    lastCountReconcile := ?{ atNs = nowNs; drift };
+    // Stamped from inside, not handed the sweep's clock: this message runs after
+    // the one that scheduled it, and the two timestamps are compared against each
+    // other (attempt vs success) to tell a failing reconcile from a due one.
+    lastCountReconcile := ?{ atNs = Time.now(); drift };
     if (drift.size() > 0) {
       let rendered = drift.map(
         func(d : Orders.Drift) : Text = d.status # " " # d.was.toText() # "→" # d.is.toText()
@@ -1885,10 +1898,23 @@ persistent actor CyclesGateway {
     recoverySweepInFlight := true;
     try {
       ignore retentionSweep();
-      // Synchronous and before the awaits, for the same reason retention is:
-      // it reads the whole order store, and doing that across an await would
-      // race the money sweep's own transitions and manufacture false drift.
-      reconcileCountsIfDue(Time.now());
+      // Detached into its own message rather than run inline. It reads the whole
+      // order store, so at enough orders it could hit the instruction limit — and
+      // inline that trap would take the entire sweep down with it, leaving
+      // retention and money-out dead while the reconcile stayed due and trapped
+      // again on every tick. A bookkeeping *check* must not be able to stop
+      // orders from minting.
+      //
+      // Claiming the cadence here, in the sweep's own message, is what bounds the
+      // damage: this write commits whatever the detached message does, so a
+      // trapping reconcile retries daily rather than every tick. Its cost is a
+      // visibly stale `lastCountReconcile` (RUNBOOK §9), which is the right
+      // signal — the tallies are unverified, not known-wrong.
+      let now = Time.now();
+      if (Recovery.reconcileDue(lastCountReconcileAttemptNs, now, countReconcileIntervalNs)) {
+        lastCountReconcileAttemptNs := now;
+        ignore async { reconcileCounts() };
+      };
       let pending = await* sweepMintable();
       lastRecoverySweep := ?{ atNs = Time.now(); pending };
     } finally {
@@ -1934,17 +1960,23 @@ persistent actor CyclesGateway {
     intervalNs : Nat;
     lastSweep : ?{ atNs : Int; pending : Nat };
     sweepInFlight : Bool;
-    /// Last tally reconciliation. A non-empty `drift` means the incremental
-    /// counts had diverged from the orders and were repaired — the tallies are
-    /// correct again, but the bug that moved them is not fixed. `recount_orders`
-    /// is the on-demand form of the same repair.
+    /// Last **successful** tally reconciliation. A non-empty `drift` means the
+    /// incremental counts had diverged from the orders and were repaired — the
+    /// tallies are correct again, but the bug that moved them is not fixed.
+    /// `recount_orders` is the on-demand form of the same repair.
     lastCountReconcile : ?{ atNs : Int; drift : [Orders.Drift] };
+    /// When one was last *attempted*. Reported alongside the success timestamp so
+    /// "due tomorrow" and "attempted today and failed" are distinguishable without
+    /// correlating against the sweep clock: an attempt materially newer than the
+    /// success means the reconcile is trapping (RUNBOOK §9).
+    lastCountReconcileAttemptNs : Int;
   } {
     {
       intervalNs = recoverySweepIntervalNs;
       lastSweep = lastRecoverySweep;
       sweepInFlight = recoverySweepInFlight;
       lastCountReconcile;
+      lastCountReconcileAttemptNs;
     };
   };
 

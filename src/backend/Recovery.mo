@@ -76,6 +76,23 @@ module {
   /// captured) but money-out hasn't finished. `#created` waits on the user
   /// (expiry is per-rail policy, seam §11.1.4), and the terminal states
   /// plus `#expired` have nothing left to drive.
+  /// Is a tally reconcile due? Gated on the last **attempt**, never on the last
+  /// success.
+  ///
+  /// A trap rolls back every state change in its own message, so a reconcile that
+  /// traps cannot record that it ran. An earlier version short-circuited on
+  /// `lastSuccessNs == null`, which defeated the whole point in the one case where
+  /// the bound matters most: a canister whose first-ever reconcile keeps trapping
+  /// never records a success, so it stayed due on *every* sweep tick and burned a
+  /// full instruction budget each time. The attempt clock alone is correct —
+  /// `lastAttemptNs` starts at 0, so the first tick is due through it anyway.
+  ///
+  /// `lastSuccessNs` is deliberately not a parameter: taking it would invite
+  /// exactly that bug back.
+  public func reconcileDue(lastAttemptNs : Int, nowNs : Int, intervalNs : Nat) : Bool {
+    nowNs - lastAttemptNs >= intervalNs;
+  };
+
   public func isSweepable(status : Types.OrderStatus) : Bool {
     switch (status) {
       case (#paid or #minting or #icpAtCmc or #awaitingTreasury) true;

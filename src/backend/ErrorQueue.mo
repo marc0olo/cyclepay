@@ -11,6 +11,7 @@
 /// Resolution lives on the queue entry, not the order: `#errorQueue` is a
 /// terminal order status (§4), and resolving here never transitions an order.
 import Map "mo:core/Map";
+import Int "mo:core/Int";
 import List "mo:core/List";
 import Iter "mo:core/Iter";
 import Nat "mo:core/Nat";
@@ -205,7 +206,9 @@ module {
     let evicted = List.empty<Entry>();
     let size = store.entries.size();
     if (size > capacity) {
-      var over = size - capacity;
+      // Int-subtract: the `if` above makes this non-negative, but that is the
+      // guard talking and not the type (M0155).
+      var over = Int.abs(size.toInt() - capacity.toInt());
       let victims = List.empty<Nat>();
       label scan for ((id, existing) in store.entries.entries()) {
         if (over == 0) break scan;
