@@ -18,29 +18,43 @@
 ///   - `cookieStore.delete` silently does nothing on a partitioned cookie unless
 ///     `partitioned: true` is passed, so the obvious cleanup does not work.
 ///
-/// **Not local-only, despite where it was found.** An earlier version of this
-/// comment claimed mainnet serves no `ic_env` and that only a local network sets
-/// a partitioned cookie. Both are false. Measured rather than reasoned about:
+/// What is **measured**, what is **reported**, and what is **inferred** — kept
+/// apart on purpose, because an earlier version of this comment stated a guess as
+/// fact and got the mainnet/local behaviour backwards.
+///
+/// MEASURED — `Set-Cookie` attributes, read from live responses and source:
 ///
 ///   mainnet asset canister:  Partitioned; SameSite=None; Secure; Max-Age=31536000; Path=<certified>
 ///   local gateway:                        SameSite=Lax;  secure; Max-Age=31536000; Path=<certified>
-///   vite dev server:                      SameSite=Lax                             (no Path, no Max-Age)
+///   vite dev server:                      SameSite=Lax                (no Path, no Max-Age)
 ///
-/// Three writers, no two agreeing. A cookie's identity is (name, domain, **path**)
-/// — and partitioning adds a separate jar on top — so these do not replace each
-/// other, they accumulate. Two more things make it worse:
+/// So the **partitioned** variant is the MAINNET one, and production serves
+/// `ic_env` exactly as local does. An earlier comment claimed the opposite of
+/// both.
 ///
-///   - **Cookies ignore the port.** A Vite dev server on `localhost:5173` and the
-///     gateway on `localhost:8000` are the same host and share one jar, so
-///     running both is enough to hold two `ic_env` cookies naming different
-///     backends.
-///   - **`Max-Age` is a year** on the canister-set copies, so a stale one
-///     outlives essentially any development cycle.
+/// MEASURED — the resolver takes the first match, in
+/// `@icp-sdk/core/src/agent/canister-env`:
 ///
-/// Duplicates remain likeliest locally, because a local network recycles canister
-/// ids across restarts while a mainnet id is stable. But nothing here is
-/// local-only, and the guard costs nothing when it does not apply: every entry
-/// point no-ops unless two cookies advertise *different* backend ids.
+///   document.cookie.split(';').find(c => c.trim().startsWith('ic_env='))
+///
+/// With several cookies present, which one wins is cookie ordering, not anything
+/// this app controls.
+///
+/// REPORTED — a stale cookie shadowing a fresh one, producing IC0536 on every
+/// call. Diagnosed against a running local network, but **not reproduced here**,
+/// so the exact provenance of the duplicate is not established.
+///
+/// INFERRED, and untested — how two copies come to coexist. A cookie is keyed on
+/// (name, domain, **path**) and the three writers above disagree on `Path`;
+/// partitioning adds a separate jar; cookies ignore the port, so a dev server on
+/// `localhost:5173` and a gateway on `localhost:8000` share one jar; and a
+/// one-year `Max-Age` lets a stale copy outlive any development cycle. Each is
+/// plausible and none has been demonstrated to be the cause.
+///
+/// The guard does not depend on any of that being right: it no-ops unless two
+/// cookies advertise *different* backend ids, which is correct everywhere. The
+/// real fix belongs upstream — see dfinity/icp-js-core (resolver) and
+/// dfinity/icp-cli#702 (cookie lifetime).
 
 /// One `ic_env` cookie's decoded key/value pairs, with the raw value kept so a
 /// caller can tell two copies apart.
