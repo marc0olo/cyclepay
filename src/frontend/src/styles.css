@@ -54,9 +54,22 @@ body {
 main,
 .site-header,
 .site-footer {
-  max-width: var(--measure);
+  max-width: var(--shell);
   margin: 0 auto;
   padding-inline: var(--space-4);
+}
+
+/* Prose keeps the 720px measure inside the wider shell. Applied to the text
+   blocks rather than the container, so data (tiers, tables) can use the width. */
+.hero,
+.explainer p,
+.explainer h2,
+.lede,
+.meta-strip,
+.dest-implicit,
+#order-status-line,
+.step-card p {
+  max-width: var(--measure);
 }
 
 /* ── type ─────────────────────────────────────────────────────────────────── */
@@ -647,4 +660,81 @@ tbody tr:hover {
 .choice.suggested {
   border-color: var(--icp-accent);
   background: var(--icp-accent-dim);
+}
+
+
+/* ── the persistent stepper ───────────────────────────────────────────────── */
+
+.stepper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  list-style: none;
+  padding: var(--space-4) 0;
+  margin: 0 0 var(--space-5);
+  border-bottom: 1px solid var(--icp-rule);
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+}
+.stepper .step {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  color: var(--icp-fg-muted);
+}
+.stepper .step .step-n {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+/* Done has to be legible at a glance without a checkmark glyph (banned). Full
+   ink against muted for pending is the distinction; the teal numeral reinforces
+   it for anyone who reads the strip rather than scans it. */
+.stepper .step.done {
+  color: var(--icp-fg);
+}
+.stepper .step.done .step-n {
+  color: var(--icp-ok);
+  font-weight: 500;
+}
+.stepper .step.current {
+  color: var(--icp-accent);
+  font-weight: 500;
+}
+
+/* ── the guided tour ──────────────────────────────────────────────────────── */
+
+.step-card {
+  padding: var(--space-5);
+  border-radius: var(--radius-md);
+  margin-block: var(--space-4);
+}
+/* Step 3 is the primary action, so it takes the inverse bar. Near-black in both
+   themes, by rule. */
+.step-card.handoff .eyebrow {
+  color: var(--icp-cta-bar-muted);
+}
+.step-card.outlined {
+  border: 1px solid var(--icp-rule);
+  border-left: 3px solid var(--icp-section-default);
+  background: var(--icp-bg-elev);
+}
+.step-card .section-h {
+  margin-top: var(--space-2);
+}
+
+#order-details > summary {
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  color: var(--icp-fg-secondary);
+  padding-block: var(--space-2);
+}
+
+.header-link {
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  text-decoration: none;
+}
+.header-link:hover {
+  text-decoration: underline;
 }

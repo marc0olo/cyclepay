@@ -25,9 +25,19 @@ export function makeBackend(identity?: Identity) {
       "backend canister id missing from ic_env. Deploy with `icp deploy`, or run `vite dev` against a started local network.",
     );
   }
+  return makeBackendAt(backendCanisterId, identity);
+}
+
+/// Build a backend actor against an EXPLICIT canister id.
+///
+/// Exists for the stale-`ic_env` self-heal (see ic-env.ts): when the browser holds
+/// conflicting cookies, the app has to probe each advertised id and adopt the one
+/// that answers, which means constructing an actor for an id that did not come
+/// from `safeGetCanisterEnv`.
+export function makeBackendAt(canisterId: string, identity?: Identity) {
   // agentOptions, never a pre-built agent: passing { agent } to a bindgen
   // actor silently downgrades to the anonymous identity.
-  return createActor(backendCanisterId, { agentOptions: agentOptions(identity) });
+  return createActor(canisterId, { agentOptions: agentOptions(identity) });
 }
 
 export type Backend = ReturnType<typeof makeBackend>;

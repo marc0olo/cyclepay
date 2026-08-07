@@ -89,13 +89,25 @@ test.describe("brand rendering", () => {
     expect(h1).toContain("Newsreader");
   });
 
-  test("body prose stays within the 720px measure", async ({ page }) => {
+  test("prose holds the 720px measure inside the wider app shell", async ({ page }) => {
+    // The shell is 1040px because tier grids and tables are DATA, not prose, and
+    // squeezing them to the reading measure wraps columns that read better side
+    // by side. The guidelines' 720px rule is about READING, so it is enforced on
+    // the prose blocks rather than the container.
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/");
-    const width = await page.evaluate(
+    const shell = await page.evaluate(
       () => document.querySelector("main")!.getBoundingClientRect().width,
     );
-    expect(width).toBeLessThanOrEqual(720);
+    expect(shell).toBeLessThanOrEqual(1040);
+
+    const proseWidths = await page.evaluate(() =>
+      [...document.querySelectorAll(".lede, .explainer p, .hero")].map(
+        (n) => n.getBoundingClientRect().width,
+      ),
+    );
+    expect(proseWidths.length).toBeGreaterThan(0);
+    for (const w of proseWidths) expect(w).toBeLessThanOrEqual(720);
   });
 
   test("no horizontal scroll at a phone width", async ({ page }) => {

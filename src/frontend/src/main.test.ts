@@ -515,8 +515,8 @@ async function openFromHistory(): Promise<void> {
   await settle();
 }
 
-describe("CLI handoff", () => {
-  test("a delivered account order prints --app and the credited principal", async () => {
+describe("the delivered tour", () => {
+  test("a delivered account order leads with the tour, above the order facts", async () => {
     // The failure this prevents: the bare `icp identity link web dev` form
     // derives a principal from a different origin, so the buyer lands on an
     // empty balance and reads it as theft.
@@ -524,14 +524,29 @@ describe("CLI handoff", () => {
     await mount("newcomer");
     await openFromHistory();
 
-    expect(el("cli-handoff").hidden).toBe(false);
+    expect(el("tour").hidden).toBe(false);
     const cmd = el("cmd-link").textContent ?? "";
     expect(cmd).toContain("icp identity link web");
-    expect(cmd).toContain(`--app ${window.location.origin}`);
-    // Never the bare form: that is the whole point of the assertion above.
-    expect(cmd.includes("--app")).toBe(true);
+    // A bare DOMAIN, never an origin with a scheme. Verified against icp-cli
+    // 1.2.0: `--app <APP>` is the "Delegation domain (e.g. oisy.com)". Passing
+    // `https://host` is not the documented form, and the wrong shape here yields
+    // a different principal — the exact failure this command exists to prevent.
+    expect(cmd).toContain(`--app ${window.location.host}`);
+    expect(cmd).not.toContain("--app http");
+    // And never omitted: without it icp-cli lets the auth domain pick its own
+    // default, which is a different principal again.
+    expect(cmd).toContain("--app");
     // The principal is shown beside it so a mismatch is self-diagnosable.
     expect(el("credited-principal").textContent).toBe("bbbbb-bb");
+    // Verified against icp-cli 1.2.0, not invented: `icp identity principal`
+    // exists and takes --identity. The link command is NOT claimed to print a
+    // principal, because the CLI guide does not say it does.
+    expect(el("cmd-verify").textContent).toBe("icp identity principal --identity dev");
+    // Order matters: on delivery the next action leads and the facts collapse.
+    const details = el<HTMLDetailsElement>("order-details");
+    expect(details.open).toBe(false);
+    expect(el("tour").compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
   });
 
   test("a canister top-up gets no CLI commands, because it needs none", async () => {
@@ -539,14 +554,14 @@ describe("CLI handoff", () => {
     state.order = anOrder("delivered");
     await mount("live");
     await openFromHistory();
-    expect(el("cli-handoff").hidden).toBe(true);
+    expect(el("tour").hidden).toBe(true);
   });
 
   test("an undelivered order shows no commands yet", async () => {
     state.order = accountOrder("paid");
     await mount("newcomer");
     await openFromHistory();
-    expect(el("cli-handoff").hidden).toBe(true);
+    expect(el("tour").hidden).toBe(true);
   });
 });
 

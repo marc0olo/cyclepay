@@ -23,7 +23,13 @@ test.describe("sign-in is reachable from the flow", () => {
     await page.goto("/");
     const header = page.locator("#auth-area");
     await expect(header.getByRole("button")).toHaveText(/^sign in$/i);
-    await expect(page.getByText(/internet identity/i)).toHaveCount(0);
+    // Nothing VISIBLE names the mechanism. The delivered tour does name Internet
+    // Identity, deliberately: the CLI-access prerequisite is real and omitting it
+    // strands the buyer at "CLI access not enabled". That surface is post-purchase
+    // and technical, which is where #21 confines the vocabulary.
+    await expect(
+      page.getByText(/internet identity/i).filter({ visible: true }),
+    ).toHaveCount(0);
   });
 
   test("no crypto vocabulary is in the prose before sign-in", async ({ page }) => {

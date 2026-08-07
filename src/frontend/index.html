@@ -20,6 +20,7 @@
         <span class="eyebrow">Internet Computer</span>
       </a>
       <div class="header-actions">
+        <a id="history-link" class="header-link" href="#/history" hidden>Your orders</a>
         <button id="theme-toggle" type="button" class="ghost" aria-label="Switch to dark theme">
           Dark
         </button>
@@ -28,6 +29,7 @@
     </header>
 
     <main>
+      <div id="view-landing" class="view">
       <!-- Hero. The sequence is the product, not the purchase. -->
       <section class="hero">
         <h1>From zero to deployed on the <em>Internet Computer</em>.</h1>
@@ -61,6 +63,47 @@
         </button>
       </section>
 
+      <!-- Explainers. One idea each, below the flow, for the reader who scrolls
+           rather than the one who came to buy. -->
+      <section class="explainer sunk">
+        <h2 class="section-h">What cycles are</h2>
+        <p>
+          Cycles are prepaid credits that pay for your app's computation and
+          storage. Buy them here, spend them as you build. No exchange account,
+          no separate token to manage.
+        </p>
+      </section>
+
+      <section class="explainer">
+        <h2 class="section-h">Nothing to run but your <em>code</em></h2>
+        <p>
+          No servers to provision or patch, no database to host, no CDN or load
+          balancer. Your code runs replicated across independent data centres and
+          you pay for what it uses.
+          <a href="https://internetcomputer.org" target="_blank" rel="noopener noreferrer">How it works ↗</a>
+        </p>
+      </section>
+
+      <section class="explainer sunk">
+        <h2 class="section-h">Build with an <em>agent</em></h2>
+        <p>
+          Point your coding agent at the
+          <a href="https://mcp.internetcomputer.org" target="_blank" rel="noopener noreferrer">MCP server ↗</a>
+          and the
+          <a href="https://skills.internetcomputer.org" target="_blank" rel="noopener noreferrer">skills library ↗</a>.
+        </p>
+      </section>
+
+      <section class="explainer">
+        <h2 class="section-h">Checkable by <em>anyone</em></h2>
+        <p>
+          Pricing and delivery run in a single audited program, and you can check
+          the code. Every order carries a receipt that recomputes its own price
+          from two canisters you can query yourself.
+        </p>
+      </section>
+      </div><!-- /view-landing -->
+
       <p id="chooser-back" class="back-link" hidden>
         <button id="back-to-chooser" type="button" class="linklike">
           New to the platform? Start here
@@ -75,7 +118,11 @@
         <button id="rail-ckusdc" class="rail" type="button">ck-USDC</button>
       </nav>
 
-      <div id="buy-flow" hidden>
+      <!-- The four steps the product is sold as, carried across buy, order and
+           delivered so progress is visible rather than promised. -->
+      <ol id="stepper" class="stepper" aria-label="Progress" hidden></ol>
+
+      <div id="buy-flow" class="view" hidden>
         <section id="card-panel">
           <h2 class="section-h">Pick an amount</h2>
           <div id="tiers" class="tiers">
@@ -195,37 +242,74 @@
           </p>
           <p id="cancel-status" class="error" hidden></p>
         </div>
-        <dl class="order-facts">
-          <dt>Rail</dt><dd id="order-rail"></dd>
-          <dt>Cycles</dt><dd id="order-cycles"></dd>
-          <dt>Price</dt><dd id="order-price"></dd>
-          <dt>Destination</dt><dd id="order-dest"></dd>
-          <dt>Locked rate</dt><dd id="order-rate"></dd>
-        </dl>
 
-        <!-- The highest-value surface on the site: for a newcomer these two
-             commands ARE the deliverable. -->
-        <div id="cli-handoff" class="handoff" hidden>
-          <h3 class="section-h">Using this from the CLI</h3>
-          <p>
-            These cycles are credited to
-            <code id="credited-principal" class="mono"></code>. That is the
-            identity the first command links, so the two must match.
-          </p>
-          <div class="cmd">
-            <code id="cmd-link" class="mono"></code>
-            <button type="button" class="copy" data-copy="cmd-link">Copy</button>
-          </div>
-          <div class="cmd">
-            <code id="cmd-create" class="mono">icp canister create hello</code>
-            <button type="button" class="copy" data-copy="cmd-create">Copy</button>
-          </div>
-          <p class="muted">
-            New to the tooling? Follow the
-            <a href="https://docs.internetcomputer.org/getting-started/quickstart" target="_blank" rel="noopener noreferrer">quickstart ↗</a>.
-          </p>
+        <!-- The guided tour. On delivery this is the point of the page: for a
+             newcomer the two commands ARE the deliverable, so they lead, and the
+             order facts collapse beneath them. -->
+        <div id="tour" hidden>
+          <section class="handoff step-card">
+            <p class="eyebrow">Step 3 of 4</p>
+            <h3 class="section-h">Link your identity to the <em>CLI</em></h3>
+            <p>
+              This links the account your cycles are in, so the CLI spends the
+              same balance you just topped up.
+            </p>
+            <div class="cmd">
+              <code id="cmd-link" class="mono"></code>
+              <button type="button" class="copy" data-copy="cmd-link">Copy</button>
+            </div>
+            <p class="muted">
+              Your cycles are in
+              <code id="credited-principal" class="mono"></code>.
+            </p>
+            <p class="muted">
+              Check it landed on the right identity:
+            </p>
+            <div class="cmd">
+              <code id="cmd-verify" class="mono"></code>
+              <button type="button" class="copy" data-copy="cmd-verify">Copy</button>
+            </div>
+            <p class="muted">
+              That prints a principal. It should match the one above. If it does
+              not, the <code>--app</code> value did not match this site and the
+              balance will look empty.
+            </p>
+            <p class="muted">
+              You need to enable CLI access for your Internet Identity first, or
+              the sign-in page says "CLI access not enabled" and the command never
+              receives an identity.
+              <a href="https://cli.internetcomputer.org/1.2/guides/managing-identities/#signing-in-as-a-specific-app"
+                 target="_blank" rel="noopener noreferrer">Read the guide ↗</a>
+            </p>
+          </section>
+
+          <section class="step-card outlined">
+            <p class="eyebrow">Step 4 of 4</p>
+            <h3 class="section-h">Deploy</h3>
+            <div class="cmd">
+              <code id="cmd-create" class="mono">icp canister create hello</code>
+              <button type="button" class="copy" data-copy="cmd-create">Copy</button>
+            </div>
+            <p class="muted">
+              New to the tooling? Follow the
+              <a href="https://docs.internetcomputer.org/getting-started/quickstart"
+                 target="_blank" rel="noopener noreferrer">quickstart ↗</a>.
+            </p>
+          </section>
         </div>
 
+        <!-- Collapsed on the delivered view: once the cycles have arrived the
+             facts are reference material, and the next action is the tour above.
+             Open by default everywhere else. -->
+        <details id="order-details">
+          <summary>Order details</summary>
+          <dl class="order-facts">
+            <dt>Rail</dt><dd id="order-rail"></dd>
+            <dt>Cycles</dt><dd id="order-cycles"></dd>
+            <dt>Price</dt><dd id="order-price"></dd>
+            <dt>Destination</dt><dd id="order-dest"></dd>
+            <dt>Locked rate</dt><dd id="order-rate"></dd>
+          </dl>
         <details id="receipt-area" hidden>
           <summary>Receipt and price verification</summary>
           <dl class="order-facts">
@@ -244,9 +328,10 @@
             line above and it must match the cycles this order locked.
           </p>
         </details>
+        </details>
       </section>
 
-      <section id="history" hidden>
+      <section id="history" class="view" hidden>
         <h2 class="section-h">Your orders</h2>
         <table>
           <thead>
@@ -259,45 +344,6 @@
         </table>
       </section>
 
-      <!-- Explainers. One idea each, below the flow, for the reader who scrolls
-           rather than the one who came to buy. -->
-      <section class="explainer sunk">
-        <h2 class="section-h">What cycles are</h2>
-        <p>
-          Cycles are prepaid credits that pay for your app's computation and
-          storage. Buy them here, spend them as you build. No exchange account,
-          no separate token to manage.
-        </p>
-      </section>
-
-      <section class="explainer">
-        <h2 class="section-h">Nothing to run but your <em>code</em></h2>
-        <p>
-          No servers to provision or patch, no database to host, no CDN or load
-          balancer. Your code runs replicated across independent data centres and
-          you pay for what it uses.
-          <a href="https://internetcomputer.org" target="_blank" rel="noopener noreferrer">How it works ↗</a>
-        </p>
-      </section>
-
-      <section class="explainer sunk">
-        <h2 class="section-h">Build with an <em>agent</em></h2>
-        <p>
-          Point your coding agent at the
-          <a href="https://mcp.internetcomputer.org" target="_blank" rel="noopener noreferrer">MCP server ↗</a>
-          and the
-          <a href="https://skills.internetcomputer.org" target="_blank" rel="noopener noreferrer">skills library ↗</a>.
-        </p>
-      </section>
-
-      <section class="explainer">
-        <h2 class="section-h">Checkable by <em>anyone</em></h2>
-        <p>
-          Pricing and delivery run in a single audited program, and you can check
-          the code. Every order carries a receipt that recomputes its own price
-          from two canisters you can query yourself.
-        </p>
-      </section>
     </main>
 
     <footer class="site-footer">

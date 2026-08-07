@@ -59,8 +59,14 @@
   --tracking-body: 0;             /* Newsreader body */
   --tracking-eyebrow: 0.18em;     /* Inter uppercase eyebrows */
 
-  /* Measure. Body prose never exceeds 720px. */
+  /* Measure. Body prose never exceeds 720px — the guidelines are explicit, and
+     it is a readability rule, not a layout one. */
   --measure: 720px;
+  /* The app shell is wider than the prose measure: tier grids, the order facts
+     table and the history table are DATA, not prose, and squeezing them to 720px
+     wraps columns that read better side by side. Prose inside the shell still
+     holds --measure. */
+  --shell: 1040px;
 
   /* Spacing. A 4px base, which is what the 24px grid tile divides into. */
   --space-1: 0.25rem;
