@@ -67,6 +67,18 @@ jobs:
       - name: brand lint
         run: bash scripts/brand-lint.sh
 
+      # Issue #6. The cascade-and-layout bugs jsdom cannot see: it has neither,
+      # so `el.hidden` reads true for an element that is plainly on screen.
+      # Serves the built dist; no local network or deployed canister needed.
+      - name: install browser deps
+        run: npm --prefix test/browser ci
+
+      - name: install chromium
+        run: npx --prefix test/browser playwright install --with-deps chromium
+
+      - name: browser specs
+        run: npm --prefix test/browser test
+
   # The go-live bar (spec §9). ubuntu-latest because the IC replica's memory
   # tracker hard-asserts 4096-byte pages: x86_64 Linux and macOS are fine, arm64
   # Linux guests with 16 KiB pages are not.

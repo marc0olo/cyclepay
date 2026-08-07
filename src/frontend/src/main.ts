@@ -119,8 +119,15 @@ function el<T extends HTMLElement>(id: string): T {
   return node as T;
 }
 
+/// Toggle by id, tolerating a node that is not in the document.
+///
+/// Absence is a real state here, not a bug: the ck-USDC markup is *removed*
+/// while the rail is disabled (see `removeDisabledRailMarkup`), so every
+/// `show("ck-…")` on the shared paths would otherwise throw. `el()` stays strict
+/// for everything that must exist.
 function show(id: string, visible: boolean): void {
-  el(id).hidden = !visible;
+  const node = document.getElementById(id);
+  if (node) node.hidden = !visible;
 }
 
 // --- auth ----------------------------------------------------------------
@@ -142,8 +149,11 @@ function renderAuth(): void {
     area.append(principal, out);
   } else {
     const inBtn = document.createElement("button");
-    inBtn.className = "primary";
-    inBtn.textContent = "Sign in with Internet Identity";
+    inBtn.className = "cta-secondary";
+    // Not "Sign in with Internet Identity": naming the mechanism above the fold
+    // imports the vocabulary the Google-plus-card path is meant to delete. The
+    // provider buttons are on the identity screen itself; this is just the way in.
+    inBtn.textContent = "Sign in";
     inBtn.onclick = async () => {
       try {
         setIdentity(await signIn());
@@ -265,7 +275,25 @@ function ckRailDisabled(): boolean {
   return ckConfig === null || ckConfig.maxUsdCents === 0n;
 }
 
+/// Take the ck-USDC markup out of the document entirely while the rail is off.
+///
+/// Hiding it is not enough. The rail ships disabled and may never be activated,
+/// so a tab and a panel that merely happen to be `hidden` still put "ck-USDC" in
+/// the accessibility tree, in find-in-page, and one CSS mistake away from being
+/// on screen — which is precisely how `.rails { display: flex }` put it back.
+/// Absent beats hidden for something we may never ship.
+/// Called only once the config has actually been read, never on the null-config
+/// guess made at first paint.
+function removeDisabledRailMarkup(): void {
+  if (ckConfig === null || !ckRailDisabled()) return;
+  document.getElementById("rail-nav")?.remove();
+  document.getElementById("ck-panel")?.remove();
+}
+
 function renderCkPanel(): void {
+  // Nothing to render once the markup is gone. Reached on the disabled path via
+  // loadMarket, so this guard is what lets the removal above be safe.
+  if (document.getElementById("ck-panel") === null) return;
   const disabled = ckRailDisabled();
   show("ck-disabled-notice", disabled);
   el<HTMLInputElement>("ck-amount").disabled = disabled;
@@ -285,6 +313,9 @@ function renderCkPanel(): void {
 
 /// Live estimate under the ck-USDC amount box, from the backend's quote.
 function renderCkEstimate(): void {
+  // The ck-USDC markup is removed while the rail is disabled, so every
+  // shared code path that touches it needs this. See removeDisabledRailMarkup.
+  if (document.getElementById("ck-panel") === null) return;
   const node = el("ck-estimate");
   if (ckQuote === null || ckConfig === null || ckRailDisabled()) {
     show("ck-estimate", false);
@@ -294,13 +325,17 @@ function renderCkEstimate(): void {
   const fee = { feeBps: ckConfig.feeBps, feeFixedCents: ckConfig.feeFixedCents };
   node.textContent =
     `${estimateLine(ckQuote.cycles ?? null, destination, depositFee)} · ` +
-    `${feeBreakdown(ckQuote.usdCents, ckQuote.feeCents, ckQuote.netCents, fee)} — ${RATE_LOCK_NOTE}`;
+    `${feeBreakdown(ckQuote.usdCents, ckQuote.feeCents, ckQuote.netCents, fee)} ${RATE_LOCK_NOTE}`;
   show("ck-estimate", true);
 }
 
 /// Debounced re-quote as the amount is typed. A malformed amount clears the
 /// estimate rather than leaving a stale one that belongs to different input.
 function scheduleCkQuote(): void {
+  // The ck-USDC markup is removed while the rail is disabled, so every
+  // shared code path that touches it needs this. See removeDisabledRailMarkup.
+  if (document.getElementById("ck-panel") === null) return;
+
   clearRequote();
   if (ckQuoteTimer !== null) clearTimeout(ckQuoteTimer);
   const parsed = parseUsdAmount(el<HTMLInputElement>("ck-amount").value);
@@ -330,7 +365,15 @@ function renderTiers(): void {
   if (tiers.length === 0) {
     const p = document.createElement("p");
     p.className = "muted";
-    p.textContent = "No amounts are configured yet.";
+    // Distinguish "the operator has configured none" from "we could not ask".
+    // Printing the former on a network failure tells the visitor the product is
+    // empty when it is merely unreachable.
+    p.textContent =
+      marketState === "loading"
+        ? "Loading amounts…"
+        : marketState === "failed"
+          ? "Amounts could not be loaded."
+          : "No amounts are configured yet.";
     container.append(p);
     return;
   }
@@ -371,7 +414,7 @@ function renderTierDetail(): void {
     return;
   }
   node.textContent =
-    `${feeBreakdown(quote.usdCents, quote.feeCents, quote.netCents, cardFee)} — ${RATE_LOCK_NOTE}`;
+    `${feeBreakdown(quote.usdCents, quote.feeCents, quote.netCents, cardFee)} ${RATE_LOCK_NOTE}`;
   show("tier-detail", true);
 }
 
@@ -388,17 +431,21 @@ function renderAudience(): void {
 
   show("dest-newcomer", audience === "newcomer");
   show("dest-choice", audience === "live");
-  show("dest-ledger-advanced", audience === "newcomer" ? newcomerAdvanced : false);
 
   const kind = selectedDestinationKind();
   show("dest-canister", chosen && kind === "canister");
-  if (audience === "live") {
-    show("dest-ledger-advanced", kind === "cyclesLedgerAccount");
-  }
+  // The newcomer escape hatch is "sending to someone else's canister?", so it
+  // reveals the canister field and nothing else. The owner/subaccount fields
+  // belong to the already-live account option; showing them on the newcomer arm
+  // put two destination inputs on screen at once, only one of which was read.
+  show("dest-ledger-advanced", audience === "live" && kind === "cyclesLedgerAccount");
 
-  // The rail nav is a nav only when there is something to navigate between.
-  // A single visible tab is noise, and a disabled second one promises a rail
-  // that may never ship.
+  // The rail nav is a nav only when there is something to navigate between. A
+  // single visible tab is noise, and a disabled second one promises a rail that
+  // may never ship — so when it is off the markup is removed outright.
+  // Hidden here, removed later. At first paint `ckConfig` is still null, so
+  // `ckRailDisabled()` is true for a rail that may turn out to be enabled —
+  // removing on that guess deleted the markup before the answer arrived.
   show("rail-nav", !ckRailDisabled());
   if (ckRailDisabled() && activeRail !== "card") setRail("card");
 
@@ -419,8 +466,11 @@ function renderSubmitGate(): void {
   const btn = el<HTMLButtonElement>("create-order");
   show("signin-providers", !identity);
   if (!identity) {
-    btn.disabled = true;
-    btn.textContent = "Sign in to continue";
+    // Enabled, not disabled. A permanently greyed-out button at the end of the
+    // flow is a dead end: the only other affordance was a header button, which
+    // is not where someone who just picked an amount is looking.
+    btn.disabled = false;
+    btn.textContent = "Sign in and continue";
   } else if (activeRail === "card" && selectedTierId === null) {
     btn.disabled = true;
     btn.textContent = "Pick an amount";
@@ -480,8 +530,8 @@ function onQuoteChanged(usdCents: bigint, quoted: bigint): void {
 function setRail(rail: RailKey): void {
   activeRail = rail;
   clearRequote();
-  el("rail-card").classList.toggle("active", rail === "card");
-  el("rail-ckusdc").classList.toggle("active", rail === "ckUsdc");
+  document.getElementById("rail-card")?.classList.toggle("active", rail === "card");
+  document.getElementById("rail-ckusdc")?.classList.toggle("active", rail === "ckUsdc");
   show("card-panel", rail === "card");
   show("ck-panel", rail === "ckUsdc");
   showFormError(null);
@@ -532,6 +582,18 @@ function readDestination(): { ok: true; value: Destination } | { ok: false; erro
   };
 }
 
+/// A sentence for the visitor, and the real error for whoever is debugging.
+///
+/// Raw agent and HTTP messages must never reach the page: they are unreadable to
+/// the audience this is built for, and on a property that takes card details they
+/// leak internals to no one's benefit. Every call site pairs a plain sentence
+/// with a console entry carrying the original.
+function reportCallFailure(context: string, error: unknown): string {
+  // eslint-disable-next-line no-console
+  console.error(context, error);
+  return "Could not reach the gateway. Nothing was charged. Please try again.";
+}
+
 function showFormError(message: string | null): void {
   const node = el("form-error");
   node.textContent = message ?? "";
@@ -539,6 +601,19 @@ function showFormError(message: string | null): void {
 }
 
 async function onCreateOrder(event: SubmitEvent): Promise<void> {
+  // Signed out, the CTA's job is to sign in. Stop there rather than continuing
+  // into order creation: the destination for a newcomer is derived from the
+  // identity, so it cannot be read until sign-in resolves.
+  if (!identity) {
+    event.preventDefault();
+    showFormError(null);
+    try {
+      setIdentity(await signIn());
+    } catch {
+      showFormError("Sign-in was cancelled. Nothing was charged.");
+    }
+    return;
+  }
   event.preventDefault();
   showFormError(null);
   if (!identity) return;
@@ -555,7 +630,7 @@ async function onCreateOrder(event: SubmitEvent): Promise<void> {
     if (activeRail === "card") await createCardOrder(dest.value);
     else await createCkOrder(dest.value);
   } catch (error) {
-    showFormError(`Call failed: ${error instanceof Error ? error.message : String(error)}`);
+    showFormError(reportCallFailure("create_order failed", error));
   } finally {
     renderSubmitGate();
   }
@@ -792,7 +867,7 @@ async function onCancelOrder(): Promise<void> {
     renderOrder(result.ok);
     void refreshHistory();
   } catch (error) {
-    status.textContent = `Could not cancel: ${error instanceof Error ? error.message : String(error)}`;
+    status.textContent = reportCallFailure("cancel_order failed", error);
     show("cancel-status", true);
     btn.disabled = false;
   }
@@ -856,7 +931,7 @@ async function onCkApprove(): Promise<void> {
     await claimCkOrder(orderId);
   } catch (error) {
     setCkFlowStatus(
-      `Approval call failed: ${error instanceof Error ? error.message : String(error)}`,
+      reportCallFailure("ck-USDC approve failed", error),
       "err",
     );
   } finally {
@@ -885,7 +960,7 @@ async function claimCkOrder(orderId: string): Promise<void> {
     result = await backend.claim_ck_usdc_order(orderId);
   } catch (error) {
     setCkFlowStatus(
-      `Claim call failed: ${error instanceof Error ? error.message : String(error)}`,
+      reportCallFailure("ck-USDC claim failed", error),
       "err",
     );
     return;
@@ -1014,33 +1089,94 @@ function repeatOrder(order: Order): void {
   show("active-order", false);
 
   const toCanister = "canister" in order.destination;
-  audience = toCanister ? "live" : audience ?? "live";
+  // Match `suggestFrom`: an account-funded order means this buyer was topping up
+  // their own balance, which is the newcomer arm's shape. Defaulting that case to
+  // "live" contradicted the very helper that decides the same question elsewhere.
+  audience = toCanister ? "live" : "newcomer";
   newcomerAdvanced = false;
-  remember(audience);
+  // Deliberately NOT remembered. Repeating a past order says nothing about which
+  // arm this visitor wants next time, and `remember` exists to record a choice
+  // they made in the chooser — not one inferred from a table row.
   renderAudience();
 
   if (toCanister) {
-    const radio = document.querySelector<HTMLInputElement>('input[name="dest-kind"][value="canister"]');
-    if (radio) radio.checked = true;
+    setDestinationKind("canister");
     el<HTMLInputElement>("canister-principal").value =
       (order.destination as { canister: Principal }).canister.toText();
-  } else if (audience === "live") {
-    const radio = document.querySelector<HTMLInputElement>(
-      'input[name="dest-kind"][value="cyclesLedgerAccount"]',
-    );
-    if (radio) radio.checked = true;
+    validateCanisterId();
+  } else {
+    // Carry the WHOLE account across, owner and subaccount both. Prefilling only
+    // the kind left whatever happened to be sitting in the collapsed advanced
+    // fields to decide where the money went — a silent substitution of one
+    // destination for another.
+    const account = (order.destination as {
+      cyclesLedgerAccount: { owner: Principal; subaccount?: Uint8Array | number[] };
+    }).cyclesLedgerAccount;
+    if (audience === "live") setDestinationKind("cyclesLedgerAccount");
+    const ownerField = document.getElementById("ledger-owner") as HTMLInputElement | null;
+    if (ownerField) ownerField.value = account.owner.toText();
+    const subField = document.getElementById("ledger-subaccount") as HTMLInputElement | null;
+    if (subField) {
+      subField.value = account.subaccount
+        ? [...account.subaccount].map((b) => b.toString(16).padStart(2, "0")).join("")
+        : "";
+    }
   }
-  renderAudience();
 
   // Match the tier by price. A tier that no longer exists (retired, or repriced)
-  // simply leaves nothing selected rather than silently picking a neighbour.
+  // leaves nothing selected rather than silently picking a neighbour.
   const tier = tiers.find((t) => t.usdCents === order.pricing.usdCents);
   selectedTierId = tier ? tier.id : null;
+  if (tier === undefined) {
+    showFormError("That amount is no longer offered. Pick one below.");
+  } else {
+    showFormError(null);
+  }
   clearRequote();
   renderTiers();
   renderTierDetail();
   renderSubmitGate();
   el("card-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/// Validate the canister id's shape as it is typed.
+///
+/// Only the already-live arm can produce an `Undeliverable` order (spec §1: only
+/// canister destinations can), so catching a malformed id before payment is the
+/// cheapest place to stop that. This checks SHAPE only — whether the canister
+/// exists, and whether it accepts deposits, is not knowable from here.
+function validateCanisterId(): boolean {
+  const field = document.getElementById("canister-principal") as HTMLInputElement | null;
+  const error = document.getElementById("canister-id-error");
+  if (!field || !error) return true;
+  const text = field.value.trim();
+  if (text === "") {
+    error.hidden = true;
+    return false;
+  }
+  try {
+    Principal.fromText(text);
+    error.hidden = true;
+    return true;
+  } catch {
+    error.textContent = `"${text}" is not a valid canister id.`;
+    error.hidden = false;
+    return false;
+  }
+}
+
+/// Set the destination radio AND run the app's reaction to it.
+///
+/// Assigning `.checked` fires no `change` event, so the handler that owns
+/// `#dest-canister` / `#dest-ledger-advanced` visibility never ran and the two
+/// could disagree with the radio. One owner: this function.
+function setDestinationKind(kind: DestinationKind): void {
+  const radio = document.querySelector<HTMLInputElement>(
+    `input[name="dest-kind"][value="${kind}"]`,
+  );
+  if (!radio) return;
+  radio.checked = true;
+  radio.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 /// Copy-to-clipboard for the CLI commands. Falls back to selecting the text:
@@ -1117,13 +1253,57 @@ function wireDestinationToggle(): void {
   }
 }
 
+/// Load the market, and say something a person can act on if it fails.
+///
+/// The previous version printed the raw error into the page. An agent or HTTP
+/// message is not copy: it is unreadable to the audience this page is for, and it
+/// leaks internals on a property that takes card details. The detail goes to the
+/// console for whoever is debugging; the visitor gets a sentence and a retry.
+/// Tri-state on purpose. "No amounts are configured yet" is a claim about the
+/// operator; "could not be loaded" is a claim about the network. Before the first
+/// answer arrives BOTH are false, and the agent retries an unreachable gateway
+/// for several seconds — so a two-state flag put a false statement on screen for
+/// the whole of that window.
+let marketState: "loading" | "loaded" | "failed" = "loading";
+
+async function loadMarketWithRetry(): Promise<void> {
+  const line = el("rate-line");
+  line.replaceChildren();
+  try {
+    await loadMarket();
+    marketState = "loaded";
+    // Now the rail's status is known rather than assumed, so a rail that is off
+    // can be taken out of the document for good.
+    removeDisabledRailMarkup();
+  } catch (error) {
+    marketState = "failed";
+    // eslint-disable-next-line no-console
+    console.error("market load failed", error);
+    const message = document.createElement("span");
+    message.textContent = "Could not reach the gateway. Nothing was charged. ";
+    const again = document.createElement("button");
+    again.type = "button";
+    again.className = "linklike";
+    again.textContent = "Try again";
+    again.onclick = () => void loadMarketWithRetry();
+    line.append(message, again);
+    renderTiers();
+    renderSubmitGate();
+  }
+}
+
 async function init(): Promise<void> {
   renderAuth();
   wireDestinationToggle();
   el<HTMLFormElement>("order-form").onsubmit = (e) => void onCreateOrder(e);
-  el<HTMLInputElement>("ck-amount").oninput = () => scheduleCkQuote();
-  el("rail-card").onclick = () => setRail("card");
-  el("rail-ckusdc").onclick = () => setRail("ckUsdc");
+  // Optional chaining, not el(): when the rail is disabled these nodes are
+  // removed from the document rather than hidden.
+  const canisterField = document.getElementById("canister-principal") as HTMLInputElement | null;
+  if (canisterField) canisterField.oninput = () => validateCanisterId();
+  const ckAmount = document.getElementById("ck-amount") as HTMLInputElement | null;
+  if (ckAmount) ckAmount.oninput = () => scheduleCkQuote();
+  document.getElementById("rail-card")?.addEventListener("click", () => setRail("card"));
+  document.getElementById("rail-ckusdc")?.addEventListener("click", () => setRail("ckUsdc"));
   el("cancel-order").onclick = () => void onCancelOrder();
   el("ck-approve").onclick = () => void onCkApprove();
   el("ck-claim").onclick = () => void onCkClaim();
@@ -1152,13 +1332,7 @@ async function init(): Promise<void> {
   const restored = await currentIdentity();
   if (restored) setIdentity(restored);
 
-  try {
-    await loadMarket();
-  } catch (error) {
-    el("rate-line").textContent = `Could not reach the gateway: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
-  }
+  await loadMarketWithRetry();
 }
 
 void init();

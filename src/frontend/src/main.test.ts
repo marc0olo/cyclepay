@@ -393,13 +393,16 @@ describe("receipt", () => {
 });
 
 describe("ck-USDC panel", () => {
-  test("the rail shows its disabled notice while maxUsdCents is 0", async () => {
+  test("there is no rail to reach while maxUsdCents is 0", async () => {
+    // This replaces an assertion that the panel showed a "not enabled yet, check
+    // back soon" notice. That notice promised a rail that may never ship, so the
+    // panel and its tab are now removed outright and there is nothing to click.
+    state.ckMaxUsdCents = 0n;
     await mount();
-    el("rail-ckusdc").click();
-    await settle();
-    expect(el("ck-disabled-notice").hidden).toBe(false);
-    expect(el<HTMLInputElement>("ck-amount").disabled).toBe(true);
-    expect(el<HTMLButtonElement>("create-order").textContent).toContain("not enabled");
+    expect(document.getElementById("rail-ckusdc")).toBeNull();
+    expect(document.getElementById("ck-amount")).toBeNull();
+    // And the card CTA is unaffected by a rail that is not there.
+    expect(el<HTMLButtonElement>("create-order").textContent).not.toContain("not enabled");
   });
 });
 
@@ -468,17 +471,23 @@ describe("audience chooser", () => {
 });
 
 describe("disabled rail is invisible, not promised", () => {
-  test("the rail nav does not render while ck-USDC is off", async () => {
-    // The old copy said "not enabled yet — check back soon" for a rail that may
-    // never ship. Absent beats promised.
+  test("the rail nav and panel are removed from the document while ck-USDC is off", async () => {
+    // Hiding was not enough: `.rails { display: flex }` outranked the UA
+    // stylesheet's `[hidden] { display: none }`, so a tab for a rail that may
+    // never ship was on screen while `el.hidden` read true. Absent cannot be
+    // undone by a stylesheet.
     state.ckMaxUsdCents = 0n;
     await mount("live");
-    expect(el("rail-nav").hidden).toBe(true);
+    expect(document.getElementById("rail-nav")).toBeNull();
+    expect(document.getElementById("ck-panel")).toBeNull();
   });
 
-  test("the rail nav appears once the rail is actually sized", async () => {
+  test("the rail nav survives while the config is still unknown", async () => {
+    // At first paint ckConfig is null, which reads as "disabled". Removing on
+    // that guess deleted the markup before the real answer arrived.
     state.ckMaxUsdCents = 10_000n;
     await mount("live");
+    expect(document.getElementById("rail-nav")).not.toBeNull();
     expect(el("rail-nav").hidden).toBe(false);
   });
 });

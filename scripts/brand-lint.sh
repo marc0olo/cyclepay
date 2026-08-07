@@ -22,9 +22,30 @@ report() {
   printf '%s\n' "$@" | sed 's/^/    /'
 }
 
-# String literals only, so a comment explaining a rule cannot trip it.
+command -v perl >/dev/null 2>&1 || {
+  echo "perl not found; it is required for the character checks" >&2
+  exit 2
+}
+
+# Every user-facing string literal: double-quoted, single-quoted, AND template
+# literals. Template literals were the gap that mattered — three em-dashes shipped
+# inside `${...}` interpolations while this script reported clean, because it only
+# looked at "double quotes".
+#
+# perl, not `grep -P`: BSD grep has no -P, and with stderr suppressed the failure
+# was silent, so the emoji check simply passed everywhere it could not run.
+read -r -d '' EXTRACT_LITERALS <<'PERL' || true
+while ($line = <>) {
+  $n++;
+  while ($line =~ /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g) {
+    print "$ARGV:$n:$&\n";
+  }
+  $n = 0 if eof;
+}
+PERL
+
 literals() {
-  grep -nEo '"[^"]*"' "$FE"/src/*.ts 2>/dev/null | grep -v '\.test\.ts:'
+  perl -CSD -e "$EXTRACT_LITERALS" "$FE"/src/*.ts 2>/dev/null | grep -v '\.test\.ts:'
 }
 
 # --- banned characters -------------------------------------------------------
@@ -34,8 +55,9 @@ hits="$( { grep -n '—' "$FE/index.html"; literals | grep '—'; } 2>/dev/null 
 
 # Emoji and pictographs. ⚠ and ✓ count: they render as emoji on most platforms,
 # and the voice is meant to be calm and factual rather than decorated.
-hits="$( { grep -nP '[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}\x{2B00}-\x{2BFF}\x{FE0F}]' "$FE/index.html"; \
-           literals | grep -P '[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}\x{2B00}-\x{2BFF}\x{FE0F}]'; } 2>/dev/null )"
+PICTO='[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}\x{2B00}-\x{2BFF}\x{FE0F}]'
+hits="$( { perl -CSD -ne "print qq(\$ARGV:\$.:\$_) if /$PICTO/" "$FE/index.html"; \
+           literals | perl -CSD -ne "print if /$PICTO/"; } 2>/dev/null )"
 [ -n "$hits" ] && report "emoji or pictograph in user-facing copy" "$hits"
 
 # --- banned vocabulary -------------------------------------------------------
@@ -57,7 +79,9 @@ css_code() {
 # Everything must come from tokens.css, which is the guidelines' own review rule
 # and the only thing keeping the dark theme correct. #fff is the one exception:
 # on a rust or near-black fill it is that fill's contrast pair, not a theme value.
-hits="$(css_code "$FE/src/styles.css" | grep -E '#[0-9a-fA-F]{3,8}\b' | grep -vE '#fff\b' || true)"
+hits="$(css_code "$FE/src/styles.css" \
+  | grep -E '#[0-9a-fA-F]{3,8}\b|\b(rgba?|hsla?|oklch|color-mix)\(' \
+  | grep -vE '#fff\b' || true)"
 [ -n "$hits" ] && report "hardcoded colour in styles.css (add a token instead)" "$hits"
 
 # --- the theme rule ----------------------------------------------------------

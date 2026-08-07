@@ -83,6 +83,17 @@ run "frontend tests" npm --prefix src/frontend run test
 # hierarchy still need eyes.
 run "brand lint — user-facing copy and tokens" bash scripts/brand-lint.sh
 
+# Browser specs (issue #6). These cover what jsdom is structurally blind to: the
+# CASCADE and LAYOUT. A class selector's `display` outranks the UA stylesheet's
+# `[hidden]`, so elements the app had hidden stayed on screen while every DOM
+# test passed — that shipped once, and these exist so it cannot again.
+# Serves the built dist over a static server; needs no local network.
+if [ -d test/browser/node_modules ]; then
+  run "browser specs — cascade, layout, reachability" npm --prefix test/browser test
+else
+  printf '\n\033[33m⚠ skipped the browser specs (run: npm --prefix test/browser ci)\033[0m\n'
+fi
+
 if [ "$FAST" -eq 1 ]; then
   printf '\n\033[33m⚠ skipped the PocketIC suite (--fast). The go-live bar is UNVERIFIED.\033[0m\n'
 else

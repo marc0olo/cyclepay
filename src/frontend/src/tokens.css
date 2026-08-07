@@ -36,6 +36,10 @@
   /* Secondary ink ON the bar. Cannot be --icp-fg-muted: the bar is theme-stable,
      so its muted tone must be too. */
   --icp-cta-bar-muted: #b9b3a8;
+  /* Washes ON the bar. Also theme-stable: the bar does not change, so neither
+     may the tints layered on it. */
+  --icp-cta-bar-wash: rgba(255, 255, 255, 0.08);
+  --icp-cta-bar-edge: rgba(255, 255, 255, 0.25);
 
   /* Status. Not in the guidelines, which have no error/success vocabulary, but
      an order pipeline cannot be honest without one. Chosen inside the palette's

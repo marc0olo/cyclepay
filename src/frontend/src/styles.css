@@ -17,6 +17,17 @@
   box-sizing: border-box;
 }
 
+/* The `hidden` attribute must beat every layout rule in this file.
+   The UA stylesheet's `[hidden] { display: none }` has lower specificity than a
+   class selector, so `.chooser { display: grid }` and `.rails { display: flex }`
+   silently re-showed elements the app had hidden — the chooser never went away
+   and the disabled rail nav was always on screen.
+   jsdom has no layout and no cascade, so the DOM suite could not see any of it:
+   `el.hidden` was true the whole time. */
+[hidden] {
+  display: none !important;
+}
+
 html {
   color-scheme: light;
 }
@@ -517,7 +528,7 @@ legend {
   color: var(--icp-accent);
 }
 .handoff code {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--icp-cta-bar-wash);
   color: var(--icp-cta-bar-fg);
 }
 .cmd {
@@ -535,7 +546,7 @@ legend {
 }
 .handoff .copy {
   color: var(--icp-cta-bar-fg);
-  border-color: rgba(255, 255, 255, 0.25);
+  border-color: var(--icp-cta-bar-edge);
   flex: none;
 }
 .handoff .copy:hover {

@@ -111,7 +111,7 @@ export function feeBreakdown(
   fee: FeeConfig,
 ): string {
   if (netCents === undefined) {
-    return `Payment processing (${formatUsdCents(feeCents)}) would exceed ${formatUsdCents(grossCents)} — pick a larger amount.`;
+    return `Payment processing (${formatUsdCents(feeCents)}) would exceed ${formatUsdCents(grossCents)}. Pick a larger amount.`;
   }
   const rate = fee.feeBps === 0n && fee.feeFixedCents === 0n
     ? "no processor fee"
