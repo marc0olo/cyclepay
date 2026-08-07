@@ -1,23 +1,46 @@
 /// Detect and recover from a **stale `ic_env` cookie**, a real failure diagnosed
 /// against a running local network.
 ///
-/// The shape of the bug: a partitioned cookie (`Secure; SameSite=None;
-/// Partitioned`) left behind by an earlier local network can coexist with the
-/// fresh one. `document.cookie` lists the stale copy first, and
-/// `safeGetCanisterEnv` takes the first match, so the app builds its actor
-/// against a canister id that no longer exists and every call rejects with
+/// The shape of the bug: two `ic_env` cookies for one origin, advertising
+/// different backend canister ids. `document.cookie` lists the stale copy first
+/// and `safeGetCanisterEnv` takes the first match, so the app builds its actor
+/// against a canister that no longer exists and every call rejects with
 /// **IC0536** (canister not found). Nothing in the UI explains it, the page looks
 /// broken, and clearing site data is not something a visitor will guess.
+///
+/// They coexist rather than replacing each other because a partitioned and an
+/// unpartitioned cookie live in separate jars (see the measured attributes
+/// below), so a copy written under one configuration survives alongside a fresh
+/// one written under another.
 ///
 /// Two things make this worth code rather than a note in a README:
 ///   - it presents as "the gateway is down" when the gateway is fine, and
 ///   - `cookieStore.delete` silently does nothing on a partitioned cookie unless
 ///     `partitioned: true` is passed, so the obvious cleanup does not work.
 ///
-/// **Local development only.** Mainnet serves no `ic_env` at all (the asset
-/// canister sets it, and only a local network sets a partitioned one), so every
-/// entry point here no-ops when fewer than two cookies are present, which is
-/// always the case in production.
+/// **Not local-only, despite where it was found.** An earlier version of this
+/// comment claimed mainnet serves no `ic_env` and that only a local network sets
+/// a partitioned cookie. Both are false. Measured rather than reasoned about:
+///
+///   mainnet asset canister:  Partitioned; SameSite=None; Secure; Max-Age=31536000; Path=<certified>
+///   local gateway:                        SameSite=Lax;  secure; Max-Age=31536000; Path=<certified>
+///   vite dev server:                      SameSite=Lax                             (no Path, no Max-Age)
+///
+/// Three writers, no two agreeing. A cookie's identity is (name, domain, **path**)
+/// — and partitioning adds a separate jar on top — so these do not replace each
+/// other, they accumulate. Two more things make it worse:
+///
+///   - **Cookies ignore the port.** A Vite dev server on `localhost:5173` and the
+///     gateway on `localhost:8000` are the same host and share one jar, so
+///     running both is enough to hold two `ic_env` cookies naming different
+///     backends.
+///   - **`Max-Age` is a year** on the canister-set copies, so a stale one
+///     outlives essentially any development cycle.
+///
+/// Duplicates remain likeliest locally, because a local network recycles canister
+/// ids across restarts while a mainnet id is stable. But nothing here is
+/// local-only, and the guard costs nothing when it does not apply: every entry
+/// point no-ops unless two cookies advertise *different* backend ids.
 
 /// One `ic_env` cookie's decoded key/value pairs, with the raw value kept so a
 /// caller can tell two copies apart.
