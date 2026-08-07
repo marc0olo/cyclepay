@@ -9,6 +9,7 @@ import type { Identity } from "@icp-sdk/core/agent";
 import {
   backendCanisterId,
   makeBackend,
+  type PricingStatus,
   makeBackendAt,
   type Backend,
   type CkUsdcConfig,
@@ -351,7 +352,10 @@ function setIdentity(next: Identity | null): void {
   backend = makeBackend(identity ?? undefined);
   renderAuth();
   renderSubmitGate();
-  show("history", identity !== null);
+  // Visibility belongs to renderView, which is what makes history a VIEW rather
+  // than a section pinned to the bottom of whatever else is on screen. Signing in
+  // reveals the header link, not the table.
+  renderView();
   if (identity) {
     const owner = el<HTMLInputElement>("ledger-owner");
     if (!owner.value) owner.value = identity.getPrincipal().toText();
@@ -380,17 +384,8 @@ async function loadMarket(): Promise<void> {
   // Both rate inputs are shown, because both are needed to reproduce a quote —
   // the ICP price from the Exchange Rate Canister and the XDR/ICP rate the CMC
   // will actually mint at. A buyer can query either canister and check us.
-  const rateLine = el("rate-line");
-  if (pricing.rates) {
-    const usdPerIcp = (Number(pricing.rates.usdPerIcpMicros) / 1e6).toFixed(2);
-    const xdrPerIcp = (Number(pricing.rates.xdrPermyriadPerIcp) / 1e4).toFixed(4);
-    const fee = `fee ${Number(pricing.config.feeBps) / 100}% + ${formatUsdCents(pricing.config.feeFixedCents)}`;
-    rateLine.textContent =
-      `ICP $${usdPerIcp} · ${xdrPerIcp} XDR/ICP · ${fee} · cycles are locked at order creation`;
-  } else {
-    rateLine.textContent =
-      "No exchange rate available yet. Orders are paused until one is fetched.";
-  }
+  lastPricing = pricing;
+  renderRateLine();
 
   const gate = el("gate-notice");
   if (lowFloat) {
@@ -434,6 +429,10 @@ async function refreshTierQuotes(): Promise<void> {
     // Leave the map empty — tiers render without an estimate rather than with
     // a wrong one.
   }
+  // Quotes are the authoritative answer to "can this gateway price right now",
+  // so the rate strip is re-rendered from them rather than left at whatever the
+  // cached pair implied at load.
+  renderRateLine();
 }
 
 /// The cycles-ledger deposit fee, disclosed where the choice is made rather
@@ -539,6 +538,42 @@ function scheduleCkQuote(): void {
     })();
   }, QUOTE_DEBOUNCE_MS);
 }
+
+/// The rate strip under the amounts.
+///
+/// Keyed on whether the gateway can actually QUOTE, not on whether a rate pair is
+/// cached. Those differ: `pricing_status.rates` returns the last pair fetched even
+/// when it has aged past `maxAgeNs` or the most recent refresh failed. Rendering
+/// on presence alone printed a live-looking "ICP $4.55 · 3.5000 XDR/ICP" directly
+/// above three tiles each saying "No exchange rate available right now" — the page
+/// quoting a price it would refuse to honour.
+function renderRateLine(): void {
+  const node = document.getElementById("rate-line");
+  if (!node || lastPricing === null) return;
+  const pricing = lastPricing;
+  // The authoritative signal: a quote either came back with a cycle quantity or
+  // it did not. Falls back to the last refresh attempt before any tier is priced.
+  const priceable =
+    tierQuotes.size > 0
+      ? [...tierQuotes.values()].some((q) => q.cycles !== undefined)
+      : pricing.lastAttempt?.ok !== false;
+
+  if (pricing.rates && priceable) {
+    const rates = pricing.rates;
+    const usdPerIcp = (Number(rates.usdPerIcpMicros) / 1e6).toFixed(2);
+    const xdrPerIcp = (Number(rates.xdrPermyriadPerIcp) / 1e4).toFixed(4);
+    const fee = `fee ${Number(pricing.config.feeBps) / 100}% + ${formatUsdCents(pricing.config.feeFixedCents)}`;
+    node.textContent =
+      `ICP $${usdPerIcp} · ${xdrPerIcp} XDR/ICP · ${fee} · cycles are locked at order creation`;
+    return;
+  }
+  node.textContent =
+    "No exchange rate available right now. Orders are paused until one is fetched.";
+}
+
+/// The last `pricing_status`, so the rate strip can be re-rendered when quotes
+/// arrive rather than only at load.
+let lastPricing: PricingStatus | null = null;
 
 function renderTiers(): void {
   const container = el("tiers");
@@ -777,6 +812,30 @@ function reportCallFailure(context: string, error: unknown): string {
   return "Could not reach the gateway. Nothing was charged. Please try again.";
 }
 
+/// Why sign-in did not complete.
+///
+/// A blanket "Sign-in was cancelled" was wrong and actively harmful: it is the
+/// one outcome that needs no action, so reporting it for a blocked popup or an
+/// unreachable identity provider tells the user to relax about a problem they
+/// have to fix. Closing the window is only ONE of the ways this rejects.
+function signInFailureMessage(error: unknown): string {
+  // eslint-disable-next-line no-console
+  console.error("sign-in failed", error);
+  const text = error instanceof Error ? error.message : String(error);
+  if (/UserInterrupt|closed|cancel/i.test(text)) {
+    return "Sign-in was cancelled. Nothing was charged.";
+  }
+  if (/popup|blocked|window/i.test(text)) {
+    return "The sign-in window could not open. Allow pop-ups for this site and try again.";
+  }
+  // Anything else: the provider is unreachable or refused. Say that, and say
+  // where to look, rather than implying the user did something.
+  return (
+    "Could not reach the sign-in service. Nothing was charged. " +
+    "The browser console has the details."
+  );
+}
+
 function showFormError(message: string | null): void {
   const node = el("form-error");
   node.textContent = message ?? "";
@@ -792,8 +851,8 @@ async function onCreateOrder(event: SubmitEvent): Promise<void> {
     showFormError(null);
     try {
       setIdentity(await signIn());
-    } catch {
-      showFormError("Sign-in was cancelled. Nothing was charged.");
+    } catch (error) {
+      showFormError(signInFailureMessage(error));
     }
     return;
   }
@@ -887,7 +946,12 @@ function describeDestination(order: Order): string {
       const subText = sub && sub.length > 0
         ? `, subaccount ${[...sub].map((b) => b.toString(16).padStart(2, "0")).join("")}`
         : "";
-      return `cycles-ledger account ${account.owner.toText()}${subText}`;
+      // "cycles-ledger account <62-char principal>" is operator vocabulary. The
+      // buyer's own account is the common case by far and needs no id at all;
+      // anything else is someone else's, and there the id is the whole point.
+      const mine = identity !== null && account.owner.toText() === identity.getPrincipal().toText();
+      if (mine && subText === "") return "your account";
+      return `account ${account.owner.toText()}${subText}`;
     }
   }
 }
@@ -907,6 +971,8 @@ function renderOrder(order: Order, clientReferenceId?: string): void {
   el("order-rate").textContent =
     `$${(Number(order.pricing.usdPerIcpMicros) / 1e6).toFixed(2)}/ICP · ` +
     `${(Number(order.pricing.xdrPermyriadPerIcp) / 1e4).toFixed(4)} XDR/ICP · locked at creation`;
+  // XDR is the unit the CMC mints against, so it belongs in the verifiable
+  // record — but the headline number a buyer recognises is the dollar rate.
 
   const key = statusKeyOf(order);
   const info = statusInfo(key);
@@ -1218,6 +1284,11 @@ async function refreshHistory(): Promise<void> {
   );
   el("choose-new").classList.toggle("suggested", suggestion === "newcomer");
   el("choose-live").classList.toggle("suggested", suggestion === "live");
+
+  orderCount = orders.length;
+  // The header link appears only once there is something behind it, so this has
+  // to run after the count is known rather than at sign-in.
+  renderView();
 
   const body = el("orders");
   body.replaceChildren();
@@ -1533,6 +1604,9 @@ async function init(): Promise<void> {
 
   audience = recall();
   renderAudience();
+  // Parse the route the page was OPENED with, not only later hashchanges. Without
+  // this a deep link or a reload on #/history silently rendered the landing view.
+  applyRoute(parseRoute(window.location.hash));
 
   const restored = await currentIdentity();
   if (restored) setIdentity(restored);

@@ -70,3 +70,22 @@ test.describe("the stepper", () => {
     expect(strip).toHaveLength(4);
   });
 });
+
+test.describe("history is a view, not a footer", () => {
+  test("the orders table is never on the landing screen", async ({ page }) => {
+    // It was: `setIdentity` unhid `#history` directly while `renderView` also
+    // owned it, so signing in pinned the table to the bottom of whatever was on
+    // screen. Two owners of one decision, the same shape of bug as the chooser.
+    await page.goto("/");
+    await expect(page.locator("#history")).toBeHidden();
+    await page.locator("#choose-live").click();
+    await expect(page.locator("#history")).toBeHidden();
+  });
+
+  test("the history route shows the table and nothing else", async ({ page }) => {
+    await page.goto("/#/history");
+    await expect(page.locator("#history")).toBeVisible();
+    await expect(page.locator("#view-landing")).toBeHidden();
+    await expect(page.locator("#buy-flow")).toBeHidden();
+  });
+});

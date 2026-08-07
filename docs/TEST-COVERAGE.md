@@ -102,10 +102,12 @@ Two gotchas it encodes, both found by running it:
 - The **xrc mock keeps its canned response in heap and sets it from `init_args` at
   install time**, so a routine `icp deploy` upgrades it and every later rate call
   traps with "Response has not been set". The script reinstalls it first.
-- **`rates` stays null locally** and that is expected, not a failure: caching a pair
-  also needs a fresh CMC rate, which needs governance impersonation through the
-  PocketIC control API — an unsupported interface the script deliberately avoids.
-  So local orders cannot be *priced*; the money path stays in the PocketIC suite.
+- **`rates` stays null until the local gateway is seeded.** Caching a pair needs a
+  fresh CMC rate as well as the XRC, and the CMC's rate is settable only by NNS
+  governance. `scripts/local-dev-seed.sh` does that through the PocketIC control
+  API (see docs/SANDBOX-TESTPLAN.md), so local orders **can** be priced — the smoke
+  test just does not depend on it, because that control port is not a supported
+  `icp` interface.
 
 ### 4. Things only a real Stripe account can show
 

@@ -151,6 +151,10 @@ async function mount(arm: "live" | "newcomer" | "none" = "live"): Promise<void> 
   // jsdom has no layout, so these are absent. main.ts calls them.
   Element.prototype.scrollIntoView ??= () => undefined;
   window.localStorage.clear();
+  // jsdom keeps `location` across tests in a file, so a previous test's #/buy
+  // would be parsed as the starting route and skip the chooser under test.
+  // A real first-time visitor arrives with no hash.
+  window.location.hash = "";
   const html = readFileSync(resolve(__dirname, "..", "index.html"), "utf-8");
   const body = /<body>([\s\S]*)<\/body>/.exec(html);
   if (!body) throw new Error("could not extract <body> from index.html");
@@ -244,8 +248,11 @@ describe("destination affects what lands", () => {
     // the copy must not then claim two different figures. It still says the fee
     // was applied.
     const label = tierButton().querySelector(".cycles")!.textContent!;
-    expect(label).toContain("credited");
-    expect(label).toContain("deposit fee");
+    expect(label).toMatch(/deposit/i);
+    // The fee must be DISCLOSED; the exact wording is copy. Asserting the phrase
+    // "deposit fee" pinned the operator-facing version of this sentence.
+    expect(label).toMatch(/deposit/i);
+    expect(label).toContain("100 M");
     expect(label).not.toMatch(/3\.5 T minted/);
     const note = el("dest-fee-note");
     expect(note.hidden).toBe(false);
@@ -591,5 +598,30 @@ describe("buy again", () => {
     el("orders").querySelector<HTMLButtonElement>("button.buy-again")!.click();
     await settle();
     expect(el("active-order").hidden).toBe(true);
+  });
+});
+
+describe("the rate strip never contradicts the tiers", () => {
+  test("a cached but unusable rate is not printed as if it were live", async () => {
+    // Found on a real local network: the strip read "ICP $4.55 · 3.5000 XDR/ICP"
+    // directly above three tiles each saying "No exchange rate available right
+    // now". `pricing_status.rates` returns the LAST pair fetched even when the
+    // most recent refresh failed, so rendering on its presence alone had the page
+    // quoting a price it would refuse to honour.
+    state.quote = { usdCents: TIER_CENTS, feeCents: 45n, netCents: 455n, cycles: undefined };
+    await mount("live");
+
+    const strip = el("rate-line").textContent ?? "";
+    expect(strip).toMatch(/no exchange rate/i);
+    expect(strip).not.toContain("XDR/ICP");
+    // And the tiers agree, which is the whole point.
+    expect(tierButton().querySelector(".cycles")!.textContent).toMatch(/no exchange rate/i);
+  });
+
+  test("a usable rate is printed in full", async () => {
+    await mount("live");
+    const strip = el("rate-line").textContent ?? "";
+    expect(strip).toContain("XDR/ICP");
+    expect(strip).not.toMatch(/no exchange rate/i);
   });
 });

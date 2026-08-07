@@ -219,8 +219,8 @@
         <div id="pay-area" hidden>
           <a id="pay-link" target="_blank" rel="noopener noreferrer" class="cta">Pay with card ↗</a>
           <p class="muted">
-            The payment page is a Stripe Payment Link carrying reference
-            <code id="client-ref"></code>. Keep this tab open; status updates live.
+            Opens Stripe in a new tab. Keep this one open: it updates the moment
+            the payment clears.
           </p>
         </div>
         <div id="ck-pay-area" hidden>
@@ -304,6 +304,7 @@
         <details id="order-details">
           <summary>Order details</summary>
           <dl class="order-facts">
+            <dt>Payment reference</dt><dd id="client-ref" class="wrap"></dd>
             <dt>Rail</dt><dd id="order-rail"></dd>
             <dt>Cycles</dt><dd id="order-cycles"></dd>
             <dt>Price</dt><dd id="order-price"></dd>

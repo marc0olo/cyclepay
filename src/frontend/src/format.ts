@@ -171,7 +171,10 @@ export function estimateLine(
         `(${formatCycles(cycles)} minted, less the cycles ledger's ${formatCycles(depositFee)} deposit fee)`
       );
     }
-    return `≈ ${shown} cycles credited (after the cycles ledger's ${formatCycles(depositFee)} deposit fee)`;
+    // The deposit fee is real and must be disclosed, but "(after the cycles
+    // ledger's 100 M deposit fee)" makes the buyer parse a subtraction to learn
+    // what they get. Lead with the number that lands.
+    return `≈ ${shown} cycles (the cycles ledger takes ${formatCycles(depositFee)} to accept the deposit)`;
   }
   return `≈ ${formatCycles(cycles)} cycles`;
 }

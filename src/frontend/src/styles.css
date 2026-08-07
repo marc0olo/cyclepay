@@ -475,6 +475,15 @@ legend {
   border-top: 1px solid var(--icp-rule);
 }
 
+/* The stepper already closes with a rule, so the view below it must not open
+   with a second one: stacked hairlines with a gap between them read as an empty
+   section that failed to render. */
+#stepper:not([hidden]) + #buy-flow,
+#stepper:not([hidden]) ~ #active-order {
+  border-top: 0;
+  padding-top: 0;
+}
+
 .timeline {
   list-style: none;
   display: flex;
