@@ -53,8 +53,9 @@
 ///
 /// The guard does not depend on any of that being right: it no-ops unless two
 /// cookies advertise *different* backend ids, which is correct everywhere. The
-/// real fix belongs upstream — see dfinity/icp-js-core (resolver) and
-/// dfinity/icp-cli#702 (cookie lifetime).
+/// real fix belongs upstream, tracked on **dfinity/icp-js-core#1384**: the
+/// resolver is in `@icp-sdk/core`, and the one-year cookie lifetime is context
+/// there rather than a separate issue.
 
 /// One `ic_env` cookie's decoded key/value pairs, with the raw value kept so a
 /// caller can tell two copies apart.
