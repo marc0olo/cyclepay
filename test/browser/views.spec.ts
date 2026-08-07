@@ -63,7 +63,7 @@ test.describe("the stepper", () => {
     // The headline promises four steps; the strip has to agree with it or one of
     // the two is lying.
     await page.goto("/");
-    const hero = await page.locator(".steps li").allInnerTexts();
+    const hero = await page.locator(".flow-step").allInnerTexts();
     expect(hero).toHaveLength(4);
     await page.locator("#choose-new").click();
     const strip = await page.locator("#stepper .step").allInnerTexts();

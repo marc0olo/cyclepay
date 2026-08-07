@@ -75,7 +75,7 @@ test.describe("the hero states the sequence", () => {
   test("the four steps are on screen, with the real command", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("h1")).toContainText(/from zero to deployed/i);
-    const steps = page.locator(".steps li");
+    const steps = page.locator(".flow-step");
     await expect(steps).toHaveCount(4);
     await expect(steps.nth(2)).toContainText("icp identity link web");
   });

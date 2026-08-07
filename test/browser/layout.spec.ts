@@ -101,8 +101,10 @@ test.describe("brand rendering", () => {
     );
     expect(shell).toBeLessThanOrEqual(1040);
 
+    // `.hero` is now the two-column GRID, so the measure lives on `.hero-copy`.
+    // The figure beside it is a diagram, not prose, and is not bound by it.
     const proseWidths = await page.evaluate(() =>
-      [...document.querySelectorAll(".lede, .explainer p, .hero")].map(
+      [...document.querySelectorAll(".lede, .explainer p, .hero-copy")].map(
         (n) => n.getBoundingClientRect().width,
       ),
     );
@@ -118,5 +120,56 @@ test.describe("brand rendering", () => {
       () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
     );
     expect(overflow).toBeLessThanOrEqual(0);
+  });
+});
+
+test.describe("the four-step hero figure", () => {
+  test("every step is legible at rest, not only while animating", async ({ page }) => {
+    // The animation raises attention; it must not CARRY information. A step that
+    // is invisible between pulses would hide the sequence from anyone who looks
+    // at the wrong moment, screenshots the page, or disables motion.
+    await page.goto("/");
+    for (let i = 0; i < 4; i += 1) {
+      const step = page.locator(".flow-step").nth(i);
+      await expect(step).toBeVisible();
+      const opacity = await step.evaluate((n) => Number(getComputedStyle(n).opacity));
+      expect(opacity).toBeGreaterThanOrEqual(0.5);
+    }
+  });
+
+  test("reduced motion removes the animation entirely", async ({ page }) => {
+    // Not slowed down: removed. Every step rests fully legible, so dropping the
+    // motion loses nothing.
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto("/");
+    const states = await page.evaluate(() =>
+      [...document.querySelectorAll(".flow-step")].map((n) => ({
+        animation: getComputedStyle(n).animationName,
+        opacity: getComputedStyle(n).opacity,
+      })),
+    );
+    for (const s of states) {
+      expect(s.animation).toBe("none");
+      expect(Number(s.opacity)).toBe(1);
+    }
+    const pulse = await page.evaluate(
+      () => getComputedStyle(document.querySelector(".flow")!, "::after").display,
+    );
+    expect(pulse).toBe("none");
+  });
+
+  test("the hero is two columns on desktop and one on a phone", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto("/");
+    const wide = await page.evaluate(
+      () => getComputedStyle(document.querySelector(".hero")!).gridTemplateColumns.split(" ").length,
+    );
+    expect(wide).toBe(2);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const narrow = await page.evaluate(
+      () => getComputedStyle(document.querySelector(".hero")!).gridTemplateColumns.split(" ").length,
+    );
+    expect(narrow).toBe(1);
   });
 });

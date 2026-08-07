@@ -61,7 +61,7 @@ main,
 
 /* Prose keeps the 720px measure inside the wider shell. Applied to the text
    blocks rather than the container, so data (tiers, tables) can use the width. */
-.hero,
+.hero-copy,
 .explainer p,
 .explainer h2,
 .lede,
@@ -86,6 +86,9 @@ h3 {
 
 h1 {
   font-size: clamp(2rem, 5.5vw, 3rem);
+  /* Keeps the two-column hero from breaking "Internet / Computer" across lines
+     and leaving a one-word orphan. */
+  text-wrap: balance;
 }
 
 /* The italic rule: one emphasis word per heading, carried in rust. */
@@ -187,6 +190,10 @@ a:hover {
 /* ── hero, with the one permitted texture ─────────────────────────────────── */
 
 .hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: var(--space-7);
+  align-items: center;
   padding-block: var(--space-7) var(--space-6);
   background-image:
     linear-gradient(to right, var(--grid-ink) 1px, transparent 1px),
@@ -746,4 +753,133 @@ tbody tr:hover {
 }
 .header-link:hover {
   text-decoration: underline;
+}
+
+
+/* ── the four-step flow figure ────────────────────────────────────────────── */
+
+.flow {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  position: relative;
+  display: grid;
+  gap: var(--space-5);
+}
+
+/* The connector. A 1px hairline, as every rule in this system is. */
+.flow::before {
+  content: "";
+  position: absolute;
+  left: 17px;
+  top: 18px;
+  bottom: 18px;
+  width: 1px;
+  background: var(--icp-rule);
+}
+
+/* A rust pulse travelling the connector, tying the steps into one sequence.
+   Sized off the same 8s loop as the steps so they stay in phase. */
+.flow::after {
+  content: "";
+  position: absolute;
+  left: 15px;
+  top: 18px;
+  width: 5px;
+  height: 5px;
+  border-radius: var(--radius-pill);
+  background: var(--icp-accent);
+  animation: flow-pulse 8s linear infinite;
+}
+
+/* `top` rather than `transform`, so the travel tracks the container's real
+   height instead of a hardcoded pixel guess that breaks the moment a label
+   wraps. One 5px dot, so the layout cost is irrelevant. */
+@keyframes flow-pulse {
+  0% { top: 18px; opacity: 0; }
+  6% { opacity: 1; }
+  94% { opacity: 1; }
+  100% { top: calc(100% - 18px); opacity: 0; }
+}
+
+.flow-step {
+  display: grid;
+  grid-template-columns: 35px 1fr;
+  gap: var(--space-3);
+  align-items: center;
+  /* Resting state is legible on its own: the animation raises attention, it does
+     not carry information. */
+  opacity: 0.55;
+  animation: flow-dim 8s calc(var(--i) * 2s - 1s) infinite;
+}
+
+@keyframes flow-dim {
+  0%, 4% { opacity: 0.55; }
+  8%, 22% { opacity: 1; }
+  26%, 100% { opacity: 0.55; }
+}
+
+.flow-node {
+  display: grid;
+  place-items: center;
+  width: 35px;
+  height: 35px;
+  border: 1px solid var(--icp-rule);
+  border-radius: var(--radius-pill);
+  background: var(--icp-bg);
+  animation: flow-ring 8s calc(var(--i) * 2s - 1s) infinite;
+}
+
+@keyframes flow-ring {
+  0%, 4% { border-color: var(--icp-rule); }
+  8%, 22% { border-color: var(--icp-accent); }
+  26%, 100% { border-color: var(--icp-rule); }
+}
+
+.flow-n {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--icp-fg-secondary);
+}
+
+.flow-body {
+  display: grid;
+  gap: 2px;
+}
+.flow-label {
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  color: var(--icp-fg);
+}
+.flow-detail {
+  font-family: var(--font-ui);
+  font-size: 0.8125rem;
+  color: var(--icp-fg-muted);
+  justify-self: start;
+}
+code.flow-detail {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+/* Motion is decoration here, so it goes entirely rather than being slowed down.
+   Every step rests fully legible, which is why this is a clean removal. */
+@media (prefers-reduced-motion: reduce) {
+  .flow-step,
+  .flow-node {
+    animation: none;
+    opacity: 1;
+  }
+  .flow::after {
+    display: none;
+  }
+}
+
+/* One column below the fold-out width: the figure stacks under the prose rather
+   than being squeezed into a column too narrow for the commands. */
+@media (max-width: 860px) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-6);
+  }
 }

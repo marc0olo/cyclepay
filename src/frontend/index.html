@@ -32,21 +32,53 @@
       <div id="view-landing" class="view">
       <!-- Hero. The sequence is the product, not the purchase. -->
       <section class="hero">
-        <h1>From zero to deployed on the <em>Internet Computer</em>.</h1>
-        <p class="lede">
-          Get cycles with a card, link your identity to the CLI, and deploy, in a
-          few minutes.
-        </p>
-        <p class="meta-strip">
-          Operated by the DFINITY Foundation
-          <span class="dot">·</span>
-          <span id="rate-claim">at the protocol exchange rate, plus card processing</span>
-        </p>
-        <ol class="steps" aria-label="What this takes">
-          <li><span class="step-n">1</span> Sign in with Google, Apple, or Microsoft</li>
-          <li><span class="step-n">2</span> Pay with a card</li>
-          <li><span class="step-n">3</span> <code>icp identity link web</code></li>
-          <li><span class="step-n">4</span> Deploy</li>
+        <div class="hero-copy">
+          <p class="eyebrow">Cycles</p>
+          <h1>From zero to deployed on the <em>Internet Computer</em>.</h1>
+          <p class="lede">
+            Get cycles with a card, link your identity to the CLI, and deploy, in
+            a few minutes.
+          </p>
+          <p class="meta-strip">
+            Operated by the DFINITY Foundation
+            <span class="dot">·</span>
+            <span id="rate-claim">at the protocol exchange rate, plus card processing</span>
+          </p>
+        </div>
+
+        <!-- The four steps as a figure rather than a wrapping sentence. The
+             sequence IS the product (issue #21), so it gets the visual weight the
+             right-hand column was wasting. Motion is CSS-only and cycles slowly;
+             prefers-reduced-motion drops it to a static, fully-legible state. -->
+        <ol class="flow" aria-label="What this takes">
+          <li class="flow-step" style="--i: 0">
+            <span class="flow-node"><span class="flow-n">1</span></span>
+            <span class="flow-body">
+              <span class="flow-label">Sign in</span>
+              <span class="flow-detail">Google, Apple, or Microsoft</span>
+            </span>
+          </li>
+          <li class="flow-step" style="--i: 1">
+            <span class="flow-node"><span class="flow-n">2</span></span>
+            <span class="flow-body">
+              <span class="flow-label">Pay with a card</span>
+              <span class="flow-detail">No exchange account needed</span>
+            </span>
+          </li>
+          <li class="flow-step" style="--i: 2">
+            <span class="flow-node"><span class="flow-n">3</span></span>
+            <span class="flow-body">
+              <span class="flow-label">Link the CLI</span>
+              <code class="flow-detail">icp identity link web</code>
+            </span>
+          </li>
+          <li class="flow-step" style="--i: 3">
+            <span class="flow-node"><span class="flow-n">4</span></span>
+            <span class="flow-body">
+              <span class="flow-label">Deploy</span>
+              <code class="flow-detail">icp canister create</code>
+            </span>
+          </li>
         </ol>
       </section>
 
