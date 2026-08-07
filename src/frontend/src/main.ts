@@ -682,12 +682,24 @@ function chooseAudience(next: Audience): void {
 
 function renderSubmitGate(): void {
   const btn = el<HTMLButtonElement>("create-order");
+  // Reset both every render: the button's ROLE changes with sign-in state, and a
+  // stale click handler left over from the signed-out state would swallow the
+  // submit once the user signs in.
+  if (identity) {
+    btn.type = "submit";
+    btn.onclick = null;
+  }
   show("signin-providers", !identity);
   if (!identity) {
     // Enabled, not disabled. A permanently greyed-out button at the end of the
     // flow is a dead end: the only other affordance was a header button, which
     // is not where someone who just picked an amount is looking.
+    //
+    // And type="button", not submit: signer-js will only open its window from a
+    // click handler, so sign-in cannot travel through the form's submit event.
     btn.disabled = false;
+    btn.type = "button";
+    btn.onclick = onSignInClick;
     btn.textContent = "Sign in and continue";
   } else if (activeRail === "card" && selectedTierId === null) {
     btn.disabled = true;
@@ -842,21 +854,29 @@ function showFormError(message: string | null): void {
   show("form-error", message !== null);
 }
 
+/// Start sign-in from a **click**, synchronously.
+///
+/// signer-js opens the signer window itself and refuses to do so outside a click
+/// handler: "channels must be established in a click handler". Routing this
+/// through the form's `submit` handler broke that — the window never opened and
+/// the page reported a blocked pop-up, which sent the user to their browser
+/// settings for a problem that was not there.
+///
+/// So `signIn()` is invoked as the first statement of a real click listener, with
+/// nothing awaited before it. The promise is handled afterwards; only the CALL
+/// has to happen inside the gesture.
+function onSignInClick(): void {
+  showFormError(null);
+  signIn()
+    .then((next) => setIdentity(next))
+    .catch((error) => showFormError(signInFailureMessage(error)));
+}
+
 async function onCreateOrder(event: SubmitEvent): Promise<void> {
-  // Signed out, the CTA's job is to sign in. Stop there rather than continuing
-  // into order creation: the destination for a newcomer is derived from the
-  // identity, so it cannot be read until sign-in resolves.
-  if (!identity) {
-    event.preventDefault();
-    showFormError(null);
-    try {
-      setIdentity(await signIn());
-    } catch (error) {
-      showFormError(signInFailureMessage(error));
-    }
-    return;
-  }
   event.preventDefault();
+  // Signed out the CTA is not a submit button at all (see renderSubmitGate), so
+  // this is unreachable then. Kept as a guard rather than an assumption.
+  if (!identity) return;
   showFormError(null);
   if (!identity) return;
   const dest = readDestination();

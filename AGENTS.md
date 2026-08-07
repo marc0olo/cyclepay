@@ -54,6 +54,19 @@ recorded reasoning — don't "fix" them without reading the rationale:
   the whole ingestion path unit-tests without an IC environment. Equivalent
   separation, deliberately chosen.
 
+## Running it locally
+
+```sh
+icp network start -d && icp deploy && scripts/local-dev-seed.sh
+```
+
+The seed step is **not optional**. A fresh deploy is fail-closed on five axes at
+once (no tiers, no CMC rate, zero burn cap, no float, and a `minCanisterCycles`
+floor above what `icp deploy` funds the canister with), which presents as a broken
+app rather than a safe one. `scripts/local-dev-seed.sh --rate-only` after every
+deploy and every ~15 minutes: the CMC rate expires, and `icp deploy` wipes the XRC
+mock's install-time response. Full detail in README.md.
+
 ## Scope: the Card rail is the product
 
 CyclePay onboards developers who have **no ICP, no wallet, and no exchange

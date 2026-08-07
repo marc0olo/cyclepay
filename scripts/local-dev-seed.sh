@@ -123,8 +123,26 @@ const s = await post('/update/submit_ingress_message', body);
 if (s.status !== 200) { console.error('submit failed', s.status, s.body.slice(0,300)); process.exit(1); }
 const a = await post('/update/await_ingress_message', JSON.parse(s.body).Ok);
 if (a.status !== 200) { console.error('await failed', a.status, a.body.slice(0,300)); process.exit(1); }
+// DECODE the CMC's reply. HTTP 200 only means PocketIC delivered the message;
+// the CMC can still answer Err, and treating 200 as success reported a rate that
+// was never set and left the gateway unable to price.
+
 " ) || die "could not set the CMC rate through the PocketIC control API on :$CONTROL_PORT"
-ok "CMC rate set to ${XDR_PERMYRIAD} permyriad XDR/ICP"
+# HTTP 200 only means PocketIC delivered the message; the CMC can still refuse it.
+# Ask the CMC what it now holds instead of decoding the reply — this checks the
+# thing we actually depend on, and it caught a fresh network where the rate never
+# landed and the CMC was still serving its hardcoded 2021 default.
+STORED="$(icp canister call rkp4c-7iaaa-aaaaa-aaaca-cai get_icp_xdr_conversion_rate '()' 2>/dev/null |
+  grep -oE 'xdr_permyriad_per_icp = [0-9_]+' | tr -d '_' | grep -oE '[0-9]+$' || echo 0)"
+STAMP="$(icp canister call rkp4c-7iaaa-aaaaa-aaaca-cai get_icp_xdr_conversion_rate '()' 2>/dev/null |
+  grep -oE 'timestamp_seconds = [0-9_]+' | tr -d '_' | grep -oE '[0-9]+$' || echo 0)"
+if [ "$STORED" != "$XDR_PERMYRIAD" ]; then
+  die "the CMC did not take the rate: it still reports $STORED permyriad, stamped $STAMP
+    (its hardcoded default is 35200 stamped 1620633601, i.e. 10 May 2021).
+    The submit reached PocketIC, so this is the CMC refusing the proposal rather
+    than a transport problem."
+fi
+ok "CMC rate set to ${XDR_PERMYRIAD} permyriad XDR/ICP (stamped $STAMP)"
 
 icp canister call backend refresh_rates '()' >/dev/null 2>&1 || true
 
@@ -168,7 +186,7 @@ icp canister call backend set_card_tiers \
           record { id = \"t50\"; usdCents = 5_000 : nat; paymentLinkUrl = \"$LINK_T50\" } })" \
   >/dev/null || die "set_card_tiers failed"
 if [ "$LINK_T5" = "$PLACEHOLDER" ]; then
-  printf '  \033[33m·\033[0m 3 tiers (\$5 / \$20 / \$50) with PLACEHOLDER payment links.\n'
+  printf '  \033[33m·\033[0m 3 tiers ($5 / $20 / $50) with PLACEHOLDER payment links.\n'
   printf '    "Pay with card" will land on a Stripe AccessDenied page until you set\n'
   printf '    STRIPE_LINK_T5 / _T20 / _T50 and re-run. Everything up to that point works.\n'
 else
