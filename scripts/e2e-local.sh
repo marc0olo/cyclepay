@@ -17,12 +17,13 @@
 # None of these is a canister behaviour, which is exactly why the canister test
 # suite misses them. A broken `icp.yaml` or a bad recipe pin would ship silently.
 #
-# Deliberately NOT covered: the money path. Reaching `delivered` locally also
-# needs the CMC rate set by impersonating governance through the local network's
-# PocketIC control API, which is not a supported `icp` interface — the port is
-# unpublished and may change between releases. That recipe is in
-# docs/SANDBOX-TESTPLAN.md for manual use; nothing scripted depends on it. Every
-# money-path assertion stays in the PocketIC suite, where it needs none of this.
+# Deliberately NOT covered: the money path. Reaching `delivered` locally needs the
+# CMC rate set by impersonating governance through the PocketIC control API, which
+# is not a supported `icp` interface — the port is unpublished and may change
+# between releases. `scripts/local-dev-seed.sh` does exactly that when you want to
+# click through the app by hand; this smoke test stays independent of it so it
+# keeps working if the port moves. Every money-path assertion lives in the
+# PocketIC suite, where it needs none of this.
 #
 # Usage:
 #   scripts/e2e-local.sh              # start a network if needed, deploy, assert, tear down
@@ -225,15 +226,14 @@ ok "backend resolved the XRC to the injected local id"
 
 # And the id it resolved can actually answer — a correct id that returns nothing
 # prices no orders. `rates` is null until a refresh succeeds end to end.
-# `rates` staying null locally is EXPECTED, not a failure: caching a pair needs a
-# fresh CMC rate too, and a local network's CMC has none until governance is
-# impersonated through the PocketIC control API — the unsupported interface this
-# script deliberately avoids (see the header). So this is a soft note: it means
-# local orders cannot be priced, which is why the money path lives in the PocketIC
-# suite and the manual recipe lives in docs/SANDBOX-TESTPLAN.md.
+# `rates` staying null here is EXPECTED, not a failure: a pair needs a fresh CMC
+# rate as well as the XRC, and this script deliberately does not touch the
+# unsupported control port that can set one. Run scripts/local-dev-seed.sh if you
+# want the gateway actually sellable.
 if printf '%s' "$PRICING" | grep -q 'rates = null'; then
-  printf '  \033[33m·\033[0m no rate pair cached — expected locally (the CMC rate needs governance;\n'
-  printf '    see docs/SANDBOX-TESTPLAN.md). The XRC id above is still proven.\n'
+  printf '  \033[33m·\033[0m no rate pair cached. Expected: the CMC rate needs governance.\n'
+  printf '    Run scripts/local-dev-seed.sh to make this gateway sellable.\n'
+  printf '    The XRC override above is proven either way.\n'
 else
   ok "a rate pair is cached, priced from the local mock"
 fi

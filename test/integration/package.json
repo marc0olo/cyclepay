@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "PocketIC integration suite \u2014 the Card and ck-USDC go-live bars (spec \u00a79).",
+  "description": "PocketIC integration suite — the Card and ck-USDC go-live bars (spec §9).",
   "scripts": {
     "build:backend": "cd ../.. && mops build",
     "fetch:wasm": "node scripts/fetch-wasms.mjs",
@@ -14,10 +14,13 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@dfinity/pic": "0.22.0",
-    "@types/node": "^25.9.2",
-    "tsx": "^4.23.1",
+    "@dfinity/pic": "^0.23.0",
+    "@types/node": "^26.2.0",
+    "tsx": "^4.23.11",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
+  },
+  "allowScripts": {
+    "@dfinity/pic@0.23.0": true
   }
 }

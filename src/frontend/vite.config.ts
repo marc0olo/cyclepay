@@ -48,6 +48,17 @@ export default defineConfig(({ command, mode }) => ({
       outDir: "./src/bindings",
     }),
   ],
+  // The test-only fixture hook (src/fixtures.ts), which is what makes the
+  // post-purchase surfaces reachable from a browser spec at all.
+  //
+  // A `define`d literal rather than `import.meta.env`, because the guarantee this
+  // rests on is dead-code elimination: `if (false)` lets Rollup drop the branch
+  // AND the dynamic import inside it, so the hook is not merely unreachable in a
+  // production bundle but absent from it. scripts/test-all.sh greps the shipping
+  // bundle to keep that a checked fact rather than a claim.
+  define: {
+    __FIXTURES__: JSON.stringify(process.env.CYCLEPAY_FIXTURES === "1"),
+  },
   ...(command === "serve" && mode !== "test" ? { server: getDevServerConfig() } : {}),
   test: {
     // main.ts is a DOM script, so its suite needs a document. format.test.ts is

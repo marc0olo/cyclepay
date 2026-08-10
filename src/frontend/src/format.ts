@@ -1,4 +1,4 @@
-// Pure presentation/encoding helpers — no DOM, no agent, unit-tested.
+// Pure presentation/encoding helpers. No DOM, no agent, unit-tested.
 
 /// OrderStatus variant keys as the Candid wrapper surfaces them.
 export type StatusKey =
@@ -27,13 +27,13 @@ export function statusInfo(key: StatusKey): StatusInfo {
     case "created":
       return { label: "Awaiting payment", step: 0, terminal: false, tone: "active" };
     case "expired":
-      // §4 expiry is advisory — a genuine late payment still completes, so
+      // §4 expiry is advisory. A genuine late payment still completes, so
       // the order stays pollable.
-      return { label: "Expired — a completed payment still goes through", step: 0, terminal: false, tone: "warn" };
+      return { label: "Expired. A completed payment still goes through", step: 0, terminal: false, tone: "warn" };
     case "paid":
       return { label: "Payment received", step: 1, terminal: false, tone: "active" };
     case "awaitingTreasury":
-      return { label: "Queued — waiting on treasury", step: 1, terminal: false, tone: "warn" };
+      return { label: "Queued. Waiting on treasury", step: 1, terminal: false, tone: "warn" };
     case "minting":
       return { label: "Minting cycles", step: 2, terminal: false, tone: "active" };
     case "icpAtCmc":
@@ -41,11 +41,11 @@ export function statusInfo(key: StatusKey): StatusInfo {
     case "delivered":
       return { label: "Delivered", step: 3, terminal: true, tone: "ok" };
     case "errorQueue":
-      return { label: "Needs operator attention — contact support", step: -1, terminal: true, tone: "err" };
+      return { label: "Needs operator attention. Contact support", step: -1, terminal: true, tone: "err" };
   }
 }
 
-/// Append client_reference_id to a Stripe Payment Link (§6.1) — the one URL
+/// Append client_reference_id to a Stripe Payment Link (§6.1). The one URL
 /// param the whole attribution flow hangs off.
 export function paymentLinkWithRef(url: string, clientReferenceId: string): string {
   const sep = url.includes("?") ? "&" : "?";
@@ -78,7 +78,7 @@ export function formatUsdCents(cents: bigint): string {
 //
 // The backend prices everything. `quote_previews` runs the *same* `quoteCents`
 // function `create_order` runs, so a quoted figure and the order that follows it
-// cannot disagree — nothing here reimplements the formula.
+// cannot disagree. Nothing here reimplements the formula.
 //
 // The one deliberate exception is `cyclesForCents` below, used only to re-derive
 // a *finished* order's price from its receipt. That duplication is the point: a
@@ -90,7 +90,7 @@ export interface FeeConfig {
   feeFixedCents: bigint;
 }
 
-/// `netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros`, floored — mirrors
+/// `netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros`, floored. Mirrors
 /// `Pricing.cyclesForCents`. Receipt verification only; see the note above.
 export function cyclesForCents(
   net: bigint,
@@ -103,7 +103,7 @@ export function cyclesForCents(
 
 /// The fee split in words, from the backend's own numbers. Ends with the margin
 /// statement because "what is the operator taking?" is the question a fee line
-/// actually raises — and on this gateway the answer is nothing.
+/// actually raises. And on this gateway the answer is nothing.
 export function feeBreakdown(
   grossCents: bigint,
   feeCents: bigint,
@@ -111,7 +111,7 @@ export function feeBreakdown(
   fee: FeeConfig,
 ): string {
   if (netCents === undefined) {
-    return `Payment processing (${formatUsdCents(feeCents)}) would exceed ${formatUsdCents(grossCents)} — pick a larger amount.`;
+    return `Payment processing (${formatUsdCents(feeCents)}) would exceed ${formatUsdCents(grossCents)}. Pick a larger amount.`;
   }
   const rate = fee.feeBps === 0n && fee.feeFixedCents === 0n
     ? "no processor fee"
@@ -145,7 +145,7 @@ export function cyclesAtDestination(
 /// locked once the order exists.
 ///
 /// **The rate is what gets locked, not the quantity.** Money-out never re-reads
-/// a rate, so market movement after creation changes nothing — but if a payment
+/// a rate, so market movement after creation changes nothing. But if a payment
 /// arrives for a different amount than quoted, the quantity is re-derived at
 /// that same locked rate. Saying "cycles are locked" would be wrong in that one
 /// case; saying the rate is locked is always true.
@@ -155,13 +155,13 @@ export function estimateLine(
   depositFee: bigint,
 ): string {
   if (cycles === null) {
-    return "No exchange rate available right now — orders are paused until one is.";
+    return "No exchange rate available right now. Orders are paused until one is.";
   }
   const landing = cyclesAtDestination(cycles, destination, depositFee);
   if (destination === "cyclesLedgerAccount" && landing !== null) {
     // Only spell out the split when the two figures actually *read* differently.
     // `formatCycles` shows three decimals, so on a multi-trillion order the
-    // deposit fee rounds away entirely — and "3.5 T credited (3.5 T minted, less
+    // deposit fee rounds away entirely. And "3.5 T credited (3.5 T minted, less
     // the 100 M deposit fee)" reads as a contradiction rather than a disclosure.
     // The fee is still disclosed unconditionally next to the destination choice.
     const shown = formatCycles(landing);
@@ -171,7 +171,10 @@ export function estimateLine(
         `(${formatCycles(cycles)} minted, less the cycles ledger's ${formatCycles(depositFee)} deposit fee)`
       );
     }
-    return `≈ ${shown} cycles credited (after the cycles ledger's ${formatCycles(depositFee)} deposit fee)`;
+    // The deposit fee is real and must be disclosed, but "(after the cycles
+    // ledger's 100 M deposit fee)" makes the buyer parse a subtraction to learn
+    // what they get. Lead with the number that lands.
+    return `≈ ${shown} cycles (the cycles ledger takes ${formatCycles(depositFee)} to accept the deposit)`;
   }
   return `≈ ${formatCycles(cycles)} cycles`;
 }
@@ -180,7 +183,7 @@ export function estimateLine(
 /// gateway locks: 5%.
 ///
 /// Rates refresh on a timer, so an exact match would bounce a purchase for a
-/// move too small to care about — and every bounce is a buyer wondering whether
+/// move too small to care about. And every bounce is a buyer wondering whether
 /// their card was charged. 5% is wide enough that ordinary drift passes and
 /// narrow enough that a real dislocation still stops and asks.
 ///
@@ -212,7 +215,7 @@ export function lockedVsEstimate(locked: bigint, shown: bigint | null): string |
 /// does. Shown next to the estimate so nobody has to guess whether the number
 /// they are looking at can still move.
 export const RATE_LOCK_NOTE =
-  "The exchange rate is locked when you create the order — it never changes afterwards, however long you take to pay or however far the market moves.";
+  "The exchange rate is locked when you create the order. It never changes afterwards, however long you take to pay or however far the market moves.";
 
 export function shortPrincipal(text: string): string {
   return text.length <= 16 ? text : `${text.slice(0, 5)}…${text.slice(-5)}`;
@@ -244,7 +247,7 @@ export interface ReceiptCheck {
 /// Recompute the quote from a receipt and compare it to what was locked.
 ///
 /// The point is that this runs on the buyer's machine from values they can fetch
-/// from the XRC and the CMC themselves — so "you were charged correctly" is
+/// from the XRC and the CMC themselves. So "you were charged correctly" is
 /// something they check, not something the operator asserts.
 export function checkReceipt(v: ReceiptVerification, lockedCycles: bigint): ReceiptCheck {
   const net = v.netCents;
@@ -252,7 +255,7 @@ export function checkReceipt(v: ReceiptVerification, lockedCycles: bigint): Rece
     return {
       recomputed: null,
       matches: false,
-      formula: "This order has no net amount — the fee formula would have consumed it.",
+      formula: "This order has no net amount: the fee formula would have consumed it.",
     };
   }
   const recomputed = cyclesForCents(net, v.xdrPermyriadPerIcp, v.usdPerIcpMicros);
@@ -263,7 +266,7 @@ export function checkReceipt(v: ReceiptVerification, lockedCycles: bigint): Rece
     matches: recomputed !== null && recomputed === lockedCycles,
     formula:
       `${formatUsdCents(net)} net × ${xdrPerIcp} XDR/ICP ÷ $${usdPerIcp}/ICP × 10¹² = ` +
-      `${recomputed === null ? "—" : formatCycles(recomputed)}`,
+      `${recomputed === null ? "not yet" : formatCycles(recomputed)}`,
   };
 }
 
@@ -296,7 +299,7 @@ export function parseSubaccountHex(input: string): SubaccountParse {
 
 // --- ck-USDC rail (§6.2) -----------------------------------------------------
 
-/// 1¢ = 10⁴ ck-USDC units (6 decimals, 1:1 USD peg) — mirrors CkUsdc.unitsForCents.
+/// 1¢ = 10⁴ ck-USDC units (6 decimals, 1:1 USD peg). Mirrors CkUsdc.unitsForCents.
 export const CK_UNITS_PER_CENT = 10_000n;
 
 export function ckUnitsForCents(cents: bigint): bigint {
@@ -316,7 +319,7 @@ export function formatCkUsdcUnits(units: bigint): string {
 export type UsdAmountParse = { ok: true; cents: bigint } | { ok: false; error: string };
 
 /// User-typed dollar amount → cents. Strict shape (optional $, up to two
-/// decimals) — anything fancier silently guessing at money is worse than
+/// decimals). Anything fancier silently guessing at money is worse than
 /// asking the user to retype.
 export function parseUsdAmount(input: string): UsdAmountParse {
   const text = input.trim().replace(/^\$/, "");
@@ -329,7 +332,7 @@ export function parseUsdAmount(input: string): UsdAmountParse {
 
 /// Gate.mo admission refusal. Every case is a *temporary operational* state
 /// except `amountAboveMax`, so the copy has to tell the user whether to change
-/// something or come back later — a generic failure would leave them retrying a
+/// something or come back later. A generic failure would leave them retrying a
 /// button that cannot succeed.
 export type GateReason =
   | { __kind__: "tooManyOpenOrders"; tooManyOpenOrders: { open: bigint; max: bigint } }
@@ -348,7 +351,7 @@ export function gateReasonMessage(reason: GateReason): string {
       return `You already have ${reason.tooManyOpenOrders.open} unpaid orders open (limit ${reason.tooManyOpenOrders.max}). Pay or abandon one before starting another.`;
     case "burnCapExhausted":
       // The operator's rolling blast-radius bound is spent for this window.
-      return "Purchases are paused right now — the gateway has hit its limit for this period. Nothing was charged; please try again later.";
+      return "Purchases are paused right now. The gateway has hit its limit for this period. Nothing was charged; please try again later.";
     case "floatLow":
     case "canisterCyclesLow":
       return "Purchases are temporarily unavailable while the gateway is topped up. Nothing was charged; please try again later.";
@@ -369,7 +372,7 @@ export type CkCreateError =
 export function createCkOrderErrorMessage(err: CkCreateError): string {
   switch (err.__kind__) {
     case "railDisabled":
-      return "The ck-USDC rail is not enabled yet — check back soon.";
+      return "The ck-USDC rail is not available.";
     case "zeroAmount":
       return "Amount must be more than $0.";
     case "belowMinimum":
@@ -377,13 +380,13 @@ export function createCkOrderErrorMessage(err: CkCreateError): string {
     case "aboveMaximum":
       return `The maximum is ${formatUsdCents(err.aboveMaximum)}.`;
     case "amountBelowFees":
-      return "Fees would swallow this amount — enter a larger one.";
+      return "Fees would swallow this amount. Enter a larger one.";
     case "rateUnavailable":
-      return "Exchange rate temporarily unavailable — nothing was charged. Try again in a minute.";
+      return "Exchange rate temporarily unavailable. Nothing was charged. Try again in a minute.";
     case "anonymous":
       return "Sign in with Internet Identity first.";
     case "idGeneration":
-      return "Could not generate an order id — try again.";
+      return "Could not generate an order id. Try again.";
     case "notAdmitted":
       return gateReasonMessage(err.notAdmitted);
   }
@@ -414,13 +417,13 @@ export interface ClaimErrorInfo {
 
 /// §6.2 claim-error → user-action mapping. The two amount-short arms are
 /// definite rejections (the backend dropped the intent; nothing moved), so
-/// they read as clean "fix and retry" — never as a stuck order.
+/// they read as clean "fix and retry". Never as a stuck order.
 export function claimErrorInfo(err: ClaimError): ClaimErrorInfo {
   switch (err.__kind__) {
     case "insufficientAllowance": {
       const { allowance, required } = err.insufficientAllowance;
       return {
-        message: `You approved ${formatCkUsdcUnits(allowance)} but ${formatCkUsdcUnits(required)} is needed (price + ledger fee). Approve at least that and claim again — nothing was charged.`,
+        message: `You approved ${formatCkUsdcUnits(allowance)} but ${formatCkUsdcUnits(required)} is needed (price + ledger fee). Approve at least that and claim again. Nothing was charged.`,
         action: "approve",
         requiredUnits: required,
       };
@@ -428,22 +431,22 @@ export function claimErrorInfo(err: ClaimError): ClaimErrorInfo {
     case "insufficientFunds": {
       const { balance, required } = err.insufficientFunds;
       return {
-        message: `Your ck-USDC balance is ${formatCkUsdcUnits(balance)}; ${formatCkUsdcUnits(required)} is needed (price + ledger fee). Top up and claim again — nothing was charged.`,
+        message: `Your ck-USDC balance is ${formatCkUsdcUnits(balance)}; ${formatCkUsdcUnits(required)} is needed (price + ledger fee). Top up and claim again. Nothing was charged.`,
         action: "fund",
       };
     }
     case "retryable":
-      return { message: "The ledger is temporarily unavailable — try claiming again in a moment.", action: "retry" };
+      return { message: "The ledger is temporarily unavailable. Try claiming again in a moment.", action: "retry" };
     case "inFlight":
-      return { message: "A claim for this order is already in progress — give it a moment.", action: "retry" };
+      return { message: "A claim for this order is already in progress. Give it a moment.", action: "retry" };
     case "badFee":
       return {
-        message: `The ledger's transfer fee changed (it now expects ${formatCkUsdcUnits(err.badFee.expectedFee)}) — the operator needs to update the rail config. Nothing was charged.`,
+        message: `The ledger's transfer fee changed (it now expects ${formatCkUsdcUnits(err.badFee.expectedFee)}). The operator needs to update the rail config. Nothing was charged.`,
         action: "none",
       };
     case "staleIntent":
       return {
-        message: "This order's payment needs operator attention — you will not be charged twice. Contact support with the order id.",
+        message: "This order's payment needs operator attention. You will not be charged twice. Contact support with the order id.",
         action: "none",
       };
     case "ledgerRejected":
@@ -468,55 +471,55 @@ export function quoteChangedMessage(
   depositFee: bigint,
 ): string {
   return (
-    `The exchange rate moved while this page was open — nothing was charged. ` +
+    `The exchange rate moved while this page was open. Nothing was charged. ` +
     `This amount now buys ${estimateLine(quoted, destination, depositFee)}. ` +
     `Click again to create the order and lock that rate.`
   );
 }
 
 /// icrc2_approve errors come from the raw (non-bindgen) ledger actor, so the
-/// variant is a one-key record — key on it structurally.
+/// variant is a one-key record. Key on it structurally.
 export function approveErrorMessage(err: Record<string, unknown>): string {
   if ("InsufficientFunds" in err) {
     const balance = (err.InsufficientFunds as { balance: bigint }).balance;
-    return `Your ck-USDC balance (${formatCkUsdcUnits(balance)}) cannot cover the approval fee — top up first.`;
+    return `Your ck-USDC balance (${formatCkUsdcUnits(balance)}) cannot cover the approval fee. Top up first.`;
   }
   if ("BadFee" in err) {
     const expected = (err.BadFee as { expected_fee: bigint }).expected_fee;
-    return `The ledger expects a ${formatCkUsdcUnits(expected)} approval fee — reload and try again.`;
+    return `The ledger expects a ${formatCkUsdcUnits(expected)} approval fee. Reload and try again.`;
   }
-  if ("TemporarilyUnavailable" in err) return "The ledger is temporarily unavailable — try again in a moment.";
+  if ("TemporarilyUnavailable" in err) return "The ledger is temporarily unavailable. Try again in a moment.";
   if ("GenericError" in err) {
     return `The ledger rejected the approval: ${(err.GenericError as { message: string }).message}`;
   }
   const key = Object.keys(err)[0] ?? "unknown";
-  return `Approval failed (${key}) — try again.`;
+  return `Approval failed (${key}). Try again.`;
 }
 
 /// User-facing messages for create_order errors (variant key → text).
 ///
 /// `notAdmitted` carries a payload, so callers with the full error value should
-/// pass its reason to `gateReasonMessage` instead of only the key — the key
+/// pass its reason to `gateReasonMessage` instead of only the key. The key
 /// alone cannot say whether the user should change the amount or wait.
 export function createOrderErrorMessage(key: string): string {
   switch (key) {
     case "quoteChanged":
-      // Callers with the full error should use `quoteChangedMessage` — the key
+      // Callers with the full error should use `quoteChangedMessage`. The key
       // alone cannot say what the amount buys now.
-      return "The exchange rate moved past the accepted tolerance — nothing was charged. Check the updated amount and confirm.";
+      return "The exchange rate moved past the accepted tolerance. Nothing was charged. Check the updated amount and confirm.";
     case "notAdmitted":
-      return "Purchases are temporarily unavailable — nothing was charged. Please try again later.";
+      return "Purchases are temporarily unavailable. Nothing was charged. Please try again later.";
     case "rateUnavailable":
       // §3.1 fail-closed: never price on a stale rate.
-      return "Exchange rate temporarily unavailable — nothing was charged. Try again in a minute.";
+      return "Exchange rate temporarily unavailable. Nothing was charged. Try again in a minute.";
     case "tierBelowFees":
       return "This tier is misconfigured (payment fees would exceed it). Pick another tier.";
     case "unknownTier":
-      return "That tier no longer exists — reload the page for current tiers.";
+      return "That tier no longer exists. Reload the page for current tiers.";
     case "anonymous":
       return "Sign in with Internet Identity first.";
     case "idGeneration":
-      return "Could not generate an order id — try again.";
+      return "Could not generate an order id. Try again.";
     default:
       return `Order creation failed: ${key}`;
   }

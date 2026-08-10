@@ -47,6 +47,8 @@ const state = {
   lastMinCycles: undefined as bigint | null | undefined,
   order: undefined as Record<string, unknown> | undefined,
   receipt: undefined as Record<string, unknown> | undefined,
+  /// When set, the next `signIn()` rejects with it.
+  signInError: undefined as unknown,
 };
 
 function anOrder(status: string, lockedCycles = TIER_CYCLES) {
@@ -129,7 +131,10 @@ vi.mock("./actor", () => ({
 }));
 vi.mock("./auth", () => ({
   currentIdentity: async () => identity,
-  signIn: async () => identity,
+  signIn: async () => {
+    if (state.signInError !== undefined) throw state.signInError;
+    return identity;
+  },
   signOut: async () => undefined,
 }));
 vi.mock("./ledger", () => ({ makeCkUsdcLedger: () => ({ icrc2_approve: async () => ({ Ok: 1n }) }) }));
@@ -140,9 +145,42 @@ vi.mock("./ledger", () => ({ makeCkUsdcLedger: () => ({ icrc2_approve: async () 
 /// against it. Using the shipped markup rather than a hand-written fixture is the
 /// point: a renamed id breaks the test, which is exactly the class of bug that a
 /// typecheck cannot see.
-async function mount(): Promise<void> {
-  // jsdom has no layout, so this is absent. main.ts calls it on openOrder.
+/// `arm` picks the audience the way a visitor does — by clicking the chooser.
+///
+/// Not optional, and not a convenience: the purchase flow is hidden until an arm
+/// is chosen, and jsdom neither renders nor respects `hidden`. A test that skips
+/// the click still finds every element and still passes, while asserting a path
+/// no real visitor can reach. Defaulting to "live" keeps the pre-existing tests
+/// on the arm whose markup they were written against (canister destination).
+/// Window listeners the current mount installed, so the next one can detach them.
+///
+/// jsdom gives one window per FILE, and `main.ts` registers a `hashchange`
+/// listener at import. Without this, every earlier test's copy of the app is still
+/// listening: they all react to the current test's navigation, each from its own
+/// stale module state, and each renders into the one shared document. The visible
+/// symptom is a view being hidden by a previous test's idea of where the visitor
+/// is — which is indistinguishable from the routing bug under test.
+let installedListeners: Array<[string, EventListener]> = [];
+const realAddEventListener = window.addEventListener.bind(window);
+window.addEventListener = ((type: string, fn: EventListener, opts?: unknown) => {
+  installedListeners.push([type, fn]);
+  realAddEventListener(type, fn, opts as never);
+}) as typeof window.addEventListener;
+
+async function mount(
+  arm: "live" | "newcomer" | "none" = "live",
+  hash = "",
+): Promise<void> {
+  // jsdom has no layout, so these are absent. main.ts calls them.
   Element.prototype.scrollIntoView ??= () => undefined;
+  window.localStorage.clear();
+  for (const [type, fn] of installedListeners) window.removeEventListener(type, fn);
+  installedListeners = [];
+  // jsdom keeps `location` across tests in a file, so a previous test's #/buy
+  // would be parsed as the starting route and skip the chooser under test.
+  // A real first-time visitor arrives with no hash; `hash` is for the deep-link
+  // tests, which need the route to exist BEFORE `init` reads it.
+  window.location.hash = hash;
   const html = readFileSync(resolve(__dirname, "..", "index.html"), "utf-8");
   const body = /<body>([\s\S]*)<\/body>/.exec(html);
   if (!body) throw new Error("could not extract <body> from index.html");
@@ -151,6 +189,10 @@ async function mount(): Promise<void> {
   await import("./main");
   // let init()'s awaits settle
   await new Promise((r) => setTimeout(r, 0));
+  if (arm !== "none") {
+    el(arm === "live" ? "choose-live" : "choose-new").click();
+    await new Promise((r) => setTimeout(r, 0));
+  }
 }
 
 function el<T extends HTMLElement>(id: string): T {
@@ -177,6 +219,7 @@ beforeEach(() => {
   state.lastMinCycles = undefined;
   state.order = undefined;
   state.receipt = undefined;
+  state.signInError = undefined;
 });
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -232,8 +275,11 @@ describe("destination affects what lands", () => {
     // the copy must not then claim two different figures. It still says the fee
     // was applied.
     const label = tierButton().querySelector(".cycles")!.textContent!;
-    expect(label).toContain("credited");
-    expect(label).toContain("deposit fee");
+    expect(label).toMatch(/deposit/i);
+    // The fee must be DISCLOSED; the exact wording is copy. Asserting the phrase
+    // "deposit fee" pinned the operator-facing version of this sentence.
+    expect(label).toMatch(/deposit/i);
+    expect(label).toContain("100 M");
     expect(label).not.toMatch(/3\.5 T minted/);
     const note = el("dest-fee-note");
     expect(note.hidden).toBe(false);
@@ -268,7 +314,7 @@ describe("quote pinning", () => {
     const notice = el("quote-notice");
     expect(notice.hidden).toBe(false);
     expect(notice.textContent).toContain("2.5 T");
-    expect(notice.textContent).toContain("nothing was charged");
+    expect(notice.textContent).toMatch(/nothing was charged/i);
     expect(el<HTMLButtonElement>("create-order").textContent).toContain("Confirm at the new rate");
 
     // Second click: pinned to the acknowledged figure, and it succeeds.
@@ -310,10 +356,9 @@ describe("the active order", () => {
 
   test("cancel is NOT offered once an order is paid", async () => {
     // Offering it there would promise something untrue: a paid order is going to
-    // deliver. Asserted on the rule by opening a paid order, rather than on the
-    // 3 s poll that reaches it in production — vitest fake timers cannot control
-    // an interval created before they were installed, so the poll transition
-    // itself stays uncovered here.
+    // deliver. Asserted on the rule by opening a paid order; the poll's own
+    // arrival at a new status is covered separately, under fake timers installed
+    // before the interval exists (see "the POLL finding an order delivered").
     state.order = anOrder("paid");
     await mount();
     el("orders").querySelector("tr")!.dispatchEvent(new Event("click"));
@@ -375,18 +420,432 @@ describe("receipt", () => {
     expect(el("receipt-area").hidden).toBe(false);
     expect(el("receipt-block").textContent).toBe("42");
     expect(el("receipt-sources").textContent).toContain("5 of 6");
-    expect(el("receipt-verdict").textContent).toContain("✓");
+    expect(el("receipt-verdict").textContent).toContain("Verified");
     expect(el("receipt-formula").textContent).toContain("3.5 T");
   });
 });
 
 describe("ck-USDC panel", () => {
-  test("the rail shows its disabled notice while maxUsdCents is 0", async () => {
+  test("there is no rail to reach while maxUsdCents is 0", async () => {
+    // This replaces an assertion that the panel showed a "not enabled yet, check
+    // back soon" notice. That notice promised a rail that may never ship, so the
+    // panel and its tab are now removed outright and there is nothing to click.
+    state.ckMaxUsdCents = 0n;
     await mount();
-    el("rail-ckusdc").click();
+    expect(document.getElementById("rail-ckusdc")).toBeNull();
+    expect(document.getElementById("ck-amount")).toBeNull();
+    // And the card CTA is unaffected by a rail that is not there.
+    expect(el<HTMLButtonElement>("create-order").textContent).not.toContain("not enabled");
+  });
+});
+
+// ── the two-audience flow (issue #21) ─────────────────────────────────────────
+
+describe("audience chooser", () => {
+  test("nothing is purchasable until an arm is chosen", async () => {
+    // The gate this whole section rests on. It is asserted first because jsdom
+    // ignores `hidden`: every other test in this file would still pass if the
+    // chooser stopped gating anything at all.
+    await mount("none");
+    expect(el("chooser").hidden).toBe(false);
+    expect(el("buy-flow").hidden).toBe(true);
+  });
+
+  test("the newcomer arm never renders a canister-id field", async () => {
+    // A newcomer's first canister does not exist yet, so the question is
+    // unanswerable. Showing it is what makes the page read as "not for me".
+    await mount("newcomer");
+    expect(el("buy-flow").hidden).toBe(false);
+    expect(el("dest-newcomer").hidden).toBe(false);
+    expect(el("dest-choice").hidden).toBe(true);
+    expect(el("dest-canister").hidden).toBe(true);
+  });
+
+  test("the already-live arm defaults to a canister, which is why they came", async () => {
+    await mount("live");
+    expect(el("dest-choice").hidden).toBe(false);
+    expect(el("dest-newcomer").hidden).toBe(true);
+    expect(el("dest-canister").hidden).toBe(false);
+    const checked = document.querySelector<HTMLInputElement>('input[name="dest-kind"]:checked');
+    expect(checked!.value).toBe("canister");
+  });
+
+  test("persistence is asymmetric: live is remembered, newcomer is not", async () => {
+    // Wrongly resuming the expert arm shows a canister field to someone with no
+    // canister. Wrongly re-asking an expert costs one click. The asymmetry is
+    // the point, so it is pinned in both directions.
+    await mount("live");
+    expect(window.localStorage.getItem("icp.audience")).toBe("live");
+
+    await mount("newcomer");
+    expect(window.localStorage.getItem("icp.audience")).toBeNull();
+  });
+
+  test("a remembered arm still offers a visible way back, and forgets on use", async () => {
+    await mount("live");
+    expect(el("chooser-back").hidden).toBe(false);
+    el("back-to-chooser").click();
     await settle();
-    expect(el("ck-disabled-notice").hidden).toBe(false);
-    expect(el<HTMLInputElement>("ck-amount").disabled).toBe(true);
-    expect(el<HTMLButtonElement>("create-order").textContent).toContain("not enabled");
+    expect(el("chooser").hidden).toBe(false);
+    expect(el("buy-flow").hidden).toBe(true);
+    expect(window.localStorage.getItem("icp.audience")).toBeNull();
+  });
+
+  test("the newcomer escape hatch reveals a canister field without promoting it", async () => {
+    // "Sending to someone else's canister?" stays reachable, but as a link and
+    // not a co-equal radio.
+    await mount("newcomer");
+    expect(el("dest-canister").hidden).toBe(true);
+    el("show-advanced-dest").click();
+    await settle();
+    expect(el("dest-canister").hidden).toBe(false);
+    expect(el("dest-choice").hidden).toBe(true);
+  });
+});
+
+describe("disabled rail is invisible, not promised", () => {
+  test("the rail nav and panel are removed from the document while ck-USDC is off", async () => {
+    // Hiding was not enough: `.rails { display: flex }` outranked the UA
+    // stylesheet's `[hidden] { display: none }`, so a tab for a rail that may
+    // never ship was on screen while `el.hidden` read true. Absent cannot be
+    // undone by a stylesheet.
+    state.ckMaxUsdCents = 0n;
+    await mount("live");
+    expect(document.getElementById("rail-nav")).toBeNull();
+    expect(document.getElementById("ck-panel")).toBeNull();
+  });
+
+  test("the rail nav survives while the config is still unknown", async () => {
+    // At first paint ckConfig is null, which reads as "disabled". Removing on
+    // that guess deleted the markup before the real answer arrived.
+    state.ckMaxUsdCents = 10_000n;
+    await mount("live");
+    expect(document.getElementById("rail-nav")).not.toBeNull();
+    expect(el("rail-nav").hidden).toBe(false);
+  });
+});
+
+/// An account-funded order. `owner` defaults to the SIGNED-IN principal, which is
+/// what makes it the buyer's own balance and so the case that earns the tour.
+///
+/// It used to default to a stranger's principal while the tests asserted the
+/// buyer's tour was shown, which is the third-party bug those tests were meant to
+/// be evidence against.
+function accountOrder(status: string, owner = "aaaaa-aa") {
+  // `anOrder` infers a canister destination, so this widens rather than
+  // reassigns — the stub mirrors the bindgen wrapper's variant shape, which the
+  // test fixtures type only structurally.
+  const order = anOrder(status) as Record<string, unknown>;
+  order.destination = {
+    __kind__: "cyclesLedgerAccount",
+    cyclesLedgerAccount: { owner: { toText: () => owner }, subaccount: undefined },
+  };
+  return order;
+}
+
+/// Open a past order the way a returning buyer does — from the history table.
+/// The purchase path cannot be used here: the create_order stub replaces
+/// state.order with a freshly `created` one, so a delivered fixture set before
+/// the click never survives it.
+async function openFromHistory(): Promise<void> {
+  const row = el("orders").querySelector("tr");
+  if (!row) throw new Error("no history row rendered");
+  row.click();
+  await settle();
+}
+
+describe("the delivered tour", () => {
+  test("a delivered account order leads with the tour, above the order facts", async () => {
+    // The failure this prevents: the bare `icp identity link web dev` form
+    // derives a principal from a different origin, so the buyer lands on an
+    // empty balance and reads it as theft.
+    state.order = accountOrder("delivered");
+    await mount("newcomer");
+    await openFromHistory();
+
+    expect(el("tour").hidden).toBe(false);
+    const cmd = el("cmd-link").textContent ?? "";
+    expect(cmd).toContain("icp identity link web");
+    // A bare DOMAIN, never an origin with a scheme. Verified against icp-cli
+    // 1.2.0: `--app <APP>` is the "Delegation domain (e.g. oisy.com)". Passing
+    // `https://host` is not the documented form, and the wrong shape here yields
+    // a different principal — the exact failure this command exists to prevent.
+    expect(cmd).toContain(`--app ${window.location.host}`);
+    expect(cmd).not.toContain("--app http");
+    // And never omitted: without it icp-cli lets the auth domain pick its own
+    // default, which is a different principal again.
+    expect(cmd).toContain("--app");
+    // The principal is shown beside it so a mismatch is self-diagnosable.
+    expect(el("credited-principal").textContent).toBe("aaaaa-aa");
+    // Verified against icp-cli 1.2.0, not invented: `icp identity principal`
+    // exists and takes --identity. The link command is NOT claimed to print a
+    // principal, because the CLI guide does not say it does.
+    expect(el("cmd-verify").textContent).toBe("icp identity principal --identity dev");
+    // Order matters: on delivery the next action leads and the facts collapse.
+    const details = el<HTMLDetailsElement>("order-details");
+    expect(details.open).toBe(false);
+    expect(el("tour").compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+  });
+
+  test("a canister top-up gets no CLI commands, because it needs none", async () => {
+    // The cycles are already where they will be spent.
+    state.order = anOrder("delivered");
+    await mount("live");
+    await openFromHistory();
+    expect(el("tour").hidden).toBe(true);
+  });
+
+  test("an undelivered order shows no commands yet", async () => {
+    state.order = accountOrder("paid");
+    await mount("newcomer");
+    await openFromHistory();
+    expect(el("tour").hidden).toBe(true);
+  });
+
+  test("cycles sent to someone else's account get the fact and no commands", async () => {
+    // `icp identity link web` links the BUYER's identity. For an account they do
+    // not own that command reaches the wrong balance, so following it lands them
+    // on an empty account and reads as the cycles having gone missing.
+    state.order = accountOrder("delivered", "bbbbb-bb");
+    await mount("live");
+    await openFromHistory();
+    expect(el("tour").hidden).toBe(false);
+    expect(el("tour-third-party").hidden).toBe(false);
+    expect(el("tour-steps").hidden).toBe(true);
+    // And no progress strip either: steps 3 and 4 are not this buyer's to take.
+    expect(el("stepper").hidden).toBe(true);
+  });
+
+  test("the POLL finding an order delivered brings up the tour", async () => {
+    // The defect this pins. A buyer creating an order and paying never navigates
+    // again: the poll is what discovers `delivered`. It updated the order facts
+    // and left the view machine unrun, so the tour, the stepper state and the
+    // collapsed facts — the whole delivered view — appeared only if you reopened
+    // the order from history. Every earlier test did exactly that, which is why
+    // none of them saw it.
+    state.order = accountOrder("paid");
+    await mount("newcomer");
+    // Fake timers must be installed BEFORE `openOrder` creates the interval;
+    // vitest cannot control one created under real timers.
+    vi.useFakeTimers();
+    try {
+      el("orders").querySelector("tr")!.click();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(el("active-order").hidden).toBe(false);
+      expect(el("tour").hidden).toBe(true);
+
+      // The gateway delivers. The visitor does nothing.
+      state.order = accountOrder("delivered");
+      await vi.advanceTimersByTimeAsync(7_000); // two 3 s poll intervals
+
+      expect(el("tour").hidden).toBe(false);
+      expect(el("cmd-link").textContent).toContain("icp identity link web");
+      // Step 3 is now the current one, and the facts have collapsed under it.
+      expect(el("stepper").querySelectorAll(".step")[2]!.className).toContain("current");
+      expect(el<HTMLDetailsElement>("order-details").open).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a poll tick cannot repaint the order over a view the visitor moved to", async () => {
+    // `renderOrder` unhid `#active-order` itself while `renderView` also owned it.
+    // Two owners of one decision: a tick arriving after the visitor navigated to
+    // their orders painted the order back over the table.
+    await mount("live");
+    vi.useFakeTimers();
+    try {
+      tierButton().click();
+      await vi.advanceTimersByTimeAsync(0);
+      el<HTMLInputElement>("canister-principal").value = "aaaaa-aa";
+      el<HTMLFormElement>("order-form").dispatchEvent(new Event("submit"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(el("active-order").hidden).toBe(false);
+
+      // The header link routes synchronously, which is the path a click takes.
+      el("history-link").click();
+      expect(el("active-order").hidden).toBe(true);
+      expect(el("history").hidden).toBe(false);
+
+      state.order = anOrder("paid");
+      await vi.advanceTimersByTimeAsync(7_000);
+      expect(el("active-order").hidden).toBe(true);
+      expect(el("history").hidden).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("sign-in failures are explained wherever they start", () => {
+  /// The header button and the CTA can fail the same three ways, and the header
+  /// one used to swallow all of them. A button that does nothing when clicked is
+  /// the worst of the outcomes: it reads as the app ignoring you.
+  async function signOutInHeader(): Promise<void> {
+    el("auth-area").querySelector("button")!.click();
+    await settle();
+  }
+
+  test("the header reports a blocked pop-up in the CTA's own words", async () => {
+    await mount("none");
+    await signOutInHeader();
+    state.signInError = new Error("popup was blocked by the browser");
+    el("auth-area").querySelector("button")!.click();
+    await settle();
+    const error = el("auth-error");
+    expect(error.hidden).toBe(false);
+    expect(error.textContent).toMatch(/allow pop-ups/i);
+  });
+
+  test("the header distinguishes a cancelled sign-in from an unreachable one", async () => {
+    // The distinction that matters: cancelling needs no action, so reporting it
+    // for an unreachable provider tells the user to relax about a real problem.
+    await mount("none");
+    await signOutInHeader();
+    state.signInError = new Error("UserInterrupt");
+    el("auth-area").querySelector("button")!.click();
+    await settle();
+    expect(el("auth-error").textContent).toMatch(/cancelled/i);
+
+    state.signInError = new Error("connection reset");
+    el("auth-area").querySelector("button")!.click();
+    await settle();
+    expect(el("auth-error").textContent).toMatch(/could not reach the sign-in service/i);
+  });
+
+  test("a successful sign-in clears the previous failure", async () => {
+    await mount("none");
+    await signOutInHeader();
+    state.signInError = new Error("UserInterrupt");
+    el("auth-area").querySelector("button")!.click();
+    await settle();
+    expect(el("auth-error").hidden).toBe(false);
+
+    state.signInError = undefined;
+    el("auth-area").querySelector("button")!.click();
+    await settle();
+    expect(el("auth-error").hidden).toBe(true);
+  });
+});
+
+describe("routes that name nothing", () => {
+  test("#/buy with no arm chosen asks the question instead", async () => {
+    // Deep-linked or reloaded, `#/buy` rendered a form with no destination
+    // question on it at all: the newcomer block hidden, the already-live radios
+    // hidden, and an amount grid wired to a destination nobody was asked about.
+    await mount("none");
+    window.location.hash = "#/buy";
+    await settle();
+    expect(el("buy-flow").hidden).toBe(true);
+    expect(el("chooser").hidden).toBe(false);
+  });
+
+  test("a reload on an order deep link resolves it as the SIGNED-IN buyer", async () => {
+    // `get_order` answers per caller. Resolving the route before the session was
+    // restored looked the order up anonymously, got nothing, and landed the owner
+    // on "we could not find that order" — on a plain reload of their own order.
+    // It also decided whose tour to show, so a self-funded account order rendered
+    // as somebody else's.
+    state.order = accountOrder("delivered");
+    // No chooser click: that would navigate to the buy view and throw the deep
+    // link away, which is the whole thing under test.
+    await mount("none", "#/order/abcdef0123456789abcdef0123456789");
+    await settle();
+    expect(el("order-missing").hidden).toBe(true);
+    expect(el("active-order").hidden).toBe(false);
+    expect(el("tour").hidden).toBe(false);
+    expect(el("tour-steps").hidden).toBe(false);
+    expect(el("tour-third-party").hidden).toBe(true);
+  });
+
+  test("an unknown order id says so rather than showing the last one", async () => {
+    state.order = anOrder("delivered");
+    await mount("live");
+    await openFromHistory();
+    expect(el("active-order").hidden).toBe(false);
+
+    // The gateway holds no such order.
+    state.order = undefined;
+    window.location.hash = "#/order/deadbeefdeadbeefdeadbeefdeadbeef";
+    await settle();
+    await settle();
+    expect(el("active-order").hidden).toBe(true);
+    expect(el("order-missing").hidden).toBe(false);
+    expect(el("order-missing-detail").textContent).toMatch(/not one this gateway holds/i);
+  });
+});
+
+describe("buy again", () => {
+  test("prefills the amount and canister from a past order without submitting", async () => {
+    // One click plus payment is the shortest flow the design allows for an
+    // operator refilling the same canister monthly. It must NOT submit: the
+    // price is re-quoted at today's rate and the buyer has to see the number.
+    state.order = anOrder("delivered");
+    await mount("live");
+    const again = el("orders").querySelector<HTMLButtonElement>("button.buy-again");
+    expect(again).not.toBeNull();
+    again!.click();
+    await settle();
+
+    expect(el<HTMLInputElement>("canister-principal").value).toBe("aaaaa-aa");
+    expect(tierButton().classList.contains("selected")).toBe(true);
+    // Still on the form, not on a fresh order.
+    expect(el("buy-flow").hidden).toBe(false);
+  });
+
+  test("driven from the history view, it lands the visitor on the form", async () => {
+    // The masked defect. `repeatOrder` prefilled and never navigated, and the
+    // original test mounted on the buy view — so "the form is on screen" passed
+    // because the form had never left. From the history view, where the button
+    // actually lives, the prefill happened on a screen nobody was looking at.
+    state.order = anOrder("delivered");
+    await mount("live");
+    window.location.hash = "#/history";
+    await settle();
+    expect(el("history").hidden).toBe(false);
+
+    el("orders").querySelector<HTMLButtonElement>("button.buy-again")!.click();
+    await settle();
+
+    expect(el("buy-flow").hidden).toBe(false);
+    expect(el("history").hidden).toBe(true);
+    expect(window.location.hash).toBe("#/buy");
+    expect(el<HTMLInputElement>("canister-principal").value).toBe("aaaaa-aa");
+  });
+
+  test("clicking buy again does not also open the order row", async () => {
+    // Both handlers live on the same row; without stopPropagation the prefill is
+    // immediately replaced by the order view.
+    state.order = anOrder("delivered");
+    await mount("live");
+    el("orders").querySelector<HTMLButtonElement>("button.buy-again")!.click();
+    await settle();
+    expect(el("active-order").hidden).toBe(true);
+  });
+});
+
+describe("the rate strip never contradicts the tiers", () => {
+  test("a cached but unusable rate is not printed as if it were live", async () => {
+    // Found on a real local network: the strip read "ICP $4.55 · 3.5000 XDR/ICP"
+    // directly above three tiles each saying "No exchange rate available right
+    // now". `pricing_status.rates` returns the LAST pair fetched even when the
+    // most recent refresh failed, so rendering on its presence alone had the page
+    // quoting a price it would refuse to honour.
+    state.quote = { usdCents: TIER_CENTS, feeCents: 45n, netCents: 455n, cycles: undefined };
+    await mount("live");
+
+    const strip = el("rate-line").textContent ?? "";
+    expect(strip).toMatch(/no exchange rate/i);
+    expect(strip).not.toContain("XDR/ICP");
+    // And the tiers agree, which is the whole point.
+    expect(tierButton().querySelector(".cycles")!.textContent).toMatch(/no exchange rate/i);
+  });
+
+  test("a usable rate is printed in full", async () => {
+    await mount("live");
+    const strip = el("rate-line").textContent ?? "";
+    expect(strip).toContain("XDR/ICP");
+    expect(strip).not.toMatch(/no exchange rate/i);
   });
 });

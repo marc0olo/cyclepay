@@ -1,187 +1,915 @@
-:root {
-  --bg: #0d1117;
-  --panel: #161b22;
-  --border: #30363d;
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --accent: #2f81f7;
-  --ok: #3fb950;
-  --warn: #d29922;
-  --err: #f85149;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+/* Internet Computer brand guidelines v2.30, applied.
+   Every value here comes from tokens.css — no hardcoded hex, which is the
+   guidelines' own review rule and what keeps the dark theme honest.
+
+   Rules this file is deliberately obeying, easy to undo by accident:
+     - no drop shadows, no gradients (grid paper is the one permitted texture)
+     - 1px hairlines only, always --icp-rule
+     - pill radius on CTAs only
+     - three faces: Newsreader (editorial), Inter (chrome), JetBrains Mono
+       (numerals, code); stat numbers are never Newsreader
+     - sentence case; UPPERCASE only for eyebrows and markers
+     - body prose never wider than 720px */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
-* { box-sizing: border-box; }
+/* The `hidden` attribute must beat every layout rule in this file.
+   The UA stylesheet's `[hidden] { display: none }` has lower specificity than a
+   class selector, so `.chooser { display: grid }` and `.rails { display: flex }`
+   silently re-showed elements the app had hidden — the chooser never went away
+   and the disabled rail nav was always on screen.
+   jsdom has no layout and no cascade, so the DOM suite could not see any of it:
+   `el.hidden` was true the whole time. */
+[hidden] {
+  display: none !important;
+}
+
+html {
+  color-scheme: light;
+}
+html[data-theme='dark'] {
+  color-scheme: dark;
+}
 
 body {
-  margin: 0 auto;
-  max-width: 720px;
-  padding: 0 1rem 4rem;
-  background: var(--bg);
-  color: var(--text);
-  line-height: 1.5;
+  margin: 0;
+  /* The full-bleed technique on .explainer.sunk uses 50vw, which counts the
+     scrollbar; clip the resulting sliver rather than letting the page scroll
+     sideways. */
+  overflow-x: clip;
+  background: var(--icp-bg);
+  color: var(--icp-fg);
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  letter-spacing: var(--tracking-body);
+  -webkit-font-smoothing: antialiased;
 }
 
-header {
+main,
+.site-header,
+.site-footer {
+  max-width: var(--shell);
+  margin: 0 auto;
+  padding-inline: var(--space-4);
+}
+
+/* Prose keeps the 720px measure inside the wider shell. Applied to the text
+   blocks rather than the container, so data (tiers, tables) can use the width. */
+.hero-copy,
+.explainer p,
+.explainer h2,
+.lede,
+.meta-strip,
+.dest-implicit,
+#order-status-line,
+.step-card p {
+  max-width: var(--measure);
+}
+
+/* ── type ─────────────────────────────────────────────────────────────────── */
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: var(--tracking-display);
+  line-height: 1.15;
+  margin: 0;
+}
+
+h1 {
+  font-size: clamp(2rem, 5.5vw, 3rem);
+  /* Keeps the two-column hero from breaking "Internet / Computer" across lines
+     and leaving a one-word orphan. */
+  text-wrap: balance;
+}
+
+/* The italic rule: one emphasis word per heading, carried in rust. */
+h1 em,
+h2 em,
+h3 em {
+  font-style: italic;
+  color: var(--icp-accent);
+}
+
+.section-h {
+  font-size: 1.375rem;
+  margin-bottom: var(--space-3);
+}
+
+.eyebrow {
+  font-family: var(--font-ui);
+  font-weight: 500;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-eyebrow);
+  color: var(--icp-fg-secondary);
+}
+
+.lede {
+  font-size: 1.25rem;
+  color: var(--icp-fg-secondary);
+  margin: var(--space-4) 0 0;
+}
+
+.meta-strip {
+  font-family: var(--font-ui);
+  font-size: 0.875rem;
+  color: var(--icp-fg-secondary);
+  margin: var(--space-4) 0 0;
+}
+.meta-strip .dot {
+  color: var(--icp-fg-muted);
+  margin-inline: var(--space-2);
+}
+
+.muted {
+  font-family: var(--font-ui);
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--icp-fg-muted);
+}
+
+.mono,
+code,
+.order-facts dd,
+input[type='text'] {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+code {
+  font-size: 0.875em;
+  background: var(--icp-bg-sunk);
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius-sm);
+}
+
+a {
+  color: var(--icp-accent);
+  text-underline-offset: 0.15em;
+  text-decoration-thickness: 1px;
+}
+a:hover {
+  color: var(--icp-accent-strong);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+/* ── header ───────────────────────────────────────────────────────────────── */
+
+.site-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 1.5rem 0 1rem;
-  border-bottom: 1px solid var(--border);
+  gap: var(--space-4);
+  padding-block: var(--space-5) var(--space-4);
 }
-h1 { margin: 0; font-size: 1.4rem; }
-h2 { font-size: 1.05rem; margin: 1.5rem 0 0.5rem; }
-.tagline { margin: 0; color: var(--muted); font-size: 0.85rem; }
-
-button, .pay-button {
-  font: inherit;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--text);
-  padding: 0.45rem 0.9rem;
-  cursor: pointer;
+.wordmark {
   text-decoration: none;
-  display: inline-block;
 }
-button:disabled { opacity: 0.45; cursor: not-allowed; }
-button.primary, .pay-button {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-  font-weight: 600;
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
 }
 
-.rails { display: flex; gap: 0.5rem; margin-top: 1.25rem; }
-.rail.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
-.soon { font-size: 0.7rem; color: var(--muted); }
+/* ── hero, with the one permitted texture ─────────────────────────────────── */
 
-.amount-label { display: block; font-size: 0.9rem; }
-.ck-actions { display: flex; gap: 0.6rem; margin: 0.6rem 0; }
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: var(--space-7);
+  align-items: center;
+  padding-block: var(--space-7) var(--space-6);
+  background-image:
+    linear-gradient(to right, var(--grid-ink) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-ink) 1px, transparent 1px);
+  background-size: var(--grid-tile) var(--grid-tile);
+  border-bottom: 1px solid var(--icp-rule);
+}
 
-.tiers { display: flex; flex-wrap: wrap; gap: 0.6rem; }
-.tier {
-  min-width: 9rem;
+.steps {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  padding: 0;
+  margin: var(--space-5) 0 0;
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  color: var(--icp-fg-secondary);
+}
+.steps li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.step-n {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--icp-accent);
+}
+
+/* ── chooser ──────────────────────────────────────────────────────────────── */
+
+.chooser {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: var(--space-4);
+  margin-block: var(--space-6);
+}
+.choice {
+  display: block;
   text-align: left;
-  padding: 0.7rem 0.9rem;
+  padding: var(--space-4);
+  background: var(--icp-bg-elev);
+  border: 1px solid var(--icp-rule);
+  border-left: 3px solid var(--icp-section-default);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
 }
-.tier.selected { border-color: var(--accent); outline: 1px solid var(--accent); }
-.tier .amount { font-size: 1.2rem; font-weight: 700; display: block; }
-.tier .cycles { color: var(--muted); font-size: 0.8rem; }
+.choice:hover {
+  background: var(--icp-accent-dim);
+}
+.choice-title {
+  display: block;
+  margin-top: var(--space-2);
+  font-family: var(--font-display);
+  font-size: 1.0625rem;
+  line-height: 1.4;
+}
+.back-link {
+  margin-block: var(--space-4);
+}
 
-form { margin-top: 0.5rem; }
-.radio { display: block; margin: 0.3rem 0; }
-.dest-fields { margin: 0.6rem 0 0.6rem 1.4rem; }
-.dest-fields label { display: block; margin-bottom: 0.5rem; font-size: 0.9rem; }
-input[type="text"] {
+/* ── buttons ──────────────────────────────────────────────────────────────── */
+
+button,
+.cta,
+.cta-secondary {
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+/* Pill radius is for CTAs and nothing else. */
+.cta,
+.cta-secondary {
+  display: inline-block;
+  padding: 0.5rem 1.15rem;
+  border-radius: var(--radius-pill);
+  text-decoration: none;
+  border: 1px solid transparent;
+}
+.cta {
+  background: var(--icp-accent);
+  color: #fff;
+  border-color: var(--icp-accent);
+}
+.cta:hover:not(:disabled) {
+  background: var(--icp-accent-strong);
+  border-color: var(--icp-accent-strong);
+  color: #fff;
+}
+.cta-secondary {
+  background: transparent;
+  color: var(--icp-accent);
+  border-color: var(--icp-accent);
+}
+.cta-secondary:hover:not(:disabled) {
+  background: var(--icp-accent-dim);
+}
+.cta:disabled,
+.cta-secondary:disabled,
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ghost,
+.copy {
+  background: transparent;
+  color: var(--icp-fg-secondary);
+  border: 1px solid var(--icp-rule);
+  border-radius: var(--radius-md);
+  padding: 0.35rem 0.8rem;
+}
+.ghost:hover,
+.copy:hover {
+  color: var(--icp-fg);
+  border-color: var(--icp-fg-muted);
+}
+
+.linklike {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--icp-accent);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+:focus-visible {
+  outline: 2px solid var(--icp-accent);
+  outline-offset: 2px;
+}
+
+/* ── rails ────────────────────────────────────────────────────────────────── */
+
+.rails {
+  display: flex;
+  gap: var(--space-2);
+  margin-block: var(--space-5) var(--space-4);
+  border-bottom: 1px solid var(--icp-rule);
+}
+.rail {
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: var(--space-2) var(--space-3);
+  color: var(--icp-fg-muted);
+}
+.rail.active {
+  color: var(--icp-accent);
+  border-bottom-color: var(--icp-accent);
+}
+
+/* ── amounts ──────────────────────────────────────────────────────────────── */
+
+.tiers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--space-3);
+}
+.tier {
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+  background: var(--icp-bg-elev);
+  border: 1px solid var(--icp-rule);
+  border-radius: var(--radius-md);
+  color: inherit;
+}
+.tier:hover {
+  border-color: var(--icp-fg-muted);
+}
+.tier.selected {
+  border-color: var(--icp-accent);
+  background: var(--icp-accent-dim);
+}
+/* Numerals are JetBrains Mono, never Newsreader. */
+.tier .amount {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.tier .cycles {
+  display: block;
+  margin-top: var(--space-1);
+  font-family: var(--font-ui);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--icp-fg-secondary);
+}
+
+.amount-label,
+.dest-fields label {
+  display: block;
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  margin-bottom: var(--space-3);
+}
+
+input[type='text'] {
   display: block;
   width: 100%;
-  max-width: 32rem;
-  margin-top: 0.2rem;
-  padding: 0.45rem 0.6rem;
-  font: inherit;
-  font-family: ui-monospace, monospace;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text);
+  margin-top: var(--space-1);
+  padding: 0.5rem 0.65rem;
+  font-size: 0.9375rem;
+  background: var(--icp-bg-elev);
+  border: 1px solid var(--icp-rule);
+  border-radius: var(--radius-md);
+  color: var(--icp-fg);
 }
-#create-order { margin-top: 0.8rem; }
+input[type='text']:focus {
+  border-color: var(--icp-accent);
+}
+
+fieldset {
+  border: 0;
+  padding: 0;
+  margin: var(--space-5) 0 0;
+}
+legend {
+  padding: 0;
+}
+.radio {
+  display: block;
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  margin-block: var(--space-2);
+}
+.dest-fields {
+  margin-block: var(--space-3);
+}
+.dest-implicit {
+  margin-top: var(--space-5);
+}
+.advanced {
+  margin-block: var(--space-4);
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+}
+.advanced summary {
+  cursor: pointer;
+  color: var(--icp-fg-secondary);
+}
+#create-order {
+  margin-top: var(--space-4);
+}
+.providers {
+  margin-top: var(--space-3);
+}
+
+/* ── notices ──────────────────────────────────────────────────────────────── */
 
 .notice {
-  border: 1px solid var(--warn);
-  border-radius: 6px;
-  padding: 0.6rem 0.9rem;
-  margin-top: 1rem;
-  color: var(--warn);
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  border: 1px solid var(--icp-rule);
+  border-left: 3px solid var(--icp-warn);
+  border-radius: var(--radius-md);
+  background: var(--icp-bg-sunk);
+  padding: var(--space-3) var(--space-4);
+  margin-block: var(--space-4);
+  color: var(--icp-fg-secondary);
 }
-.error { color: var(--err); }
-.muted { color: var(--muted); font-size: 0.85rem; }
+.error {
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  color: var(--icp-err);
+}
+
+.tone-ok { color: var(--icp-ok); }
+.tone-warn { color: var(--icp-warn); }
+.tone-err { color: var(--icp-err); }
+.tone-active { color: var(--icp-accent); }
+
+/* ── order ────────────────────────────────────────────────────────────────── */
+
+#active-order,
+#history,
+.explainer {
+  padding-block: var(--space-6);
+  border-top: 1px solid var(--icp-rule);
+}
+
+/* The stepper already closes with a rule, so the view below it must not open
+   with a second one: stacked hairlines with a gap between them read as an empty
+   section that failed to render. */
+#stepper:not([hidden]) + #buy-flow,
+#stepper:not([hidden]) ~ #active-order {
+  border-top: 0;
+  padding-top: 0;
+}
 
 .timeline {
   list-style: none;
   display: flex;
-  gap: 0;
   padding: 0;
-  margin: 0.8rem 0;
+  margin-block: var(--space-4);
+  gap: 1px;
 }
 .timeline li {
   flex: 1;
+  font-family: var(--font-ui);
+  font-size: 0.75rem;
   text-align: center;
-  font-size: 0.8rem;
-  color: var(--muted);
-  border-top: 3px solid var(--border);
-  padding-top: 0.4rem;
+  color: var(--icp-fg-muted);
+  border-top: 3px solid var(--icp-rule);
+  padding-top: var(--space-2);
 }
-.timeline li.done { border-top-color: var(--ok); color: var(--text); }
-.timeline li.now { border-top-color: var(--accent); color: var(--accent); font-weight: 600; }
-
-.tone-ok { color: var(--ok); }
-.tone-warn { color: var(--warn); }
-.tone-err { color: var(--err); }
-.tone-active { color: var(--accent); }
-
-.order-facts { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; }
-.order-facts dt { color: var(--muted); }
-.order-facts dd { margin: 0; font-family: ui-monospace, monospace; }
-
-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); }
-th { color: var(--muted); font-weight: 500; }
-tbody tr { cursor: pointer; }
-tbody tr:hover { background: var(--panel); }
-
-#auth-area { display: flex; align-items: center; gap: 0.6rem; }
-#auth-area .principal { font-family: ui-monospace, monospace; font-size: 0.85rem; color: var(--muted); }
-
-footer { margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 1rem; }
-code { font-family: ui-monospace, monospace; background: var(--panel); padding: 0.1rem 0.3rem; border-radius: 4px; }
-
-/* Cycle estimate on a tier button — the quantity is what is being chosen
-   between, so it reads as large as the price. */
-.tier .cycles {
-  display: block;
-  font-size: 0.78rem;
-  line-height: 1.3;
-  opacity: 0.85;
-  margin-top: 0.25rem;
+.timeline li.done {
+  border-top-color: var(--icp-ok);
+  color: var(--icp-fg-secondary);
+}
+.timeline li.now {
+  border-top-color: var(--icp-accent);
+  color: var(--icp-accent);
 }
 
-/* Fee split / rate-lock line under the selected amount. */
-.estimate-detail,
-.estimate {
-  font-size: 0.82rem;
-  line-height: 1.45;
-  opacity: 0.8;
-  margin: 0.4rem 0 0;
+.order-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-4);
+  margin-block: var(--space-4);
+  font-size: 0.9375rem;
+}
+.order-facts dt {
+  font-family: var(--font-ui);
+  font-size: 0.8125rem;
+  color: var(--icp-fg-muted);
+}
+.order-facts dd {
+  margin: 0;
 }
 
-.estimate {
-  opacity: 0.9;
+.ck-actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-block: var(--space-3);
 }
 
-/* Receipt verification block. */
-#receipt-area > summary {
-  cursor: pointer;
-  font-weight: 600;
-  margin-top: 0.75rem;
+/* The CLI handoff: an inverse bar, near-black in BOTH themes by rule. */
+.handoff {
+  background: var(--icp-cta-bar);
+  color: var(--icp-cta-bar-fg);
+  border-radius: var(--radius-md);
+  padding: var(--space-5);
+  margin-block: var(--space-5);
 }
-
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.8rem;
+.handoff .section-h,
+.handoff p {
+  color: var(--icp-cta-bar-fg);
+}
+.handoff .muted {
+  color: var(--icp-cta-bar-muted);
+}
+.handoff a {
+  color: var(--icp-accent);
+}
+.handoff code {
+  background: var(--icp-cta-bar-wash);
+  color: var(--icp-cta-bar-fg);
+}
+.cmd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-block: var(--space-3);
+}
+.cmd code {
   overflow-x: auto;
   white-space: nowrap;
+  padding: var(--space-2) var(--space-3);
+  flex: 1;
+}
+.handoff .copy {
+  color: var(--icp-cta-bar-fg);
+  border-color: var(--icp-cta-bar-edge);
+  flex: none;
+}
+.handoff .copy:hover {
+  border-color: var(--icp-cta-bar-fg);
+  color: var(--icp-cta-bar-fg);
 }
 
-/* Cancel-this-order: available but not competing with the pay button. */
-button.subtle {
+#receipt-area > summary {
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  color: var(--icp-fg-secondary);
+}
+.estimate-detail,
+.estimate {
+  font-family: var(--font-ui);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--icp-fg-secondary);
+  margin: var(--space-2) 0 0;
+}
+
+/* ── history ──────────────────────────────────────────────────────────────── */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+th,
+td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--icp-rule);
+}
+th {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-eyebrow);
+  color: var(--icp-fg-muted);
+  font-weight: 500;
+}
+td {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+}
+tbody tr:hover {
+  background: var(--icp-bg-sunk);
+}
+.buy-again {
+  font-family: var(--font-ui);
+  font-size: 0.8125rem;
   background: none;
-  border: 1px solid currentColor;
-  opacity: 0.7;
-  font-size: 0.85rem;
+  border: 1px solid var(--icp-rule);
+  border-radius: var(--radius-md);
+  padding: 0.2rem 0.6rem;
+  color: var(--icp-accent);
+}
+.buy-again:hover {
+  background: var(--icp-accent-dim);
 }
 
-button.subtle:hover:not(:disabled) {
-  opacity: 1;
+/* ── explainers ───────────────────────────────────────────────────────────── */
+
+/* Full-bleed tint while the prose stays on the 720px measure. Done with
+   cancelling margin/padding rather than a spread box-shadow: the guidelines ban
+   drop shadows, and a `box-shadow` used as a bleed trick reads as a violation
+   even when it casts nothing. */
+.explainer.sunk {
+  background: var(--icp-bg-sunk);
+  margin-inline: calc(-1 * (50vw - 50%));
+  padding-inline: calc(50vw - 50%);
+}
+.explainer p {
+  margin: 0;
+}
+
+#auth-area {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+#auth-area .principal {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--icp-fg-muted);
+}
+
+.site-footer {
+  margin-top: var(--space-7);
+  padding-block: var(--space-5) var(--space-8);
+  border-top: 1px solid var(--icp-rule);
+}
+
+/* The arm suggested by this principal's last order. A pre-selection, never a
+   skip — the chooser is still shown and either arm is one click away. */
+.choice.suggested {
+  border-color: var(--icp-accent);
+  background: var(--icp-accent-dim);
+}
+
+
+/* ── the persistent stepper ───────────────────────────────────────────────── */
+
+.stepper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  list-style: none;
+  padding: var(--space-4) 0;
+  margin: 0 0 var(--space-5);
+  border-bottom: 1px solid var(--icp-rule);
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+}
+.stepper .step {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  color: var(--icp-fg-muted);
+}
+.stepper .step .step-n {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+/* Done has to be legible at a glance without a checkmark glyph (banned). Full
+   ink against muted for pending is the distinction; the teal numeral reinforces
+   it for anyone who reads the strip rather than scans it. */
+.stepper .step.done {
+  color: var(--icp-fg);
+}
+.stepper .step.done .step-n {
+  color: var(--icp-ok);
+  font-weight: 500;
+}
+.stepper .step.current {
+  color: var(--icp-accent);
+  font-weight: 500;
+}
+
+/* ── the guided tour ──────────────────────────────────────────────────────── */
+
+.step-card {
+  padding: var(--space-5);
+  border-radius: var(--radius-md);
+  margin-block: var(--space-4);
+}
+/* Step 3 is the primary action, so it takes the inverse bar. Near-black in both
+   themes, by rule. */
+.step-card.handoff .eyebrow {
+  color: var(--icp-cta-bar-muted);
+}
+.step-card.outlined {
+  border: 1px solid var(--icp-rule);
+  border-left: 3px solid var(--icp-section-default);
+  background: var(--icp-bg-elev);
+}
+.step-card .section-h {
+  margin-top: var(--space-2);
+}
+
+#order-details > summary {
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  color: var(--icp-fg-secondary);
+  padding-block: var(--space-2);
+}
+
+.header-link {
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  text-decoration: none;
+}
+.header-link:hover {
+  text-decoration: underline;
+}
+
+
+/* ── the four-step flow figure ────────────────────────────────────────────── */
+
+.flow {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-5);
+
+  /* The connector and the travelling pulse are BACKGROUND LAYERS of this
+     container, not pseudo elements. A background always paints below its own
+     element's content, so the opaque node fills mask both and neither can ever
+     cross a numeral.
+     They were absolutely-positioned pseudo elements, and they did cross: the
+     hairline ran down through every digit and the 5px pulse parked on the "1" and
+     erased it. z-index does not fix it here. `.flow-step` animates its opacity,
+     which puts each step on its own composited layer; sinking the pseudo elements
+     to `z-index: -1` and raising the steps to `z-index: 1` were both measured at
+     8x magnification and neither moved them. Backgrounds need no ordering trick.
+     Layer 1: the pulse, a 5px rust dot. Layer 2: the connector, a 1px hairline,
+     as every rule in this system is. */
+  background-image:
+    radial-gradient(circle 2.5px at 2.5px 2.5px, var(--icp-accent) 99%, transparent 100%),
+    linear-gradient(var(--icp-rule), var(--icp-rule));
+  background-repeat: no-repeat, no-repeat;
+  /* The dot has NO SIZE in the base style, and the animation is what grows it.
+     So anything that stops the animation — a paused page, a screenshot tool that
+     rewinds to the base style, reduced motion — shows the figure with no dot at
+     all, rather than one parked on the "1" for good. */
+  background-size:
+    0 0,
+    1px calc(100% - 36px);
+  background-position:
+    15px 18px,
+    17px 18px;
+  animation: flow-pulse 8s linear infinite;
+}
+
+/* `background-position` relative to the container, so the travel tracks the
+   figure's real height instead of a hardcoded pixel guess that breaks the moment
+   a label wraps.
+   The dot grows in and shrinks out via `background-size` rather than fading via
+   opacity, which a single background layer cannot do. Same effect, and it earns
+   something the old fade did not: at rest the dot has **no size at all**, so a
+   paused or screenshotted page shows a clean figure instead of a rust smudge
+   parked on the "1". */
+@keyframes flow-pulse {
+  0% {
+    background-position:
+      15px 18px,
+      17px 18px;
+    background-size:
+      0 0,
+      1px calc(100% - 36px);
+  }
+  6%,
+  94% {
+    background-size:
+      5px 5px,
+      1px calc(100% - 36px);
+  }
+  100% {
+    background-position:
+      15px calc(100% - 23px),
+      17px 18px;
+    background-size:
+      0 0,
+      1px calc(100% - 36px);
+  }
+}
+
+.flow-step {
+  display: grid;
+  grid-template-columns: 35px 1fr;
+  gap: var(--space-3);
+  align-items: center;
+  /* Resting state is legible on its own: the animation raises attention, it does
+     not carry information. */
+  opacity: 0.55;
+  animation: flow-dim 8s calc(var(--i) * 2s - 1s) infinite;
+}
+
+@keyframes flow-dim {
+  0%, 4% { opacity: 0.55; }
+  8%, 22% { opacity: 1; }
+  26%, 100% { opacity: 0.55; }
+}
+
+.flow-node {
+  display: grid;
+  place-items: center;
+  width: 35px;
+  height: 35px;
+  border: 1px solid var(--icp-rule);
+  border-radius: var(--radius-pill);
+  background: var(--icp-bg);
+  animation: flow-ring 8s calc(var(--i) * 2s - 1s) infinite;
+}
+
+@keyframes flow-ring {
+  0%, 4% { border-color: var(--icp-rule); }
+  8%, 22% { border-color: var(--icp-accent); }
+  26%, 100% { border-color: var(--icp-rule); }
+}
+
+.flow-n {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--icp-fg-secondary);
+}
+
+.flow-body {
+  display: grid;
+  gap: 2px;
+}
+.flow-label {
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  color: var(--icp-fg);
+}
+.flow-detail {
+  font-family: var(--font-ui);
+  font-size: 0.8125rem;
+  color: var(--icp-fg-muted);
+  justify-self: start;
+}
+code.flow-detail {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+/* Motion is decoration here, so it goes entirely rather than being slowed down.
+   Every step rests fully legible, which is why this is a clean removal. */
+@media (prefers-reduced-motion: reduce) {
+  .flow-step,
+  .flow-node {
+    animation: none;
+    opacity: 1;
+  }
+  /* The pulse layer goes with the animation: a rust dot parked forever on the
+     first node is not a resting state, it is a smudge. The connector stays. */
+  .flow {
+    animation: none;
+    background-image: linear-gradient(var(--icp-rule), var(--icp-rule));
+    background-size: 1px calc(100% - 36px);
+    background-position: 17px 18px;
+  }
+}
+
+/* One column below the fold-out width: the figure stacks under the prose rather
+   than being squeezed into a column too narrow for the commands. */
+@media (max-width: 860px) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-6);
+  }
 }

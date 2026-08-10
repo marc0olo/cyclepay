@@ -26,7 +26,23 @@ src/backend/dist/*
 # frontend (src/frontend)
 src/frontend/node_modules/
 src/frontend/dist/
+# the fixtures build the browser specs serve (npm run build:fixtures). A separate
+# outDir on purpose: `dist/` is what ships, and a bundle carrying the test hook
+# must never be reachable by a deploy.
+src/frontend/dist-fixtures/
 src/frontend/src/bindings/
+
+# browser suite (test/browser). `package-lock.json` is the committed contract;
+# the install is not. 193 files and 18 MB of it were tracked for three days —
+# including `fsevents.node`, a macOS-only Mach-O binary, in a repo whose CI is
+# Linux — because the commit that added the suite committed its node_modules
+# alongside the specs. Nothing ever read it: CI runs `npm --prefix test/browser ci`,
+# which deletes and reinstalls the directory from the lockfile.
+test/browser/node_modules/
+# Playwright's per-run failure artifacts (traces, diff images). The screenshot
+# BASELINES beside them are committed on purpose — see test/browser/visual.spec.ts.
+test/browser/test-results/
+test/browser/playwright-report/
 
 # PocketIC integration suite (test/integration)
 test/integration/node_modules/

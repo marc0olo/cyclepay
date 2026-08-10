@@ -59,47 +59,89 @@ This project uses **`icp-cli`, never `dfx`**. Project configuration lives in
 
 ## Local development
 
-One-time setup:
+### Run the app locally, from nothing
 
 ```sh
-mops install                 # Motoko dependencies (pinned by mops.lock)
+mops install                              # Motoko dependencies (pinned by mops.lock)
+icp network start -d                      # local replica (PocketIC), gateway on :8000
+icp deploy                                # backend, frontend, and the local XRC mock
+scripts/local-dev-seed.sh                 # make the gateway actually sellable
 ```
 
-Backend iteration loop:
+Then open **<http://frontend.local.localhost:8000/>**.
+
+**The seed step is not optional.** A freshly deployed gateway is fail-closed on
+five axes at once, and the result looks like a broken app rather than a safe one:
+
+| What you see | Why |
+|---|---|
+| "No amounts are configured yet" | The tier list *is* the card rail's on/off switch (RUNBOOK §3) |
+| "No exchange rate available yet" | Pricing needs the CMC rate, which only NNS governance can set |
+| "temporarily unavailable while the gateway is topped up" | `minCanisterCycles` defaults to 5 T and `icp deploy` creates the canister with less, so the gate refuses every purchase. This one is about the canister's own **gas**, not the treasury; the seed script fixes it with `icp canister top-up backend --amount 20t`, which is what you would do on mainnet, rather than by lowering the floor |
+| Orders never mint | Burn cap defaults to 0 (the §5.3 pause lever) and there is no ICP float |
+
+`scripts/local-dev-seed.sh` sets all five and verifies a $5 purchase is admitted
+before reporting success. It reaches the CMC through the local network's PocketIC
+control API — see `docs/SANDBOX-TESTPLAN.md` for why that is possible and why
+nothing in CI depends on it.
+
+The CMC step is verified from a stopped network through to a priced $5 quote. If
+it ever reports that the CMC did not take the rate, that check is real: the script
+queries the CMC and compares what it actually stored rather than trusting the `Ok`
+reply, because PocketIC returning 200 only means the message was delivered.
+
+To click all the way through payment you also need real Stripe Payment Links:
 
 ```sh
-mops check                   # typecheck (includes unit tests)
-mops build                   # compile to src/backend/dist/
-mops test                    # run the Motoko unit suites
+export STRIPE_LINK_T5=https://buy.stripe.com/test_xxx
+export STRIPE_LINK_T20=…  STRIPE_LINK_T50=…
+scripts/local-dev-seed.sh
 ```
 
-Running the whole app locally:
+Without them the tiers carry a placeholder URL and "Pay with card" lands on a
+Stripe `AccessDenied` page. Everything up to that point works.
+
+### Verify the deployment wiring
 
 ```sh
-icp network start -d         # project-local replica; the OS picks a free port
-icp deploy                   # build + deploy backend and frontend canisters
-icp network status --json    # gateway URL (the port changes every start — never hardcode it)
-icp network stop             # when done
+scripts/e2e-local.sh                      # 20 checks against a real local network
 ```
 
-The local network is configured with `gateway.port: 0` so parallel
-worktrees/projects never collide — always read the URL from
-`icp network status --json`.
+Covers what the canister suites structurally cannot: the deploy pipeline, the
+`PUBLIC_CANISTER_ID:xrc` override, the `ic_env` cookie, local Internet Identity,
+a signed webhook through the real gateway (and unsigned/bad-MAC bodies refused),
+and that `icp.yaml`'s `ic` environment excludes the local-only mock.
 
-Frontend iteration with hot reload (needs the network up and the backend
-deployed, since the Vite dev server shells out to `icp` to simulate the
-`ic_env` cookie the asset canister sets in production):
+### Backend iteration loop
 
 ```sh
-icp network start -d && icp deploy backend
+mops check -- -Werror        # typecheck + lint; -Werror makes M0145 a build failure
+mops build                   # compile, and regenerate the committed .did
+mops test                    # the Motoko unit suites
+```
+
+### Frontend iteration with hot reload
+
+Needs the network up and the backend deployed: the Vite dev server shells out to
+`icp` to simulate the `ic_env` cookie the asset canister sets in production.
+
+```sh
+icp network start -d && icp deploy
 npm --prefix src/frontend run dev
 ```
 
-TypeScript bindings for the backend actor are regenerated from the committed
-Candid interface (`src/backend/dist/backend.did`) by the `icpBindgen` Vite
-plugin on every dev/build run — if you change the backend API, run
-`mops build` to refresh the `.did`, and the frontend will pick it up (or fail
-to typecheck, which is the point).
+TypeScript bindings are regenerated from the committed Candid interface
+(`src/backend/dist/backend.did`) by the `icpBindgen` Vite plugin on every
+dev/build run. Change the backend API, run `mops build` to refresh the `.did`,
+and the frontend picks it up — or fails to typecheck, which is the point.
+
+### Stopping
+
+```sh
+icp network stop
+```
+
+State does not survive `--mode reinstall`, so re-run the seed after one.
 
 ## Testing the Stripe rail locally
 

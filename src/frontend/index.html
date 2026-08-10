@@ -3,94 +3,262 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CyclePay — cycles, on-chain</title>
+    <title>From zero to deployed on the Internet Computer</title>
+    <meta
+      name="description"
+      content="Get cycles with a card, link your identity to the CLI, and deploy. No exchange account, no separate token to manage."
+    />
+    <meta name="theme-color" content="#faf9f5" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#14110d" media="(prefers-color-scheme: dark)" />
+    <link rel="stylesheet" href="/src/fonts.css" />
+    <link rel="stylesheet" href="/src/tokens.css" />
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <header>
-      <div class="brand">
-        <h1>CyclePay</h1>
-        <p class="tagline">Card or ck-USDC → cycles, verifiably on-chain</p>
+    <header class="site-header">
+      <a class="wordmark" href="/">
+        <span class="eyebrow">Internet Computer</span>
+      </a>
+      <div class="header-actions">
+        <a id="history-link" class="header-link" href="#/history" hidden>Your orders</a>
+        <button id="theme-toggle" type="button" class="ghost" aria-label="Switch to dark theme">
+          Dark
+        </button>
+        <div id="auth-area"></div>
       </div>
-      <div id="auth-area"></div>
     </header>
 
     <main>
-      <nav class="rails" aria-label="Payment rail">
+      <div id="view-landing" class="view">
+      <!-- Hero. The sequence is the product, not the purchase. -->
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Cycles</p>
+          <h1>From zero to deployed on the <em>Internet Computer</em>.</h1>
+          <p class="lede">
+            Get cycles with a card, link your identity to the CLI, and deploy, in
+            a few minutes.
+          </p>
+          <p class="meta-strip">
+            Operated by the DFINITY Foundation
+            <span class="dot">·</span>
+            <span id="rate-claim">at the protocol exchange rate, plus card processing</span>
+          </p>
+        </div>
+
+        <!-- The four steps as a figure rather than a wrapping sentence. The
+             sequence IS the product (issue #21), so it gets the visual weight the
+             right-hand column was wasting. Motion is CSS-only and cycles slowly;
+             prefers-reduced-motion drops it to a static, fully-legible state. -->
+        <ol class="flow" aria-label="What this takes">
+          <li class="flow-step" style="--i: 0">
+            <span class="flow-node"><span class="flow-n">1</span></span>
+            <span class="flow-body">
+              <span class="flow-label">Sign in</span>
+              <span class="flow-detail">Google, Apple, or Microsoft</span>
+            </span>
+          </li>
+          <li class="flow-step" style="--i: 1">
+            <span class="flow-node"><span class="flow-n">2</span></span>
+            <span class="flow-body">
+              <span class="flow-label">Pay with a card</span>
+              <span class="flow-detail">No exchange account needed</span>
+            </span>
+          </li>
+          <li class="flow-step" style="--i: 2">
+            <span class="flow-node"><span class="flow-n">3</span></span>
+            <span class="flow-body">
+              <span class="flow-label">Link the CLI</span>
+              <code class="flow-detail">icp identity link web</code>
+            </span>
+          </li>
+          <li class="flow-step" style="--i: 3">
+            <span class="flow-node"><span class="flow-n">4</span></span>
+            <span class="flow-body">
+              <span class="flow-label">Deploy</span>
+              <code class="flow-detail">icp canister create</code>
+            </span>
+          </li>
+        </ol>
+      </section>
+
+      <!-- The chooser. Pre-sign-in: there is no principal to look up yet, so a
+           stored preference is the only signal available. -->
+      <section id="chooser" class="chooser" aria-label="What brings you here">
+        <button id="choose-new" type="button" class="choice">
+          <span class="eyebrow">I'm new here</span>
+          <span class="choice-title">Get cycles, link your identity, deploy your first canister.</span>
+        </button>
+        <button id="choose-live" type="button" class="choice">
+          <span class="eyebrow">Already live?</span>
+          <span class="choice-title">Top up a canister that's running low, or add to your balance.</span>
+        </button>
+      </section>
+
+      <!-- Explainers. One idea each, below the flow, for the reader who scrolls
+           rather than the one who came to buy. -->
+      <section class="explainer sunk">
+        <h2 class="section-h">What cycles are</h2>
+        <p>
+          Cycles are prepaid credits that pay for your app's computation and
+          storage. Buy them here, spend them as you build. No exchange account,
+          no separate token to manage.
+        </p>
+      </section>
+
+      <section class="explainer">
+        <h2 class="section-h">Nothing to run but your <em>code</em></h2>
+        <p>
+          No servers to provision or patch, no database to host, no CDN or load
+          balancer. Your code runs replicated across independent data centres and
+          you pay for what it uses.
+          <a href="https://internetcomputer.org" target="_blank" rel="noopener noreferrer">How it works ↗</a>
+        </p>
+      </section>
+
+      <section class="explainer sunk">
+        <h2 class="section-h">Build with an <em>agent</em></h2>
+        <p>
+          Point your coding agent at the
+          <a href="https://mcp.internetcomputer.org" target="_blank" rel="noopener noreferrer">MCP server ↗</a>
+          and the
+          <a href="https://skills.internetcomputer.org" target="_blank" rel="noopener noreferrer">skills library ↗</a>.
+        </p>
+      </section>
+
+      <section class="explainer">
+        <h2 class="section-h">Checkable by <em>anyone</em></h2>
+        <p>
+          Pricing and delivery run in a single audited program, and you can check
+          the code. Every order carries a receipt that recomputes its own price
+          from two canisters you can query yourself.
+        </p>
+      </section>
+      </div><!-- /view-landing -->
+
+      <p id="chooser-back" class="back-link" hidden>
+        <button id="back-to-chooser" type="button" class="linklike">
+          New to the platform? Start here
+        </button>
+      </p>
+
+      <!-- Sign-in started from the HEADER has no form beneath it to report into,
+           and the header itself is too small for a sentence. It lands here, at the
+           top of whatever view is on screen, because the header button is
+           available from every one of them. -->
+      <p id="auth-error" class="error" hidden></p>
+
+      <div id="gate-notice" class="notice" hidden></div>
+
+      <!-- Rail nav renders only when more than one rail is live. -->
+      <nav id="rail-nav" class="rails" aria-label="Payment rail" hidden>
         <button id="rail-card" class="rail active" type="button">Card</button>
         <button id="rail-ckusdc" class="rail" type="button">ck-USDC</button>
       </nav>
 
-      <div id="gate-notice" class="notice" hidden></div>
+      <!-- The four steps the product is sold as, carried across buy, order and
+           delivered so progress is visible rather than promised. -->
+      <ol id="stepper" class="stepper" aria-label="Progress" hidden></ol>
 
-      <section id="card-panel">
-        <h2>Pick an amount</h2>
-        <div id="tiers" class="tiers">
-          <p class="muted">Loading tiers…</p>
-        </div>
-        <p id="tier-detail" class="estimate-detail" hidden></p>
-        <p id="quote-notice" class="notice" hidden></p>
-        <p id="rate-line" class="muted"></p>
-      </section>
-
-      <section id="ck-panel" hidden>
-        <div id="ck-disabled-notice" class="notice" hidden>
-          The ck-USDC rail is not enabled yet — check back soon.
-        </div>
-        <h2>Choose an amount</h2>
-        <label class="amount-label">
-          Amount (USD)
-          <input id="ck-amount" type="text" inputmode="decimal" placeholder="5.00" autocomplete="off" spellcheck="false" />
-        </label>
-        <p id="ck-estimate" class="estimate" hidden></p>
-        <p id="ck-bounds-line" class="muted"></p>
-      </section>
-
-      <section>
-        <form id="order-form">
-          <h2>Where should the cycles go?</h2>
-          <label class="radio">
-            <input type="radio" name="dest-kind" value="canister" checked />
-            Top up a canister
-          </label>
-          <label class="radio">
-            <input type="radio" name="dest-kind" value="cyclesLedgerAccount" />
-            Credit a cycles-ledger account
-          </label>
-          <p id="dest-fee-note" class="muted" hidden></p>
-
-          <div id="dest-canister" class="dest-fields">
-            <label>
-              Canister id
-              <input id="canister-principal" type="text" placeholder="aaaaa-aa" autocomplete="off" spellcheck="false" />
-            </label>
+      <div id="buy-flow" class="view" hidden>
+        <section id="card-panel">
+          <h2 class="section-h">Pick an amount</h2>
+          <div id="tiers" class="tiers">
+            <p class="muted">Loading amounts…</p>
           </div>
-          <div id="dest-ledger" class="dest-fields" hidden>
-            <label>
-              Account owner principal
-              <input id="ledger-owner" type="text" autocomplete="off" spellcheck="false" />
-            </label>
-            <label>
-              Subaccount (hex, optional)
-              <input id="ledger-subaccount" type="text" placeholder="leave empty for default" autocomplete="off" spellcheck="false" />
-            </label>
-          </div>
+          <p id="tier-detail" class="estimate-detail" hidden></p>
+          <p id="quote-notice" class="notice" hidden></p>
+          <p id="rate-line" class="muted"></p>
+        </section>
 
-          <p id="form-error" class="error" hidden></p>
-          <button id="create-order" type="submit" disabled>Sign in to continue</button>
-        </form>
-      </section>
+        <section id="ck-panel" hidden>
+          <div id="ck-disabled-notice" class="notice" hidden></div>
+          <h2 class="section-h">Choose an amount</h2>
+          <label class="amount-label">
+            Amount (USD)
+            <input id="ck-amount" type="text" inputmode="decimal" placeholder="5.00" autocomplete="off" spellcheck="false" />
+          </label>
+          <p id="ck-estimate" class="estimate" hidden></p>
+          <p id="ck-bounds-line" class="muted"></p>
+        </section>
+
+        <section>
+          <form id="order-form">
+            <!-- Newcomer arm: no destination question at all. Cycles go to the
+                 signed-in account, and the canister-id field must not exist here
+                 (a newcomer has no canister to name). -->
+            <div id="dest-newcomer" class="dest-implicit" hidden>
+              <h2 class="section-h">Where the cycles go</h2>
+              <p>
+                Your cycles go to your account. You'll link it to the CLI in a
+                moment.
+              </p>
+              <p class="muted">
+                <button id="show-advanced-dest" type="button" class="linklike">
+                  Sending to someone else's canister?
+                </button>
+              </p>
+            </div>
+
+            <!-- Already-live arm: both options, canister first, because that is
+                 why this audience came. -->
+            <fieldset id="dest-choice" hidden>
+              <legend class="section-h">Where should the cycles go?</legend>
+              <label class="radio">
+                <input type="radio" name="dest-kind" value="canister" checked />
+                A canister I already run
+              </label>
+              <label class="radio">
+                <input type="radio" name="dest-kind" value="cyclesLedgerAccount" />
+                My account
+              </label>
+              <p id="dest-fee-note" class="muted" hidden></p>
+            </fieldset>
+
+            <div id="dest-canister" class="dest-fields" hidden>
+              <label>
+                Canister id
+                <input id="canister-principal" type="text" placeholder="aaaaa-aa" autocomplete="off" spellcheck="false" />
+              </label>
+              <p id="canister-id-error" class="error" hidden></p>
+            </div>
+
+            <details id="dest-ledger-advanced" class="advanced" hidden>
+              <summary>Advanced: credit a different account</summary>
+              <div id="dest-ledger" class="dest-fields">
+                <label>
+                  Account owner principal
+                  <input id="ledger-owner" type="text" autocomplete="off" spellcheck="false" />
+                </label>
+                <label>
+                  Subaccount (hex, optional)
+                  <input id="ledger-subaccount" type="text" placeholder="leave empty for default" autocomplete="off" spellcheck="false" />
+                </label>
+              </div>
+            </details>
+
+            <p id="form-error" class="error" hidden></p>
+            <button id="create-order" type="submit" class="cta" disabled>Sign in to continue</button>
+            <div id="signin-providers" class="providers" hidden>
+              <p class="muted">
+                Sign in with Google, Apple, or Microsoft, or use a passkey. Your
+                account is created on first sign-in.
+              </p>
+            </div>
+          </form>
+        </section>
+      </div>
 
       <section id="active-order" hidden>
-        <h2>Order <span id="order-id-short"></span></h2>
+        <h2 class="section-h">Order <span id="order-id-short" class="mono"></span></h2>
         <p id="order-lock-notice" class="notice" hidden></p>
         <ol id="timeline" class="timeline"></ol>
         <p id="order-status-line"></p>
         <div id="pay-area" hidden>
-          <a id="pay-link" target="_blank" rel="noopener noreferrer" class="pay-button">Pay with card</a>
+          <a id="pay-link" target="_blank" rel="noopener noreferrer" class="cta">Pay with card ↗</a>
           <p class="muted">
-            The payment page is a Stripe Payment Link carrying reference
-            <code id="client-ref"></code> — keep this tab open; status updates live.
+            Opens Stripe in a new tab. Keep this one open: it updates the moment
+            the payment clears.
           </p>
         </div>
         <div id="ck-pay-area" hidden>
@@ -99,28 +267,101 @@
             approve the gateway to pull it, then claim.
           </p>
           <div class="ck-actions">
-            <button id="ck-approve" type="button" class="primary">1 · Approve</button>
-            <button id="ck-claim" type="button">2 · Claim</button>
+            <button id="ck-approve" type="button" class="cta">1 · Approve</button>
+            <button id="ck-claim" type="button" class="cta-secondary">2 · Claim</button>
           </div>
           <p id="ck-flow-status" class="muted" hidden></p>
         </div>
         <div id="cancel-area" hidden>
-          <button id="cancel-order" type="button" class="subtle">Cancel this order</button>
+          <button id="cancel-order" type="button" class="ghost">Cancel this order</button>
           <p class="muted">
             Frees the slot so you can start another. If a payment is already on
             its way it will still be honoured at this order's locked rate.
           </p>
           <p id="cancel-status" class="error" hidden></p>
         </div>
-        <dl class="order-facts">
-          <dt>Rail</dt><dd id="order-rail"></dd>
-          <dt>Cycles</dt><dd id="order-cycles"></dd>
-          <dt>Price</dt><dd id="order-price"></dd>
-          <dt>Destination</dt><dd id="order-dest"></dd>
-          <dt>Locked rate</dt><dd id="order-rate"></dd>
-        </dl>
+
+        <!-- The guided tour. On delivery this is the point of the page: for a
+             newcomer the two commands ARE the deliverable, so they lead, and the
+             order facts collapse beneath them. -->
+        <div id="tour" hidden>
+          <!-- Cycles credited to somebody else's account. The commands below
+               would link the BUYER's identity, which is not the account that was
+               funded, so printing them here teaches a step that cannot work. -->
+          <p id="tour-third-party" class="notice" hidden>
+            These cycles went to an account you do not control, so there is
+            nothing for you to link. Whoever owns that account can spend them from
+            their own CLI.
+          </p>
+
+          <div id="tour-steps">
+          <section class="handoff step-card">
+            <p class="eyebrow">Step 3 of 4</p>
+            <h3 class="section-h">Link your identity to the <em>CLI</em></h3>
+            <p>
+              This links the account your cycles are in, so the CLI spends the
+              same balance you just topped up.
+            </p>
+            <div class="cmd">
+              <code id="cmd-link" class="mono"></code>
+              <button type="button" class="copy" data-copy="cmd-link">Copy</button>
+            </div>
+            <p class="muted">
+              Your cycles are in
+              <code id="credited-principal" class="mono"></code>.
+            </p>
+            <p class="muted">
+              Check it landed on the right identity:
+            </p>
+            <div class="cmd">
+              <code id="cmd-verify" class="mono"></code>
+              <button type="button" class="copy" data-copy="cmd-verify">Copy</button>
+            </div>
+            <p class="muted">
+              That prints a principal. It should match the one above. If it does
+              not, the <code>--app</code> value did not match this site and the
+              balance will look empty.
+            </p>
+            <p class="muted">
+              You need to enable CLI access for your Internet Identity first, or
+              the sign-in page says "CLI access not enabled" and the command never
+              receives an identity.
+              <a href="https://cli.internetcomputer.org/1.2/guides/managing-identities/#signing-in-as-a-specific-app"
+                 target="_blank" rel="noopener noreferrer">Read the guide ↗</a>
+            </p>
+          </section>
+
+          <section class="step-card outlined">
+            <p class="eyebrow">Step 4 of 4</p>
+            <h3 class="section-h">Deploy</h3>
+            <div class="cmd">
+              <code id="cmd-create" class="mono">icp canister create hello</code>
+              <button type="button" class="copy" data-copy="cmd-create">Copy</button>
+            </div>
+            <p class="muted">
+              New to the tooling? Follow the
+              <a href="https://docs.internetcomputer.org/getting-started/quickstart"
+                 target="_blank" rel="noopener noreferrer">quickstart ↗</a>.
+            </p>
+          </section>
+          </div><!-- /tour-steps -->
+        </div>
+
+        <!-- Collapsed on the delivered view: once the cycles have arrived the
+             facts are reference material, and the next action is the tour above.
+             Open by default everywhere else. -->
+        <details id="order-details">
+          <summary>Order details</summary>
+          <dl class="order-facts">
+            <dt>Payment reference</dt><dd id="client-ref" class="wrap"></dd>
+            <dt>Rail</dt><dd id="order-rail"></dd>
+            <dt>Cycles</dt><dd id="order-cycles"></dd>
+            <dt>Price</dt><dd id="order-price"></dd>
+            <dt>Destination</dt><dd id="order-dest"></dd>
+            <dt>Locked rate</dt><dd id="order-rate"></dd>
+          </dl>
         <details id="receipt-area" hidden>
-          <summary>Receipt &amp; price verification</summary>
+          <summary>Receipt and price verification</summary>
           <dl class="order-facts">
             <dt>You paid</dt><dd id="receipt-paid"></dd>
             <dt>Cycles minted</dt><dd id="receipt-minted"></dd>
@@ -130,31 +371,49 @@
           <p id="receipt-formula" class="mono"></p>
           <p id="receipt-verdict"></p>
           <p class="muted">
-            Both rates come from canisters you can query yourself — the
+            Both rates come from canisters you can query yourself: the
             <a href="https://dashboard.internetcomputer.org/canister/uf6dk-hyaaa-aaaaq-qaaaq-cai"
-               target="_blank" rel="noopener noreferrer">Exchange Rate Canister</a>
+               target="_blank" rel="noopener noreferrer">Exchange Rate Canister ↗</a>
             for USD/ICP and the Cycles Minting Canister for XDR/ICP. Recompute the
             line above and it must match the cycles this order locked.
           </p>
         </details>
+        </details>
       </section>
 
-      <section id="history" hidden>
-        <h2>Your orders</h2>
+      <!-- A deep link to an order id this gateway does not hold. Its own state,
+           not an empty order view: the previous behaviour logged to the console
+           and left the last order's facts on screen, so the wrong order's numbers
+           were shown under the wrong URL. -->
+      <section id="order-missing" class="view" hidden>
+        <h2 class="section-h">We could not find that order</h2>
+        <p id="order-missing-detail"></p>
+        <p><a href="#/history">Your orders</a></p>
+      </section>
+
+      <section id="history" class="view" hidden>
+        <h2 class="section-h">Your orders</h2>
         <table>
           <thead>
-            <tr><th>Created</th><th>Order</th><th>Rail</th><th>Cycles</th><th>Price</th><th>Status</th></tr>
+            <tr>
+              <th>Created</th><th>Order</th><th>Rail</th><th>Cycles</th>
+              <th>Price</th><th>Status</th><th><span class="sr-only">Actions</span></th>
+            </tr>
           </thead>
           <tbody id="orders"></tbody>
         </table>
       </section>
+
     </main>
 
-    <footer>
+    <footer class="site-footer">
       <p class="muted">
-        Everything this gateway does — pricing, minting, delivery — runs in a
-        verifiable canister. No accounts, no custodians.
+        Pricing, minting, and delivery all run in one audited canister.
       </p>
+      <!-- TODO(#21): imprint, terms, privacy, status, and contact are required
+           for a Foundation-operated property. Deliberately not stubbed with
+           placeholder links: a dead "Terms" link on a page taking card details
+           is worse than a visibly absent one. -->
     </footer>
 
     <script type="module" src="/src/main.ts"></script>

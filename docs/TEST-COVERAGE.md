@@ -13,7 +13,8 @@ for the scenario map by id — ids are stable, counts are not.
 |---|---|---|
 | **Motoko unit** (`test/*.test.mo`) | pure logic: HMAC, the Stripe signature scheme, JSON parsing, fee/rate arithmetic, the §4 state machine, dedup, retention bands, the error queue, `Cmc.terminationFor`'s eight money positions, `stageOf`'s resume decisions | `mops test`. No IC environment — every module takes its dependencies as a record (`Card.Deps`), which is why the whole ingestion path is unit-testable |
 | **Frontend pure** (`format.test.ts`) | status mapping, cycle/USD formatting, the §3 pricing vector, slippage flooring, deposit-fee subtraction, receipt verification, every error-message mapping | `vitest` |
-| **Frontend DOM** (`main.test.ts`) | the real `index.html` body in jsdom with a stubbed backend: tier estimates, fee split, destination switch, the acknowledge-then-confirm quote flow, cancel visibility, the receipt render, the disabled ck panel | `vitest` + jsdom |
+| **Frontend DOM** (`main.test.ts`) | the real `index.html` body in jsdom with a stubbed backend: tier estimates, fee split, destination switch, the acknowledge-then-confirm quote flow, cancel visibility, the receipt render, the disabled ck panel, the view machine (including the poll's own arrival at `delivered`, under fake timers) | `vitest` + jsdom |
+| **Browser** (`test/browser/*.spec.ts`) | what jsdom is structurally blind to: the cascade, layout, reachability, and — via committed screenshot baselines — paint. Runs against a production build served statically, with an unreachable gateway by default and a canned one where a spec needs answers | `npm --prefix test/browser test` (Playwright, Chromium) |
 | **PocketIC** (`test/integration/src/*.spec.ts`) | end-to-end against the **real** ICP ledger, CMC and cycles ledger, plus a sha256-pinned XRC mock at the mainnet id | `npm --prefix test/integration test` |
 
 ### What makes the PocketIC suite the real bar
@@ -47,25 +48,41 @@ for the scenario map by id — ids are stable, counts are not.
 | Escalation → the right money position and instruction | unit (all 8 arms) + PocketIC | see the gap below |
 | Delay alerts and terminal bounds per in-flight status | PocketIC | |
 | Buyer never stuck: cancel, expiry, late payment, quote pinning | PocketIC | |
-| Frontend **rendering and interaction** | ❌ **nothing** | see below |
+| Frontend state machine and reactions | jsdom (`main.test.ts`) | real `index.html` body, stubbed backend |
+| Frontend **rendering**: cascade, layout, reachability, paint | browser (`test/browser`) | screenshot baselines for paint; see below for what is still uncovered |
 
 ## What is not covered, and why
 
-### 1. The frontend in a real browser
+### 1. The frontend against a real backend, and real Internet Identity
 
-`main.ts` now has jsdom tests (`main.test.ts`) covering its state machine — the
-quote-confirm flow, cancel visibility, the receipt render, destination switching —
-against the **real `index.html` body**, so a renamed id fails the test. The backend
-is stubbed deliberately: its behaviour is already proven by the PocketIC suite,
-and a stub is the only way to drive a `#quoteChanged` or a delivered receipt
-on demand.
+Two layers cover the frontend, and the split is deliberate.
 
-What jsdom cannot show: real layout and CSS, the real Internet Identity login, and
-that the Candid shapes match reality in a browser. **Nobody has rendered the page
-in a browser yet.** Group H of `docs/SANDBOX-TESTPLAN.md` covers that, and it needs
-a mainnet deploy in Stripe test mode — PocketIC does not set the `ic_env` cookie the
-page reads, and the local-II feature currently breaks instance creation (recorded in
-`harness.ts`).
+`main.test.ts` runs the **real `index.html` body** in jsdom with a stubbed backend,
+so a renamed id fails the test. The stub is not a weakness: the backend's behaviour
+is already proven by the PocketIC suite, and a stub is the only way to drive a
+`#quoteChanged`, a delivered receipt, or a poll transition on demand.
+
+`test/browser` runs a **production build in Chromium**, because jsdom has neither a
+cascade nor a layout and is therefore blind to a whole class of bug that has shipped
+here twice: `el.hidden` reads `true` for an element a class selector is keeping on
+screen. It covers reachability (can a person actually get from here to the next
+step), and — through committed `toHaveScreenshot()` baselines — paint, which no
+assertion reaches. The pulse in the hero figure painting *over* the step numbers was
+found that way, after every visibility, opacity and font assertion passed.
+
+A **test-only fixture hook** (`src/frontend/src/fixtures.ts`) is what makes the
+post-purchase surfaces reachable at all. It replaces the backend and nothing else,
+so sign-in, routing, the view machine and the 3 s poll are the app's own code; it is
+absent from a production build (`__FIXTURES__` is a `define`d literal, and
+`scripts/test-all.sh` greps the shipping bundle to keep that checked rather than
+claimed). Before it existed the delivered view could only be photographed by
+injecting DOM state, which is how it shipped broken twice.
+
+What is still not covered: the **real Internet Identity login** and that the
+**Candid shapes match reality in a browser**. Group H of
+`docs/SANDBOX-TESTPLAN.md` covers those and needs a mainnet deploy in Stripe test
+mode — PocketIC does not set the `ic_env` cookie the page reads, and the local-II
+feature currently breaks instance creation (recorded in `harness.ts`).
 
 ### 2. Structural limits in PocketIC — verified, not assumed
 
@@ -102,10 +119,12 @@ Two gotchas it encodes, both found by running it:
 - The **xrc mock keeps its canned response in heap and sets it from `init_args` at
   install time**, so a routine `icp deploy` upgrades it and every later rate call
   traps with "Response has not been set". The script reinstalls it first.
-- **`rates` stays null locally** and that is expected, not a failure: caching a pair
-  also needs a fresh CMC rate, which needs governance impersonation through the
-  PocketIC control API — an unsupported interface the script deliberately avoids.
-  So local orders cannot be *priced*; the money path stays in the PocketIC suite.
+- **`rates` stays null until the local gateway is seeded.** Caching a pair needs a
+  fresh CMC rate as well as the XRC, and the CMC's rate is settable only by NNS
+  governance. `scripts/local-dev-seed.sh` does that through the PocketIC control
+  API (see docs/SANDBOX-TESTPLAN.md), so local orders **can** be priced — the smoke
+  test just does not depend on it, because that control port is not a supported
+  `icp` interface.
 
 ### 4. Things only a real Stripe account can show
 
