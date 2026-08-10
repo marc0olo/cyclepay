@@ -1,4 +1,10 @@
-import { test, expect, useFixtureBackend } from "./fixtures";
+import {
+  test,
+  expect,
+  openFixtureOrder,
+  signInAsFixtureBuyer,
+  useFixtureBackend,
+} from "./fixtures";
 
 /// Pixel baselines for the two surfaces a visitor decides on, in both themes.
 ///
@@ -78,6 +84,20 @@ test.describe("visual baselines", () => {
     await expect(page.locator("#tiers button.tier")).toHaveCount(3);
     await settleForShot(page);
     await expect(page).toHaveScreenshot("buy-light.png", shot);
+  });
+
+  test("the delivered view, with the tour leading", async ({ page }) => {
+    // The surface with the worst history in this repo: it shipped broken twice,
+    // both times because nothing could reach it. It is also the one where paint
+    // matters most — two shell commands the buyer has to read and copy exactly.
+    // Deterministic by construction: the order id, the credited principal, the
+    // receipt figures and the `--app` domain are all fixed by the fixture.
+    await page.goto("/");
+    await signInAsFixtureBuyer(page);
+    await openFixtureOrder(page, { status: "delivered", destination: "account" });
+    await expect(page.locator("#cmd-link")).toBeVisible();
+    await settleForShot(page);
+    await expect(page).toHaveScreenshot("delivered-light.png", shot);
   });
 
   test("the buy view with real amounts, dark", async ({ page }) => {
