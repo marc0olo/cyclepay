@@ -762,44 +762,69 @@ tbody tr:hover {
   list-style: none;
   margin: 0;
   padding: 0;
-  position: relative;
   display: grid;
   gap: var(--space-5);
-}
 
-/* The connector. A 1px hairline, as every rule in this system is. */
-.flow::before {
-  content: "";
-  position: absolute;
-  left: 17px;
-  top: 18px;
-  bottom: 18px;
-  width: 1px;
-  background: var(--icp-rule);
-}
-
-/* A rust pulse travelling the connector, tying the steps into one sequence.
-   Sized off the same 8s loop as the steps so they stay in phase. */
-.flow::after {
-  content: "";
-  position: absolute;
-  left: 15px;
-  top: 18px;
-  width: 5px;
-  height: 5px;
-  border-radius: var(--radius-pill);
-  background: var(--icp-accent);
+  /* The connector and the travelling pulse are BACKGROUND LAYERS of this
+     container, not pseudo elements. A background always paints below its own
+     element's content, so the opaque node fills mask both and neither can ever
+     cross a numeral.
+     They were absolutely-positioned pseudo elements, and they did cross: the
+     hairline ran down through every digit and the 5px pulse parked on the "1" and
+     erased it. z-index does not fix it here. `.flow-step` animates its opacity,
+     which puts each step on its own composited layer; sinking the pseudo elements
+     to `z-index: -1` and raising the steps to `z-index: 1` were both measured at
+     8x magnification and neither moved them. Backgrounds need no ordering trick.
+     Layer 1: the pulse, a 5px rust dot. Layer 2: the connector, a 1px hairline,
+     as every rule in this system is. */
+  background-image:
+    radial-gradient(circle 2.5px at 2.5px 2.5px, var(--icp-accent) 99%, transparent 100%),
+    linear-gradient(var(--icp-rule), var(--icp-rule));
+  background-repeat: no-repeat, no-repeat;
+  /* The dot has NO SIZE in the base style, and the animation is what grows it.
+     So anything that stops the animation — a paused page, a screenshot tool that
+     rewinds to the base style, reduced motion — shows the figure with no dot at
+     all, rather than one parked on the "1" for good. */
+  background-size:
+    0 0,
+    1px calc(100% - 36px);
+  background-position:
+    15px 18px,
+    17px 18px;
   animation: flow-pulse 8s linear infinite;
 }
 
-/* `top` rather than `transform`, so the travel tracks the container's real
-   height instead of a hardcoded pixel guess that breaks the moment a label
-   wraps. One 5px dot, so the layout cost is irrelevant. */
+/* `background-position` relative to the container, so the travel tracks the
+   figure's real height instead of a hardcoded pixel guess that breaks the moment
+   a label wraps.
+   The dot grows in and shrinks out via `background-size` rather than fading via
+   opacity, which a single background layer cannot do. Same effect, and it earns
+   something the old fade did not: at rest the dot has **no size at all**, so a
+   paused or screenshotted page shows a clean figure instead of a rust smudge
+   parked on the "1". */
 @keyframes flow-pulse {
-  0% { top: 18px; opacity: 0; }
-  6% { opacity: 1; }
-  94% { opacity: 1; }
-  100% { top: calc(100% - 18px); opacity: 0; }
+  0% {
+    background-position:
+      15px 18px,
+      17px 18px;
+    background-size:
+      0 0,
+      1px calc(100% - 36px);
+  }
+  6%,
+  94% {
+    background-size:
+      5px 5px,
+      1px calc(100% - 36px);
+  }
+  100% {
+    background-position:
+      15px calc(100% - 23px),
+      17px 18px;
+    background-size:
+      0 0,
+      1px calc(100% - 36px);
+  }
 }
 
 .flow-step {
@@ -870,8 +895,13 @@ code.flow-detail {
     animation: none;
     opacity: 1;
   }
-  .flow::after {
-    display: none;
+  /* The pulse layer goes with the animation: a rust dot parked forever on the
+     first node is not a resting state, it is a smudge. The connector stays. */
+  .flow {
+    animation: none;
+    background-image: linear-gradient(var(--icp-rule), var(--icp-rule));
+    background-size: 1px calc(100% - 36px);
+    background-position: 17px 18px;
   }
 }
 

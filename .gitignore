@@ -26,7 +26,16 @@ src/backend/dist/*
 # frontend (src/frontend)
 src/frontend/node_modules/
 src/frontend/dist/
+# the fixtures build the browser specs serve (npm run build:fixtures). A separate
+# outDir on purpose: `dist/` is what ships, and a bundle carrying the test hook
+# must never be reachable by a deploy.
+src/frontend/dist-fixtures/
 src/frontend/src/bindings/
+
+# Playwright's per-run failure artifacts (traces, diff images). The screenshot
+# BASELINES beside them are committed on purpose — see test/browser/visual.spec.ts.
+test/browser/test-results/
+test/browser/playwright-report/
 
 # PocketIC integration suite (test/integration)
 test/integration/node_modules/

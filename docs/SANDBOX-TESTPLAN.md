@@ -50,9 +50,11 @@ scripts/local-dev-seed.sh
 `icp deploy` leaves a gateway that is **fail-closed on four axes at once** — no
 tiers, no CMC rate, a zero burn cap and no float — plus a fifth that catches
 everyone: `minCanisterCycles` defaults to 5 T while `icp deploy` creates the
-canister with 2 T, so the admission gate refuses every purchase with "temporarily
+canister with less, so the admission gate refuses every purchase with "temporarily
 unavailable while the gateway is topped up". That reads as a treasury problem and
-is really about the canister's own gas.
+is really about the canister's own gas. The seed script tops the canister up
+(`icp canister top-up backend --amount 20t`) and leaves the 5 T floor in place, so
+local development exercises the same gate mainnet does.
 
 The seed script sets all five and verifies a $5 purchase is admitted before it
 reports success. **The CMC rate goes stale after 15 minutes** (`cmcRateMaxAgeNs` is

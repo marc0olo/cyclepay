@@ -74,19 +74,34 @@ test.describe("brand rendering", () => {
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   });
 
-  test("the three brand faces load and are actually applied", async ({ page }) => {
+  test("all three brand faces load, and each is actually applied", async ({ page }) => {
     await page.goto("/");
-    // A self-hosted face that 404s falls back silently to a serif that looks
-    // close enough to miss in a screenshot.
-    const loaded = await page.evaluate(async () => {
+    // A self-hosted face that 404s falls back silently to something that looks
+    // close enough to miss in a screenshot. Newsreader was the only one checked,
+    // so Inter and JetBrains Mono could 404 unnoticed — and they carry the body
+    // copy and every CLI command on the page between them.
+    const faces = await page.evaluate(async () => {
       await document.fonts.ready;
-      return [...document.fonts].map((f) => `${f.family}:${f.status}`);
+      return [...document.fonts].map((f) => `${f.family}/${f.style}:${f.status}`);
     });
-    expect(loaded.join(" ")).toContain("Newsreader:loaded");
-    const h1 = await page.evaluate(() =>
-      getComputedStyle(document.querySelector("h1")!).fontFamily,
-    );
-    expect(h1).toContain("Newsreader");
+    for (const family of ["Newsreader", "Inter", "JetBrains Mono"]) {
+      expect(faces.join(" "), `${family} did not load`).toContain(`${family}/normal:loaded`);
+    }
+    // The italic Newsreader is a separate file, and the display face is used
+    // italic in every headline the brand rules emphasise.
+    expect(faces.join(" ")).toContain("Newsreader/italic:loaded");
+
+    // Loaded is not applied. Each face has to reach the element it is for.
+    const applied = await page.evaluate(() => ({
+      display: getComputedStyle(document.querySelector("h1")!).fontFamily,
+      // `.meta-strip`, not `.lede`: the lede is prose and takes the DISPLAY face
+      // by design. Inter carries the UI text around it.
+      ui: getComputedStyle(document.querySelector(".meta-strip")!).fontFamily,
+      mono: getComputedStyle(document.querySelector("code.flow-detail")!).fontFamily,
+    }));
+    expect(applied.display).toContain("Newsreader");
+    expect(applied.ui).toContain("Inter");
+    expect(applied.mono).toContain("JetBrains Mono");
   });
 
   test("prose holds the 720px measure inside the wider app shell", async ({ page }) => {
@@ -137,6 +152,48 @@ test.describe("the four-step hero figure", () => {
     }
   });
 
+  test("the connector and the pulse never touch a step number", async ({ page }) => {
+    // Found by a screenshot, and invisible to every other assertion in this suite.
+    // The connector runs through the node centres and the pulse travels along it,
+    // so both cross each numeral. As absolutely-positioned pseudo elements they
+    // painted ON TOP: the hairline ran down through every digit and the 5px rust
+    // dot parked on the "1" and erased it. Visibility passed, opacity passed, the
+    // font checks passed; the digit simply was not there.
+    //
+    // The fix is that they are BACKGROUND LAYERS of `.flow` rather than
+    // absolutely-positioned pseudo elements. That is what this asserts, and the
+    // assertion is structural on purpose: "a background paints below its own
+    // element's content" is a guarantee of the box model, whereas z-index here is
+    // not. Two z-index arrangements were tried and measured at 8x magnification —
+    // sinking the pseudo elements to -1, and raising the steps to 1 — and neither
+    // moved the dot off the digit, because `.flow-step` animates its opacity and
+    // so composites separately.
+    //
+    // A pixel-equality check cannot stand in for this: `.flow-step` dims to
+    // opacity 0.55, which makes the node's fill translucent, so a decoration
+    // BEHIND it still tints the numeral slightly. Legible, and the point — the
+    // pulse passes behind the node rather than over the number.
+    await page.goto("/");
+    const figure = await page.evaluate(() => {
+      const flow = document.querySelector(".flow")!;
+      const cs = getComputedStyle(flow);
+      return {
+        image: cs.backgroundImage,
+        animation: cs.animationName,
+        // No decoration may return to a pseudo element. `content: none` means the
+        // pseudo element is not generated at all.
+        before: getComputedStyle(flow, "::before").content,
+        after: getComputedStyle(flow, "::after").content,
+      };
+    });
+    // The pulse and the connector, in that order.
+    expect(figure.image).toContain("radial-gradient");
+    expect(figure.image).toContain("linear-gradient");
+    expect(figure.animation).toBe("flow-pulse");
+    expect(figure.before).toBe("none");
+    expect(figure.after).toBe("none");
+  });
+
   test("reduced motion removes the animation entirely", async ({ page }) => {
     // Not slowed down: removed. Every step rests fully legible, so dropping the
     // motion loses nothing.
@@ -152,10 +209,16 @@ test.describe("the four-step hero figure", () => {
       expect(s.animation).toBe("none");
       expect(Number(s.opacity)).toBe(1);
     }
-    const pulse = await page.evaluate(
-      () => getComputedStyle(document.querySelector(".flow")!, "::after").display,
-    );
-    expect(pulse).toBe("none");
+    // The pulse is a background layer, so "removed" means the layer is gone —
+    // otherwise the dot would sit parked on the first node forever, which is a
+    // smudge rather than a resting state. The connector layer stays.
+    const flow = await page.evaluate(() => {
+      const cs = getComputedStyle(document.querySelector(".flow")!);
+      return { animation: cs.animationName, image: cs.backgroundImage };
+    });
+    expect(flow.animation).toBe("none");
+    expect(flow.image).not.toContain("radial-gradient");
+    expect(flow.image).toContain("linear-gradient");
   });
 
   test("the hero is two columns on desktop and one on a phone", async ({ page }) => {

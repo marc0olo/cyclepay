@@ -1,4 +1,4 @@
-import { test as base } from "@playwright/test";
+import { test as base, type Page } from "@playwright/test";
 
 /// A syntactically valid `ic_env` cookie, in the **exact** shape the asset
 /// canister and the Vite dev server emit.
@@ -55,3 +55,73 @@ export const test = base.extend({
 });
 
 export { expect } from "@playwright/test";
+
+// ── the app's own test hook ───────────────────────────────────────────────────
+//
+// `window.__cyclepayFixtures`, installed by src/frontend/src/fixtures.ts and
+// present only in a CYCLEPAY_FIXTURES=1 build. It replaces the BACKEND and
+// nothing else, so everything these helpers drive — sign-in, routing, the view
+// machine, the 3 s poll — is the app's own code on its own path.
+//
+// This is what makes the post-purchase surfaces testable at all. Reaching the
+// delivered view for real needs an Internet Identity session, a funded local
+// network, a Stripe payment and a signed webhook, none of which a browser spec
+// can have; so before this existed the only pictures of that screen came from
+// injecting DOM state, and a spec could pass while a visitor saw nothing.
+
+export type OrderSpec = {
+  status?: string;
+  destination?: "account" | "canister";
+  thirdParty?: boolean;
+};
+
+type FixtureApi = {
+  useBackend(): Promise<void>;
+  signIn(): Promise<void>;
+  openOrder(spec?: OrderSpec): Promise<void>;
+  setStatus(status: string): void;
+  principal(): string;
+};
+
+declare global {
+  interface Window {
+    __cyclepayFixtures: FixtureApi;
+  }
+}
+
+/// Wait for `init()` to have installed the hook. It is installed inside an async
+/// init, so a spec that reaches for it immediately after `goto` races it.
+async function api(page: Page): Promise<void> {
+  await page.waitForFunction(() => window.__cyclepayFixtures !== undefined);
+}
+
+/// Canned backend, no session. For the priced buy view a signed-out visitor sees.
+export async function useFixtureBackend(page: Page): Promise<void> {
+  await api(page);
+  await page.evaluate(() => window.__cyclepayFixtures.useBackend());
+}
+
+/// Canned backend and a signed-in buyer.
+export async function signInAsFixtureBuyer(page: Page): Promise<void> {
+  await api(page);
+  await page.evaluate(() => window.__cyclepayFixtures.signIn());
+}
+
+/// Put an order on screen through the app's own `openOrder`.
+export async function openFixtureOrder(page: Page, spec: OrderSpec = {}): Promise<void> {
+  await api(page);
+  await page.evaluate((s) => window.__cyclepayFixtures.openOrder(s), spec);
+}
+
+/// Change what the backend answers, and leave the app to DISCOVER it on its next
+/// poll tick. Deliberately not a render call: the defect this exists to catch was
+/// precisely that the poll's discovery skipped the view machine.
+export async function setFixtureStatus(page: Page, status: string): Promise<void> {
+  await api(page);
+  await page.evaluate((s) => window.__cyclepayFixtures.setStatus(s), status);
+}
+
+export async function fixturePrincipal(page: Page): Promise<string> {
+  await api(page);
+  return page.evaluate(() => window.__cyclepayFixtures.principal());
+}

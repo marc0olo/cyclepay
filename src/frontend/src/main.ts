@@ -24,6 +24,7 @@ import { linkIdentityCommand, verifyIdentityCommand } from "./config";
 import {
   clearIcEnvCookies,
   distinctBackendIds,
+  hasConflictingIcEnv,
   isCanisterNotFound,
   parseIcEnvCookies,
   resolveLiveBackendId,
@@ -83,7 +84,31 @@ function isCkOrder(order: Order): boolean {
 type RailKey = "card" | "ckUsdc";
 
 let identity: Identity | null = null;
-let backend: Backend = makeBackend();
+
+/// The backend id the stale-cookie probe found answering, once it has run.
+///
+/// Module state, and consulted by **every** backend construction, because there
+/// are two of them and they disagreed: `init` adopted the probed id into its own
+/// local, then `setIdentity` rebuilt from `makeBackend()` on sign-in and went
+/// straight back to the dead canister the cookie advertises. The self-heal
+/// therefore worked exactly until the visitor signed in.
+let liveBackendId: string | null = null;
+
+/// Set only by the test-only fixture hook, and absent from a production build
+/// (see fixtures.ts). Every construction consults it for the same reason as
+/// above: a fixture that only replaced the first actor would be undone by
+/// sign-in.
+let backendFactory: ((who: Identity | null) => Backend) | null = null;
+
+/// The one place a backend actor is built.
+function buildBackend(who: Identity | null): Backend {
+  if (backendFactory !== null) return backendFactory(who);
+  return liveBackendId === null
+    ? makeBackend(who ?? undefined)
+    : makeBackendAt(liveBackendId, who ?? undefined);
+}
+
+let backend: Backend = buildBackend(null);
 let tiers: Tier[] = [];
 let selectedTierId: string | null = null;
 let lowFloat = false;
@@ -143,27 +168,41 @@ function show(id: string, visible: boolean): void {
   if (node) node.hidden = !visible;
 }
 
-// --- stale ic_env cookie (local development only) --------------------------
+// --- stale ic_env cookie ---------------------------------------------------
 
-/// A stale partitioned `ic_env` cookie shadows the fresh one, so the app builds
-/// its actor against a canister id that no longer exists and every call rejects
-/// IC0536. See ic-env.ts for why this needs code rather than a README note.
+/// A stale `ic_env` cookie shadows the fresh one, so the app builds its actor
+/// against a canister id that no longer exists and the gateway answers every
+/// request with `400 canister_not_found`. See ic-env.ts for the probe that
+/// established that, and for why this needs code rather than a README note.
 ///
-/// Returns the backend id to use, or null to keep whatever `makeBackend()` chose.
-/// No-ops unless the browser is holding conflicting copies, which cannot happen
-/// on mainnet — the asset canister serves one cookie and never a partitioned one.
-async function resolveStaleIcEnv(): Promise<string | null> {
+/// Not local-only, as an earlier version of this heading claimed: the asset
+/// canister serves `ic_env` on mainnet too (ic-env.ts, REPORTED), so the guard is
+/// not scoped to development. It costs nothing where there is only one cookie.
+///
+/// Sets `liveBackendId` when it finds one, and no-ops unless the browser is
+/// holding conflicting copies.
+async function resolveStaleIcEnv(): Promise<void> {
   const candidates = distinctBackendIds(parseIcEnvCookies(document.cookie));
-  if (candidates.length < 2) return null;
+  if (candidates.length < 2) return;
   // eslint-disable-next-line no-console
   console.warn("conflicting ic_env cookies", candidates);
-  const live = await resolveLiveBackendId(candidates, async (canisterId) => {
+  // REVERSED, and the order is load-bearing rather than incidental. The one
+  // measured fact this module rests on is that `safeGetCanisterEnv` takes the
+  // FIRST `ic_env` match, and that first match is the id the app is already
+  // failing against. Probing from the other end tries the copies it has not
+  // used yet before the one that is known not to work.
+  //
+  // When more than one candidate answers, this is a preference and not a proof:
+  // nothing in the cookie says which copy is fresher. It is still strictly
+  // better than repeating the choice that produced the failure.
+  const live = await resolveLiveBackendId([...candidates].reverse(), async (canisterId) => {
     // A cheap public query. Any answer at all proves the id exists.
     await makeBackendAt(canisterId).pricing_status();
   });
-  if (live === null) return null;
+  if (live === null) return;
   staleCookieDetected = true;
-  return live;
+  liveBackendId = live;
+  backend = buildBackend(identity);
 }
 
 /// True once a stale cookie has been identified, so the failure copy can name it
@@ -188,17 +227,24 @@ function renderStaleCookieNotice(into: HTMLElement): void {
   fix.textContent = "Clear it and reload";
   fix.onclick = () => {
     void clearIcEnvCookies().then((cleared) => {
-      if (cleared) {
+      // `cookieStore.delete` resolves whether or not it removed anything, so a
+      // resolved promise is not evidence. Re-read the cookies: reloading on an
+      // unverified delete lands the visitor on the same broken page with the one
+      // explanation of it now gone.
+      if (cleared && !hasConflictingIcEnv(document.cookie)) {
         window.location.reload();
         return;
       }
-      // No cookieStore (Safari, Firefox at time of writing). Deleting a
-      // partitioned cookie is not possible from script there, so say what to do
-      // rather than reloading into the same failure.
+      // Either there is no cookieStore (Safari, Firefox at time of writing), or
+      // there is and the delete did not take. Both end in the same manual step,
+      // and both are worth distinguishing for whoever is reading over a shoulder.
       fix.replaceWith(
         document.createTextNode(
-          "This browser cannot clear it from script: clear site data for this " +
-            "origin and reload.",
+          cleared
+            ? "The cookies are still there after deleting them: clear site data " +
+              "for this origin and reload."
+            : "This browser cannot clear it from script: clear site data for this " +
+              "origin and reload.",
         ),
       );
     });
@@ -213,20 +259,34 @@ let currentView: View = "landing";
 /// Orders this principal has, so the header link can hide when there are none.
 let orderCount = 0;
 
-/// Is this order's tour relevant at all?
+/// Whose steps 3 and 4 are these?
 ///
-/// A canister top-up needs no steps 3 and 4: the cycles are already where they
-/// will be spent, so there is nothing to link and nothing to deploy against.
-/// Showing a four-step strip to that buyer promises two steps that never
-/// complete.
-function orderWantsTour(order: Order | null): boolean {
-  return order !== null && "cyclesLedgerAccount" in order.destination;
+/// - `none` — a canister top-up. The cycles are already where they will be spent,
+///   so there is nothing to link and nothing to deploy against; a four-step strip
+///   would promise this buyer two steps that never complete.
+/// - `self` — the buyer's own cycles-ledger account. The two commands ARE the
+///   deliverable.
+/// - `third-party` — somebody else's account. `icp identity link web` links the
+///   BUYER's identity, which is not the account that was funded, so the commands
+///   cannot reach the balance and must not be printed. An unknown identity counts
+///   as third-party: printing commands that may be for the wrong account is worse
+///   than printing none.
+type TourKind = "none" | "self" | "third-party";
+
+function tourKind(order: Order | null): TourKind {
+  if (order === null || !("cyclesLedgerAccount" in order.destination)) return "none";
+  const owner = order.destination.cyclesLedgerAccount.owner;
+  return identity !== null && owner.toText() === identity.getPrincipal().toText()
+    ? "self"
+    : "third-party";
 }
 
 function renderStepper(view: View, order: Order | null): void {
   const node = document.getElementById("stepper");
   if (!node) return;
-  const relevant = view === "buy" || ((view === "order" || view === "delivered") && orderWantsTour(order));
+  // Steps 3 and 4 belong to the buyer only when the balance is theirs.
+  const relevant =
+    view === "buy" || ((view === "order" || view === "delivered") && tourKind(order) === "self");
   if (!relevant) {
     node.hidden = true;
     return;
@@ -258,18 +318,36 @@ function renderStepper(view: View, order: Order | null): void {
   node.hidden = false;
 }
 
+/// How the order the route names worked out. `ok` covers "we are not on the order
+/// view at all", which is why it is the default.
+///
+/// Tri-state for the same reason the tier list is: "we could not find that order"
+/// is a claim about the gateway's records and "we could not reach the gateway" is
+/// a claim about the network, and while the lookup is in flight both are false.
+type OrderLoad = "ok" | "loading" | "missing" | "unreachable";
+let orderLoad: OrderLoad = "ok";
+
 /// Show exactly one view.
 function renderView(): void {
   const order = activeOrder;
   const delivered = currentView === "order" && order !== null && statusKeyOf(order) === "delivered";
   const effective: View = delivered ? "delivered" : currentView;
+  const onOrder = effective === "order" || effective === "delivered";
 
   show("view-landing", effective === "landing");
   show("buy-flow", effective === "buy");
   show("chooser-back", effective === "buy" && audience === "live");
-  show("active-order", effective === "order" || effective === "delivered");
+  // Nothing to show is not the same as an empty panel: signing out drops the
+  // order, and the order view then has no content of its own.
+  const ready = orderLoad === "ok" && order !== null;
+  // `#active-order` has exactly one owner, and it is this line. `renderOrder`
+  // used to unhide it too, which is how a poll tick could paint an order over the
+  // history table the visitor had navigated to.
+  show("active-order", onOrder && ready);
+  show("order-missing", onOrder && !ready);
   show("history", effective === "history");
   show("history-link", orderCount > 0 && identity !== null);
+  if (onOrder && !ready) renderOrderMissing();
 
   renderStepper(effective, order);
 
@@ -278,6 +356,18 @@ function renderView(): void {
   const details = document.getElementById("order-details") as HTMLDetailsElement | null;
   if (details) details.open = !delivered;
   renderTour(order, delivered);
+}
+
+function renderOrderMissing(): void {
+  const node = document.getElementById("order-missing-detail");
+  if (!node) return;
+  node.textContent =
+    orderLoad === "loading"
+      ? "Looking it up…"
+      : orderLoad === "unreachable"
+        ? "Could not reach the gateway to look it up. Nothing was charged. Reload to try again."
+        : "That order id is not one this gateway holds for you. If you have just " +
+          "paid, the payment reference on your card receipt is the one to quote.";
 }
 
 function navigate(route: Route, replace = false): void {
@@ -294,22 +384,50 @@ function navigate(route: Route, replace = false): void {
 }
 
 function applyRoute(route: Route): void {
+  // A deep link or a reload on #/buy with no arm chosen renders a form with no
+  // destination question on it at all: the newcomer block is hidden, the
+  // already-live radios are hidden, and the only thing left is an amount grid
+  // wired to a destination the visitor was never asked about. Send them to the
+  // question first. Replaced, not pushed, so Back leaves rather than bouncing.
+  if (route.view === "buy" && audience === null) {
+    navigate({ view: "landing" }, true);
+    return;
+  }
+
+  // Leaving the order view ends the poll. The other half of `#active-order`
+  // having one owner: a tick that arrives after the visitor has moved on has
+  // nothing left to repaint.
+  if (route.view !== "order" && pollOrderId !== null) stopPolling();
+
   currentView = route.view;
   if (route.view === "order" && activeOrder?.id !== route.orderId) {
     // Deep link or Back into an order we are not currently holding.
+    orderLoad = "loading";
     void loadOrderById(route.orderId);
   }
   renderView();
 }
 
 async function loadOrderById(orderId: string): Promise<void> {
+  let order: Order | null;
   try {
-    const order = await backend.get_order(orderId);
-    if (order) openOrder(order);
+    order = await backend.get_order(orderId);
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error("could not load order", orderId, error);
+    orderLoad = "unreachable";
+    renderView();
+    return;
   }
+  // The route may have moved on while the query was in flight.
+  if (currentView !== "order") return;
+  if (order === null) {
+    orderLoad = "missing";
+    renderView();
+    return;
+  }
+  orderLoad = "ok";
+  openOrder(order);
 }
 
 // --- auth ----------------------------------------------------------------
@@ -336,20 +454,37 @@ function renderAuth(): void {
     // imports the vocabulary the Google-plus-card path is meant to delete. The
     // provider buttons are on the identity screen itself; this is just the way in.
     inBtn.textContent = "Sign in";
-    inBtn.onclick = async () => {
-      try {
-        setIdentity(await signIn());
-      } catch {
-        // User closed the popup — nothing to clean up.
-      }
-    };
+    // The same failure copy as the CTA, and for the same reason: this button can
+    // fail with a blocked pop-up or an unreachable provider too, and it used to
+    // swallow both. A header button that does nothing when clicked is the worst
+    // of the three outcomes, because it looks like the app ignored you.
+    inBtn.onclick = () => startSignIn(showAuthError);
     area.append(inBtn);
   }
 }
 
+/// Begin sign-in from a click, reporting failure wherever the caller says.
+///
+/// See `onSignInClick` for why `signIn()` must be the first statement: signer-js
+/// opens its window itself and refuses to outside a click handler.
+function startSignIn(report: (message: string | null) => void): void {
+  report(null);
+  signIn()
+    .then((next) => setIdentity(next))
+    .catch((error) => report(signInFailureMessage(error)));
+}
+
+function showAuthError(message: string | null): void {
+  const node = document.getElementById("auth-error");
+  if (!node) return;
+  node.textContent = message ?? "";
+  show("auth-error", message !== null);
+}
+
 function setIdentity(next: Identity | null): void {
   identity = next;
-  backend = makeBackend(identity ?? undefined);
+  backend = buildBackend(next);
+  showAuthError(null);
   renderAuth();
   renderSubmitGate();
   // Visibility belongs to renderView, which is what makes history a VIEW rather
@@ -362,8 +497,13 @@ function setIdentity(next: Identity | null): void {
     void refreshHistory();
   } else {
     stopPolling();
-    show("active-order", false);
+    orderCount = 0;
+    activeOrder = null;
+    orderLoad = "missing";
     el("orders").replaceChildren();
+    // Visibility is renderView's, above: signing out cannot leave an order on
+    // screen because the order view no longer owns anything to show.
+    renderView();
   }
 }
 
@@ -866,10 +1006,7 @@ function showFormError(message: string | null): void {
 /// nothing awaited before it. The promise is handled afterwards; only the CALL
 /// has to happen inside the gesture.
 function onSignInClick(): void {
-  showFormError(null);
-  signIn()
-    .then((next) => setIdentity(next))
-    .catch((error) => showFormError(signInFailureMessage(error)));
+  startSignIn(showFormError);
 }
 
 async function onCreateOrder(event: SubmitEvent): Promise<void> {
@@ -977,6 +1114,11 @@ function describeDestination(order: Order): string {
 }
 
 function renderOrder(order: Order, clientReferenceId?: string): void {
+  // Writes into `#active-order`, which the order view owns and no other view
+  // does. The poll ticks every 3 s regardless of where the visitor has since
+  // navigated, so without this a tick could refill and re-reveal the order panel
+  // underneath the history table or the buy form.
+  if (currentView !== "order") return;
   el("order-id-short").textContent = `${order.id.slice(0, 8)}…`;
   el("order-rail").textContent = isCkOrder(order) ? "ck-USDC" : "Card";
   // No "≈" here: the rate is locked, so this figure is what the order pays out.
@@ -1036,7 +1178,6 @@ function renderOrder(order: Order, clientReferenceId?: string): void {
   show("cancel-area", awaitingPayment && identity !== null);
   el<HTMLButtonElement>("cancel-order").disabled = false;
 
-  show("active-order", true);
   void renderReceipt(order);
 }
 
@@ -1055,18 +1196,26 @@ function renderOrder(order: Order, clientReferenceId?: string): void {
 /// A canister top-up gets none of it: the cycles are already where they will be
 /// spent. An already-live buyer funding their ACCOUNT does get it, but collapsed,
 /// because a repeat buyer has probably linked already (issue #21).
+/// A third-party account gets the fact and none of the commands: `icp identity
+/// link web` links the buyer's own identity, so following it would land them on
+/// their own empty balance and read as the cycles having gone missing.
 function renderTour(order: Order | null, delivered: boolean): void {
   const node = document.getElementById("tour");
   if (!node) return;
-  if (!delivered || !orderWantsTour(order)) {
+  const kind = tourKind(order);
+  if (!delivered || kind === "none") {
     node.hidden = true;
     return;
   }
-  const owner = (order!.destination as { cyclesLedgerAccount: { owner: Principal } })
-    .cyclesLedgerAccount.owner;
-  el("credited-principal").textContent = owner.toText();
-  el("cmd-link").textContent = linkIdentityCommand();
-  el("cmd-verify").textContent = verifyIdentityCommand();
+  show("tour-steps", kind === "self");
+  show("tour-third-party", kind === "third-party");
+  if (kind === "self") {
+    const owner = (order!.destination as { cyclesLedgerAccount: { owner: Principal } })
+      .cyclesLedgerAccount.owner;
+    el("credited-principal").textContent = owner.toText();
+    el("cmd-link").textContent = linkIdentityCommand();
+    el("cmd-verify").textContent = verifyIdentityCommand();
+  }
   node.hidden = false;
 }
 
@@ -1254,6 +1403,7 @@ function stopPolling(): void {
 
 function openOrder(order: Order, clientReferenceId?: string): void {
   activeOrder = order;
+  orderLoad = "ok";
   navigate({ view: "order", orderId: order.id }, true);
   stopPolling();
   setCkFlowStatus(null);
@@ -1274,7 +1424,16 @@ async function pollActiveOrder(): Promise<void> {
   }
   if (order === null || order.id !== pollOrderId) return;
   const key = statusKeyOf(order);
+  // Through the VIEW MACHINE, not only the order panel. `delivered` is a property
+  // of the ORDER rather than of the route (see view.ts), so a status the poll
+  // discovers has to travel the same path a navigation does. It did not: the poll
+  // refilled the facts and left `renderView` unrun, so on the only path a buyer
+  // actually takes — create, pay, wait — the tour never appeared, the stepper kept
+  // saying step 2 and the facts stayed expanded. The flagship surface of the whole
+  // flow was reachable only by reopening the order from history.
+  activeOrder = order;
   renderOrder(order);
+  renderView();
   if (key !== lastPolledStatus) {
     lastPolledStatus = key;
     void refreshHistory();
@@ -1359,7 +1518,6 @@ async function refreshHistory(): Promise<void> {
 function repeatOrder(order: Order): void {
   lockNotice = null;
   stopPolling();
-  show("active-order", false);
 
   const toCanister = "canister" in order.destination;
   // Match `suggestFrom`: an account-funded order means this buyer was topping up
@@ -1409,6 +1567,12 @@ function repeatOrder(order: Order): void {
   renderTiers();
   renderTierDetail();
   renderSubmitGate();
+  // The prefill is on the BUY view, and "Buy again" is clicked from the history
+  // view. Without this the button filled in a form nobody was looking at and the
+  // orders table stayed on screen, so the one-click repeat purchase did nothing
+  // visible at all. Pushed, not replaced: the visitor asked for it, so Back
+  // returns them to their orders.
+  navigate({ view: "buy" });
   el("card-panel").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -1552,10 +1716,15 @@ async function loadMarketWithRetry(): Promise<void> {
     marketState = "failed";
     // eslint-disable-next-line no-console
     console.error("market load failed", error);
-    // A canister-not-found rejection with conflicting cookies present is the
-    // stale-cookie case, not an outage. Naming it is the whole difference
-    // between a 30-second fix and an unexplained broken page.
-    if (staleCookieDetected || isCanisterNotFound(error)) {
+    // A canister-not-found rejection **with conflicting cookies present** is the
+    // stale-cookie case, not an outage. Naming it is the whole difference between
+    // a 30-second fix and an unexplained broken page.
+    //
+    // Both halves are required. A missing canister with a single, correct cookie
+    // is an ordinary bad deployment, and telling that visitor to clear a stale
+    // cookie sends them after a cookie that is not there while the real cause
+    // goes unnamed.
+    if (staleCookieDetected || (isCanisterNotFound(error) && hasConflictingIcEnv(document.cookie))) {
       renderStaleCookieNotice(line);
       renderTiers();
       renderSubmitGate();
@@ -1617,19 +1786,42 @@ async function init(): Promise<void> {
     applyRoute({ view: "history" });
   };
 
+  // Test-only, and gone from a production build: `__FIXTURES__` is replaced with
+  // the literal `false` unless the build sets CYCLEPAY_FIXTURES=1, so Rollup drops
+  // this branch and the dynamic import with it. See fixtures.ts for why the
+  // delivered view needs a hook to be testable at all.
+  if (__FIXTURES__) {
+    const { installFixtures } = await import("./fixtures");
+    installFixtures({
+      useBackend: (factory) => {
+        backendFactory = factory;
+        backend = buildBackend(identity);
+      },
+      signIn: setIdentity,
+      openOrder,
+      reloadMarket: loadMarketWithRetry,
+      reloadHistory: refreshHistory,
+    });
+  }
+
   // Before anything talks to the backend: if this browser is holding conflicting
   // ic_env cookies, find the id that actually answers and use that one.
-  const live = await resolveStaleIcEnv();
-  if (live !== null) backend = makeBackendAt(live);
+  await resolveStaleIcEnv();
 
   audience = recall();
   renderAudience();
+
+  // The session BEFORE the route, because the route can depend on it. `get_order`
+  // answers per caller, so resolving `#/order/<id>` while still anonymous looks up
+  // an order this principal cannot see, gets nothing back, and lands on "we could
+  // not find that order" — for an order the visitor owns, on a plain reload. It
+  // also decides whose steps 3 and 4 the tour is showing (see `tourKind`).
+  const restored = await currentIdentity();
+  if (restored) setIdentity(restored);
+
   // Parse the route the page was OPENED with, not only later hashchanges. Without
   // this a deep link or a reload on #/history silently rendered the landing view.
   applyRoute(parseRoute(window.location.hash));
-
-  const restored = await currentIdentity();
-  if (restored) setIdentity(restored);
 
   await loadMarketWithRetry();
 }

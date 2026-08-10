@@ -48,6 +48,41 @@ literals() {
   perl -CSD -e "$EXTRACT_LITERALS" "$FE"/src/*.ts 2>/dev/null | grep -v '\.test\.ts:'
 }
 
+# --- canary: do the checks below actually work? -------------------------------
+# A broken extractor or a regex that matches nothing reports CLEAN, and a clean
+# report is indistinguishable from a passing one. That is the worst failure this
+# script can have: every rule silently becomes a no-op and the gate stays green.
+# It has happened twice already — `grep -P` missing on BSD with stderr suppressed,
+# and template literals not being extracted at all — so the machinery is now
+# checked before its findings are trusted.
+canary() {
+  fail=1
+  printf '\n\033[31m✗ brand lint is not working: %s\033[0m\n' "$1" >&2
+}
+
+# `grep -c`, never `grep -q`, throughout the canaries: this script runs under
+# `pipefail`, and `-q` exits on its first match, which SIGPIPEs the producer and
+# makes the whole pipeline report failure. A canary that fires on success is worse
+# than no canary.
+[ -s "$FE/index.html" ] || canary "$FE/index.html is missing or empty, so every check against it looked at nothing"
+
+LITERAL_COUNT="$(literals | wc -l | tr -d ' ')"
+# An order of magnitude below the real count (~1000), so this fires on "the
+# extractor is broken" and never on ordinary editing.
+[ "${LITERAL_COUNT:-0}" -ge 100 ] ||
+  canary "the extractor found only ${LITERAL_COUNT:-0} string literals in $FE/src/*.ts"
+
+# Template literals specifically: they were the gap that mattered, because three
+# em-dashes shipped inside `${...}` interpolations while this script reported clean.
+TEMPLATE_COUNT="$(literals | grep -c '`' || true)"
+[ "${TEMPLATE_COUNT:-0}" -gt 0 ] ||
+  canary "the extractor found no template literals, which is where the last escape happened"
+
+# And prove the character classes can see a planted violation. A locale problem
+# makes these match nothing while still exiting 0.
+EM_CANARY="$(printf 'x:1:"an em dash %s here"\n' "—" | grep -c '—' || true)"
+[ "${EM_CANARY:-0}" -gt 0 ] || canary "the em-dash pattern does not match a line that contains one"
+
 # --- banned characters -------------------------------------------------------
 # U+2014 EM DASH: the guidelines name a colon, period, or parentheses instead.
 hits="$( { grep -n '—' "$FE/index.html"; literals | grep '—'; } 2>/dev/null )"
@@ -56,6 +91,11 @@ hits="$( { grep -n '—' "$FE/index.html"; literals | grep '—'; } 2>/dev/null 
 # Emoji and pictographs. ⚠ and ✓ count: they render as emoji on most platforms,
 # and the voice is meant to be calm and factual rather than decorated.
 PICTO='[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}\x{2B00}-\x{2BFF}\x{FE0F}]'
+# Canary for this class specifically: it is the one that silently passed
+# everywhere it could not run.
+PICTO_CANARY="$(printf 'x:1:"a rocket 🚀"\n' | perl -CSD -ne "print if /$PICTO/" | wc -l | tr -d ' ')"
+[ "${PICTO_CANARY:-0}" -gt 0 ] ||
+  canary "the pictograph class does not match a line that contains one (perl -CSD?)"
 hits="$( { perl -CSD -ne "print qq(\$ARGV:\$.:\$_) if /$PICTO/" "$FE/index.html"; \
            literals | perl -CSD -ne "print if /$PICTO/"; } 2>/dev/null )"
 [ -n "$hits" ] && report "emoji or pictograph in user-facing copy" "$hits"

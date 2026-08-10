@@ -210,29 +210,61 @@ BACKEND_ID="$(icp canister status backend --json | jq -r '.id')"
 icp token transfer "$FLOAT_ICP" "$BACKEND_ID" >/dev/null 2>&1 ||
   die "could not fund the float. Check: icp token balance"
 icp canister call backend refresh_float '()' >/dev/null 2>&1 || true
-ok "float funded with $FLOAT_ICP ICP"
+# Ask the GATEWAY what float it now sees, rather than trusting the transfer's exit
+# code. The same weak-check shape as the three already fixed above: a zero exit
+# says the ledger accepted a transfer, not that this canister holds the ICP, and
+# `refresh_float` is the step in between — which this script deliberately ignores
+# the exit code of, because it needs admin rights it may not have.
+OBSERVED_E8S="$(icp canister call backend treasury_status '()' 2>/dev/null |
+  grep -oE 'e8s = [0-9_]+' | tr -d '_' | grep -oE '[0-9]+$' | head -1 || echo 0)"
+EXPECTED_E8S=$((FLOAT_ICP * 100000000))
+if [ "${OBSERVED_E8S:-0}" -lt "$EXPECTED_E8S" ]; then
+  die "the gateway does not see the float: it reports ${OBSERVED_E8S:-0} e8s, expected at least $EXPECTED_E8S.
+    \`icp token transfer\` succeeded, so either the transfer went somewhere else or
+    refresh_float was refused (it is admin-only). Check:
+      icp canister call backend treasury_status '()'
+      icp canister call backend refresh_float '()'"
+fi
+ok "float funded and observed: $((OBSERVED_E8S / 100000000)) ICP"
 
 # ── the admission gate ───────────────────────────────────────────────────────
 step "admission gate"
 # The one that is genuinely confusing: `minCanisterCycles` defaults to 5 T, and
-# `icp deploy` creates a canister with 2 T. So a freshly deployed local gateway
+# `icp deploy` creates the canister with less. So a freshly deployed local gateway
 # refuses EVERY purchase with "temporarily unavailable while the gateway is
 # topped up" — which reads as a treasury problem and is actually about the
 # canister's own gas.
 #
-# On mainnet the fix is to top the canister up. Locally there is no supported CLI
-# path to deposit into a canister's gas balance (`icp cycles transfer` credits the
-# cycles LEDGER, which is a different thing), so lower the floor instead. It is an
-# operator lever that exists for exactly this, and locally the risk it guards
-# against — running out of gas mid-mint — is not real.
-BALANCE="$(icp canister call backend cycles_status '()' 2>/dev/null |
-  grep -oE 'balance = [0-9_]+' | tr -d '_' | grep -oE '[0-9]+' || echo 0)"
+# Fix the CONDITION, not the gate: top the canister up, which is exactly what you
+# would do on mainnet. `icp canister top-up` (icp-cli 1.2.0) does this; it is not
+# `icp cycles transfer`, which credits the cycles LEDGER and is a different thing.
+#
+# This used to lower `minCanisterCycles` to 0.5 T instead. That works, and it is
+# the wrong lever twice over: it moves a safety floor to accommodate an
+# under-funded canister, and it means local development never exercises a gate
+# that is load-bearing on mainnet.
+CYCLES_TOP_UP=20t
+icp canister top-up backend --amount "$CYCLES_TOP_UP" >/dev/null 2>&1 ||
+  die "could not top up the backend canister with $CYCLES_TOP_UP cycles.
+    Needs icp-cli 1.2.0 or newer (\`icp canister top-up --help\`)."
+
 icp canister call backend set_gate_config \
   '(record { maxOpenOrdersPerPrincipal = 3 : nat;
              maxPurchaseUsdCents = 100_000 : nat;
-             minCanisterCycles = 500_000_000_000 : nat })' \
+             minCanisterCycles = 5_000_000_000_000 : nat })' \
   >/dev/null || die "set_gate_config failed"
-ok "cycles floor lowered to 0.5 T (canister holds ${BALANCE:-?})"
+
+# Re-read the balance and compare it to the floor the gate now holds, rather than
+# trusting the top-up's exit code.
+CYCLES="$(icp canister call backend cycles_status '()' 2>/dev/null)"
+BALANCE="$(printf '%s' "$CYCLES" | grep -oE 'balance = [0-9_]+' | tr -d '_' | grep -oE '[0-9]+$' || echo 0)"
+FLOOR="$(printf '%s' "$CYCLES" | grep -oE 'floor = [0-9_]+' | tr -d '_' | grep -oE '[0-9]+$' || echo 0)"
+if [ "${BALANCE:-0}" -le "${FLOOR:-0}" ]; then
+  die "the canister still holds ${BALANCE:-0} cycles against a ${FLOOR:-0} floor, so
+    every purchase is still refused. The top-up reported success, so check:
+      icp canister call backend cycles_status '()'"
+fi
+ok "cycles floor kept at $((FLOOR / 1000000000000)) T; canister holds $((BALANCE / 1000000000000)) T"
 
 icp canister call backend can_purchase '(500 : nat)' 2>&1 | grep -q 'variant { ok }' ||
   die "the gateway still refuses a \$5 purchase. Check: icp canister call backend can_purchase '(500 : nat)'"

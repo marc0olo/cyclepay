@@ -77,7 +77,7 @@ five axes at once, and the result looks like a broken app rather than a safe one
 |---|---|
 | "No amounts are configured yet" | The tier list *is* the card rail's on/off switch (RUNBOOK §3) |
 | "No exchange rate available yet" | Pricing needs the CMC rate, which only NNS governance can set |
-| "temporarily unavailable while the gateway is topped up" | `minCanisterCycles` defaults to 5 T; `icp deploy` creates the canister with 2 T. This one is about the canister's own **gas**, not the treasury |
+| "temporarily unavailable while the gateway is topped up" | `minCanisterCycles` defaults to 5 T and `icp deploy` creates the canister with less, so the gate refuses every purchase. This one is about the canister's own **gas**, not the treasury; the seed script fixes it with `icp canister top-up backend --amount 20t`, which is what you would do on mainnet, rather than by lowering the floor |
 | Orders never mint | Burn cap defaults to 0 (the §5.3 pause lever) and there is no ICP float |
 
 `scripts/local-dev-seed.sh` sets all five and verifies a $5 purchase is admitted

@@ -67,9 +67,21 @@ jobs:
       - name: brand lint
         run: bash scripts/brand-lint.sh
 
+      # The shipping bundle must not carry the test-only fixture hook. Vite's
+      # dead-code elimination is what guarantees it, and DCE is a compiler
+      # behaviour rather than a promise, so it is checked against the built bytes.
+      - name: no test hooks in the shipping bundle
+        run: |
+          if grep -rl "__cyclepayFixtures" src/frontend/dist; then
+            echo "::error::the fixture hook is present in src/frontend/dist"
+            exit 1
+          fi
+
       # Issue #6. The cascade-and-layout bugs jsdom cannot see: it has neither,
-      # so `el.hidden` reads true for an element that is plainly on screen.
-      # Serves the built dist; no local network or deployed canister needed.
+      # so `el.hidden` reads true for an element that is plainly on screen. Also
+      # the paint-level ones no assertion reaches, via committed `-linux`
+      # screenshot baselines (test/browser/visual.spec.ts). Serves a build of the
+      # frontend; no local network or deployed canister needed.
       - name: install browser deps
         run: npm --prefix test/browser ci
 
@@ -78,6 +90,15 @@ jobs:
 
       - name: browser specs
         run: npm --prefix test/browser test
+
+      # The screenshot diffs are the only failure here you cannot read from a log.
+      - name: upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-failures
+          path: test/browser/test-results/
+          retention-days: 7
 
   # The go-live bar (spec §9). ubuntu-latest because the IC replica's memory
   # tracker hard-asserts 4096-byte pages: x86_64 Linux and macOS are fine, arm64

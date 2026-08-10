@@ -61,9 +61,9 @@ icp network start -d && icp deploy && scripts/local-dev-seed.sh
 ```
 
 The seed step is **not optional**. A fresh deploy is fail-closed on five axes at
-once (no tiers, no CMC rate, zero burn cap, no float, and a `minCanisterCycles`
-floor above what `icp deploy` funds the canister with), which presents as a broken
-app rather than a safe one. `scripts/local-dev-seed.sh --rate-only` after every
+once (no tiers, no CMC rate, zero burn cap, no float, and a canister funded below
+the `minCanisterCycles` floor), which presents as a broken app rather than a safe
+one. `scripts/local-dev-seed.sh --rate-only` after every
 deploy and every ~15 minutes: the CMC rate expires, and `icp deploy` wipes the XRC
 mock's install-time response. Full detail in README.md.
 
@@ -147,9 +147,18 @@ mops build                                   # refreshes the committed .did
 npm --prefix src/frontend run build          # regenerates bindings
 npm --prefix src/frontend run typecheck
 npm --prefix src/frontend run test           # pure functions + jsdom (main.ts)
+bash scripts/brand-lint.sh                   # banned characters, vocabulary, tokens
+npm --prefix test/browser test               # Chromium: cascade, layout, paint
 npm --prefix test/integration run typecheck   # vitest does not typecheck
 npm --prefix test/integration test           # PocketIC scenarios — the go-live bar
 ```
+
+⚠️ **No frontend change is done on a jsdom pass alone.** jsdom has no cascade and
+no layout, so `el.hidden` reads true for an element a class selector is keeping on
+screen — that has shipped twice. The browser suite is not optional and the gate
+now fails outright if it cannot run. Surfaces that need a session or a delivered
+order are reachable through the test-only fixture hook
+(`src/frontend/src/fixtures.ts`); see `test/browser/delivered.spec.ts`.
 
 ⚠️ **`npm test`, never `npx vitest run`** for the integration suite: the latter
 skips `pretest`, which fetches the sha256-pinned wasms and rebuilds the backend —

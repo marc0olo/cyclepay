@@ -142,6 +142,12 @@
         </button>
       </p>
 
+      <!-- Sign-in started from the HEADER has no form beneath it to report into,
+           and the header itself is too small for a sentence. It lands here, at the
+           top of whatever view is on screen, because the header button is
+           available from every one of them. -->
+      <p id="auth-error" class="error" hidden></p>
+
       <div id="gate-notice" class="notice" hidden></div>
 
       <!-- Rail nav renders only when more than one rail is live. -->
@@ -279,6 +285,16 @@
              newcomer the two commands ARE the deliverable, so they lead, and the
              order facts collapse beneath them. -->
         <div id="tour" hidden>
+          <!-- Cycles credited to somebody else's account. The commands below
+               would link the BUYER's identity, which is not the account that was
+               funded, so printing them here teaches a step that cannot work. -->
+          <p id="tour-third-party" class="notice" hidden>
+            These cycles went to an account you do not control, so there is
+            nothing for you to link. Whoever owns that account can spend them from
+            their own CLI.
+          </p>
+
+          <div id="tour-steps">
           <section class="handoff step-card">
             <p class="eyebrow">Step 3 of 4</p>
             <h3 class="section-h">Link your identity to the <em>CLI</em></h3>
@@ -328,6 +344,7 @@
                  target="_blank" rel="noopener noreferrer">quickstart ↗</a>.
             </p>
           </section>
+          </div><!-- /tour-steps -->
         </div>
 
         <!-- Collapsed on the delivered view: once the cycles have arrived the
@@ -362,6 +379,16 @@
           </p>
         </details>
         </details>
+      </section>
+
+      <!-- A deep link to an order id this gateway does not hold. Its own state,
+           not an empty order view: the previous behaviour logged to the console
+           and left the last order's facts on screen, so the wrong order's numbers
+           were shown under the wrong URL. -->
+      <section id="order-missing" class="view" hidden>
+        <h2 class="section-h">We could not find that order</h2>
+        <p id="order-missing-detail"></p>
+        <p><a href="#/history">Your orders</a></p>
       </section>
 
       <section id="history" class="view" hidden>

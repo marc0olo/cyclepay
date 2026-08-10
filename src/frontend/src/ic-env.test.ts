@@ -29,7 +29,8 @@ describe("parsing", () => {
   test("finds BOTH copies when a stale one shadows the fresh one", () => {
     // The reported failure: document.cookie lists the stale partitioned copy
     // first, and safeGetCanisterEnv takes the first match — so the app calls a
-    // canister that no longer exists and every query rejects IC0536.
+    // canister that no longer exists and the gateway answers 400
+    // canister_not_found to every request.
     const both = `${icEnv("stale-id")}; ${icEnv("fresh-id")}`;
     expect(parseIcEnvCookies(both)).toHaveLength(2);
     expect(distinctBackendIds(parseIcEnvCookies(both))).toEqual(["stale-id", "fresh-id"]);
@@ -59,9 +60,41 @@ describe("parsing", () => {
 });
 
 describe("recognising the failure", () => {
-  test("IC0536 is the canister-not-found signature", () => {
-    expect(isCanisterNotFound(new Error("Reject code 3: IC0536: Canister x not found"))).toBe(true);
-    expect(isCanisterNotFound("Canister aaaaa-aa not found")).toBe(true);
+  /// The real message, copied verbatim from a probe against a local network
+  /// (2026-08-10, icp-cli 1.2.0, @icp-sdk/core 5.3) calling a well-formed but
+  /// unallocated canister id. See the MEASURED section in ic-env.ts.
+  const CANISTER_NOT_FOUND =
+    "HTTP request failed:\n  Status: 400 (Bad Request)\n" +
+    '  Headers: [["content-type","text/plain; charset=utf-8"]]\n' +
+    "  Body: error: canister_not_found\ndetails: The specified canister does not exist.";
+
+  /// Same probe, calling a method that does not exist on a canister that does.
+  /// This is what IC0536 actually means, and what the previous implementation
+  /// matched instead of the case above.
+  const METHOD_NOT_FOUND =
+    "The replica returned a rejection error:\n  Reject code: 5\n" +
+    "  Reject text: Error from Canister 4fbx2-kt777-77775-aaabq-cai: " +
+    "Canister has no update method 'no_such_method_here'..\n" +
+    "Check that the method being called is exported by the target canister. " +
+    "See documentation: " +
+    "https://docs.internetcomputer.org/references/execution-errors#method-not-found\n" +
+    "  Error code: IC0536";
+
+  test("the 400 body's canister_not_found is the signature", () => {
+    expect(isCanisterNotFound(new Error(CANISTER_NOT_FOUND))).toBe(true);
+    // And when the SDK stops embedding the body in `message`, the structured
+    // field still carries it.
+    const structured = Object.assign(new Error("HTTP request failed"), {
+      code: { bodyText: "error: canister_not_found\ndetails: The specified canister does not exist." },
+    });
+    expect(isCanisterNotFound(structured)).toBe(true);
+  });
+
+  test("IC0536 is METHOD-not-found and must not trigger the self-heal", () => {
+    // The defect this pins. Keying on IC0536 matched this error — a bug in the
+    // caller's own code — and offered the visitor a cookie to clear, while the
+    // condition the self-heal exists for went unrecognised.
+    expect(isCanisterNotFound(new Error(METHOD_NOT_FOUND))).toBe(false);
   });
 
   test("an ordinary outage is not mistaken for a stale cookie", () => {
@@ -75,7 +108,7 @@ describe("recognising the failure", () => {
 describe("adopting the live backend", () => {
   test("picks the candidate that answers, not the first one listed", () => {
     const probe = async (id: string) => {
-      if (id !== "fresh-id") throw new Error("IC0536");
+      if (id !== "fresh-id") throw new Error("Body: error: canister_not_found");
       return {};
     };
     return expect(resolveLiveBackendId(["stale-id", "fresh-id"], probe)).resolves.toBe("fresh-id");

@@ -12,16 +12,25 @@ import { defineConfig, devices } from "@playwright/test";
 /// behaviour belongs in the PocketIC suite; UI state transitions belong in
 /// main.test.ts, which is far faster.
 ///
-/// Serves the **built** `dist/` over a plain static server, not `vite dev`.
+/// Serves a **production build** over a plain static server, not `vite dev`.
 /// Two reasons, both load-bearing:
 ///   - `vite.config.ts` shells out to `icp network status` at config load, so dev
 ///     mode cannot start without a running local network. These specs must not
 ///     need one, or they will not run in CI and will rot.
-///   - `dist/` is the artifact that actually ships. A bundler transform that only
-///     breaks in production is exactly the sort of thing a dev-server spec misses.
+///   - the bundle is the artifact that actually ships. A bundler transform that
+///     only breaks in production is exactly the sort of thing a dev-server spec
+///     misses.
+///
+/// `dist-fixtures/` rather than `dist/`: the same `vite build`, with
+/// CYCLEPAY_FIXTURES=1 adding the test-only hook that makes the post-purchase
+/// surfaces reachable (src/frontend/src/fixtures.ts). A separate outDir because
+/// `dist/` is what a deploy uploads, and a bundle carrying the hook must never be
+/// sitting there waiting to be shipped. `scripts/test-all.sh` asserts the shipping
+/// bundle has no hook in it.
 ///
 /// The backend is unreachable on purpose (see fixtures.ts): what renders must not
-/// depend on the gateway answering.
+/// depend on the gateway answering, and the specs that DO need answers install the
+/// canned backend explicitly.
 export default defineConfig({
   testDir: ".",
   fullyParallel: true,
@@ -34,11 +43,24 @@ export default defineConfig({
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
+    // CYCLEPAY_SKIP_BUILD exists for one job: regenerating the `-linux` screenshot
+    // baselines inside the Playwright container (see visual.spec.ts). The bundle
+    // is built on the host, because the container cannot reuse a macOS
+    // node_modules — vite's native binaries are per-platform. Never set it in CI or
+    // locally: it would serve whatever stale bundle happens to be on disk.
     command:
-      "npm --prefix ../../src/frontend run build" +
-      " && python3 -m http.server 5178 --bind 127.0.0.1 --directory ../../src/frontend/dist",
+      (process.env.CYCLEPAY_SKIP_BUILD === "1"
+        ? ""
+        : "npm --prefix ../../src/frontend run build:fixtures && ") +
+      "python3 -m http.server 5178 --bind 127.0.0.1 --directory ../../src/frontend/dist-fixtures",
     url: "http://localhost:5178",
-    reuseExistingServer: !process.env.CI,
+    // NEVER reuse. The command here is "build, then serve", so a reused server is
+    // serving whatever bundle the last run happened to leave on disk: edit the
+    // CSS, re-run, and the suite reports green against the code you just changed
+    // without ever having loaded it. That happened twice while these specs were
+    // being written, and both times the wrong conclusion was drawn from it before
+    // the cause was found. The cost of not reusing is one rebuild, a few seconds.
+    reuseExistingServer: false,
     timeout: 180_000,
   },
 });

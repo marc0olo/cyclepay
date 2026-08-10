@@ -4,35 +4,65 @@
 /// The shape of the bug: two `ic_env` cookies for one origin, advertising
 /// different backend canister ids. `document.cookie` lists the stale copy first
 /// and `safeGetCanisterEnv` takes the first match, so the app builds its actor
-/// against a canister that no longer exists and every call rejects with
-/// **IC0536** (canister not found). Nothing in the UI explains it, the page looks
-/// broken, and clearing site data is not something a visitor will guess.
-///
-/// They coexist rather than replacing each other because a partitioned and an
-/// unpartitioned cookie live in separate jars (see the measured attributes
-/// below), so a copy written under one configuration survives alongside a fresh
-/// one written under another.
+/// against a canister that no longer exists and every call fails. Nothing in the
+/// UI explains it, the page looks broken, and clearing site data is not something
+/// a visitor will guess.
 ///
 /// Two things make this worth code rather than a note in a README:
 ///   - it presents as "the gateway is down" when the gateway is fine, and
 ///   - `cookieStore.delete` silently does nothing on a partitioned cookie unless
 ///     `partitioned: true` is passed, so the obvious cleanup does not work.
 ///
-/// What is **measured**, what is **reported**, and what is **inferred** — kept
-/// apart on purpose, because an earlier version of this comment stated a guess as
-/// fact and got the mainnet/local behaviour backwards.
+/// What is **measured**, what is **reported**, and what is **inferred** are kept
+/// apart below, each with its source. Three successive versions of this comment
+/// stated a guess as fact — including the error code this module keys on, which
+/// was wrong for four rounds.
 ///
-/// MEASURED — `Set-Cookie` attributes, read from live responses and source:
+/// ── MEASURED ────────────────────────────────────────────────────────────────
 ///
-///   mainnet asset canister:  Partitioned; SameSite=None; Secure; Max-Age=31536000; Path=<certified>
-///   local gateway:                        SameSite=Lax;  secure; Max-Age=31536000; Path=<certified>
-///   vite dev server:                      SameSite=Lax                (no Path, no Max-Age)
+/// **What a missing canister actually returns.** Probed against a local network
+/// (icp-cli 1.2.0, network launcher v15.0.0-2026-07-17-04-19) on 2026-08-10, with
+/// `@icp-sdk/core` 5.3, calling a well-formed but unallocated canister id
+/// (`e5xzy-miaaa-aaaah-7777q-cai`):
 ///
-/// So the **partitioned** variant is the MAINNET one, and production serves
-/// `ic_env` exactly as local does. An earlier comment claimed the opposite of
-/// both.
+///   class:  ProtocolError            (NOT a RejectError, and no reject code)
+///   status: HTTP 400 Bad Request
+///   body:   error: canister_not_found
+///           details: The specified canister does not exist.
 ///
-/// MEASURED — the resolver takes the first match, in
+/// Identical for a query and for an update. **`IC0536` appears nowhere in it.**
+///
+/// **What IC0536 actually is.** Same probe, calling a method that does not exist
+/// on a canister that does:
+///
+///   class:          RejectError, reject code 5
+///   rejectErrorCode: IC0536
+///   message:        Canister has no update method 'no_such_method_here'.
+///                   …/references/execution-errors#method-not-found
+///
+/// So the previous `/IC0536/` test matched **method-not-found** and could never
+/// match the condition this module exists for. The fallback `/[Cc]anister .* not
+/// found/` missed it too: the real body says `canister_not_found` with an
+/// underscore, and then "does not exist".
+///
+/// **`Set-Cookie` from the local gateway.** Complete response header, read on
+/// 2026-08-10 from `http://frontend.local.localhost:8000/`:
+///
+///   set-cookie: ic_env=…; SameSite=Lax
+///
+/// That is the whole header: no `Path`, no `Max-Age`, no `Secure`, no
+/// `Partitioned`. A previous table here claimed `secure; Max-Age=31536000;
+/// Path=<certified>` for this row, and none of it was there.
+///
+/// **Who writes it.** The same response certifies `Set-Cookie`
+/// (`ic-certificateexpression` lists it among the certified response headers) and
+/// carries `x-ic-canister-id: <frontend>`, so the **asset canister** emits this
+/// cookie, not the gateway.
+///
+/// **The vite dev server's copy**, from this repo: `vite.config.ts`
+/// `getDevServerConfig()` sets `ic_env=…; SameSite=Lax;` and nothing else.
+///
+/// **The resolver takes the first match**, in
 /// `@icp-sdk/core/src/agent/canister-env`:
 ///
 ///   document.cookie.split(';').find(c => c.trim().startsWith('ic_env='))
@@ -40,22 +70,38 @@
 /// With several cookies present, which one wins is cookie ordering, not anything
 /// this app controls.
 ///
-/// REPORTED — a stale cookie shadowing a fresh one, producing IC0536 on every
-/// call. Diagnosed against a running local network, but **not reproduced here**,
-/// so the exact provenance of the duplicate is not established.
+/// ── REPORTED, not measured here ─────────────────────────────────────────────
 ///
-/// INFERRED, and untested — how two copies come to coexist. A cookie is keyed on
-/// (name, domain, **path**) and the three writers above disagree on `Path`;
-/// partitioning adds a separate jar; cookies ignore the port, so a dev server on
-/// `localhost:5173` and a gateway on `localhost:8000` share one jar; and a
-/// one-year `Max-Age` lets a stale copy outlive any development cycle. Each is
-/// plausible and none has been demonstrated to be the cause.
+/// **The mainnet header**: `ic_env=…; Secure; SameSite=None; Partitioned` — one
+/// header, no `Max-Age` and no `Path`. Source: the retraction on
+/// **dfinity/icp-js-core#1384**, which corrected an earlier table built by
+/// grepping a whole response instead of the `Set-Cookie` line.
+///
+/// Not measurable from this repo yet, and that is itself measured: `nns.ic0.app`,
+/// `identity.internetcomputer.org` and `oc.app` return **no `Set-Cookie` at all**
+/// (checked 2026-08-10). `ic_env` comes from the icp-cli asset-canister recipe, so
+/// seeing it on mainnet needs a canister deployed that way, and this project has
+/// not deployed one.
+///
+/// **A stale cookie shadowing a fresh one.** Diagnosed against a running local
+/// network but **not reproduced here**, so the provenance of the duplicate is not
+/// established.
+///
+/// ── INFERRED, untested ──────────────────────────────────────────────────────
+///
+/// How two copies come to coexist. A cookie is keyed on (name, domain, path), and
+/// a partitioned cookie lives in a separate jar from an unpartitioned one, so a
+/// copy written under one configuration can survive beside a fresh one written
+/// under another. Cookies ignore the port, so a dev server on `localhost:5173` and
+/// a gateway on `localhost:8000` share a jar. Whether the recipe adds `Secure` and
+/// `Partitioned` conditionally on https — which is what would make the mainnet and
+/// local headers differ at all, given the same canister code emits both — is
+/// likewise not established here.
 ///
 /// The guard does not depend on any of that being right: it no-ops unless two
 /// cookies advertise *different* backend ids, which is correct everywhere. The
 /// real fix belongs upstream, tracked on **dfinity/icp-js-core#1384**: the
-/// resolver is in `@icp-sdk/core`, and the one-year cookie lifetime is context
-/// there rather than a separate issue.
+/// resolver is in `@icp-sdk/core`.
 
 /// One `ic_env` cookie's decoded key/value pairs, with the raw value kept so a
 /// caller can tell two copies apart.
@@ -116,13 +162,31 @@ export function hasConflictingIcEnv(cookieString: string): boolean {
   return distinctBackendIds(parseIcEnvCookies(cookieString)).length > 1;
 }
 
-/// Does this error look like "the canister id I called does not exist"?
+/// Does this error say "the canister id I called does not exist"?
 ///
-/// IC0536 is the replica's canister-not-found code. Matched on the code rather
-/// than message prose, which is not a stable interface.
+/// Keyed on `canister_not_found`, which is the machine-readable identifier the
+/// gateway puts in the 400 response body — see the MEASURED section at the top of
+/// this file for the probe it came from. Not on the prose beside it, and not on a
+/// reject code, because this failure carries none.
+///
+/// It used to test for `IC0536`. That code is **method-not-found**, so the test
+/// matched a completely different failure and never matched this one. The
+/// stale-cookie self-heal's trigger was therefore unexercised for four rounds of
+/// review while the comment above it asserted the opposite.
 export function isCanisterNotFound(error: unknown): boolean {
-  const text = error instanceof Error ? error.message : String(error);
-  return /IC0536/.test(text) || /[Cc]anister .* not found/.test(text);
+  return /canister_not_found/.test(errorText(error));
+}
+
+/// Everything an agent error can carry the identifier in.
+///
+/// `message` already embeds the response body for a `ProtocolError`, but the body
+/// is also on `error.code.bodyText`, and reading both costs nothing and survives a
+/// change to how the SDK formats its messages.
+function errorText(error: unknown): string {
+  const parts = [error instanceof Error ? error.message : String(error)];
+  const body = (error as { code?: { bodyText?: unknown } } | null)?.code?.bodyText;
+  if (typeof body === "string") parts.push(body);
+  return parts.join("\n");
 }
 
 /// Delete every `ic_env` cookie this document can reach.
@@ -160,6 +224,11 @@ type CookieStoreLike = {
 /// `probe` is injected rather than imported so this stays testable and so the
 /// caller owns actor construction. The first candidate that resolves wins; if
 /// none do, null means "this is not a stale-cookie problem".
+///
+/// **Order is the caller's decision, and it matters.** When exactly one candidate
+/// answers, order is irrelevant. When more than one does, this returns whichever
+/// comes first, and nothing in a cookie says which copy is fresher — so the caller
+/// has to choose deliberately and say why (see `resolveStaleIcEnv` in main.ts).
 export async function resolveLiveBackendId(
   candidates: string[],
   probe: (canisterId: string) => Promise<unknown>,

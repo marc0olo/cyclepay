@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:fixtures": "CYCLEPAY_FIXTURES=1 vite build --outDir dist-fixtures",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

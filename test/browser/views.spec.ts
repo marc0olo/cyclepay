@@ -1,4 +1,10 @@
-import { test, expect } from "./fixtures";
+import {
+  test,
+  expect,
+  openFixtureOrder,
+  signInAsFixtureBuyer,
+  useFixtureBackend,
+} from "./fixtures";
 
 /// One view owns the screen, and Back works. Both are layout facts, so they
 /// belong here rather than in jsdom.
@@ -36,10 +42,32 @@ test.describe("view routing", () => {
     await expect(page.locator("#view-landing")).toBeVisible();
   });
 
-  test("the orders link is absent with no orders", async ({ page }) => {
-    // Signed out and with no history, a "Your orders" link leads nowhere.
+  // Two different reasons for the same absence, and the old single spec could not
+  // tell them apart: it asserted "hidden while signed out with no orders", which
+  // passes if the link is hidden for either reason, or for a third one nobody
+  // intended. Each condition now has its own spec.
+  test("the orders link is absent while signed OUT", async ({ page }) => {
     await page.goto("/");
+    await expect(page.locator("#auth-area").getByRole("button")).toHaveText(/sign in/i);
     await expect(page.locator("#history-link")).toBeHidden();
+  });
+
+  test("the orders link is absent for a signed-IN buyer with no orders", async ({ page }) => {
+    // The condition the previous spec could not reach at all: a session with an
+    // empty history. `orderCount > 0 && identity !== null` could have lost either
+    // half and stayed green.
+    await page.goto("/");
+    await useFixtureBackend(page);
+    await signInAsFixtureBuyer(page);
+    await expect(page.locator("#auth-area .principal")).toBeVisible();
+    await expect(page.locator("#history-link")).toBeHidden();
+  });
+
+  test("the orders link appears once there is an order behind it", async ({ page }) => {
+    await page.goto("/");
+    await signInAsFixtureBuyer(page);
+    await openFixtureOrder(page, { status: "delivered" });
+    await expect(page.locator("#history-link")).toBeVisible();
   });
 });
 

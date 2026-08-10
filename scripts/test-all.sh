@@ -78,6 +78,20 @@ run "frontend build — regenerate bindings" npm --prefix src/frontend run build
 run "frontend typecheck" npm --prefix src/frontend run typecheck
 run "frontend tests" npm --prefix src/frontend run test
 
+# The test-only fixture hook (src/frontend/src/fixtures.ts) exists behind a
+# `define`d `__FIXTURES__` so the browser specs can reach the post-purchase
+# surfaces. Its absence from the SHIPPING bundle is the whole basis for letting it
+# exist, and dead-code elimination is a compiler behaviour rather than a promise —
+# so it is checked here against the bytes that would be deployed.
+step=$((step + 1))
+printf '\n\033[1m── %d. %s\033[0m\n' "$step" "no test hooks in the shipping bundle"
+if grep -rl "__cyclepayFixtures" src/frontend/dist >/dev/null 2>&1; then
+  printf '\n\033[31m✗ the fixture hook is present in src/frontend/dist — a fixtures build was left in the shipping output\033[0m\n' >&2
+  grep -rl "__cyclepayFixtures" src/frontend/dist >&2
+  exit 1
+fi
+printf '   dist/ carries no fixture hook\n'
+
 # Brand guidelines: the mechanically checkable rules only (banned characters,
 # banned vocabulary, hardcoded colour, the no-auto-dark rule). Typography and
 # hierarchy still need eyes.
@@ -91,11 +105,19 @@ run "brand lint — user-facing copy and tokens" bash scripts/brand-lint.sh
 if [ -d test/browser/node_modules ]; then
   run "browser specs — cascade, layout, reachability" npm --prefix test/browser test
 else
-  printf '\n\033[33m⚠ skipped the browser specs (run: npm --prefix test/browser ci)\033[0m\n'
+  # FAILS, rather than warning and carrying on to a green tick. Nobody asked for
+  # this skip: it means the dependency is not installed, and the fix is one
+  # command. Every frontend claim in this gate — that a view is on screen, that
+  # the delivered tour renders, that a poll does not repaint a dead view — is
+  # unverified without it, and a yellow line above "✓ gate passed" is not how you
+  # tell someone that.
+  printf '\n\033[31m✗ the browser specs cannot run, so nothing about the frontend is verified.\033[0m\n' >&2
+  printf '\033[31m  Install them:  npm --prefix test/browser ci && npx --prefix test/browser playwright install chromium\033[0m\n' >&2
+  exit 1
 fi
 
 if [ "$FAST" -eq 1 ]; then
-  printf '\n\033[33m⚠ skipped the PocketIC suite (--fast). The go-live bar is UNVERIFIED.\033[0m\n'
+  printf '\n\033[31m⚠ skipped the PocketIC suite (--fast)\033[0m\n' >&2
 else
   # `npm test` and never `npx vitest run`: the latter skips pretest, which fetches
   # the sha256-pinned wasms and rebuilds the backend — so it would silently test a
@@ -107,4 +129,13 @@ else
     npm --prefix test/integration test
 fi
 
-printf '\n\033[32m✓ gate passed\033[0m\n'
+# One summary line, and it must not say "passed" when a suite did not run. --fast
+# is an explicit request so it still exits 0, but a green tick after an admitted
+# skip is the thing that lets "the gate is green" be quoted for a run that never
+# checked the go-live bar.
+if [ "$FAST" -eq 1 ]; then
+  printf '\n\033[31m✗ gate INCOMPLETE: everything except the PocketIC suite passed.\033[0m\n' >&2
+  printf '\033[31m  The go-live bar is UNVERIFIED. Run without --fast before claiming it.\033[0m\n' >&2
+else
+  printf '\n\033[32m✓ gate passed\033[0m\n'
+fi
