@@ -43,16 +43,9 @@ export default defineConfig({
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    // CYCLEPAY_SKIP_BUILD exists for one job: regenerating the `-linux` screenshot
-    // baselines inside the Playwright container (see visual.spec.ts). The bundle
-    // is built on the host, because the container cannot reuse a macOS
-    // node_modules — vite's native binaries are per-platform. Never set it in CI or
-    // locally: it would serve whatever stale bundle happens to be on disk.
     command:
-      (process.env.CYCLEPAY_SKIP_BUILD === "1"
-        ? ""
-        : "npm --prefix ../../src/frontend run build:fixtures && ") +
-      "python3 -m http.server 5178 --bind 127.0.0.1 --directory ../../src/frontend/dist-fixtures",
+      "npm --prefix ../../src/frontend run build:fixtures" +
+      " && python3 -m http.server 5178 --bind 127.0.0.1 --directory ../../src/frontend/dist-fixtures",
     url: "http://localhost:5178",
     // NEVER reuse. The command here is "build, then serve", so a reused server is
     // serving whatever bundle the last run happened to leave on disk: edit the

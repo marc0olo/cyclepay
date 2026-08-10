@@ -19,22 +19,24 @@ import { test, expect, useFixtureBackend } from "./fixtures";
 /// because font rasterisation differs. CI runs ubuntu-latest x86_64, so the
 /// `-linux` files are the ones it compares against and both sets are committed.
 ///
-/// The linux set is generated in the image CI's own action installs, pinned to the
-/// same Playwright version, and forced to amd64 so the rasterisation matches CI
-/// rather than the arm64 host. It builds NOTHING inside the container — a macOS
-/// `node_modules` cannot run there — and it works on a COPY, because
-/// `test/browser/node_modules` is committed in this repo and an `npm ci` inside the
-/// container would rewrite it with linux artifacts:
+/// **The `-linux` set has to come from the CI runner itself.** Generating it in
+/// `mcr.microsoft.com/playwright:v1.62.1-noble` at `--platform linux/amd64` —
+/// the same image and architecture CI uses — was tried first and produced ~2,400
+/// differing pixels against the runner, all of it text antialiasing. Same image is
+/// not the same rasteriser.
 ///
-///   npm --prefix src/frontend run build:fixtures
-///   docker run --rm --platform linux/amd64 -v "$PWD:/w" \
-///     mcr.microsoft.com/playwright:v1.62.1-noble bash -lc '
-///       mkdir -p /run/b/test/browser /run/b/src/frontend
-///       cp /w/test/browser/*.ts /w/test/browser/package*.json /run/b/test/browser/
-///       cp -r /w/src/frontend/dist-fixtures /run/b/src/frontend/dist-fixtures
-///       cd /run/b/test/browser && npm ci
-///       CYCLEPAY_SKIP_BUILD=1 npx playwright test visual.spec.ts --update-snapshots
-///       cp visual.spec.ts-snapshots/*linux.png /w/test/browser/visual.spec.ts-snapshots/'
+/// So the procedure is: push, let CI fail, and take its own renders. The
+/// `browser-failures` artifact (uploaded on failure by the workflow) contains
+/// `*-actual.png` for every mismatch. **Look at them**, then copy them over the
+/// `-linux` baselines and push again. Two consecutive attempts in one CI run were
+/// byte-identical, so the runner is deterministic enough for this to be stable
+/// until the runner image itself changes.
+///
+/// Tolerance stays at Playwright's default (zero differing pixels above the 0.2
+/// colour threshold) on purpose. The defect these baselines found — a 5px dot and
+/// a 1px hairline painted over four digits — is about a hundred pixels, so any
+/// tolerance loose enough to absorb cross-environment noise would also have hidden
+/// it. Regenerating on a runner-image bump is the price of that.
 ///
 /// The market comes from the fixture backend, so the amounts, the rate strip and
 /// the fee line are fixed numbers rather than whatever a gateway last said. Under
