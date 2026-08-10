@@ -8,6 +8,7 @@ import {
   distinctBackendIds,
   hasConflictingIcEnv,
   isCanisterNotFound,
+  isWrongBackendId,
   resolveLiveBackendId,
 } from "./ic-env";
 
@@ -90,11 +91,29 @@ describe("recognising the failure", () => {
     expect(isCanisterNotFound(structured)).toBe(true);
   });
 
-  test("IC0536 is METHOD-not-found and must not trigger the self-heal", () => {
-    // The defect this pins. Keying on IC0536 matched this error — a bug in the
-    // caller's own code — and offered the visitor a cookie to clear, while the
-    // condition the self-heal exists for went unrecognised.
+  test("IC0536 is METHOD-not-found, and is not canister-not-found", () => {
+    // The defect this pins. Keying the matcher on IC0536 matched this error — a
+    // bug in the caller's own code — while the condition the self-heal exists for
+    // went unrecognised.
     expect(isCanisterNotFound(new Error(METHOD_NOT_FOUND))).toBe(false);
+  });
+
+  test("BOTH signatures mean the id is not our backend", () => {
+    // The trap on the far side of that correction. A stale `ic_env` can name an id
+    // that no longer exists (→ canister_not_found) or one that exists and is a
+    // different canister (→ IC0536). The reported failure was the SECOND: the
+    // cookie's backend entry held the frontend canister's id, which answers
+    // everything except the methods this app calls. A self-heal keyed on absence
+    // alone would miss it.
+    expect(isWrongBackendId(new Error(CANISTER_NOT_FOUND))).toBe(true);
+    expect(isWrongBackendId(new Error(METHOD_NOT_FOUND))).toBe(true);
+  });
+
+  test("neither an outage nor an unrelated trap is a wrong backend id", () => {
+    // The gate in main.ts pairs this with `hasConflictingIcEnv`, because IC0536
+    // with one correct cookie is our own stale bindings and no cookie will fix it.
+    expect(isWrongBackendId(new Error("fetch failed"))).toBe(false);
+    expect(isWrongBackendId(new Error("IC0503: trapped explicitly"))).toBe(false);
   });
 
   test("an ordinary outage is not mistaken for a stale cookie", () => {

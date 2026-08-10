@@ -177,6 +177,30 @@ export function isCanisterNotFound(error: unknown): boolean {
   return /canister_not_found/.test(errorText(error));
 }
 
+/// Does this error mean "the id I called is not this app's backend"?
+///
+/// One root cause, two measured wire formats, because a stale `ic_env` can name
+/// either kind of id:
+///
+///   - an id that no longer exists → `canister_not_found`, above
+///   - an id that exists but is a **different canister** → IC0536, method-not-found
+///
+/// The second is the case actually reported: the stale cookie's `backend` entry
+/// held the **frontend** canister's id. That canister exists and answers; it simply
+/// has no `card_tiers`. So a self-heal keyed on absence alone would miss the very
+/// failure it was written for — which is the trap on the other side of the IC0536
+/// correction, and why both signatures are named here rather than one replacing
+/// the other.
+///
+/// **Only meaningful behind a conflicting-cookie check.** On its own, IC0536 means
+/// this app called a method its backend does not export — our bug, typically stale
+/// bindings after an interface change — and telling that visitor to clear a cookie
+/// sends them after something that is not there. `main.ts` gates it on
+/// `hasConflictingIcEnv` for exactly that reason.
+export function isWrongBackendId(error: unknown): boolean {
+  return isCanisterNotFound(error) || /IC0536/.test(errorText(error));
+}
+
 /// Everything an agent error can carry the identifier in.
 ///
 /// `message` already embeds the response body for a `ProtocolError`, but the body

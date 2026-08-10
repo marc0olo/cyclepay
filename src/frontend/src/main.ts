@@ -25,7 +25,7 @@ import {
   clearIcEnvCookies,
   distinctBackendIds,
   hasConflictingIcEnv,
-  isCanisterNotFound,
+  isWrongBackendId,
   parseIcEnvCookies,
   resolveLiveBackendId,
 } from "./ic-env";
@@ -1716,15 +1716,21 @@ async function loadMarketWithRetry(): Promise<void> {
     marketState = "failed";
     // eslint-disable-next-line no-console
     console.error("market load failed", error);
-    // A canister-not-found rejection **with conflicting cookies present** is the
+    // A wrong-backend-id failure **with conflicting cookies present** is the
     // stale-cookie case, not an outage. Naming it is the whole difference between
     // a 30-second fix and an unexplained broken page.
     //
-    // Both halves are required. A missing canister with a single, correct cookie
-    // is an ordinary bad deployment, and telling that visitor to clear a stale
-    // cookie sends them after a cookie that is not there while the real cause
+    // Both halves are required, in both directions. A missing canister with a
+    // single correct cookie is an ordinary bad deployment; an IC0536 with a single
+    // correct cookie is our own stale bindings. Telling either visitor to clear a
+    // cookie sends them after something that is not there while the real cause
     // goes unnamed.
-    if (staleCookieDetected || (isCanisterNotFound(error) && hasConflictingIcEnv(document.cookie))) {
+    //
+    // Reached only when the init-time probe found nothing live: whenever it does
+    // find a live id, `staleCookieDetected` short-circuits this. So this arm is the
+    // both-copies-dead case, which is precisely when the visitor most needs to be
+    // told it is their cookies and not the gateway.
+    if (staleCookieDetected || (isWrongBackendId(error) && hasConflictingIcEnv(document.cookie))) {
       renderStaleCookieNotice(line);
       renderTiers();
       renderSubmitGate();
