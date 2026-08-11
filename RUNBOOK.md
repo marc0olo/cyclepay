@@ -210,6 +210,25 @@ Dashboard page is <https://dashboard.stripe.com/payment-links> — deliberately 
 reproduced here as a click path, because Stripe moves its UI and a stale click path
 is worse than none.
 
+**Register the bare URL, and leave the Dashboard's URL-parameter field EMPTY.**
+The Dashboard offers a "URL parameters" dialog (*URL-Parameter*) where you can bake
+a **Client reference ID** (*Client-Referenz-ID*) into the link before copying it.
+That is for people with no application; do not use it. The frontend appends
+`?client_reference_id=<principal>_<orderId>` **per order** at runtime, and it
+appends unconditionally — so a link that already carries one arrives as
+`?client_reference_id=STATIC&client_reference_id=REAL`. Stripe honours one of them,
+and every payment then resolves to the wrong order or to none: a Type 1 queue entry
+each time, money in and nothing minted.
+
+For the same reason, never hand a buyer the bare link. Only the button on the order
+page produces a payable URL.
+
+**Include the `https://` scheme.** The Dashboard displays links as
+`buy.stripe.com/test_…` without it. The value is used verbatim as an anchor `href`,
+so a scheme-less one resolves as a **relative path** — the button then navigates to
+`https://<your-origin>/buy.stripe.com/test_…` and 404s. Nothing validates this
+(see below), so it presents as "the pay button is broken".
+
 What is specific to this system, and is not in Stripe's docs:
 
 - **One-time price, never recurring.** A subscription-mode link produces sessions

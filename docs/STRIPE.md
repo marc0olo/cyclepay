@@ -171,6 +171,16 @@ Payment Link is always live, so anyone can pay it with any reference they like.
 Every dollar that arrives must therefore resolve to one of: delivery, Type 1, or
 Type 2 — never to a silent accept.
 
+It is a **pointer, not a credential**, and that is what makes it safe to put in a
+URL. The order id is 16 bytes of `raw_rand`, so a reference cannot be guessed; and
+forging one gains nothing, because the claimed principal must equal the order's
+stored owner, so the best an attacker achieves is paying for somebody else's order.
+
+The value is appended **by the frontend, per order** — it is never configured
+anywhere. The Stripe Dashboard's URL-parameter dialog can bake a static one into a
+link, which would break attribution for every buyer; RUNBOOK §3 says to leave it
+empty.
+
 `handleCheckout` (`Card.mo`) re-derives and checks everything:
 
 | Check | Failure |
