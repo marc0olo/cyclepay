@@ -176,19 +176,27 @@ step "card tiers"
 #
 #   export STRIPE_LINK_T5=https://buy.stripe.com/test_xxx
 #   export STRIPE_LINK_T20=…  STRIPE_LINK_T50=…
-PLACEHOLDER="https://buy.stripe.com/PLACEHOLDER-set-STRIPE_LINK_T5"
-LINK_T5="${STRIPE_LINK_T5:-$PLACEHOLDER}"
-LINK_T20="${STRIPE_LINK_T20:-$PLACEHOLDER}"
-LINK_T50="${STRIPE_LINK_T50:-$PLACEHOLDER}"
+# Each unset link gets a placeholder naming ITS OWN variable, and every unset one
+# is reported. Previously all three fell back to a single placeholder that said
+# "set STRIPE_LINK_T5", and the warning was gated on T5 alone — so setting T5 and
+# forgetting T20/T50 printed "3 tiers with your Stripe links" over two dead links.
+link_for() { printf '%s' "${!1:-https://buy.stripe.com/PLACEHOLDER-set-$1}"; }
+LINK_T5="$(link_for STRIPE_LINK_T5)"
+LINK_T20="$(link_for STRIPE_LINK_T20)"
+LINK_T50="$(link_for STRIPE_LINK_T50)"
+MISSING=""
+for var in STRIPE_LINK_T5 STRIPE_LINK_T20 STRIPE_LINK_T50; do
+  [ -n "${!var:-}" ] || MISSING="$MISSING $var"
+done
 icp canister call backend set_card_tiers \
   "(vec { record { id = \"t5\"; usdCents = 500 : nat; paymentLinkUrl = \"$LINK_T5\" };
           record { id = \"t20\"; usdCents = 2_000 : nat; paymentLinkUrl = \"$LINK_T20\" };
           record { id = \"t50\"; usdCents = 5_000 : nat; paymentLinkUrl = \"$LINK_T50\" } })" \
   >/dev/null || die "set_card_tiers failed"
-if [ "$LINK_T5" = "$PLACEHOLDER" ]; then
-  printf '  \033[33m·\033[0m 3 tiers ($5 / $20 / $50) with PLACEHOLDER payment links.\n'
-  printf '    "Pay with card" will land on a Stripe AccessDenied page until you set\n'
-  printf '    STRIPE_LINK_T5 / _T20 / _T50 and re-run. Everything up to that point works.\n'
+if [ -n "$MISSING" ]; then
+  printf '  \033[33m·\033[0m 3 tiers ($5 / $20 / $50), but PLACEHOLDER links for:%s\n' "$MISSING"
+  printf '    Those tiles create a real order and then land on a Stripe AccessDenied\n'
+  printf '    page. Set the variables above and re-run. Everything else works.\n'
 else
   ok "3 tiers (\$5 / \$20 / \$50) with your Stripe links"
 fi

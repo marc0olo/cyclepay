@@ -45,7 +45,7 @@ This is the decision the rest of the design hangs off:
 | Nothing to steal | A full compromise of canister state yields no Stripe credential. The only secret is the webhook *signing* secret, which can forge inbound webhooks but cannot touch the Stripe account, customers, or payouts (§13). |
 | Refunds are manual | The canister structurally cannot issue a refund. Every refund is a human action in the Stripe Dashboard (§11). |
 | No subscriptions or auto-refill | Both require charging a stored payment method, i.e. an outbound API key. Explicitly out of scope. |
-| Payment amounts are pinned by URL | The canister cannot create prices, so tiers are permanent Payment Links the operator makes in the Dashboard and registers on-chain. |
+| Payment amounts are pinned by URL | The canister cannot create prices, so tiers are permanent Payment Links the operator makes in the Dashboard and registers on-chain. The pin is only as good as the link's configuration — see RUNBOOK §3 for the four settings that break it. |
 
 **The canister makes no outbound HTTPS at all.** Not to Stripe, and not to
 anything else: pricing reads two on-chain canisters — the Exchange Rate Canister
@@ -620,8 +620,15 @@ query themselves and confirm they were charged correctly.
 
 ### Stripe Dashboard setup
 
-1. Create one **Payment Link** per price point, in USD, card-only.
-2. Register them with `set_card_tiers`.
+1. Create one **Payment Link** per price point, in USD, card-only, with a **fixed**
+   price and with adjustable quantity, promotion codes and automatic tax all
+   **off**. Those four settings are what keep `amount_total == tier.usdCents`; see
+   RUNBOOK §3 for what each one does if enabled. The failure mode is not an error —
+   the order delivers a different cycle quantity and looks successful.
+2. Register them with `set_card_tiers`. The URL is **not validated** (Stripe custom
+   checkout domains make a host allowlist wrong), so click each tile once on the
+   deployed site: a wrong link still creates an order, locks a rate and consumes an
+   open-order slot before dead-ending.
 3. Create a webhook endpoint pointing at
    `https://<canister-id>.icp0.io/webhook/stripe`, subscribed to exactly
    **`checkout.session.completed`** and **`charge.refunded`**.

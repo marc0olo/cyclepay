@@ -99,10 +99,12 @@ consciously set. Work the list in order:
    `icp canister call backend set_expected_livemode '(opt true)' -e ic --identity <operator>`.
    Until this is set, a test-mode webhook secret would mint **real** cycles for
    payments that never happened. Verify with `expected_livemode`.
-12. **Pin the Payment Link to card-only** in the Stripe Dashboard. Links enable
-   several delayed payment methods by default. Delayed settlement *is* handled
-   (`checkout.session.async_payment_succeeded` mints correctly), but card-only
-   keeps money-in synchronous and the timeline predictable.
+12. **Configure every Payment Link per §3's table**, then click each tile once on
+   the deployed site. Card-only, USD, a fixed price, and adjustable quantity,
+   promotion codes and automatic tax all **off**. Those settings are what make
+   `amount_total == tier.usdCents` true, and when it is not true nothing fails —
+   the order silently delivers a different cycle quantity. The URL itself is not
+   validated, so a typo is only discovered by a buyer.
 13. **Add a backup controller.** A single controller identity with no backup
    means a lost key makes the canister permanently un-upgradeable; there is no
    recovery path (§0 covers the trust model this implies).
@@ -195,6 +197,51 @@ creation time from the cached rate pair; changing tier prices never reprices
 existing orders. The actual paid amount is honored — a Stripe-side price
 edit mid-flight reprices from the order's own creation-time snapshot, never
 from a fresh rate.
+
+### How each Payment Link must be configured
+
+The whole tier model rests on one invariant: **the session's `amount_total`
+equals the tier's `usdCents`.** The canister reads `data.object.amount_total`,
+which Stripe defines as the total *after discounts and taxes*. When it does not
+match, nothing fails — `Card.honoredCycles` reprices from the order's own rate
+snapshot and delivers a different quantity, and the audit log shows an ordinary
+completed purchase. There is no alert for this.
+
+Four Dashboard settings break that invariant. All four default to off, so a plain
+fixed-price link is correct; each is one checkbox away from not being.
+
+| Setting | Must be | If enabled |
+|---|---|---|
+| Pricing model | a **fixed** price (`unit_amount`) | "Customers choose price" (`custom_unit_amount`) lets the buyer set `amount_total`; the quantity quoted before payment becomes a guess |
+| Adjustable quantity | **off** | `amount_total` becomes unit × qty, bounded only by `maxPurchaseUsdCents` — a buyer can take far more than the tier |
+| Allow promotion codes | **off** | lowers `amount_total`; the buyer silently receives fewer cycles than the tile promised them |
+| Automatic tax / Stripe Tax | **off** | raises `amount_total`; cycles get minted against tax money you owe a tax authority, and it looks like a successful purchase |
+
+Plus the two already in §1: **USD** (any other currency is refused as
+`#unattributed`, which is a Type 1 obligation and a manual refund) and
+**card-only** (delayed methods are handled, but they make money-in asynchronous).
+
+⚠️ **`paymentLinkUrl` is not validated.** `Tiers.validate` checks ids and amounts,
+not the URL — it is not parsed, and the host is not checked (deliberately: Stripe
+supports custom checkout domains, so a `buy.stripe.com` allowlist would reject a
+legitimate setup). A typo is accepted and the buyer finds out: the order is created,
+the rate is locked, an open-order slot is consumed, and the link 404s or answers
+`AccessDenied`. **In production a wrong link is worse than no tier at all** — with
+no tier the buyer cannot start; with a wrong one they get a live unpaid order that
+sits until the TTL expires it. Paste the links, then click each tile once on the
+deployed site before announcing it.
+
+### What the app does with no links
+
+An empty tier vector is the rail's off switch, and it fails closed cleanly: the
+frontend renders "No amounts are configured yet." (distinct from "Amounts could not
+be loaded", which is a network claim), and `create_order` answers
+`#unknownTier` for any id. Nothing is half-open.
+
+`scripts/local-dev-seed.sh` fills in **placeholder** links for any of
+`STRIPE_LINK_T5` / `_T20` / `_T50` you have not exported, names the missing
+variables in its output, and is for local development only. Those tiles create real
+orders and then dead-end on Stripe.
 
 ## 4. Pricing rates (§3.1)
 

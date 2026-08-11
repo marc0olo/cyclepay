@@ -55,8 +55,12 @@ stripe login                                    # a SANDBOX account, never live
 npm --prefix test/integration run fetch:wasm    # the sha256-pinned xrc mock
 npm --prefix test/browser ci                    # only if you also want the suites
 
-# 1. A sellable local gateway. Paste your own Payment Links, or the "Pay with card"
-#    button lands on a Stripe AccessDenied page.
+# 1. A sellable local gateway. Paste your own Payment Links; any you leave unset get
+#    a placeholder, and the script names which. A placeholder tile still creates a
+#    real order and then dead-ends on Stripe.
+#    Configure each link as RUNBOOK §3 requires — fixed price, USD, card-only, and
+#    adjustable quantity / promotion codes / automatic tax all off. Sandbox links
+#    with a "wrong" setting will not error; they deliver a different cycle quantity.
 export STRIPE_LINK_T5=https://buy.stripe.com/test_...
 export STRIPE_LINK_T20=https://buy.stripe.com/test_...
 export STRIPE_LINK_T50=https://buy.stripe.com/test_...
