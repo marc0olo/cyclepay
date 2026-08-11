@@ -243,12 +243,22 @@ completed purchase. There is no alert for this.
 Four Dashboard settings break that invariant. All four default to off, so a plain
 fixed-price link is correct; each is one checkbox away from not being.
 
-| Setting | Must be | If enabled |
+The German Dashboard labels are given too, because that is where these get set and
+two of the five are easy to mistake for harmless conveniences.
+
+| Setting (Dashboard / German) | Must be | If enabled |
 |---|---|---|
-| Pricing model | a **fixed** price (`unit_amount`) | "Customers choose price" (`custom_unit_amount`) lets the buyer set `amount_total`; the quantity quoted before payment becomes a guess |
-| Adjustable quantity | **off** | `amount_total` becomes unit × qty, bounded only by `maxPurchaseUsdCents` — a buyer can take far more than the tier |
-| Allow promotion codes | **off** | lowers `amount_total`; the buyer silently receives fewer cycles than the tile promised them |
-| Automatic tax / Stripe Tax | **off** | raises `amount_total`; cycles get minted against tax money you owe a tax authority, and it looks like a successful purchase |
+| Pricing model — *Kunden wählen den Preis* | a **fixed**, **one-time** price (`unit_amount`) | "Customers choose price" (`custom_unit_amount`) lets the buyer set `amount_total`; the quantity quoted before payment becomes a guess. Recurring is worse — see above |
+| Adjustable quantity — *Anpassbare Menge* | **off** | `amount_total` becomes unit × qty, bounded only by `maxPurchaseUsdCents` — a buyer can take far more than the tier |
+| Allow promotion codes — *Promo-Codes zulassen* | **off** | lowers `amount_total`; the buyer silently receives fewer cycles than the tile promised them |
+| Automatic tax — *Steuer automatisch einziehen* | **off** | raises `amount_total`; cycles get minted against tax money you owe a tax authority, and it looks like a successful purchase |
+| Limit the number of payments — *Anzahl der Zahlungen einschränken* | **off** | one link serves **every** buyer of that tier, forever. A redemption cap silently retires the tier once it is reached: the tile still quotes, the order is still created, and the link then refuses everyone |
+
+The first two are set on the product/price step, the last three on the link's own
+options screen. Everything else on that screen (customer name, business name,
+address, phone, custom fields, tax IDs, saving payment details, Managed Payments)
+leaves `amount_total` alone. Leave them off regardless: the shortest checkout is the
+one that asks a newcomer buying $5 of cycles for nothing but a card.
 
 Plus the two already in §1: **USD** (any other currency is refused as
 `#unattributed`, which is a Type 1 obligation and a manual refund) and
