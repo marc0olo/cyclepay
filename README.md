@@ -101,6 +101,22 @@ scripts/local-dev-seed.sh
 Without them the tiers carry a placeholder URL and "Pay with card" lands on a
 Stripe `AccessDenied` page. Everything up to that point works.
 
+Then wire the webhook, in its own terminal:
+
+```sh
+scripts/stripe-dev.sh                     # asserts the gateway can price, then forwards
+```
+
+The two scripts own different levers and the order matters: `local-dev-seed.sh` owns
+the money (tiers, treasury, float, the CMC rate, the canister's own cycles) and
+`stripe-dev.sh` owns Stripe (expected livemode, the forwarding session's signing
+secret, a dev-short order TTL). Run the seed first.
+
+**For the full buy → pay → deliver → link the CLI → see the cycles walkthrough,
+including the local Internet Identity step and how to prove the cycles arrived, see
+`docs/SANDBOX-TESTPLAN.md` → "The whole flow, in order, in a browser".** That is the
+one procedure; the rest of that file is scenarios and reference.
+
 ### Verify the deployment wiring
 
 ```sh

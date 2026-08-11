@@ -39,7 +39,73 @@ sender impersonation** and **time control**.
 PocketIC and on that port being open, and either could change between releases. The
 committed suites deliberately do not rely on it — it is a manual-testing convenience.
 
-### From nothing to a sellable local gateway
+### The whole flow, in order, in a browser
+
+This is **the** procedure. Everything below it in this file is either a group of
+scenarios to work through or a by-hand reference for one of these steps.
+
+What you have to supply: a **Stripe sandbox account** with the Stripe CLI logged in
+to it, and **one Payment Link per tier** in that account. Nothing else, and no
+mainnet.
+
+```sh
+# 0. Prerequisites, once.
+brew install stripe/stripe-cli/stripe jq
+stripe login                                    # a SANDBOX account, never live
+npm --prefix test/integration run fetch:wasm    # the sha256-pinned xrc mock
+npm --prefix test/browser ci                    # only if you also want the suites
+
+# 1. A sellable local gateway. Paste your own Payment Links, or the "Pay with card"
+#    button lands on a Stripe AccessDenied page.
+export STRIPE_LINK_T5=https://buy.stripe.com/test_...
+export STRIPE_LINK_T20=https://buy.stripe.com/test_...
+export STRIPE_LINK_T50=https://buy.stripe.com/test_...
+icp network start -d
+icp deploy
+scripts/local-dev-seed.sh
+
+# 2. Wire Stripe, in its own terminal. It asserts the gateway can price before it
+#    starts, and leaves the forwarder running until Ctrl-C.
+scripts/stripe-dev.sh
+```
+
+Then, in the browser at the frontend URL `icp deploy` printed
+(`http://frontend.local.localhost:8000/` with the default gateway port):
+
+1. **Pick an arm.** "I'm new here" is the arm worth testing: it asks no destination
+   question and sends the cycles to your own account, which is what makes steps 6
+   and 7 meaningful.
+2. **Sign in.** You get **local** Internet Identity automatically —
+   `http://id.ai.localhost:8000`, deployed by `ii: true` in `icp.yaml`, chosen by
+   `auth.ts` because the origin ends in `.localhost`. Nothing to configure, and a
+   production origin cannot take that branch. Register a passkey; it is throwaway
+   and local to this network, which is wiped by `icp network stop`.
+3. **Pick an amount and create the order.** The rate is locked here, not at payment.
+4. **Pay.** "Pay with card ↗" opens your Payment Link with `?client_reference_id=`
+   already appended — that reference is the whole attribution mechanism, so do not
+   open the bare link. Card `4242 4242 4242 4242`, any future expiry, any CVC.
+5. **Watch the page.** Leave the order tab open. The webhook arrives at the
+   forwarder, the mint runs, and the page reaches **delivered** on its own 3 s poll
+   with the guided tour leading. It should never need a reload.
+6. **Follow the tour.** Copy `icp identity link web dev --app <host>`, run it, then
+   `icp identity principal --identity dev` and compare with the principal the page
+   printed. **They must match.** A mismatch means the `--app` value did not match
+   this origin, and the balance will look empty.
+7. **Prove the cycles exist.**
+
+   ```sh
+   icp cycles balance --of-principal <the principal from step 6>
+   ```
+
+   This is the end of the flow the product promises, and the one thing no suite in
+   this repo proves.
+
+⚠️ **The CMC rate expires 15 minutes after seeding** and new orders are then refused
+(an existing order is unaffected — its rate is locked). Refresh with
+`scripts/local-dev-seed.sh --rate-only`; it needs no restart and nothing else to be
+re-done.
+
+### The same setup by hand, if you want to see each lever
 
 ```sh
 icp network start -d
@@ -63,7 +129,12 @@ refreshes just that.
 
 No restart is needed after seeding, and none of it survives a `--mode reinstall`.
 
-### Local good-path walkthrough (verified end to end)
+### Every lever the seed script pulls, spelled out
+
+Reference, not a second procedure: `scripts/local-dev-seed.sh` does all of this and
+verifies the outcome of each step rather than the exit code. Read it when a step
+fails and you need to know which lever to inspect, or when configuring something
+that is not a local network.
 
 ```sh
 npm --prefix test/integration run fetch:wasm    # the pinned xrc_mock
@@ -233,10 +304,19 @@ rejected with a 400.
 | Live-mode behaviour: Radar, 3DS, payouts, disputes, account restrictions | mainnet + Stripe **live**, tight caps | unmockable |
 
 Group H runs against a **local network**, not mainnet: the asset canister serves the
-`ic_env` cookie the page reads for the backend id and root key, and mainnet II works
-against a local replica. The frontend *state logic* is separately covered headlessly
-by `src/frontend/src/main.test.ts` (jsdom), so what a browser adds is rendering and
-the real login, not behaviour.
+`ic_env` cookie the page reads for the backend id and root key.
+
+Sign-in there uses **local** Internet Identity, and it does so automatically —
+`identityProvider()` in `auth.ts` derives `http://id.ai.localhost:<port>/authorize`
+from the page's own origin whenever the hostname ends in `.localhost`, and mainnet
+`https://id.ai` otherwise. There is no environment variable to set and no way for a
+production origin to take the local branch. (`VITE_II_URL` overrides both, and
+exists for the PocketIC sandbox script.)
+
+The frontend's *state logic* is covered headlessly by `main.test.ts` (jsdom) and its
+*rendering* by `test/browser/` in Chromium, so what a human adds here is the real
+login, the real Checkout page, the deployed-cookie path, and whether the tour's
+commands land on the right principal.
 
 **Nothing in this plan requires a mainnet deploy.** Only live-mode Stripe behaviour
 does — Radar, 3DS, payouts, account restrictions — and that is a separate decision
@@ -340,21 +420,41 @@ that sequence** — a unit test previously encoded a wrong assumption here.
 | G4 | Live-on-test | the reverse | not minted, but an obligation **is** queued, keeping the real reference |
 | G5 | Mode unset | clear it with `set_expected_livemode '(null)'`, pay | mints, plus `stripe.livemodeUnset` on every payment |
 
-## H. Frontend (never yet rendered by a human)
+## H. Frontend — only what a machine cannot do
 
-`main.ts` has **no automated coverage** — all 69 frontend tests are pure functions.
-Everything here is genuinely unverified.
+**Most of this group is now automated.** `main.ts` has a jsdom suite against the
+real `index.html` body, and `test/browser/` drives a production build in Chromium
+with committed screenshot baselines. Re-checking those by hand is wasted time; what
+is left below is the part no suite can reach.
+
+Automated, and where — do **not** repeat these manually:
+
+| Was | Now covered by |
+|---|---|
+| H1 tier buttons show a cycle estimate, not a tier id | `main.test.ts` |
+| H2 destination toggle changes the estimate and names the 100 M deposit fee | `main.test.ts` |
+| H3 fee breakdown accounts for every cent, "operator margin: none" | `main.test.ts` |
+| H4 the disabled ck-USDC rail | `main.test.ts` + `layout.spec.ts`. **The expectation changed**: there is no "disabled notice" any more. The nav and panel are *removed from the document*, and the browser spec asserts nothing about the rail is legible |
+| H5 a moved quote asks for confirmation, and the second click goes through | `main.test.ts` |
+| H6 cancel appears only pre-payment | `main.test.ts` |
+| H7 the receipt recomputes and reports a match | `main.test.ts` + `delivered.spec.ts` |
+| the delivered tour, the stepper, the collapsed facts, buy-again, unknown order ids | `delivered.spec.ts`, through a fixture that replaces only the backend |
+| paint: same-colour text, occlusion, opacity | five screenshot baselines, zero tolerance |
+
+Still needs a human, and this is the list to work:
 
 | # | Scenario | Expect |
 |---|---|---|
-| H1 | Tier buttons | show a **cycle estimate**, not a tier id (the bug this fixed) |
-| H2 | Destination toggle | estimate changes; the cycles-ledger note names the 100 M deposit fee |
-| H3 | Fee breakdown | accounts for every cent; says "operator margin: none" |
-| H4 | ck-USDC panel | disabled notice shown (the rail ships off) |
-| H5 | Quote moved | lower `maxRateDeltaBps`/force a rate move between page load and submit → "Confirm at the new rate", then a second click succeeds |
-| H6 | Cancel | button appears only pre-payment; frees the slot |
-| H7 | Receipt | after delivery, the verification line recomputes and reports ✓ |
-| H8 | Order history | survives sign-out/in; a reopened order still shows its timeline |
+| H1 | **Real sign-in**, local Internet Identity at `http://id.ai.localhost:8000` | a passkey registers and the header shows a shortened principal. No suite can drive a passkey |
+| H2 | **The deployed asset canister**, not a static build | the page reads its backend id and root key from the real `ic_env` cookie and prices from the real canister. The browser suite serves `dist-fixtures` over a static server, so this path is only ever exercised by hand |
+| H3 | **The real Stripe hosted Checkout page** | Stripe has no headless path; `stripe trigger` gets you a signed event but never the page |
+| H4 | **The tour's commands actually work** | copy `icp identity link web dev --app <host>` from the delivered view, run it, then `icp identity principal --identity dev` and compare to the principal printed beside it. They must match, or the balance looks empty |
+| H5 | **The cycles are really there** | `icp cycles balance --of-principal <that principal>` shows the delivered quantity |
+| H6 | Order history across a **real** sign-out and sign-in | the table repopulates; a reopened order still shows its timeline |
+| H7 | Typography, hierarchy, and the italic rule | `brand-lint.sh` covers banned characters, vocabulary and hardcoded colour. The rest needs eyes |
+
+H4 and H5 are the two that matter most: they are the end of the flow the product
+promises, and nothing in any suite proves cycles a buyer can actually spend.
 
 ## I. Fixture capture — do this while you are in there
 
