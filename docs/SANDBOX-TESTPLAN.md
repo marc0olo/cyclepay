@@ -48,6 +48,12 @@ What you have to supply: a **Stripe sandbox account** with the Stripe CLI logged
 to it, and **one Payment Link per tier** in that account. Nothing else, and no
 mainnet.
 
+**How to create those links — and how each must be configured — is RUNBOOK §3.**
+Get it right here rather than at go-live: the four settings that break
+`amount_total == tier.usdCents` produce no error, just a different cycle quantity,
+so a sandbox run with automatic tax left on would "pass" while proving the wrong
+thing.
+
 ```sh
 # 0. Prerequisites, once.
 brew install stripe/stripe-cli/stripe jq

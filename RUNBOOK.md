@@ -99,12 +99,14 @@ consciously set. Work the list in order:
    `icp canister call backend set_expected_livemode '(opt true)' -e ic --identity <operator>`.
    Until this is set, a test-mode webhook secret would mint **real** cycles for
    payments that never happened. Verify with `expected_livemode`.
-12. **Configure every Payment Link per §3's table**, then click each tile once on
-   the deployed site. Card-only, USD, a fixed price, and adjustable quantity,
-   promotion codes and automatic tax all **off**. Those settings are what make
-   `amount_total == tier.usdCents` true, and when it is not true nothing fails —
-   the order silently delivers a different cycle quantity. The URL itself is not
-   validated, so a typo is only discovered by a buyer.
+12. **Create the Payment Links in LIVE mode and configure them per §3.** Your
+   sandbox links are different objects and cannot be reused here. Card-only, USD, a
+   fixed **one-time** price, and adjustable quantity, promotion codes and automatic
+   tax all **off**. Those settings are what make `amount_total == tier.usdCents`
+   true, and when it is not true nothing fails — the order silently delivers a
+   different cycle quantity. Register with `set_card_tiers`, then click each tile
+   once on the deployed site: the URL itself is not validated, so a typo is
+   otherwise discovered by a buyer.
 13. **Add a backup controller.** A single controller identity with no backup
    means a lost key makes the canister permanently un-upgradeable; there is no
    recovery path (§0 covers the trust model this implies).
@@ -197,6 +199,37 @@ creation time from the cached rate pair; changing tier prices never reprices
 existing orders. The actual paid amount is honored — a Stripe-side price
 edit mid-flight reprices from the order's own creation-time snapshot, never
 from a fresh rate.
+
+### Creating the links
+
+A Payment Link is not a standalone object: it wraps a **Price**, which belongs to a
+**Product**. So one tier is Product → Price → Link, and the settings that matter
+below are split across those three screens. Stripe's own walkthrough is
+[Create a payment link](https://docs.stripe.com/payment-links/create), and the
+Dashboard page is <https://dashboard.stripe.com/payment-links> — deliberately not
+reproduced here as a click path, because Stripe moves its UI and a stale click path
+is worse than none.
+
+What is specific to this system, and is not in Stripe's docs:
+
+- **One-time price, never recurring.** A subscription-mode link produces sessions
+  with no `payment_intent`, which the canister cannot process: it acks 200 (a 400
+  would repeat for Stripe's full ~3-day retry horizon and can get the endpoint
+  disabled) and files a **Type 1 error-queue entry** — money in, nothing minted,
+  manual refund in the Dashboard. It is not a mismint, but it is a support ticket
+  per payment.
+- **Test-mode and live-mode links are different objects and are not
+  convertible.** The sandbox links you verify with cannot be registered on a
+  mainnet canister, and the reverse is worse. Going live means creating the Products,
+  Prices and Links *again* in live mode and re-running `set_card_tiers` against the
+  mainnet canister.
+- **The webhook signing secret is per endpoint, per mode**, and the one
+  `stripe listen` mints for a forwarding session is a third, different secret. None
+  of the three is reusable; each needs its own `set_webhook_secret`.
+- Once `set_expected_livemode '(opt true)'` is set, a stray test-mode event is
+  refused and tagged `stripe.livemodeMismatch` (§9 alerts on it), so this fails
+  closed. The symptom of forgetting to re-create the links is therefore not lost
+  money — it is that nobody can buy anything.
 
 ### How each Payment Link must be configured
 

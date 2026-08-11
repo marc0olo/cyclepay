@@ -620,11 +620,13 @@ query themselves and confirm they were charged correctly.
 
 ### Stripe Dashboard setup
 
-1. Create one **Payment Link** per price point, in USD, card-only, with a **fixed**
-   price and with adjustable quantity, promotion codes and automatic tax all
-   **off**. Those four settings are what keep `amount_total == tier.usdCents`; see
-   RUNBOOK §3 for what each one does if enabled. The failure mode is not an error —
-   the order delivers a different cycle quantity and looks successful.
+1. Create one **Payment Link** per price point: a Product, a fixed **one-time**
+   Price in USD, and a card-only link with adjustable quantity, promotion codes and
+   automatic tax all **off**. Those four settings are what keep
+   `amount_total == tier.usdCents`, and the failure mode is not an error — the order
+   delivers a different cycle quantity and looks successful. **RUNBOOK §3 is the
+   reference**: how to create them, what each setting does if enabled, and why
+   test-mode links cannot be reused in live mode.
 2. Register them with `set_card_tiers`. The URL is **not validated** (Stripe custom
    checkout domains make a host allowlist wrong), so click each tile once on the
    deployed site: a wrong link still creates an order, locks a rate and consumes an
