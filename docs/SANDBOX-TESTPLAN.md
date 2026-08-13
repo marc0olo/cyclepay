@@ -1,12 +1,38 @@
 # Stripe sandbox test plan (manual, human-in-the-browser)
 
-Every Stripe payload in this repo is hand-crafted JSON written from the API docs.
-That is the last significant unknown on the Card rail: the automated suites prove
-the canister behaves as designed against *our* idea of Stripe, not against Stripe.
-This plan closes that gap and captures real fixtures while doing it.
+Most Stripe payloads in the automated suites are hand-crafted JSON written from the
+API docs, so those suites prove the canister behaves as designed against *our* idea
+of Stripe rather than against Stripe. This plan closes that gap and captures real
+fixtures while doing it.
 
 **Read §"What this cannot tell you" at the end before treating a green run as
 go-live approval.** It is not one.
+
+## Status: the good path has been run, once
+
+**2026-08-13, local network, Stripe sandbox — the whole browser flow completed.**
+Two purchases ($5 and $20) went from the UI through a real Stripe test-mode checkout,
+a genuinely signed webhook, the real CMC mint, and on to cycles credited to the
+buyer's cycles-ledger account. Verified from the canister rather than from the UI:
+
+- `mint.delivered` twice; order `ae60aa7d…` minted **14,707,692,335,000** cycles at
+  ICP block **102** with `retries = 0`, destination the buyer's own account
+- `icp cycles balance --of-principal <buyer>` → **18,207,492,307,692** — both
+  deliveries, spendable
+- **error queue empty**: every dollar resolved to delivery, no Type 1 or Type 2
+  obligation left open
+- `heldOrders = 0`, `paidOrders = 0` — nothing stuck mid-pipeline
+- 5.20 ICP burned against the 100 ICP/24 h cap, consistent with the two mints
+- `cancel_order` exercised twice, and one order expired through the retention sweep
+
+**What that run did NOT cover**, and is still open:
+
+| Gap | Where |
+|---|---|
+| The CLI handoff — `icp identity link web` was never run, so "the cycles are reachable from the CLI" is still unproven | group H below |
+| Fixture capture — **3 of 8** real payloads are committed (`ab5281c`); the run added none, so five integration tests stay skipped | group I, #4 |
+| Refunds, async payment methods, disputes | groups E, F, G |
+| Anything live-mode | not local-testable by construction |
 
 ---
 
@@ -455,18 +481,20 @@ Automated, and where — do **not** repeat these manually:
 
 Still needs a human, and this is the list to work:
 
-| # | Scenario | Expect |
-|---|---|---|
-| H1 | **Real sign-in**, local Internet Identity at `http://id.ai.localhost:8000` | a passkey registers and the header shows a shortened principal. No suite can drive a passkey |
-| H2 | **The deployed asset canister**, not a static build | the page reads its backend id and root key from the real `ic_env` cookie and prices from the real canister. The browser suite serves `dist-fixtures` over a static server, so this path is only ever exercised by hand |
-| H3 | **The real Stripe hosted Checkout page** | Stripe has no headless path; `stripe trigger` gets you a signed event but never the page |
-| H4 | **The tour's commands actually work** | copy `icp identity link web dev --app <host>` from the delivered view, run it, then `icp identity principal --identity dev` and compare to the principal printed beside it. They must match, or the balance looks empty |
-| H5 | **The cycles are really there** | `icp cycles balance --of-principal <that principal>` shows the delivered quantity |
-| H6 | Order history across a **real** sign-out and sign-in | the table repopulates; a reopened order still shows its timeline |
-| H7 | Typography, hierarchy, and the italic rule | `brand-lint.sh` covers banned characters, vocabulary and hardcoded colour. The rest needs eyes |
+| # | Scenario | Expect | 2026-08-13 |
+|---|---|---|---|
+| H1 | **Real sign-in**, local Internet Identity at `http://id.ai.localhost:8000` | a passkey registers and the header shows a shortened principal. No suite can drive a passkey | ✅ |
+| H2 | **The deployed asset canister**, not a static build | the page reads its backend id and root key from the real `ic_env` cookie and prices from the real canister. The browser suite serves `dist-fixtures` over a static server, so this path is only ever exercised by hand | ✅ |
+| H3 | **The real Stripe hosted Checkout page** | Stripe has no headless path; `stripe trigger` gets you a signed event but never the page | ✅ |
+| H4 | **The tour's commands actually work** | copy `icp identity link web dev --app <host>` from the delivered view, run it, then `icp identity principal --identity dev` and compare to the principal printed beside it. They must match, or the balance looks empty | ❌ **not run** — no `dev` identity exists |
+| H5 | **The cycles are really there** | `icp cycles balance --of-principal <that principal>` shows the delivered quantity | ✅ 18.2 T for two orders |
+| H6 | Order history across a **real** sign-out and sign-in | the table repopulates; a reopened order still shows its timeline | not run |
+| H7 | Typography, hierarchy, and the italic rule | `brand-lint.sh` covers banned characters, vocabulary and hardcoded colour. The rest needs eyes | not run |
 
-H4 and H5 are the two that matter most: they are the end of the flow the product
-promises, and nothing in any suite proves cycles a buyer can actually spend.
+**H4 is the one that still matters most.** H5 proves the cycles exist at the
+buyer's principal; H4 is what proves a buyer can *become* that principal from the
+CLI and spend them. Until it passes, the last step of the product's promise —
+"link the CLI, deploy" — is unverified end to end, and it is two commands.
 
 ## I. Fixture capture — do this while you are in there
 

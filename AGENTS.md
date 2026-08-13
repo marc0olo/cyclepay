@@ -4,7 +4,7 @@
 
 ICP skills are tested, frequently-updated instruction files maintained by DFINITY
 (<https://skills.internetcomputer.org>). Consult the relevant skill **before**
-making changes — the Motoko, `icp-cli`, and `canister-security` skills all
+making changes — the `writing-motoko`, `icp-cli`, and `canister-security` skills all
 contradict pre-training knowledge in ways that matter here.
 
 **This repo uses [autosync](https://skills.internetcomputer.org/skills/autosync-ic-skills).**
@@ -49,7 +49,7 @@ recorded reasoning — don't "fix" them without reading the rationale:
   moves the problem to a key the canister also needs. See `src/backend/Secret.mo`
   and `docs/STRIPE.md` §7. Confidentiality comes from the SEV-SNP subnet; the
   ICP burn cap bounds the blast radius either way.
-- **`motoko` architecture pattern** (`lib/`, `mixins/`). This backend uses flat
+- **`writing-motoko` architecture pattern** (`lib/`, `mixins/`). This backend uses flat
   modules with explicit dependency records (`Card.Deps`) instead of mixins, so
   the whole ingestion path unit-tests without an IC environment. Equivalent
   separation, deliberately chosen.
