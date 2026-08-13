@@ -99,10 +99,14 @@ consciously set. Work the list in order:
    `icp canister call backend set_expected_livemode '(opt true)' -e ic --identity <operator>`.
    Until this is set, a test-mode webhook secret would mint **real** cycles for
    payments that never happened. Verify with `expected_livemode`.
-12. **Pin the Payment Link to card-only** in the Stripe Dashboard. Links enable
-   several delayed payment methods by default. Delayed settlement *is* handled
-   (`checkout.session.async_payment_succeeded` mints correctly), but card-only
-   keeps money-in synchronous and the timeline predictable.
+12. **Create the Payment Links in LIVE mode and configure them per §3.** Your
+   sandbox links are different objects and cannot be reused here. Card-only, USD, a
+   fixed **one-time** price, and adjustable quantity, promotion codes and automatic
+   tax all **off**. Those settings are what make `amount_total == tier.usdCents`
+   true, and when it is not true nothing fails — the order silently delivers a
+   different cycle quantity. Register with `set_card_tiers`, then click each tile
+   once on the deployed site: the URL itself is not validated, so a typo is
+   otherwise discovered by a buyer.
 13. **Add a backup controller.** A single controller identity with no backup
    means a lost key makes the canister permanently un-upgradeable; there is no
    recovery path (§0 covers the trust model this implies).
@@ -195,6 +199,111 @@ creation time from the cached rate pair; changing tier prices never reprices
 existing orders. The actual paid amount is honored — a Stripe-side price
 edit mid-flight reprices from the order's own creation-time snapshot, never
 from a fresh rate.
+
+### Creating the links
+
+A Payment Link is not a standalone object: it wraps a **Price**, which belongs to a
+**Product**. So one tier is Product → Price → Link, and the settings that matter
+below are split across those three screens. Stripe's own walkthrough is
+[Create a payment link](https://docs.stripe.com/payment-links/create), and the
+Dashboard page is <https://dashboard.stripe.com/payment-links> — deliberately not
+reproduced here as a click path, because Stripe moves its UI and a stale click path
+is worse than none.
+
+**Register the bare URL, and leave the Dashboard's URL-parameter field EMPTY.**
+The Dashboard offers a "URL parameters" dialog (*URL-Parameter*) where you can bake
+a **Client reference ID** (*Client-Referenz-ID*) into the link before copying it.
+That is for people with no application; do not use it. The frontend appends
+`?client_reference_id=<principal>_<orderId>` **per order** at runtime, and it
+appends unconditionally — so a link that already carries one arrives as
+`?client_reference_id=STATIC&client_reference_id=REAL`. Stripe honours one of them,
+and every payment then resolves to the wrong order or to none: a Type 1 queue entry
+each time, money in and nothing minted.
+
+For the same reason, never hand a buyer the bare link. Only the button on the order
+page produces a payable URL.
+
+**Include the `https://` scheme.** The Dashboard displays links as
+`buy.stripe.com/test_…` without it. The value is used verbatim as an anchor `href`,
+so a scheme-less one resolves as a **relative path** — the button then navigates to
+`https://<your-origin>/buy.stripe.com/test_…` and 404s. Nothing validates this
+(see below), so it presents as "the pay button is broken".
+
+What is specific to this system, and is not in Stripe's docs:
+
+- **One-time price, never recurring.** A subscription-mode link produces sessions
+  with no `payment_intent`, which the canister cannot process: it acks 200 (a 400
+  would repeat for Stripe's full ~3-day retry horizon and can get the endpoint
+  disabled) and files a **Type 1 error-queue entry** — money in, nothing minted,
+  manual refund in the Dashboard. It is not a mismint, but it is a support ticket
+  per payment.
+- **Test-mode and live-mode links are different objects and are not
+  convertible.** The sandbox links you verify with cannot be registered on a
+  mainnet canister, and the reverse is worse. Going live means creating the Products,
+  Prices and Links *again* in live mode and re-running `set_card_tiers` against the
+  mainnet canister.
+- **The webhook signing secret is per endpoint, per mode**, and the one
+  `stripe listen` mints for a forwarding session is a third, different secret. None
+  of the three is reusable; each needs its own `set_webhook_secret`.
+- Once `set_expected_livemode '(opt true)'` is set, a stray test-mode event is
+  refused and tagged `stripe.livemodeMismatch` (§9 alerts on it), so this fails
+  closed. The symptom of forgetting to re-create the links is therefore not lost
+  money — it is that nobody can buy anything.
+
+### How each Payment Link must be configured
+
+The whole tier model rests on one invariant: **the session's `amount_total`
+equals the tier's `usdCents`.** The canister reads `data.object.amount_total`,
+which Stripe defines as the total *after discounts and taxes*. When it does not
+match, nothing fails — `Card.honoredCycles` reprices from the order's own rate
+snapshot and delivers a different quantity, and the audit log shows an ordinary
+completed purchase. There is no alert for this.
+
+Four Dashboard settings break that invariant. All four default to off, so a plain
+fixed-price link is correct; each is one checkbox away from not being.
+
+The German Dashboard labels are given too, because that is where these get set and
+two of the five are easy to mistake for harmless conveniences.
+
+| Setting (Dashboard / German) | Must be | If enabled |
+|---|---|---|
+| Pricing model — *Kunden wählen den Preis* | a **fixed**, **one-time** price (`unit_amount`) | "Customers choose price" (`custom_unit_amount`) lets the buyer set `amount_total`; the quantity quoted before payment becomes a guess. Recurring is worse — see above |
+| Adjustable quantity — *Anpassbare Menge* | **off** | `amount_total` becomes unit × qty, bounded only by `maxPurchaseUsdCents` — a buyer can take far more than the tier |
+| Allow promotion codes — *Promo-Codes zulassen* | **off** | lowers `amount_total`; the buyer silently receives fewer cycles than the tile promised them |
+| Automatic tax — *Steuer automatisch einziehen* | **off** | raises `amount_total`; cycles get minted against tax money you owe a tax authority, and it looks like a successful purchase |
+| Limit the number of payments — *Anzahl der Zahlungen einschränken* | **off** | one link serves **every** buyer of that tier, forever. A redemption cap silently retires the tier once it is reached: the tile still quotes, the order is still created, and the link then refuses everyone |
+
+The first two are set on the product/price step, the last three on the link's own
+options screen. Everything else on that screen (customer name, business name,
+address, phone, custom fields, tax IDs, saving payment details, Managed Payments)
+leaves `amount_total` alone. Leave them off regardless: the shortest checkout is the
+one that asks a newcomer buying $5 of cycles for nothing but a card.
+
+Plus the two already in §1: **USD** (any other currency is refused as
+`#unattributed`, which is a Type 1 obligation and a manual refund) and
+**card-only** (delayed methods are handled, but they make money-in asynchronous).
+
+⚠️ **`paymentLinkUrl` is not validated.** `Tiers.validate` checks ids and amounts,
+not the URL — it is not parsed, and the host is not checked (deliberately: Stripe
+supports custom checkout domains, so a `buy.stripe.com` allowlist would reject a
+legitimate setup). A typo is accepted and the buyer finds out: the order is created,
+the rate is locked, an open-order slot is consumed, and the link 404s or answers
+`AccessDenied`. **In production a wrong link is worse than no tier at all** — with
+no tier the buyer cannot start; with a wrong one they get a live unpaid order that
+sits until the TTL expires it. Paste the links, then click each tile once on the
+deployed site before announcing it.
+
+### What the app does with no links
+
+An empty tier vector is the rail's off switch, and it fails closed cleanly: the
+frontend renders "No amounts are configured yet." (distinct from "Amounts could not
+be loaded", which is a network claim), and `create_order` answers
+`#unknownTier` for any id. Nothing is half-open.
+
+`scripts/local-dev-seed.sh` fills in **placeholder** links for any of
+`STRIPE_LINK_T5` / `_T20` / `_T50` you have not exported, names the missing
+variables in its output, and is for local development only. Those tiles create real
+orders and then dead-end on Stripe.
 
 ## 4. Pricing rates (§3.1)
 

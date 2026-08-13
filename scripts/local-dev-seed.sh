@@ -168,27 +168,79 @@ step "card tiers"
 # The tier list IS the card rail's on/off switch (RUNBOOK §3), so an empty list is
 # the fail-closed default rather than a missing step.
 #
-# Payment links come from the environment when you have real ones. The fallback is
-# a URL that does not exist, and "Pay with card" then lands on Stripe's bucket
-# returning `AccessDenied` — which looks like a broken integration and is really
-# just an unconfigured link. Set these to your sandbox links to click all the way
-# through:
+# Where each tier's Payment Link comes from, in precedence order:
 #
-#   export STRIPE_LINK_T5=https://buy.stripe.com/test_xxx
-#   export STRIPE_LINK_T20=…  STRIPE_LINK_T50=…
-PLACEHOLDER="https://buy.stripe.com/PLACEHOLDER-set-STRIPE_LINK_T5"
-LINK_T5="${STRIPE_LINK_T5:-$PLACEHOLDER}"
-LINK_T20="${STRIPE_LINK_T20:-$PLACEHOLDER}"
-LINK_T50="${STRIPE_LINK_T50:-$PLACEHOLDER}"
+#   1. STRIPE_LINK_T5 / _T20 / _T50 in the environment
+#   2. scripts/.local-dev.env, if it exists — gitignored, so you set your sandbox
+#      links ONCE instead of exporting them into every new shell
+#   3. the link already registered on this canister, when it is not a placeholder
+#   4. a placeholder naming the variable to set
+#
+# (3) is what makes re-seeding safe. A full re-run on a network you had already
+# configured used to overwrite working links with placeholders, and the symptom is
+# Stripe answering AccessDenied on the one button the run exists to click.
+#
+# Each placeholder names ITS OWN variable and every one is reported: a single shared
+# placeholder saying "set STRIPE_LINK_T5", with the warning gated on T5 alone, meant
+# setting T5 and forgetting the others printed a green "with your Stripe links".
+LINKS_FILE="scripts/.local-dev.env"
+if [ -f "$LINKS_FILE" ]; then
+  # The environment wins over the file, so a one-off export still overrides it.
+  BEFORE_T5="${STRIPE_LINK_T5:-}"
+  BEFORE_T20="${STRIPE_LINK_T20:-}"
+  BEFORE_T50="${STRIPE_LINK_T50:-}"
+  # shellcheck disable=SC1090
+  . "$LINKS_FILE"
+  [ -z "$BEFORE_T5" ] || STRIPE_LINK_T5="$BEFORE_T5"
+  [ -z "$BEFORE_T20" ] || STRIPE_LINK_T20="$BEFORE_T20"
+  [ -z "$BEFORE_T50" ] || STRIPE_LINK_T50="$BEFORE_T50"
+  ok "read Payment Links from $LINKS_FILE"
+fi
+
+# `<tier id>\t<url>` for what is registered right now. Paired by id rather than by
+# position, so a hand-set tier list in another order cannot mis-assign.
+REGISTERED="$(icp canister call backend card_tiers '()' 2>/dev/null | awk '
+  match($0, /id = "[^"]+"/) { id = substr($0, RSTART + 6, RLENGTH - 7) }
+  match($0, /paymentLinkUrl = "[^"]*"/) {
+    if (id != "") { print id "\t" substr($0, RSTART + 18, RLENGTH - 19); id = "" }
+  }' || true)"
+
+PLACEHOLDERS=""
+REUSED=""
+# Assigns through `printf -v` rather than returning a value, so the classification
+# below happens in THIS shell — command substitution would discard it.
+resolve_link() { # $1 = destination var, $2 = env var name, $3 = tier id
+  if [ -n "${!2:-}" ]; then
+    printf -v "$1" '%s' "${!2}"
+    return
+  fi
+  local registered
+  registered="$(printf '%s\n' "$REGISTERED" | awk -F'\t' -v want="$3" '$1 == want { print $2 }')"
+  case "$registered" in
+    "" | *PLACEHOLDER-set-*)
+      PLACEHOLDERS="$PLACEHOLDERS $2"
+      printf -v "$1" 'https://buy.stripe.com/PLACEHOLDER-set-%s' "$2"
+      ;;
+    *)
+      REUSED="$REUSED $3"
+      printf -v "$1" '%s' "$registered"
+      ;;
+  esac
+}
+resolve_link LINK_T5 STRIPE_LINK_T5 t5
+resolve_link LINK_T20 STRIPE_LINK_T20 t20
+resolve_link LINK_T50 STRIPE_LINK_T50 t50
+
 icp canister call backend set_card_tiers \
   "(vec { record { id = \"t5\"; usdCents = 500 : nat; paymentLinkUrl = \"$LINK_T5\" };
           record { id = \"t20\"; usdCents = 2_000 : nat; paymentLinkUrl = \"$LINK_T20\" };
           record { id = \"t50\"; usdCents = 5_000 : nat; paymentLinkUrl = \"$LINK_T50\" } })" \
   >/dev/null || die "set_card_tiers failed"
-if [ "$LINK_T5" = "$PLACEHOLDER" ]; then
-  printf '  \033[33m·\033[0m 3 tiers ($5 / $20 / $50) with PLACEHOLDER payment links.\n'
-  printf '    "Pay with card" will land on a Stripe AccessDenied page until you set\n'
-  printf '    STRIPE_LINK_T5 / _T20 / _T50 and re-run. Everything up to that point works.\n'
+[ -z "$REUSED" ] || ok "kept the links already registered for:$REUSED"
+if [ -n "$PLACEHOLDERS" ]; then
+  printf '  \033[33m·\033[0m 3 tiers ($5 / $20 / $50), but PLACEHOLDER links for:%s\n' "$PLACEHOLDERS"
+  printf '    Those tiles create a real order and then land on a Stripe AccessDenied\n'
+  printf '    page. Set them in %s (or the environment) and re-run.\n' "$LINKS_FILE"
 else
   ok "3 tiers (\$5 / \$20 / \$50) with your Stripe links"
 fi

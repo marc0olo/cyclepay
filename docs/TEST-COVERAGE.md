@@ -78,11 +78,25 @@ absent from a production build (`__FIXTURES__` is a `define`d literal, and
 claimed). Before it existed the delivered view could only be photographed by
 injecting DOM state, which is how it shipped broken twice.
 
-What is still not covered: the **real Internet Identity login** and that the
-**Candid shapes match reality in a browser**. Group H of
-`docs/SANDBOX-TESTPLAN.md` covers those and needs a mainnet deploy in Stripe test
-mode — PocketIC does not set the `ic_env` cookie the page reads, and the local-II
-feature currently breaks instance creation (recorded in `harness.ts`).
+**Both of those were done by hand on 2026-08-13** against a local network and a
+Stripe sandbox, and no mainnet deploy was needed: real Internet Identity login (the
+local II the network deploys), the deployed asset canister's real `ic_env` cookie,
+the real hosted Checkout page, a genuinely signed webhook, the real CMC mint, and
+cycles credited to the buyer's account. Twice. Verified from the canister — two
+`mint.delivered` entries, 18.2 T spendable at the buyer's principal, an empty error
+queue, nothing held. The evidence and the exact figures are in
+`docs/SANDBOX-TESTPLAN.md` → "Status: the good path has been run, once".
+
+**Three things that run did not close**, and no suite closes either:
+
+- **The CLI handoff.** `icp identity link web` was never run, so "the cycles are
+  reachable from the CLI" — the last step the product promises — is unproven. Group
+  H4.
+- **Real Stripe payload capture.** 3 of 8 fixtures are committed; five integration
+  tests stay skipped until the rest are captured (#4, group I). The suite prints
+  which are missing on every run rather than hiding it.
+- **Refunds, async payment methods, disputes, and anything live-mode.** Groups E, F,
+  G, and a separate decision respectively.
 
 ### 2. Structural limits in PocketIC — verified, not assumed
 

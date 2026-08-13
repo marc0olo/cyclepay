@@ -90,16 +90,43 @@ it ever reports that the CMC did not take the rate, that check is real: the scri
 queries the CMC and compares what it actually stored rather than trusting the `Ok`
 reply, because PocketIC returning 200 only means the message was delivered.
 
-To click all the way through payment you also need real Stripe Payment Links:
+To click all the way through payment you also need real Stripe Payment Links. Put
+them in **`scripts/.local-dev.env`** once (gitignored) and every later run picks them
+up:
 
 ```sh
-export STRIPE_LINK_T5=https://buy.stripe.com/test_xxx
-export STRIPE_LINK_T20=…  STRIPE_LINK_T50=…
+cat > scripts/.local-dev.env <<'LINKS'
+STRIPE_LINK_T5=https://buy.stripe.com/test_xxx
+STRIPE_LINK_T20=https://buy.stripe.com/test_yyy
+STRIPE_LINK_T50=https://buy.stripe.com/test_zzz
+LINKS
 scripts/local-dev-seed.sh
 ```
 
+Precedence is environment → that file → **the link already registered on the
+canister** → a placeholder naming the variable. The third rule is what makes
+re-seeding safe: a re-run cannot overwrite working links with placeholders. See
+RUNBOOK §3 for how each link must be configured — the settings matter more than the
+URL.
+
 Without them the tiers carry a placeholder URL and "Pay with card" lands on a
 Stripe `AccessDenied` page. Everything up to that point works.
+
+Then wire the webhook, in its own terminal:
+
+```sh
+scripts/stripe-dev.sh                     # asserts the gateway can price, then forwards
+```
+
+The two scripts own different levers and the order matters: `local-dev-seed.sh` owns
+the money (tiers, treasury, float, the CMC rate, the canister's own cycles) and
+`stripe-dev.sh` owns Stripe (expected livemode, the forwarding session's signing
+secret, a dev-short order TTL). Run the seed first.
+
+**For the full buy → pay → deliver → link the CLI → see the cycles walkthrough,
+including the local Internet Identity step and how to prove the cycles arrived, see
+`docs/SANDBOX-TESTPLAN.md` → "The whole flow, in order, in a browser".** That is the
+one procedure; the rest of that file is scenarios and reference.
 
 ### Verify the deployment wiring
 

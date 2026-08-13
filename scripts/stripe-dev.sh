@@ -1,32 +1,38 @@
 #!/usr/bin/env bash
 # Local Stripe-sandbox loop against a local `icp network`.
 #
-# A local network CAN run the whole good path, including delivery — see
-# docs/SANDBOX-TESTPLAN.md for the verified walkthrough. Two steps this script does
-# not do for you:
-#
-#   1. `icp canister top-up backend --amount 20t` — a fresh deploy is under the
-#      admission gate's own-cycles floor.
-#   2. Give the CMC a current rate. Its seeded rate is stamped 2021 and only
-#      governance may change it, so pricing fails until you impersonate governance
-#      through the local network's PocketIC control API (recipe in the test plan).
-#
-# `npm --prefix test/integration run sandbox` is the scripted alternative when you do
-# not need the frontend in a browser — it handles all of the above itself.
-#
 # Wires the Stripe CLI's webhook forwarder to a locally deployed backend so the
 # real §6.1 path runs end to end: genuine Stripe signatures, genuine event JSON,
 # genuine retry behaviour on a non-2xx.
 #
+# ## Run scripts/local-dev-seed.sh FIRST
+#
+# The two scripts own different levers and this one assumes the other has run:
+#
+#   local-dev-seed.sh  the money levers — tiers, treasury, ICP float, the CMC rate,
+#                      the canister's own cycles
+#   this script        the Stripe levers — expected livemode, the forwarding
+#                      session's signing secret, a dev-short order TTL, forwarding
+#
+# It used to set tiers and the treasury config too, which made the ORDER of the two
+# scripts silently decide the outcome: run the seed with your real Payment Links and
+# then this, and your links were replaced by a placeholder. The symptom is Stripe
+# answering AccessDenied, which reads as a Stripe problem. It no longer touches
+# either, and it refuses to start if the gateway cannot price.
+#
+# `npm --prefix test/integration run sandbox` is the scripted alternative when you do
+# not need the frontend in a browser — it boots its own PocketIC and needs none of
+# this.
+#
 # Usage:
-#   scripts/stripe-dev.sh              # bootstrap config, wire the secret, forward
+#   scripts/stripe-dev.sh              # bootstrap Stripe config, wire the secret, forward
 #   scripts/stripe-dev.sh --no-bootstrap   # only wire the secret and forward
 #   scripts/stripe-dev.sh --print-only     # print the forward URL and exit
 #
 # Prerequisites:
 #   brew install stripe/stripe-cli/stripe
 #   stripe login          # choose a SANDBOX account, never a live one
-#   icp network start -d && icp deploy backend
+#   icp network start -d && icp deploy && scripts/local-dev-seed.sh
 set -euo pipefail
 
 BOOTSTRAP=1
@@ -90,28 +96,30 @@ if [ "$PRINT_ONLY" -eq 1 ]; then
   exit 0
 fi
 
-# --- bootstrap the fail-closed money levers ---------------------------------
-# Everything ships dark: no tiers, burn cap 0, no secret. The admission gate
-# refuses every order until the cap is sized, so a fresh local deploy cannot
-# create an order at all without this step.
+# --- the gateway must already be sellable -----------------------------------
+# Assert it rather than re-configuring it. A quote is the honest check: it proves
+# tiers exist AND both rate inputs answered AND the canister is above the gate's
+# own-cycles floor, which is every money lever this script does not own.
+QUOTE="$(icp canister call backend quote_previews '(variant { card }, vec { 500 : nat })' 2>&1 || true)"
+if ! printf '%s' "$QUOTE" | grep -q 'cycles = opt'; then
+  echo "error: the gateway cannot price a \$5 purchase, so an order cannot be created." >&2
+  echo "       Run this first, and note the CMC rate expires after 15 minutes:" >&2
+  echo "         scripts/local-dev-seed.sh" >&2
+  echo "       Diagnose with:" >&2
+  echo "         icp canister call backend pricing_status '()'" >&2
+  echo "         icp canister call backend cycles_status '()'" >&2
+  exit 1
+fi
+echo "priceable:   a \$5 purchase quotes (tiers, both rates, and own-cycles are all fine)"
+
+# --- bootstrap the STRIPE-side config ---------------------------------------
+# Tiers, treasury, float, the CMC rate and the canister's own cycles belong to
+# scripts/local-dev-seed.sh and are deliberately not touched here. Setting tiers
+# from both scripts meant whichever ran last decided which Payment Links the app
+# would open.
 if [ "$BOOTSTRAP" -eq 1 ]; then
   echo
-  echo "--- bootstrapping local config (dev values, never for mainnet) ---"
-
-  # A single $5 tier. The Payment Link URL is a placeholder: `stripe trigger`
-  # does not use it, and for a real sandbox checkout you paste your own link.
-  icp canister call backend set_card_tiers \
-    '(vec { record { id = "tier5"; usdCents = 500 : nat; paymentLinkUrl = "https://buy.stripe.com/test_PLACEHOLDER" } })' \
-    >/dev/null
-  echo "tiers:       tier5 (\$5.00)"
-
-  # 100 ICP per 24 h, float gating off — enough for the gate to admit locally.
-  # alertAfterNs must be shorter than maxHoldNs (validation enforces it); 2 min
-  # here so the delay alert is reachable inside a dev session.
-  icp canister call backend set_treasury_config \
-    '(record { burnCapE8s = 10_000_000_000 : nat; burnWindowNs = 86_400_000_000_000 : int; alertAfterNs = 120_000_000_000 : int; maxHoldNs = 259_200_000_000_000 : int; lowFloatThresholdE8s = 0 : nat })' \
-    >/dev/null
-  echo "burn cap:    100 ICP / 24 h (alert 2 min, float gating off)"
+  echo "--- bootstrapping Stripe-side config (dev values, never for mainnet) ---"
 
   # Short TTL so expiry is reachable in a dev session instead of 48 h. There is
   # no horizon: orders are never deleted.
@@ -157,17 +165,21 @@ In a second terminal:
       Type 1 #unattributed entry. That is a real test of the attribution guard,
       not the happy path.
 
-  For the happy path, create an order and pay its link:
+  For the happy path, buy through the UI at the URL `icp deploy` printed for the
+  frontend, which is the whole point of running against a local network. The
+  browser path and the CLI path below produce the same order.
+
+  Or from the CLI:
       1. icp canister call backend create_order \
-             '("tier5", variant { canister = principal "<some-canister>" }, null)'
+             '("t5", variant { canister = principal "<some-canister>" }, null)'
          (the third argument pins a minimum cycle quantity; null opts out)
       2. Take the returned clientReferenceId.
       3. Open YOUR sandbox Payment Link with ?client_reference_id=<ref> appended.
       4. Pay with test card 4242 4242 4242 4242.
 
   Inspect what happened:
-      icp canister call backend audit_log
-      icp canister call backend error_queue
+      icp canister call backend audit_log '()'
+      icp canister call backend error_queue_unresolved '(null, 50)'
       icp canister call backend order_for_payment '("pi_...")'
 
 Two things to expect locally:
@@ -176,11 +188,10 @@ Two things to expect locally:
    tolerance. If local time has drifted further than that from real time, every
    live webhook is rejected with a 400.
 
-2. **`create_order` needs two more things than this script sets up**, or it answers
-   `notAdmitted(canisterCyclesLow)` and then `rateUnavailable`:
-   top up the backend (`icp canister top-up backend --amount 20t`), and give the CMC
-   a current rate. Both are in docs/SANDBOX-TESTPLAN.md's local walkthrough. With
-   them done, the full path runs here — including the real CMC mint and delivery.
+2. **The CMC rate expires 15 minutes after the seed script set it**, and pricing
+   then refuses every new order. It does not affect an order that already exists:
+   the rate is locked at creation. Refresh with:
+       scripts/local-dev-seed.sh --rate-only
 
 Starting the forwarder (Ctrl-C to stop)...
 NOTES

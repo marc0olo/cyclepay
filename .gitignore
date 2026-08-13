@@ -32,6 +32,11 @@ src/frontend/dist/
 src/frontend/dist-fixtures/
 src/frontend/src/bindings/
 
+# Your own Stripe SANDBOX Payment Links, read by scripts/local-dev-seed.sh so they
+# do not have to be exported into every new shell. Never committed: they are yours,
+# they are per-account, and a live-mode link in here would be a loaded gun.
+scripts/.local-dev.env
+
 # browser suite (test/browser). `package-lock.json` is the committed contract;
 # the install is not. 193 files and 18 MB of it were tracked for three days —
 # including `fsevents.node`, a macOS-only Mach-O binary, in a repo whose CI is
