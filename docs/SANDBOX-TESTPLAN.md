@@ -61,9 +61,11 @@ stripe login                                    # a SANDBOX account, never live
 npm --prefix test/integration run fetch:wasm    # the sha256-pinned xrc mock
 npm --prefix test/browser ci                    # only if you also want the suites
 
-# 1. A sellable local gateway. Paste your own Payment Links; any you leave unset get
-#    a placeholder, and the script names which. A placeholder tile still creates a
-#    real order and then dead-ends on Stripe.
+# 1. A sellable local gateway. Put your Payment Links in scripts/.local-dev.env
+#    (gitignored) so you set them once rather than per shell; the environment still
+#    overrides it, and a re-run keeps links already registered on the canister
+#    rather than replacing them with placeholders. Any that ARE placeholders are
+#    named in the output, and those tiles create a real order before dead-ending.
 #    Configure each link as RUNBOOK §3 requires — fixed price, USD, card-only, and
 #    adjustable quantity / promotion codes / automatic tax all off. Sandbox links
 #    with a "wrong" setting will not error; they deliver a different cycle quantity.
