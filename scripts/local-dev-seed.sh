@@ -58,9 +58,15 @@ icp network status >/dev/null 2>&1 || die "no local network. Run: icp network st
 # ── the PocketIC control port ────────────────────────────────────────────────
 step "PocketIC control API"
 # Same process as the gateway, second listening port. Discovered, never assumed.
-PIC_PID="$(pgrep -f 'pocket-ic' | head -1 || true)"
-[ -n "$PIC_PID" ] || die "no pocket-ic process found. Is this network managed by icp-cli?"
 GATEWAY_PORT="$(icp network status --json | jq -r '.gateway_url' | sed -E 's#.*:([0-9]+)/?$#\1#')"
+[ -n "$GATEWAY_PORT" ] || die "could not read a gateway port from icp network status"
+# The process SERVING THIS GATEWAY, not just any pocket-ic. `pgrep -f pocket-ic |
+# head -1` picked whichever instance started first, so with a second local network
+# running anywhere on the machine — another project, or a stale one — the CMC
+# message went to the wrong instance and this script failed with "the CMC did not
+# take the rate" while the rate had in fact been set on someone else's network.
+PIC_PID="$(lsof -nP -iTCP:"$GATEWAY_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+[ -n "$PIC_PID" ] || die "nothing is listening on the gateway port :$GATEWAY_PORT. Run: icp network start -d"
 CONTROL_PORT="$(lsof -nP -iTCP -sTCP:LISTEN -a -p "$PIC_PID" 2>/dev/null |
   awk '{print $9}' | grep -oE '[0-9]+$' | grep -v "^${GATEWAY_PORT}$" | head -1 || true)"
 [ -n "$CONTROL_PORT" ] || die "could not find the PocketIC control port beside the gateway on :$GATEWAY_PORT.
