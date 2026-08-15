@@ -1,5 +1,15 @@
 # Agent instructions
 
+> ⚠️ **The architecture is being changed right now, and this file describes the
+> code as it is — not as it will be.** Pinned issue **#12 ("Start here: the plan,
+> in order")** is authoritative over this file, over `docs/`, and over `RUNBOOK.md`
+> wherever they disagree. Read it before starting any work on the Card rail.
+>
+> Settlement is moving to a cycles reserve, payment to per-order Stripe Checkout
+> Sessions, and the ck-USDC rail and the ICP mint path are being removed. Several
+> statements below are true today and are scheduled to stop being true; each issue
+> updates the ones its own change invalidates.
+
 ## ICP skills
 
 ICP skills are tested, frequently-updated instruction files maintained by DFINITY
@@ -74,14 +84,14 @@ account**. That is the whole point, and it is why the Stripe rail gets the
 attention: for that user a stablecoin rail is not an option, because acquiring
 the stablecoin is the same problem over again.
 
-**ck-USDC is frozen, not deleted.** It is code-complete, has its own PocketIC
-scenario map, and is **disabled by default** (`maxUsdCents = 0`). Keep it compiling and
-keep its suite green; do not add features to it. It exists because a payments
-dependency with no alternative is a single point of failure — if Stripe ever
-restricts the account, the rail is a config change away from live.
+**ck-USDC is being deleted, not frozen.** It was kept code-complete and disabled
+as a second-source hedge; that decision was reversed on 2026-08-14 because
+carrying a rail we do not ship makes every other change bigger. **Issue #35 removes
+it entirely** — the module, the frontend client, the suites, and the docs. Until
+that lands the code still contains it; do not add to it, and do not treat "keep
+its suite green" as a constraint when working #35.
 
-Work on the Card rail unless asked otherwise. When a change touches shared
-money-out, verify both suites.
+Work on the Card rail. It is the only rail.
 
 ## Project conventions
 
