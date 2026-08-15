@@ -77,6 +77,25 @@ one. `scripts/local-dev-seed.sh --rate-only` after every
 deploy and every ~15 minutes: the CMC rate expires, and `icp deploy` wipes the XRC
 mock's install-time response. Full detail in README.md.
 
+### Do not cycle the network
+
+`icp network start` takes **minutes**, and **two projects cannot run local
+networks at once** (the fixed `gateway.port: 8000` in `icp.yaml`).
+
+- **Check first** with `icp network status`. If one is running, **use it** — do
+  not restart it to get a clean slate.
+- **Start only if absent**, and remember that you started it.
+- **Never stop a network you did not start.** You cannot tell whether a human is
+  mid-manual-run, or whether the network belongs to another project. Stopping one
+  has already destroyed a session's worth of delivered test orders, their audit
+  trail, and a local Internet Identity registration.
+- **For a clean slate, reinstall — do not restart.** `icp deploy --mode reinstall
+  --yes` then `scripts/local-dev-seed.sh` takes seconds and is the documented loop
+  for a stable-shape change; a network restart takes minutes and throws away more
+  than you wanted.
+- **Leave it running when you finish**, and say so in the PR. The next piece of
+  work needs it.
+
 ## Scope: the Card rail is the product
 
 CyclePay onboards developers who have **no ICP, no wallet, and no exchange
