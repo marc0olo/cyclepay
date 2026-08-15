@@ -11,10 +11,6 @@ through the Cycles Minting Canister from an operator ICP float. Purchases are
 Internet-Identity-authenticated, one-shot, and delivered either to a canister
 (`notify_top_up`) or a cycles-ledger account (`notify_mint_cycles`).
 
-A second rail, **ck-USDC** (ICRC-2 approve → pull), is implemented and tested but
-**ships disabled**. It shares the same money-out path and exists as a fallback if
-the card processor ever becomes unavailable; it is not the product.
-
 **Pricing is derived on-chain and reproducible by anyone.** Two rates, both read
 from canisters — USD/ICP from the Exchange Rate Canister, XDR/ICP from the CMC —
 so the canister makes no outbound HTTPS at all.
@@ -216,7 +212,7 @@ npm --prefix src/frontend run typecheck
 
 **3. PocketIC integration suite** (`test/integration`) — the **go-live bar**
 (spec §9): end-to-end scenarios against the real ICP ledger, CMC, cycles
-ledger, and ck-USDC ledger Wasms, plus the released XRC mock at the mainnet XRC
+ledger Wasms, plus the released XRC mock at the mainnet XRC
 id — HMAC-signed Stripe webhooks (over a real HTTP gateway in scenario 55), time
 control, outage injection against the real NNS canisters, and upgrade-mid-flight
 replay checks:

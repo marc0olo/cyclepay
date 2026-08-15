@@ -150,11 +150,6 @@
 
       <div id="gate-notice" class="notice" hidden></div>
 
-      <!-- Rail nav renders only when more than one rail is live. -->
-      <nav id="rail-nav" class="rails" aria-label="Payment rail" hidden>
-        <button id="rail-card" class="rail active" type="button">Card</button>
-        <button id="rail-ckusdc" class="rail" type="button">ck-USDC</button>
-      </nav>
 
       <!-- The four steps the product is sold as, carried across buy, order and
            delivered so progress is visible rather than promised. -->
@@ -169,17 +164,6 @@
           <p id="tier-detail" class="estimate-detail" hidden></p>
           <p id="quote-notice" class="notice" hidden></p>
           <p id="rate-line" class="muted"></p>
-        </section>
-
-        <section id="ck-panel" hidden>
-          <div id="ck-disabled-notice" class="notice" hidden></div>
-          <h2 class="section-h">Choose an amount</h2>
-          <label class="amount-label">
-            Amount (USD)
-            <input id="ck-amount" type="text" inputmode="decimal" placeholder="5.00" autocomplete="off" spellcheck="false" />
-          </label>
-          <p id="ck-estimate" class="estimate" hidden></p>
-          <p id="ck-bounds-line" class="muted"></p>
         </section>
 
         <section>
@@ -260,17 +244,6 @@
             Opens Stripe in a new tab. Keep this one open: it updates the moment
             the payment clears.
           </p>
-        </div>
-        <div id="ck-pay-area" hidden>
-          <p>
-            Pay <strong id="ck-pay-amount"></strong> from your ck-USDC account:
-            approve the gateway to pull it, then claim.
-          </p>
-          <div class="ck-actions">
-            <button id="ck-approve" type="button" class="cta">1 · Approve</button>
-            <button id="ck-claim" type="button" class="cta-secondary">2 · Claim</button>
-          </div>
-          <p id="ck-flow-status" class="muted" hidden></p>
         </div>
         <div id="cancel-area" hidden>
           <button id="cancel-order" type="button" class="ghost">Cancel this order</button>
@@ -354,7 +327,6 @@
           <summary>Order details</summary>
           <dl class="order-facts">
             <dt>Payment reference</dt><dd id="client-ref" class="wrap"></dd>
-            <dt>Rail</dt><dd id="order-rail"></dd>
             <dt>Cycles</dt><dd id="order-cycles"></dd>
             <dt>Price</dt><dd id="order-price"></dd>
             <dt>Destination</dt><dd id="order-dest"></dd>

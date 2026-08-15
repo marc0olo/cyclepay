@@ -1384,7 +1384,7 @@ test('40 — the price a buyer is shown comes from the same code that locks it',
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
-  const preview = await gw.asAnon.quote_previews({ card: null }, [TIER_USD_CENTS]);
+  const preview = await gw.asAnon.quote_previews([TIER_USD_CENTS]);
   const quoted = preview.quotes[0]!;
 
   // The fee split accounts for every cent, and net is exactly gross minus fee.
@@ -1407,17 +1407,13 @@ test('40 — the price a buyer is shown comes from the same code that locks it',
   expect(created.order.lockedCycles).toBe(quoted.cycles[0]!);
   expectOk(await gw.asUser.cancel_order(created.order.id));
 
-  // Public: it is market data plus the fee formula, nothing secret. The rail's
-  // own fee formula is used, so ck-USDC (0/0 by default) nets the full amount.
-  const ck = await gw.asAnon.quote_previews({ ckUsdc: null }, [TIER_USD_CENTS]);
-  expect(ck.quotes[0]!.feeCents).toBe(0n);
-  expect(ck.quotes[0]!.netCents).toEqual([TIER_USD_CENTS]);
+  // Public: it is market data plus the fee formula, nothing secret.
 
   // An empty request is answered, not rejected — no cap, so nothing is ever
   // silently truncated.
-  expect((await gw.asAnon.quote_previews({ card: null }, [])).quotes).toHaveLength(0);
+  expect((await gw.asAnon.quote_previews([])).quotes).toHaveLength(0);
   const many = Array.from({ length: 64 }, (_, i) => TIER_USD_CENTS + BigInt(i));
-  expect((await gw.asAnon.quote_previews({ card: null }, many)).quotes).toHaveLength(64);
+  expect((await gw.asAnon.quote_previews(many)).quotes).toHaveLength(64);
 });
 
 test('41 — an order can never lock fewer cycles than the buyer was shown', async () => {
@@ -1429,7 +1425,7 @@ test('41 — an order can never lock fewer cycles than the buyer was shown', asy
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
-  const shown = (await gw.asAnon.quote_previews({ card: null }, [TIER_USD_CENTS]))
+  const shown = (await gw.asAnon.quote_previews([TIER_USD_CENTS]))
     .quotes[0]!.cycles[0]!;
   const ordersBefore = (await gw.asUser.list_orders()).length;
 
@@ -1443,7 +1439,7 @@ test('41 — an order can never lock fewer cycles than the buyer was shown', asy
   const APPRECIATED = ICP_USD_RATE * 14n / 10n;
   await setXrcRate(gw, APPRECIATED);
   await tickRateTimer(gw);
-  const dearer = (await gw.asAnon.quote_previews({ card: null }, [TIER_USD_CENTS]))
+  const dearer = (await gw.asAnon.quote_previews([TIER_USD_CENTS]))
     .quotes[0]!.cycles[0]!;
   // 455¢ net × 35_000 × 10¹² / 6_370_000 — checked against the arithmetic, not
   // just "smaller than before", so a guard silently rejecting the refresh (which

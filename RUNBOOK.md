@@ -36,13 +36,13 @@ argument makes `icp canister call` ask *"Do you want to send this message?
 [y/N]"* and read stdin — which hangs any script, cron job, or CI step.
 
 Public queries (`treasury_status`, `pricing_status`, `recovery_status`,
-`card_tiers`, `ck_usdc_config`, `lifecycle_config`, `retention_status`,
+`card_tiers`, `lifecycle_config`, `retention_status`,
 `can_purchase`, `cycles_status`, `error_queue_depth`, `health`) work from any
 identity and are the
 monitoring surface (§9 transparency stance — operational state is public,
 the webhook secret is the only secret in the system).
 
-**Units used throughout:** ICP amounts are e8s (1 ICP = 10⁸ e8s); ck-USDC
+**Units used throughout:** ICP amounts are e8s (1 ICP = 10⁸ e8s);
 amounts are units (1 USDC = 10⁶ units, so 1¢ = 10⁴ units); durations are
 nanoseconds (1 h = `3_600_000_000_000`, 24 h = `86_400_000_000_000`,
 72 h = `259_200_000_000_000`); cycle prices are XDR-pegged (1 XDR = 1 T
@@ -80,8 +80,6 @@ consciously set. Work the list in order:
    every mint holds in `awaitingTreasury` — cap 0 is the pause lever.
 6. **Arm the low-float alert**: include a non-zero `lowFloatThresholdE8s`
    in the same `set_treasury_config` call.
-7. **(Optional) enable the ck-USDC rail** (§7 below). Default
-   `maxUsdCents = 0` keeps it disabled.
 8. **Configure the Stripe webhook endpoint**: in the Stripe Dashboard, add
    a webhook destination `https://<backend-canister-id>.icp0.io/webhook/stripe`
    sending exactly the events `checkout.session.completed` and
@@ -492,7 +490,7 @@ icp canister call backend set_gate_config \
 | `maxPurchaseUsdCents` | 100 000 (\$1 000) | Operator typo in a tier, and the webhook's upward repricing path. | Set just above your largest tier. `set_card_tiers` rejects any tier above it, and the webhook refuses to mint a payment above it. |
 
 **These three deliberately default to non-zero**, unlike the burn cap and the
-ck-USDC bound. Those are money decisions that must ship dark; these are safety
+burn cap. That is a money decision that must ship dark; these are safety
 limits where a 0 default would brick the canister rather than protect it. The
 card rail's actual on/off switch remains the tier list.
 
@@ -605,7 +603,6 @@ icp canister call backend resolve_error '(137 : nat)' -e ic --identity <operator
 | `#stuckMint{stage="ambiguousForward"}` | Cycles minted; forward may or may not have reached the destination (died between the pre-forward marker and delivery) | Check the destination: canister cycle balance delta / cycles-ledger account balance vs `mint_journal.cyclesMinted`. **Arrived** → done, `resolve_error`. **Not arrived** → cycles are in the backend's balance; deliver manually as for Type 2. Never re-forwarded automatically — double delivery is the risk being avoided. ⚠️ **Do not notify the CMC again**: the ICP is already consumed. This stage is also what the 72 h bound produces for an `#icpAtCmc` order that has `cyclesMinted` journaled, precisely so that case is never mistaken for `retriesExhausted`. |
 | `#stuckMint{stage="mintShortfall"}` | Cycles minted, but **fewer than the order locked** — the CMC's rate moved between sizing the ICP transfer and notifying it (up to 15 min normally, longer if a recovery sweep notified a transfer stranded by an outage). The minted cycles are in this canister's balance; nothing was forwarded | Read `mint_journal(orderId).cyclesMinted` for the real figure. Either forward that amount and tell the buyer, or top up to `lockedCycles` from operator funds — a business call, not a technical one. **Never** just re-run the mint: the ICP is already spent. Deliberately not absorbed automatically, because covering the gap from the canister's own gas is an unbudgeted subsidy that grows with volatility. `resolve_error` once delivered. |
 | `#stuckMint{stage="missingJournal"}` | Order status implies money-out state the journal doesn't have | Invariant breach — should be unreachable. Reconstruct from `audit_log` + ledgers; treat as a bug, file it. |
-| `#stuckMint{stage="stalePullIntent"}` (ck-USDC) | Uncertain, money-IN: a `icrc2_transfer_from` pull intent aged past 24 h with no recorded block; the order deliberately stays `created` and further claims are blocked | See §7 below — this one has dedicated levers. |
 | `#duplicate` naming an order the session did **not** reference | An intent already credited to a *different* order — an `attach_payment` went to the wrong order, or the reference is wrong. **Nothing was minted twice** | Decide which order the buyer actually paid for. Cross-check `order_for_payment` against the session's `client_reference_id` in the Stripe Dashboard. If the session's order is the right one, deliver it from operator funds and reconcile the wrongly-credited order; otherwise just resolve. The audit tag is `stripe.creditedElsewhere`. |
 | `#unprocessable {eventId; field}` | **Unknown — establish it first.** A verified Stripe event was missing a required field, so the canister could not tell whether money moved | Look the `eventId` up in the Stripe Dashboard. Paid → identify the order and `attach_payment`, or refund. Not paid (e.g. a 100%-off promo, or a subscription-mode link) → nothing happened; `resolve_error`. Then fix the Dashboard config that produced it: this is almost always a link mode or promo-code setting, and it will recur until changed. One event never becomes two entries: a Dashboard resend inside the ~7-day event-dedup window is dropped there, and past it the worklist itself is checked (audited `stripe.unprocessableResend`). Once you `resolve_error` it, a later resend is allowed to file again — so resolve only after you have established the money position. |
 | `#refundAfterDelivery {orderId; paymentRef; cycles; refundedCents; fullRefund}` | **A loss, not a recoverable position**: the fiat was refunded (or charged back) *after* the cycles were forwarded to an arbitrary destination. Cycles cannot be clawed back. | There is nothing to recover on-chain. Reconcile in the Stripe Dashboard by `paymentRef` to see whether this was your own refund (a support decision — expected) or a customer-initiated dispute (fraud signal). For repeated disputes, tighten Stripe Radar rules and lower the per-purchase ceiling (§5a); the burn cap does **not** bound this, because each payment is individually legitimate. `resolve_error` once reconciled — nothing auto-resolves it, deliberately: the refund is what created the entry. |
@@ -665,55 +662,7 @@ icp canister call backend order_for_payment '("pi_3Q...")' -e ic --identity <ope
 `null` means the payment was never attributed to an order here; check the queue
 for a Type 1 entry carrying it.
 
-## 7. ck-USDC rail (§6.2)
-
-**Enable / bound the rail** (default `maxUsdCents = 0` = disabled; also the
-rail-level pause lever):
-
-```bash
-icp canister call backend set_ck_usdc_config \
-  '(record { minUsdCents = 100; maxUsdCents = 100_000; feeBps = 0; feeFixedCents = 0; ledgerFeeUnits = 10_000 })' \
-  -e ic --identity <operator>
-```
-
-`ledgerFeeUnits` must match the real ck-USDC ledger fee (10_000 units
-today — confirm with `icrc1_fee` on `xevnm-gaaaa-aaaar-qafnq-cai` before
-changing). The fee formula defaults 0/0: there is no structural processor
-fee on this rail; the operator absorbs off-chain conversion cost per §3.
-
-**`stalePullIntent` procedure** (the §6.2/§5.1 escalation — order stays
-`created`, claims blocked, queued once):
-
-1. `ck_usdc_pull '("<orderId>")'` — read the journaled intent: amount,
-   `created_at_time`, and the memo (the order id's UTF-8 — every pull is
-   ledger-greppable by it).
-2. Check the ck-USDC ledger for a transaction matching the intent (the
-   user's account → backend, that amount, that memo).
-3. **No transaction** (nothing ever moved): `reset_ck_usdc_pull '("<orderId>")'`
-   clears the intent; the user simply claims again. The method refuses
-   (returns `false`) if a block *is* recorded — it structurally cannot
-   create a double-debit.
-4. **Transaction executed** (user was debited, credit never recorded): do
-   NOT reset — a fresh intent would debit them twice. Refund the pulled
-   amount with `withdraw_ck_usdc` to the user's account, then
-   `resolve_error` the queue entry and tell the user to re-order.
-
-**Withdraw lever** — both the refund tool above and the §6.2 hold-ckUSDC
-treasury posture (pulled ck-USDC accrues in the backend's ledger account;
-periodically withdraw → convert to ICP off-chain → refill the float):
-
-```bash
-icp canister call backend withdraw_ck_usdc \
-  '(record { owner = principal "<operator-principal>"; subaccount = null }, 1_000_000_000)' \
-  -e ic --identity <operator>
-```
-
-Returns the block index. The transfer carries **no `created_at_time`** —
-this is an attended lever, so on a timeout/ambiguous failure **check the
-ledger before retrying** (the backend's balance is public on the ck-USDC
-ledger; no query method needed, and that's deliberate).
-
-## 8. Recovery timer & manual kicks (§5.2)
+## 7. Recovery timer & manual kicks (§5.2)
 
 The recurring sweep is the backstop for every detached mint kick that dies:
 it re-drives all orders in `paid`/`minting`/`icpAtCmc`/`awaitingTreasury`.
@@ -742,7 +691,7 @@ icp canister call backend process_order '("<orderId>")' -e ic --identity <operat
   driven). Use it to resume a specific held order immediately after a
   float refill or cap change instead of waiting for the sweep.
 
-## 9. Monitoring plan
+## 8. Monitoring plan
 
 Every safety mechanism in this system is a **number someone has to look at**. The
 2 h delay alert, the error queue, the rate-refresh liveness — none of them page
@@ -856,7 +805,7 @@ Everything it needs is a public query, and the frontend already reads
 `treasury_status` for its low-float soft gate — so a read-only operator page is
 straightforward. It is a convenience, not a control.
 
-## 10. Confidential-subnet checklist (§7, §11.1)
+## 9. Confidential-subnet checklist (§7, §11.1)
 
 The webhook secret is plaintext canister state. SEV-SNP is the intended
 confidentiality layer; **the burn cap is the always-on backstop and launch
@@ -892,7 +841,7 @@ route table, edge-captured ownership, per-rail expiry) are binding on code
 changes, not operations — but any new rail lands with its own runbook
 section, its own dedup set, and its own go-live checklist entry here.
 
-## 11. Upgrades & releases
+## 10. Upgrades & releases
 
 `RELEASE.md` end to end: reproducible container build → publish
 `MODULE-HASHES.txt` → `icp deploy -e ic --mode upgrade` → **gate on
@@ -926,7 +875,7 @@ release doc doesn't cover:
   enters `Stopping`, the IC delivers the replies to its outstanding calls,
   and only once every call context is closed does it reach `Stopped`. That
   is why the stop-first procedure is also the *safe* one: an in-flight mint
-  or ck-USDC pull completes before the upgrade happens, so a controlled
+  completes before the upgrade happens, so a controlled
   upgrade cannot strand money. Verified by `test/integration` scenarios 12
   and 13 and ck-08.
 

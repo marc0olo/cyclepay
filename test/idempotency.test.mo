@@ -20,13 +20,6 @@ suite("record-once semantics", func() {
     assert not Idempotency.recordStripeIntent(store, "pi_1", 200);
   });
 
-  test("ckUSDC block: first sight true, replay false", func() {
-    let store = Idempotency.emptyStore();
-    assert Idempotency.recordCkUsdcBlock(store, 42);
-    assert not Idempotency.recordCkUsdcBlock(store, 42);
-    assert Idempotency.recordCkUsdcBlock(store, 43);
-  });
-
   test("sets are independent: same key text in events vs intents", func() {
     let store = Idempotency.emptyStore();
     assert Idempotency.recordStripeEvent(store, "shared", 100);
@@ -56,13 +49,6 @@ suite("stripe pruning (~7 days, §4.2)", func() {
     assert Idempotency.recordStripeIntent(store, "pi_fresh", 5 * day);
     assert Idempotency.pruneStripe(store, 8 * day) == 3;
     assert not Idempotency.recordStripeIntent(store, "pi_fresh", 8 * day);
-  });
-
-  test("ckUSDC blocks are never pruned (financial record, §4.2)", func() {
-    let store = Idempotency.emptyStore();
-    assert Idempotency.recordCkUsdcBlock(store, 7);
-    ignore Idempotency.pruneStripe(store, 1_000 * day);
-    assert not Idempotency.recordCkUsdcBlock(store, 7);
   });
 
   test("first-seen timestamp does not refresh on replay", func() {

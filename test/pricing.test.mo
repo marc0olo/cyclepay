@@ -56,7 +56,7 @@ suite("fee formula (§3 net-of-fees)", func() {
     assert Pricing.netCents(fee, 32) == ?1;
   });
 
-  test("a zero-fee formula nets the gross unchanged (the ck-USDC rail)", func() {
+  test("a zero-fee formula nets the gross unchanged", func() {
     assert Pricing.netCents({ feeBps = 0; feeFixedCents = 0 }, 500) == ?500;
   });
 });

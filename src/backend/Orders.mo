@@ -4,7 +4,7 @@
 /// dedup, and delivery are the callers' business (per-rail money-in, §5
 /// money-out) — they ask for a transition and this module answers whether it
 /// is legal. Seam §11.1.3: `create` takes the owner as a parameter and never
-/// reads a caller itself; Card/ck-USDC owners come from an II Candid call,
+/// reads a caller itself; owners come from an II Candid call,
 /// a future Base owner from a verified EIP-3009 signature.
 import Array "mo:core/Array";
 import Blob "mo:core/Blob";

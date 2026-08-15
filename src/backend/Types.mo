@@ -39,8 +39,11 @@ module {
     };
   };
 
-  /// Money-in rails in scope (§6). Base/x402 deferred (§6.3, §11).
-  public type Rail = { #card; #ckUsdc };
+  /// Money-in rail. Single-case from #35, which deleted the ck-USDC rail — kept
+  /// as a variant for the same reason `Owner` is one: it names the dimension, so
+  /// a future second rail is an additive change rather than a schema-wide edit.
+  /// The audit log, the error queue and the delivery journal are all keyed by it.
+  public type Rail = { #card };
 
   /// ICRC-1 account (cycles ledger destination).
   public type Account = { owner : Principal; subaccount : ?Blob };
@@ -137,8 +140,6 @@ module {
     /// telemetry and drops its oldest entries, so it cannot be the only place
     /// a fact about money lives.
     ///
-    /// On the ck-USDC rail this always equals `pricing.usdCents`: the canister
-    /// pulls the exact quoted price, so a mismatch is structurally impossible.
     paidUsdCents : ?Nat;
     createdAtNs : Int;
     updatedAtNs : Int;

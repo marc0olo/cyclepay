@@ -95,8 +95,8 @@ problem, and no operator-settable rate source to audit.
                                      └─ past max wait ─▶ #errorQueue
 ```
 
-Money-out is rail-agnostic from `#paid` onward and is shared with the ck-USDC
-rail; it is out of scope for this document beyond the diagram.
+Money-out is rail-agnostic from `#paid` onward — the code is keyed by
+`Types.Rail`, which is a single-case variant today (#35).
 
 ## 4. Ingress: two paths, and why the webhook can't be caller-authenticated
 

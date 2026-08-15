@@ -6,7 +6,7 @@
 > wherever they disagree. Read it before starting any work on the Card rail.
 >
 > Settlement is moving to a cycles reserve, payment to per-order Stripe Checkout
-> Sessions, and the ck-USDC rail and the ICP mint path are being removed. Several
+> Sessions, and the ICP mint path is being removed. Several
 > statements below are true today and are scheduled to stop being true; each issue
 > updates the ones its own change invalidates.
 
@@ -103,14 +103,13 @@ account**. That is the whole point, and it is why the Stripe rail gets the
 attention: for that user a stablecoin rail is not an option, because acquiring
 the stablecoin is the same problem over again.
 
-**ck-USDC is being deleted, not frozen.** It was kept code-complete and disabled
-as a second-source hedge; that decision was reversed on 2026-08-14 because
-carrying a rail we do not ship makes every other change bigger. **Issue #35 removes
-it entirely** — the module, the frontend client, the suites, and the docs. Until
-that lands the code still contains it; do not add to it, and do not treat "keep
-its suite green" as a constraint when working #35.
+The card rail is the only rail. A second ck-USDC rail was kept code-complete and
+disabled as a second-source hedge; that decision was reversed on 2026-08-14 and
+#35 removed it, because carrying a rail we do not ship made every other change
+bigger.
 
-Work on the Card rail. It is the only rail.
+`Types.Rail` stays a single-case variant so a future rail is an additive change
+rather than a schema-wide edit — the same reasoning as `Types.Owner`.
 
 ## Project conventions
 

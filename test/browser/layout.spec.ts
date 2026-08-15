@@ -30,28 +30,6 @@ test.describe("the hidden attribute actually hides", () => {
     await expect(page.locator("#canister-principal")).toBeHidden();
   });
 
-  test("a disabled ck-USDC rail is invisible, and promises nothing", async ({ page }) => {
-    // `.rails { display: flex }` outranked [hidden] the same way, so the tab for
-    // a rail that may never ship was always on screen.
-    await page.goto("/");
-    await page.locator("#choose-live").click();
-    // Not visible. The stronger claim — that the nav and panel are *removed from
-    // the document* — is asserted in main.test.ts, because removal happens only
-    // once the config has actually been read and here the gateway is unreachable
-    // by construction. Removing on the null-config guess made at first paint
-    // would delete the markup for a rail that turns out to be enabled, so under
-    // an outage "hidden" is the correct and only honest state.
-    await expect(page.locator("#rail-nav")).toBeHidden();
-    await expect(page.locator("#ck-panel")).toBeHidden();
-    // Nothing promises it either. The old copy said "check back soon".
-    await expect(page.getByText(/check back soon/i)).toHaveCount(0);
-    // Visible text only. `#ck-pay-area` still exists inside the order view,
-    // which is a different surface and unreachable without a ck-USDC order —
-    // but nothing about the rail may be legible on the buying page.
-    await expect(
-      page.getByText(/ck-USDC/i).filter({ visible: true }),
-    ).toHaveCount(0);
-  });
 });
 
 test.describe("brand rendering", () => {

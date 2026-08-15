@@ -88,14 +88,7 @@ const backend = {
     config: { feeBps: 290n, feeFixedCents: 30n },
     lastAttempt: undefined,
   }),
-  ck_usdc_config: async () => ({
-    minUsdCents: 100n,
-    maxUsdCents: state.ckMaxUsdCents,
-    feeBps: 0n,
-    feeFixedCents: 0n,
-    ledgerFeeUnits: 10_000n,
-  }),
-  quote_previews: async (_rail: unknown, amounts: bigint[]) => ({
+  quote_previews: async (amounts: bigint[]) => ({
     quotes: amounts.map(() => state.quote),
     rates: undefined,
     cyclesLedgerDepositFee: state.depositFee,
@@ -110,7 +103,6 @@ const backend = {
     state.order = anOrder("created");
     return { __kind__: "ok", ok: { order: state.order, clientReferenceId: "aaaaa-aa_abcdef0123456789abcdef0123456789" } };
   },
-  create_ck_usdc_order: async () => ({ __kind__: "err", err: { __kind__: "railDisabled" } }),
   get_order: async () => state.order ?? null,
   list_orders: async () => (state.order ? [state.order] : []),
   cancel_order: async () => {
@@ -118,7 +110,6 @@ const backend = {
     return { __kind__: "ok", ok: state.order };
   },
   receipt: async () => state.receipt ?? null,
-  claim_ck_usdc_order: async () => ({ __kind__: "err", err: { __kind__: "notFound" } }),
 };
 
 const identity = { getPrincipal: () => ({ toText: () => "aaaaa-aa" }) };
@@ -127,7 +118,7 @@ vi.mock("./actor", () => ({
   backendCanisterId: "aaaaa-aa",
   makeBackend: () => backend,
   agentOptions: () => ({}),
-  Rail: { card: "card", ckUsdc: "ckUsdc" },
+  Rail: { card: "card" },
 }));
 vi.mock("./auth", () => ({
   currentIdentity: async () => identity,
@@ -137,7 +128,6 @@ vi.mock("./auth", () => ({
   },
   signOut: async () => undefined,
 }));
-vi.mock("./ledger", () => ({ makeCkUsdcLedger: () => ({ icrc2_approve: async () => ({ Ok: 1n }) }) }));
 
 // ── harness ───────────────────────────────────────────────────────────────────
 
@@ -425,20 +415,6 @@ describe("receipt", () => {
   });
 });
 
-describe("ck-USDC panel", () => {
-  test("there is no rail to reach while maxUsdCents is 0", async () => {
-    // This replaces an assertion that the panel showed a "not enabled yet, check
-    // back soon" notice. That notice promised a rail that may never ship, so the
-    // panel and its tab are now removed outright and there is nothing to click.
-    state.ckMaxUsdCents = 0n;
-    await mount();
-    expect(document.getElementById("rail-ckusdc")).toBeNull();
-    expect(document.getElementById("ck-amount")).toBeNull();
-    // And the card CTA is unaffected by a rail that is not there.
-    expect(el<HTMLButtonElement>("create-order").textContent).not.toContain("not enabled");
-  });
-});
-
 // ── the two-audience flow (issue #21) ─────────────────────────────────────────
 
 describe("audience chooser", () => {
@@ -500,28 +476,6 @@ describe("audience chooser", () => {
     await settle();
     expect(el("dest-canister").hidden).toBe(false);
     expect(el("dest-choice").hidden).toBe(true);
-  });
-});
-
-describe("disabled rail is invisible, not promised", () => {
-  test("the rail nav and panel are removed from the document while ck-USDC is off", async () => {
-    // Hiding was not enough: `.rails { display: flex }` outranked the UA
-    // stylesheet's `[hidden] { display: none }`, so a tab for a rail that may
-    // never ship was on screen while `el.hidden` read true. Absent cannot be
-    // undone by a stylesheet.
-    state.ckMaxUsdCents = 0n;
-    await mount("live");
-    expect(document.getElementById("rail-nav")).toBeNull();
-    expect(document.getElementById("ck-panel")).toBeNull();
-  });
-
-  test("the rail nav survives while the config is still unknown", async () => {
-    // At first paint ckConfig is null, which reads as "disabled". Removing on
-    // that guess deleted the markup before the real answer arrived.
-    state.ckMaxUsdCents = 10_000n;
-    await mount("live");
-    expect(document.getElementById("rail-nav")).not.toBeNull();
-    expect(el("rail-nav").hidden).toBe(false);
   });
 });
 

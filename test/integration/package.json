@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "PocketIC integration suite — the Card and ck-USDC go-live bars (spec §9).",
+  "description": "PocketIC integration suite — the Card rail go-live bar (spec §9).",
   "scripts": {
     "build:backend": "cd ../.. && mops build",
     "fetch:wasm": "node scripts/fetch-wasms.mjs",

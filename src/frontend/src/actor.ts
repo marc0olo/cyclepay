@@ -9,7 +9,7 @@ import { createActor, Rail } from "./bindings/backend";
 const canisterEnv = safeGetCanisterEnv();
 export const backendCanisterId = canisterEnv?.["PUBLIC_CANISTER_ID:backend"];
 
-/// One agent recipe for every actor this app builds (backend and the ck-USDC
+/// One agent recipe for every actor this app builds (the backend and the
 /// ledger) — host and root key always come from ic_env.
 export function agentOptions(identity?: Identity) {
   return {
@@ -49,7 +49,6 @@ export type Destination = Parameters<Backend["create_order"]>[1];
 export type CreateOrderResult = Awaited<ReturnType<Backend["create_order"]>>;
 export type TreasuryStatus = Awaited<ReturnType<Backend["treasury_status"]>>;
 export type PricingStatus = Awaited<ReturnType<Backend["pricing_status"]>>;
-export type CkUsdcConfig = Awaited<ReturnType<Backend["ck_usdc_config"]>>;
 // Payload-less Candid variants surface as string enums; re-exported so callers
 // name the rail instead of hand-building a variant record.
 export { Rail };

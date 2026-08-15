@@ -677,13 +677,6 @@ suite("handleWebhook: attribution failures are Type 1 #unattributed (§4.1)", fu
     assert statusOf(deps) == #created;
   });
 
-  test("reference to a non-card order", func() {
-    let deps = freshDeps();
-    withOrder(deps, #ckUsdc);
-    expectUnattributed(deps, paidBody("evt_1", "pi_1", ?goodRef, 500), goodRef, "pi_1");
-    assert statusOf(deps) == #created;
-  });
-
   test("unexpected currency", func() {
     let deps = freshDeps();
     withOrder(deps, #card);

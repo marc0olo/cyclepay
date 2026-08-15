@@ -21,7 +21,7 @@ let amount : Nat = 500; // well inside the default ceiling
 
 suite("defaults", func() {
   test("safety limits ship non-zero, unlike the money levers", func() {
-    // The burn cap and the ck-USDC bound default to 0 so no money moves until
+    // The burn cap defaults to 0 so no money moves until
     // an operator sizes them. These three are safety limits: a 0 default would
     // refuse every order rather than protect anything.
     assert config.maxOpenOrdersPerPrincipal > 0;

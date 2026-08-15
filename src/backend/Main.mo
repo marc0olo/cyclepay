@@ -32,7 +32,6 @@ import Orders "Orders";
 import Recovery "Recovery";
 import Retention "Retention";
 import Card "rails/Card";
-import CkUsdc "rails/CkUsdc";
 import Secret "Secret";
 import Tiers "Tiers";
 import Treasury "Treasury";
@@ -190,7 +189,7 @@ persistent actor CyclesGateway {
   /// Is the rail live enough to be worth spending cycles keeping a rate warm?
   /// A dark gateway refreshes nothing.
   func railsLive() : Bool {
-    cardTiers.size() > 0 or ckUsdcConfig.maxUsdCents > 0;
+    cardTiers.size() > 0;
   };
 
   func recordRateAttempt(ok : Bool, detail : Text) {
@@ -447,7 +446,7 @@ persistent actor CyclesGateway {
   /// user-facing method from being able to trigger a paid XRC request.
   ///
   /// The fee is a parameter because each rail prices with its own formula (card
-  /// = the Stripe formula in `pricingConfig`, ck-USDC = its rail config) over
+  /// = the Stripe formula in `pricingConfig`) over
   /// the one shared rate cache.
   func quoteCents(fee : { feeBps : Nat; feeFixedCents : Nat }, usdCents : Nat) : {
     #ok : (Nat, Types.Pricing);
@@ -724,7 +723,7 @@ persistent actor CyclesGateway {
   ///
   /// This exists so the price a buyer is shown is **computed by the same code
   /// that prices the order** — `quoteCents`, the identical function
-  /// `create_order` and `create_ck_usdc_order` call. A client reimplementing the
+  /// `create_order` calls. A client reimplementing the
   /// formula would be one refactor away from quoting a number the gateway does
   /// not honour, and the buyer would have no way to tell which was wrong.
   ///
@@ -739,12 +738,14 @@ persistent actor CyclesGateway {
   /// than the cap would get a short array back with no signal that anything was
   /// dropped.
   ///
-  /// `rail` selects the fee formula — the two rails price the same rate cache
-  /// with different fees (§6.1, §6.2).
-  public query func quote_previews(rail : Types.Rail, amounts : [Nat]) : async QuotePreviews {
-    let fee : { feeBps : Nat; feeFixedCents : Nat } = switch (rail) {
-      case (#card) { { feeBps = pricingConfig.feeBps; feeFixedCents = pricingConfig.feeFixedCents } };
-      case (#ckUsdc) { { feeBps = ckUsdcConfig.feeBps; feeFixedCents = ckUsdcConfig.feeFixedCents } };
+  /// There is one rail, so there is one fee formula and no `rail` parameter to
+  /// select it with (#35): a query that branches on nothing should not ask the
+  /// caller to pick. `Types.Rail` still exists on the order — the type names the
+  /// dimension, this query does not need to switch on it.
+  public query func quote_previews(amounts : [Nat]) : async QuotePreviews {
+    let fee : { feeBps : Nat; feeFixedCents : Nat } = {
+      feeBps = pricingConfig.feeBps;
+      feeFixedCents = pricingConfig.feeFixedCents;
     };
     let quotes = amounts.map(
       func(usdCents) {
@@ -769,7 +770,7 @@ persistent actor CyclesGateway {
   // ── Webhook ingestion state (task 8, §4.1/§4.2) ─────────────────────────
 
   /// §4.2 per-rail dedup sets. Stripe keys prune opportunistically on the
-  /// webhook path (~7 days, Idempotency.mo); ck-USDC block indexes never.
+  /// webhook path (~7 days, Idempotency.mo).
   let dedup : Idempotency.Store = Idempotency.emptyStore();
 
   /// §4.1 bounded error queue: Type 1 (fiat-only, operator refunds in the
@@ -1980,365 +1981,6 @@ persistent actor CyclesGateway {
     };
   };
 
-  // ── ck-USDC rail (task 14, §6.2) ────────────────────────────────────────
-
-  /// §6.2 rail config. Fails closed: maxUsdCents defaults to 0, so the rail
-  /// is disabled until the operator consciously sizes its bounds (the
-  /// empty-tier-list stance).
-  var ckUsdcConfig : CkUsdc.Config = CkUsdc.defaultConfig();
-
-  /// Money-IN journal for this rail: the §5.1-style pull intent persisted
-  /// *before* the transfer_from await, plus the recovered block. Financial
-  /// record — never pruned (it proves which ledger block paid which order).
-  let ckUsdcPulls : CkUsdc.PullJournal = CkUsdc.emptyPullJournal();
-
-  /// Per-order single-flight for the claim path: two concurrent claims for
-  /// one order would both pass the status gate before the ledger await.
-  /// Transient — an upgrade mid-pull clears it and the persisted intent
-  /// drives the replay (CkUsdc.claimStage) instead.
-  transient let pullsInFlight = Set.empty<Types.OrderId>();
-
-  transient let ckUsdcLedger = actor (CkUsdc.ledgerId) : CkUsdc.LedgerService;
-
-  public type CreateCkUsdcOrderError = {
-    #anonymous;
-    /// Operator has not enabled the rail (maxUsdCents = 0).
-    #railDisabled;
-    #zeroAmount;
-    /// Carry the bound so the frontend can render what would be accepted.
-    #belowMinimum : Nat;
-    #aboveMaximum : Nat;
-    /// §3 fee formula swallows the amount — config problem, not retryable.
-    #amountBelowFees;
-    /// §3.1 fail-closed: no fresh rate and the refresh failed.
-    #rateUnavailable;
-    /// See `CreateOrderError.quoteChanged`.
-    #quoteChanged : { quoted : Nat; minimum : Nat };
-    #idGeneration;
-    /// Gate.mo admission refusal — the same pre-creation gate the card rail
-    /// uses. Both rails converge on one ICP float and one burn cap, so both
-    /// must be refused when fulfilment is impossible; gating only one would
-    /// leave the other as a way around the own-cycles floor.
-    #notAdmitted : Gate.Reason;
-  };
-
-  public type CreatedCkUsdcOrder = {
-    order : Types.Order;
-    /// Ledger units the claim will pull (the exact quoted price).
-    amountUnits : Nat;
-    /// The user's `icrc2_approve` must cover at least this: amount + the
-    /// ledger transfer fee (charged to the `from` account on the pull).
-    approveUnits : Nat;
-  };
-
-  /// Create a ck-USDC order (§6.2): user-chosen amount within operator
-  /// bounds — nothing structural pins the amount the way a card Payment Link
-  /// does, and the canister pulls the exact price itself. Same §3 quote path
-  /// as the card rail (locked cycle quantity, fail-closed on a stale rate),
-  /// priced with this rail's own fee formula. The flow after this:
-  /// `icrc2_approve` (user → ledger, ≥ approveUnits) then `claim_ck_usdc_order`.
-  /// `minCycles` behaves exactly as on `create_order` — see it for the reasoning.
-  public shared ({ caller }) func create_ck_usdc_order(
-    usdCents : Nat,
-    destination : Types.Destination,
-    minCycles : ?Nat,
-  ) : async Result.Result<CreatedCkUsdcOrder, CreateCkUsdcOrderError> {
-    switch (Auth.checkUser(caller)) {
-      case (#err(#anonymous)) return #err(#anonymous);
-      case (#ok) {};
-    };
-    // One config snapshot: bounds, fee formula, and ledger fee from one epoch.
-    let config = ckUsdcConfig;
-    switch (CkUsdc.validateAmount(config, usdCents)) {
-      case (#err(#railDisabled)) return #err(#railDisabled);
-      case (#err(#zeroAmount)) return #err(#zeroAmount);
-      case (#err(#belowMinimum(min))) return #err(#belowMinimum(min));
-      case (#err(#aboveMaximum(max))) return #err(#aboveMaximum(max));
-      case (#ok) {};
-    };
-    // Same pre-quote admission gate as the card rail (see create_order).
-    switch (admit(caller, usdCents)) {
-      case (#err(reason)) return #err(#notAdmitted(reason));
-      case (#ok) {};
-    };
-    let fee = { feeBps = config.feeBps; feeFixedCents = config.feeFixedCents };
-    let (lockedCycles, pricing) = switch (quoteCents(fee, usdCents)) {
-      case (#ok(quoted)) quoted;
-      case (#unpriceable) return #err(#amountBelowFees);
-      case (#stale) return #err(#rateUnavailable);
-    };
-    switch (minCycles) {
-      case (?minimum) if (lockedCycles < minimum) {
-        return #err(#quoteChanged({ quoted = lockedCycles; minimum }));
-      };
-      case null {};
-    };
-    switch (await* createOrderWithFreshId(#ii(caller), #ckUsdc, destination, lockedCycles, pricing)) {
-      case (?order) {
-        let amountUnits = CkUsdc.unitsForCents(usdCents);
-        #ok({ order; amountUnits; approveUnits = amountUnits + config.ledgerFeeUnits });
-      };
-      case null #err(#idGeneration);
-    };
-  };
-
-  public type ClaimCkUsdcError = {
-    #anonymous;
-    /// Not found or not owned — existence is not revealed to non-owners.
-    #notFound;
-    #wrongRail;
-    /// Order status is past money-in (carries the status text).
-    #notClaimable : Text;
-    /// A claim for this order is already in flight.
-    #inFlight;
-    /// §6.2 amount-short mismatch: approve at least `required`, then retry.
-    #insufficientAllowance : { allowance : Nat; required : Nat };
-    #insufficientFunds : { balance : Nat; required : Nat };
-    /// ledgerFeeUnits config drifted from the ledger's fee — operator fixes.
-    #badFee : { expectedFee : Nat };
-    #ledgerRejected : Text;
-    /// Transient ledger trouble — safe to retry (the intent replays).
-    #retryable : Text;
-    /// The pull's fate is unknowable (intent aged past the dedup window) —
-    /// escalated to the operator; do not approve again until resolved.
-    #staleIntent;
-  };
-
-  /// Mark the order paid off a recovered ledger block: dedup + journal +
-  /// transition in one sync block. `#Duplicate`-recovered blocks from our own
-  /// replayed intent skip the dedup insert (it was recorded with the block).
-  func creditPull(orderId : Types.OrderId, block : Nat) : Result.Result<Types.Order, ClaimCkUsdcError> {
-    let ownBlock = switch (ckUsdcPulls.get(orderId)) {
-      case (?entry) entry.blockIndex == ?block;
-      case null false;
-    };
-    if (not ownBlock) {
-      if (not Idempotency.recordCkUsdcBlock(dedup, block)) {
-        // Structurally unreachable: every pull is its own ledger transaction.
-        // §4.1 invariant anyway — dedup gates the mint, so refuse to credit.
-        audit("ckusdc.blockAlreadyCredited", orderId # ": block " # block.toText());
-        return #err(#retryable("ledger block already credited"));
-      };
-      CkUsdc.recordPullBlock(ckUsdcPulls, orderId, block, Time.now());
-    };
-    // The pull is always for the exact quoted price, so a mismatch is
-    // structurally impossible on this rail — record it explicitly rather than
-    // leaving paidUsdCents null and making a reader wonder.
-    let quoted = switch (Orders.get(orderStore, orderId)) {
-      case (?order) order.pricing.usdCents;
-      case null 0;
-    };
-    switch (Orders.markPaid(orderStore, orderId, lockedOf(orderId), quoted, Time.now())) {
-      case (#ok(paid)) {
-        audit("ckusdc.paid", orderId # ": block " # block.toText());
-        #ok(paid);
-      };
-      case (#err(_)) {
-        // Block + journal are committed; the next claim heals via
-        // #recoverBlock. Degrade, never trap mid-money-flow.
-        audit("ckusdc.paidTransitionRefused", orderId # ": block " # block.toText());
-        #err(#retryable("payment recorded; retry to finalize"));
-      };
-    };
-  };
-
-  /// The order's current locked quantity — ck-USDC credits do not reprice, so
-  /// markPaid is handed back exactly what was locked at creation.
-  func lockedOf(orderId : Types.OrderId) : Nat {
-    switch (Orders.get(orderStore, orderId)) {
-      case (?order) order.lockedCycles;
-      case null 0;
-    };
-  };
-
-  /// §5.1 stale-intent escalation, money-IN edition: the pull's fate is
-  /// unknowable. The order deliberately stays `#created` (no legal edge to
-  /// `#errorQueue` pre-payment, and the position may well be "nothing
-  /// happened") — the pull journal's escalation mark blocks further claims;
-  /// the operator reads the ck-USDC ledger, then either refunds via
-  /// `withdraw_ck_usdc` (pull executed) or `reset_ck_usdc_pull` (it didn't).
-  func escalateStalePull(order : Types.Order, detail : Text) {
-    CkUsdc.markEscalated(ckUsdcPulls, order.id, Time.now());
-    ignore queueMintError(#ckUsdc, #stuckMint({ orderId = order.id; stage = "stalePullIntent" }), detail);
-    audit("ckusdc.stalePull", order.id # ": " # detail);
-  };
-
-  func driveClaim(order : Types.Order) : async* Result.Result<Types.Order, ClaimCkUsdcError> {
-    let orderId = order.id;
-    let intent : CkUsdc.PullIntent = switch (CkUsdc.claimStage(order.status, ckUsdcPulls.get(orderId), Time.now(), CkUsdc.ledgerDedupWindowNs)) {
-      case (#notClaimable) return #err(#notClaimable(Types.statusToText(order.status)));
-      case (#alreadyEscalated) return #err(#staleIntent);
-      case (#escalate(_)) {
-        escalateStalePull(order, "pull intent aged past the ledger dedup window without a recorded block — check the ck-USDC ledger for the pull before refunding (order stays Created)");
-        return #err(#staleIntent);
-      };
-      case (#recoverBlock(block)) {
-        switch (creditPull(orderId, block)) {
-          case (#ok(paid)) {
-            // Detached money-out kick (§5) — the claim ack never waits on
-            // ledger/CMC latency; the §5.2 timer backstops a dead message.
-            ignore async { await* processMint(orderId) };
-            return #ok(paid);
-          };
-          case (#err(e)) return #err(e);
-        };
-      };
-      case (#fresh) {
-        // §5.1 step 1, money-IN edition: the pull args are frozen and
-        // persisted in this sync block, before the ledger await. The amount
-        // comes from the order's own pricing snapshot, never live config.
-        let #ii(fromOwner) = order.owner;
-        let intent = CkUsdc.buildPullIntent(
-          fromOwner,
-          orderId,
-          CkUsdc.unitsForCents(order.pricing.usdCents),
-          ckUsdcConfig.ledgerFeeUnits,
-          Time.now(),
-        );
-        ignore CkUsdc.openPull(ckUsdcPulls, orderId, intent, Time.now());
-        intent;
-      };
-      case (#replay(intent)) intent;
-    };
-    let result = try {
-      await ckUsdcLedger.icrc2_transfer_from(CkUsdc.transferFromArgs(selfPrincipal(), intent));
-    } catch (e) {
-      // Call rejected — keep the intent; the next claim replays it.
-      audit("ckusdc.pullFailed", orderId # ": " # e.message());
-      return #err(#retryable(e.message()));
-    };
-    switch (CkUsdc.interpretPull(result)) {
-      case (#pulled(block)) {
-        switch (creditPull(orderId, block)) {
-          case (#ok(paid)) {
-            ignore async { await* processMint(orderId) };
-            #ok(paid);
-          };
-          case (#err(e)) #err(e);
-        };
-      };
-      case (#drop(reason)) {
-        // Definite rejection — proven nothing ever moved under these args
-        // (dedup-first ledger semantics, CkUsdc.mo doc), so the intent goes
-        // and the next claim builds a fresh one.
-        CkUsdc.dropPull(ckUsdcPulls, orderId);
-        let required = intent.amountUnits + intent.feeUnits;
-        switch (reason) {
-          case (#insufficientAllowance({ allowance })) #err(#insufficientAllowance({ allowance; required }));
-          case (#insufficientFunds({ balance })) #err(#insufficientFunds({ balance; required }));
-          case (#badFee({ expectedFee })) {
-            audit("ckusdc.badFee", orderId # ": ledger expects " # expectedFee.toText() # " units");
-            #err(#badFee({ expectedFee }));
-          };
-          case (#rejected(detail)) {
-            audit("ckusdc.pullRejected", orderId # ": " # detail);
-            #err(#ledgerRejected(detail));
-          };
-        };
-      };
-      case (#retry(detail)) {
-        audit("ckusdc.pullRetriable", orderId # ": " # detail);
-        #err(#retryable(detail));
-      };
-      case (#uncertain(detail)) {
-        escalateStalePull(order, detail);
-        #err(#staleIntent);
-      };
-    };
-  };
-
-  /// §6.2 pull: after `icrc2_approve` (≥ the order's approveUnits, spender =
-  /// this canister), the owner claims and the canister pulls the exact quoted
-  /// price. Idempotent against double-clicks (single-flight) and safe against
-  /// lost responses (the persisted intent replays bit-identically; the ledger
-  /// dedups on created_at_time). On success the order is `#paid` and the
-  /// mint pipeline is kicked — the same money-out path as the card rail.
-  public shared ({ caller }) func claim_ck_usdc_order(id : Types.OrderId) : async Result.Result<Types.Order, ClaimCkUsdcError> {
-    switch (Auth.checkUser(caller)) {
-      case (#err(#anonymous)) return #err(#anonymous);
-      case (#ok) {};
-    };
-    let ?order = Orders.getOwned(orderStore, id, caller) else return #err(#notFound);
-    if (order.rail != #ckUsdc) return #err(#wrongRail);
-    if (pullsInFlight.contains(id)) return #err(#inFlight);
-    pullsInFlight.add(id);
-    try { await* driveClaim(order) } finally { pullsInFlight.remove(id) };
-  };
-
-  /// Adjust the rail config (§7): amount bounds, fee formula, ledger fee.
-  /// Validated atomically — a bad config never partially applies.
-  public shared ({ caller }) func set_ck_usdc_config(config : CkUsdc.Config) : async Result.Result<(), CkUsdc.ConfigError> {
-    requireAdmin(caller);
-    switch (CkUsdc.validateConfig(config)) {
-      case (#ok) {
-        ckUsdcConfig := config;
-        auditAdmin(caller, "ckusdc.configSet", "maxUsdCents=" # config.maxUsdCents.toText()
-          # (if (config.maxUsdCents == 0) " — RAIL DISABLED" else ""));
-        #ok;
-      };
-      case (#err(e)) #err(e);
-    };
-  };
-
-  /// Public — bounds and fee formula are what users are charged (the same
-  /// transparency stance as forex_status); the frontend renders the rail
-  /// panel (or its disabled state) from this.
-  public query func ck_usdc_config() : async CkUsdc.Config {
-    ckUsdcConfig;
-  };
-
-  /// Money-IN journal for one order (admin, ops parity with mint_journal).
-  public shared query ({ caller }) func ck_usdc_pull(id : Types.OrderId) : async ?CkUsdc.PullEntry {
-    requireAdmin(caller);
-    ckUsdcPulls.get(id);
-  };
-
-  /// Clear a stuck pull intent so the order becomes claimable again — ONLY
-  /// after verifying on the ck-USDC ledger that no transaction matches the
-  /// intent (a fresh intent after an executed-but-unrecorded pull would debit
-  /// the user twice). Refuses when a block is recorded (money moved). False =
-  /// nothing cleared.
-  public shared ({ caller }) func reset_ck_usdc_pull(id : Types.OrderId) : async Bool {
-    requireAdmin(caller);
-    switch (ckUsdcPulls.get(id)) {
-      case (?entry) {
-        if (entry.blockIndex != null) return false;
-        CkUsdc.dropPull(ckUsdcPulls, id);
-        auditAdmin(caller, "ckusdc.pullReset", id # ": intent cleared after ledger verification");
-        true;
-      };
-      case null false;
-    };
-  };
-
-  /// §6.2 hold-ckUSDC treasury posture: pulled ck-USDC accrues in this
-  /// canister's ledger account; the operator withdraws it here, converts to
-  /// ICP off-chain, and refills the float. Attended admin lever — no
-  /// created_at_time dedup; on an ambiguous failure check the ledger before
-  /// retrying. (Balance is public on the ck-USDC ledger; no query needed.)
-  public shared ({ caller }) func withdraw_ck_usdc(to : Types.Account, amountUnits : Nat) : async Result.Result<Nat, Text> {
-    requireAdmin(caller);
-    let result = try {
-      await ckUsdcLedger.icrc1_transfer({
-        from_subaccount = null;
-        to;
-        amount = amountUnits;
-        fee = ?ckUsdcConfig.ledgerFeeUnits;
-        memo = null;
-        created_at_time = null;
-      });
-    } catch (e) {
-      return #err(e.message());
-    };
-    switch (result) {
-      case (#Ok(block)) {
-        auditAdmin(caller, "ckusdc.withdraw", amountUnits.toText() # " units to " # to.owner.toText() # ", block " # block.toText());
-        #ok(block);
-      };
-      case (#Err(error)) #err(CkUsdc.transferErrorToText(error));
-    };
-  };
-
   // ── HTTP ingress ────────────────────────────────────────────────────────
 
   /// Set by the webhook route handler when a delivery marks an order `#paid`,
@@ -2423,9 +2065,8 @@ persistent actor CyclesGateway {
   /// no stale duplicate to cancel.
   ///
   /// Declared last in the actor body: the initializer evaluates during actor
-  /// init and `recoverySweep` reaches the order store, the mint journal, and
-  /// the ck-USDC pull journal, all of which must already be initialized
-  /// (M0016 otherwise).
+  /// init and `recoverySweep` reaches the order store and the mint journal,
+  /// both of which must already be initialized (M0016 otherwise).
   transient var recoveryTimerId : Timer.TimerId =
     Timer.recurringTimer<system>(#nanoseconds(recoverySweepIntervalNs), recoverySweep);
 

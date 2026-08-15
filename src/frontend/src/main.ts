@@ -1,22 +1,17 @@
-// CyclePay frontend (M2): II login, rail selector (Card | ck-USDC), order
+// CyclePay frontend (M2): II login, order
 // creation, Stripe Payment Link hand-off / approve→claim flow, live status
 // polling, order history.
 //
-// The rail tabs are the §11.1 seam in UI form: each rail is a panel feeding
-// the one shared destination form and the one shared order timeline.
 import { Principal } from "@icp-sdk/core/principal";
 import type { Identity } from "@icp-sdk/core/agent";
 import {
-  backendCanisterId,
   makeBackend,
   type PricingStatus,
   makeBackendAt,
   type Backend,
-  type CkUsdcConfig,
   type Destination,
   type Order,
   type QuotePreview,
-  Rail,
   type Tier,
 } from "./actor";
 import { currentIdentity, signIn, signOut } from "./auth";
@@ -31,15 +26,10 @@ import {
 } from "./ic-env";
 import { type Audience, recall, remember, forget, suggestFrom } from "./audience";
 import { type View, type Route, parseRoute, routeHash, TOUR_STEPS, stepStates } from "./view";
-import { makeCkUsdcLedger } from "./ledger";
 import {
   RATE_LOCK_NOTE,
   STEPS,
-  approveErrorMessage,
   checkReceipt,
-  ckUnitsForCents,
-  claimErrorInfo,
-  createCkOrderErrorMessage,
   createOrderErrorMessage,
   type DestinationKind,
   estimateLine,
@@ -50,12 +40,10 @@ import {
   lockedVsEstimate,
   minAcceptableCycles,
   quoteChangedMessage,
-  formatCkUsdcUnits,
   formatCycles,
   formatUsdCents,
   nsToMillis,
   parseSubaccountHex,
-  parseUsdAmount,
   paymentLinkWithRef,
   rateSourceNote,
   shortPrincipal,
@@ -64,9 +52,6 @@ import {
 } from "./format";
 
 const POLL_MS = 3_000;
-/// Debounce on the ck-USDC amount box: one query per pause in typing, not per
-/// keystroke.
-const QUOTE_DEBOUNCE_MS = 350;
 
 // The bindgen wrapper surfaces OrderStatus as a string enum whose values are
 // exactly the variant labels format.ts keys on.
@@ -74,14 +59,8 @@ function statusKeyOf(order: Order): StatusKey {
   return order.status as unknown as StatusKey;
 }
 
-// Rail is a payload-less variant → string enum in the wrapper, same story.
-function isCkOrder(order: Order): boolean {
-  return (order.rail as unknown as string) === "ckUsdc";
-}
-
 // --- state ---------------------------------------------------------------
 
-type RailKey = "card" | "ckUsdc";
 
 let identity: Identity | null = null;
 
@@ -112,7 +91,6 @@ let backend: Backend = buildBackend(null);
 let tiers: Tier[] = [];
 let selectedTierId: string | null = null;
 let lowFloat = false;
-let activeRail: RailKey = "card";
 
 /// Null means "show the chooser". See audience.ts for why only "live" persists.
 /// The order the order/delivered view is showing. Null on every other view.
@@ -123,19 +101,12 @@ let audience: Audience | null = null;
 /// escape hatch for funding someone else's canister without promoting it to a
 /// co-equal choice.
 let newcomerAdvanced = false;
-let ckConfig: CkUsdcConfig | null = null;
 // Payment links keyed by order id — known only for orders created this
 // session (the backend stores no link; the tier carries it).
 const payLinks = new Map<string, string>();
-// Ledger-authoritative approve amounts (from insufficientAllowance claim
-// errors) — they supersede the config-derived price + fee for that order.
-const ckRequiredUnits = new Map<string, bigint>();
-// Approve/claim flow guard: the order id of an in-flight ledger/claim call.
-let ckBusyOrderId: string | null = null;
 // Quotes the *backend* computed, keyed by tier id — never derived here, so what
 // a buyer is shown and what create_order locks cannot disagree.
 let tierQuotes = new Map<string, QuotePreview>();
-let ckQuote: QuotePreview | null = null;
 // Fee formulas, for rendering the split in words.
 let cardFee: FeeConfig | null = null;
 // The ledger's own deposit fee, from quote_previews.
@@ -144,7 +115,6 @@ let depositFee = 0n;
 // within tolerance, so the order went through, but the buyer should still hear
 // the real number rather than discover it.
 let lockNotice: string | null = null;
-let ckQuoteTimer: ReturnType<typeof setTimeout> | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let pollOrderId: string | null = null;
 let lastPolledStatus: string | null = null;
@@ -159,10 +129,6 @@ function el<T extends HTMLElement>(id: string): T {
 
 /// Toggle by id, tolerating a node that is not in the document.
 ///
-/// Absence is a real state here, not a bug: the ck-USDC markup is *removed*
-/// while the rail is disabled (see `removeDisabledRailMarkup`), so every
-/// `show("ck-…")` on the shared paths would otherwise throw. `el()` stays strict
-/// for everything that must exist.
 function show(id: string, visible: boolean): void {
   const node = document.getElementById(id);
   if (node) node.hidden = !visible;
@@ -510,15 +476,13 @@ function setIdentity(next: Identity | null): void {
 // --- tiers + gates -------------------------------------------------------
 
 async function loadMarket(): Promise<void> {
-  const [tierList, treasury, pricing, ck] = await Promise.all([
+  const [tierList, treasury, pricing] = await Promise.all([
     backend.card_tiers(),
     backend.treasury_status(),
     backend.pricing_status(),
-    backend.ck_usdc_config(),
   ]);
   tiers = tierList;
   lowFloat = treasury.lowFloat;
-  ckConfig = ck;
   cardFee = { feeBps: pricing.config.feeBps, feeFixedCents: pricing.config.feeFixedCents };
 
   // Both rate inputs are shown, because both are needed to reproduce a quote —
@@ -536,7 +500,6 @@ async function loadMarket(): Promise<void> {
 
   await refreshTierQuotes();
   renderTiers();
-  renderCkPanel();
   renderDestinationNote();
   renderSubmitGate();
 }
@@ -559,7 +522,7 @@ async function refreshTierQuotes(): Promise<void> {
   tierQuotes = new Map();
   if (tiers.length === 0) return;
   try {
-    const preview = await backend.quote_previews(Rail.card, tiers.map((t) => t.usdCents));
+    const preview = await backend.quote_previews(tiers.map((t) => t.usdCents));
     depositFee = preview.cyclesLedgerDepositFee;
     preview.quotes.forEach((quote, index) => {
       const tier = tiers[index];
@@ -587,96 +550,6 @@ function renderDestinationNote(): void {
     `The cycles ledger charges ${formatCycles(depositFee)} cycles to accept a deposit, ` +
     `so an account receives that much less than a canister top-up. It is not added to your price.`;
   show("dest-fee-note", true);
-}
-
-// maxUsdCents = 0 is the backend's fail-closed default: the rail exists but
-// the operator has not sized it yet.
-function ckRailDisabled(): boolean {
-  return ckConfig === null || ckConfig.maxUsdCents === 0n;
-}
-
-/// Take the ck-USDC markup out of the document entirely while the rail is off.
-///
-/// Hiding it is not enough. The rail ships disabled and may never be activated,
-/// so a tab and a panel that merely happen to be `hidden` still put "ck-USDC" in
-/// the accessibility tree, in find-in-page, and one CSS mistake away from being
-/// on screen — which is precisely how `.rails { display: flex }` put it back.
-/// Absent beats hidden for something we may never ship.
-/// Called only once the config has actually been read, never on the null-config
-/// guess made at first paint.
-function removeDisabledRailMarkup(): void {
-  if (ckConfig === null || !ckRailDisabled()) return;
-  document.getElementById("rail-nav")?.remove();
-  document.getElementById("ck-panel")?.remove();
-}
-
-function renderCkPanel(): void {
-  // Nothing to render once the markup is gone. Reached on the disabled path via
-  // loadMarket, so this guard is what lets the removal above be safe.
-  if (document.getElementById("ck-panel") === null) return;
-  const disabled = ckRailDisabled();
-  show("ck-disabled-notice", disabled);
-  el<HTMLInputElement>("ck-amount").disabled = disabled;
-  const line = el("ck-bounds-line");
-  if (ckConfig === null || disabled) {
-    line.textContent = "";
-    return;
-  }
-  const fee =
-    ckConfig.feeBps === 0n && ckConfig.feeFixedCents === 0n
-      ? "no processor fee"
-      : `fee ${Number(ckConfig.feeBps) / 100}% + ${formatUsdCents(ckConfig.feeFixedCents)}`;
-  line.textContent =
-    `Between ${formatUsdCents(ckConfig.minUsdCents > 0n ? ckConfig.minUsdCents : 1n)} and ${formatUsdCents(ckConfig.maxUsdCents)} · ${fee} · ` +
-    `ledger fee ${formatCkUsdcUnits(ckConfig.ledgerFeeUnits)} per transfer · cycles are locked at order creation`;
-}
-
-/// Live estimate under the ck-USDC amount box, from the backend's quote.
-function renderCkEstimate(): void {
-  // The ck-USDC markup is removed while the rail is disabled, so every
-  // shared code path that touches it needs this. See removeDisabledRailMarkup.
-  if (document.getElementById("ck-panel") === null) return;
-  const node = el("ck-estimate");
-  if (ckQuote === null || ckConfig === null || ckRailDisabled()) {
-    show("ck-estimate", false);
-    return;
-  }
-  const destination = selectedDestinationKind();
-  const fee = { feeBps: ckConfig.feeBps, feeFixedCents: ckConfig.feeFixedCents };
-  node.textContent =
-    `${estimateLine(ckQuote.cycles ?? null, destination, depositFee)} · ` +
-    `${feeBreakdown(ckQuote.usdCents, ckQuote.feeCents, ckQuote.netCents, fee)} ${RATE_LOCK_NOTE}`;
-  show("ck-estimate", true);
-}
-
-/// Debounced re-quote as the amount is typed. A malformed amount clears the
-/// estimate rather than leaving a stale one that belongs to different input.
-function scheduleCkQuote(): void {
-  // The ck-USDC markup is removed while the rail is disabled, so every
-  // shared code path that touches it needs this. See removeDisabledRailMarkup.
-  if (document.getElementById("ck-panel") === null) return;
-
-  clearRequote();
-  if (ckQuoteTimer !== null) clearTimeout(ckQuoteTimer);
-  const parsed = parseUsdAmount(el<HTMLInputElement>("ck-amount").value);
-  if (!parsed.ok) {
-    ckQuote = null;
-    renderCkEstimate();
-    return;
-  }
-  const cents = parsed.cents;
-  ckQuoteTimer = setTimeout(() => {
-    void (async () => {
-      try {
-        const preview = await backend.quote_previews(Rail.ckUsdc, [cents]);
-        depositFee = preview.cyclesLedgerDepositFee;
-        ckQuote = preview.quotes[0] ?? null;
-      } catch {
-        ckQuote = null;
-      }
-      renderCkEstimate();
-    })();
-  }, QUOTE_DEBOUNCE_MS);
 }
 
 /// The rate strip under the amounts.
@@ -801,9 +674,6 @@ function renderAudience(): void {
   // Hidden here, removed later. At first paint `ckConfig` is still null, so
   // `ckRailDisabled()` is true for a rail that may turn out to be enabled —
   // removing on that guess deleted the markup before the answer arrived.
-  show("rail-nav", !ckRailDisabled());
-  if (ckRailDisabled() && activeRail !== "card") setRail("card");
-
   renderDestinationNote();
 }
 
@@ -813,7 +683,6 @@ function chooseAudience(next: Audience): void {
   remember(next);
   renderAudience();
   renderTiers();
-  renderCkEstimate();
   renderSubmitGate();
   // A chosen arm IS the buy view. Pushed, not replaced: the visitor asked for
   // this, so Back should return them to the chooser.
@@ -841,13 +710,10 @@ function renderSubmitGate(): void {
     btn.type = "button";
     btn.onclick = onSignInClick;
     btn.textContent = "Sign in and continue";
-  } else if (activeRail === "card" && selectedTierId === null) {
+  } else if (selectedTierId === null) {
     btn.disabled = true;
     btn.textContent = "Pick an amount";
-  } else if (activeRail === "ckUsdc" && ckRailDisabled()) {
-    btn.disabled = true;
-    btn.textContent = "ck-USDC is not enabled yet";
-  } else if (activeRail === "card" && tierQuotes.get(selectedTierId ?? "")?.cycles === undefined) {
+  } else if (tierQuotes.get(selectedTierId ?? "")?.cycles === undefined) {
     // Pricing is unavailable, so create_order would refuse. Say that here
     // instead of letting the user find out by clicking.
     btn.disabled = true;
@@ -894,17 +760,6 @@ function pinFor(usdCents: bigint, shown: bigint | null): bigint | null {
 function onQuoteChanged(usdCents: bigint, quoted: bigint): void {
   acknowledgedQuote = { cents: usdCents, cycles: quoted };
   showQuoteNotice(quoteChangedMessage(quoted, selectedDestinationKind(), depositFee));
-  renderSubmitGate();
-}
-
-function setRail(rail: RailKey): void {
-  activeRail = rail;
-  clearRequote();
-  document.getElementById("rail-card")?.classList.toggle("active", rail === "card");
-  document.getElementById("rail-ckusdc")?.classList.toggle("active", rail === "ckUsdc");
-  show("card-panel", rail === "card");
-  show("ck-panel", rail === "ckUsdc");
-  showFormError(null);
   renderSubmitGate();
 }
 
@@ -1026,8 +881,7 @@ async function onCreateOrder(event: SubmitEvent): Promise<void> {
   btn.disabled = true;
   btn.textContent = "Creating order…";
   try {
-    if (activeRail === "card") await createCardOrder(dest.value);
-    else await createCkOrder(dest.value);
+    await createCardOrder(dest.value);
   } catch (error) {
     showFormError(reportCallFailure("create_order failed", error));
   } finally {
@@ -1064,32 +918,6 @@ async function createCardOrder(dest: Destination): Promise<void> {
   void refreshHistory();
 }
 
-async function createCkOrder(dest: Destination): Promise<void> {
-  const amount = parseUsdAmount(el<HTMLInputElement>("ck-amount").value);
-  if (!amount.ok) {
-    showFormError(amount.error);
-    return;
-  }
-  const shown = ckQuote?.cycles ?? null;
-  const result = await backend.create_ck_usdc_order(amount.cents, dest, pinFor(amount.cents, shown));
-  if (result.__kind__ === "err") {
-    if (result.err.__kind__ === "quoteChanged") {
-      onQuoteChanged(amount.cents, result.err.quoteChanged.quoted);
-      return;
-    }
-    showFormError(createCkOrderErrorMessage(result.err));
-    return;
-  }
-  clearRequote();
-  const created = result.ok;
-  lockNotice = lockedVsEstimate(created.order.lockedCycles, shown);
-  // approveUnits as quoted at creation — the claim error corrects it if the
-  // ledger fee config drifts before the user gets around to approving.
-  ckRequiredUnits.set(created.order.id, created.approveUnits);
-  openOrder(created.order);
-  void refreshHistory();
-}
-
 // --- active order + polling ----------------------------------------------
 
 function describeDestination(order: Order): string {
@@ -1120,7 +948,6 @@ function renderOrder(order: Order, clientReferenceId?: string): void {
   // underneath the history table or the buy form.
   if (currentView !== "order") return;
   el("order-id-short").textContent = `${order.id.slice(0, 8)}…`;
-  el("order-rail").textContent = isCkOrder(order) ? "ck-USDC" : "Card";
   // No "≈" here: the rate is locked, so this figure is what the order pays out.
   const destination = order.destination.__kind__ === "canister" ? "canister" : "cyclesLedgerAccount";
   el("order-cycles").textContent = estimateLine(order.lockedCycles, destination, depositFee)
@@ -1156,22 +983,15 @@ function renderOrder(order: Order, clientReferenceId?: string): void {
   statusLine.className = `tone-${info.tone}`;
 
   const awaitingPayment = key === "created" || key === "expired";
-  const isCk = isCkOrder(order);
 
   const link = payLinks.get(order.id);
-  show("pay-area", !isCk && awaitingPayment && link !== undefined);
+  show("pay-area", awaitingPayment && link !== undefined);
   if (link !== undefined) {
     el<HTMLAnchorElement>("pay-link").href = link;
   }
   if (clientReferenceId !== undefined) {
     el("client-ref").textContent = clientReferenceId;
   }
-
-  // Unlike the card link, the approve→claim flow is reconstructable for any
-  // session: the amount derives from the pricing snapshot, the ledger fee
-  // from public config — so reopened ck orders stay payable.
-  show("ck-pay-area", isCk && awaitingPayment);
-  if (isCk && awaitingPayment) renderCkPay(order);
 
   // Only an unpaid order can be given up on; past payment it is going to
   // deliver, and offering a cancel there would promise something untrue.
@@ -1288,112 +1108,6 @@ async function onCancelOrder(): Promise<void> {
   }
 }
 
-// --- ck-USDC approve → claim ------------------------------------------------
-
-function ckApproveUnitsFor(order: Order): bigint {
-  const fallbackFee = ckConfig?.ledgerFeeUnits ?? 10_000n;
-  return ckRequiredUnits.get(order.id) ?? ckUnitsForCents(order.pricing.usdCents) + fallbackFee;
-}
-
-function setCkFlowStatus(message: string | null, tone: "muted" | "err" = "muted"): void {
-  const node = el("ck-flow-status");
-  node.textContent = message ?? "";
-  node.className = tone === "err" ? "error" : "muted";
-  show("ck-flow-status", message !== null);
-}
-
-/// Re-rendered on every poll tick — updates amounts and button state but
-/// never clobbers the flow-status line an in-flight call owns.
-function renderCkPay(order: Order): void {
-  el("ck-pay-amount").textContent = formatCkUsdcUnits(ckApproveUnitsFor(order));
-  const busy = ckBusyOrderId === order.id;
-  el<HTMLButtonElement>("ck-approve").disabled = busy || !identity;
-  el<HTMLButtonElement>("ck-claim").disabled = busy || !identity;
-}
-
-async function onCkApprove(): Promise<void> {
-  if (!identity || pollOrderId === null || ckBusyOrderId !== null) return;
-  if (!backendCanisterId) return;
-  const orderId = pollOrderId;
-  let order: Order | null = null;
-  try {
-    order = await backend.get_order(orderId);
-  } catch {
-    setCkFlowStatus("Could not reach the gateway. Try again.", "err");
-    return;
-  }
-  if (order === null) return;
-  const units = ckApproveUnitsFor(order);
-  ckBusyOrderId = orderId;
-  renderCkPay(order);
-  setCkFlowStatus(`Approving ${formatCkUsdcUnits(units)} on the ck-USDC ledger…`);
-  try {
-    const result = await makeCkUsdcLedger(identity).icrc2_approve({
-      from_subaccount: [],
-      spender: { owner: Principal.fromText(backendCanisterId), subaccount: [] },
-      amount: units,
-      expected_allowance: [],
-      expires_at: [],
-      fee: [],
-      memo: [],
-      created_at_time: [],
-    });
-    if ("Err" in result) {
-      setCkFlowStatus(approveErrorMessage(result.Err), "err");
-      return;
-    }
-    setCkFlowStatus("Approved. Claiming…");
-    await claimCkOrder(orderId);
-  } catch (error) {
-    setCkFlowStatus(
-      reportCallFailure("ck-USDC approve failed", error),
-      "err",
-    );
-  } finally {
-    ckBusyOrderId = null;
-    if (order) renderCkPay(order);
-  }
-}
-
-async function onCkClaim(): Promise<void> {
-  if (!identity || pollOrderId === null || ckBusyOrderId !== null) return;
-  const orderId = pollOrderId;
-  ckBusyOrderId = orderId;
-  setCkFlowStatus("Claiming…");
-  try {
-    await claimCkOrder(orderId);
-  } finally {
-    ckBusyOrderId = null;
-  }
-}
-
-/// One claim attempt; on success the order is #paid and the regular poll
-/// takes over (it hides this whole area on the next render).
-async function claimCkOrder(orderId: string): Promise<void> {
-  let result: Awaited<ReturnType<Backend["claim_ck_usdc_order"]>>;
-  try {
-    result = await backend.claim_ck_usdc_order(orderId);
-  } catch (error) {
-    setCkFlowStatus(
-      reportCallFailure("ck-USDC claim failed", error),
-      "err",
-    );
-    return;
-  }
-  if (result.__kind__ === "err") {
-    const info = claimErrorInfo(result.err);
-    setCkFlowStatus(info.message, info.action === "retry" ? "muted" : "err");
-    if (info.action === "approve" && info.requiredUnits !== undefined) {
-      // The ledger's number wins — the next approve uses it.
-      ckRequiredUnits.set(orderId, info.requiredUnits);
-    }
-    return;
-  }
-  setCkFlowStatus(null);
-  renderOrder(result.ok);
-  void refreshHistory();
-}
-
 function stopPolling(): void {
   if (pollTimer !== null) clearInterval(pollTimer);
   pollTimer = null;
@@ -1406,7 +1120,6 @@ function openOrder(order: Order, clientReferenceId?: string): void {
   orderLoad = "ok";
   navigate({ view: "order", orderId: order.id }, true);
   stopPolling();
-  setCkFlowStatus(null);
   renderOrder(order, clientReferenceId);
   pollOrderId = order.id;
   lastPolledStatus = statusKeyOf(order);
@@ -1477,7 +1190,6 @@ async function refreshHistory(): Promise<void> {
     const cells = [
       new Date(nsToMillis(order.createdAtNs)).toLocaleString(),
       `${order.id.slice(0, 8)}…`,
-      isCkOrder(order) ? "ck-USDC" : "Card",
       formatCycles(order.lockedCycles),
       formatUsdCents(order.pricing.usdCents),
       info.label,
@@ -1685,7 +1397,6 @@ function wireDestinationToggle(): void {
       // screen has to follow the toggle.
       renderDestinationNote();
       renderTiers();
-      renderCkEstimate();
     };
   }
 }
@@ -1709,9 +1420,6 @@ async function loadMarketWithRetry(): Promise<void> {
   try {
     await loadMarket();
     marketState = "loaded";
-    // Now the rail's status is known rather than assumed, so a rail that is off
-    // can be taken out of the document for good.
-    removeDisabledRailMarkup();
   } catch (error) {
     marketState = "failed";
     // eslint-disable-next-line no-console
@@ -1757,13 +1465,7 @@ async function init(): Promise<void> {
   // removed from the document rather than hidden.
   const canisterField = document.getElementById("canister-principal") as HTMLInputElement | null;
   if (canisterField) canisterField.oninput = () => validateCanisterId();
-  const ckAmount = document.getElementById("ck-amount") as HTMLInputElement | null;
-  if (ckAmount) ckAmount.oninput = () => scheduleCkQuote();
-  document.getElementById("rail-card")?.addEventListener("click", () => setRail("card"));
-  document.getElementById("rail-ckusdc")?.addEventListener("click", () => setRail("ckUsdc"));
   el("cancel-order").onclick = () => void onCancelOrder();
-  el("ck-approve").onclick = () => void onCkApprove();
-  el("ck-claim").onclick = () => void onCkClaim();
 
   el("choose-new").onclick = () => chooseAudience("newcomer");
   el("choose-live").onclick = () => chooseAudience("live");
