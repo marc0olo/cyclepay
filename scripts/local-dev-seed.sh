@@ -286,6 +286,45 @@ fi
 ok "float funded and observed: $((OBSERVED_E8S / 100000000)) ICP"
 
 # ── the admission gate ───────────────────────────────────────────────────────
+# ── Stripe API key + return origin (#33) ─────────────────────────────────────
+step "Stripe session config"
+# The rail is live only when BOTH the API key and the webhook secret are
+# provisioned. This step does the KEY and the ORIGIN; `scripts/stripe-dev.sh`
+# does the webhook secret, because that one belongs to a `stripe listen` session
+# rather than to the deployment.
+#
+# ⚠️ A reinstall wipes both secrets and this script only restores the key, so
+# after `--mode reinstall` you still need `scripts/stripe-dev.sh` before paying.
+if [ -n "${STRIPE_API_KEY:-}" ]; then
+  icp canister call backend set_stripe_api_key "(\"${STRIPE_API_KEY}\")" >/dev/null \
+    || die "set_stripe_api_key was refused (too short?)"
+  ok "Stripe API key provisioned from STRIPE_API_KEY"
+else
+  # A placeholder, deliberately: it lets every non-paying path work — browsing,
+  # signing in, quoting — while `create_order` fails at the outcall with a real
+  # Stripe 401 rather than at a config check. That is a better local default than
+  # refusing to create orders at all, and the failure names itself.
+  icp canister call backend set_stripe_api_key '("rk_test_PLACEHOLDER_set_STRIPE_API_KEY_to_create_sessions")' >/dev/null \
+    || die "set_stripe_api_key was refused"
+  printf '  \033[33m!\033[0m placeholder API key set — export STRIPE_API_KEY=rk_... to create real sessions\n'
+fi
+
+# The origin Stripe returns the buyer to. The frontend canister's own URL, since
+# no domain is chosen yet (#40/#23). Must be https, so a local run uses the
+# canister's icp0.io origin rather than the localhost gateway.
+# `icp canister id` does not exist; the deploy records the mapping here.
+# `canister status` would also print it, but it needs a running network and a
+# reachable canister, where this is just a read.
+FRONTEND_ID="$(sed -n 's/.*"frontend": *"\([^"]*\)".*/\1/p' .icp/cache/mappings/local.ids.json 2>/dev/null || true)"
+if [ -n "$FRONTEND_ID" ]; then
+  ORIGIN="https://${FRONTEND_ID}.icp0.io"
+  icp canister call backend set_stripe_origin "(\"${ORIGIN}\")" >/dev/null \
+    || die "set_stripe_origin refused ${ORIGIN} — it must be https with no query or fragment"
+  ok "return origin set to ${ORIGIN}"
+else
+  printf '  \033[33m!\033[0m could not read the frontend canister id; set_stripe_origin skipped\n'
+fi
+
 step "admission gate"
 # The one that is genuinely confusing: `minCanisterCycles` defaults to 5 T, and
 # `icp deploy` creates the canister with less. So a freshly deployed local gateway

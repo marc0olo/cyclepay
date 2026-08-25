@@ -176,6 +176,38 @@ it once the endpoint is confirmed working.
 
 ## 3. Card tiers & Payment Links (§3, §6.1)
 
+> ⚠️ **SUPERSEDED as of #33.** The gateway creates a **Checkout Session per
+> order** through the Stripe API; it no longer sends buyers to a fixed Payment
+> Link, and `Tier.paymentLinkUrl` is read by nothing. Everything below about
+> creating and configuring links has **no effect**. It is still here only because
+> deleting it belongs in the same PR that deletes the mechanism (#33 PR-C), and a
+> half-deleted procedure is worse than a marked one.
+>
+> **What to do instead — the whole of it:**
+>
+> 1. Create a **restricted** API key (`rk_...`) scoped to **write Checkout
+>    Sessions and nothing else**. Not an `sk_`: a leaked write-sessions key can
+>    create sessions that pay you, which is a different problem from one that can
+>    issue refunds. Stripe's IP allowlists are unusable here — a subnet's replicas
+>    have many changing addresses.
+> 2. `set_stripe_api_key '("rk_...")'`
+> 3. `set_stripe_origin '("https://<your-origin>")'` — where Stripe returns the
+>    buyer. Validated at set time: https, no query, no fragment.
+> 4. Record the **Stripe API version** the account is on, and treat changing it as
+>    a code change: webhook payload shapes follow the account default, so an
+>    account-level upgrade silently changes what `Json.mo` parses.
+>
+> No Products, no Prices, no Payment Links, no Dashboard objects at all — the
+> session carries inline `price_data`.
+>
+> ⚠️ **Provisioning the two secrets is what OPENS the rail**, so do it last, and
+> know that rotating either closes the rail until both are valid again.
+>
+> ⚠️ **Changing the origin later is a user-visible migration, not a config
+> tweak**: Internet Identity derives a principal *per origin*, so existing buyers
+> get new principals and cannot see their old orders.
+
+
 The canister never calls Stripe. Controllers create **permanent Payment
 Links** in the Stripe Dashboard (one per price point, USD) and register
 them:
@@ -546,6 +578,42 @@ Both consequences matter operationally:
 The flip is still bookkeeping in the sense that it deletes nothing: the order and
 its `client_reference_id` survive forever, which is what keeps a late payment
 *attributable*, and therefore refundable rather than a mystery charge.
+
+### The outcall cost, and the one field that moves it
+
+`create_order` now spends the canister's own cycles on an HTTPS outcall, so
+`minCanisterCycles` is more load-bearing than before: it is the floor that closes
+the rail before the gas runs out.
+
+The cost is **computed exactly** by `ic0.cost_http_request` — `Call.httpRequest`
+attaches precisely that and never a buffer, because attached cycles are reserved
+for the call's duration and a margin therefore caps how many outcalls can be in
+flight. There is nothing to measure. What decides the number is
+**`max_response_bytes`**, currently **16,384** (`Session.maxResponseBytes`):
+
+| Replication | Cost per call at 16 KB |
+|---|---|
+| n = 13 (application subnets, and the local network) | **≈ 220 M cycles** (~$0.0003) |
+| n = 7 (the confidential subnet, our target — #2) | **≈ 118 M cycles** |
+
+Work with the 13-node figure: it is the conservative one, and the local network
+prices on it, so local runs *overstate* production cost. At 20 T gas with a 5 T
+floor that is ≈68,000 creations before the rail closes.
+
+⚠️ **The cap counts response HEADERS, not just the body, and it is checked
+twice** — once on the raw response, once on the transform's Candid-encoded
+output. Three distinct rejects, and the middle one misleads:
+`Header size exceeds specified response size limit` (headers alone),
+`Http body exceeds size limit of <N>` (**prints the full cap, not the remainder
+left after headers, so the body that failed can be well under `<N>`**), and
+`Transformed http response exceeds limit`. Raising the cap fixes all three;
+stripping headers in the transform fixes only the last.
+
+⚠️ **`No consensus could be reached` means the transform, not Stripe.** It is the
+signature of a per-request value not being stripped, it takes the whole rail down
+rather than degrading it, and **no test suite in this repo can catch it** — the
+PocketIC suite mocks outcalls, verified by mutation. `Session.classifyFailure`
+labels it in the audit log for exactly that reason.
 
 **`orderTtlNs` must exceed the Stripe Checkout Session lifetime (24 h)**, or a
 customer can watch their order expire while still on the payment page — and now

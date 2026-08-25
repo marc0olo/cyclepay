@@ -24,6 +24,20 @@ for the scenario map by id — ids are stable, counts are not.
   implementation — so it is not testing our signer against our verifier.
 - **Time control**: the 2 h delay alert and the 72 h terminate bound are reachable
   in seconds; the ledger's 24 h dedup window likewise.
+- **HTTPS outcalls are PARKED, not performed** (#33). Every `create_order` and
+  `cancel_order` blocks on one, and the suite answers it — which for the request
+  *shape* is better coverage than a live call, because the exact bytes the
+  canister built can be read back (scenario 63 does). Three things it cannot tell
+  you, and the third was measured rather than assumed:
+  - the real cycle cost;
+  - whether `max_response_bytes` is big enough for a real Stripe response;
+  - **whether the transform strips enough for consensus.** pic-js can answer with
+    one response per replica, which looks like a way to test this — a scenario
+    was written on that basis, then `Session.strip` was mutated to leak every
+    header and the whole suite still passed. The mock does not enforce consensus
+    the way a subnet does. That failure is first observable against real Stripe,
+    where it takes the rail down; `Session.classifyFailure` labels it so the audit
+    log points at the transform.
 - **Failure injection**: the ledger, CMC and cycles ledger can be *stopped*
   (`stopNns`, impersonating NNS root) to force real outages — scenarios 51–54, and
   scenario 11, where a stopped cycles ledger is what makes the Type 2

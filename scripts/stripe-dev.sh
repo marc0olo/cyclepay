@@ -148,6 +148,22 @@ case "$WHSEC" in
 esac
 
 icp canister call backend set_webhook_secret "(\"${WHSEC}\")" >/dev/null
+
+# ── the OTHER secret (#33) ───────────────────────────────────────────────────
+# The rail is live only when both are provisioned, so a webhook secret alone is
+# not enough any more: without an API key `create_order` cannot create a session
+# and nobody can pay. Checked rather than set, because the key is yours and it
+# does not come from the forwarding session.
+KEY_SET="$(icp canister call backend stripe_api_key_status '()' 2>/dev/null | grep -c 'isSet = true' || true)"
+if [ "$KEY_SET" = "0" ]; then
+  printf '\n\033[33m! no Stripe API key is provisioned, so create_order cannot make a session.\033[0m\n'
+  printf '  Create a RESTRICTED key (rk_...) scoped to write Checkout Sessions and nothing else, then:\n'
+  printf '    icp canister call backend set_stripe_api_key '"'"'("rk_...")'"'"'\n'
+  printf '  Or re-run the seed with it in the environment:\n'
+  printf '    STRIPE_API_KEY=rk_... ./scripts/local-dev-seed.sh\n\n'
+else
+  echo "api key:     provisioned (generation $(icp canister call backend stripe_api_key_status '()' 2>/dev/null | grep -oE 'generation = [0-9_]+' | grep -oE '[0-9_]+' || echo '?'))"
+fi
 # NOTE: pass an explicit '()' for zero-argument methods. Omitting the argument
 # makes `icp canister call` ask "Do you want to send this message? [y/N]" and
 # read stdin, which hangs any script or CI job.
