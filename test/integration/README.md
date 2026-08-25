@@ -76,6 +76,13 @@ git commit && git push   # needs a workflow-scoped token (a normal `gh auth` tok
 
 ## Scenario map (spec §9 coverage)
 
+⚠️ **Partial by construction, and it drifts.** This maps §9 coverage plus each
+later batch of additions; scenarios **20–39** were never added to it, and rows go
+stale when a scenario's contract changes — row 42 described the pre-#34
+"a payment racing the cancel still delivers" behaviour for three review rounds
+after the branch inverted it. `grep -oE "^test\('[0-9]+" src/gateway.spec.ts` is
+the authoritative list. If you change what a scenario asserts, change its row.
+
 | # | Scenario | §9 item |
 |---|----------|---------|
 | 01 | 503 before secret provisioning, controller-gated admin API | — |
@@ -104,7 +111,7 @@ git commit && git push   # needs a workflow-scoped token (a normal `gh auth` tok
 |---|----------|----------|
 | 40 | `quote_previews` fee split, §3 vector, deposit fee, and an order locking exactly the previewed figure | quote/lock agreement |
 | 41 | a +40% ICP move → `#quoteChanged` naming the new figure, nothing created; the new figure is accepted; a favourable move never refuses; `null` opts out | server-side quote pinning |
-| 42 | owner-only `cancel_order` frees a slot, is idempotent, refuses a paid order, and a payment racing the cancel **still delivers** | buyer never locked out |
+| 42 | owner-only `cancel_order` produces `#cancelled` and frees a slot, is idempotent, refuses a paid order, and a payment racing the cancel is **refunded, not converted** — one Type 1 obligation carrying the intent (#34) | buyer never locked out, buyer's decision wins |
 
 ### Added from the code review
 
@@ -122,6 +129,13 @@ git commit && git push   # needs a workflow-scoped token (a normal `gh auth` tok
 | 52 | an ICP ledger outage moves no money and records no block; recovery debits the float **exactly once** | ledger outage + §5.1 replay |
 | 53 | CMC stopped *after* the transfer → order parks at `#icpAtCmc` with a block and no minted cycles → `notifyDelayed` alert → terminates as `retriesExhausted` **carrying the real block index** | notify stall, end to end |
 | 54 | the CMC rate halves between transfer and notify → `mintShortfall` escalation, minted quantity preserved, buyer not subsidised from canister gas | rate move mid-mint |
+| 56 | the per-purchase ceiling cannot be lowered under a live tier | config safety |
+| 57 | an already-credited intent is caught **before** attribution, not after | double-credit protection |
+| 58 | the sweep reconciles the status tallies on its own cadence and reports no drift | tally integrity |
+| 59 | a Stripe resend past the dedup window does not file a second unprocessable | redelivery vs double-pay |
+| 60 | a stall that moves to a different stage re-raises the alert instead of leaving stale wording | alert accuracy |
+| 61 | a crafted `create_order` for another principal's account, or a non-default subaccount, is refused by the **canister** — the refusal no UI test can demonstrate (#29) | destination enforcement |
+| 62 | the four new order fields and `ratesFetchedAtNs` survive a real stop → upgrade → start; `ratesFetchedAtNs < createdAtNs`; a `#cancelled` order decodes as itself and stays unpayable across the upgrade (#34) | durable order record |
 
 ### Live HTTP gateway (`live-gateway.spec.ts`)
 
