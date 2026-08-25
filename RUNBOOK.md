@@ -531,6 +531,9 @@ and then rejected: it would flip the order to `expired` while its reserve promis
 stayed held, so a broken order would look like a correctly expired one and the
 reserve would leak silently. The stuck order IS the detection signal (#30's
 predicate 1) — treat "created, past `expiresAtNs`" as an alert, not as noise.
+⚠️ **Nothing exposes it yet**: order reads are owner-scoped and `order_stats`
+carries only counts, so §8 records this as a gap with an interim signal rather
+than as an alert you can wire. #38 (admin order listing) is what closes it.
 
 ⚠️ **A payment arriving against an expired or cancelled order cannot be
 converted** (#34 deleted `#expired → #paid`). It answers 200, the status does not
@@ -799,10 +802,28 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | `recovery_status.lastCountReconcile.drift` | non-empty | **P2** | the per-status tallies had diverged from the order store and were repaired. The counts are correct again; the bookkeeping bug that moved them is not fixed. They gate admission, so a drifted count refuses or admits the wrong orders |
 | `recovery_status.lastCountReconcile.atNs` | older than ~48 h while `lastSweep` advances, or materially older than `lastCountReconcileAttemptNs` | **P3** | the daily reconcile is failing. It runs in its own message, so it cannot take the sweep down with it — money-out is unaffected — but the tallies are now **unverified**, not known-good. Written only on success, and the cadence is claimed by the sweep, so a reconcile that traps retries daily rather than every tick. `recount_orders` is the on-demand repair and will show the same failure if it is a real one |
 | `order_stats.openOrders` | climbing while `delivered` does not | **P3** | order-creation abuse; lever is `maxOpenOrdersPerPrincipal` (§5a) |
-| an order still `created` past its own `expiresAtNs` | any | **P2** | a `checkout.session.expired` was missed. Nothing sweeps it (§5b, deliberately — a sweep would hide a held reserve). Resend the event from the Stripe Dashboard |
+| an order still `created` past its own `expiresAtNs` | any | **P2** | a `checkout.session.expired` was missed. Nothing sweeps it (§5b, deliberately — a sweep would hide a held reserve): resend the event from the Stripe Dashboard. ⚠️ **You cannot query this today** — see the gap below |
 | `pricing_status.xrcCanisterId` | anything other than `uf6dk-hyaaa-aaaaq-qaaaq-cai` | **P1** | **on mainnet this must be the real Exchange Rate Canister.** The id is resolved from a `PUBLIC_CANISTER_ID:xrc` canister environment variable so a local network can point at a mock; a mainnet canister reporting any other id is pricing real sales off something that is not the market. Only a controller can inject it, so this reads as either a misconfigured deploy or a compromised controller. Cap the burn to 0 (§2) before investigating. **`null` is not a pass** — it means no refresh has reached the XRC call at all (expected for seconds after an install or upgrade, since the value is transient). Do **not** wait on `lastAttempt` becoming non-null: that field is persistent, so it survives the upgrade and is already set while this one is still null. Re-read until `lastAttempt.atNs` post-dates the deploy. A *failing* refresh never shows null here — the id is recorded when the call is constructed, so a rejected call reads as a non-null id plus `lastAttempt.ok = false` |
 | `pricing_status.rates.quality.receivedRates` | drops to `minRateSources` | **P3** | thin market — a price from 2 sources is not one from 12 |
 | `health` | unreachable | **P1** | canister stopped, frozen, or out of cycles |
+
+⚠️ **One row above is not yet observable, and saying so is the point.** "An order
+still `created` past its own `expiresAtNs`" is #30's detection predicate 1 — the
+signal that exists *because* #33 refused to add a sweep that would have hidden a
+held reserve. Nothing exposes it:
+
+- `get_order` / `list_orders` / `receipt` are **owner-scoped**. Not even a
+  controller can read another principal's order.
+- `order_stats` returns counts, not records — it cannot tell a fresh `created`
+  order from one that lapsed an hour ago.
+- An admin order listing is **#38**, not built yet.
+
+So today the predicate is reachable only through a buyer's complaint or the
+Stripe Dashboard's own event list. Until #38 lands, the interim signal is
+`order_stats.openOrders` **staying non-zero and static well past ~40 minutes**
+(the session lifetime is ~35), cross-checked against expired sessions in Stripe.
+That is weaker than an alert and it is the honest state of it — a runbook that
+claims an alert nobody can wire is worse than a documented gap.
 
 ### Needs a controller key
 

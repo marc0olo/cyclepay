@@ -764,13 +764,14 @@ test('17 — admission gate: the per-purchase ceiling bounds tiers and amounts',
   // used to say the opposite — it described the old behaviour as a convenience
   // ("pause a tier without rewriting the tier list"). It was a footgun dressed as a
   // feature: order creation stopped, but a buyer already on the Stripe page could
-  // still pay, and the webhook would then honour an amount above the ceiling, file a
-  // Type 1, and `attach_payment` would refuse to rescue it until the ceiling went
-  // back up. Nobody connects a refused rescue to a config change made hours earlier.
+  // still pay, and the webhook would then file a Type 1 rather than mint. Since #33
+  // there is no rescue lever either, so the buyer is refunded.
   //
-  // The pause lever is the tier list itself — an empty vector disables card order
-  // creation and leaves in-flight orders payable, because a paid order prices from
-  // its own snapshot and never re-reads the tier.
+  // ⚠️ **The pause lever is NOT the tier list.** This comment said it was, and
+  // PR-B (#48) falsified that: with custom amounts a buyer can order without any
+  // preset, so an empty vector only hides the tiles. The rail is live iff **both
+  // Stripe secrets are provisioned** — scenario 29 in this file asserts exactly
+  // that, and asserted the opposite before #48.
   expectErr(await gw.asAdmin.set_gate_config({ ...gate, maxPurchaseUsdCents: TIER_USD_CENTS - 1n }));
   expect((await gw.asAnon.lifecycle_config()).gate.maxPurchaseUsdCents)
     .toBe(gate.maxPurchaseUsdCents);
@@ -2177,11 +2178,15 @@ test('54 — a rate move between transfer and notify escalates instead of subsid
 test('56 — the purchase ceiling cannot be lowered under a live tier', async () => {
   // `set_card_tiers` already refuses a tier priced above the ceiling. Without the
   // inverse check, lowering the ceiling left the tier SELLABLE BUT UNPAYABLE: a
-  // buyer completes checkout, the webhook honours an amount above the ceiling and
-  // files a Type 1 instead of minting — and `attach_payment` then refuses to rescue
-  // it until the ceiling goes back up. The operator has to connect a refused rescue
-  // to a config change made earlier, which is exactly the kind of link nobody makes
-  // under pressure.
+  // buyer completes checkout and the webhook files a Type 1 instead of minting.
+  // Since #33 deleted `attach_payment` the only remedy is a refund, so the buyer
+  // pays and is repaid over a config change made earlier — exactly the kind of
+  // link nobody makes under pressure.
+  //
+  // ⚠️ This is also the ceiling's ONE remaining reachable case on the money path:
+  // with the paid amount required to equal the quote, an order that matches its
+  // own quote after the ceiling moved beneath it is the only thing `#aboveCeiling`
+  // still catches (webhook.test.mo pins it directly).
   const gate = (await gw.asAnon.lifecycle_config()).gate;
 
   const refused = expectErr(await gw.asAdmin.set_gate_config({

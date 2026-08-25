@@ -729,8 +729,10 @@ persistent actor CyclesGateway {
   /// One quote = one consistent epoch: the caller snapshots the rail's fee
   /// formula *before* any await, and both rates are read once from the cache
   /// here. The §6.1 pricing snapshot persisted on the order carries both rate
-  /// inputs from that same epoch — the webhook reprices a mismatched paid
-  /// amount from it, never from a fresh rate.
+  /// inputs from that same epoch — which is what a buyer recomputes their own
+  /// price from, and what a delivered order is auditable against. (It was also
+  /// what the webhook repriced a mismatched paid amount from, until #33 made a
+  /// mismatch mint nothing.)
   ///
   /// Synchronous and awaitless by design: the rates come from the cache the
   /// refresh timer maintains, never from a call. That is what keeps a
@@ -2142,7 +2144,9 @@ persistent actor CyclesGateway {
   /// Runs in its own message (see the call site) and takes no `await`, so it
   /// still sees a consistent snapshot of the order store — chunking it across
   /// messages would admit mutations mid-scan and manufacture false drift, which
-  /// is why this is not paged the way retention is.
+  /// is why it is not paged. (The retention sweep WAS paged, for the opposite
+  /// reason — it mutated as it went and only had to visit everything eventually.
+  /// #33 deleted it; this one stays unpaged deliberately.)
   func reconcileCounts() {
     let { drift; counts = _ } = Orders.reconcile(orderStore);
     // Stamped from inside, not handed the sweep's clock: this message runs after
@@ -2173,8 +2177,8 @@ persistent actor CyclesGateway {
       // Detached into its own message rather than run inline. It reads the whole
       // order store, so at enough orders it could hit the instruction limit — and
       // inline that trap would take the entire sweep down with it, leaving
-      // retention and money-out dead while the reconcile stayed due and trapped
-      // again on every tick. A bookkeeping *check* must not be able to stop
+      // money-out dead while the reconcile stayed due and trapped again on every
+      // tick. A bookkeeping *check* must not be able to stop
       // orders from minting.
       //
       // Claiming the cadence here, in the sweep's own message, is what bounds the

@@ -141,11 +141,16 @@ module {
     };
   };
 
-  /// §3/§6.1 pricing snapshot captured at order creation. `lockedCycles`
-  /// is the §3 quantity for the *expected* (tier) amount; this snapshot is
-  /// what lets the webhook honor a **different actual paid amount** at the
-  /// same locked rate + fee formula instead of a fresh rate — "no quote
-  /// drift" holds even off the happy path.
+  /// §3/§6.1 pricing snapshot captured at order creation, carrying the gross
+  /// amount, both rate inputs and the fee formula from one consistent epoch.
+  ///
+  /// ⚠️ It existed to let the webhook honour a **different actual paid amount**
+  /// at the locked rate — a fixed Payment Link could legitimately be paid for an
+  /// amount the order was not created for. #33 deleted that: a per-order session
+  /// carries the amount we set, so the webhook requires equality and a mismatch
+  /// mints nothing. The snapshot survives for what it always also did — it is
+  /// the **evidence** a buyer recomputes their own price from (`receipt`), and
+  /// the record that says which rates a delivered order was priced at.
   public type Pricing = {
     /// Gross USD cents the order was quoted for (the tier price).
     usdCents : Nat;
@@ -183,8 +188,13 @@ module {
   /// which returns an updated copy. `lockedCycles` is the cycle *quantity*
   /// locked at creation (§3) — fulfillment delivers exactly this many cycles
   /// regardless of later rate movement; the operator absorbs ICP-cost drift.
-  /// (Webhook ingestion replaces it via Orders.markPaid when the actual paid
-  /// amount differs from the quoted tier, repriced from `pricing`.)
+  ///
+  /// ⚠️ **Nothing writes it after creation.** Webhook ingestion used to replace
+  /// it through `Orders.markPaid` when the paid amount differed from the quote;
+  /// #33 deleted repricing and `markPaid` no longer takes a quantity at all, so
+  /// the immutability is structural rather than a rule to remember. #30's tally
+  /// is exact rather than conservative because of it — anything that gives this
+  /// field a second writer takes that away.
   public type Order = {
     id : OrderId;
     owner : Owner;
@@ -203,10 +213,10 @@ module {
     /// a fact about money lives.
     ///
     paidUsdCents : ?Nat;
-    /// Why an order is `#expired`. Null for every other status, and null for an
-    /// order the retention sweep expired on a TTL — that mechanism has no tag
-    /// because #33 deletes it, and naming a variant after a concept that will not
-    /// exist sends the next reader looking for it.
+    /// Why an order is `#expired`. Null for every other status. Both producers
+    /// are Stripe-side, and they are the only ones: #33 deleted the retention
+    /// sweep, so there is no third way for an order to reach `#expired` and no
+    /// tag for one.
     ///
     /// Buyer cancellation is **not** here: it is `#cancelled`, a status. The
     /// question "can this still be paid?" is a transition-matrix question, and
