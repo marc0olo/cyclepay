@@ -21,6 +21,7 @@ import { Principal } from '@icp-sdk/core/principal';
 import {
   ICP_FEE_E8S, ORDER_E8S, TIER_USD_CENTS, WEBHOOK_SECRET,
   ensureRates, expectOk, fundFloat, setCmcRate, setXrcRate, setupGateway, user,
+  clientReferenceFor,
 } from './harness';
 
 const SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? WEBHOOK_SECRET;
@@ -120,7 +121,7 @@ async function main(): Promise<void> {
     ),
   );
   console.log(`  ready-made order      ${created.order.id}`);
-  console.log(`  clientReferenceId     ${created.clientReferenceId}\n`);
+  console.log(`  clientReferenceId     ${clientReferenceFor(created.order.id)}\n`);
 
   // Live mode auto-progresses, so nothing needs ticking. Hold the process open.
   console.log('running — Ctrl-C to tear down\n');

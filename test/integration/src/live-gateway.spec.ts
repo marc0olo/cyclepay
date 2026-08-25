@@ -3,6 +3,7 @@ import {
   ICP_FEE_E8S, ORDER_E8S, TIER_LOCKED_CYCLES, TIER_USD_CENTS, WEBHOOK_SECRET,
   checkoutSessionBody, ensureRates, expectOk, fundFloat, orderStatus, setCmcRate,
   setupGateway, setXrcRate, stripeSignature, teardownGateway, tickUntilStatus, user,
+  clientReferenceFor, createOrderWithSession,
   type Gateway,
 } from './harness';
 
@@ -43,13 +44,20 @@ test('55 — the webhook route serves real HTTP end to end, and delivers', async
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
   expectOk(await gw.asAdmin.set_webhook_secret(WEBHOOK_SECRET));
+  // #33: both secrets, or `create_order` cannot produce a payable session.
+  expectOk(await gw.asAdmin.set_stripe_api_key('rk_test_live_gateway_spec'));
+  expectOk(await gw.asAdmin.set_stripe_origin('https://live.example'));
   expectOk(await gw.asAdmin.set_card_tiers([
     { id: 'tier5', usdCents: TIER_USD_CENTS, paymentLinkUrl: 'https://buy.stripe.com/test_tier5' },
   ]));
   await fundFloat(gw, ORDER_E8S * 2n + ICP_FEE_E8S * 2n);
   // One destination, and the gateway refuses any other (#29).
+  // Created BEFORE `makeLive()`, deliberately: the session outcall is answered
+  // deterministically here. Once the instance is live it auto-progresses, so a
+  // parked outcall could be picked up by the real network instead of the test.
   const created = expectOk(
-    await gw.asUser.create_order(
+    await createOrderWithSession(
+      gw,
       'tier5',
       { cyclesLedgerAccount: { owner: user.getPrincipal(), subaccount: [] } },
       [],
@@ -67,7 +75,7 @@ test('55 — the webhook route serves real HTTP end to end, and delivers', async
   // 4. POST a signed webhook over real HTTP — exactly what `stripe listen` does.
   const body = checkoutSessionBody({
     eventId: 'evt_live', paymentIntent: 'pi_live',
-    clientReferenceId: created.clientReferenceId, amountCents: TIER_USD_CENTS,
+    clientReferenceId: clientReferenceFor(created.order.id), amountCents: TIER_USD_CENTS,
   });
   const t = BigInt(Math.floor(Date.now() / 1000));
   const res = await fetch(url, {
