@@ -31,6 +31,7 @@ import Orders "Orders";
 import Recovery "Recovery";
 import Retention "Retention";
 import Card "rails/Card";
+import Session "rails/Session";
 import Secret "Secret";
 import Tiers "Tiers";
 import Treasury "Treasury";
@@ -38,10 +39,34 @@ import Types "Types";
 
 persistent actor CyclesGateway {
 
-  /// §7: the only stored secret — plaintext by design, SEV-SNP posture and
-  /// burn-cap backstop documented in Secret.mo. Persists across upgrades;
-  /// rotation never requires a redeploy.
+  /// §7 secret one of TWO: the Stripe webhook signing key. Plaintext by design,
+  /// SEV-SNP posture documented in Secret.mo. Persists across upgrades; rotation
+  /// never requires a redeploy.
   let webhookSecret : Secret.Store = Secret.emptyStore();
+
+  /// §7 secret two: the Stripe **API key** that creates Checkout Sessions (#33).
+  ///
+  /// Same store, same posture, same never-readable-back guarantee. Use a
+  /// **restricted key** (`rk_...`) scoped to *write Checkout Sessions* and
+  /// nothing else: a leaked write-sessions key can create sessions that pay us,
+  /// which is materially different from one that can also issue refunds. Stripe's
+  /// IP/ASN access policies are not usable here — a subnet's replicas have many
+  /// changing addresses.
+  let stripeApiKey : Secret.Store = Secret.emptyStore();
+
+  /// The asset origin Stripe returns the buyer to, e.g.
+  /// `https://<canister>.icp0.io`. Null until an admin sets it, and
+  /// `create_order` fails closed rather than creating a sessionless order.
+  ///
+  /// ⚠️ **Admin config, never a `create_order` parameter.** A caller-supplied
+  /// `success_url` is an open redirect that Stripe renders *after a real
+  /// payment* — a phishing primitive wearing a genuine receipt page.
+  ///
+  /// ⚠️ Changing it later invalidates nothing already paid, but Internet Identity
+  /// derives a principal **per origin**, so an origin change is a user-visible
+  /// migration rather than a config tweak: existing buyers get new principals and
+  /// cannot see their old orders. Choose it once (#40/#23).
+  var stripeOrigin : ?Text = null;
 
   /// §7 admin authz: caller ∈ controllers (flat allowlist, equal
   /// privileges — see Auth.mo). Traps rather than returning an error so an
@@ -78,6 +103,60 @@ persistent actor CyclesGateway {
   public shared query ({ caller }) func webhook_secret_status() : async Secret.Status {
     requireAdmin(caller);
     Secret.status(webhookSecret);
+  };
+
+  /// Provision or rotate the Stripe API key (#33) — admin, mirroring
+  /// `set_webhook_secret` in every respect including the provisioning caveat:
+  /// the argument transits the TLS-terminating boundary node as plain ingress.
+  /// #11 covers vetKeys for encrypted delivery, and now applies to two secrets.
+  public shared ({ caller }) func set_stripe_api_key(key : Text) : async Result.Result<(), Secret.SetError> {
+    requireAdmin(caller);
+    let result = Secret.set(stripeApiKey, key.encodeUtf8(), Time.now());
+    switch (result) {
+      case (#ok) auditAdmin(caller, "stripe.apiKeySet", "generation " # Secret.status(stripeApiKey).generation.toText());
+      case (#err(_)) auditAdmin(caller, "stripe.apiKeyRejected", "rejected as too short; the working key is untouched");
+    };
+    result;
+  };
+
+  public shared query ({ caller }) func stripe_api_key_status() : async Secret.Status {
+    requireAdmin(caller);
+    Secret.status(stripeApiKey);
+  };
+
+  public type OriginError = {
+    /// Anything but `https://`. A plain-HTTP return URL after a card payment is
+    /// not a thing to offer, and Stripe would render it.
+    #notHttps;
+    /// A query string or fragment would collide with the `#/order/<id>` route
+    /// appended to it, producing a URL that does not resolve to the order.
+    #hasQueryOrFragment;
+    #empty;
+  };
+
+  /// Set the origin Stripe returns buyers to (#33) — admin.
+  ///
+  /// Validated at set time rather than at session-create time, so a bad value
+  /// fails in front of the operator who typed it instead of breaking every
+  /// purchase later. Until a domain is chosen (#40/#23) this is the canister's
+  /// own asset origin.
+  public shared ({ caller }) func set_stripe_origin(origin : Text) : async Result.Result<(), OriginError> {
+    requireAdmin(caller);
+    if (origin.size() == 0) return #err(#empty);
+    if (not origin.startsWith(#text "https://")) return #err(#notHttps);
+    if (origin.contains(#char '?') or origin.contains(#char '#')) return #err(#hasQueryOrFragment);
+    // Trailing slash trimmed here rather than at every use site, so
+    // `origin # "/#/order/" # id` cannot produce a double slash.
+    let trimmed = origin.trimEnd(#char '/');
+    stripeOrigin := ?trimmed;
+    auditAdmin(caller, "stripe.originSet", trimmed);
+    #ok;
+  };
+
+  /// The origin, readable back because it is not a secret — it is the URL
+  /// buyers are sent to, and an operator needs to confirm it.
+  public shared query func stripe_origin() : async ?Text {
+    stripeOrigin;
   };
 
   // ── Order + tier state (task 6) ─────────────────────────────────────────
