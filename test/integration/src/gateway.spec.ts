@@ -62,11 +62,6 @@ beforeAll(async () => {
   // creates an order needs this; the ones that exercise #awaitingTreasury drop
   // the cap back to 0 *after* creating, which is the documented pause lever.
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-  // #33: the rail needs BOTH the API key and a return origin before
-  // `create_order` can produce a payable session. Provisioned here so every
-  // scenario below starts from a live rail; scenario 63 asserts the closed cases.
-  expectOk(await gw.asAdmin.set_stripe_api_key('rk_test_integration_suite_key'));
-  expectOk(await gw.asAdmin.set_stripe_origin('https://integration.example'));
 });
 
 /// Cap sized, float gating off (scenarios assert on the cap, not the float).
@@ -103,6 +98,45 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
   const status = await gw.asAdmin.webhook_secret_status();
   expect(status.isSet).toBe(true);
   expect(status.generation).toBe(1n);
+
+  // ── #33: an unprovisioned rail refuses BEFORE committing an order ───────────
+  //
+  // Asserted here because there is deliberately no way to UNSET a secret, so
+  // this is the only point in the suite where the unprovisioned state exists —
+  // and it is the state a fresh deployment is in, and the one RUNBOOK §1
+  // prescribes during go-live, since provisioning the secrets last is what opens
+  // the rail.
+  //
+  // ⚠️ **`totalOrders` is the assertion that matters.** Both config checks
+  // short-circuit before the outcall, so if the order were committed first every
+  // call would mint a permanent `#expired` record for FREE: no cycles spent, so
+  // `minCanisterCycles` never bounds the loop, and the record is not `#created`,
+  // so the open-order cap does not either. Unbounded storage at zero cost.
+  expect((await gw.asAdmin.stripe_api_key_status()).isSet).toBe(false);
+  expect(await gw.asAdmin.stripe_origin()).toHaveLength(0);
+  const ordersBefore = (await gw.asAdmin.retention_status()).totalOrders;
+  const noKey = expectErr(
+    await gw.asUser.create_order('tier5', USER_ACCOUNT, []),
+  ) as { sessionUnavailable: string };
+  expect(noKey.sessionUnavailable).toContain('API key');
+  expect((await gw.asAdmin.retention_status()).totalOrders).toBe(ordersBefore);
+
+  // The key alone is not enough: without a return origin there is no URL to send
+  // the buyer back to, and the same no-record rule applies.
+  expectOk(await gw.asAdmin.set_stripe_api_key('rk_test_integration_suite_key'));
+  const noOrigin = expectErr(
+    await gw.asUser.create_order('tier5', USER_ACCOUNT, []),
+  ) as { sessionUnavailable: string };
+  expect(noOrigin.sessionUnavailable).toContain('origin');
+  expect((await gw.asAdmin.retention_status()).totalOrders).toBe(ordersBefore);
+
+  // Validated at set time, so a bad value fails in front of the operator who
+  // typed it rather than breaking every purchase later.
+  expect(expectErr(await gw.asAdmin.set_stripe_origin('http://insecure.example'))).toEqual({ notHttps: null });
+  expect(expectErr(await gw.asAdmin.set_stripe_origin('https://x.example/?a=1'))).toEqual({ hasQueryOrFragment: null });
+  expect(expectErr(await gw.asAdmin.set_stripe_origin(''))).toEqual({ empty: null });
+  expectOk(await gw.asAdmin.set_stripe_origin('https://integration.example'));
+  expect(await gw.asAdmin.stripe_origin()).toEqual(['https://integration.example']);
 });
 
 test('02 — tier config is admin-gated and public to read', async () => {
@@ -2858,4 +2892,74 @@ test('67 — checkout.session.expired is the only thing that expires an order (#
   }))).toMatchObject({ status_code: 200 });
   const log = await gw.asAdmin.audit_log();
   expect(log.some((e) => e.tag === 'stripe.disputeCreated' && e.detail.includes('pi_disputed'))).toBe(true);
+});
+
+test('68 — a cancel racing session creation cannot leave a payable URL behind (#33)', async () => {
+  // THE INTERLEAVING the continuation re-check exists for, and it had no test —
+  // the same shape as #46's untested `attach_payment` guard, so it gets one now.
+  //
+  // `create_order` commits the order and THEN awaits the outcall, so another
+  // ingress message runs in between. `cancel_order` from a second tab takes its
+  // sessionless branch (no session id yet, so no outcall) and cancels
+  // immediately. If the continuation then stored the URL, the buyer would hold a
+  // **payable link for an order they were told was cancelled** — money-safe,
+  // because the matrix rejects `#cancelled → #paid`, but exactly the "told
+  // cancelled, tab still charges" wart atomic cancellation exists to eliminate.
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+
+  const settle = await gw.deferredUser.create_order('tier5', USER_ACCOUNT, []);
+  const outcall = await awaitPendingOutcall(gw);
+
+  // The order is committed and `#created` at this point, with no session id — so
+  // cancelling takes the branch that needs no outcall.
+  const orderId = decodeURIComponent(
+    /client_reference_id=([^&]+)/.exec(outcallBody(outcall))![1]!,
+  ).split('_').pop()!;
+  expect(await orderStatus(gw, orderId)).toBe('created');
+  expect(statusKey(expectOk(await gw.asUser.cancel_order(orderId)))).toBe('cancelled');
+
+  // Now Stripe answers the create. The session is real at Stripe, but its URL
+  // must never reach the buyer.
+  await answerOutcall(gw, outcall, 200, sessionCreatedBody({
+    id: 'cs_raced_creation',
+    expiresAtSeconds: Number(await nowSeconds(gw.pic)) + 2_100,
+  }));
+  expect(expectErr(await settle())).toEqual({ cancelledDuringCreation: null });
+
+  const raced = (await gw.asUser.get_order(orderId))[0]!;
+  expect(statusKey(raced)).toBe('cancelled');
+  // Nothing stored: no URL to hand out, and no session id to bind an event to.
+  expect(raced.stripeSessionUrl).toHaveLength(0);
+  expect(raced.stripeSessionId).toHaveLength(0);
+  // Audited, because a real session now exists at Stripe that nobody can reach.
+  // It dies at its own `expires_at`; the URL never left the canister.
+  const log = await gw.asAdmin.audit_log();
+  expect(log.some((e) => e.tag === 'stripe.sessionOrphaned' && e.detail.includes('cs_raced_creation'))).toBe(true);
+});
+
+test('69 — a FAILED session creation racing a cancel does not double-release (#33)', async () => {
+  // The other half of the same gap. The failure path routes through
+  // `expireWithCause` rather than writing the status directly, so when the order
+  // is already `#cancelled` the matrix no-ops `#cancelled → #expired` for free.
+  // A direct write would move a terminal order back to `#expired` — and once #30
+  // lands, release a promise that cancellation already released.
+  await ensureRates(gw);
+
+  const settle = await gw.deferredUser.create_order('tier5', USER_ACCOUNT, []);
+  const outcall = await awaitPendingOutcall(gw);
+  const orderId = decodeURIComponent(
+    /client_reference_id=([^&]+)/.exec(outcallBody(outcall))![1]!,
+  ).split('_').pop()!;
+  expectOk(await gw.asUser.cancel_order(orderId));
+
+  // Stripe refuses. The in-call failure handler runs against a cancelled order.
+  await answerOutcall(gw, outcall, 400, JSON.stringify({ error: { message: 'nope' } }));
+  expect(expectErr(await settle())).toHaveProperty('sessionUnavailable');
+
+  // Still #cancelled, NOT #expired: the buyer's own decision is what the record
+  // says, and the status did not move twice.
+  const stayed = (await gw.asUser.get_order(orderId))[0]!;
+  expect(statusKey(stayed)).toBe('cancelled');
+  expect(stayed.expiredBy).toHaveLength(0);
 });

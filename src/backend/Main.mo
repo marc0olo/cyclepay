@@ -559,14 +559,33 @@ persistent actor CyclesGateway {
   /// never add a buffer**: over-attaching is refunded, but the cycles are reserved
   /// for the call's duration, so a buffer reduces how many outcalls can be in
   /// flight, which is precisely why the library attaches the minimum.
+  /// The two things a session needs, or a reason there is none.
+  ///
+  /// ⚠️ **Read this BEFORE committing an order.** Both checks short-circuit
+  /// without an outcall, so an unprovisioned gateway that committed the order
+  /// first would mint a permanent `#expired` record for **free**: no cycles are
+  /// spent, so `minCanisterCycles` never bounds the loop, and the record is not
+  /// `#created`, so the open-order cap does not either. Unbounded storage growth
+  /// at zero attacker cost — and precisely in the state RUNBOOK §1 prescribes
+  /// during go-live, since provisioning the secrets last is what opens the rail.
+  ///
+  /// #33's own finding 1 says it: *fail closed rather than creating a sessionless
+  /// order.*
+  func sessionConfig() : { #ok : { apiKey : Text; origin : Text }; #err : SessionError } {
+    let ?apiKey = Secret.get(stripeApiKey) else return #err(#railClosed);
+    let ?keyText = apiKey.decodeUtf8() else return #err(#railClosed);
+    let ?origin = stripeOrigin else return #err(#originUnset);
+    #ok({ apiKey = keyText; origin });
+  };
+
   func createStripeSession(
+    config : { apiKey : Text; origin : Text },
     orderId : Types.OrderId,
     clientReferenceId : Text,
     usdCents : Nat,
   ) : async* { #ok : Session.Created; #err : SessionError } {
-    let ?apiKey = Secret.get(stripeApiKey) else return #err(#railClosed);
-    let ?keyText = apiKey.decodeUtf8() else return #err(#railClosed);
-    let ?origin = stripeOrigin else return #err(#originUnset);
+    let keyText = config.apiKey;
+    let origin = config.origin;
     // Stripe evaluates the 30-minute floor against ITS clock on receipt, so the
     // request asks for 35 to survive skew and consensus latency. `expiresAtNs`
     // comes from the response, not from this.
@@ -815,6 +834,18 @@ persistent actor CyclesGateway {
     if (not Types.isOwnDestination(destination, caller)) {
       return #err(#destinationNotOwned);
     };
+    // The rail's own state, before anything about this particular request. If no
+    // session can be created then no tier matters, and "card payments are not
+    // available yet" is a more useful answer than "unknown tier" — as well as a
+    // cheaper one. Ordering: caller, then arguments that depend only on the
+    // caller, then the RAIL, then this request's tier and admission.
+    let config = switch (sessionConfig()) {
+      case (#ok(c)) c;
+      case (#err(e)) {
+        audit("stripe.railClosed", "create_order refused: " # sessionErrorToText(e));
+        return #err(#sessionUnavailable(sessionErrorToText(e)));
+      };
+    };
     let ?tier = Tiers.find(cardTiers, tierId) else return #err(#unknownTier(tierId));
     // Admission BEFORE the quote, so a spamming principal is turned away before
     // it can make the canister do work (`canister-security`: anyone can burn
@@ -845,7 +876,7 @@ persistent actor CyclesGateway {
     // The ordering is forced: the order id IS the `client_reference_id`, so the
     // order must be committed before the session can name it. Which means an
     // await sits between them, and everything below is about that gap.
-    switch (await* createStripeSession(order.id, clientReferenceId, order.pricing.usdCents)) {
+    switch (await* createStripeSession(config, order.id, clientReferenceId, order.pricing.usdCents)) {
       case (#err(e)) {
         // Fail the order in the same call and let the buyer start over. There is
         // no retry method by design: a `payment_session(orderId)` retry was the

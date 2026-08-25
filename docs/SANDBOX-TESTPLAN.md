@@ -120,9 +120,11 @@ Then, in the browser at the frontend URL `icp deploy` printed
    production origin cannot take that branch. Register a passkey; it is throwaway
    and local to this network, which is wiped by `icp network stop`.
 3. **Pick an amount and create the order.** The rate is locked here, not at payment.
-4. **Pay.** "Pay with card ↗" opens your Payment Link with `?client_reference_id=`
-   already appended — that reference is the whole attribution mechanism, so do not
-   open the bare link. Card `4242 4242 4242 4242`, any future expiry, any CVC.
+4. **Pay.** "Pay with card ↗" opens the order's own Checkout Session — the
+   canister created it and set `client_reference_id` on it through the API (#33),
+   so there is no link to configure and no parameter to append. Card
+   `4242 4242 4242 4242`, any future expiry, any CVC. **You have 35 minutes**,
+   enforced by Stripe; the button disappears at the deadline.
 5. **Watch the page.** Leave the order tab open. The webhook arrives at the
    forwarder, the mint runs, and the page reaches **delivered** on its own 3 s poll
    with the guided tour leading. It should never need a reload.
@@ -230,10 +232,25 @@ icp canister call backend refresh_rates '()'
 icp canister call backend pricing_status '()' --query   # expect ok = true
 ```
 
-Create an order, append its `clientReferenceId` to your test-mode Payment Link as
-`?client_reference_id=<ref>`, pay with `4242 4242 4242 4242`, and watch `get_order`
-reach `delivered`. `process_order` kicks the mint without waiting for the sweep.
-`mint_journal` and `receipt` then carry the real ICP block index and minted quantity.
+Create an order and open the `stripeSessionUrl` on the returned order — that is
+the payment page. The canister creates a **Checkout Session per order** and sets
+`client_reference_id` through the API (#33), so there is no Payment Link to
+configure and no URL parameter to append. Pay with `4242 4242 4242 4242` and watch
+`get_order` reach `delivered`. `process_order` kicks the mint without waiting for
+the sweep; `mint_journal` and `receipt` then carry the real ICP block index and
+minted quantity.
+
+⚠️ **Two things that look like bugs and are not:**
+
+- **The session expires 35 minutes after creation**, enforced by Stripe. Past that
+  the pay button disappears — the UI renders expiry from `expiresAtNs`, not from
+  the status, so it goes even before the `checkout.session.expired` webhook lands.
+- **After paying, Stripe redirects to the configured origin**
+  (`https://<frontend-id>.icp0.io`), which does **not** serve your local frontend.
+  The payment completes and the webhook fires regardless; only the landing page
+  fails to load. There is no local https origin to point at, and a caller-supplied
+  `success_url` is deliberately impossible — it would be an open redirect Stripe
+  renders after a real payment.
 
 #### Giving the local CMC a current rate
 
@@ -420,7 +437,7 @@ icp canister call backend receipt '("<orderId>")'           # owner identity onl
 
 | # | Scenario | How | Expect |
 |---|---|---|---|
-| B1 | Happy path | your link + `?client_reference_id=<ref>` from `create_order`, card `4242 4242 4242 4242` | order → `#paid`; → `#delivered` |
+| B1 | Happy path | open the order's `stripeSessionUrl`, card `4242 4242 4242 4242` | order → `#paid`; → `#delivered` |
 | B2 | No reference | `stripe trigger checkout.session.completed` | `200`; Type 1 `#unattributed`, `claimedRef` empty |
 | B3 | Forged owner | hand-edit the ref to another principal, same order id | Type 1 — "claimed owner does not match" |
 | B4 | Malformed reference | ref = `garbage` | Type 1 — "malformed" |

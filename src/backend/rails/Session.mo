@@ -353,6 +353,16 @@ module {
   /// Used by the expire path, where "not open" is a distinguishable outcome
   /// rather than a failure: the session either completed or expired already, and
   /// we must not guess which from our own clock.
+  ///
+  /// ⚠️ **This matches Stripe's error PROSE, so the unit test checks our code
+  /// against our own assumption of those strings, not against Stripe.** Getting it
+  /// wrong is safe — a misclassified "not open" degrades to "could not cancel, try
+  /// again", and the session expires on its own within 35 minutes — but it is an
+  /// assumption, not a fact.
+  ///
+  /// #4 captures the real expire-on-completed response; pin this against that
+  /// body then, or switch to matching the structured `error.code` instead of the
+  /// message, which is what Stripe actually guarantees stable.
   public func isNotOpen(status : Nat, body : Blob) : Bool {
     if (status == 200) return false;
     let ?text = body.decodeUtf8() else return false;

@@ -193,9 +193,18 @@ In a second terminal:
          is refused with #destinationNotOwned. Get yours with
          `icp identity principal`, and pass the same --identity to the call.
          (the third argument pins a minimum cycle quantity; null opts out)
-      2. Take the returned clientReferenceId.
-      3. Open YOUR sandbox Payment Link with ?client_reference_id=<ref> appended.
-      4. Pay with test card 4242 4242 4242 4242.
+      2. Take stripeSessionUrl from the returned order and open it. That IS the
+         payment page: the canister created a Checkout Session per order and set
+         client_reference_id through the API, so there is no link to configure and
+         no URL parameter to append.
+      3. Pay with test card 4242 4242 4242 4242.
+
+         ⚠ The session expires 35 minutes after creation, enforced by Stripe.
+         ⚠ After paying, Stripe redirects to the origin the seed configured
+           (https://<frontend-id>.icp0.io), which does NOT serve your local
+           frontend. The payment still completes and the webhook still fires —
+           the landing page is the only thing that will not load. Watch the order
+           through `get_order` or the local UI instead.
 
   Inspect what happened:
       icp canister call backend audit_log '()'
