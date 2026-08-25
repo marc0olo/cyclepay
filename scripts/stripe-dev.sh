@@ -100,7 +100,7 @@ fi
 # Assert it rather than re-configuring it. A quote is the honest check: it proves
 # tiers exist AND both rate inputs answered AND the canister is above the gate's
 # own-cycles floor, which is every money lever this script does not own.
-QUOTE="$(icp canister call backend quote_previews '(variant { card }, vec { 500 : nat })' 2>&1 || true)"
+QUOTE="$(icp canister call backend quote_previews '(vec { 500 : nat })' 2>&1 || true)"
 if ! printf '%s' "$QUOTE" | grep -q 'cycles = opt'; then
   echo "error: the gateway cannot price a \$5 purchase, so an order cannot be created." >&2
   echo "       Run this first, and note the CMC rate expires after 15 minutes:" >&2

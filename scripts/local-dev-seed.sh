@@ -156,7 +156,7 @@ icp canister call backend refresh_rates '()' >/dev/null 2>&1 || true
 # failed refresh and a pair too old to use, so grepping for it reported success on
 # a gateway that refused every purchase — the same mistake the rate line in the UI
 # was making.
-QUOTE="$(icp canister call backend quote_previews '(variant { card }, vec { 500 : nat })' 2>&1)"
+QUOTE="$(icp canister call backend quote_previews '(vec { 500 : nat })' 2>&1)"
 if ! printf '%s' "$QUOTE" | grep -q 'cycles = opt'; then
   printf '\n\033[31m✗ the gateway still cannot price a $5 purchase.\033[0m\n' >&2
   icp canister call backend pricing_status '()' 2>&1 | grep -E 'ok = |detail = ' >&2
