@@ -149,6 +149,17 @@
           <div id="tiers" class="tiers">
             <p class="muted">Loading amounts…</p>
           </div>
+          <!-- A typed amount, bounded by the gate's own floor and ceiling, read
+               from the canister at load and never written down here. Picking a
+               tile clears this and typing clears the tile: "which amount" has one
+               answer. -->
+          <p class="or-custom">or enter an amount</p>
+          <label class="amount-label" for="custom-amount">
+            <span id="custom-amount-range" class="muted">Loading amounts…</span>
+            <input id="custom-amount" type="text" inputmode="decimal"
+                   placeholder="25.00" autocomplete="off" spellcheck="false" disabled />
+          </label>
+          <p id="custom-amount-error" class="error" hidden></p>
           <p id="tier-detail" class="estimate-detail" hidden></p>
           <p id="quote-notice" class="notice" hidden></p>
           <p id="rate-line" class="muted"></p>
@@ -185,6 +196,11 @@
       <section id="active-order" hidden>
         <h2 class="section-h">Order <span id="order-id-short" class="mono"></span></h2>
         <p id="order-lock-notice" class="notice" hidden></p>
+        <!-- A live countdown, not a static "reserved until 14:32": thirty-five
+             minutes is short enough that a stale timestamp misleads a buyer who
+             looked away. Rendered from `expiresAtNs`, which is Stripe's own
+             deadline. -->
+        <p id="order-deadline" class="muted" hidden></p>
         <ol id="timeline" class="timeline"></ol>
         <p id="order-status-line"></p>
         <div id="pay-area" hidden>

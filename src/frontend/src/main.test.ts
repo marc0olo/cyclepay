@@ -28,11 +28,13 @@ type Quote = {
   cycles: bigint | undefined;
 };
 
-const TIER_CENTS = 500n;
+/// $10 — the new floor (#33). The old $5 fixture is below it, so `Gate.admit`
+/// would refuse it and every downstream assertion would be about the wrong bound.
+const TIER_CENTS = 1_000n;
 const TIER_CYCLES = 3_500_000_000_000n;
 
 const state = {
-  tiers: [{ id: "tier5", usdCents: TIER_CENTS, paymentLinkUrl: "https://buy.stripe.com/x" }],
+  tiers: [{ id: "tier10", usdCents: TIER_CENTS }],
   quote: {
     usdCents: TIER_CENTS,
     feeCents: 45n,
@@ -48,6 +50,9 @@ const state = {
   /// Captured destination from the last create_order call — the app builds it
   /// from the session rather than reading it off the form (#29).
   lastDestination: undefined as unknown,
+  /// Captured Amount variant, so a test can assert which of the two shapes the
+  /// app sent (#33).
+  lastAmount: undefined as unknown,
   order: undefined as Record<string, unknown> | undefined,
   receipt: undefined as Record<string, unknown> | undefined,
   /// When set, the next `signIn()` rejects with it.
@@ -95,6 +100,16 @@ function anOrder(status: string, lockedCycles = TIER_CYCLES) {
 
 const backend = {
   card_tiers: async () => state.tiers,
+  lifecycle_config: async () => ({
+    gate: {
+      maxOpenOrdersPerPrincipal: 1n,
+      minCanisterCycles: 5_000_000_000_000n,
+      // The #33 bounds: $10 floor, $100 ceiling.
+      minPurchaseUsdCents: 1_000n,
+      maxPurchaseUsdCents: 10_000n,
+    },
+    retention: { orderTtlNs: 172_800_000_000_000n },
+  }),
   treasury_status: async () => ({ lowFloat: false }),
   pricing_status: async () => ({
     rates: {
@@ -111,9 +126,10 @@ const backend = {
     rates: undefined,
     cyclesLedgerDepositFee: state.depositFee,
   }),
-  create_order: async (_tier: string, dest: unknown, minCycles: bigint | null) => {
+  create_order: async (amount: unknown, dest: unknown, minCycles: bigint | null) => {
     state.lastMinCycles = minCycles;
     state.lastDestination = dest;
+    state.lastAmount = amount;
     if (state.quoteChangedTo !== undefined) {
       const quoted = state.quoteChangedTo;
       state.quoteChangedTo = undefined;
@@ -226,6 +242,7 @@ beforeEach(() => {
   state.quoteChangedTo = undefined;
   state.lastMinCycles = undefined;
   state.lastDestination = undefined;
+  state.lastAmount = undefined;
   state.order = undefined;
   state.receipt = undefined;
   state.signInError = undefined;
@@ -240,8 +257,8 @@ describe("tier rendering", () => {
     await mount();
     const label = tierButton().querySelector(".cycles")!;
     expect(label.textContent).toContain("3.5 T");
-    expect(label.textContent).not.toContain("tier5");
-    expect(tierButton().querySelector(".amount")!.textContent).toBe("$5.00");
+    expect(label.textContent).not.toContain("tier10");
+    expect(tierButton().querySelector(".amount")!.textContent).toBe("$10.00");
   });
 
   test("selecting a tier reveals the fee split and the rate-lock note", async () => {
@@ -858,5 +875,104 @@ describe("expiry renders from the DEADLINE, not the status", () => {
     // `cancel_order` can only fail. A button that always fails is worse than
     // none. (Freeing the buyer's slot in this state is #30's open-order-cap work.)
     expect(el("cancel-area").hidden).toBe(true);
+  });
+});
+
+// ── custom amounts, bounded by the BACKEND's numbers (#33) ────────────────────
+
+describe("a buyer can type an amount", () => {
+  function customField(): HTMLInputElement {
+    return el<HTMLInputElement>("custom-amount");
+  }
+
+  async function type(value: string): Promise<void> {
+    customField().value = value;
+    customField().dispatchEvent(new Event("input"));
+    await settle();
+  }
+
+  test("the range shown is the gate's, not a number written in the frontend", async () => {
+    // A second copy of the bounds would drift from `Gate.admit`, which is the one
+    // that decides. So the label is rendered from lifecycle_config.
+    await mount();
+    expect(el("custom-amount-range").textContent).toBe("Any amount from $10.00 to $100.00");
+    expect(customField().disabled).toBe(false);
+  });
+
+  test("a usable amount is quoted by the BACKEND and becomes the order", async () => {
+    await mount();
+    await type("25");
+    expect(el("custom-amount-error").hidden).toBe(true);
+    // Priced through quote_previews — the same code create_order calls — so what
+    // the buyer sees and what the gateway locks cannot disagree.
+    expect(el("tier-detail").hidden).toBe(false);
+
+    el<HTMLFormElement>("order-form").dispatchEvent(new Event("submit"));
+    await settle();
+    expect(state.lastAmount).toEqual({ __kind__: "custom", custom: 2_500n });
+  });
+
+  test("below the floor and above the ceiling both refuse, in the buyer's terms", async () => {
+    await mount();
+    await type("5");
+    expect(el("custom-amount-error").hidden).toBe(false);
+    expect(el("custom-amount-error").textContent).toContain("between $10.00 and $100.00");
+    expect(el<HTMLButtonElement>("create-order").textContent).toContain("Pick an amount");
+
+    await type("500");
+    expect(el("custom-amount-error").hidden).toBe(false);
+  });
+
+  test("exactly one amount is ever chosen, in both directions", async () => {
+    // Two selected amounts would make "what am I buying" ambiguous, and the
+    // submit path would have to pick one.
+    await mount();
+    tierButton().click();
+    await settle();
+    expect(tierButton().classList.contains("selected")).toBe(true);
+
+    await type("25");
+    // Typing cleared the tile.
+    expect(tierButton().classList.contains("selected")).toBe(false);
+
+    tierButton().click();
+    await settle();
+    // And the tile cleared the field.
+    expect(customField().value).toBe("");
+    el<HTMLFormElement>("order-form").dispatchEvent(new Event("submit"));
+    await settle();
+    expect(state.lastAmount).toEqual({ __kind__: "tier", tier: "tier10" });
+  });
+
+  test("clearing the field goes back to needing a choice", async () => {
+    await mount();
+    await type("25");
+    await type("");
+    expect(el("custom-amount-error").hidden).toBe(true);
+    expect(el<HTMLButtonElement>("create-order").textContent).toContain("Pick an amount");
+  });
+});
+
+describe("the deadline is a countdown, not a timestamp", () => {
+  test("a payable order shows the time remaining and warns about the edge", async () => {
+    // Thirty-five minutes is short enough that "reserved until 14:32" misleads a
+    // buyer who looked away — and one who starts paying near the deadline loses
+    // the attempt, so the copy has to say so.
+    const soon = anOrder("created") as Record<string, unknown>;
+    soon.expiresAtNs = BigInt(Date.now() + 10 * 60_000) * 1_000_000n;
+    state.order = soon;
+    await mount();
+    await openFromHistory();
+    expect(el("order-deadline").hidden).toBe(false);
+    expect(el("order-deadline").textContent).toMatch(/9 min|10 min/);
+    expect(el("order-deadline").textContent).toMatch(/not charged/i);
+  });
+
+  test("no countdown once the order is past payment", async () => {
+    // A timer next to "Delivered" would read as something still at risk.
+    state.order = anOrder("delivered");
+    await mount();
+    await openFromHistory();
+    expect(el("order-deadline").hidden).toBe(true);
   });
 });

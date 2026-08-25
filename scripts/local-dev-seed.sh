@@ -156,112 +156,53 @@ icp canister call backend refresh_rates '()' >/dev/null 2>&1 || true
 # failed refresh and a pair too old to use, so grepping for it reported success on
 # a gateway that refused every purchase — the same mistake the rate line in the UI
 # was making.
-QUOTE="$(icp canister call backend quote_previews '(vec { 500 : nat })' 2>&1)"
+# $10, the smallest amount the gate now admits — quoting below the floor would
+# "work" here (quote_previews is a pure quote and does not gate) and then be
+# refused at create_order, which is a confusing thing for a seed to report as OK.
+QUOTE="$(icp canister call backend quote_previews '(vec { 1_000 : nat })' 2>&1)"
 if ! printf '%s' "$QUOTE" | grep -q 'cycles = opt'; then
-  printf '\n\033[31m✗ the gateway still cannot price a $5 purchase.\033[0m\n' >&2
+  printf '\n\033[31m✗ the gateway still cannot price a $10 purchase.\033[0m\n' >&2
   icp canister call backend pricing_status '()' 2>&1 | grep -E 'ok = |detail = ' >&2
   exit 1
 fi
-ok "a \$5 purchase quotes (both XRC and CMC answered)"
+ok "a \$10 purchase quotes (both XRC and CMC answered)"
 
 if [ "$RATE_ONLY" -eq 1 ]; then
   printf '\n\033[32m✓ rate refreshed\033[0m — it goes stale again in 15 minutes.\n'
   exit 0
 fi
 
-# ── tiers ────────────────────────────────────────────────────────────────────
-step "card tiers"
-# The tier list IS the card rail's on/off switch (RUNBOOK §3), so an empty list is
-# the fail-closed default rather than a missing step.
-#
-# ⚠️ **SUPERSEDED MACHINERY (#33).** Nothing opens these links any more: the
-# canister creates a Checkout Session per order through the Stripe API, and
-# `Tier.paymentLinkUrl` is read by nothing. This block still runs only because the
-# field is still required, and it goes when the field does (#33 PR-C). Do not add
-# to it, and do not treat a missing link as a reason paying will fail — the API
-# key is that reason.
-#
-# Where each tier's Payment Link comes from, in precedence order:
-#
-#   1. STRIPE_LINK_T5 / _T20 / _T50 in the environment
-#
-# `STRIPE_API_KEY` follows the same precedence and is read by the Stripe session
-# step below — put it in the file rather than on a command line (see there).
-#   2. scripts/.local-dev.env, if it exists — gitignored, so you set your sandbox
-#      links ONCE instead of exporting them into every new shell
-#   3. the link already registered on this canister, when it is not a placeholder
-#   4. a placeholder naming the variable to set
-#
-# (3) is what makes re-seeding safe. A full re-run on a network you had already
-# configured used to overwrite working links with placeholders, and the symptom is
-# Stripe answering AccessDenied on the one button the run exists to click.
-#
-# Each placeholder names ITS OWN variable and every one is reported: a single shared
-# placeholder saying "set STRIPE_LINK_T5", with the warning gated on T5 alone, meant
-# setting T5 and forgetting the others printed a green "with your Stripe links".
+# ── local dev config ─────────────────────────────────────────────────────────
+# `scripts/.local-dev.env` is gitignored, so a value set there is set once instead
+# of exported into every new shell — and it stays out of shell history, `ps` and
+# any terminal transcript, which matters for `STRIPE_API_KEY`.
 LINKS_FILE="scripts/.local-dev.env"
 if [ -f "$LINKS_FILE" ]; then
-  # The environment wins over the file, so a one-off export still overrides it.
-  BEFORE_T5="${STRIPE_LINK_T5:-}"
-  BEFORE_T20="${STRIPE_LINK_T20:-}"
-  BEFORE_T50="${STRIPE_LINK_T50:-}"
   BEFORE_KEY="${STRIPE_API_KEY:-}"
   # shellcheck disable=SC1090
   . "$LINKS_FILE"
-  [ -z "$BEFORE_T5" ] || STRIPE_LINK_T5="$BEFORE_T5"
-  [ -z "$BEFORE_T20" ] || STRIPE_LINK_T20="$BEFORE_T20"
-  [ -z "$BEFORE_T50" ] || STRIPE_LINK_T50="$BEFORE_T50"
+  # The environment wins over the file, so a one-off export still overrides it.
   [ -z "$BEFORE_KEY" ] || STRIPE_API_KEY="$BEFORE_KEY"
   ok "read local dev config from $LINKS_FILE"
 fi
 
-# `<tier id>\t<url>` for what is registered right now. Paired by id rather than by
-# position, so a hand-set tier list in another order cannot mis-assign.
-REGISTERED="$(icp canister call backend card_tiers '()' 2>/dev/null | awk '
-  match($0, /id = "[^"]+"/) { id = substr($0, RSTART + 6, RLENGTH - 7) }
-  match($0, /paymentLinkUrl = "[^"]*"/) {
-    if (id != "") { print id "\t" substr($0, RSTART + 18, RLENGTH - 19); id = "" }
-  }' || true)"
-
-PLACEHOLDERS=""
-REUSED=""
-# Assigns through `printf -v` rather than returning a value, so the classification
-# below happens in THIS shell — command substitution would discard it.
-resolve_link() { # $1 = destination var, $2 = env var name, $3 = tier id
-  if [ -n "${!2:-}" ]; then
-    printf -v "$1" '%s' "${!2}"
-    return
-  fi
-  local registered
-  registered="$(printf '%s\n' "$REGISTERED" | awk -F'\t' -v want="$3" '$1 == want { print $2 }')"
-  case "$registered" in
-    "" | *PLACEHOLDER-set-*)
-      PLACEHOLDERS="$PLACEHOLDERS $2"
-      printf -v "$1" 'https://buy.stripe.com/PLACEHOLDER-set-%s' "$2"
-      ;;
-    *)
-      REUSED="$REUSED $3"
-      printf -v "$1" '%s' "$registered"
-      ;;
-  esac
-}
-resolve_link LINK_T5 STRIPE_LINK_T5 t5
-resolve_link LINK_T20 STRIPE_LINK_T20 t20
-resolve_link LINK_T50 STRIPE_LINK_T50 t50
-
+# ── presets ──────────────────────────────────────────────────────────────────
+step "card presets"
+# ⚠️ An empty list is NO LONGER a pause lever (#33): a custom amount is orderable
+# without any preset, so an empty list just shows no tiles. The rail's switch is
+# both Stripe secrets being provisioned.
+#
+# The `STRIPE_LINK_*` resolver that used to live here is gone: #33 removed
+# `Tier.paymentLinkUrl`, so there was nothing left for it to populate.
+#
+# The presets are $10 / $20 / $50. The old $5 tier is gone because the gate's
+# floor is $10, and registering it would be refused as `belowFloor`.
 icp canister call backend set_card_tiers \
-  "(vec { record { id = \"t5\"; usdCents = 500 : nat; paymentLinkUrl = \"$LINK_T5\" };
-          record { id = \"t20\"; usdCents = 2_000 : nat; paymentLinkUrl = \"$LINK_T20\" };
-          record { id = \"t50\"; usdCents = 5_000 : nat; paymentLinkUrl = \"$LINK_T50\" } })" \
+  '(vec { record { id = "t10"; usdCents = 1_000 : nat };
+          record { id = "t20"; usdCents = 2_000 : nat };
+          record { id = "t50"; usdCents = 5_000 : nat } })' \
   >/dev/null || die "set_card_tiers failed"
-[ -z "$REUSED" ] || ok "kept the links already registered for:$REUSED"
-if [ -n "$PLACEHOLDERS" ]; then
-  printf '  \033[33m·\033[0m 3 tiers ($5 / $20 / $50), but PLACEHOLDER links for:%s\n' "$PLACEHOLDERS"
-  printf '    Those tiles create a real order and then land on a Stripe AccessDenied\n'
-  printf '    page. Set them in %s (or the environment) and re-run.\n' "$LINKS_FILE"
-else
-  ok "3 tiers (\$5 / \$20 / \$50) with your Stripe links"
-fi
+ok "3 presets (\$10 / \$20 / \$50); any amount from \$10 to \$100 is orderable"
 
 # ── treasury ─────────────────────────────────────────────────────────────────
 step "treasury"
@@ -364,9 +305,12 @@ icp canister top-up backend --amount "$CYCLES_TOP_UP" >/dev/null 2>&1 ||
   die "could not top up the backend canister with $CYCLES_TOP_UP cycles.
     Needs icp-cli 1.2.0 or newer (\`icp canister top-up --help\`)."
 
+# The #33 bounds: a $10 floor and a $100 ceiling. One pair governs presets AND
+# custom amounts — do not add a custom-amount-specific limit.
 icp canister call backend set_gate_config \
   '(record { maxOpenOrdersPerPrincipal = 3 : nat;
-             maxPurchaseUsdCents = 100_000 : nat;
+             maxPurchaseUsdCents = 10_000 : nat;
+             minPurchaseUsdCents = 1_000 : nat;
              minCanisterCycles = 5_000_000_000_000 : nat })' \
   >/dev/null || die "set_gate_config failed"
 
@@ -382,9 +326,9 @@ if [ "${BALANCE:-0}" -le "${FLOOR:-0}" ]; then
 fi
 ok "cycles floor kept at $((FLOOR / 1000000000000)) T; canister holds $((BALANCE / 1000000000000)) T"
 
-icp canister call backend can_purchase '(500 : nat)' 2>&1 | grep -q 'variant { ok }' ||
-  die "the gateway still refuses a \$5 purchase. Check: icp canister call backend can_purchase '(500 : nat)'"
-ok "a \$5 purchase is admitted"
+icp canister call backend can_purchase '(1_000 : nat)' 2>&1 | grep -q 'variant { ok }' ||
+  die "the gateway still refuses a \$10 purchase. Check: icp canister call backend can_purchase '(1_000 : nat)'"
+ok "a \$10 purchase is admitted"
 
 printf '\n\033[32m✓ local gateway seeded\033[0m\n'
 cat <<NOTES

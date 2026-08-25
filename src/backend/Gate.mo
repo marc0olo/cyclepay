@@ -37,25 +37,49 @@ module {
     /// room to notice and top up. Distinct from `Treasury`'s float checks in
     /// every way: different resource, different failure, different fix.
     minCanisterCycles : Nat;
-    /// Per-purchase ceiling on the gross USD amount. On the card rail the
-    /// amount is already structurally pinned by which tier's Payment Link was
-    /// used, so this is defence in depth against an operator typo (a tier
-    /// registered at 100× its intended price) and against the webhook's
-    /// amount-honouring path repricing an implausible payment upward. Retune
-    /// to just above your largest tier; do not disable.
+    /// Per-purchase ceiling on the gross USD amount.
+    ///
+    /// It stopped being defence in depth when custom amounts arrived (#33): the
+    /// buyer names the amount now, so this is the **only** upper bound, and it is
+    /// the real lever on the reserve-availability vector in #30 — the ceiling IS
+    /// the per-order reserve exposure. At $1,000 one unpaid order ties up ~720 T
+    /// of reserve for a few hundred million cycles of our gas; at $100 it is
+    /// ~72 T, a 10× improvement for one config value and no new machinery.
+    ///
+    /// **One ceiling governs presets AND custom amounts.** Do not add a
+    /// custom-amount-specific limit: two knobs for one rule is how the float gate
+    /// and the reserve gate ended up contradicting each other.
     maxPurchaseUsdCents : Nat;
+    /// Floor on the gross USD amount, for the same two cases.
+    ///
+    /// Below it the §3 fee formula swallows too much of the payment to be worth
+    /// the outcall and the reserve hold: a $1 purchase pays ~33¢ in card fees
+    /// before it buys a cycle. Nothing enforced a floor before #33 —
+    /// `Tiers.validate` checked non-zero and the ceiling only.
+    ///
+    /// Enforced in **two** places, and both are needed: here, for every order;
+    /// and in `set_card_tiers`, or a registered tier becomes unsellable — the
+    /// mirror of `#tierAboveCeiling`.
+    minPurchaseUsdCents : Nat;
   };
 
   /// Deliberately non-zero, unlike the burn cap — that is a *money* decision and
-  /// must ship dark. These three are *safety
-  /// limits*: a default of 0 would brick the canister rather than protect it,
-  /// which is the wrong direction of fail-closed. The card rail's real on/off
-  /// switch remains the tier list, which does ship empty.
+  /// must ship dark. These are *safety limits*: a default of 0 would brick the
+  /// canister rather than protect it, which is the wrong direction of fail-closed.
+  ///
+  /// The card rail's on/off switch is **both Stripe secrets being provisioned**
+  /// (#33), not the tier list. An empty tier list now means only "no presets
+  /// shown", because a custom amount is orderable without one.
   public func defaultConfig() : Config {
     {
       maxOpenOrdersPerPrincipal = 20;
       minCanisterCycles = 5_000_000_000_000; // 5T
-      maxPurchaseUsdCents = 100_000; // $1,000
+      // $100, down from $1,000 (#33). The ceiling IS the per-order reserve
+      // exposure, so this is the main lever on #30's reserve-griefing vector.
+      maxPurchaseUsdCents = 10_000;
+      // $10. Below this the card fee eats too much of the payment to be worth an
+      // outcall and a reserve hold.
+      minPurchaseUsdCents = 1_000;
     };
   };
 
@@ -72,6 +96,11 @@ module {
     /// to work out the connection between a refused rescue and a config change
     /// made earlier.
     #tierAboveCeiling : { tierId : Text; usdCents : Nat; maxUsdCents : Nat };
+    /// The mirror: a registered tier costs less than the new floor.
+    #tierBelowFloor : { tierId : Text; usdCents : Nat; minUsdCents : Nat };
+    /// A floor above the ceiling admits nothing at all — the rail would refuse
+    /// every amount, which is a config typo rather than a policy.
+    #floorAboveCeiling : { minUsdCents : Nat; maxUsdCents : Nat };
   };
 
   /// `tierPrices` is every registered card tier, so the ceiling cannot be lowered
@@ -82,9 +111,21 @@ module {
   ) : Result.Result<(), ConfigError> {
     if (config.maxOpenOrdersPerPrincipal == 0) return #err(#zeroOpenOrderCap);
     if (config.maxPurchaseUsdCents == 0) return #err(#zeroPurchaseCeiling);
+    if (config.minPurchaseUsdCents > config.maxPurchaseUsdCents) {
+      return #err(#floorAboveCeiling({
+        minUsdCents = config.minPurchaseUsdCents;
+        maxUsdCents = config.maxPurchaseUsdCents;
+      }));
+    };
     for ((tierId, usdCents) in tierPrices.values()) {
       if (usdCents > config.maxPurchaseUsdCents) {
         return #err(#tierAboveCeiling({ tierId; usdCents; maxUsdCents = config.maxPurchaseUsdCents }));
+      };
+      // The mirror, for the same reason: raising the floor over a registered tier
+      // would leave it sellable but unpayable, and the operator would have to
+      // connect a refused order to a config change made earlier.
+      if (usdCents < config.minPurchaseUsdCents) {
+        return #err(#tierBelowFloor({ tierId; usdCents; minUsdCents = config.minPurchaseUsdCents }));
       };
     };
     // minCanisterCycles = 0 is permitted: it means "do not gate on my own
@@ -102,6 +143,10 @@ module {
     #burnCapExhausted : { burnedE8s : Nat; capE8s : Nat };
     #floatLow : { observedE8s : ?Nat; thresholdE8s : Nat };
     #amountAboveMax : { usdCents : Nat; maxUsdCents : Nat };
+    /// Below the floor. Distinguishable from `#amountAboveMax` because the buyer
+    /// acts on them differently — one means "ask for less", the other "ask for
+    /// more" — and with custom amounts both are reachable by typing.
+    #amountBelowMin : { usdCents : Nat; minUsdCents : Nat };
   };
 
   /// Renderable config-validation failure.
@@ -117,6 +162,13 @@ module {
         "tierAboveCeiling(tier " # tierId # " costs " # usdCents.toText()
         # " cents, ceiling would be " # maxUsdCents.toText() # ")";
       };
+      case (#tierBelowFloor({ tierId; usdCents; minUsdCents })) {
+        "tierBelowFloor(tier " # tierId # " costs " # usdCents.toText()
+        # " cents, floor would be " # minUsdCents.toText() # ")";
+      };
+      case (#floorAboveCeiling({ minUsdCents; maxUsdCents })) {
+        "floorAboveCeiling(" # minUsdCents.toText() # ">" # maxUsdCents.toText() # ")";
+      };
     };
   };
 
@@ -130,6 +182,7 @@ module {
         "floatLow(" # observed # "<" # thresholdE8s.toText() # ")";
       };
       case (#amountAboveMax({ usdCents; maxUsdCents })) "amountAboveMax(" # usdCents.toText() # ">" # maxUsdCents.toText() # ")";
+      case (#amountBelowMin({ usdCents; minUsdCents })) "amountBelowMin(" # usdCents.toText() # "<" # minUsdCents.toText() # ")";
     };
   };
 
@@ -159,6 +212,12 @@ module {
   public func admit(config : Config, observation : Observation, usdCents : Nat) : Result.Result<(), Reason> {
     if (usdCents > config.maxPurchaseUsdCents) {
       return #err(#amountAboveMax({ usdCents; maxUsdCents = config.maxPurchaseUsdCents }));
+    };
+    // Checked HERE rather than only in the frontend, because a frontend-only
+    // bound is not a bound — and with custom amounts the buyer supplies this
+    // number directly.
+    if (usdCents < config.minPurchaseUsdCents) {
+      return #err(#amountBelowMin({ usdCents; minUsdCents = config.minPurchaseUsdCents }));
     };
     if (observation.openOrders >= config.maxOpenOrdersPerPrincipal) {
       return #err(#tooManyOpenOrders({

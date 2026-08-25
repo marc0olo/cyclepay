@@ -116,7 +116,7 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
   expect(await gw.asAdmin.stripe_origin()).toHaveLength(0);
   const ordersBefore = (await gw.asAdmin.retention_status()).totalOrders;
   const noKey = expectErr(
-    await gw.asUser.create_order('tier5', USER_ACCOUNT, []),
+    await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []),
   ) as { sessionUnavailable: string };
   expect(noKey.sessionUnavailable).toContain('API key');
   expect((await gw.asAdmin.retention_status()).totalOrders).toBe(ordersBefore);
@@ -125,7 +125,7 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
   // the buyer back to, and the same no-record rule applies.
   expectOk(await gw.asAdmin.set_stripe_api_key('rk_test_integration_suite_key'));
   const noOrigin = expectErr(
-    await gw.asUser.create_order('tier5', USER_ACCOUNT, []),
+    await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []),
   ) as { sessionUnavailable: string };
   expect(noOrigin.sessionUnavailable).toContain('origin');
   expect((await gw.asAdmin.retention_status()).totalOrders).toBe(ordersBefore);
@@ -137,12 +137,61 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
   expect(expectErr(await gw.asAdmin.set_stripe_origin(''))).toEqual({ empty: null });
   expectOk(await gw.asAdmin.set_stripe_origin('https://integration.example'));
   expect(await gw.asAdmin.stripe_origin()).toEqual(['https://integration.example']);
+
+  // ── #33's amount bounds, and why this suite lowers the floor ───────────────
+  //
+  // The shipped defaults are a $10 floor and a $100 ceiling, asserted here.
+  expect((await gw.asAnon.lifecycle_config()).gate.minPurchaseUsdCents).toBe(1_000n);
+  expect((await gw.asAnon.lifecycle_config()).gate.maxPurchaseUsdCents).toBe(10_000n);
+
+  // But every exact assertion in this suite rests on the §3 vector: 500¢ gross
+  // − 45¢ fee = 455¢ net = **exactly one ICP** at $4.55, which mints exactly
+  // 3.5 T cycles. That is what makes `TIER_LOCKED_CYCLES` and `ORDER_E8S` exact
+  // rather than approximate, across dozens of assertions. A $10 floor would
+  // refuse it, and re-deriving the vector at $10 would trade exactness for
+  // matching a default — so the floor is lowered HERE and the shipped value is
+  // asserted above and exercised in scenario 71.
+  const { gate: defaults } = await gw.asAnon.lifecycle_config();
+  expectOk(await gw.asAdmin.set_gate_config({ ...defaults, minPurchaseUsdCents: 100n }));
+});
+
+test('01b — a dark gateway spends nothing on rates (#33: the switch is both secrets)', async () => {
+  // The other half of scenario 29, and it has to live here: `railsLive` gates the
+  // rate-refresh timer, and the only point where the rail is genuinely OFF is
+  // before both secrets are provisioned — there is deliberately no way to unset
+  // one.
+  //
+  // This also fixes a real waste rather than just moving a check: a gateway with
+  // presets but no API key used to pay for XRC calls it could never use, because
+  // the switch was the tier list.
+  //
+  // ⚠️ Ordering note: scenario 01 provisions BOTH secrets, so by the time this
+  // runs the rail is live and the timer ticks. The dark case is asserted through
+  // the audit log, which records what happened while it was dark: nothing.
+  const log = await gw.asAdmin.audit_log();
+  const beforeProvisioning = log.filter((e) => e.tag === 'rates.refreshFailed');
+  // No refresh was even attempted before the secrets landed, so no failure was
+  // recorded from that window.
+  expect(beforeProvisioning.length).toBe(0);
+
+  // Nothing has been attempted at all yet, which is the whole claim: no rates
+  // cached and no attempt recorded from the window before the secrets landed.
+  const pricing = await gw.asAnon.pricing_status();
+  expect(pricing.rates).toHaveLength(0);
+  expect(pricing.lastAttempt).toHaveLength(0);
+
+  // ⚠️ **Deliberately does not tick the rate timer.** A failed refresh arms the
+  // backoff (`rateTicksToSkip`), so an extra failing attempt here makes a LATER
+  // scenario's tick get skipped and its `lastAttempt` read as this one's. That
+  // cost scenario 03 a confusing failure once. The positive — a live rail does
+  // refresh — is asserted in scenario 29, which has rates installed and can
+  // observe it without side effects.
 });
 
 test('02 — tier config is admin-gated and public to read', async () => {
   await expect(gw.asUser.set_card_tiers([])).rejects.toThrow(/not a controller/);
   expectOk(await gw.asAdmin.set_card_tiers([
-    { id: 'tier5', usdCents: TIER_USD_CENTS, paymentLinkUrl: 'https://buy.stripe.com/test_tier5' },
+    { id: 'tier5', usdCents: TIER_USD_CENTS },
   ]));
   const tiers = await gw.asAnon.card_tiers();
   expect(tiers).toHaveLength(1);
@@ -151,7 +200,7 @@ test('02 — tier config is admin-gated and public to read', async () => {
 
 test('03 — pricing fails closed: an XRC error leaves no rate and blocks orders (§3.1)', async () => {
   // Anonymous callers can never own orders.
-  const anonResult = await gw.asAnon.create_order('tier5', USER_ACCOUNT, []);
+  const anonResult = await gw.asAnon.create_order({ tier: 'tier5' }, USER_ACCOUNT, []);
   expect(expectErr(anonResult)).toEqual({ anonymous: null });
 
   // The XRC declining to answer is the realistic outage: it refuses rather than
@@ -178,7 +227,7 @@ test('03 — pricing fails closed: an XRC error leaves no rate and blocks orders
   expect(status.lastAttempt[0]!.ok).toBe(false);
   expect(status.lastAttempt[0]!.detail).toContain('InconsistentRatesReceived');
 
-  expect(expectErr(await gw.asUser.create_order('tier5', USER_ACCOUNT, [])))
+  expect(expectErr(await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, [])))
     .toEqual({ rateUnavailable: null });
 });
 
@@ -194,7 +243,7 @@ test('04 — a healthy XRC + CMC pair prices the §3 vector exactly', async () =
   expect(rates.quality.receivedRates).toBe(5n);
   expect(rates.quality.queriedSources).toBe(6n);
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   orderA = created.order;
   refA = clientReferenceFor(created.order.id);
 
@@ -218,7 +267,7 @@ test('04 — a healthy XRC + CMC pair prices the §3 vector exactly', async () =
   expect((await gw.asUser.list_orders()).map((o) => o.id)).toContain(orderA.id);
 
   // Orders read the cache; nothing user-facing calls the XRC.
-  const again = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const again = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   expect(again.order.lockedCycles).toBe(TIER_LOCKED_CYCLES);
 });
 
@@ -391,7 +440,7 @@ test('09 — Type 1 unattributed: claimed-not-trusted reference resolution (§6.
 
 test('10 — the ledger\'s deposit fee lands on the buyer, and is not grossed up (§5 forward)', async () => {
   const creditedBefore = await userCycles();
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   orderB = created.order;
   refB = clientReferenceFor(created.order.id);
 
@@ -430,7 +479,7 @@ test('11 — Type 2 undeliverable: a failed forward refunds cycles to the app ba
   // The outage is real rather than mocked: PocketIC accepts NNS root as an
   // impersonated sender, so the cycles ledger can genuinely be stopped, which is
   // what a ledger outage looks like to the backend.
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   orderC = created.order;
   refC = clientReferenceFor(created.order.id);
 
@@ -471,7 +520,7 @@ test('11 — Type 2 undeliverable: a failed forward refunds cycles to the app ba
 });
 
 test('12 — upgrade mid-transfer: §5.1 write-intent replay recovers without a double spend, timer re-arms', async () => {
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   orderE = created.order;
   refE = clientReferenceFor(created.order.id);
 
@@ -518,7 +567,7 @@ test('13 — upgrade mid-forward: the stop-first procedure drains the forward, d
   // Scenario 12 advanced past both the CMC window and the rate staleness bound;
   // ensureRates re-arms both.
   await ensureRates(gw);
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const orderG = created.order;
   const creditedBefore = await userCycles();
 
@@ -582,7 +631,7 @@ test('14 — a treasury hold alerts but keeps waiting, then delivers when fixed 
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   orderF = created.order;
   refF = clientReferenceFor(created.order.id);
 
@@ -676,7 +725,7 @@ test('16 — admission gate: no burn-cap headroom refuses the quote before any m
   // could only park in #awaitingTreasury and later refund.
   expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
 
-  const refused = expectErr(await gw.asUser.create_order('tier5', USER_ACCOUNT, []));
+  const refused = expectErr(await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []));
   expect(refused).toHaveProperty('notAdmitted');
   expect((refused as { notAdmitted: Record<string, unknown> }).notAdmitted)
     .toHaveProperty('burnCapExhausted');
@@ -690,7 +739,7 @@ test('16 — admission gate: no burn-cap headroom refuses the quote before any m
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
   await ensureRates(gw);
   expectOk(await gw.asAnon.can_purchase(TIER_USD_CENTS));
-  const admitted = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const admitted = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   expect(statusKey(admitted.order)).toBe('created');
 });
 
@@ -701,8 +750,8 @@ test('17 — admission gate: the per-purchase ceiling bounds tiers and amounts',
   // guard. Rejection is atomic, so the live tier list is untouched.
   const tooBig = gate.maxPurchaseUsdCents + 1n;
   expectErr(await gw.asAdmin.set_card_tiers([
-    { id: 'tier5', usdCents: TIER_USD_CENTS, paymentLinkUrl: 'https://buy.stripe.com/test_tier5' },
-    { id: 'fat', usdCents: tooBig, paymentLinkUrl: 'https://buy.stripe.com/test_fat' },
+    { id: 'tier5', usdCents: TIER_USD_CENTS },
+    { id: 'fat', usdCents: tooBig },
   ]));
   expect((await gw.asAnon.card_tiers()).map((t) => t.id)).toEqual(['tier5']);
 
@@ -731,7 +780,7 @@ test('17 — admission gate: the per-purchase ceiling bounds tiers and amounts',
 
 test('18 — retention expires an abandoned order but never deletes it', async () => {
   await ensureRates(gw);
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const lapsed = created.order;
   const lapsedRef = clientReferenceFor(created.order.id);
 
@@ -841,7 +890,7 @@ test('20 — an unauthenticated webhook that pays nothing triggers no sweep (DoS
   await setCmcRate(gw);
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const held = created.order;
 
   expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
@@ -915,7 +964,7 @@ test('22 — a rate change between order and mint does not move the locked quant
   // change in what a dollar buys, still inside the plausible band.
   const movedPermyriad = (XDR_PERMYRIAD_PER_ICP * 16n) / 10n;
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const order = created.order;
   expect(order.lockedCycles).toBe(TIER_LOCKED_CYCLES);
   expect(order.pricing.usdPerIcpMicros).toBe(4_550_000n);
@@ -946,7 +995,7 @@ test('22 — a rate change between order and mint does not move the locked quant
   // A NEW order at the moved rates buys 80% as much: cycles scale by
   // (P′/P)/(U′/U) = 1.6/2. The locked quantity above is unaffected — only new
   // quotes move, which is the §3 promise.
-  const after = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const after = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   expect(after.order.lockedCycles).toBe((TIER_LOCKED_CYCLES * 8n) / 10n);
 
   await setXrcRate(gw, ICP_USD_RATE);
@@ -968,7 +1017,7 @@ test('23 — the delta guard rejects an implausible move and keeps serving the o
   expect(status.lastAttempt[0]!.ok).toBe(false);
   expect(status.lastAttempt[0]!.detail).toContain('delta guard');
   expect(status.rates[0]!.usdPerIcpMicros).toBe(before.usdPerIcpMicros);
-  expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
 
   await setXrcRate(gw, ICP_USD_RATE);
   await ensureRates(gw);
@@ -1010,12 +1059,12 @@ test('25 — every XRC failure mode fails closed with a distinguishable reason',
   // A prior good rate keeps serving until it goes stale, then orders refuse.
   await gw.pic.advanceTime(3_700_000); // past any allowed staleness window
   await gw.pic.tick(3);
-  expect(expectErr(await gw.asUser.create_order('tier5', USER_ACCOUNT, [])))
+  expect(expectErr(await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, [])))
     .toEqual({ rateUnavailable: null });
 
   await setXrcRate(gw, ICP_USD_RATE);
   await ensureRates(gw);
-  expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
 });
 
 test('26 — a rate reported with different decimals prices identically', async () => {
@@ -1024,12 +1073,12 @@ test('26 — a rate reported with different decimals prices identically', async 
   await setXrcResponse(gw, { kind: 'rate', rate: 4_550_000n, decimals: 6 });
   await ensureRates(gw);
   expect((await gw.asAnon.pricing_status()).rates[0]!.usdPerIcpMicros).toBe(4_550_000n);
-  const sixDecimals = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const sixDecimals = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   expect(sixDecimals.order.lockedCycles).toBe(TIER_LOCKED_CYCLES);
 
   await setXrcResponse(gw, { kind: 'rate', rate: 4_550_000_000_000n, decimals: 12 });
   await ensureRates(gw);
-  const twelveDecimals = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const twelveDecimals = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   expect(twelveDecimals.order.lockedCycles).toBe(TIER_LOCKED_CYCLES);
 
   await setXrcRate(gw, ICP_USD_RATE);
@@ -1057,7 +1106,7 @@ test('27 — the rate timer re-arms across an upgrade with no manual kick', asyn
   expect(after).toBeGreaterThan(before);
 
   // Orders work off the timer-refreshed rate, with nothing manual in between.
-  expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
 });
 
 test('28 — the own-cycles floor refuses orders against a real balance', async () => {
@@ -1072,7 +1121,7 @@ test('28 — the own-cycles floor refuses orders against a real balance', async 
   const gate = (await gw.asAnon.lifecycle_config()).gate;
   expectOk(await gw.asAdmin.set_gate_config({ ...gate, minCanisterCycles: balance * 2n }));
 
-  const refused = expectErr(await gw.asUser.create_order('tier5', USER_ACCOUNT, []));
+  const refused = expectErr(await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []));
   expect(refused).toHaveProperty('notAdmitted');
   const reason = (refused as { notAdmitted: Record<string, { balance: bigint; min: bigint }> }).notAdmitted;
   expect(reason).toHaveProperty('canisterCyclesLow');
@@ -1085,34 +1134,50 @@ test('28 — the own-cycles floor refuses orders against a real balance', async 
     .toHaveProperty('canisterCyclesLow');
 
   expectOk(await gw.asAdmin.set_gate_config({ ...gate, minCanisterCycles: floor }));
-  expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
 });
 
-test('29 — pausing the rail stops rate refreshes but never strands a paid order', async () => {
-  // An interaction worth pinning: refreshes only run while a rail is live, so
-  // emptying the tier list (the documented rail-pause lever) also stops the
-  // canister spending cycles on rates. A paid order must still deliver, because
-  // money-out reads the CMC directly and never touches the rate cache.
+test('29 — an empty preset list does NOT pause the rail any more (#33)', async () => {
+  // INVERTED BY #33, and this is the assertion that proves the switch moved.
+  //
+  // Emptying the tier list used to be the documented pause lever, and it also
+  // stopped the rate timer. With custom amounts it stops nothing: a buyer can
+  // order any amount between the floor and the ceiling without any preset, so an
+  // empty list means only "no tiles shown". The switch is both Stripe secrets
+  // being provisioned — see scenario 01 for the timer going quiet when it is off.
+  //
+  // A paid order must still deliver either way, because money-out reads the CMC
+  // directly and never touches the rate cache.
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const inFlight = created.order;
   expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_pause', paymentIntent: 'pi_pause', clientReferenceId: clientReferenceFor(created.order.id),
     amountCents: TIER_USD_CENTS,
   }))).toMatchObject({ status_code: 200 });
 
-  // Pause: empty tiers. New card orders are refused outright.
+  // Empty the presets. A `#tier` order for a preset that no longer exists is
+  // still refused — that part is unchanged.
   const tiers = await gw.asAnon.card_tiers();
   expectOk(await gw.asAdmin.set_card_tiers([]));
-  expect(expectErr(await gw.asUser.create_order('tier5', USER_ACCOUNT, [])))
+  expect(expectErr(await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, [])))
     .toEqual({ unknownTier: 'tier5' });
 
-  // And the refresh timer goes quiet — a dark gateway spends nothing.
+  // ⚠️ But a CUSTOM amount goes through, which is why an empty list is no longer
+  // a pause: it never stopped the thing it claimed to.
+  const custom = expectOk(
+    await createOrderWithSession(gw, { custom: TIER_USD_CENTS }, USER_ACCOUNT, []),
+  );
+  expect(custom.order.pricing.usdCents).toBe(TIER_USD_CENTS);
+  expectOk(await cancelOrderWithExpire(gw, custom.order.id));
+
+  // And the refresh timer KEEPS RUNNING, because the rail is live: both secrets
+  // are provisioned. It used to go quiet here.
   const attemptBefore = (await gw.asAnon.pricing_status()).lastAttempt[0]!.atNs;
   await tickRateTimer(gw);
-  expect((await gw.asAnon.pricing_status()).lastAttempt[0]!.atNs).toBe(attemptBefore);
+  expect((await gw.asAnon.pricing_status()).lastAttempt[0]!.atNs).not.toBe(attemptBefore);
 
   // But the already-paid order still delivers: money-out uses the CMC, not the
   // rate cache, so a paused rail cannot strand money already taken.
@@ -1146,7 +1211,7 @@ test('30 — the rate pair is cross-checked: a plausible-but-wrong ICP price is 
   expect(status.lastAttempt[0]!.detail).toContain('rate pair disagrees');
   // The previous good pair keeps serving rather than pricing stopping dead.
   expect(status.rates[0]!.usdPerIcpMicros).toBe(before.usdPerIcpMicros);
-  expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
 
   // Symmetric: 10x too low implies 7.69 XDR/USD, equally absurd.
   await setXrcResponse(gw, { kind: 'rate', rate: ICP_USD_RATE / 10n, decimals: 9 });
@@ -1183,7 +1248,7 @@ test('31 — a single-source rate is refused, because XRC cannot flag it itself'
     receivedRates: 2n, queriedSources: 6n,
   });
   await ensureRates(gw);
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   // The quality signal reaches the order, so a buyer can see how thin it was.
   expect(created.order.pricing.rateReceivedRates).toBe(2n);
   expect(created.order.pricing.rateQueriedSources).toBe(6n);
@@ -1199,7 +1264,7 @@ test('32 — rates going bad after payment cannot affect an order already #paid'
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const order = created.order;
   expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_ratebad', paymentIntent: 'pi_ratebad', clientReferenceId: clientReferenceFor(created.order.id),
@@ -1228,7 +1293,7 @@ test('33 — an unmintable order alerts and waits; only abandon_order ends it', 
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const stuck = created.order;
 
   // Let the CMC rate go stale BEFORE payment (its guard is 15 min) so the mint
@@ -1266,7 +1331,7 @@ test('33 — an unmintable order alerts and waits; only abandon_order ends it', 
 test('34 — abandon_order is the only terminal give-up, and it demands a reason', async () => {
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const doomed = created.order;
 
   // Not abandonable before money is involved — nothing to decide about.
@@ -1317,7 +1382,7 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   // structural, not transient, so refunding proactively is the protective act.
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const doomed = created.order;
 
   expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
@@ -1367,7 +1432,7 @@ test('36 — attach_payment rescues a charge the webhook never delivered', async
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const orphan = created.order;
   // No webhook is delivered at all — this is the whole point.
   expect(await orderStatus(gw, orphan.id)).toBe('created');
@@ -1402,8 +1467,8 @@ test('37 — a charge can never be credited twice, by either route', async () =>
   // The dangerous property of a money-creating lever. attach_payment shares the
   // webhook's dedup set, so the same payment_intent cannot be credited via both.
   await ensureRates(gw);
-  const first = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
-  const second = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const first = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
+  const second = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
 
   expectOk(await gw.asAdmin.attach_payment('pi_once', first.order.id, TIER_USD_CENTS));
 
@@ -1428,7 +1493,7 @@ test('38 — attaching an identified payment closes its Type 1 obligation', asyn
   // Turns "refund and ask them to re-order at today's price" into "deliver what
   // they bought" — and the open obligation must not survive as an orphan.
   await ensureRates(gw);
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
 
   // A payment arrives with an unusable reference → Type 1 unattributed.
   expect(await deliverWebhook(gw, checkoutSessionBody({
@@ -1452,7 +1517,7 @@ test('39 — attach_payment enforces the same amount rules as the webhook', asyn
   await ensureRates(gw);
   const { gate } = await gw.asAnon.lifecycle_config();
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   // Above the per-purchase ceiling — repricing is an upward path, so a manual
   // rescue must not become a way around the bound.
   const over = expectErr(await gw.asAdmin.attach_payment(
@@ -1470,7 +1535,7 @@ test('39 — attach_payment enforces the same amount rules as the webhook', asyn
   expect(statusKey(fixed)).toBe('paid');
 
   // A different amount than quoted is repriced from the order's OWN snapshot.
-  const other = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const other = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const repriced = expectOk(await gw.asAdmin.attach_payment('pi_double', other.order.id, TIER_USD_CENTS * 2n));
   expect(repriced.paidUsdCents).toEqual([TIER_USD_CENTS * 2n]);
   expect(repriced.lockedCycles).toBeGreaterThan(TIER_LOCKED_CYCLES);
@@ -1488,7 +1553,7 @@ test('39 — attach_payment enforces the same amount rules as the webhook', asyn
   // Cancelled here, because it needs no clock. The `#expired` half lives in
   // scenario 18, which already holds an aged-out order — advancing time here
   // would leak into every scenario after this one.
-  const doomed = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const doomed = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   expectOk(await cancelOrderWithExpire(gw, doomed.order.id));
   const refused = expectErr(await gw.asAdmin.attach_payment(
     'pi_attach_cancelled', doomed.order.id, TIER_USD_CENTS,
@@ -1525,7 +1590,7 @@ test('40 — the price a buyer is shown comes from the same code that locks it',
 
   // And an order created now locks exactly the previewed figure.
   const created = expectOk(
-    await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, [quoted.cycles[0]!]),
+    await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, [quoted.cycles[0]!]),
   );
   expect(created.order.lockedCycles).toBe(quoted.cycles[0]!);
   expectOk(await cancelOrderWithExpire(gw, created.order.id));
@@ -1573,7 +1638,7 @@ test('41 — an order can never lock fewer cycles than the buyer was shown', asy
   // Pinning the old figure refuses, and says what the amount buys NOW — so the
   // caller can show the buyer a real number rather than a bare failure.
   const refused = expectErr(
-    await gw.asUser.create_order('tier5', USER_ACCOUNT, [shown]),
+    await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, [shown]),
   ) as { quoteChanged: { quoted: bigint; minimum: bigint } };
   expect(refused.quoteChanged.quoted).toBe(dearer);
   expect(refused.quoteChanged.minimum).toBe(shown);
@@ -1584,7 +1649,7 @@ test('41 — an order can never lock fewer cycles than the buyer was shown', asy
 
   // Accepting the current figure goes through.
   const atNewRate = expectOk(
-    await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, [dearer]),
+    await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, [dearer]),
   );
   expect(atNewRate.order.lockedCycles).toBe(dearer);
   expectOk(await cancelOrderWithExpire(gw, atNewRate.order.id));
@@ -1594,14 +1659,14 @@ test('41 — an order can never lock fewer cycles than the buyer was shown', asy
   await setXrcRate(gw, ICP_USD_RATE);
   await tickRateTimer(gw);
   const better = expectOk(
-    await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, [dearer]),
+    await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, [dearer]),
   );
   expect(better.order.lockedCycles).toBeGreaterThan(dearer);
   expectOk(await cancelOrderWithExpire(gw, better.order.id));
 
   // Omitting the pin opts out of the check entirely.
   const unpinned = expectOk(
-    await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []),
+    await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []),
   );
   expectOk(await cancelOrderWithExpire(gw, unpinned.order.id));
 });
@@ -1616,7 +1681,7 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
-  const mine = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const mine = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const openBefore = (await gw.asAdmin.retention_status()).openOrders;
 
   // Owner-scoped: nobody else can cancel your order, including an admin.
@@ -1660,7 +1725,7 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
   // A PAID order cannot be cancelled — it is going to deliver, and pretending
   // otherwise would be the actual way to strand a buyer. Needs its own order,
   // since the one above never becomes paid now.
-  const payable = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const payable = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_cancel_paid',
     paymentIntent: 'pi_cancel_paid',
@@ -1775,7 +1840,7 @@ test('45 — a delayed async payment still mints when it settles', async () => {
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
   await fundFloat(gw, ORDER_E8S * 4n + ICP_FEE_E8S * 4n);
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
 
   expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_async_pending',
@@ -1810,7 +1875,7 @@ test('46 — a test-mode payment cannot mint on a gateway declared live', async 
   // any money moves and much cheaper than catching it at webhook time. Scenario 63
   // asserts that refusal directly.
   const created = expectOk(
-    await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, [], { livemode: true }),
+    await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, [], { livemode: true }),
   );
   expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_testmode',
@@ -1847,7 +1912,7 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const doomed = created.order;
 
   // Park it in #paid: a stale CMC rate stops the mint before it starts.
@@ -1898,7 +1963,7 @@ test('48 — the notify stage is bounded by time, not only by the retry count', 
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
   await fundFloat(gw, ORDER_E8S * 2n + ICP_FEE_E8S * 2n);
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const order = created.order;
   expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_notify', paymentIntent: 'pi_notify', clientReferenceId: clientReferenceFor(created.order.id),
@@ -1917,7 +1982,7 @@ test('48 — the notify stage is bounded by time, not only by the retry count', 
   // Now the stuck shape, from the money-out side. Create first and pause after:
   // a zero burn cap also refuses order *creation* (the admission gate), so the
   // order has to exist before minting is stopped.
-  const held = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const held = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
   expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_held', paymentIntent: 'pi_held', clientReferenceId: clientReferenceFor(held.order.id),
@@ -1983,7 +2048,7 @@ test('49 — an out-of-order async settlement still mints exactly once', async (
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
   await fundFloat(gw, ORDER_E8S * 2n + ICP_FEE_E8S * 2n);
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
 
   // Settlement first.
   expect(await deliverWebhook(gw, checkoutSessionBody({
@@ -2021,7 +2086,7 @@ test('50 — retention covers every order across ticks and resets its cursor', a
   const ids: string[] = [];
   for (let i = 0; i < 5; i++) {
     ids.push(expectOk(
-      await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []),
+      await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []),
     ).order.id);
   }
   expect((await gw.asAnon.retention_status()).openOrders).toBe(before.openOrders + 5n);
@@ -2055,7 +2120,7 @@ test('50 — retention covers every order across ticks and resets its cursor', a
   // Advancing 50 h staled both rates; re-arm before quoting again.
   await setCmcRate(gw);
   await ensureRates(gw);
-  const late = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const late = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   await gw.pic.advanceTime(50 * 3_600 * 1_000);
   await gw.pic.tick(3);
   let g2 = 0;
@@ -2083,7 +2148,7 @@ test('51 — a CMC outage stalls the mint, alerts, and never invents a money pos
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
   await fundFloat(gw, ORDER_E8S * 3n + ICP_FEE_E8S * 3n);
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const order = created.order;
 
   // The CMC is down when the payment lands: money-out reads its rate directly, so
@@ -2129,7 +2194,7 @@ test('52 — an ICP ledger outage cannot move money or fabricate a block', async
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
   await fundFloat(gw, ORDER_E8S * 3n + ICP_FEE_E8S * 3n);
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const order = created.order;
 
   await stopNns(gw, ICP_LEDGER_ID);
@@ -2175,7 +2240,7 @@ test('53 — a CMC outage after the transfer parks the order at icpAtCmc, alerts
   expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n));
   await fundFloat(gw, ORDER_E8S * 3n + ICP_FEE_E8S * 3n);
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const order = created.order;
   const floatBefore = await floatBalance(gw);
 
@@ -2242,7 +2307,7 @@ test('54 — a rate move between transfer and notify escalates instead of subsid
   expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n));
   await fundFloat(gw, ORDER_E8S * 3n + ICP_FEE_E8S * 3n);
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const order = created.order;
 
   expect(await deliverWebhook(gw, checkoutSessionBody({
@@ -2326,7 +2391,7 @@ test('57 — an already-credited intent is caught before attribution, not after'
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
   await fundFloat(gw, ORDER_E8S * 2n + ICP_FEE_E8S * 2n);
 
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_credit_a', paymentIntent: 'pi_credited',
     clientReferenceId: clientReferenceFor(created.order.id), amountCents: TIER_USD_CENTS,
@@ -2374,13 +2439,13 @@ test('58 — the sweep reconciles the status tallies on its own cadence and repo
 
   // Orders across several tracked statuses, so a reconcile has something to
   // disagree with if `bump` were wrong.
-  const paid = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const paid = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_reconcile', paymentIntent: 'pi_reconcile',
     clientReferenceId: clientReferenceFor(paid.order.id), amountCents: TIER_USD_CENTS,
   }))).toMatchObject({ status_code: 200 });
   expect(await tickUntilStatus(gw, paid.order.id, ['delivered'])).toBe('delivered');
-  expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
 
   const before = (await gw.asAnon.recovery_status()).lastCountReconcile[0]?.atNs ?? -1n;
   const auditBefore = (await gw.asAdmin.audit_log()).length;
@@ -2487,7 +2552,7 @@ test('60 — a stall that moves to a different stage re-raises the alert instead
   expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n));
 
   // Create before pausing: a zero burn cap also refuses order creation.
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const orderId = created.order.id;
   expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
   expect(await deliverWebhook(gw, checkoutSessionBody({
@@ -2593,7 +2658,7 @@ test('61 — cycles go to the caller and nowhere else, enforced by the canister 
   const ordersBefore = (await gw.asUser.list_orders()).length;
 
   // Someone else's account.
-  expect(expectErr(await gw.asUser.create_order('tier5', {
+  expect(expectErr(await gw.asUser.create_order({ tier: 'tier5' }, {
     cyclesLedgerAccount: { owner: admin.getPrincipal(), subaccount: [] },
   }, []))).toEqual({ destinationNotOwned: null });
 
@@ -2603,7 +2668,7 @@ test('61 — cycles go to the caller and nowhere else, enforced by the canister 
   // buyer cannot see.
   const subaccount = new Uint8Array(32);
   subaccount[31] = 1;
-  expect(expectErr(await gw.asUser.create_order('tier5', {
+  expect(expectErr(await gw.asUser.create_order({ tier: 'tier5' }, {
     cyclesLedgerAccount: { owner: user.getPrincipal(), subaccount: [subaccount] },
   }, []))).toEqual({ destinationNotOwned: null });
 
@@ -2616,13 +2681,13 @@ test('61 — cycles go to the caller and nowhere else, enforced by the canister 
   // unknown tier *and* a bad destination returns the destination error, so
   // nothing after the caller comparison has run. Moving the check below the tier
   // lookup or the admission gate flips this to `unknownTier`.
-  expect(expectErr(await gw.asUser.create_order('no-such-tier', {
+  expect(expectErr(await gw.asUser.create_order({ tier: 'no-such-tier' }, {
     cyclesLedgerAccount: { owner: admin.getPrincipal(), subaccount: [] },
   }, []))).toEqual({ destinationNotOwned: null });
 
   // And the anonymous check still wins over this one: an anonymous caller gets
   // told about the session rather than about the destination.
-  expect(expectErr(await gw.asAnon.create_order('tier5', {
+  expect(expectErr(await gw.asAnon.create_order({ tier: 'tier5' }, {
     cyclesLedgerAccount: { owner: admin.getPrincipal(), subaccount: [] },
   }, []))).toEqual({ anonymous: null });
 });
@@ -2634,7 +2699,7 @@ test('62 — the durable order record survives a real stop → upgrade → start
   // them. Enhanced orthogonal persistence keeps stable state without serialising
   // it, and this is the assertion of that rather than the assumption.
   await ensureRates(gw);
-  const created = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const before = created.order;
 
   // ── ratesFetchedAtNs is the one new field with a producer TODAY, so it is the
@@ -2667,7 +2732,7 @@ test('62 — the durable order record survives a real stop → upgrade → start
 
   // ── A cancelled order, so a non-default status and a terminal one both cross
   // the upgrade.
-  const doomed = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const doomed = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   expect(statusKey(expectOk(await cancelOrderWithExpire(gw, doomed.order.id)))).toBe('cancelled');
 
   await upgradeBackendMidFlight(gw);
@@ -2700,7 +2765,7 @@ test('63 — the session request is exactly what Stripe needs, asserted byte by 
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
-  const settle = await gw.deferredUser.create_order('tier5', USER_ACCOUNT, []);
+  const settle = await gw.deferredUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []);
   const outcall = await awaitPendingOutcall(gw);
 
   expect(outcall.url).toBe('https://api.stripe.com/v1/checkout/sessions');
@@ -2774,7 +2839,7 @@ test('65 — a session that cannot be created fails the order in the same call (
   await ensureRates(gw);
   const openBefore = (await gw.asAdmin.retention_status()).openOrders;
 
-  const settle = await gw.deferredUser.create_order('tier5', USER_ACCOUNT, []);
+  const settle = await gw.deferredUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []);
   const outcall = await awaitPendingOutcall(gw);
   await answerOutcall(gw, outcall, 400, JSON.stringify({ error: { message: 'no such price' } }));
   const failed = expectErr(await settle());
@@ -2793,7 +2858,7 @@ test('65 — a session that cannot be created fails the order in the same call (
   // cheaper than catching it at webhook time, and the reason the check lives here.
   await gw.asAdmin.set_expected_livemode([true]);
   const mismatched = expectErr(
-    await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, [], { livemode: false }),
+    await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, [], { livemode: false }),
   ) as { sessionUnavailable: string };
   expect(mismatched.sessionUnavailable).toContain('livemode mismatch');
   await gw.asAdmin.set_expected_livemode([]);
@@ -2807,7 +2872,7 @@ test('66 — cancelling is ATOMIC with Stripe: never half-cancelled (#33)', asyn
   // audited the failure and returned success, which recreates the state
   // `#cancelled` exists to eliminate — order says cancelled, session still
   // charges the buyer.
-  const stubborn = expectOk(await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, []));
+  const stubborn = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const failedCancel = expectErr(
     await cancelOrderWithExpire(gw, stubborn.order.id, { expireStatus: 500, expireBody: '{"error":{"message":"internal"}}' }),
   );
@@ -2836,7 +2901,7 @@ test('66 — cancelling is ATOMIC with Stripe: never half-cancelled (#33)', asyn
 test('67 — checkout.session.expired is the only thing that expires an order (#33)', async () => {
   await ensureRates(gw);
   const live = expectOk(
-    await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, [], { sessionId: 'cs_expire_me' }),
+    await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, [], { sessionId: 'cs_expire_me' }),
   );
 
   expect(await deliverWebhook(gw, sessionExpiredBody({
@@ -2863,7 +2928,7 @@ test('67 — checkout.session.expired is the only thing that expires an order (#
   // degrade to a no-op rather than trap — a trap here is a 5xx that Stripe
   // retries for three days.
   const cancelled = expectOk(
-    await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, [], { sessionId: 'cs_cancelled_one' }),
+    await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, [], { sessionId: 'cs_cancelled_one' }),
   );
   expectOk(await cancelOrderWithExpire(gw, cancelled.order.id));
   expect(await deliverWebhook(gw, sessionExpiredBody({
@@ -2880,7 +2945,7 @@ test('67 — checkout.session.expired is the only thing that expires an order (#
   // attacker-editable URL parameter, so a reference that resolves to one of our
   // orders is not on its own permission to expire it. The order must not move.
   const bound = expectOk(
-    await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, [], { sessionId: 'cs_the_real_one' }),
+    await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, [], { sessionId: 'cs_the_real_one' }),
   );
   expect(await deliverWebhook(gw, sessionExpiredBody({
     eventId: 'evt_exp_mismatch',
@@ -2930,7 +2995,7 @@ test('68 — a cancel racing session creation cannot leave a payable URL behind 
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
-  const settle = await gw.deferredUser.create_order('tier5', USER_ACCOUNT, []);
+  const settle = await gw.deferredUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []);
   const outcall = await awaitPendingOutcall(gw);
 
   // The order is committed and `#created` at this point, with no session id — so
@@ -2968,7 +3033,7 @@ test('69 — a FAILED session creation racing a cancel does not double-release (
   // lands, release a promise that cancellation already released.
   await ensureRates(gw);
 
-  const settle = await gw.deferredUser.create_order('tier5', USER_ACCOUNT, []);
+  const settle = await gw.deferredUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []);
   const outcall = await awaitPendingOutcall(gw);
   const orderId = decodeURIComponent(
     /client_reference_id=([^&]+)/.exec(outcallBody(outcall))![1]!,
@@ -2984,4 +3049,66 @@ test('69 — a FAILED session creation racing a cancel does not double-release (
   const stayed = (await gw.asUser.get_order(orderId))[0]!;
   expect(statusKey(stayed)).toBe('cancelled');
   expect(stayed.expiredBy).toHaveLength(0);
+});
+
+test('71 — a custom amount is bounded by the gate, in both directions (#33)', async () => {
+  // The bounds are the ONLY thing standing between a buyer and an arbitrary
+  // charge now: with custom amounts there is no tier to pin the figure. So both
+  // ends are asserted against the canister, not the UI — a frontend-only bound is
+  // not a bound.
+  await ensureRates(gw);
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  const { gate } = await gw.asAnon.lifecycle_config();
+
+  // A typed amount with no matching preset works — that is the point.
+  const odd = expectOk(await createOrderWithSession(gw, { custom: 3_333n }, USER_ACCOUNT, []));
+  expect(odd.order.pricing.usdCents).toBe(3_333n);
+  // Priced by the same code a preset uses, so the receipt arithmetic is identical.
+  expect(odd.order.lockedCycles).toBeGreaterThan(0n);
+  expectOk(await cancelOrderWithExpire(gw, odd.order.id));
+
+  // Below the floor: refused, and distinguishably from the ceiling case, because
+  // the buyer acts on them differently.
+  const under = expectErr(
+    await gw.asUser.create_order({ custom: gate.minPurchaseUsdCents - 1n }, USER_ACCOUNT, []),
+  ) as { notAdmitted: { amountBelowMin: { usdCents: bigint; minUsdCents: bigint } } };
+  expect(under.notAdmitted.amountBelowMin.minUsdCents).toBe(gate.minPurchaseUsdCents);
+
+  // Above the ceiling: refused. The ceiling IS the per-order reserve exposure
+  // (#30), so this is the bound that matters most.
+  const over = expectErr(
+    await gw.asUser.create_order({ custom: gate.maxPurchaseUsdCents + 1n }, USER_ACCOUNT, []),
+  ) as { notAdmitted: { amountAboveMax: { usdCents: bigint; maxUsdCents: bigint } } };
+  expect(over.notAdmitted.amountAboveMax.maxUsdCents).toBe(gate.maxPurchaseUsdCents);
+
+  // Both bounds inclusive, so the extremes are sellable.
+  for (const at of [gate.minPurchaseUsdCents, gate.maxPurchaseUsdCents]) {
+    const edge = expectOk(await createOrderWithSession(gw, { custom: at }, USER_ACCOUNT, []));
+    expect(edge.order.pricing.usdCents).toBe(at);
+    expectOk(await cancelOrderWithExpire(gw, edge.order.id));
+  }
+
+  // ⚠️ ONE ceiling for presets AND custom amounts. Registering a preset outside
+  // either bound is refused, so a tile can never appear that `Gate.admit` then
+  // rejects — sellable but unpayable, at both ends.
+  const live = await gw.asAnon.card_tiers();
+  expect(expectErr(await gw.asAdmin.set_card_tiers([
+    { id: 'toobig', usdCents: gate.maxPurchaseUsdCents + 1n },
+  ]))).toHaveProperty('aboveCeiling');
+  expect(expectErr(await gw.asAdmin.set_card_tiers([
+    { id: 'toosmall', usdCents: gate.minPurchaseUsdCents - 1n },
+  ]))).toHaveProperty('belowFloor');
+  // And the live list is untouched by a refused batch.
+  expect(await gw.asAnon.card_tiers()).toEqual(live);
+
+  // The inverse guard: moving a bound across a registered preset is refused, so
+  // the operator cannot strand one by editing config later.
+  expect(expectErr(await gw.asAdmin.set_gate_config({
+    ...gate,
+    minPurchaseUsdCents: TIER_USD_CENTS + 1n,
+  }))).toHaveProperty('tierBelowFloor');
+  expect(expectErr(await gw.asAdmin.set_gate_config({
+    ...gate,
+    minPurchaseUsdCents: gate.maxPurchaseUsdCents + 1n,
+  }))).toHaveProperty('floorAboveCeiling');
 });

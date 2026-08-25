@@ -47,8 +47,13 @@ test('55 — the webhook route serves real HTTP end to end, and delivers', async
   // #33: both secrets, or `create_order` cannot produce a payable session.
   expectOk(await gw.asAdmin.set_stripe_api_key('rk_test_live_gateway_spec'));
   expectOk(await gw.asAdmin.set_stripe_origin('https://live.example'));
+  // Same reason as the main suite: the §3 vector is a $5 tier, and #33's shipped
+  // floor is $10. Lowering it here keeps the vector exact; the shipped default is
+  // asserted in gateway.spec scenario 01.
+  const { gate } = await gw.asAnon.lifecycle_config();
+  expectOk(await gw.asAdmin.set_gate_config({ ...gate, minPurchaseUsdCents: 100n }));
   expectOk(await gw.asAdmin.set_card_tiers([
-    { id: 'tier5', usdCents: TIER_USD_CENTS, paymentLinkUrl: 'https://buy.stripe.com/test_tier5' },
+    { id: 'tier5', usdCents: TIER_USD_CENTS },
   ]));
   await fundFloat(gw, ORDER_E8S * 2n + ICP_FEE_E8S * 2n);
   // One destination, and the gateway refuses any other (#29).
@@ -58,7 +63,7 @@ test('55 — the webhook route serves real HTTP end to end, and delivers', async
   const created = expectOk(
     await createOrderWithSession(
       gw,
-      'tier5',
+      { tier: 'tier5' },
       { cyclesLedgerAccount: { owner: user.getPrincipal(), subaccount: [] } },
       [],
     ),

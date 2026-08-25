@@ -5,6 +5,11 @@ type ValidateError =
                    maxUsdCents: nat;
                    usdCents: nat;
                  };
+   belowFloor: record {
+                 id: text;
+                 minUsdCents: nat;
+                 usdCents: nat;
+               };
    duplicateTierId: text;
    emptyTierId;
    zeroUsdCents: text;
@@ -19,7 +24,6 @@ type TransferIntent =
 type Tier = 
  record {
    id: text;
-   paymentLinkUrl: text;
    usdCents: nat;
  };
 type Status__1 = 
@@ -149,6 +153,10 @@ type Reason =
  variant {
    amountAboveMax: record {
                      maxUsdCents: nat;
+                     usdCents: nat;
+                   };
+   amountBelowMin: record {
+                     minUsdCents: nat;
                      usdCents: nat;
                    };
    burnCapExhausted: record {
@@ -384,6 +392,7 @@ type Config__3 =
    maxOpenOrdersPerPrincipal: nat;
    maxPurchaseUsdCents: nat;
    minCanisterCycles: nat;
+   minPurchaseUsdCents: nat;
  };
 type Config__2 = 
  record {
@@ -396,11 +405,20 @@ type Config__2 =
 type Config__1 = record {orderTtlNs: nat;};
 type ConfigError__3 = 
  variant {
+   floorAboveCeiling: record {
+                        maxUsdCents: nat;
+                        minUsdCents: nat;
+                      };
    tierAboveCeiling: record {
                        maxUsdCents: nat;
                        tierId: text;
                        usdCents: nat;
                      };
+   tierBelowFloor: record {
+                     minUsdCents: nat;
+                     tierId: text;
+                     usdCents: nat;
+                   };
    zeroOpenOrderCap;
    zeroPurchaseCeiling;
  };
@@ -447,6 +465,11 @@ type AttachPaymentError =
    transitionRefused: text;
    unusableSnapshot;
    wrongRail;
+ };
+type Amount = 
+ variant {
+   custom: nat;
+   tier: text;
  };
 type Account = 
  record {
@@ -532,7 +555,8 @@ service : {
   /// trail, and queueing an obligation for an order where no money moved is
   /// exactly the orphan state the queue must not accumulate.
   cancel_order: (id: OrderId) -> (Result_11);
-  /// Public — the frontend renders tiers and their Payment Links from this.
+  /// Public — the frontend renders the amount tiles from this. There is no link
+  /// to render: the canister creates a session per order (#33).
   card_tiers: () -> (vec Tier) query;
   /// Create a card-rail order: II caller becomes the owner (ownership is
   /// captured here at the API edge, seam §11.1.3), the tier's USD amount is
@@ -553,7 +577,7 @@ service : {
   /// A **minimum**, deliberately, not an equality: a rate move in the buyer's
   /// favour passes through and they keep the extra cycles. The guard can only
   /// ever protect the buyer. `null` opts out entirely.
-  create_order: (tierId: text, destination: Destination, minCycles:
+  create_order: (amount: Amount, destination: Destination, minCycles:
    opt nat) -> (Result_10);
   /// §5.2 liveness observability, public (operational transparency, same
   /// stance as treasury_status): cadence + last completed timer sweep. A
@@ -749,8 +773,14 @@ service : {
                           expired: nat;
                           scanned: nat;
                         });
-  /// Replace the card tier config (§3/§7 — admin, validated atomically: a
-  /// bad config never partially applies).
+  /// Replace the card presets (§3/§7 — admin, validated atomically: a bad config
+  /// never partially applies).
+  /// 
+  /// ⚠️ **This is no longer the rail's on/off switch.** An empty list used to
+  /// pause the rail, and the audit line said "CARD RAIL PAUSED". With custom
+  /// amounts (#33) a buyer can order without any preset, so an empty list stops
+  /// nothing — it just shows no tiles. The switch is both Stripe secrets being
+  /// provisioned; `railsLive` is where that lives.
   set_card_tiers: (tiers: vec Tier) -> (Result_7);
   /// Adjust the admission gate (§7): open-order cap, own-cycles floor,
   /// per-purchase ceiling. Validated atomically — a bad config never partially

@@ -1,5 +1,5 @@
 // CyclePay frontend (M2): II login, order
-// creation, Stripe Payment Link hand-off / approve→claim flow, live status
+// creation, Stripe Checkout Session hand-off, live status
 // polling, order history.
 //
 import type { Identity } from "@icp-sdk/core/agent";
@@ -9,6 +9,7 @@ import {
   makeBackendAt,
   type Backend,
   type Destination,
+  type Amount,
   type Order,
   type QuotePreview,
   type Tier,
@@ -39,8 +40,10 @@ import {
   quoteChangedMessage,
   formatCycles,
   formatUsdCents,
+  parseUsdAmount,
   clientReferenceFor,
   nsToMillis,
+  timeUntil,
   rateSourceNote,
   shortPrincipal,
   statusInfo,
@@ -86,6 +89,18 @@ function buildBackend(who: Identity | null): Backend {
 let backend: Backend = buildBackend(null);
 let tiers: Tier[] = [];
 let selectedTierId: string | null = null;
+/// A typed amount in gross USD cents, or null when the buyer has not entered a
+/// usable one. Mutually exclusive with `selectedTierId`: picking a preset clears
+/// this and typing clears that, because "which amount am I buying" must have one
+/// answer.
+let customUsdCents: bigint | null = null;
+/// The backend's quote for the typed amount, from `quote_previews` — never
+/// computed here, so what the buyer is shown and what `create_order` locks cannot
+/// disagree.
+let customQuote: bigint | null = null;
+/// The gate's bounds, read from `lifecycle_config`. Null until the market loads;
+/// the input stays disabled until then rather than guessing a range.
+let amountBounds: { min: bigint; max: bigint } | null = null;
 let lowFloat = false;
 
 /// The order the order/delivered view is showing. Null on every other view.
@@ -103,6 +118,9 @@ let depositFee = 0n;
 // the real number rather than discover it.
 let lockNotice: string | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+/// Separate from the poll so the countdown ticks every second without making a
+/// call every second.
+let deadlineTimer: ReturnType<typeof setInterval> | null = null;
 let pollOrderId: string | null = null;
 let lastPolledStatus: string | null = null;
 
@@ -463,6 +481,20 @@ async function loadMarket(): Promise<void> {
   }
   show("gate-notice", lowFloat);
 
+  // The gate's own bounds, so the custom-amount field can say "between $10 and
+  // $100" in the backend's numbers rather than in a second copy of them.
+  try {
+    const lifecycle = await backend.lifecycle_config();
+    amountBounds = {
+      min: lifecycle.gate.minPurchaseUsdCents,
+      max: lifecycle.gate.maxPurchaseUsdCents,
+    };
+  } catch {
+    // Leave it null: the field stays disabled rather than offering a range it
+    // cannot vouch for. The presets still work.
+  }
+  renderAmountBounds();
+
   await refreshTierQuotes();
   renderTiers();
   renderDestinationNote();
@@ -581,6 +613,12 @@ function renderTiers(): void {
     btn.append(amount, label);
     btn.onclick = () => {
       selectedTierId = tier.id;
+      // The other direction of the same rule: a tile clears the typed amount.
+      customUsdCents = null;
+      customQuote = null;
+      const field = document.getElementById("custom-amount") as HTMLInputElement | null;
+      if (field) field.value = "";
+      show("custom-amount-error", false);
       clearRequote();
       renderTiers();
       renderTierDetail();
@@ -631,10 +669,15 @@ function renderSubmitGate(): void {
     btn.type = "button";
     btn.onclick = onSignInClick;
     btn.textContent = "Sign in and continue";
-  } else if (selectedTierId === null) {
+  } else if (chosenAmount() === null) {
     btn.disabled = true;
     btn.textContent = "Pick an amount";
-  } else if (tierQuotes.get(selectedTierId ?? "")?.cycles === undefined) {
+  } else if (customUsdCents !== null && customQuote === null) {
+    // A typed amount the gateway could not price. Same refusal as an unpriceable
+    // preset, said in the same words.
+    btn.disabled = true;
+    btn.textContent = "Pricing unavailable, try again shortly";
+  } else if (selectedTierId !== null && tierQuotes.get(selectedTierId)?.cycles === undefined) {
     // Pricing is unavailable, so create_order would refuse. Say that here
     // instead of letting the user find out by clicking.
     btn.disabled = true;
@@ -786,18 +829,120 @@ async function onCreateOrder(event: SubmitEvent): Promise<void> {
   }
 }
 
-async function createCardOrder(dest: Destination): Promise<void> {
-  if (selectedTierId === null) return;
-  const tier = tiers.find((t) => t.id === selectedTierId);
-  if (!tier) {
-    showFormError("That amount is no longer offered. Reload the page.");
+/// Show the range and enable the field, once the backend has told us the bounds.
+function renderAmountBounds(): void {
+  const field = document.getElementById("custom-amount") as HTMLInputElement | null;
+  const label = document.getElementById("custom-amount-range");
+  if (!field || !label) return;
+  if (amountBounds === null) {
+    label.textContent = "Loading amounts…";
+    field.disabled = true;
     return;
   }
-  const shown = tierQuotes.get(tier.id)?.cycles ?? null;
-  const result = await backend.create_order(tier.id, dest, pinFor(tier.usdCents, shown));
+  label.textContent =
+    `Any amount from ${formatUsdCents(amountBounds.min)} to ${formatUsdCents(amountBounds.max)}`;
+  field.disabled = false;
+}
+
+/// React to typing: validate, quote through the backend, and clear any preset.
+async function onCustomAmountInput(): Promise<void> {
+  const read = readCustomAmount();
+  const error = el("custom-amount-error");
+  if (!read.ok) {
+    customUsdCents = null;
+    customQuote = null;
+    error.textContent = read.error;
+    show("custom-amount-error", true);
+    renderSubmitGate();
+    return;
+  }
+  show("custom-amount-error", false);
+  customUsdCents = read.cents;
+  customQuote = null;
+  if (read.cents !== null) {
+    // Typing an amount deselects the tiles, so exactly one amount is chosen.
+    selectedTierId = null;
+    clearRequote();
+    renderTiers();
+    // Priced by the BACKEND, through the same `quoteCents` that `create_order`
+    // calls — never derived here, or a buyer could be shown a number the gateway
+    // would not honour.
+    try {
+      const preview = await backend.quote_previews([read.cents]);
+      customQuote = preview.quotes[0]?.cycles ?? null;
+    } catch {
+      customQuote = null;
+    }
+  }
+  renderCustomEstimate();
+  renderSubmitGate();
+}
+
+/// What the typed amount buys, under the field.
+function renderCustomEstimate(): void {
+  const node = el("tier-detail");
+  if (customUsdCents === null) {
+    show("tier-detail", false);
+    return;
+  }
+  node.textContent = customQuote === null
+    ? "No exchange rate available right now. Orders are paused until one is."
+    : `${estimateLine(customQuote, depositFee)} ${RATE_LOCK_NOTE}`;
+  show("tier-detail", true);
+}
+
+/// The one place "what amount is the buyer buying" is answered.
+///
+/// Returns null when nothing usable is chosen, which is also what keeps the
+/// submit button honest — `renderSubmitGate` asks the same question.
+function chosenAmount():
+  | { kind: "tier"; tierId: string; usdCents: bigint }
+  | { kind: "custom"; usdCents: bigint }
+  | null {
+  if (customUsdCents !== null) return { kind: "custom", usdCents: customUsdCents };
+  if (selectedTierId === null) return null;
+  const tier = tiers.find((t) => t.id === selectedTierId);
+  if (!tier) return null;
+  return { kind: "tier", tierId: tier.id, usdCents: tier.usdCents };
+}
+
+/// Parse and bound-check the custom-amount field.
+///
+/// The bounds are the BACKEND's, read from `lifecycle_config` rather than written
+/// down here — a second copy would drift, and `Gate.admit` is the one that
+/// decides. This check exists so the buyer hears "between $10 and $100" before
+/// they click, not so the bound is enforced: a frontend-only bound is not a bound.
+function readCustomAmount(): { ok: true; cents: bigint | null } | { ok: false; error: string } {
+  const field = document.getElementById("custom-amount") as HTMLInputElement | null;
+  if (!field) return { ok: true, cents: null };
+  const raw = field.value.trim();
+  if (raw === "") return { ok: true, cents: null };
+  const parsed = parseUsdAmount(raw);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+  if (amountBounds === null) return { ok: false, error: "Loading amounts…" };
+  if (parsed.cents < amountBounds.min || parsed.cents > amountBounds.max) {
+    return {
+      ok: false,
+      error: `Enter an amount between ${formatUsdCents(amountBounds.min)} and ${formatUsdCents(amountBounds.max)}.`,
+    };
+  }
+  return { ok: true, cents: parsed.cents };
+}
+
+async function createCardOrder(dest: Destination): Promise<void> {
+  // A preset or a typed amount — the same order either way. `create_order` takes
+  // a variant (#33), so both go down one path and both are bounded by the same
+  // floor and ceiling.
+  const chosen = chosenAmount();
+  if (chosen === null) return;
+  const shown = chosen.kind === "tier" ? (tierQuotes.get(chosen.tierId)?.cycles ?? null) : customQuote;
+  const amount: Amount = chosen.kind === "tier"
+    ? { __kind__: "tier", tier: chosen.tierId }
+    : { __kind__: "custom", custom: chosen.usdCents };
+  const result = await backend.create_order(amount, dest, pinFor(chosen.usdCents, shown));
   if (result.__kind__ === "err") {
     if (result.err.__kind__ === "quoteChanged") {
-      onQuoteChanged(tier.usdCents, result.err.quoteChanged.quoted);
+      onQuoteChanged(chosen.usdCents, result.err.quoteChanged.quoted);
       return;
     }
     showFormError(
@@ -829,6 +974,32 @@ function describeDestination(order: Order): string {
   return mine ? "your account" : `account ${account.owner.toText()}`;
 }
 
+/// The live countdown to Stripe's deadline.
+///
+/// Only while the order is still payable: on a paid or delivered order the
+/// deadline is history, and showing a timer next to "Delivered" would read as
+/// something still being at risk.
+function renderDeadline(order: Order): void {
+  const node = document.getElementById("order-deadline");
+  if (!node) return;
+  const deadline = order.expiresAtNs;
+  if (deadline === undefined || statusKeyOf(order) !== "created") {
+    show("order-deadline", false);
+    return;
+  }
+  const left = timeUntil(nsToMillis(deadline), Date.now());
+  if (left === null) {
+    // The status line already says expired (see `renderOrder`); repeating it here
+    // would be two owners for one statement.
+    show("order-deadline", false);
+    return;
+  }
+  node.textContent =
+    `This price is held for ${left}. Start paying with a few minutes to spare: `
+    + `a payment still in flight when the window closes fails, and you are not charged.`;
+  show("order-deadline", true);
+}
+
 /// Whether Stripe's own deadline has passed.
 ///
 /// Null means no session exists yet, which is a transient state during creation
@@ -852,6 +1023,8 @@ function renderOrder(order: Order): void {
     .replace(/^≈ /, "");
   el("order-price").textContent = formatUsdCents(order.pricing.usdCents);
   el("order-dest").textContent = describeDestination(order);
+  renderDeadline(order);
+
   const lockNode = el("order-lock-notice");
   lockNode.textContent = lockNotice ?? "";
   show("order-lock-notice", lockNotice !== null);
@@ -1026,6 +1199,8 @@ async function onCancelOrder(): Promise<void> {
 function stopPolling(): void {
   if (pollTimer !== null) clearInterval(pollTimer);
   pollTimer = null;
+  if (deadlineTimer !== null) clearInterval(deadlineTimer);
+  deadlineTimer = null;
   pollOrderId = null;
   lastPolledStatus = null;
 }
@@ -1039,6 +1214,12 @@ function openOrder(order: Order): void {
   pollOrderId = order.id;
   lastPolledStatus = statusKeyOf(order);
   pollTimer = setInterval(() => void pollActiveOrder(), POLL_MS);
+  // The countdown has to move between polls, or a 3 s tick makes it look stuck.
+  // Re-rendering only the deadline keeps it off the view machine's path.
+  if (deadlineTimer !== null) clearInterval(deadlineTimer);
+  deadlineTimer = setInterval(() => {
+    if (activeOrder !== null && currentView === "order") renderDeadline(activeOrder);
+  }, 1_000);
   el("active-order").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
@@ -1280,6 +1461,8 @@ async function init(): Promise<void> {
   el<HTMLFormElement>("order-form").onsubmit = (e) => void onCreateOrder(e);
   el("cancel-order").onclick = () => void onCancelOrder();
   el("start-buy").onclick = startBuying;
+  const customField = document.getElementById("custom-amount") as HTMLInputElement | null;
+  if (customField) customField.oninput = () => void onCustomAmountInput();
   wireCopyButtons();
   wireThemeToggle();
   // Hash routing so Back works. An asset canister would need SPA rewrites for

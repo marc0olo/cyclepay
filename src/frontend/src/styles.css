@@ -343,9 +343,46 @@ button:disabled {
   color: var(--icp-fg-secondary);
 }
 
-/* The form has no text inputs, no fieldset and no radios: there is one
-   destination and the page states it (#29). Styles for those controls return
-   with the controls, if a field ever earns its place here. */
+/* The custom-amount field (#33). #29 removed the input styles with a note that
+   they "return with the controls" — this is that moment, and it is the only text
+   input on the page. */
+.or-custom {
+  margin-block: var(--space-5) var(--space-2);
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  color: var(--icp-fg-secondary);
+}
+.amount-label {
+  display: block;
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  color: var(--icp-fg-secondary);
+  max-width: 22rem;
+}
+.amount-label input[type='text'] {
+  display: block;
+  width: 100%;
+  margin-top: var(--space-2);
+  padding: 0.5rem 0.65rem;
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  background: var(--icp-bg-elev);
+  border: 1px solid var(--icp-rule);
+  border-radius: var(--radius-md);
+  color: var(--icp-fg);
+}
+.amount-label input[type='text']:focus {
+  border-color: var(--icp-accent);
+  outline: none;
+}
+/* Disabled until the bounds are known: offering a range we cannot vouch for is
+   worse than waiting for one. */
+.amount-label input[type='text']:disabled {
+  background: var(--icp-bg-sunk);
+  color: var(--icp-fg-muted);
+  cursor: not-allowed;
+}
+
 .dest-implicit {
   margin-top: var(--space-5);
 }

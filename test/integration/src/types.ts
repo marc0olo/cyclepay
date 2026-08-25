@@ -97,12 +97,14 @@ export type GateReason =
   | { canisterCyclesLow: { balance: bigint; min: bigint } }
   | { burnCapExhausted: { burnedE8s: bigint; capE8s: bigint } }
   | { floatLow: { observedE8s: Opt<bigint>; thresholdE8s: bigint } }
-  | { amountAboveMax: { usdCents: bigint; maxUsdCents: bigint } };
+  | { amountAboveMax: { usdCents: bigint; maxUsdCents: bigint } }
+  | { amountBelowMin: { usdCents: bigint; minUsdCents: bigint } };
 
 export interface GateConfig {
   maxOpenOrdersPerPrincipal: bigint;
   minCanisterCycles: bigint;
   maxPurchaseUsdCents: bigint;
+  minPurchaseUsdCents: bigint;
 }
 
 export interface RetentionConfig {
@@ -197,8 +199,10 @@ export interface AuditEvent {
 export interface Tier {
   id: string;
   usdCents: bigint;
-  paymentLinkUrl: string;
 }
+
+/// What the buyer is paying for: a preset or a typed amount (#33).
+export type Amount = { tier: string } | { custom: bigint };
 
 
 export interface TreasuryConfig {
@@ -235,7 +239,7 @@ export interface HttpResponse {
 export interface BackendService {
   audit_log(): Promise<AuditEvent[]>;
   card_tiers(): Promise<Tier[]>;
-  create_order(tierId: string, destination: Destination, minCycles: [] | [bigint]): Promise<Result<CreatedOrder, CreateOrderError>>;
+  create_order(amount: Amount, destination: Destination, minCycles: [] | [bigint]): Promise<Result<CreatedOrder, CreateOrderError>>;
   set_stripe_api_key(key: string): Promise<Result<null, { tooShort: { size: bigint; min: bigint } }>>;
   stripe_api_key_status(): Promise<{ isSet: boolean; setAtNs: Opt<bigint>; generation: bigint }>;
   set_stripe_origin(origin: string): Promise<Result<null, { notHttps: null } | { hasQueryOrFragment: null } | { empty: null }>>;

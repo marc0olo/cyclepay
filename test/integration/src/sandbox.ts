@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   expectOk(await gw.asAdmin.set_treasury_config(DEV_TREASURY));
   expectOk(await gw.asAdmin.set_webhook_secret(SECRET));
   expectOk(await gw.asAdmin.set_card_tiers([
-    { id: 'tier5', usdCents: TIER_USD_CENTS, paymentLinkUrl: 'https://buy.stripe.com/test_REPLACE_ME' },
+    { id: 'tier5', usdCents: TIER_USD_CENTS },
   ]));
   expectOk(await gw.asAdmin.set_retention_config({ orderTtlNs: 600_000_000_000n }));
   await gw.asAdmin.set_expected_livemode([false]);
@@ -87,8 +87,9 @@ async function main(): Promise<void> {
 
   2. Create an order (as the test user identity):
 
-     printed clientReferenceId → append to your test-mode Payment Link as
-     ?client_reference_id=<ref>, or drive it headlessly:
+     printed stripeSessionUrl → open it. That IS the payment page: the canister
+     created a Checkout Session and set client_reference_id on it through the
+     API, so there is nothing to append. Or drive it headlessly:
 
      stripe trigger checkout.session.completed \\
        --override checkout_session:client_reference_id=<ref>
@@ -115,7 +116,7 @@ async function main(): Promise<void> {
   // cycles-ledger account, default subaccount.
   const created = expectOk(
     await gw.asUser.create_order(
-      'tier5',
+      { tier: 'tier5' },
       { cyclesLedgerAccount: { owner: user.getPrincipal(), subaccount: [] } },
       [],
     ),

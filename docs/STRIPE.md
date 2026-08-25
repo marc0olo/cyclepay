@@ -82,14 +82,15 @@ problem, and no operator-settable rate source to audit.
                         └──────────────────────────┬───────────────────────────────┘
                                                    │ set_card_tiers (admin, on-chain)
                                                    ▼
- user ──II login──▶ create_order(tierId, destination)         Main.mo
+ user ──II login──▶ create_order(amount, destination)         Main.mo
                        │  admission gate                       Main.mo → Gate.mo
                        │  quote: lock the CYCLE QUANTITY       Pricing.mo (cached XRC+CMC)
                        │  raw_rand order id                    Orders.mo
                        ▼
                     #created  +  clientReferenceId = <principal>_<orderId>
                        │
- frontend ─────────────┤ opens  <paymentLinkUrl>?client_reference_id=<ref>
+ frontend ─────────────┤ opens  order.stripeSessionUrl  (#33: the canister set
+                       │        client_reference_id on the session itself)
                        ▼
  user pays Stripe (card data never touches the canister)
                        │
@@ -280,9 +281,10 @@ Three guarantees, in the order they matter.
 
 ### The cycle quantity is shown before anything is committed
 
-`quote_previews(rail, amounts)` is a **public query** returning, per amount, the
+`quote_previews(amounts)` is a **public query** returning, per amount, the
 fee, the net, and the cycle quantity — plus the rate pair it used and the cycles
-ledger's deposit fee. The tier grid is one round trip.
+ledger's deposit fee. The preset grid is one round trip, and a typed custom
+amount is priced through the same query rather than in the client.
 
 ⚠️ **It calls the same `quoteCents` that `create_order` calls.** Not the same
 formula reimplemented — the same function. A client computing its own estimate
@@ -296,7 +298,7 @@ thing a cap would buy is silent truncation.
 
 ### The rate is locked at creation, and the lock is enforced
 
-`create_order(tierId, destination, minCycles)` takes an **optional minimum**.
+`create_order(amount, destination, minCycles)` takes an **optional minimum**.
 If the current rate no longer clears it, the call returns
 `#quoteChanged {quoted; minimum}` and **creates nothing** — no half-finished
 order to clean up — carrying what the amount buys now so the client can show a
@@ -678,7 +680,7 @@ privileges — any controller can do any of this):
 |---|---|
 | `set_webhook_secret` | provision / rotate (§13) |
 | `webhook_secret_status` | confirm a rotation landed |
-| `set_card_tiers` | register Payment Links; **empty vector disables the rail** |
+| `set_card_tiers` | register the preset amounts. Since #33 an empty vector shows no tiles and does **not** disable the rail — the switch is both Stripe secrets |
 | `set_gate_config` | open-order cap, own-cycles floor, per-purchase ceiling |
 | `set_retention_config` | order TTL (the expiry flip; nothing is deleted) |
 | `set_pricing_config` | fee formula, staleness window (capped at 1 h), delta bound, minimum rate sources |

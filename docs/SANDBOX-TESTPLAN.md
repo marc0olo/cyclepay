@@ -97,8 +97,8 @@ npm --prefix test/browser ci                    # only if you also want the suit
 #    with a fixed unit_amount and quantity 1, and none of the settings that could
 #    move amount_total is enabled — src/backend/rails/Session.mo lists all eight
 #    next to the body builder, and test/session.test.mo asserts their absence.
-#    The STRIPE_LINK_* variables the seed still reads populate a field nothing
-#    reads; they go with the field (#33 PR-C).
+#    Nothing else to configure: the STRIPE_LINK_* variables went with
+#    Tier.paymentLinkUrl (#33).
 icp network start -d
 icp deploy
 scripts/local-dev-seed.sh
@@ -213,7 +213,7 @@ icp canister top-up backend --amount 20t
 # Config. The webhook secret has a 16-character minimum; shorter is rejected.
 icp canister call backend set_webhook_secret '("whsec_local_test_1234567890")'
 icp canister call backend set_card_tiers \
-  '(vec { record { id = "tier5"; usdCents = 500 : nat; paymentLinkUrl = "https://buy.stripe.com/test_x" } })'
+  '(vec { record { id = "t10"; usdCents = 1_000 : nat } })'
 icp canister call backend set_treasury_config \
   '(record { burnCapE8s = 10_000_000_000 : nat; burnWindowNs = 86_400_000_000_000 : int;
              alertAfterNs = 120_000_000_000 : int; maxHoldNs = 259_200_000_000_000 : int;
