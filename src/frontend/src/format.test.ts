@@ -25,24 +25,40 @@ import {
 describe("statusInfo", () => {
   const ALL: StatusKey[] = [
     "created",
+    "cancelled",
     "expired",
     "paid",
     "minting",
     "icpAtCmc",
     "awaitingTreasury",
     "delivered",
-    "errorQueue",
+    "needsReview",
+    "abandoned",
   ];
 
-  test("exactly the two §4 terminal states stop polling", () => {
+  test("polling stops exactly on the statuses the backend will never move again", () => {
+    // Grew in #34: `#expired` became terminal when `#expired → #paid` was
+    // deleted, and `#cancelled`/`#abandoned` are terminal by construction.
     const terminal = ALL.filter((k) => statusInfo(k).terminal);
-    expect(terminal.sort()).toEqual(["delivered", "errorQueue"]);
+    expect(terminal.sort()).toEqual(["abandoned", "cancelled", "delivered", "expired"]);
   });
 
-  test("expired stays pollable (advisory, §4) and reads as a warning", () => {
-    const info = statusInfo("expired");
-    expect(info.terminal).toBe(false);
-    expect(info.tone).toBe("warn");
+  test("needsReview keeps polling, because the operator can still end it", () => {
+    // The other half of splitting `#errorQueue`: this one is not terminal, and a
+    // buyer watching the page should see `#abandoned` arrive rather than sit on a
+    // stale screen.
+    expect(statusInfo("needsReview").terminal).toBe(false);
+    expect(statusInfo("needsReview").tone).toBe("err");
+  });
+
+  test("a cancelled order never reads as expired, and neither invites a payment", () => {
+    // The defect #34 fixes: cancelling transitioned to `#expired`, so a reload
+    // told a buyer who had cancelled that their order had expired — and the copy
+    // then promised a late payment would still go through, which is now false for
+    // both.
+    expect(statusInfo("cancelled").label).toBe("Cancelled");
+    expect(statusInfo("expired").label).not.toMatch(/still goes through/i);
+    expect(statusInfo("expired").terminal).toBe(true);
   });
 
   test("steps are within the timeline and monotone along the happy path", () => {

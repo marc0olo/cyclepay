@@ -100,27 +100,44 @@ module {
   /// §4 — one Order, one state machine. Transitions live in Orders.mo;
   /// expiry *policy* is per-rail money-in behavior and stays out of the core
   /// (seam §11.1.4).
+  /// §4 statuses. Each says exactly one thing, and the promise state (#30) is a
+  /// function of the status alone — which is why `#errorQueue` was split.
+  ///
+  /// `#minting`, `#icpAtCmc` and `#awaitingTreasury` are the ICP mint pipeline
+  /// and are live until #36 retires it. The final set is the seven below without
+  /// them.
   public type OrderStatus = {
     #created;
+    /// The buyer gave up before paying. Terminal, and `#cancelled → #paid` is
+    /// absent from the matrix — that absence IS the guarantee (#34).
+    #cancelled;
     #expired;
     #paid;
     #minting;
     #icpAtCmc;
     #delivered;
     #awaitingTreasury;
-    #errorQueue;
+    /// A money position whose outcome is not known — typically a transfer past
+    /// the ledger's ~24 h dedup window. A human checks the ledger. The order's
+    /// **promise is still held** (#30).
+    #needsReview;
+    /// The operator ended the order, typically after refunding by hand.
+    /// Terminal, and the **promise is released** (#30).
+    #abandoned;
   };
 
   public func statusToText(status : OrderStatus) : Text {
     switch (status) {
       case (#created) "Created";
+      case (#cancelled) "Cancelled";
       case (#expired) "Expired";
       case (#paid) "Paid";
       case (#minting) "Minting";
       case (#icpAtCmc) "IcpAtCMC";
       case (#delivered) "Delivered";
       case (#awaitingTreasury) "AwaitingTreasury";
-      case (#errorQueue) "ErrorQueue";
+      case (#needsReview) "NeedsReview";
+      case (#abandoned) "Abandoned";
     };
   };
 
@@ -151,6 +168,15 @@ module {
     /// §3 fee formula at creation.
     feeBps : Nat;
     feeFixedCents : Nat;
+    /// When the rate pair above was **read**, not when the order was created.
+    ///
+    /// Quotes are served from a cache refreshed on a timer, so these rates were
+    /// observed up to `maxAgeNs` before the order existed. Without this the only
+    /// timestamp on the record is `createdAtNs`, and an auditor comparing the
+    /// stored rates against XRC/CMC history at that moment can conclude the
+    /// quote used the wrong rate. It is also the only way to ask, after the fact,
+    /// whether an order was priced off a rate that was about to go stale.
+    ratesFetchedAtNs : Int;
   };
 
   /// Immutable order record; status changes go through Orders.transition,
@@ -177,8 +203,44 @@ module {
     /// a fact about money lives.
     ///
     paidUsdCents : ?Nat;
+    /// Why an order is `#expired`. Null for every other status, and null for an
+    /// order the retention sweep expired on a TTL — that mechanism has no tag
+    /// because #33 deletes it, and naming a variant after a concept that will not
+    /// exist sends the next reader looking for it.
+    ///
+    /// Buyer cancellation is **not** here: it is `#cancelled`, a status. The
+    /// question "can this still be paid?" is a transition-matrix question, and
+    /// answering it with a status plus a runtime check on a provenance field puts
+    /// two owners on one decision.
+    expiredBy : ?ExpiredBy;
+    /// Stripe's `expires_at` for this order's Checkout Session, in
+    /// **nanoseconds** (Stripe reports Unix seconds; #33 multiplies by 10⁹).
+    ///
+    /// Stamped once from the session-create response and never re-stamped, since
+    /// there is no session retry. Null until the session exists — an order still
+    /// null minutes after creation is #30's detection predicate 2.
+    ///
+    /// This is the deadline, singular. Expiry used to be recomputed from the
+    /// *current* global TTL, so changing that config retroactively re-dated every
+    /// existing order.
+    expiresAtNs : ?Int;
+    /// The Checkout Session this order is paid through (#33). The URL must
+    /// survive a reload: without it a buyer who closed the tab has no route back
+    /// to paying an order that is still payable, and the open-order cap then
+    /// refuses them a second attempt.
+    stripeSessionId : ?Text;
+    stripeSessionUrl : ?Text;
     createdAtNs : Int;
     updatedAtNs : Int;
+  };
+
+  /// Why an `#expired` order expired. Both producers arrive with #33: Stripe's
+  /// `checkout.session.expired` event, and a failure to create the session at
+  /// all. Until then every expiry comes from the retention sweep and leaves this
+  /// null.
+  public type ExpiredBy = {
+    #sessionExpired;
+    #sessionFailed;
   };
 
   /// §5.1 — deterministic transfer args persisted *before* the ledger call

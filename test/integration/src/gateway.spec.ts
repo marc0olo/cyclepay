@@ -404,7 +404,7 @@ test('11 — Type 2 undeliverable: a failed forward refunds cycles to the app ba
     }));
     expect(response.status_code).toBe(200);
 
-    expect(await tickUntilStatus(gw, orderC.id, ['errorQueue'])).toBe('errorQueue');
+    expect(await tickUntilStatus(gw, orderC.id, ['needsReview'])).toBe('needsReview');
   } finally {
     // Restarted inside the scenario: every later one delivers through this ledger,
     // so leaving it stopped would fail all of them for the wrong reason.
@@ -421,7 +421,7 @@ test('11 — Type 2 undeliverable: a failed forward refunds cycles to the app ba
   if ('undeliverable' in entry.kind) {
     expect(entry.kind.undeliverable.cycles).toBe(TIER_LOCKED_CYCLES);
   }
-  expect(statusKey((await gw.asAdmin.mint_journal(orderC.id))[0]!)).toBe('errorQueue');
+  expect(statusKey((await gw.asAdmin.mint_journal(orderC.id))[0]!)).toBe('needsReview');
 
   // The §4.1 Type-2 invariant: the minted cycles refunded into the app
   // canister's own balance (minus execution costs accrued along the way).
@@ -717,17 +717,29 @@ test('18 — retention expires an abandoned order but never deletes it', async (
   expect(await gw.asUser.get_order(lapsed.id)).toHaveLength(1);
   expect((await gw.asUser.list_orders()).map((o) => o.id)).toContain(lapsed.id);
 
-  // And §4's promise holds: a late genuine payment is still honoured at the
-  // locked quantity, a year later.
+  // §4's late-payment promise is GONE as of #34, which deleted `#expired →
+  // #paid`. A payment arriving now is real money against an order that cannot
+  // accept it, so it becomes an operator obligation rather than cycles.
+  //
+  // ⚠️ This is the money-in path's most dangerous edge, because `Orders.markPaid`
+  // TRAPS on an illegal transition and `Card.mo` relies on its status guard to
+  // make that unreachable — and a trap here is a 5xx Stripe retries for ~3 days.
+  // So: 200, status unmoved, obligation filed.
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
   expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_late', paymentIntent: 'pi_late', clientReferenceId: lapsedRef,
     amountCents: TIER_USD_CENTS,
   }))).toMatchObject({ status_code: 200 });
-  expect(await tickUntilStatus(gw, lapsed.id, ['delivered'])).toBe('delivered');
-  const settled = (await gw.asUser.get_order(lapsed.id))[0]!;
-  expect(settled.lockedCycles).toBe(TIER_LOCKED_CYCLES);
+  await gw.pic.tick(5);
+  expect(await orderStatus(gw, lapsed.id)).toBe('expired');
+  const obligation = (await openErrorEntries(gw)).find(
+    (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_late',
+  );
+  expect(obligation).toBeDefined();
+  expect(obligation!.detail).toContain('cannot be paid');
+  // Nothing was minted for it.
+  expect((await gw.asUser.get_order(lapsed.id))[0]!.paidUsdCents).toHaveLength(0);
 });
 
 test('19 — a buyer can verify their own purchase from the receipt', async () => {
@@ -1216,7 +1228,9 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
   expectErr(await gw.asAdmin.abandon_order(doomed.id, ''));
 
   const abandoned = expectOk(await gw.asAdmin.abandon_order(doomed.id, 'buyer asked to cancel'));
-  expect(statusKey(abandoned)).toBe('errorQueue');
+  // `#abandoned`, the released half of the old `#errorQueue` (#34): the operator
+  // ended it, so nothing is owed.
+  expect(statusKey(abandoned)).toBe('abandoned');
 
   const entry = (await openErrorEntries(gw)).find(
     (e) => 'abandoned' in e.kind && e.kind.abandoned.orderId === doomed.id,
@@ -1266,7 +1280,7 @@ test('35 — past the max-wait bound the order terminates so the operator refund
 
   await gw.pic.advanceTime(70 * 3_600 * 1_000);
   await gw.pic.tick(5);
-  expect(await tickUntilStatus(gw, doomed.id, ['errorQueue'])).toBe('errorQueue');
+  expect(await tickUntilStatus(gw, doomed.id, ['needsReview'])).toBe('needsReview');
 
   const entry = (await openErrorEntries(gw)).find(
     (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === doomed.id,
@@ -1532,37 +1546,67 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
   expect(expectErr(await gw.asAnon.cancel_order(mine.order.id))).toContain('no order');
 
   const cancelled = expectOk(await gw.asUser.cancel_order(mine.order.id));
-  expect(statusKey(cancelled)).toBe('expired');
+  // `#cancelled`, its own status as of #34 — not `#expired`, which told a buyer
+  // who had cancelled that their order had expired.
+  expect(statusKey(cancelled)).toBe('cancelled');
   // The slot is freed, which is the point.
   expect((await gw.asAdmin.retention_status()).openOrders).toBe(openBefore - 1n);
   // Idempotent — a double-click is not an error.
-  expect(statusKey(expectOk(await gw.asUser.cancel_order(mine.order.id)))).toBe('expired');
+  expect(statusKey(expectOk(await gw.asUser.cancel_order(mine.order.id)))).toBe('cancelled');
 
-  // THE SAFETY PROPERTY: a payment already in flight when they clicked cancel
-  // must still deliver. #expired stays payable (§4), so cancelling can never
-  // strand money.
+  // THE SAFETY PROPERTY, INVERTED BY #34 and stated as it now is.
+  //
+  // A cancelled order can never be paid: `#cancelled → #paid` is absent from the
+  // matrix, and that absence is the guarantee. So a payment that was already in
+  // flight when the buyer clicked cancel does NOT deliver — it lands as an
+  // operator obligation carrying the payment intent, which a Stripe refund
+  // resolves. Money is recorded and refundable, never silently kept and never
+  // converted against the buyer's decision.
+  //
+  // The window itself is what #33 closes: `cancel_order` will expire the Stripe
+  // session first, so the race stops being possible rather than merely recorded.
   expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_cancel_race',
     paymentIntent: 'pi_cancel_race',
     clientReferenceId: mine.clientReferenceId,
     amountCents: TIER_USD_CENTS,
   }))).toMatchObject({ status_code: 200 });
-  expect(await tickUntilStatus(gw, mine.order.id, ['delivered'])).toBe('delivered');
-  expect((await gw.asUser.get_order(mine.order.id))[0]!.lockedCycles).toBe(TIER_LOCKED_CYCLES);
+  await gw.pic.tick(5);
+  expect(await orderStatus(gw, mine.order.id)).toBe('cancelled');
+  const raced = (await openErrorEntries(gw)).find(
+    (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_cancel_race',
+  );
+  expect(raced).toBeDefined();
+  expect(raced!.detail).toContain('cannot be paid');
 
-  // A paid order cannot be cancelled — it is going to deliver, and pretending
-  // otherwise would be the actual way to strand a buyer.
-  expect(expectErr(await gw.asUser.cancel_order(mine.order.id)))
+  // A PAID order cannot be cancelled — it is going to deliver, and pretending
+  // otherwise would be the actual way to strand a buyer. Needs its own order,
+  // since the one above never becomes paid now.
+  const payable = expectOk(await gw.asUser.create_order('tier5', USER_ACCOUNT, []));
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_cancel_paid',
+    paymentIntent: 'pi_cancel_paid',
+    clientReferenceId: payable.clientReferenceId,
+    amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  expect(await tickUntilStatus(gw, payable.order.id, ['delivered'])).toBe('delivered');
+  expect(expectErr(await gw.asUser.cancel_order(payable.order.id)))
     .toContain('cannot be cancelled');
 
-  // The cancel is on the audit trail; no error-queue obligation, because no
-  // money moved and an entry with nothing owed is exactly the orphan the queue
-  // must not accumulate.
+  // The cancel is on the audit trail.
   const log = await gw.asAdmin.audit_log();
   expect(log.some((e) => e.tag === 'order.cancelled' && e.detail.includes(mine.order.id))).toBe(true);
-  expect((await openErrorEntries(gw)).some(
+
+  // And CANCELLING ITSELF owes nothing: the only obligation against this order is
+  // the raced payment above, which carries real money. An entry with nothing owed
+  // is exactly the orphan the queue must not accumulate, so the count matters —
+  // asserting "none" would now be wrong, and asserting "some" would hide a
+  // spurious second one.
+  const againstMine = (await openErrorEntries(gw)).filter(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes(mine.order.id),
-  )).toBe(false);
+  );
+  expect(againstMine).toHaveLength(1);
+  expect(JSON.stringify(againstMine[0]!.kind)).toContain('pi_cancel_race');
 });
 
 test('43 — a partial refund never settles a full obligation', async () => {
@@ -1739,9 +1783,9 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
   expect(alert).toBeDefined();
 
   // Now terminate it instead of fixing it. abandon_order is the operator's
-  // explicit "stop trying", and it drives the order to #errorQueue.
+  // explicit "stop trying", and it drives the order to #abandoned.
   expectOk(await gw.asAdmin.abandon_order(doomed.id, 'operator gave up (test)'));
-  expect(await orderStatus(gw, doomed.id)).toBe('errorQueue');
+  expect(await orderStatus(gw, doomed.id)).toBe('abandoned');
 
   // THE ASSERTION: the delay alert is closed, not left promising delivery.
   const after = (await allErrorEntries(gw)).find((e) => e.id === alert.id)!;
@@ -1820,7 +1864,7 @@ test('48 — the notify stage is bounded by time, not only by the retry count', 
   // would tell the operator to notify a block index that does not exist.
   await gw.pic.advanceTime(80 * 3_600 * 1_000);
   await gw.pic.tick(10);
-  expect(await tickUntilStatus(gw, held.order.id, ['errorQueue'])).toBe('errorQueue');
+  expect(await tickUntilStatus(gw, held.order.id, ['needsReview'])).toBe('needsReview');
   const terminal = (await openErrorEntries(gw)).find(
     (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === held.order.id,
   )!;
@@ -1915,8 +1959,13 @@ test('50 — retention covers every order across ticks and resets its cursor', a
   }
   expect((await gw.asAnon.retention_status()).openOrders).toBe(0n);
 
-  // And an expired order is STILL payable, which is what makes bounding the
-  // sweep safe: lateness costs nothing.
+  // A swept order is expired and stays expired. It used to remain payable, which
+  // was what made bounding the sweep safe — "lateness costs nothing". #34 deleted
+  // `#expired → #paid`, so lateness now costs the buyer a refund cycle instead,
+  // and what makes bounding the sweep safe is simply that expiry is never
+  // *deletion*: the order and its reference survive, so the payment is
+  // attributable and therefore refundable.
+  //
   // Advancing 50 h staled both rates; re-arm before quoting again.
   await setCmcRate(gw);
   await ensureRates(gw);
@@ -1932,7 +1981,11 @@ test('50 — retention covers every order across ticks and resets its cursor', a
     eventId: 'evt_late_pay', paymentIntent: 'pi_late_pay',
     clientReferenceId: late.clientReferenceId, amountCents: TIER_USD_CENTS,
   }))).toMatchObject({ status_code: 200 });
-  expect(await tickUntilStatus(gw, late.order.id, ['delivered'])).toBe('delivered');
+  await gw.pic.tick(5);
+  expect(await orderStatus(gw, late.order.id)).toBe('expired');
+  expect((await openErrorEntries(gw)).some(
+    (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_late_pay',
+  )).toBe(true);
 });
 
 test('51 — a CMC outage stalls the mint, alerts, and never invents a money position', async () => {
@@ -2075,7 +2128,7 @@ test('53 — a CMC outage after the transfer parks the order at icpAtCmc, alerts
   // position, with the real block index, not a bare "pipeline stopped".
   await gw.pic.advanceTime(80 * 3_600 * 1_000);
   await gw.pic.tick(10);
-  expect(await tickUntilStatus(gw, order.id, ['errorQueue'])).toBe('errorQueue');
+  expect(await tickUntilStatus(gw, order.id, ['needsReview'])).toBe('needsReview');
   const terminal = (await openErrorEntries(gw)).find(
     (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === order.id,
   )!;
@@ -2125,7 +2178,7 @@ test('54 — a rate move between transfer and notify escalates instead of subsid
 
   // Escalated, not delivered — and the minted quantity is preserved so the
   // operator can settle the position.
-  expect(await tickUntilStatus(gw, order.id, ['errorQueue'])).toBe('errorQueue');
+  expect(await tickUntilStatus(gw, order.id, ['needsReview'])).toBe('needsReview');
   const entry = (await openErrorEntries(gw)).find(
     (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === order.id,
   )!;
@@ -2486,4 +2539,60 @@ test('61 — cycles go to the caller and nowhere else, enforced by the canister 
   expect(expectErr(await gw.asAnon.create_order('tier5', {
     cyclesLedgerAccount: { owner: admin.getPrincipal(), subaccount: [] },
   }, []))).toEqual({ anonymous: null });
+});
+
+test('62 — the durable order record survives a real stop → upgrade → start (#34)', async () => {
+  // #34's acceptance criterion. The fields exist to make a support ticket or a
+  // reconciliation answerable from the record itself rather than from a 4,096-
+  // entry ring buffer that drops — which is worth nothing if an upgrade loses
+  // them. Enhanced orthogonal persistence keeps stable state without serialising
+  // it, and this is the assertion of that rather than the assumption.
+  await ensureRates(gw);
+  const created = expectOk(await gw.asUser.create_order('tier5', USER_ACCOUNT, []));
+  const before = created.order;
+
+  // ── ratesFetchedAtNs is the one new field with a producer TODAY, so it is the
+  // one this scenario can assert on its merits rather than just for durability.
+  expect(before.pricing.ratesFetchedAtNs).toBeGreaterThan(0n);
+  // STRICTLY EARLIER than the order: quotes come from a cache the timer
+  // refreshes, so the rates that priced this order were read before it existed.
+  // That gap is the entire reason the field is not `createdAtNs` — an auditor
+  // comparing the stored rates against XRC/CMC history at `createdAtNs` would
+  // otherwise be checking the wrong instant.
+  expect(before.pricing.ratesFetchedAtNs).toBeLessThan(before.createdAtNs);
+
+  // ── The session fields are null until #33 creates sessions. Asserted anyway,
+  // because "null and durable" is what the next issue builds on, and a field that
+  // silently arrived non-null would mean something else stamped it.
+  expect(before.expiresAtNs).toHaveLength(0);
+  expect(before.stripeSessionId).toHaveLength(0);
+  expect(before.stripeSessionUrl).toHaveLength(0);
+  expect(before.expiredBy).toHaveLength(0);
+
+  // ── A cancelled order, so a non-default status and a terminal one both cross
+  // the upgrade.
+  const doomed = expectOk(await gw.asUser.create_order('tier5', USER_ACCOUNT, []));
+  expect(statusKey(expectOk(await gw.asUser.cancel_order(doomed.order.id)))).toBe('cancelled');
+
+  await upgradeBackendMidFlight(gw);
+
+  const after = (await gw.asUser.get_order(before.id))[0]!;
+  expect(after.pricing).toEqual(before.pricing);
+  expect(after.expiresAtNs).toEqual(before.expiresAtNs);
+  expect(after.stripeSessionId).toEqual(before.stripeSessionId);
+  expect(after.stripeSessionUrl).toEqual(before.stripeSessionUrl);
+  expect(after.expiredBy).toEqual(before.expiredBy);
+  expect(statusKey(after)).toBe('created');
+
+  // The new status survives as itself — not decoded as some neighbouring tag,
+  // which is the failure a variant reorder would produce.
+  expect(statusKey((await gw.asUser.get_order(doomed.order.id))[0]!)).toBe('cancelled');
+
+  // And it is still unpayable on the other side of the upgrade.
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_62', paymentIntent: 'pi_62',
+    clientReferenceId: doomed.clientReferenceId, amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  await gw.pic.tick(5);
+  expect(await orderStatus(gw, doomed.order.id)).toBe('cancelled');
 });

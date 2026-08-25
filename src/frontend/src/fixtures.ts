@@ -86,6 +86,9 @@ function cannedOrder(spec: OrderSpec): Order {
       rateQueriedSources: 6n,
       feeBps: 290n,
       feeFixedCents: 30n,
+      // Before the order, deliberately: the rate pair is read from a cache the
+      // timer refreshes, so it predates every order it prices (#34).
+      ratesFetchedAtNs: CREATED_AT_NS - 60_000_000_000n,
     },
     paidUsdCents: status === "created" || status === "expired" ? undefined : USD_CENTS,
     createdAtNs: CREATED_AT_NS,

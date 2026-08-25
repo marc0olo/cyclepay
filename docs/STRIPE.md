@@ -92,7 +92,7 @@ problem, and no operator-settable rate source to audit.
                        ▼
    #paid ─ burn cap + float pre-gate ─▶ #minting ─▶ #icpAtCmc ─▶ #delivered
               └─ no headroom ─▶ #awaitingTreasury ─(refill)─┘
-                                     └─ past max wait ─▶ #errorQueue
+                                     └─ past max wait ─▶ #needsReview
 ```
 
 Money-out is rail-agnostic from `#paid` onward — the code is keyed by
@@ -322,6 +322,42 @@ amount tiles show what lands; the note under the destination names the fee once.
 ⚠️ **Deliberately not grossed up into the price.** Minting extra to cover a
 per-order fee would let anyone drain the operator by opening orders — a griefable
 gas drain. Disclosure is the honest fix.
+
+### The order is the record; the audit log is the trail
+
+**Every fact about an order's money lives on the order** (#34): its status, what
+the buyer actually paid, why it expired (`expiredBy`), when its rates were read
+(`pricing.ratesFetchedAtNs`), and — once #33 lands — the Stripe session it is paid
+through and the deadline Stripe set for it.
+
+`audit_log` is the *operational trail*: alerts, dedup drops, evictions. It answers
+"what was happening around then", never "what happened to this order". That
+division is about where a fact belongs, not about the buffer being bounded — #37
+removes the ring and the division still holds.
+
+**A refund is the one money fact not on the order.** It lives in Stripe, where it
+was issued, plus the unresolved `#refundAfterDelivery` entry, which the queue
+never evicts. #34 considered a `refundedUsdCents` field and dropped it: the app
+does not model refunds, and a manual Stripe refund is an out-of-band operator
+action. It becomes a field when there is real money to reconcile.
+
+### Order statuses, and what each one owes
+
+| Status | Payable? | Owes cycles? |
+|---|---|---|
+| `#created` | yes | not yet — the promise is held against the reserve |
+| `#cancelled` | **no** — the buyer gave up, and `#cancelled → #paid` is absent from the matrix | no |
+| `#expired` | **no** as of #34 | no |
+| `#paid` → `#minting` → `#icpAtCmc` | already paid | **yes** |
+| `#awaitingTreasury` | already paid | **yes** |
+| `#delivered` | — | settled |
+| `#needsReview` | — | **yes** — outcome unknown, a human checks the ledger |
+| `#abandoned` | — | no — the operator ended it, having refunded by hand |
+
+A payment that arrives for a `#cancelled` or `#expired` order is real money the
+gateway cannot convert. It is filed as a Type 1 `#unattributed` obligation
+carrying the payment intent, and the operator refunds it in Stripe. Until #33
+expires the Stripe session on cancellation, that window is genuinely reachable.
 
 ### Afterwards: a receipt the buyer can check
 

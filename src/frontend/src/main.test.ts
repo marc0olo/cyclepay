@@ -115,7 +115,7 @@ const backend = {
   get_order: async () => state.order ?? null,
   list_orders: async () => (state.order ? [state.order] : []),
   cancel_order: async () => {
-    state.order = anOrder("expired");
+    state.order = anOrder("cancelled");
     return { __kind__: "ok", ok: state.order };
   },
   receipt: async () => state.receipt ?? null,
@@ -364,9 +364,12 @@ describe("the active order", () => {
     expect(el("cancel-area").hidden).toBe(true);
   });
 
-  test("cancelling an unpaid order keeps it payable, so cancel stays offered", async () => {
-    // #expired is still payable (§4), which is what makes cancelling safe — the
-    // UI must not imply the order is dead.
+  test("cancelling reads as cancelled, and closes the order out", async () => {
+    // Inverted by #34. Cancelling used to transition to `#expired`, which was
+    // still payable — so the copy said a completed payment would still go
+    // through, and a buyer who had cancelled was told their order "expired".
+    // Now it is its own terminal status: `#cancelled → #paid` is absent from the
+    // matrix, so the order genuinely cannot be paid.
     await mount();
     tierButton().click();
     await settle();
@@ -375,7 +378,12 @@ describe("the active order", () => {
     el("cancel-order").click();
     await settle();
     await settle();
-    expect(el("order-status-line").textContent).toContain("still goes through");
+    expect(el("order-status-line").textContent).toBe("Cancelled");
+    expect(el("order-status-line").textContent).not.toMatch(/expired/i);
+    expect(el("order-status-line").textContent).not.toMatch(/still goes through/i);
+    // Nothing left to cancel, and nothing left to pay.
+    expect(el("cancel-area").hidden).toBe(true);
+    expect(el("pay-area").hidden).toBe(true);
   });
 
   test("the locked figure is stated without a '≈', and the locked rate is shown", async () => {

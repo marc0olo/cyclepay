@@ -869,7 +869,11 @@ function renderOrder(order: Order, clientReferenceId?: string): void {
   statusLine.textContent = info.label;
   statusLine.className = `tone-${info.tone}`;
 
-  const awaitingPayment = key === "created" || key === "expired";
+  // `#expired` used to be here, on the §4 grounds that a late payment still
+  // completed. #34 deleted `#expired → #paid`, so an expired order is not
+  // awaiting anything — offering a pay link would send a buyer to spend money the
+  // gateway would then have to refund. `#cancelled` was never payable.
+  const awaitingPayment = key === "created";
 
   const link = payLinks.get(order.id);
   show("pay-area", awaitingPayment && link !== undefined);

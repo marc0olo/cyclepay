@@ -51,27 +51,29 @@ suite("band boundaries", func() {
 
 suite("statuses the sweep must never touch", func() {
   test("money-bearing and terminal statuses always keep, at any age", func() {
-    // #paid/#minting/#icpAtCmc/#awaitingTreasury are in flight; #delivered and
-    // #errorQueue are financial records kept forever. Their volume is bounded
-    // by the burn cap, so they can never be a growth vector.
+    // #paid/#minting/#icpAtCmc/#awaitingTreasury are in flight; the rest are
+    // financial records kept forever. Their volume is bounded by the burn cap, so
+    // they can never be a growth vector.
     let untouchable : [Types.OrderStatus] = [
       #paid,
       #minting,
       #icpAtCmc,
       #awaitingTreasury,
       #delivered,
-      #errorQueue,
+      #cancelled,
+      #needsReview,
+      #abandoned,
     ];
     for (status in untouchable.values()) {
       assert Retention.bandOf(status, created, at(config.orderTtlNs * 10_000), config) == #keep;
     };
   });
 
-  test("all eight statuses are covered — a new status defaults to keep", func() {
+  test("every status is covered — a new status defaults to keep", func() {
     // Guards against a future status silently becoming sweepable.
     let all : [Types.OrderStatus] = [
-      #created, #expired, #paid, #minting,
-      #icpAtCmc, #delivered, #awaitingTreasury, #errorQueue,
+      #created, #cancelled, #expired, #paid, #minting,
+      #icpAtCmc, #delivered, #awaitingTreasury, #needsReview, #abandoned,
     ];
     var expiring = 0;
     for (status in all.values()) {

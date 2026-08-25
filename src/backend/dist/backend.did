@@ -202,6 +202,7 @@ type Pricing =
    rateQueriedSources: nat;
    rateReceivedRates: nat;
    rateStandardDeviation: nat;
+   ratesFetchedAtNs: int;
    usdCents: nat;
    usdPerIcpMicros: nat;
    xdrPermyriadPerIcp: nat;
@@ -214,13 +215,15 @@ type Page =
 type Owner = variant {ii: principal;};
 type OrderStatus = 
  variant {
+   abandoned;
    awaitingTreasury;
+   cancelled;
    created;
    delivered;
-   errorQueue;
    expired;
    icpAtCmc;
    minting;
+   needsReview;
    paid;
  };
 type OrderId = text;
@@ -228,6 +231,8 @@ type Order =
  record {
    createdAtNs: int;
    destination: Destination;
+   expiredBy: opt ExpiredBy;
+   expiresAtNs: opt int;
    id: OrderId;
    lockedCycles: nat;
    owner: Owner;
@@ -235,6 +240,8 @@ type Order =
    pricing: Pricing;
    rail: Rail;
    status: OrderStatus;
+   stripeSessionId: opt text;
+   stripeSessionUrl: opt text;
    updatedAtNs: int;
  };
 type Kind = 
@@ -304,6 +311,11 @@ type FloatObservation =
  record {
    atNs: int;
    e8s: nat;
+ };
+type ExpiredBy = 
+ variant {
+   sessionExpired;
+   sessionFailed;
  };
 type Event = 
  record {

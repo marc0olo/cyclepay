@@ -96,10 +96,13 @@ module {
       case (#created) {
         if (age >= config.orderTtlNs) #expire else #keep;
       };
-      // An expired order is kept indefinitely: it remains payable, and it is a
-      // record of an attempt either way.
-      case (#expired) #keep;
-      case (#paid or #minting or #icpAtCmc or #awaitingTreasury or #delivered or #errorQueue) #keep;
+      // Kept indefinitely: an order is a record of an attempt whatever became
+      // of it, and nothing here is deleted on age.
+      //
+      // `#expired` used to be kept on the grounds that it "remains payable".
+      // That stopped being true when #34 deleted `#expired → #paid`; it is kept
+      // as a record now, which is the same answer for an honest reason.
+      case (#cancelled or #expired or #paid or #minting or #icpAtCmc or #awaitingTreasury or #delivered or #needsReview or #abandoned) #keep;
     };
   };
 

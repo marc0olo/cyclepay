@@ -80,21 +80,25 @@ suite("isSweepable", func() {
 
   test("user-pending, expired, and terminal states never sweep", func() {
     assert not Recovery.isSweepable(#created);
+    assert not Recovery.isSweepable(#cancelled);
     assert not Recovery.isSweepable(#expired);
     assert not Recovery.isSweepable(#delivered);
-    assert not Recovery.isSweepable(#errorQueue);
+    assert not Recovery.isSweepable(#abandoned);
+    // The one worth stating: `#needsReview` means the money position is UNKNOWN,
+    // so re-driving it automatically is the double-spend the status prevents.
+    assert not Recovery.isSweepable(#needsReview);
   });
 
-  test("the matrix is exhaustive: 4 of all 8 states sweep", func() {
+  test("the matrix is exhaustive: 4 of all 10 states sweep", func() {
     let all : [Types.OrderStatus] = [
-      #created, #expired, #paid, #minting,
-      #icpAtCmc, #delivered, #awaitingTreasury, #errorQueue,
+      #created, #cancelled, #expired, #paid, #minting,
+      #icpAtCmc, #delivered, #awaitingTreasury, #needsReview, #abandoned,
     ];
     var sweepable = 0;
     for (status in all.values()) {
       if (Recovery.isSweepable(status)) sweepable += 1;
     };
-    assert all.size() == 8;
+    assert all.size() == 10;
     assert sweepable == 4;
   });
 

@@ -561,8 +561,21 @@ icp canister call backend resolve_error '(42)' -e ic --identity <operator>
 icp canister call backend mint_journal '("<orderId>")' -e ic --identity <operator>
 ```
 
-The queue is the **operator worklist** — resolution lives on the entry and
-never transitions an order (`errorQueue` status is terminal).
+The queue is the **operator worklist** — resolving an entry lives on the entry and
+never transitions the order. The order's own status says whether anything is
+still owed, which is why #34 split the old `errorQueue` status in two:
+
+| Status | Meaning | The order's promise |
+|---|---|---|
+| `NeedsReview` | a money position nobody knows the outcome of — typically a transfer past the ledger's ~24 h dedup window. **Check the ledger.** | **still held** |
+| `Abandoned` | you ended it, having refunded by hand. Terminal. | **released** |
+
+`abandon_order` is the only way from the first to the second, and it now accepts
+a `NeedsReview` order — which the single `errorQueue` status could not, because it
+meant both things at once and the transition would have been to itself.
+
+⚠️ **Never treat `NeedsReview` as finished.** It is the status that still owes
+cycles; `Abandoned` is the one that does not.
 **Only a *full* `charge.refunded` auto-resolves a Type 1 entry** — Stripe fires
 the same event for partial refunds, so the canister compares `amount_refunded`
 against the charge's `amount`. A partial refund leaves the entry open and audits

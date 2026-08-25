@@ -27,8 +27,10 @@ module {
   public type Kind = {
     /// Type 1 — genuine 2nd/distinct payment for an already-handled order.
     #duplicate : { orderId : Types.OrderId; paymentRef : Text };
-    /// Type 1 — `client_reference_id` resolved to no order (claimed, not
-    /// trusted: it is an attacker-editable URL param).
+    /// Type 1 — the payment could not be attributed to an order that can accept
+    /// it: `client_reference_id` resolved to no order (claimed, not trusted — it
+    /// is an attacker-editable URL param), or it resolved to an order that is
+    /// `#cancelled` or `#expired` and so is no longer payable.
     #unattributed : { claimedRef : Text; paymentRef : Text };
     /// Type 2 — minted, but forward failed (e.g. target canister deleted).
     #undeliverable : { orderId : Types.OrderId; cycles : Nat };

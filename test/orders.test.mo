@@ -15,31 +15,37 @@ import Orders "../src/backend/Orders";
 
 let allStatuses : [Types.OrderStatus] = [
   #created,
+  #cancelled,
   #expired,
   #paid,
   #minting,
   #icpAtCmc,
   #delivered,
   #awaitingTreasury,
-  #errorQueue,
+  #needsReview,
+  #abandoned,
 ];
 
-// The legal-transition table straight from spec §4 (+ the two error-queue
-// edges from §4.1/§5.1). Kept as data here so the test is the spec table,
-// independent of the implementation's switch.
+// The legal-transition table straight from spec §4 (+ the escalation edges from
+// §4.1/§5.1 and the #34 statuses). Kept as data here so the test is the spec
+// table, independent of the implementation's switch.
 let legalTransitions : [(Types.OrderStatus, Types.OrderStatus)] = [
+  (#created, #cancelled),
   (#created, #expired),
   (#created, #paid),
-  (#expired, #paid),
   (#paid, #minting),
   (#paid, #awaitingTreasury),
-  (#paid, #errorQueue),
+  (#paid, #needsReview),
   (#awaitingTreasury, #minting),
-  (#awaitingTreasury, #errorQueue),
+  (#awaitingTreasury, #needsReview),
   (#minting, #icpAtCmc),
-  (#minting, #errorQueue),
+  (#minting, #needsReview),
   (#icpAtCmc, #delivered),
-  (#icpAtCmc, #errorQueue),
+  (#icpAtCmc, #needsReview),
+  // abandon_order: the operator ends it, having refunded by hand.
+  (#paid, #abandoned),
+  (#awaitingTreasury, #abandoned),
+  (#needsReview, #abandoned),
 ];
 
 func isExpectedLegal(from : Types.OrderStatus, to : Types.OrderStatus) : Bool {
@@ -63,6 +69,10 @@ let pricing : Types.Pricing = {
   rateQueriedSources = 5;
   feeBps = 290;
   feeFixedCents = 30;
+  // Deliberately EARLIER than any order's createdAtNs in these fixtures: the
+  // rate pair is read before the order exists, which is the whole reason #34
+  // records it separately.
+  ratesFetchedAtNs = 1;
 };
 
 func newOrder(store : Orders.Store, id : Types.OrderId, owner : Principal) : Types.Order {
@@ -114,13 +124,34 @@ suite("legal-transition matrix (exhaustive, 8×8)", func() {
         if (Orders.isLegalTransition(from, to)) count += 1;
       };
     };
-    assert count == 12;
+    assert count == 15;
   });
 
-  test("delivered and errorQueue are terminal", func() {
+  test("the terminal statuses have no outgoing edge at all", func() {
+    // `#expired` joined this list in #34, when `#expired → #paid` was deleted:
+    // an expired order is a record of an attempt, not something still payable.
+    for (from in ([#delivered, #cancelled, #expired, #abandoned] : [Types.OrderStatus]).values()) {
+      for (to in allStatuses.values()) {
+        assert not Orders.isLegalTransition(from, to);
+      };
+    };
+  });
+
+  test("a cancelled order can NEVER be paid (#34's whole point)", func() {
+    // Asserted on its own rather than only as part of the table, because this
+    // absence is the guarantee `cancel_order` rests on. If `#cancelled → #paid`
+    // is ever added, the buyer-cancellation state stops meaning anything.
+    assert not Orders.isLegalTransition(#cancelled, #paid);
+    // And the same for an expired one, which used to be legal.
+    assert not Orders.isLegalTransition(#expired, #paid);
+  });
+
+  test("needsReview holds its promise: abandon is the only way out", func() {
+    // It is NOT re-drivable and NOT terminal. The single edge is what makes
+    // `abandon_order` able to end an escalated order — the thing one status
+    // meaning both "held" and "released" prevented.
     for (to in allStatuses.values()) {
-      assert not Orders.isLegalTransition(#delivered, to);
-      assert not Orders.isLegalTransition(#errorQueue, to);
+      assert Orders.isLegalTransition(#needsReview, to) == (to == #abandoned);
     };
   });
 });
@@ -194,10 +225,18 @@ suite("store: applyTransition", func() {
     };
   });
 
-  test("late payment path Created -> Expired -> Paid", func() {
+  test("buyer cancellation path Created -> Cancelled, and it stops there", func() {
+    // Replaces "Created -> Expired -> Paid". #34 deleted `#expired → #paid`, so
+    // there is no late-payment path left to drive: an order that stopped being
+    // payable stays that way, and `Card.handleWebhook` files a payment against
+    // one as a Type 1 obligation instead.
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    drive(store, "ord-1", [#expired, #paid]);
+    drive(store, "ord-1", [#cancelled]);
+    switch (Orders.applyTransition(store, "ord-1", #paid, 300)) {
+      case (#err(#illegalTransition({ from = #cancelled; to = #paid }))) {};
+      case (_) assert false;
+    };
   });
 
   test("treasury path Paid -> AwaitingTreasury -> Minting", func() {
@@ -373,13 +412,28 @@ suite("markPaid (§6.1 amount honoring)", func() {
     };
   });
 
-  test("late payment: expired -> paid is honored (§4)", func() {
-    let store = Orders.emptyStore();
-    ignore newOrder(store, "ord-1", alice);
-    drive(store, "ord-1", [#expired]);
-    switch (Orders.markPaid(store, "ord-1", 7, 500, 300)) {
-      case (#ok(paid)) assert paid.status == #paid;
-      case (#err(_)) assert false;
+  test("markPaid refuses an order that is no longer payable", func() {
+    // Was "late payment: expired -> paid is honored (§4)". #34 deleted that edge,
+    // so `markPaid` is now the second line of defence behind
+    // `Card.handleWebhook`'s status guard: the guard files a Type 1 obligation,
+    // and this refuses rather than moving the status if the guard is ever wrong.
+    //
+    // ⚠️ `Card.mo` TRAPS on this error, deliberately, so that a mismatch between
+    // the guard and the matrix cannot silently mint. Which is exactly why the
+    // guard must never let one of these through — see the webhook suite.
+    for (unpayable in ([#cancelled, #expired] : [Types.OrderStatus]).values()) {
+      let store = Orders.emptyStore();
+      ignore newOrder(store, "ord-1", alice);
+      drive(store, "ord-1", [unpayable]);
+      switch (Orders.markPaid(store, "ord-1", 7, 500, 300)) {
+        case (#err(#illegalTransition({ from; to = #paid }))) assert from == unpayable;
+        case (_) assert false;
+      };
+      // And the store is untouched.
+      switch (Orders.get(store, "ord-1")) {
+        case (?stored) assert stored.status == unpayable and stored.paidUsdCents == null;
+        case null assert false;
+      };
     };
   });
 
@@ -510,16 +564,16 @@ suite("status counts — the O(1) query inputs", func() {
   test("recount lands an order in exactly one bucket after a transition chain", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    ignore Orders.applyTransition(store, "ord-1", #expired, 200);
-    // A late payment on an expired order is honoured (§4), so this chain is a
-    // real one, not a contrived sequence.
-    ignore Orders.applyTransition(store, "ord-1", #paid, 300);
+    // A real chain rather than a contrived one: paid, then held short of float.
+    // (It used to be created → expired → paid, which #34 made illegal.)
+    ignore Orders.applyTransition(store, "ord-1", #paid, 200);
+    ignore Orders.applyTransition(store, "ord-1", #awaitingTreasury, 300);
     ignore Orders.recount(store);
     // One order, one bucket: the statuses it passed through must be vacated.
     assert Orders.countOf(store, #created) == 0;
     assert Orders.countOf(store, #expired) == 0;
-    assert Orders.countOf(store, #paid) == 1;
-    assert Orders.countOf(store, #awaitingTreasury) == 0;
+    assert Orders.countOf(store, #paid) == 0;
+    assert Orders.countOf(store, #awaitingTreasury) == 1;
   });
 
   test("reconcile reports no drift while the incremental counts are correct", func() {
@@ -574,9 +628,9 @@ suite("status counts — the O(1) query inputs", func() {
   test("a status no order is in reads zero", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    // #delivered and #errorQueue are untracked by design (terminal or worklist-
+    // #delivered and the terminal #34 statuses are untracked by design (terminal or worklist-
     // owned); the rest are tracked but empty here.
-    for (status in ([#paid, #minting, #icpAtCmc, #delivered, #errorQueue] : [Types.OrderStatus]).values()) {
+    for (status in ([#paid, #minting, #icpAtCmc, #delivered, #cancelled, #needsReview, #abandoned] : [Types.OrderStatus]).values()) {
       assert Orders.countOf(store, status) == 0;
     };
   });

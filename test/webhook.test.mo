@@ -42,6 +42,10 @@ let pricing : Types.Pricing = {
   rateQueriedSources = 5;
   feeBps = 290;
   feeFixedCents = 30;
+  // Deliberately EARLIER than any order's createdAtNs in these fixtures: the
+  // rate pair is read before the order exists, which is the whole reason #34
+  // records it separately.
+  ratesFetchedAtNs = 1;
 };
 let lockedCycles : Nat = 3_500_000_000_000;
 
@@ -601,15 +605,42 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
     assert statusOf(deps) == #paid; // first payment's delivery is untouched
   });
 
-  test("late payment on an expired order is honored (§4)", func() {
-    let deps = freshDeps();
-    withOrder(deps, #card);
-    switch (Orders.applyTransition(deps.orders, orderId, #expired, 200)) {
-      case (#ok(_)) {};
-      case (#err(_)) assert false;
+  test("a payment for an unpayable order is a Type 1 obligation, never a trap", func() {
+    // ⚠️ THE REGRESSION THIS PINS is a reachable `Runtime.trap` on the money-in
+    // path. `markPaid`'s error arm traps, on the documented grounds that the
+    // status guard above it already checked the status. #34 deleted
+    // `#expired → #paid` from the matrix; had the guard kept admitting
+    // `#expired`, every such payment would have trapped — and a trap here is a
+    // 5xx that Stripe retries for about three days.
+    //
+    // `-Werror` cannot see that coupling: both arms typecheck whatever the matrix
+    // says. This test is the coupling.
+    //
+    // This test previously asserted the opposite ("late payment on an expired
+    // order is honored"), which was the §4 contract until `attach_payment` and
+    // the `#expired → #paid` edge were deleted together.
+    for (unpayable in ([#cancelled, #expired] : [Types.OrderStatus]).values()) {
+      let deps = freshDeps();
+      withOrder(deps, #card);
+      switch (Orders.applyTransition(deps.orders, orderId, unpayable, 200)) {
+        case (#ok(_)) {};
+        case (#err(_)) assert false;
+      };
+      // 200, not 5xx: Stripe must stop retrying. The money is real and the
+      // obligation is recorded for the operator.
+      assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
+      // The status does NOT move.
+      assert statusOf(deps) == unpayable;
+      // Filed as #unattributed, not #duplicate: nothing was ever paid, so there
+      // is no first payment for this to be a second of. It carries the
+      // paymentRef a `charge.refunded` resolves.
+      let open = ErrorQueue.unresolved(deps.errorQueue);
+      assert open.size() == 1;
+      switch (open[0].kind) {
+        case (#unattributed({ paymentRef; claimedRef = _ })) assert paymentRef == "pi_1";
+        case (_) Runtime.trap("expected #unattributed for a " # Types.statusToText(unpayable) # " order");
+      };
     };
-    assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
-    assert statusOf(deps) == #paid;
   });
 
   test("an unsettled async payment mints when Stripe reports it succeeded", func() {

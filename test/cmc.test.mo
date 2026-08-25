@@ -231,8 +231,16 @@ suite("journal", func() {
   rateQueriedSources = 5;
   feeBps = 290;
   feeFixedCents = 30;
+  // Deliberately EARLIER than any order's createdAtNs in these fixtures: the
+  // rate pair is read before the order exists, which is the whole reason #34
+  // records it separately.
+  ratesFetchedAtNs = 1;
 };
       paidUsdCents = null;
+      expiredBy = null;
+      expiresAtNs = null;
+      stripeSessionId = null;
+      stripeSessionUrl = null;
       status = #paid;
       createdAtNs = 1;
       updatedAtNs = 2;
@@ -341,7 +349,7 @@ suite("stageOf (§5.1/§5.2 resume decision)", func() {
   });
 
   test("no money-out work for the remaining statuses", func() {
-    for (status in [#created, #expired, #awaitingTreasury, #delivered, #errorQueue].values()) {
+    for (status in [#created, #cancelled, #expired, #awaitingTreasury, #delivered, #needsReview, #abandoned].values()) {
       assert Cmc.stageOf(status, null, 0, window, maxRetries) == #none;
     };
   });

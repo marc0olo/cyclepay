@@ -17,8 +17,12 @@ export interface Account {
 export type Destination = { cyclesLedgerAccount: Account };
 
 export type OrderStatusKey =
-  | 'created' | 'expired' | 'paid' | 'minting' | 'icpAtCmc'
-  | 'delivered' | 'awaitingTreasury' | 'errorQueue';
+  | 'created' | 'cancelled' | 'expired' | 'paid' | 'minting' | 'icpAtCmc'
+  | 'delivered' | 'awaitingTreasury' | 'needsReview' | 'abandoned';
+
+/// Why an `#expired` order expired. Both producers arrive with #33; until then
+/// the retention sweep expires orders and leaves this null.
+export type ExpiredBy = { sessionExpired: null } | { sessionFailed: null };
 
 export type StatusVariant = Partial<Record<OrderStatusKey, null>>;
 
@@ -33,6 +37,9 @@ export interface Pricing {
   rateQueriedSources: bigint;
   feeBps: bigint;
   feeFixedCents: bigint;
+  /// When the rate pair above was READ — earlier than `createdAtNs`, because
+  /// quotes come from a cache the timer refreshes (#34).
+  ratesFetchedAtNs: bigint;
 }
 
 export interface PricingQuality {
@@ -58,6 +65,13 @@ export interface PricingConfig {
 
 export interface Order {
   paidUsdCents: Opt<bigint>;
+  /// Null except on an `#expired` order with a known cause, and null for every
+  /// sweep expiry — that mechanism has no tag because #33 deletes it (#34).
+  expiredBy: Opt<ExpiredBy>;
+  /// Stripe's `expires_at` in nanoseconds. Null until #33 creates the session.
+  expiresAtNs: Opt<bigint>;
+  stripeSessionId: Opt<string>;
+  stripeSessionUrl: Opt<string>;
   id: string;
   owner: { ii: Principal };
   rail: Partial<Record<'card', null>>;

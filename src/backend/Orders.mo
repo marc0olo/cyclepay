@@ -89,6 +89,12 @@ module {
 
   /// Statuses whose live counts are maintained. Keyed by `statusToText` so the
   /// map is a shared type and the key set is self-documenting.
+  ///
+  /// `#cancelled`, `#needsReview` and `#abandoned` are deliberately absent, as
+  /// `#delivered` and the old `#errorQueue` were: a status earns an O(1) tally
+  /// only when something reads it. Nothing counts these — `countOf` returns 0
+  /// and `reconcile` leaves them alone. #30 adds `#needsReview` if its promise
+  /// tally needs the count.
   let trackedStatuses : [Types.OrderStatus] = [#created, #expired, #paid, #minting, #icpAtCmc, #awaitingTreasury];
 
   func isTracked(status : Types.OrderStatus) : Bool {
@@ -179,18 +185,25 @@ module {
   /// human/off-chain on the queue entry (§4.1), not an order transition.
   public func isLegalTransition(from : Types.OrderStatus, to : Types.OrderStatus) : Bool {
     switch (from, to) {
-      case (#created, #expired) true; // never paid; advisory only (§4)
+      case (#created, #cancelled) true; // the buyer gave up before paying (#34)
+      case (#created, #expired) true; // never paid (§4)
       case (#created, #paid) true; // webhook verified, deduped, amount honored
-      case (#expired, #paid) true; // late real payment still honored (§4)
       case (#paid, #minting) true; // ICP float sufficient
       case (#paid, #awaitingTreasury) true; // float short (§5.3)
-      case (#paid, #errorQueue) true; // paid but unable to mint past max wait (§5)
+      case (#paid, #needsReview) true; // paid but unable to mint past max wait (§5)
       case (#awaitingTreasury, #minting) true; // float refilled
-      case (#awaitingTreasury, #errorQueue) true; // max-wait exceeded (§5.3)
+      case (#awaitingTreasury, #needsReview) true; // max-wait exceeded (§5.3)
       case (#minting, #icpAtCmc) true; // block_index recorded (§5)
-      case (#minting, #errorQueue) true; // intent aged past dedup window (§5.1)
+      case (#minting, #needsReview) true; // intent aged past dedup window (§5.1)
       case (#icpAtCmc, #delivered) true; // notify + forward succeeded
-      case (#icpAtCmc, #errorQueue) true; // forward failed → Type 2 (§4.1)
+      case (#icpAtCmc, #needsReview) true; // forward failed → Type 2 (§4.1)
+      // `abandon_order` — the operator ends it, having refunded by hand. The
+      // #needsReview edge is what the #errorQueue split made possible: an
+      // escalated order could not previously be abandoned, because one status
+      // meant both "promise held" and "promise released".
+      case (#paid, #abandoned) true;
+      case (#awaitingTreasury, #abandoned) true;
+      case (#needsReview, #abandoned) true;
       case _ false;
     };
   };
@@ -233,6 +246,13 @@ module {
       pricing;
       status = #created;
       paidUsdCents = null;
+      // All four are the session's, and no session exists yet: #33 stamps them
+      // from the Checkout Session it creates. `expiredBy` stays null unless the
+      // order reaches `#expired` with a known cause.
+      expiredBy = null;
+      expiresAtNs = null;
+      stripeSessionId = null;
+      stripeSessionUrl = null;
       createdAtNs = nowNs;
       updatedAtNs = nowNs;
     };

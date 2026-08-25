@@ -471,6 +471,10 @@ persistent actor CyclesGateway {
             rateQueriedSources = rates.quality.queriedSources;
             feeBps = fee.feeBps;
             feeFixedCents = fee.feeFixedCents;
+            // The one field of `Pricing.Rates` this copy used to drop. Without
+            // it `createdAtNs` is the only timestamp on the record, and it is
+            // not when these rates were read (#34).
+            ratesFetchedAtNs = rates.fetchedAtNs;
           },
         ));
       };
@@ -1102,11 +1106,13 @@ persistent actor CyclesGateway {
   };
 
   /// §5.1 escalation: the mint stopped where the money position is
-  /// uncertain. Terminal — the order goes `#errorQueue` and the operator
-  /// resolves off-chain (inspect ledger/CMC/destination, refund/re-deliver).
+  /// uncertain. The order goes `#needsReview` — **not** `#abandoned`: the money
+  /// position is unknown, so its promise stays held (#30) and a human resolves it
+  /// off-chain (inspect ledger/CMC/destination, refund/re-deliver). Only
+  /// `abandon_order` ends an order.
   func escalateStuckMint(order : Types.Order, stage : Text, detail : Text) {
-    ignore tryTransition(order.id, #errorQueue);
-    Cmc.patch(mintJournal, order.id, { status = ?#errorQueue; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+    ignore tryTransition(order.id, #needsReview);
+    Cmc.patch(mintJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
     // Before queueing the escalation: any open delay alert for this order says
     // "it delivers on the next sweep", which just stopped being true. Leaving it
     // open would put a false promise on the worklist next to the real problem,
@@ -1417,8 +1423,8 @@ persistent actor CyclesGateway {
             case (#failed(detail)) {
               // §4.1 Type 2: the failed deposit refunded the cycles to the
               // app balance — minted money exists, delivery didn't happen.
-              ignore tryTransition(orderId, #errorQueue);
-              Cmc.patch(mintJournal, orderId, { status = ?#errorQueue; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+              ignore tryTransition(orderId, #needsReview);
+              Cmc.patch(mintJournal, orderId, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
               // Same reason as escalateStuckMint: the delay is over, badly.
               clearDelayed(orderId);
               ignore queueMintError(order.rail, #undeliverable({ orderId; cycles = order.lockedCycles }), detail);
@@ -1666,7 +1672,7 @@ persistent actor CyclesGateway {
     let ?order = Orders.getOwned(orderStore, id, caller) else return #err("no order " # id);
     switch (order.status) {
       case (#created) {};
-      case (#expired) return #ok(order); // idempotent: already given up on
+      case (#cancelled) return #ok(order); // idempotent: already given up on
       case (status) {
         return #err(
           "order " # id # " is " # Types.statusToText(status)
@@ -1674,8 +1680,18 @@ persistent actor CyclesGateway {
         );
       };
     };
-    let ?cancelled = tryTransition(id, #expired) else {
-      return #err("order " # id # " refused the transition to expired");
+    // `#cancelled`, not `#expired`: the buyer's own decision is a distinct state,
+    // so a reload shows them "Cancelled" rather than telling them their order
+    // expired (#34). And `#cancelled → #paid` is absent from the matrix, which is
+    // what makes a cancelled order unpayable by construction rather than by a
+    // runtime check somebody has to remember.
+    //
+    // ⚠️ Local-only until #33: the Stripe session stays payable, so a buyer who
+    // cancels and then pays anyway produces money-in against an unpayable order.
+    // `Card.handleWebhook` files that as a Type 1 obligation for the operator
+    // rather than trapping. #33 closes the window by expiring the session first.
+    let ?cancelled = tryTransition(id, #cancelled) else {
+      return #err("order " # id # " refused the transition to cancelled");
     };
     audit("order.cancelled", id # " cancelled by owner");
     #ok(cancelled);
@@ -1688,16 +1704,20 @@ persistent actor CyclesGateway {
     requireAdmin(caller);
     let ?order = Orders.get(orderStore, id) else return #err("no order " # id);
     switch (order.status) {
-      case (#paid or #awaitingTreasury) {};
+      // `#needsReview` is newly accepted here, and it is the point of splitting
+      // `#errorQueue`: an escalated order could not previously be abandoned,
+      // because one status meant both "promise held" and "promise released" and
+      // the transition was to itself (#34).
+      case (#paid or #awaitingTreasury or #needsReview) {};
       case (status) {
-        return #err("order " # id # " is " # Types.statusToText(status) # "; only a paid or held order can be abandoned");
+        return #err("order " # id # " is " # Types.statusToText(status) # "; only a paid, held or under-review order can be abandoned");
       };
     };
     if (reason.size() == 0) return #err("a reason is required — the audit trail must record why");
-    let ?abandoned = tryTransition(id, #errorQueue) else {
-      return #err("order " # id # " refused the transition to errorQueue");
+    let ?abandoned = tryTransition(id, #abandoned) else {
+      return #err("order " # id # " refused the transition to abandoned");
     };
-    Cmc.patch(mintJournal, id, { status = ?#errorQueue; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+    Cmc.patch(mintJournal, id, { status = ?#abandoned; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
     clearDelayed(id);
     ignore queueMintError(order.rail, #abandoned({ orderId = id; reason }), "abandoned by operator: " # reason);
     auditAdmin(caller, "order.abandoned", id # ": " # reason);
