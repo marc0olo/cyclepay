@@ -300,6 +300,116 @@ module {
     };
   };
 
+  /// Attach a created Checkout Session to an order (#33).
+  ///
+  /// ⚠️ **Refuses unless the order is still `#created`, and that refusal is the
+  /// point.** `create_order` commits the order and *then* awaits the outcall, so
+  /// another ingress message can interleave — specifically `cancel_order` from a
+  /// second tab, whose sessionless branch fires because no session id exists yet.
+  /// Storing the URL anyway would hand the buyer a **payable link for an order
+  /// they were told was cancelled**. Money-safe (the matrix rejects
+  /// `#cancelled → #paid`, so a payment lands as a Type 1 and is refunded) but it
+  /// recreates the exact "told cancelled, tab still charges" wart that making
+  /// cancellation atomic exists to eliminate.
+  ///
+  /// `expiresAtNs` is Stripe's own deadline and is stamped **once** — there is no
+  /// session retry, so nothing ever re-stamps it.
+  public func attachSession(
+    store : Store,
+    id : Types.OrderId,
+    sessionId : Text,
+    sessionUrl : Text,
+    expiresAtNs : Int,
+    nowNs : Int,
+  ) : Result.Result<Types.Order, TransitionError> {
+    switch (store.orders.get(id)) {
+      case null #err(#notFound(id));
+      case (?order) {
+        if (order.status != #created) {
+          // Not a transition failure in the matrix sense — the order is fine, it
+          // just is not the order this session was created for any more. Reported
+          // as an illegal `#created` transition so the caller has one shape to
+          // handle and the audit line names the status it actually found.
+          return #err(#illegalTransition({ from = order.status; to = #created }));
+        };
+        let attached = {
+          order with
+          stripeSessionId = ?sessionId;
+          stripeSessionUrl = ?sessionUrl;
+          expiresAtNs = ?expiresAtNs;
+          updatedAtNs = nowNs;
+        };
+        store.orders.add(id, attached);
+        // No `bump`: the status did not change, so the tallies are untouched.
+        #ok(attached);
+      };
+    };
+  };
+
+  /// `#created → #expired` because **Stripe closed the session** (#33), with the
+  /// session id backfilled if the order did not have one.
+  ///
+  /// The backfill is what lets a residue order heal: if the session-create
+  /// response was lost (a trap or upgrade between the order commit and the
+  /// continuation), the order holds no session id — and this event, arriving ~30
+  /// minutes later, is the thing that tells it which session it had.
+  public func expireBySession(
+    store : Store,
+    id : Types.OrderId,
+    sessionId : Text,
+    nowNs : Int,
+  ) : Result.Result<Types.Order, TransitionError> {
+    switch (store.orders.get(id)) {
+      case null #err(#notFound(id));
+      case (?order) {
+        switch (transition(order, #expired, nowNs)) {
+          case (#ok(updated)) {
+            let expired = {
+              updated with
+              expiredBy = ?(#sessionExpired : Types.ExpiredBy);
+              stripeSessionId = ?sessionId;
+            };
+            store.orders.add(id, expired);
+            bump(store, order.status, -1);
+            bump(store, expired.status, 1);
+            #ok(expired);
+          };
+          case (#err(e)) #err(e);
+        };
+      };
+    };
+  };
+
+  /// `#created → #expired` **with a recorded cause** (#34's `expiredBy`).
+  ///
+  /// Routed through `transition`, never a direct status write, for two protections
+  /// at once: the matrix no-ops `#cancelled → #expired` (a second tab may have
+  /// cancelled while the outcall was in flight), and the tallies stay coupled to
+  /// the status change. A direct write would bypass both — and on the reserve path
+  /// (#30) it would release an already-released promise.
+  public func expireWithCause(
+    store : Store,
+    id : Types.OrderId,
+    cause : Types.ExpiredBy,
+    nowNs : Int,
+  ) : Result.Result<Types.Order, TransitionError> {
+    switch (store.orders.get(id)) {
+      case null #err(#notFound(id));
+      case (?order) {
+        switch (transition(order, #expired, nowNs)) {
+          case (#ok(updated)) {
+            let expired = { updated with expiredBy = ?cause };
+            store.orders.add(id, expired);
+            bump(store, order.status, -1);
+            bump(store, expired.status, 1);
+            #ok(expired);
+          };
+          case (#err(e)) #err(e);
+        };
+      };
+    };
+  };
+
   /// Webhook money-in (§6.1): `#created → #paid`, and only that. #34 deleted the
   /// `#expired` edge, so this REFUSES an order that stopped being payable.
   ///

@@ -39,8 +39,8 @@ import {
   quoteChangedMessage,
   formatCycles,
   formatUsdCents,
+  clientReferenceFor,
   nsToMillis,
-  paymentLinkWithRef,
   rateSourceNote,
   shortPrincipal,
   statusInfo,
@@ -90,9 +90,7 @@ let lowFloat = false;
 
 /// The order the order/delivered view is showing. Null on every other view.
 let activeOrder: Order | null = null;
-// Payment links keyed by order id — known only for orders created this
-// session (the backend stores no link; the tier carries it).
-const payLinks = new Map<string, string>();
+
 // Quotes the *backend* computed, keyed by tier id — never derived here, so what
 // a buyer is shown and what create_order locks cannot disagree.
 let tierQuotes = new Map<string, QuotePreview>();
@@ -811,9 +809,11 @@ async function createCardOrder(dest: Destination): Promise<void> {
   }
   clearRequote();
   const created = result.ok;
-  payLinks.set(created.order.id, paymentLinkWithRef(tier.paymentLinkUrl, created.clientReferenceId));
+  // No link to assemble any more: the canister created a Checkout Session and the
+  // order carries its URL (#33). Nothing session-shaped lives in browser memory,
+  // which is what makes a reload keep working.
   lockNotice = lockedVsEstimate(created.order.lockedCycles, shown);
-  openOrder(created.order, created.clientReferenceId);
+  openOrder(created.order);
   void refreshHistory();
 }
 
@@ -829,7 +829,18 @@ function describeDestination(order: Order): string {
   return mine ? "your account" : `account ${account.owner.toText()}`;
 }
 
-function renderOrder(order: Order, clientReferenceId?: string): void {
+/// Whether Stripe's own deadline has passed.
+///
+/// Null means no session exists yet, which is a transient state during creation
+/// rather than an expired one — treated as not-past so the UI does not flash
+/// "expired" at an order that is mid-creation.
+function isPastDeadline(order: Order): boolean {
+  const deadline = order.expiresAtNs;
+  if (deadline === undefined) return false;
+  return Date.now() >= nsToMillis(deadline);
+}
+
+function renderOrder(order: Order): void {
   // Writes into `#active-order`, which the order view owns and no other view
   // does. The poll ticks every 3 s regardless of where the visitor has since
   // navigated, so without this a tick could refill and re-reveal the order panel
@@ -851,7 +862,15 @@ function renderOrder(order: Order, clientReferenceId?: string): void {
   // record — but the headline number a buyer recognises is the dollar rate.
 
   const key = statusKeyOf(order);
-  const info = statusInfo(key);
+  // ⚠️ **Expiry is rendered from the DEADLINE, not the status.** An order sits in
+  // `#created` past its `expiresAtNs` whenever the `checkout.session.expired`
+  // webhook is late or lost — Stripe closed the session on its own clock either
+  // way. Showing "Awaiting payment" there tells the buyer to do something that
+  // cannot work, so the page reports what Stripe's timestamp says. Zero backend
+  // cost, and the backend still moves the status when the event lands.
+  const info = key === "created" && isPastDeadline(order)
+    ? statusInfo("expired")
+    : statusInfo(key);
 
   const timeline = el("timeline");
   timeline.replaceChildren();
@@ -873,15 +892,28 @@ function renderOrder(order: Order, clientReferenceId?: string): void {
   // completed. #34 deleted `#expired → #paid`, so an expired order is not
   // awaiting anything — offering a pay link would send a buyer to spend money the
   // gateway would then have to refund. `#cancelled` was never payable.
-  const awaitingPayment = key === "created";
+  //
+  // Past `expiresAtNs` the order is also not payable, even while the status is
+  // still `#created`: Stripe closes the session on its own clock and the webhook
+  // telling us may be late or lost. Rendering from the timestamp means a buyer
+  // never sees a live pay button for a session Stripe has already closed.
+  const awaitingPayment = key === "created" && !isPastDeadline(order);
 
-  const link = payLinks.get(order.id);
+  // ⚠️ FROM THE ORDER, not from browser memory. This used to read a
+  // session-scoped `Map` populated only when `create_order` returned, so ANY
+  // reload lost the pay button on an order that was still payable — and with a
+  // one-open-order cap the buyer could not even start over. The URL is on the
+  // record now (#33/#34), so a reload, a second device and a deep link all work.
+  const link = order.stripeSessionUrl;
   show("pay-area", awaitingPayment && link !== undefined);
   if (link !== undefined) {
     el<HTMLAnchorElement>("pay-link").href = link;
   }
-  if (clientReferenceId !== undefined) {
-    el("client-ref").textContent = clientReferenceId;
+  // Derived rather than handed back by `create_order` (#33): it is the reference
+  // on the buyer's card receipt, so it stays on screen, but it was only ever in
+  // the response so the frontend could build a Payment Link URL.
+  if (identity !== null) {
+    el("client-ref").textContent = clientReferenceFor(identity.getPrincipal().toText(), order.id);
   }
 
   // Only an unpaid order can be given up on; past payment it is going to
@@ -998,12 +1030,12 @@ function stopPolling(): void {
   lastPolledStatus = null;
 }
 
-function openOrder(order: Order, clientReferenceId?: string): void {
+function openOrder(order: Order): void {
   activeOrder = order;
   orderLoad = "ok";
   navigate({ view: "order", orderId: order.id }, true);
   stopPolling();
-  renderOrder(order, clientReferenceId);
+  renderOrder(order);
   pollOrderId = order.id;
   lastPolledStatus = statusKeyOf(order);
   pollTimer = setInterval(() => void pollActiveOrder(), POLL_MS);

@@ -245,3 +245,40 @@ suite("expiring a session", func() {
     assert not Session.isNotOpen(429, Text.encodeUtf8("{\"error\":{\"message\":\"rate limited\"}}"));
   });
 });
+
+suite("classifying an outcall failure", func() {
+  test("separates the retryable subnet timeout from Stripe not answering", func() {
+    // Two distinct timeouts with different meanings, and neither traps: the
+    // 60 s subnet one is SysTransient and retryable, the 30 s remote one is
+    // SysFatal. An audit line that says only "outcall failed" leaves the
+    // operator unable to tell them apart.
+    assert Session.classifyFailure("Canister http request timed out") == #subnetTimeout;
+    assert Session.classifyFailure("Deadline Exceeded") == #subnetTimeout;
+    assert Session.classifyFailure("Timeout expired") == #remoteTimeout;
+  });
+
+  test("names the consensus failure, because it means OUR transform", func() {
+    // The one failure the PocketIC suite structurally cannot produce: it mocks
+    // outcalls, so a transform leaking a per-request header passes there and
+    // fails only against the real API. Recognising it by message is the whole
+    // diagnostic.
+    let kind = Session.classifyFailure(
+      "No consensus could be reached. Replicas had different responses. Details: request_id: 5, hashes: ..."
+    );
+    assert kind == #noConsensus;
+    assert Session.failureAdvice(kind).contains(#text "transform");
+  });
+
+  test("all three size-limit messages classify as too large", func() {
+    // Including the misleading one: "Http body exceeds size limit of N" prints
+    // the FULL cap rather than the remainder left after headers, so the body
+    // that failed can be well under N.
+    assert Session.classifyFailure("Header size exceeds specified response size limit 16384") == #tooLarge;
+    assert Session.classifyFailure("Http body exceeds size limit of 16384 bytes.") == #tooLarge;
+    assert Session.classifyFailure("Transformed http response exceeds limit: 16384") == #tooLarge;
+  });
+
+  test("an unknown message is #other rather than a wrong guess", func() {
+    assert Session.classifyFailure("something nobody has seen") == #other;
+  });
+});

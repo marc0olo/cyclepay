@@ -49,6 +49,25 @@ module {
   /// The asymmetry decides the value. Too small takes the rail down; too large
   /// costs ~10,400 cycles per byte at n = 13. Never `null`: the `ic` package
   /// substitutes 2,000,000 and the call costs ~20.85 B.
+  ///
+  /// ⚠️ **The cap is checked TWICE against the same number, and the second check
+  /// adds Candid overhead.** Headers are counted first, then the body against
+  /// what remains; then the transform's *Candid-encoded output* is checked
+  /// against the same value. So a raw response that only just fits can still fail
+  /// after the transform. Sizing at ~2× a measured response is not padding, it is
+  /// the margin those two checks need.
+  ///
+  /// **Three distinct failure messages, and the middle one is actively
+  /// misleading** — worth recognising before diagnosing the wrong thing:
+  ///
+  /// | Reject message | What actually happened |
+  /// |---|---|
+  /// | `Header size exceeds specified response size limit <N>` | the headers **alone** exceeded the cap |
+  /// | `Http body exceeds size limit of <N> bytes.` | the body exceeded what was **left after** the headers. It prints the full cap, not the remainder, so **the body that failed can be well under `<N>`** |
+  /// | `Transformed http response exceeds limit: <N>` | the transform's Candid-encoded output exceeded the cap |
+  ///
+  /// Raising the cap fixes all three. Stripping headers in the transform fixes
+  /// only the last, because the first two are checked before it runs.
   public let maxResponseBytes : Nat64 = 16_384;
 
   /// Session lifetime handed to Stripe, in seconds.
@@ -272,6 +291,61 @@ module {
   /// has one home and one test.
   public func secondsToNs(seconds : Nat) : Int {
     seconds * 1_000_000_000;
+  };
+
+  /// How an outcall failed, in terms an operator can act on.
+  ///
+  /// The reject messages are the replica's, matched as substrings — the exact
+  /// strings, not paraphrases. The distinction that matters is **retryable or
+  /// not**, because there is no retry method here by design (#33): the buyer
+  /// retries, and an audit line saying "outcall failed" leaves the operator
+  /// unable to tell a transient subnet hiccup from Stripe being down from a bug
+  /// in our own transform.
+  public type FailureKind = {
+    /// The subnet did not produce a response within 60 s. `SysTransient` — the
+    /// retryable one. Nothing is known about whether Stripe created the session.
+    #subnetTimeout;
+    /// Stripe did not answer within 30 s. `SysFatal`.
+    #remoteTimeout;
+    /// ⚠️ **Replicas disagreed, which almost always means OUR transform.** The
+    /// signature of a header that is not being stripped, or a body field that
+    /// varies per request. This is the failure the PocketIC suite structurally
+    /// cannot catch — it mocks outcalls, so a leaky transform passes there and
+    /// only ever fails against the real API.
+    #noConsensus;
+    /// The response, or the transform's output, exceeded `max_response_bytes`.
+    /// See the table on `maxResponseBytes`: the body message is misleading.
+    #tooLarge;
+    /// Attached fewer cycles than required — only reachable by hand-attaching,
+    /// which this code never does.
+    #insufficientCycles;
+    #other;
+  };
+
+  /// Classify a reject message. Pure, so the mapping is unit-tested rather than
+  /// discovered during an outage.
+  public func classifyFailure(message : Text) : FailureKind {
+    if (message.contains(#text "Canister http request timed out")) return #subnetTimeout;
+    if (message.contains(#text "Deadline Exceeded")) return #subnetTimeout;
+    if (message.contains(#text "Timeout expired")) return #remoteTimeout;
+    if (message.contains(#text "No consensus could be reached")) return #noConsensus;
+    if (message.contains(#text "exceeds specified response size limit")) return #tooLarge;
+    if (message.contains(#text "exceeds size limit of")) return #tooLarge;
+    if (message.contains(#text "Transformed http response exceeds limit")) return #tooLarge;
+    if (message.contains(#text "cycles are required")) return #insufficientCycles;
+    #other;
+  };
+
+  /// What an operator should do about it, for the audit line.
+  public func failureAdvice(kind : FailureKind) : Text {
+    switch (kind) {
+      case (#subnetTimeout) "transient: the subnet did not answer in 60 s — retryable";
+      case (#remoteTimeout) "Stripe did not answer in 30 s";
+      case (#noConsensus) "REPLICAS DISAGREED — almost certainly the transform is leaking a per-request value; no test suite can catch this, check the transform";
+      case (#tooLarge) "the response exceeded max_response_bytes (headers count, and the body message understates it) — raise the cap";
+      case (#insufficientCycles) "too few cycles attached — Call.httpRequest should make this unreachable";
+      case (#other) "unclassified";
+    };
   };
 
   /// Whether Stripe's response says the session is no longer open.

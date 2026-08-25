@@ -18,6 +18,10 @@ import Set "mo:core/Set";
 import Text "mo:core/Text";
 import Time "mo:core/Time";
 import Timer "mo:core/Timer";
+// `Call.httpRequest` attaches the exact `ic0.cost_http_request` price; `IC` is
+// imported for the request/response types the transform signature needs.
+import Call "mo:ic/Call";
+import IC "mo:ic/Types";
 import AuditLog "AuditLog";
 import Auth "Auth";
 import Cmc "Cmc";
@@ -508,13 +512,172 @@ persistent actor CyclesGateway {
     /// account. Cycles go to the buyer and nowhere else, and that is a property
     /// of the canister rather than of whichever frontend called it (#29).
     #destinationNotOwned;
+    /// No payable Checkout Session could be created (#33): the API key or the
+    /// origin is unset, Stripe refused, or the outcall failed. Carries a reason
+    /// so the operator can tell "not provisioned yet" from "Stripe is down"
+    /// without reading the audit log. The order was created and then failed, so
+    /// the buyer's open-order slot is already free — they retry, they do not wait.
+    ///
+    /// Deliberately distinct from `#notAdmitted`: this is the operator's problem,
+    /// that one is the buyer's.
+    #sessionUnavailable : Text;
+    /// The order was cancelled from another tab while its session was being
+    /// created. The session exists at Stripe but its URL never left the canister,
+    /// so it is unreachable and dies at its own `expires_at`.
+    #cancelledDuringCreation;
   };
 
   public type CreatedOrder = {
+    /// The order, carrying `stripeSessionUrl` — which is the only thing the
+    /// caller needs to send the buyer to Stripe.
+    ///
+    /// ⚠️ `clientReferenceId` used to be here. It existed so the frontend could
+    /// append `?client_reference_id=` to a **Payment Link URL**; the canister now
+    /// sets it through the API, so it was a Payment-Link relic sitting in a public
+    /// response type (#33). It is derivable — `<principal>_<orderId>` — and the
+    /// frontend computes it for the receipt field rather than being handed it.
     order : Types.Order;
-    /// `<principal>_<orderId>` — the frontend appends this to the tier's
-    /// Payment Link as `?client_reference_id=` (§6.1).
-    clientReferenceId : Text;
+  };
+
+  /// The outcall transform (#33). Referenced by name in the request, so it has to
+  /// be a public `shared query` on the actor even though nothing should ever call
+  /// it directly.
+  ///
+  /// Its whole job is `Session.strip`: **remove every response header.** Stripe
+  /// returns a unique `request-id` per HTTP request, and each replica issues its
+  /// own request — so passing headers through fails consensus on *every* call, not
+  /// occasionally. Replication-count independent: any `n > 1` breaks.
+  public shared query func transform_stripe_response(args : { context : Blob; response : IC.HttpRequestResult }) : async IC.HttpRequestResult {
+    Session.strip(args.response);
+  };
+
+  /// Create the Checkout Session for a freshly committed order (#33).
+  ///
+  /// Returns the session, or a reason the caller turns into a distinguishable
+  /// `create_order` error. Cycles are attached by `Call.httpRequest`, which
+  /// computes the exact `ic0.cost_http_request` price — **never hand-attach and
+  /// never add a buffer**: over-attaching is refunded, but the cycles are reserved
+  /// for the call's duration, so a buffer reduces how many outcalls can be in
+  /// flight, which is precisely why the library attaches the minimum.
+  func createStripeSession(
+    orderId : Types.OrderId,
+    clientReferenceId : Text,
+    usdCents : Nat,
+  ) : async* { #ok : Session.Created; #err : SessionError } {
+    let ?apiKey = Secret.get(stripeApiKey) else return #err(#railClosed);
+    let ?keyText = apiKey.decodeUtf8() else return #err(#railClosed);
+    let ?origin = stripeOrigin else return #err(#originUnset);
+    // Stripe evaluates the 30-minute floor against ITS clock on receipt, so the
+    // request asks for 35 to survive skew and consensus latency. `expiresAtNs`
+    // comes from the response, not from this.
+    let expiresAtSeconds = Int.abs(Time.now() / 1_000_000_000) + Session.requestedLifetimeSeconds;
+    let body = Session.createBody({
+      orderId;
+      clientReferenceId;
+      usdCents;
+      origin;
+      expiresAtSeconds;
+    });
+    let response = try {
+      await Call.httpRequest({
+        url = Session.createUrl;
+        method = #post;
+        max_response_bytes = ?Session.maxResponseBytes;
+        body = ?body.encodeUtf8();
+        headers = Session.createHeaders(keyText, orderId);
+        transform = ?{ function = transform_stripe_response; context = "" };
+        is_replicated = null;
+      });
+    } catch (e) {
+      // Classified rather than passed through raw: "outcall failed" cannot tell an
+      // operator whether to wait, look at Stripe, or look at our own transform —
+      // and the transform case is the one no test suite can catch.
+      let kind = Session.classifyFailure(e.message());
+      return #err(#outcallFailed(Session.failureAdvice(kind) # " [" # e.message() # "]"));
+    };
+    if (response.status != 200) {
+      return #err(#stripeRejected({ status = response.status }));
+    };
+    switch (Session.parseCreated(response.body)) {
+      case (#err(#unparseable)) #err(#unparseableResponse);
+      case (#err(#missingField(f))) #err(#missingField(f));
+      case (#ok(created)) {
+        // Checked HERE rather than at webhook time: with two mode-bearing
+        // secrets — this key and the webhook secret — they can disagree, and
+        // catching it at session creation is before any money moves.
+        switch (expectLivemode) {
+          case (?expected) {
+            if (created.livemode != expected) {
+              return #err(#livemodeMismatch({ sessionLivemode = created.livemode; expected }));
+            };
+          };
+          // Unset means "either mode", which is only sensible while nothing of
+          // value is at stake. The go-live checklist declares it.
+          case null {};
+        };
+        #ok(created);
+      };
+    };
+  };
+
+  /// Expire a session at Stripe so the order is provably unpayable (#33).
+  ///
+  /// Three outcomes, and the distinction between the last two is load-bearing:
+  /// "not open" means the session already completed or expired, so the caller
+  /// must change nothing and let the webhook resolve it; "failed" means we do not
+  /// know, so the order must stay payable and uncancelled.
+  func expireStripeSession(sessionId : Text) : async* { #ok; #notOpen; #failed : Text } {
+    let ?apiKey = Secret.get(stripeApiKey) else return #failed("the Stripe API key is not provisioned");
+    let ?keyText = apiKey.decodeUtf8() else return #failed("the stored API key is not valid UTF-8");
+    let response = try {
+      await Call.httpRequest({
+        url = Session.expireUrl(sessionId);
+        method = #post;
+        max_response_bytes = ?Session.maxResponseBytes;
+        // Stripe's expire endpoint takes no parameters; the session is in the
+        // path. An empty body still needs to be `?` rather than null so the POST
+        // is well formed.
+        body = ?("" : Blob);
+        headers = Session.expireHeaders(keyText);
+        transform = ?{ function = transform_stripe_response; context = "" };
+        is_replicated = null;
+      });
+    } catch (e) {
+      let kind = Session.classifyFailure(e.message());
+      return #failed(Session.failureAdvice(kind) # " [" # e.message() # "]");
+    };
+    if (response.status == 200) return #ok;
+    if (Session.isNotOpen(response.status, response.body)) return #notOpen;
+    #failed("Stripe answered " # response.status.toText());
+  };
+
+  public type SessionError = {
+    /// The API key is not provisioned. The rail cannot produce a payable session.
+    #railClosed;
+    /// No origin set, so there is no URL to return the buyer to.
+    #originUnset;
+    #outcallFailed : Text;
+    #stripeRejected : { status : Nat };
+    #unparseableResponse;
+    #missingField : Text;
+    #livemodeMismatch : { sessionLivemode : Bool; expected : Bool };
+  };
+
+  func sessionErrorToText(e : SessionError) : Text {
+    switch (e) {
+      case (#railClosed) "the Stripe API key is not provisioned";
+      case (#originUnset) "no return origin is configured";
+      case (#outcallFailed(detail)) "outcall failed: " # detail;
+      case (#stripeRejected({ status })) "Stripe answered " # status.toText();
+      case (#unparseableResponse) "Stripe's response was not usable JSON";
+      case (#missingField(f)) "Stripe's response had no " # f;
+      case (#livemodeMismatch({ sessionLivemode; expected })) {
+        "livemode mismatch: the API key is "
+        # (if (sessionLivemode) "LIVE" else "test")
+        # " but this gateway expects "
+        # (if (expected) "LIVE" else "test");
+      };
+    };
   };
 
   /// One quote = one consistent epoch: the caller snapshots the rail's fee
@@ -673,9 +836,62 @@ persistent actor CyclesGateway {
       case null {};
     };
     let owner : Types.Owner = #ii(caller);
-    switch (await* createOrderWithFreshId(owner, #card, destination, lockedCycles, pricing)) {
-      case (?order) #ok({ order; clientReferenceId = Orders.clientReferenceId(owner, order.id) });
-      case null #err(#idGeneration);
+    let ?order = (await* createOrderWithFreshId(owner, #card, destination, lockedCycles, pricing)) else {
+      return #err(#idGeneration);
+    };
+    let clientReferenceId = Orders.clientReferenceId(owner, order.id);
+
+    // ── The session, after the order exists ─────────────────────────────────
+    // The ordering is forced: the order id IS the `client_reference_id`, so the
+    // order must be committed before the session can name it. Which means an
+    // await sits between them, and everything below is about that gap.
+    switch (await* createStripeSession(order.id, clientReferenceId, order.pricing.usdCents)) {
+      case (#err(e)) {
+        // Fail the order in the same call and let the buyer start over. There is
+        // no retry method by design: a `payment_session(orderId)` retry was the
+        // only thing that created orders in a sessionless state, and every
+        // downstream complication chained off that — a promise no
+        // `checkout.session.expired` can release, a sweep promoted into a release
+        // path, a per-attempt idempotency key Stripe rejects on a changed body.
+        //
+        // ⚠️ Through `expireWithCause`, never a direct status write: a second tab
+        // may have cancelled this order while the outcall was in flight, and the
+        // matrix no-ops `#cancelled → #expired` for free.
+        switch (Orders.expireWithCause(orderStore, order.id, #sessionFailed, Time.now())) {
+          case (#ok(_)) {};
+          case (#err(_)) {}; // already cancelled or gone; nothing to undo
+        };
+        audit("stripe.sessionFailed", order.id # ": " # sessionErrorToText(e));
+        return #err(#sessionUnavailable(sessionErrorToText(e)));
+      };
+      case (#ok(created)) {
+        // ⚠️ Re-check the status before storing. `create_order` committed the
+        // order as `#created` and then awaited, so `cancel_order` from a second
+        // tab can have run in between — its sessionless branch fires, because no
+        // session id existed yet. Storing the URL anyway would hand the buyer a
+        // payable link for an order they were told was cancelled. Money-safe (the
+        // matrix rejects `#cancelled → #paid`) but it recreates exactly the
+        // "told cancelled, tab still charges" wart atomic cancellation exists to
+        // eliminate. `attachSession` enforces this; the branch below reports it.
+        switch (
+          Orders.attachSession(
+            orderStore,
+            order.id,
+            created.id,
+            created.url,
+            Session.secondsToNs(created.expiresAtSeconds),
+            Time.now(),
+          )
+        ) {
+          case (#ok(withSession)) #ok({ order = withSession });
+          case (#err(_)) {
+            // The session is unreachable either way: its URL never left the
+            // canister, so nobody can pay it, and it dies at its own expires_at.
+            audit("stripe.sessionOrphaned", order.id # ": cancelled during creation; session " # created.id # " left to expire");
+            #err(#cancelledDuringCreation);
+          };
+        };
+      };
     };
   };
 
@@ -1789,10 +2005,49 @@ persistent actor CyclesGateway {
     // what makes a cancelled order unpayable by construction rather than by a
     // runtime check somebody has to remember.
     //
-    // ⚠️ Local-only until #33: the Stripe session stays payable, so a buyer who
-    // cancels and then pays anyway produces money-in against an unpayable order.
-    // `Card.handleWebhook` files that as a Type 1 obligation for the operator
-    // rather than trapping. #33 closes the window by expiring the session first.
+    // ── Atomic with Stripe (#33, option B) ──────────────────────────────────
+    // Expire the session FIRST, then mark the order. Nothing is ever *half*
+    // cancelled: if the session is still live on Stripe, the order is not
+    // cancelled. That ordering is the whole reason `#cancelled → #paid` never
+    // needs to be legal — Stripe guarantees a session ends in exactly one of
+    // completed/expired, so a successful expire proves no payment completed.
+    //
+    // An earlier draft made this outcall non-fatal (audit and return success
+    // anyway). Rejected: it recreates the half-cancelled state — order says
+    // cancelled, session still charges the buyer — that `#cancelled` exists to
+    // eliminate.
+    switch (order.stripeSessionId) {
+      case null {
+        // No session ever existed, so no URL left the canister and the order is
+        // provably unpayable. This is the residue case: a trap or upgrade landed
+        // between the order commit and the outcall response, so the in-call
+        // failure handler never ran. Cancel with no outcall.
+        audit("order.cancelledSessionless", id # " had no session; cancelled without an outcall");
+      };
+      case (?sessionId) {
+        switch (await* expireStripeSession(sessionId)) {
+          case (#ok) {};
+          case (#notOpen) {
+            // Two causes and we must not guess between them from our clock: the
+            // session completed (the payment won the race) or it expired already.
+            // Change nothing and let the incoming `checkout.session.completed` or
+            // `checkout.session.expired` resolve it.
+            audit("order.cancelRaced", id # ": session " # sessionId # " is no longer open");
+            return #err(
+              "order " # id # " is already settled or has expired — refresh the page"
+            );
+          };
+          case (#failed(detail)) {
+            // The order stays payable and uncancelled, which is the safe side:
+            // the buyer can retry, or it expires on its own.
+            audit("order.cancelFailed", id # ": " # detail);
+            return #err(
+              "could not reach Stripe to cancel order " # id # " — try again, or it expires on its own"
+            );
+          };
+        };
+      };
+    };
     let ?cancelled = tryTransition(id, #cancelled) else {
       return #err("order " # id # " refused the transition to cancelled");
     };
