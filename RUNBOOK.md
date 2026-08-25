@@ -518,24 +518,39 @@ icp canister call backend run_retention '()' -e ic --identity <operator>
 ```
 
 **Orders are never deleted.** Retention has exactly one effect: a `created`
-order past `orderTtlNs` flips to `expired`. Buyers can also trigger that flip
-themselves with `cancel_order` (owner-scoped) to free an open-order slot — an
-`expired` order is still payable, so cancelling never strands an in-flight
-payment, and it creates no error-queue entry because nothing is owed.
+order past `orderTtlNs` flips to `expired`. A buyer freeing their own open-order
+slot uses `cancel_order` (owner-scoped), which produces `cancelled` — a separate
+status, not this flip.
 
-| Status | Age | Payable? |
-|---|---|---|
-| `created` | < `orderTtlNs` (default 48 h) | yes |
-| `expired` | ≥ TTL, forever | **yes** — expiry is advisory (§4) |
+| Status | Payable? |
+|---|---|
+| `created` | yes, until the TTL |
+| `expired` | **no** (#34) |
+| `cancelled` | **no** (#34) |
 
-The flip is bookkeeping: it makes an abandoned attempt visibly stale rather than
-indistinguishable from a live one. A Payment Link is permanent, so a payment can
-arrive against an expired order years later, and it is **honoured at the locked
-quantity** — same as if it had arrived on time.
+⚠️ **Expiry stopped being advisory in #34**, which deleted `#expired → #paid`.
+Both consequences matter operationally:
+
+- **A payment arriving against an expired or cancelled order cannot be
+  converted.** It answers 200, the status does not move, and a Type 1
+  `#unattributed` entry is filed carrying the payment intent. **Refund it in
+  Stripe** — `attach_payment` refuses a non-`created` order with `notClaimable`,
+  by design.
+- **A webhook lost for longer than the TTL is now a refund, not a rescue.**
+  Stripe retries a failed delivery for about three days while the default TTL is
+  48 h, so an order can expire mid-retry. Raising `orderTtlNs` past the retry
+  window is the lever if that ever bites before #33 lands; #33 removes the
+  question by taking the deadline from Stripe (30 min, Stripe-enforced), so a
+  session that can still be paid always belongs to an order that can accept it.
+
+The flip is still bookkeeping in the sense that it deletes nothing: the order and
+its `client_reference_id` survive forever, which is what keeps a late payment
+*attributable*, and therefore refundable rather than a mystery charge.
 
 **`orderTtlNs` must exceed the Stripe Checkout Session lifetime (24 h)**, or a
-customer can watch their order expire while still on the payment page. The 48 h
-default is 2×. Zero is refused.
+customer can watch their order expire while still on the payment page — and now
+that expiry is terminal, that would cost them a refund cycle rather than a wait.
+The 48 h default is 2×. Zero is refused.
 
 The flip runs inside the recovery timer (hourly by default); `run_retention`
 applies a retuned TTL immediately instead of waiting a cycle, and is safe to
@@ -561,8 +576,21 @@ icp canister call backend resolve_error '(42)' -e ic --identity <operator>
 icp canister call backend mint_journal '("<orderId>")' -e ic --identity <operator>
 ```
 
-The queue is the **operator worklist** — resolution lives on the entry and
-never transitions an order (`errorQueue` status is terminal).
+The queue is the **operator worklist** — resolving an entry lives on the entry and
+never transitions the order. The order's own status says whether anything is
+still owed, which is why #34 split the old `errorQueue` status in two:
+
+| Status | Meaning | The order's promise |
+|---|---|---|
+| `NeedsReview` | a money position nobody knows the outcome of — typically a transfer past the ledger's ~24 h dedup window. **Check the ledger.** | **still held** |
+| `Abandoned` | you ended it, having refunded by hand. Terminal. | **released** |
+
+`abandon_order` is the only way from the first to the second, and it now accepts
+a `NeedsReview` order — which the single `errorQueue` status could not, because it
+meant both things at once and the transition would have been to itself.
+
+⚠️ **Never treat `NeedsReview` as finished.** It is the status that still owes
+cycles; `Abandoned` is the one that does not.
 **Only a *full* `charge.refunded` auto-resolves a Type 1 entry** — Stripe fires
 the same event for partial refunds, so the canister compares `amount_refunded`
 against the charge's `amount`. A partial refund leaves the entry open and audits
@@ -592,7 +620,7 @@ icp canister call backend resolve_error '(137 : nat)' -e ic --identity <operator
 | Kind / stage | Money position | Action |
 |---|---|---|
 | `#duplicate {orderId; paymentRef}` (Type 1) | Fiat in twice for one order; first payment minted, second did not | Refund `paymentRef` in the Stripe Dashboard (search by payment_intent). The `charge.refunded` webhook auto-resolves the entry; `resolve_error` is the fallback. |
-| `#unattributed {claimedRef; paymentRef}` (Type 1) | Fiat in, no resolvable order (bad/missing `client_reference_id`, owner/rail/currency mismatch, below-fee-floor payment) | Inspect the session in Stripe by `paymentRef`. **If you can identify the order the customer meant, `attach_payment` credits it** — the buyer gets cycles instead of a refund-and-re-order round trip, priced from that order's own creation-time snapshot (see below). If you cannot identify it, refund → auto-resolve (or `resolve_error`). |
+| `#unattributed {claimedRef; paymentRef}` (Type 1) | Fiat in, and no order that can accept it: a bad/missing `client_reference_id`, an owner/rail/currency mismatch, a below-fee-floor payment — **or, since #34, a payment against a `cancelled` or `expired` order**, which is now the common producer. The entry's own `detail` says which. | Inspect the session in Stripe by `paymentRef`. **`attach_payment` only works while the order is `created`** — against a cancelled or expired one it refuses with `notClaimable`, because #34 deleted `#expired → #paid` and the decided answer there is a refund. So: if the entry names an order that is still `created`, attach it and the buyer gets cycles instead of a refund-and-re-order round trip, priced from that order's own creation-time snapshot (see below). Otherwise — including every cancelled/expired case — **refund in Stripe** → auto-resolve (or `resolve_error`). |
 | `#undeliverable {orderId; cycles}` (Type 2) | Cycles minted, the forward *cleanly rejected* — the cycles sit in the backend's own cycle balance. Since #29 there is one destination, so the cause is the **cycles ledger**, not the target: stopped, upgrading, or its call queue full. | Check the cycles ledger is serving (`icrc1_fee` on `um5iw-rqaaa-aaaaq-qaaba-cai` answers). There is no automatic re-forward lever; once it is back, either deliver manually with a cycles-ledger transfer to the buyer's account (the stranded balance reimburses you) or refund the fiat in Stripe. Then `resolve_error`. |
 | `#stuckMint{stage="treasuryWaitExceeded"}` | Certain: fiat in, nothing minted | Refund in the Stripe Dashboard → `resolve_error`. |
 | `#stuckMint{stage="staleIntent"}` | Uncertain: ICP transfer intent aged past the 24 h ledger dedup window with no recorded block — the original transfer's fate is unknowable, auto-replay risks double-spend (§5.1) | Read `mint_journal(orderId)` for the intent (amount, `created_at_time`, CMC top-up subaccount). Check the ICP ledger for a matching transfer from the backend account. **Executed** → the ICP sits at the CMC under the backend's top-up subaccount; call `notify_top_up` on the CMC with the found block index (anyone may notify; if the CMC refuses an old block, contact DFINITY ops — the ICP is parked, not lost) and reconcile. **Not executed** → fiat in, nothing moved: refund in Stripe. Either way `resolve_error`; never rebuild a fresh intent. |
@@ -619,7 +647,15 @@ This is the buyer-first resolution for a payment that arrived but could not be
 matched — a mistyped or stripped `client_reference_id`, or a webhook the canister
 never received. The order is credited exactly as the webhook would have credited
 it: **priced from that order's own creation-time snapshot**, never from today's
-rate, so a rescue weeks later delivers what the buyer bought.
+rate, so the buyer gets what they bought rather than today's price.
+
+⚠️ **Only while the order is still `created`** (#34). A cancelled or expired order
+refuses with `notClaimable`: `#expired → #paid` no longer exists, so there is
+nothing to credit and the answer is a refund in Stripe. That narrows this lever
+sharply, because the default TTL (48 h) is shorter than Stripe's retry window
+(~3 days) — a webhook lost long enough expires its own order. #33 removes the
+mismatch by taking the deadline from Stripe and deletes this method with the rest
+of the Payment Link mechanism.
 
 ⚠️ **`paidUsdCents` is required, not optional** — pass what Stripe actually shows for
 that charge. There is no "use the tier price" shorthand, deliberately: the amount is

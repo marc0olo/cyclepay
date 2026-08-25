@@ -3,13 +3,15 @@
 /// OrderStatus variant keys as the Candid wrapper surfaces them.
 export type StatusKey =
   | "created"
+  | "cancelled"
   | "expired"
   | "paid"
   | "minting"
   | "icpAtCmc"
   | "awaitingTreasury"
   | "delivered"
-  | "errorQueue";
+  | "needsReview"
+  | "abandoned";
 
 export interface StatusInfo {
   label: string;
@@ -26,10 +28,16 @@ export function statusInfo(key: StatusKey): StatusInfo {
   switch (key) {
     case "created":
       return { label: "Awaiting payment", step: 0, terminal: false, tone: "active" };
+    case "cancelled":
+      // The buyer's own decision, and its own status — so a reload no longer
+      // tells someone who cancelled that their order "expired" (#34).
+      return { label: "Cancelled", step: -1, terminal: true, tone: "warn" };
     case "expired":
-      // §4 expiry is advisory. A genuine late payment still completes, so
-      // the order stays pollable.
-      return { label: "Expired. A completed payment still goes through", step: 0, terminal: false, tone: "warn" };
+      // TERMINAL as of #34, which deleted `#expired → #paid`. It used to say a
+      // completed payment still went through; that is no longer true, and a
+      // payment arriving now becomes an operator obligation to refund rather
+      // than cycles.
+      return { label: "Expired. This order can no longer be paid", step: -1, terminal: true, tone: "warn" };
     case "paid":
       return { label: "Payment received", step: 1, terminal: false, tone: "active" };
     case "awaitingTreasury":
@@ -40,8 +48,12 @@ export function statusInfo(key: StatusKey): StatusInfo {
       return { label: "Minting cycles (ICP at the minting canister)", step: 2, terminal: false, tone: "active" };
     case "delivered":
       return { label: "Delivered", step: 3, terminal: true, tone: "ok" };
-    case "errorQueue":
-      return { label: "Needs operator attention. Contact support", step: -1, terminal: true, tone: "err" };
+    case "needsReview":
+      // NOT terminal: the operator can still end it, and until they do the order
+      // holds its promise. Polling continues so the buyer sees that happen.
+      return { label: "Needs operator attention. Contact support", step: -1, terminal: false, tone: "err" };
+    case "abandoned":
+      return { label: "Ended by support. Contact us about a refund", step: -1, terminal: true, tone: "err" };
   }
 }
 

@@ -19,14 +19,20 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   const Owner = IDL.Variant({ ii: IDL.Principal });
   const Rail = IDL.Variant({ card: IDL.Null });
   const OrderStatus = IDL.Variant({
+    abandoned: IDL.Null,
     awaitingTreasury: IDL.Null,
+    cancelled: IDL.Null,
     created: IDL.Null,
     delivered: IDL.Null,
-    errorQueue: IDL.Null,
     expired: IDL.Null,
     icpAtCmc: IDL.Null,
     minting: IDL.Null,
+    needsReview: IDL.Null,
     paid: IDL.Null,
+  });
+  const ExpiredBy = IDL.Variant({
+    sessionExpired: IDL.Null,
+    sessionFailed: IDL.Null,
   });
   const Pricing = IDL.Record({
     feeBps: IDL.Nat,
@@ -34,6 +40,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     rateQueriedSources: IDL.Nat,
     rateReceivedRates: IDL.Nat,
     rateStandardDeviation: IDL.Nat,
+    ratesFetchedAtNs: IDL.Int,
     usdCents: IDL.Nat,
     usdPerIcpMicros: IDL.Nat,
     xdrPermyriadPerIcp: IDL.Nat,
@@ -41,6 +48,10 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   const Order = IDL.Record({
     createdAtNs: IDL.Int,
     paidUsdCents: IDL.Opt(IDL.Nat),
+    expiredBy: IDL.Opt(ExpiredBy),
+    expiresAtNs: IDL.Opt(IDL.Int),
+    stripeSessionId: IDL.Opt(IDL.Text),
+    stripeSessionUrl: IDL.Opt(IDL.Text),
     destination: Destination,
     id: IDL.Text,
     lockedCycles: IDL.Nat,

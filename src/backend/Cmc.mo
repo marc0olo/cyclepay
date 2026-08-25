@@ -520,7 +520,7 @@ module {
         let ?block = e.blockIndex else return #escalate(#missingJournal);
         #notifyCmc(block);
       };
-      case (#created or #expired or #awaitingTreasury or #delivered or #errorQueue) #none;
+      case (#created or #cancelled or #expired or #awaitingTreasury or #delivered or #needsReview or #abandoned) #none;
     };
   };
 

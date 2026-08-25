@@ -96,7 +96,10 @@ module {
   public func isSweepable(status : Types.OrderStatus) : Bool {
     switch (status) {
       case (#paid or #minting or #icpAtCmc or #awaitingTreasury) true;
-      case (#created or #expired or #delivered or #errorQueue) false;
+      // `#needsReview` is NOT sweepable: its whole meaning is that the money
+      // position is unknown and a human must look. Re-driving it automatically
+      // is the double-spend this status exists to prevent.
+      case (#created or #cancelled or #expired or #delivered or #needsReview or #abandoned) false;
     };
   };
 

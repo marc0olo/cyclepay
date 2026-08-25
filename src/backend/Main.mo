@@ -471,6 +471,10 @@ persistent actor CyclesGateway {
             rateQueriedSources = rates.quality.queriedSources;
             feeBps = fee.feeBps;
             feeFixedCents = fee.feeFixedCents;
+            // The one field of `Pricing.Rates` this copy used to drop. Without
+            // it `createdAtNs` is the only timestamp on the record, and it is
+            // not when these rates were read (#34).
+            ratesFetchedAtNs = rates.fetchedAtNs;
           },
         ));
       };
@@ -1102,11 +1106,13 @@ persistent actor CyclesGateway {
   };
 
   /// §5.1 escalation: the mint stopped where the money position is
-  /// uncertain. Terminal — the order goes `#errorQueue` and the operator
-  /// resolves off-chain (inspect ledger/CMC/destination, refund/re-deliver).
+  /// uncertain. The order goes `#needsReview` — **not** `#abandoned`: the money
+  /// position is unknown, so its promise stays held (#30) and a human resolves it
+  /// off-chain (inspect ledger/CMC/destination, refund/re-deliver). Only
+  /// `abandon_order` ends an order.
   func escalateStuckMint(order : Types.Order, stage : Text, detail : Text) {
-    ignore tryTransition(order.id, #errorQueue);
-    Cmc.patch(mintJournal, order.id, { status = ?#errorQueue; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+    ignore tryTransition(order.id, #needsReview);
+    Cmc.patch(mintJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
     // Before queueing the escalation: any open delay alert for this order says
     // "it delivers on the next sweep", which just stopped being true. Leaving it
     // open would put a false promise on the worklist next to the real problem,
@@ -1417,8 +1423,8 @@ persistent actor CyclesGateway {
             case (#failed(detail)) {
               // §4.1 Type 2: the failed deposit refunded the cycles to the
               // app balance — minted money exists, delivery didn't happen.
-              ignore tryTransition(orderId, #errorQueue);
-              Cmc.patch(mintJournal, orderId, { status = ?#errorQueue; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+              ignore tryTransition(orderId, #needsReview);
+              Cmc.patch(mintJournal, orderId, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
               // Same reason as escalateStuckMint: the delay is over, badly.
               clearDelayed(orderId);
               ignore queueMintError(order.rail, #undeliverable({ orderId; cycles = order.lockedCycles }), detail);
@@ -1570,10 +1576,20 @@ persistent actor CyclesGateway {
   /// horizon the charge exists in Stripe with no on-chain trace at all, the
   /// buyer's money is gone, and their order reads "Awaiting payment" forever.
   ///
-  /// Also rescues an unattributed payment the operator *can* identify — turning
-  /// "refund and ask them to re-order at today's price" into "deliver what they
-  /// bought". Any open Type 1 entry for the charge is resolved, since attaching
-  /// it discharges that obligation.
+  /// ⚠️ **Only while the order is `#created`.** #34 deleted `#expired → #paid`,
+  /// so a cancelled or expired order cannot be converted at all — the lever there
+  /// is a refund in Stripe. That narrows this method considerably, because the
+  /// retention sweep expires an order at 48 h while Stripe is still retrying: a
+  /// webhook lost for longer than the TTL now leaves a payment that must be
+  /// refunded rather than delivered. Deliberate, and transitional — #33 takes the
+  /// deadline from Stripe (30 minutes, enforced by Stripe), so a session that can
+  /// still be paid belongs to an order that can still accept it, and this method
+  /// is deleted along with the whole Payment Link mechanism.
+  ///
+  /// Also rescues an unattributed payment the operator *can* identify, while the
+  /// order is still `#created` — turning "refund and ask them to re-order at
+  /// today's price" into "deliver what they bought". Any open Type 1 entry for the
+  /// charge is resolved, since attaching it discharges that obligation.
   ///
   /// The operator supplies the amount because Stripe is the authority on it, and
   /// it is honoured through exactly the same helper the webhook uses.
@@ -1588,8 +1604,22 @@ persistent actor CyclesGateway {
     requireAdmin(caller);
     let ?order = Orders.get(orderStore, id) else return #err(#noOrder(id));
     if (order.rail != #card) return #err(#wrongRail);
+    // `#created` alone. This guard must mirror what the matrix admits into
+    // `#paid`, exactly as `Card.handleWebhook`'s does — `markPaid` is the shared
+    // callee and `-Werror` cannot see the coupling from either side.
+    //
+    // `#expired` was here until #34 deleted `#expired → #paid`. Keeping it let
+    // the call through to a refusal `markPaid` then reported as
+    // `#transitionRefused(debug_show …)` plus a `payment.attachFailed` audit
+    // line — an internal blob and a bug-shaped trail for what is a policy. Worse,
+    // it made two statuses with identical meaning refuse differently:
+    // `#cancelled` got a clean `#notClaimable`, `#expired` did not.
+    //
+    // Past expiry or cancellation the operator's lever is a **refund**, not a
+    // conversion — the decided end state (#12), which #33 completes by deleting
+    // this method outright.
     switch (order.status) {
-      case (#created or #expired) {};
+      case (#created) {};
       case (status) return #err(#notClaimable(Types.statusToText(status)));
     };
     let honored = switch (Card.honoredCycles(order, paidUsdCents, gateConfig.maxPurchaseUsdCents)) {
@@ -1666,7 +1696,7 @@ persistent actor CyclesGateway {
     let ?order = Orders.getOwned(orderStore, id, caller) else return #err("no order " # id);
     switch (order.status) {
       case (#created) {};
-      case (#expired) return #ok(order); // idempotent: already given up on
+      case (#cancelled) return #ok(order); // idempotent: already given up on
       case (status) {
         return #err(
           "order " # id # " is " # Types.statusToText(status)
@@ -1674,8 +1704,18 @@ persistent actor CyclesGateway {
         );
       };
     };
-    let ?cancelled = tryTransition(id, #expired) else {
-      return #err("order " # id # " refused the transition to expired");
+    // `#cancelled`, not `#expired`: the buyer's own decision is a distinct state,
+    // so a reload shows them "Cancelled" rather than telling them their order
+    // expired (#34). And `#cancelled → #paid` is absent from the matrix, which is
+    // what makes a cancelled order unpayable by construction rather than by a
+    // runtime check somebody has to remember.
+    //
+    // ⚠️ Local-only until #33: the Stripe session stays payable, so a buyer who
+    // cancels and then pays anyway produces money-in against an unpayable order.
+    // `Card.handleWebhook` files that as a Type 1 obligation for the operator
+    // rather than trapping. #33 closes the window by expiring the session first.
+    let ?cancelled = tryTransition(id, #cancelled) else {
+      return #err("order " # id # " refused the transition to cancelled");
     };
     audit("order.cancelled", id # " cancelled by owner");
     #ok(cancelled);
@@ -1688,16 +1728,20 @@ persistent actor CyclesGateway {
     requireAdmin(caller);
     let ?order = Orders.get(orderStore, id) else return #err("no order " # id);
     switch (order.status) {
-      case (#paid or #awaitingTreasury) {};
+      // `#needsReview` is newly accepted here, and it is the point of splitting
+      // `#errorQueue`: an escalated order could not previously be abandoned,
+      // because one status meant both "promise held" and "promise released" and
+      // the transition was to itself (#34).
+      case (#paid or #awaitingTreasury or #needsReview) {};
       case (status) {
-        return #err("order " # id # " is " # Types.statusToText(status) # "; only a paid or held order can be abandoned");
+        return #err("order " # id # " is " # Types.statusToText(status) # "; only a paid, held or under-review order can be abandoned");
       };
     };
     if (reason.size() == 0) return #err("a reason is required — the audit trail must record why");
-    let ?abandoned = tryTransition(id, #errorQueue) else {
-      return #err("order " # id # " refused the transition to errorQueue");
+    let ?abandoned = tryTransition(id, #abandoned) else {
+      return #err("order " # id # " refused the transition to abandoned");
     };
-    Cmc.patch(mintJournal, id, { status = ?#errorQueue; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+    Cmc.patch(mintJournal, id, { status = ?#abandoned; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
     clearDelayed(id);
     ignore queueMintError(order.rail, #abandoned({ orderId = id; reason }), "abandoned by operator: " # reason);
     auditAdmin(caller, "order.abandoned", id # ": " # reason);
@@ -1802,10 +1846,11 @@ persistent actor CyclesGateway {
   /// and makes each tick more expensive exactly when the canister is under the
   /// order-creation pressure that made the store large.
   ///
-  /// Bounding the work is safe because **expiry is advisory** (§4): an order that
-  /// expires a few ticks late is still payable and nothing downstream reads the
-  /// flip. Correctness does not depend on promptness here, so throughput is the
-  /// right thing to trade away.
+  /// Bounding the work is safe because lateness errs in the BUYER's favour: an
+  /// order the sweep has not reached yet is still `#created`, so it stays payable
+  /// slightly longer than the TTL promised. Nothing downstream reads the flip, and
+  /// no money decision depends on its promptness, so throughput is the right thing
+  /// to trade away.
   transient let maxRetentionScanPerSweep : Nat = 2_000;
 
   /// The last order id this sweep handled, so the next tick resumes after it.
@@ -1889,7 +1934,7 @@ persistent actor CyclesGateway {
     };
     retentionCursor := ?ids[ids.size() - 1];
     if (expired > 0) {
-      audit("retention.sweep", expired.toText() # " order(s) marked expired (still payable, §4)");
+      audit("retention.sweep", expired.toText() # " order(s) marked expired (terminal since #34 — a later payment is refunded, not converted)");
     };
     { expired; scanned = ids.size() };
   };
@@ -1901,8 +1946,9 @@ persistent actor CyclesGateway {
   /// `pending` before that order turned #paid) was still in flight.
   ///
   /// Retention runs FIRST and synchronously: it must not race the money sweep's
-  /// awaits, and expiring an order is a no-op for money-out (`#expired` is not
-  /// sweepable, and a late payment on it is still honoured per §4).
+  /// awaits, and expiring an order is a no-op for money-out — `#expired` is not
+  /// sweepable, and since #34 no payment against it converts either, so there is
+  /// nothing for the money sweep to pick up afterwards.
   func recoverySweep() : async () {
     if (recoverySweepInFlight) return;
     recoverySweepInFlight := true;

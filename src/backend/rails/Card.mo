@@ -458,11 +458,11 @@ module {
                 );
                 audit(deps, nowNs, "stripe.refundAfterDelivery", orderId # ": " # refund.paymentIntent # " refunded (" # amounts # ") after " # order.lockedCycles.toText() # " cycles were delivered");
               };
-              case (#errorQueue) {
-                // Terminal and already on the worklist: a refund here is the
-                // *expected* resolution, not a race to investigate. Saying
-                // "the pipeline may still be mid-flight" would send an operator
-                // looking for an in-flight mint that cannot exist.
+              case (#needsReview or #abandoned) {
+                // On the worklist, or already ended by the operator: a refund
+                // here is the *expected* resolution, not a race to investigate.
+                // Saying "the pipeline may still be mid-flight" would send an
+                // operator looking for an in-flight mint that cannot exist.
                 audit(deps, nowNs, "stripe.refundOfEscalated", orderId # ": " # refund.paymentIntent # " refunded (" # amounts # ") — the expected resolution for an escalated order; resolve its queue entry once reconciled");
               };
               case (status) {
@@ -647,8 +647,32 @@ module {
     // The already-credited question was answered BEFORE attribution (see the
     // `paidIntents` lookup above), so reaching here means this intent has never
     // funded an order.
+    // ⚠️ THIS GUARD IS WHAT KEEPS `markPaid`'s trap unreachable. It must admit
+    // exactly the statuses the matrix allows into `#paid`, and nothing else: a
+    // status that passes here and is then refused by `isLegalTransition` traps,
+    // and a trap on this path is a 5xx that Stripe retries for ~3 days.
+    //
+    // `-Werror` does NOT protect this. Both arms typecheck whatever the matrix
+    // says, so the coupling is a comment and a test, not a compile error. #34
+    // deleted `#expired → #paid` and this guard had to lose `#expired` in the
+    // same change; #33 and #36 change the matrix again.
     switch (order.status) {
-      case (#created or #expired) {}; // §4: late payment on an expired order is still honored
+      case (#created) {};
+      case (#cancelled or #expired) {
+        // Real money against an order that can no longer be paid. Until #33 the
+        // Stripe session outlives both states, so this is reachable: a buyer who
+        // cancels and pays anyway, or who pays a link after the sweep expired the
+        // order.
+        //
+        // Filed as `#unattributed` rather than `#duplicate`, because nothing was
+        // ever paid — there is no first payment for this to be a second of. Both
+        // are Type 1 and both carry the `paymentRef` a `charge.refunded` resolves,
+        // so the operator's lever is the same: refund in Stripe.
+        return unattributed(
+          "order " # orderId # " is " # Types.statusToText(order.status)
+          # " and cannot be paid — refund " # session.paymentIntent # " in Stripe"
+        );
+      };
       case (status) {
         // A genuinely distinct payment for an already-handled order (§4.1:
         // Stripe dedup is redelivery protection, not double-pay protection).

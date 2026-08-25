@@ -196,9 +196,14 @@
         </div>
         <div id="cancel-area" hidden>
           <button id="cancel-order" type="button" class="ghost">Cancel this order</button>
+          <!-- This sentence is a promise made at the moment it matters, so it has
+               to match the transition matrix: `#cancelled → #paid` does not exist
+               (#34), so a payment arriving after a cancel is refunded rather than
+               applied. It said the opposite until #34 made expiry terminal. -->
           <p class="muted">
-            Frees the slot so you can start another. If a payment is already on
-            its way it will still be honoured at this order's locked rate.
+            Frees the slot so you can start another. Only cancel if you have not
+            paid: a payment that arrives after this cannot be applied to the
+            order, and would have to be refunded instead.
           </p>
           <p id="cancel-status" class="error" hidden></p>
         </div>
