@@ -108,7 +108,6 @@ const backend = {
       minPurchaseUsdCents: 1_000n,
       maxPurchaseUsdCents: 10_000n,
     },
-    retention: { orderTtlNs: 172_800_000_000_000n },
   }),
   treasury_status: async () => ({ lowFloat: false }),
   pricing_status: async () => ({

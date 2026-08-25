@@ -227,7 +227,10 @@ module {
   /// whole amount (an amount priced below the fee floor).
   ///
   /// The fee argument is the narrowed shape so both a live `Config` and an
-  /// order's creation-time snapshot fit (§6.1 amount honouring).
+  /// order's creation-time snapshot fit. The snapshot caller is `receipt`, which
+  /// recomputes what a delivered order was charged from the rates it was priced
+  /// at — it was the webhook's repricing path too, until #33 made a mismatched
+  /// amount mint nothing.
   public func netCents(fee : { feeBps : Nat; feeFixedCents : Nat }, grossCents : Nat) : ?Nat {
     let total = feeCents(fee, grossCents);
     if (total >= grossCents) return null;

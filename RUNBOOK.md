@@ -36,7 +36,7 @@ argument makes `icp canister call` ask *"Do you want to send this message?
 [y/N]"* and read stdin — which hangs any script, cron job, or CI step.
 
 Public queries (`treasury_status`, `pricing_status`, `recovery_status`,
-`card_tiers`, `lifecycle_config`, `retention_status`,
+`card_tiers`, `lifecycle_config`, `order_stats`,
 `can_purchase`, `cycles_status`, `error_queue_depth`, `health`) work from any
 identity and are the
 monitoring surface (§9 transparency stance — operational state is public,
@@ -109,11 +109,13 @@ consciously set. Work the list in order:
    missing, `create_order` refuses. Provisioning both is what OPENS the rail, so do
    it last; rotating either closes it until both are valid again.
 
-   Historically, when `amount_total != tier.usdCents` nothing failed — the order
-   silently delivered a
-   different cycle quantity. Register with `set_card_tiers`, then click each tile
-   once on the deployed site: the URL itself is not validated, so a typo is
-   otherwise discovered by a buyer.
+   Historically, when `amount_total != usdCents` nothing failed — the order
+   silently delivered a different cycle quantity. Since #33 it mints nothing and
+   files a Type 1, so a wrong amount is visible on the first order rather than as
+   drift. Register any price tiles with `set_card_tiers` (optional — a buyer can
+   type an amount without them), then **buy one thing on the deployed site with a
+   real card**: nothing short of a live purchase exercises the key, the origin,
+   the return URL and the webhook secret together.
 13. **Add a backup controller.** A single controller identity with no backup
    means a lost key makes the canister permanently un-upgradeable; there is no
    recovery path (§0 covers the trust model this implies).
@@ -183,151 +185,102 @@ it once the endpoint is confirmed working.
 4. `reset_burn_window`, restore the sized cap, and let held legitimate
    orders resume on the next sweep.
 
-## 3. Card tiers & Payment Links (§3, §6.1)
+## 3. Presets, the API key, and the settings that must stay off (§3, §6.1)
 
-> ⚠️ **SUPERSEDED as of #33.** The gateway creates a **Checkout Session per
-> order** through the Stripe API; it no longer sends buyers to a fixed Payment
-> Link, and `Tier.paymentLinkUrl` is read by nothing. Everything below about
-> creating and configuring links has **no effect**. It is still here only because
-> deleting it belongs in the same PR that deletes the mechanism (#33 PR-C), and a
-> half-deleted procedure is worse than a marked one.
->
-> **What to do instead — the whole of it:**
->
-> 1. Create a **restricted** API key (`rk_...`) scoped to **write Checkout
->    Sessions and nothing else**. Not an `sk_`: a leaked write-sessions key can
->    create sessions that pay you, which is a different problem from one that can
->    issue refunds. Stripe's IP allowlists are unusable here — a subnet's replicas
->    have many changing addresses.
-> 2. `set_stripe_api_key '("rk_...")'`
-> 3. `set_stripe_origin '("https://<your-origin>")'` — where Stripe returns the
->    buyer. Validated at set time: https, no query, no fragment.
-> 4. Record the **Stripe API version** the account is on, and treat changing it as
->    a code change: webhook payload shapes follow the account default, so an
->    account-level upgrade silently changes what `Json.mo` parses.
->
-> No Products, no Prices, no Payment Links, no Dashboard objects at all — the
-> session carries inline `price_data`.
->
-> ⚠️ **Provisioning the two secrets is what OPENS the rail**, so do it last, and
-> know that rotating either closes the rail until both are valid again.
->
-> ⚠️ **Changing the origin later is a user-visible migration, not a config
-> tweak**: Internet Identity derives a principal *per origin*, so existing buyers
-> get new principals and cannot see their old orders.
+The canister creates a **Checkout Session per order** through the Stripe API,
+with inline `price_data`. There are no Products, no Prices, no Payment Links and
+no Dashboard objects to create — which is why this section is four commands
+rather than a click path through three screens.
 
-
-The canister never calls Stripe. Controllers create **permanent Payment
-Links** in the Stripe Dashboard (one per price point, USD) and register
-them:
+### Provisioning, in order
 
 ```bash
+# 1. The API key. RESTRICTED (rk_), scoped to write Checkout Sessions, nothing else.
+icp canister call backend set_stripe_api_key '("rk_...")' -e ic --identity <operator>
+
+# 2. Where Stripe returns the buyer. Validated: https, no query, no fragment.
+icp canister call backend set_stripe_origin '("https://<your-origin>")' -e ic --identity <operator>
+
+# 3. The webhook signing secret (§7).
+icp canister call backend set_webhook_secret '("whsec_...")' -e ic --identity <operator>
+
+# 4. The price tiles. Optional — a buyer can type any amount within the bounds.
 icp canister call backend set_card_tiers \
   '(vec { record { id = "t10"; usdCents = 1_000 : nat } })' \
   -e ic --identity <operator>
 ```
 
+⚠️ **Use a restricted key, not an `sk_`.** A leaked write-sessions key can create
+sessions that pay *you*; one that can issue refunds is a materially worse thing
+to leak. Stripe's IP and ASN allowlists are unusable here — a subnet's replicas
+have many changing addresses.
+
+⚠️ **Neither secret can be read back out, even by a controller.** `stripe_api_key_status`
+and `webhook_status` report a generation counter and a set timestamp, which is
+how you confirm a rotation landed without ever exposing the value.
+
+⚠️ **Provisioning the two secrets is what OPENS the rail** (§5b of `docs/STRIPE.md`
+for why capability rather than declaration), so do them last. Rotating either
+closes the rail until both are valid again — which is a deliberate ordering
+property, not an outage: no API key means no payable session, no webhook secret
+means a buyer can pay and cannot be credited.
+
+⚠️ **Changing the origin later is a user-visible migration, not a config tweak**:
+Internet Identity derives a principal *per origin*, so existing buyers get new
+principals and cannot see their old orders.
+
+**Record the Stripe API version the account is on, and treat changing it as a
+code change.** Webhook payload shapes follow the account default, so an
+account-level upgrade silently changes what `Json.mo` parses — a class of
+breakage no test here can see, because the fixtures were captured under the old
+version.
+
+### Tier registration
+
 Validation is atomic — non-empty unique ids, non-zero amounts, every amount
-within `maxPurchaseUsdCents` (§5a), or the whole call rejects and the live tier
-list is untouched. `card_tiers` is the public
-query the frontend renders. Setting an **empty vector disables card order
-creation** (the rail-level pause lever; in-flight orders are unaffected).
+within `[minPurchaseUsdCents, maxPurchaseUsdCents]` (§5a), or the whole call
+rejects and the live tier list is untouched. `card_tiers` is the public query the
+frontend renders.
 
-Note the §3 invariant: a tier's *cycle* quantity is locked per-order at
-creation time from the cached rate pair; changing tier prices never reprices
-existing orders. The actual paid amount is honored — a Stripe-side price
-edit mid-flight reprices from the order's own creation-time snapshot, never
-from a fresh rate.
+Note the §3 invariant: a tier's *cycle* quantity is locked per-order at creation
+time from the cached rate pair, so changing tier prices never reprices existing
+orders. And since #33 the paid amount must **equal** the quoted one — an order
+delivers what it locked, or it delivers nothing and files a Type 1.
 
-### Creating the links
+### The settings that must stay off
 
-A Payment Link is not a standalone object: it wraps a **Price**, which belongs to a
-**Product**. So one tier is Product → Price → Link, and the settings that matter
-below are split across those three screens. Stripe's own walkthrough is
-[Create a payment link](https://docs.stripe.com/payment-links/create), and the
-Dashboard page is <https://dashboard.stripe.com/payment-links> — deliberately not
-reproduced here as a click path, because Stripe moves its UI and a stale click path
-is worse than none.
+The whole model rests on one invariant: **the session's `amount_total` equals the
+order's `usdCents`.** The canister reads `data.object.amount_total`, which Stripe
+defines as the total *after discounts and taxes*, and refuses anything else.
 
-**Register the bare URL, and leave the Dashboard's URL-parameter field EMPTY.**
-The Dashboard offers a "URL parameters" dialog (*URL-Parameter*) where you can bake
-a **Client reference ID** (*Client-Referenz-ID*) into the link before copying it.
-That is for people with no application; do not use it. The frontend appends
-`?client_reference_id=<principal>_<orderId>` **per order** at runtime, and it
-appends unconditionally — so a link that already carries one arrives as
-`?client_reference_id=STATIC&client_reference_id=REAL`. Stripe honours one of them,
-and every payment then resolves to the wrong order or to none: a Type 1 queue entry
-each time, money in and nothing minted.
+Per-order sessions removed most of the ways that can break: the canister sends
+`price_data` inline, `payment_method_types[]=card`, no promo codes, no adjustable
+quantity, and `adaptive_pricing[enabled]=false` explicitly. **The authoritative
+list of settings that would move the total is in the code, next to
+`Session.createBody`** — that is where someone adding a Stripe feature will see
+it. Two things remain account-level and are therefore yours to keep off:
 
-For the same reason, never hand a buyer the bare link. Only the button on the order
-page produces a payable URL.
-
-**Include the `https://` scheme.** The Dashboard displays links as
-`buy.stripe.com/test_…` without it. The value is used verbatim as an anchor `href`,
-so a scheme-less one resolves as a **relative path** — the button then navigates to
-`https://<your-origin>/buy.stripe.com/test_…` and 404s. Nothing validates this
-(see below), so it presents as "the pay button is broken".
-
-What is specific to this system, and is not in Stripe's docs:
-
-- **One-time price, never recurring.** A subscription-mode link produces sessions
-  with no `payment_intent`, which the canister cannot process: it acks 200 (a 400
-  would repeat for Stripe's full ~3-day retry horizon and can get the endpoint
-  disabled) and files a **Type 1 error-queue entry** — money in, nothing minted,
-  manual refund in the Dashboard. It is not a mismint, but it is a support ticket
-  per payment.
-- **Test-mode and live-mode links are different objects and are not
-  convertible.** The sandbox links you verify with cannot be registered on a
-  mainnet canister, and the reverse is worse. Going live means creating the Products,
-  Prices and Links *again* in live mode and re-running `set_card_tiers` against the
-  mainnet canister.
-- **The webhook signing secret is per endpoint, per mode**, and the one
-  `stripe listen` mints for a forwarding session is a third, different secret. None
-  of the three is reusable; each needs its own `set_webhook_secret`.
-- Once `set_expected_livemode '(opt true)'` is set, a stray test-mode event is
-  refused and tagged `stripe.livemodeMismatch` (§9 alerts on it), so this fails
-  closed. The symptom of forgetting to re-create the links is therefore not lost
-  money — it is that nobody can buy anything.
-
-### How each Payment Link must be configured
-
-The whole tier model rests on one invariant: **the session's `amount_total`
-equals the tier's `usdCents`.** The canister reads `data.object.amount_total`,
-which Stripe defines as the total *after discounts and taxes*. When it does not
-match, nothing fails — `Card.honoredCycles` reprices from the order's own rate
-snapshot and delivers a different quantity, and the audit log shows an ordinary
-completed purchase. There is no alert for this.
-
-Four Dashboard settings break that invariant. All four default to off, so a plain
-fixed-price link is correct; each is one checkbox away from not being.
-
-The German Dashboard labels are given too, because that is where these get set and
-two of the five are easy to mistake for harmless conveniences.
-
-| Setting (Dashboard / German) | Must be | If enabled |
+| Setting | Must be | If enabled |
 |---|---|---|
-| Pricing model — *Kunden wählen den Preis* | a **fixed**, **one-time** price (`unit_amount`) | "Customers choose price" (`custom_unit_amount`) lets the buyer set `amount_total`; the quantity quoted before payment becomes a guess. Recurring is worse — see above |
-| Adjustable quantity — *Anpassbare Menge* | **off** | `amount_total` becomes unit × qty, bounded only by `maxPurchaseUsdCents` — a buyer can take far more than the tier |
-| Allow promotion codes — *Promo-Codes zulassen* | **off** | lowers `amount_total`; the buyer silently receives fewer cycles than the tile promised them |
-| Automatic tax — *Steuer automatisch einziehen* | **off** | raises `amount_total`; cycles get minted against tax money you owe a tax authority, and it looks like a successful purchase |
-| Limit the number of payments — *Anzahl der Zahlungen einschränken* | **off** | one link serves **every** buyer of that tier, forever. A redemption cap silently retires the tier once it is reached: the tile still quotes, the order is still created, and the link then refuses everyone |
-
-The first two are set on the product/price step, the last three on the link's own
-options screen. Everything else on that screen (customer name, business name,
-address, phone, custom fields, tax IDs, saving payment details, Managed Payments)
-leaves `amount_total` alone. Leave them off regardless: the shortest checkout is the
-one that asks a newcomer buying $5 of cycles for nothing but a card.
+| **Automatic tax** (account default) | **off** | raises `amount_total`; the payment is refused as a mismatch, so nothing is minted — but every order fails until it is turned off |
+| **Adaptive pricing** (Dashboard toggle) | pinned off by the request | currently harmless to `amount_total` for this shape; the request pins it anyway, and it is proof Stripe adds Dashboard-side amount changers over time |
 
 Plus the two already in §1: **USD** (any other currency is refused as
-`#unattributed`, which is a Type 1 obligation and a manual refund) and
-**card-only** (delayed methods are handled, but they make money-in asynchronous).
+`#unattributed`, a Type 1 obligation and a manual refund) and **card-only**
+(delayed methods are handled, but they make money-in asynchronous).
 
-⚠️ **There is no `paymentLinkUrl` any more** (#33), and with it goes the whole
-class of failure this paragraph used to describe: an unvalidated, unparsed URL
-that a typo turned into a 404 the buyer discovered *after* an order was created,
-a rate locked and an open-order slot consumed. A preset is now an id and an
-amount, both validated against the gate's floor and ceiling, and the payment page
-is a session the canister creates.
+⚠️ Since #33 a mismatch is no longer silent. It used to reprice from the order's
+own snapshot and deliver a different quantity, with the audit log showing an
+ordinary completed purchase and no alert anywhere. Now it mints nothing and files
+a Type 1 whose detail names both figures — so an amount-moving setting shows up
+as a queue entry on the first order, not as a slow drift in what buyers receive.
+
+⚠️ **Test-mode and live-mode keys are different objects.** Going live means a
+live-mode restricted key and a live-mode webhook secret, both re-provisioned
+against the mainnet canister. Once `set_expected_livemode '(opt true)'` is set, a
+stray test-mode event is refused and tagged `stripe.livemodeMismatch` (§9 alerts
+on it), so this fails closed: the symptom of getting it wrong is that nobody can
+buy anything, not lost money.
 
 ### What the app does with no presets
 
@@ -531,7 +484,7 @@ icp canister call backend set_gate_config \
 
 | Lever | Default | What it protects | Sizing |
 |---|---|---|---|
-| `maxOpenOrdersPerPrincipal` | 20 | Unbounded state growth. Abandoned orders are the only thing a user can create for free, so this is the real bound — retention sweeping (§5b) is cleanup, not protection. | Raise for legitimate power users. Must be > 0; 0 is rejected as config. |
+| `maxOpenOrdersPerPrincipal` | 20 | Unbounded state growth. Abandoned orders are the only thing a user can create for free, so this is the real bound. Nothing sweeps them away (§5b): a slot frees when Stripe expires the session, or when the buyer cancels. | Raise for legitimate power users. Must be > 0; 0 is rejected as config. |
 | `minCanisterCycles` | 5 T | **This canister's own gas.** Below the freezing threshold it stops accepting updates; at zero it is uninstalled and its state is gone. | Keep well above the freezing threshold (default ~30 days of idle burn) so there is room to notice and top up. `0` disables the check. |
 | `maxPurchaseUsdCents` | 100 000 (\$1 000) | Operator typo in a tier, and the webhook's upward repricing path. | Set just above your largest tier. `set_card_tiers` rejects any tier above it, and the webhook refuses to mint a payment above it. |
 
@@ -553,45 +506,48 @@ through right now?" check. Two operational gotchas:
   `treasury_status.burnedInWindowE8s` against `burnCapE8s`, and note that
   `reset_burn_window` re-opens sales immediately.
 
-## 5b. Order retention: expiry
+## 5b. Order expiry — Stripe owns it, and there is no lever here
 
 ```bash
-icp canister call backend retention_status '()' -e ic      # public counters
-icp canister call backend set_retention_config \
-  '(record { orderTtlNs = 172_800_000_000_000 : nat })' \
-  -e ic --identity <operator>
-icp canister call backend run_retention '()' -e ic --identity <operator>
+icp canister call backend order_stats '()' -e ic      # public counters
 ```
 
-**Orders are never deleted.** Retention has exactly one effect: a `created`
-order past `orderTtlNs` flips to `expired`. A buyer freeing their own open-order
-slot uses `cancel_order` (owner-scoped), which produces `cancelled` — a separate
-status, not this flip.
+**There is no retention config, no TTL and no sweep.** #33 deleted
+`Retention.mo`: an order's deadline is its Checkout Session's `expires_at`
+(~35 min, above Stripe's 30-minute floor), stored on the order, and the *only*
+thing that moves an order to `expired` is Stripe's `checkout.session.expired`
+event. A buyer freeing their own open-order slot uses `cancel_order`
+(owner-scoped), which produces `cancelled` — a separate status.
 
 | Status | Payable? |
 |---|---|
-| `created` | yes, until the TTL |
+| `created` | yes, until the session's own `expiresAtNs` |
 | `expired` | **no** (#34) |
 | `cancelled` | **no** (#34) |
 
-⚠️ **Expiry stopped being advisory in #34**, which deleted `#expired → #paid`.
-Both consequences matter operationally:
+⚠️ **A missed `checkout.session.expired` leaves the order visibly `created` past
+its `expiresAtNs`, and that is deliberate.** A sweep as a backstop was specified
+and then rejected: it would flip the order to `expired` while its reserve promise
+stayed held, so a broken order would look like a correctly expired one and the
+reserve would leak silently. The stuck order IS the detection signal (#30's
+predicate 1) — treat "created, past `expiresAtNs`" as an alert, not as noise.
+⚠️ **Nothing exposes it yet**: order reads are owner-scoped and `order_stats`
+carries only counts, so §8 records this as a gap with an interim signal rather
+than as an alert you can wire. #38 (admin order listing) is what closes it.
 
-- **A payment arriving against an expired or cancelled order cannot be
-  converted.** It answers 200, the status does not move, and a Type 1
-  `#unattributed` entry is filed carrying the payment intent. **Refund it in
-  Stripe** — `attach_payment` refuses a non-`created` order with `notClaimable`,
-  by design.
-- **A webhook lost for longer than the TTL is now a refund, not a rescue.**
-  Stripe retries a failed delivery for about three days while the default TTL is
-  48 h, so an order can expire mid-retry. Raising `orderTtlNs` past the retry
-  window is the lever if that ever bites before #33 lands; #33 removes the
-  question by taking the deadline from Stripe (30 min, Stripe-enforced), so a
-  session that can still be paid always belongs to an order that can accept it.
+⚠️ **A payment arriving against an expired or cancelled order cannot be
+converted** (#34 deleted `#expired → #paid`). It answers 200, the status does not
+move, and a Type 1 `#unattributed` entry is filed carrying the payment intent.
+**Refund it in Stripe** — since #33 deleted `attach_payment` there is no other
+remedy at all.
 
-The flip is still bookkeeping in the sense that it deletes nothing: the order and
-its `client_reference_id` survive forever, which is what keeps a late payment
-*attributable*, and therefore refundable rather than a mystery charge.
+The webhook-lost-for-three-days problem that made the old 48 h TTL awkward is
+gone with it: the session and the order now die together, so a session that can
+still be paid always belongs to an order that can still accept it.
+
+Nothing deletes an order. The record and its `client_reference_id` survive
+forever, which is what keeps a late payment *attributable*, and therefore
+refundable rather than a mystery charge.
 
 ### The outcall cost, and the one field that moves it
 
@@ -629,23 +585,16 @@ rather than degrading it, and **no test suite in this repo can catch it** — th
 PocketIC suite mocks outcalls, verified by mutation. `Session.classifyFailure`
 labels it in the audit log for exactly that reason.
 
-**`orderTtlNs` must exceed the Stripe Checkout Session lifetime (24 h)**, or a
-customer can watch their order expire while still on the payment page — and now
-that expiry is terminal, that would cost them a refund cycle rather than a wait.
-The 48 h default is 2×. Zero is refused.
-
-The flip runs inside the recovery timer (hourly by default); `run_retention`
-applies a retuned TTL immediately instead of waiting a cycle, and is safe to
-spam since the band is an absolute age.
+### Growth
 
 Growth is bounded at its source, not by deletion:
 `maxOpenOrdersPerPrincipal` (§5a) bounds what a user can create for free, and
 the burn cap bounds legitimate volume. An order is a few hundred bytes, so a
 million is a few hundred MB — and a million orders is millions of dollars of
-volume. If retention ever genuinely binds, archive to a separate canister;
+volume. If store size ever genuinely binds, archive to a separate canister;
 deleting a financial record is not the answer.
 
-Monitor `retention_status.openOrders` — climbing while `delivered` orders do not
+Monitor `order_stats.openOrders` — climbing while `delivered` orders do not
 is the signature of order-creation abuse, and the lever is
 `maxOpenOrdersPerPrincipal` (§5a). `totalOrders` and `paidIntentsIndexed` should
 grow together and never diverge.
@@ -702,7 +651,7 @@ icp canister call backend resolve_error '(137 : nat)' -e ic --identity <operator
 | Kind / stage | Money position | Action |
 |---|---|---|
 | `#duplicate {orderId; paymentRef}` (Type 1) | Fiat in twice for one order; first payment minted, second did not | Refund `paymentRef` in the Stripe Dashboard (search by payment_intent). The `charge.refunded` webhook auto-resolves the entry; `resolve_error` is the fallback. |
-| `#unattributed {claimedRef; paymentRef}` (Type 1) | Fiat in, and no order that can accept it: a bad/missing `client_reference_id`, an owner/rail/currency mismatch, a below-fee-floor payment — **or, since #34, a payment against a `cancelled` or `expired` order**, which is now the common producer. The entry's own `detail` says which. | Inspect the session in Stripe by `paymentRef`. **`attach_payment` only works while the order is `created`** — against a cancelled or expired one it refuses with `notClaimable`, because #34 deleted `#expired → #paid` and the decided answer there is a refund. So: if the entry names an order that is still `created`, attach it and the buyer gets cycles instead of a refund-and-re-order round trip, priced from that order's own creation-time snapshot (see below). Otherwise — including every cancelled/expired case — **refund in Stripe** → auto-resolve (or `resolve_error`). |
+| `#unattributed {claimedRef; paymentRef}` (Type 1) | Fiat in, and no order that can accept it: a bad/missing `client_reference_id`, an owner/rail/currency mismatch, **a paid amount that is not the one the order asked Stripe for** (#33 — see below), or a payment against a `cancelled` or `expired` order (#34), which is the common producer. The entry's own `detail` says which. | Inspect the session in Stripe by `paymentRef`, then **refund in Stripe** → auto-resolve (or `resolve_error`). Since #33 deleted `attach_payment` this is the only remedy, whatever the order's status (see below). ⚠️ If the detail says the amount is not the quoted one, refunding is not the end of it: the session carried our own figure, so something in the Stripe configuration moved the total — check the forbidden-settings list in `docs/STRIPE.md` before the next order is created, because it will recur. |
 | `#undeliverable {orderId; cycles}` (Type 2) | Cycles minted, the forward *cleanly rejected* — the cycles sit in the backend's own cycle balance. Since #29 there is one destination, so the cause is the **cycles ledger**, not the target: stopped, upgrading, or its call queue full. | Check the cycles ledger is serving (`icrc1_fee` on `um5iw-rqaaa-aaaaq-qaaba-cai` answers). There is no automatic re-forward lever; once it is back, either deliver manually with a cycles-ledger transfer to the buyer's account (the stranded balance reimburses you) or refund the fiat in Stripe. Then `resolve_error`. |
 | `#stuckMint{stage="treasuryWaitExceeded"}` | Certain: fiat in, nothing minted | Refund in the Stripe Dashboard → `resolve_error`. |
 | `#stuckMint{stage="staleIntent"}` | Uncertain: ICP transfer intent aged past the 24 h ledger dedup window with no recorded block — the original transfer's fate is unknowable, auto-replay risks double-spend (§5.1) | Read `mint_journal(orderId)` for the intent (amount, `created_at_time`, CMC top-up subaccount). Check the ICP ledger for a matching transfer from the backend account. **Executed** → the ICP sits at the CMC under the backend's top-up subaccount; call `notify_top_up` on the CMC with the found block index (anyone may notify; if the CMC refuses an old block, contact DFINITY ops — the ICP is parked, not lost) and reconcile. **Not executed** → fiat in, nothing moved: refund in Stripe. Either way `resolve_error`; never rebuild a fresh intent. |
@@ -713,72 +662,44 @@ icp canister call backend resolve_error '(137 : nat)' -e ic --identity <operator
 | `#stuckMint{stage="ambiguousForward"}` | Cycles minted; forward may or may not have reached the destination (died between the pre-forward marker and delivery) | Check the buyer's cycles-ledger balance against `mint_journal.cyclesMinted` less the ledger's 100 M deposit fee. **Arrived** → done, `resolve_error`. **Not arrived** → cycles are in the backend's balance; deliver manually as for Type 2. Never re-forwarded automatically — double delivery is the risk being avoided. ⚠️ **Do not notify the CMC again**: the ICP is already consumed. This stage is also what the 72 h bound produces for an `#icpAtCmc` order that has `cyclesMinted` journaled, precisely so that case is never mistaken for `retriesExhausted`. |
 | `#stuckMint{stage="mintShortfall"}` | Cycles minted, but **fewer than the order locked** — the CMC's rate moved between sizing the ICP transfer and notifying it (up to 15 min normally, longer if a recovery sweep notified a transfer stranded by an outage). The minted cycles are in this canister's balance; nothing was forwarded | Read `mint_journal(orderId).cyclesMinted` for the real figure. Either forward that amount and tell the buyer, or top up to `lockedCycles` from operator funds — a business call, not a technical one. **Never** just re-run the mint: the ICP is already spent. Deliberately not absorbed automatically, because covering the gap from the canister's own gas is an unbudgeted subsidy that grows with volatility. `resolve_error` once delivered. |
 | `#stuckMint{stage="missingJournal"}` | Order status implies money-out state the journal doesn't have | Invariant breach — should be unreachable. Reconstruct from `audit_log` + ledgers; treat as a bug, file it. |
-| `#duplicate` naming an order the session did **not** reference | An intent already credited to a *different* order — an `attach_payment` went to the wrong order, or the reference is wrong. **Nothing was minted twice** | Decide which order the buyer actually paid for. Cross-check `order_for_payment` against the session's `client_reference_id` in the Stripe Dashboard. If the session's order is the right one, deliver it from operator funds and reconcile the wrongly-credited order; otherwise just resolve. The audit tag is `stripe.creditedElsewhere`. |
-| `#unprocessable {eventId; field}` | **Unknown — establish it first.** A verified Stripe event was missing a required field, so the canister could not tell whether money moved | Look the `eventId` up in the Stripe Dashboard. Paid → identify the order and `attach_payment`, or refund. Not paid (e.g. a 100%-off promo, or a subscription-mode link) → nothing happened; `resolve_error`. Then fix the Dashboard config that produced it: this is almost always a link mode or promo-code setting, and it will recur until changed. One event never becomes two entries: a Dashboard resend inside the ~7-day event-dedup window is dropped there, and past it the worklist itself is checked (audited `stripe.unprocessableResend`). Once you `resolve_error` it, a later resend is allowed to file again — so resolve only after you have established the money position. |
+| `#duplicate` naming an order the session did **not** reference | An intent already credited to a *different* order. **Nothing was minted twice.** ⚠️ Since #33 this should be unreachable: nothing but the webhook writes an attribution and nothing but the canister sets `client_reference_id`. It is kept because an unreachable contradiction that fires is worth seeing | Treat it as a bug report first. Cross-check `order_for_payment` against the session's `client_reference_id` in the Stripe Dashboard, then settle the buyer by refunding in Stripe — there is no way to credit the other order. The audit tag is `stripe.creditedElsewhere`. |
+| `#unprocessable {eventId; field}` | **Unknown — establish it first.** A verified Stripe event was missing a required field, so the canister could not tell whether money moved | Look the `eventId` up in the Stripe Dashboard. Paid → refund. Not paid → nothing happened; `resolve_error`. Then find the configuration that produced it: with per-order sessions (#33) the canister controls every field it sends, so a missing one points at an account-level API-version change (RUNBOOK §1 pins it) rather than at a link setting, and it will recur until fixed. One event never becomes two entries: a Dashboard resend inside the ~7-day event-dedup window is dropped there, and past it the worklist itself is checked (audited `stripe.unprocessableResend`). Once you `resolve_error` it, a later resend is allowed to file again — so resolve only after you have established the money position. |
 | `#refundAfterDelivery {orderId; paymentRef; cycles; refundedCents; fullRefund}` | **A loss, not a recoverable position**: the fiat was refunded (or charged back) *after* the cycles were credited to the buyer's account. Cycles cannot be clawed back. | There is nothing to recover on-chain. Reconcile in the Stripe Dashboard by `paymentRef` to see whether this was your own refund (a support decision — expected) or a customer-initiated dispute (fraud signal). For repeated disputes, tighten Stripe Radar rules and lower the per-purchase ceiling (§5a); the burn cap does **not** bound this, because each payment is individually legitimate. `resolve_error` once reconciled — nothing auto-resolves it, deliberately: the refund is what created the entry. |
 
-### Rescuing an `#unattributed` payment with `attach_payment`
+### A Type 1 payment has exactly one remedy: refund — and it is usually not "unattributable"
 
-```bash
-icp canister call backend attach_payment \
-  '("pi_3Q...", "<orderId>", 2_000 : nat)' \
-  -e ic --identity <operator>
-```
+⚠️ **Read the entry's `detail`, not its kind.** `#unattributed` is one variant
+covering two very different situations, and since #33 the common one is the
+second:
 
-This is the buyer-first resolution for a payment that arrived but could not be
-matched — a mistyped or stripped `client_reference_id`, or a webhook the canister
-never received. The order is credited exactly as the webhook would have credited
-it: **priced from that order's own creation-time snapshot**, never from today's
-rate, so the buyer gets what they bought rather than today's price.
+| | What it means | How common now |
+|---|---|---|
+| Genuinely unattributable | no order can be named: missing, malformed, or unresolvable `client_reference_id`, wrong currency | **should not happen** — the canister sets that field itself through the API, so treat one as a bug to find (or as a session someone created outside the app) |
+| Attributable but unpayable | the entry names the order; we refuse to credit it — a lowered ceiling, an amount that is not the quoted one, a cancelled or expired order | the normal producer |
 
-⚠️ **Only while the order is still `created`** (#34). A cancelled or expired order
-refuses with `notClaimable`: `#expired → #paid` no longer exists, so there is
-nothing to credit and the answer is a refund in Stripe. That narrows this lever
-sharply, because the default TTL (48 h) is shorter than Stripe's retry window
-(~3 days) — a webhook lost long enough expires its own order. #33 removes the
-mismatch by taking the deadline from Stripe and deletes this method with the rest
-of the Payment Link mechanism.
+The second kind needs no hunting in the Dashboard: the order id is in the detail.
+What it needs is fixing the cause, or the next order fails the same way.
 
-⚠️ **`paidUsdCents` is required, not optional** — pass what Stripe actually shows for
-that charge. There is no "use the tier price" shorthand, deliberately: the amount is
-the one thing that must come from the Dashboard rather than from an assumption, since
-the whole reason this lever exists is that the canister never saw the payment.
 
-It refuses a `paymentRef` already credited (so re-running it cannot double-mint),
-refuses an order that is not awaiting payment, and records the calling principal
-in the audit log. Confirm the charge is real and unrefunded in the Stripe
-Dashboard **before** calling — the canister cannot verify a payment it never saw
-a signature for, which is exactly why this is admin-only.
+`attach_payment` — the admin lever that credited a payment the canister never
+saw — was **deleted in #33**, along with the failure it existed for. Under
+Payment Links the *frontend* appended `client_reference_id` to the URL, so a
+buyer could strip it, bookmark a bare link or hand-edit it, and misattribution
+was the dominant failure. The canister now sets that field itself through the
+Checkout Sessions API: there is no URL parameter to touch, so the class is gone
+by construction.
 
-Prefer it over a refund whenever the buyer is identifiable: a refund makes the
-customer start over, and a customer who has paid and received nothing files a
-chargeback.
+What remains is refunding, in the Stripe Dashboard, by `paymentRef`. There is no
+path that turns a Type 1 payment into cycles for that buyer, whether or not we
+know which order it was for — that is
+the deliberate cost of the deletion, and it matches the decision that this app
+does not model refunds. A refund auto-resolves the entry (a partial one leaves it
+open, carrying the remainder).
 
-### Delay alerts and abandonment
-
-`#deliveryDelayed {orderId; stage; sinceNs}` is not a failure — it is a paid
-order that has been waiting longer than `alertAfterNs` (2 h). Money is still in
-flight and the retry loop is still running. Check `treasury_status` for
-`heldOrders` and `can_purchase` for `burnCapExhausted`/`floatLow`; refilling the
-float or widening the cap usually clears the whole batch at once. **It resolves
-itself on delivery** — you do not close it by hand, and a queue full of stale
-delay alerts would be exactly the orphan state the design avoids. If it is still
-open at 72 h the order escalates to `#stuckMint{stage="treasuryWaitExceeded"}`
-and becomes a refund (§5.3).
-
-`#abandoned {orderId; reason}` records an operator calling `abandon_order` on an
-unpaid order — a support action, not a money position. It exists so the audit
-trail shows *who* voided the order and why. `resolve_error` when reconciled.
-
-To go the other way — from a charge in the Stripe Dashboard to the order it
-funded — use the reconciliation lookup:
-
-```bash
-icp canister call backend order_for_payment '("pi_3Q...")' -e ic --identity <operator>
-```
-
-`null` means the payment was never attributed to an order here; check the queue
-for a Type 1 entry carrying it.
+⚠️ If you find yourself wanting the lever back, the thing to check first is
+whether attribution is broken — since #33 nothing but the canister writes
+`client_reference_id`, so a payment that cannot be attributed is a bug worth
+finding, not a routine occurrence to be papered over.
 
 ## 7. Recovery timer & manual kicks (§5.2)
 
@@ -822,7 +743,7 @@ These are public queries, so a monitor can poll them anonymously — no controll
 key on a monitoring box:
 
 `health` · `cycles_status` · `treasury_status` · `pricing_status` ·
-`recovery_status` · `retention_status` · `error_queue_depth`
+`recovery_status` · `order_stats` · `error_queue_depth`
 
 `can_purchase` is also callable anonymously and is worth special mention: the
 anonymous principal owns no orders, so `tooManyOpenOrders` can never trip for it.
@@ -879,11 +800,30 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | `treasury_status.burnedInWindowE8s` | jumps beyond expected volume | **P1** | possible leaked secret → §2 procedure, cap to 0 first |
 | `recovery_status.lastSweep.atNs` | older than 2 intervals | **P2** | the sweep timer is not running; nothing recovers while it is dead |
 | `recovery_status.lastCountReconcile.drift` | non-empty | **P2** | the per-status tallies had diverged from the order store and were repaired. The counts are correct again; the bookkeeping bug that moved them is not fixed. They gate admission, so a drifted count refuses or admits the wrong orders |
-| `recovery_status.lastCountReconcile.atNs` | older than ~48 h while `lastSweep` advances, or materially older than `lastCountReconcileAttemptNs` | **P3** | the daily reconcile is failing. It runs in its own message, so it cannot take the sweep down with it — money-out and retention are unaffected — but the tallies are now **unverified**, not known-good. Written only on success, and the cadence is claimed by the sweep, so a reconcile that traps retries daily rather than every tick. `recount_orders` is the on-demand repair and will show the same failure if it is a real one |
-| `retention_status.openOrders` | climbing while `delivered` does not | **P3** | order-creation abuse; lever is `maxOpenOrdersPerPrincipal` (§5a) |
+| `recovery_status.lastCountReconcile.atNs` | older than ~48 h while `lastSweep` advances, or materially older than `lastCountReconcileAttemptNs` | **P3** | the daily reconcile is failing. It runs in its own message, so it cannot take the sweep down with it — money-out is unaffected — but the tallies are now **unverified**, not known-good. Written only on success, and the cadence is claimed by the sweep, so a reconcile that traps retries daily rather than every tick. `recount_orders` is the on-demand repair and will show the same failure if it is a real one |
+| `order_stats.openOrders` | climbing while `delivered` does not | **P3** | order-creation abuse; lever is `maxOpenOrdersPerPrincipal` (§5a) |
+| an order still `created` past its own `expiresAtNs` | any | **P2** | a `checkout.session.expired` was missed. Nothing sweeps it (§5b, deliberately — a sweep would hide a held reserve): resend the event from the Stripe Dashboard. ⚠️ **You cannot query this today** — see the gap below |
 | `pricing_status.xrcCanisterId` | anything other than `uf6dk-hyaaa-aaaaq-qaaaq-cai` | **P1** | **on mainnet this must be the real Exchange Rate Canister.** The id is resolved from a `PUBLIC_CANISTER_ID:xrc` canister environment variable so a local network can point at a mock; a mainnet canister reporting any other id is pricing real sales off something that is not the market. Only a controller can inject it, so this reads as either a misconfigured deploy or a compromised controller. Cap the burn to 0 (§2) before investigating. **`null` is not a pass** — it means no refresh has reached the XRC call at all (expected for seconds after an install or upgrade, since the value is transient). Do **not** wait on `lastAttempt` becoming non-null: that field is persistent, so it survives the upgrade and is already set while this one is still null. Re-read until `lastAttempt.atNs` post-dates the deploy. A *failing* refresh never shows null here — the id is recorded when the call is constructed, so a rejected call reads as a non-null id plus `lastAttempt.ok = false` |
 | `pricing_status.rates.quality.receivedRates` | drops to `minRateSources` | **P3** | thin market — a price from 2 sources is not one from 12 |
 | `health` | unreachable | **P1** | canister stopped, frozen, or out of cycles |
+
+⚠️ **One row above is not yet observable, and saying so is the point.** "An order
+still `created` past its own `expiresAtNs`" is #30's detection predicate 1 — the
+signal that exists *because* #33 refused to add a sweep that would have hidden a
+held reserve. Nothing exposes it:
+
+- `get_order` / `list_orders` / `receipt` are **owner-scoped**. Not even a
+  controller can read another principal's order.
+- `order_stats` returns counts, not records — it cannot tell a fresh `created`
+  order from one that lapsed an hour ago.
+- An admin order listing is **#38**, not built yet.
+
+So today the predicate is reachable only through a buyer's complaint or the
+Stripe Dashboard's own event list. Until #38 lands, the interim signal is
+`order_stats.openOrders` **staying non-zero and static well past ~40 minutes**
+(the session lifetime is ~35), cross-checked against expired sessions in Stripe.
+That is weaker than an alert and it is the honest state of it — a runbook that
+claims an alert nobody can wire is worse than a documented gap.
 
 ### Needs a controller key
 

@@ -1,45 +1,24 @@
 # The Stripe (Card) rail, end to end
 
-> ⚠️ **Money-in changed in #33 and parts of this document describe the old shape.**
->
-> The gateway creates a **Stripe Checkout Session per order** through the API. It
-> does not send buyers to a fixed Payment Link, `Tier.paymentLinkUrl` is read by
-> nothing, and no Stripe Dashboard objects are involved at all — the session
-> carries inline `price_data`.
->
-> | Now | Was |
-> |---|---|
-> | one session per order, `expires_at` set by us and enforced by Stripe | one permanent link per price point |
-> | `client_reference_id` set by the canister through the API | appended to the link URL by the frontend |
-> | the pay URL lives on the order, so a reload keeps it | held in browser-session memory |
-> | expiry comes from `checkout.session.expired` | a TTL sweep |
-> | the rail is live iff **both** the API key and the webhook secret are provisioned | an empty tier list paused it |
->
-> Passages about creating or configuring Payment Links have **no effect**. They
-> are still here because deleting them belongs in the same PR that deletes the
-> mechanism (#33 PR-C) — a half-deleted procedure is worse than a marked one. The
-> replacement procedure is in **RUNBOOK §3**.
-
-
 How fiat becomes cycles. Written from the code — every claim names the module it
 came from, so you can check it. (Module names, not line numbers: a stale line
 number is worse than no line number, and they drift on every edit.) The *why* behind the design decisions lives in
 `design-docs/ONCHAIN_GATEWAY_SPEC.md` (spec v2.1); this document is the *what*.
 
 - [1. The one-sentence version](#1-the-one-sentence-version)
-- [2. Why the canister never calls Stripe](#2-why-the-canister-never-calls-stripe)
+- [2. What the canister calls Stripe for, and what it still cannot do](#2-what-the-canister-calls-stripe-for-and-what-it-still-cannot-do)
 - [3. The full happy path](#3-the-full-happy-path)
 - [4. Ingress: two paths, and why the webhook can't be caller-authenticated](#4-ingress-two-paths-and-why-the-webhook-cant-be-caller-authenticated)
 - [5. Signature verification](#5-signature-verification)
 - [6. Attribution: claimed, not trusted](#6-attribution-claimed-not-trusted)
 - [7. Dedup: two layers, and what they do not protect against](#7-dedup-two-layers-and-what-they-do-not-protect-against)
-- [8. Amount honouring](#8-amount-honouring)
+- [8. Amount honouring — an equality check since #33](#8-amount-honouring--an-equality-check-since-33)
 - [8a. What the buyer sees before paying](#8a-what-the-buyer-sees-before-paying)
 - [9. Admission: the pre-creation gate](#9-admission-the-pre-creation-gate)
-- [10. Order lifecycle and retention](#10-order-lifecycle-and-retention)
+- [10. Order lifecycle — Stripe owns the deadline](#10-order-lifecycle--stripe-owns-the-deadline)
 - [11. Refunds, disputes, and what is not automated](#11-refunds-disputes-and-what-is-not-automated)
 - [12. Every failure and its money position](#12-every-failure-and-its-money-position)
-- [13. The secret](#13-the-secret)
+- [13. The two secrets](#13-the-two-secrets)
 - [14. Operator surface](#14-operator-surface)
 - [15. Local development against a Stripe sandbox](#15-local-development-against-a-stripe-sandbox)
 
@@ -47,50 +26,68 @@ number is worse than no line number, and they drift on every edit.) The *why* be
 
 ## 1. The one-sentence version
 
-A user picks a fixed-price tier, is sent to a permanent Stripe Payment Link
-carrying `client_reference_id = <principal>_<orderId>`, pays Stripe directly, and
-Stripe POSTs a signed `checkout.session.completed` webhook to the canister, which
-verifies the HMAC on-chain, attributes the payment to the order, and mints the
-cycle quantity that was locked at order creation.
+A user picks a preset or types an amount; the canister creates a **Stripe
+Checkout Session for that one order** over an HTTPS outcall, setting
+`client_reference_id = <principal>_<orderId>` itself; the buyer pays Stripe
+directly on that session's URL; and Stripe POSTs a signed
+`checkout.session.completed` webhook back, which the canister verifies by HMAC
+on-chain, attributes to the order, and mints the cycle quantity that was locked
+at order creation.
 
-## 2. Why the canister never calls Stripe
+## 2. What the canister calls Stripe for, and what it still cannot do
 
-There is **no Stripe API key anywhere in the system.** No `sk_live`, no HTTP
-client for Stripe, no outbound request to Stripe at all. The rail is
-**inbound-only**: Stripe talks to us, never the reverse.
+The rail was **inbound-only** until #33: no API key anywhere, Stripe talked to us
+and never the reverse. It now makes exactly **one** kind of outbound call —
+create a Checkout Session for an order, and expire one when the buyer cancels —
+over an HTTPS outcall, using a **restricted** key (`rk_...`) scoped to write
+Checkout Sessions and nothing else.
 
-This is the decision the rest of the design hangs off:
+That scope is the whole of the change. Everything the inbound-only design bought
+still holds, because the key cannot do anything else:
 
 | Consequence | Detail |
 |---|---|
-| Nothing to steal | A full compromise of canister state yields no Stripe credential. The only secret is the webhook *signing* secret, which can forge inbound webhooks but cannot touch the Stripe account, customers, or payouts (§13). |
-| Refunds are manual | The canister structurally cannot issue a refund. Every refund is a human action in the Stripe Dashboard (§11). |
-| No subscriptions or auto-refill | Both require charging a stored payment method, i.e. an outbound API key. Explicitly out of scope. |
-| Payment amounts are pinned by URL | The canister cannot create prices, so tiers are permanent Payment Links the operator makes in the Dashboard and registers on-chain. The pin is only as good as the link's configuration — see RUNBOOK §3 for the four settings that break it. |
+| A leaked key creates sessions that pay **us** | It cannot issue refunds, read customers, touch payouts, or reach the account. That asymmetry is why the scope matters more than the storage: an `sk_` would be a materially worse thing to leak (§13). |
+| Refunds are still manual | The canister structurally cannot issue one. Every refund is a human action in the Stripe Dashboard (§11). |
+| No subscriptions or auto-refill | Both require charging a stored payment method. Explicitly out of scope. |
+| Payment amounts are pinned by **us**, not by a link's configuration | The session carries inline `price_data` with the amount the order quoted, so `amount_total == usdCents` is a property of what the request does *not* enable rather than of what an operator remembered to switch off in a Dashboard. The list is in the code beside `Session.createBody`. |
 
-**The canister makes no outbound HTTPS at all.** Not to Stripe, and not to
-anything else: pricing reads two on-chain canisters — the Exchange Rate Canister
-for USD/ICP and the CMC for XDR/ICP (§8) — so every outbound call is an
-inter-canister call. There is no `transform` function, no replica-divergence
-problem, and no operator-settable rate source to audit.
+**Two things follow from making any outbound call at all**, and both are new
+failure surfaces rather than incidental details:
+
+- **A transform is now load-bearing.** Every replica makes the request, so the
+  responses must agree byte for byte; Stripe returns a unique `request-id` per
+  HTTP request, so `Session.strip` discards **all** headers. A per-request value
+  left in place takes the rail down with `No consensus could be reached` — and no
+  suite here can catch it, because PocketIC mocks outcalls (verified by mutation).
+- **`Idempotency-Key = orderId` does two jobs.** The obvious one is that Stripe
+  will not create a second session for a retried request. The load-bearing one is
+  that without it each replica would create a *distinct* session, so consensus
+  could never be reached at all and no transform could repair it.
+
+Pricing remains inter-canister: the Exchange Rate Canister for USD/ICP and the
+CMC for XDR/ICP (§8). There is no operator-settable rate source to audit.
 
 ## 3. The full happy path
 
 ```
-                        ┌─────────────────────── off-chain ────────────────────────┐
- operator (Dashboard) ──┤ create one permanent Payment Link per price point        │
-                        └──────────────────────────┬───────────────────────────────┘
-                                                   │ set_card_tiers (admin, on-chain)
-                                                   ▼
+ operator ──▶ set_stripe_api_key + set_stripe_origin (+ optional price tiles)
+                       │  no Dashboard objects exist for this rail
+                       ▼
  user ──II login──▶ create_order(amount, destination)         Main.mo
+                       │  rail provisioned?                    Main.mo → Secret.mo
                        │  admission gate                       Main.mo → Gate.mo
                        │  quote: lock the CYCLE QUANTITY       Pricing.mo (cached XRC+CMC)
                        │  raw_rand order id                    Orders.mo
-                       ▼
-                    #created  +  clientReferenceId = <principal>_<orderId>
                        │
- frontend ─────────────┤ opens  order.stripeSessionUrl  (#33: the canister set
-                       │        client_reference_id on the session itself)
+                       │  HTTPS OUTCALL: POST /v1/checkout/sessions
+                       │    Idempotency-Key = orderId          rails/Session.mo
+                       │    inline price_data, expires_at ≈35m
+                       │    client_reference_id set BY US
+                       ▼
+                    #created + stripeSessionUrl + expiresAtNs (Stripe's own)
+                       │
+ frontend ─────────────┤ opens  order.stripeSessionUrl
                        ▼
  user pays Stripe (card data never touches the canister)
                        │
@@ -188,13 +185,16 @@ look like a delivery failure.
 
 ## 6. Attribution: claimed, not trusted
 
-`client_reference_id` is a **URL parameter the user can edit.** A permanent
-Payment Link is always live, so anyone can pay it with any reference they like.
-Every dollar that arrives must therefore resolve to one of: delivery, Type 1, or
-Type 2 — never to a silent accept.
+`client_reference_id` used to be a **URL parameter the frontend appended**, on a
+permanent link anyone could pay with any reference they liked. Since #33 the
+canister sets it through the API and there is no URL parameter to touch — which
+removes the dominant attribution failure, and removed `attach_payment` with it
+(§12).
 
-It is a **pointer, not a credential**, and that is what makes it safe to put in a
-URL. The order id is 16 bytes of `raw_rand`, so a reference cannot be guessed; and
+The posture does not change: **claimed, not trusted.** Every dollar that arrives
+must still resolve to delivery, Type 1, or Type 2 — never a silent accept —
+because the field arrives in a webhook body and a webhook body is data. It is a
+**pointer, not a credential**, which is what made it safe to expose at all. The order id is 16 bytes of `raw_rand`, so a reference cannot be guessed; and
 forging one gains nothing, because the claimed principal must equal the order's
 stored owner, so the best an attacker achieves is paying for somebody else's order.
 
@@ -249,31 +249,41 @@ minted, operator refunds. This is the single most important thing to understand
 about the rail, and it is why **dedup gates the mint** rather than gating the
 webhook.
 
-## 8. Amount honouring
+## 8. Amount honouring — an equality check since #33
 
 The order stores a **pricing snapshot** at creation (`Types.Pricing`): the gross
 cents, **both rate inputs** (`usdPerIcpMicros` from the XRC, `xdrPermyriadPerIcp`
-from the CMC) with the XRC quality signal, and the fee formula. The webhook
-honours the **actual paid amount** (`Card.mo`):
+from the CMC) with the XRC quality signal, and the fee formula. `Card.mo` then
+decides one thing:
 
-- Paid amount **equals** the quoted tier → deliver `lockedCycles` verbatim.
-- Paid amount **differs** → reprice from the order's own snapshot, never from a
-  fresh rate. So "no quote drift" holds even off the happy path.
-- Paid amount **below the fee floor** → Type 1 (the fee formula would swallow it).
-- Paid amount **above the per-purchase ceiling** → Type 1, not minted.
+- `amount_total` **equals** the order's `usdCents` → deliver `lockedCycles`
+  verbatim.
+- Anything else → **Type 1, nothing minted**, with both figures in the detail.
+- Above the per-purchase ceiling → Type 1, checked first (see below).
 
-That last case exists because repricing is an *upward* path: without a ceiling, a
-tampered link or a misconfigured Stripe price would mint an arbitrary quantity.
+**Why this used to be a computation.** A fixed Payment Link could legitimately be
+paid for an amount the order was not created for — the buyer chose the *link*, not
+the order — so a mismatch was repriced from the order's own snapshot and
+delivered. A per-order session carries the amount **we** set, so a mismatch now
+means a Stripe feature that moves the total is enabled. That is an operator
+problem to see, not a buyer's choice to honour, and repricing it would mint
+against it silently: the audit log would show an ordinary completed purchase.
+
+Two consequences worth naming, because things downstream depend on them:
+
+- **`lockedCycles` is immutable after creation.** Nothing on the money-in path
+  writes it. #30's tally is exact rather than conservative because of that.
+- **`#belowFeeFloor` and `#unusableSnapshot` are gone**, not merely unreachable —
+  both existed only to bound repricing. `#aboveCeiling` stays as defence in depth,
+  and it is still reachable without any tampering: an order created under a
+  higher ceiling matches its own quote after the ceiling is lowered.
 
 **What was actually paid is stored on the order** (`paidUsdCents`), not only in
 the audit log. The audit ring buffer drops its oldest entries, so a fact about
 money cannot live only there — "what did this buyer pay?" has to be answerable
-from state for the life of the canister.
-
-The same honouring logic serves `attach_payment`, the admin lever that credits an
-order for a payment the webhook could not attribute (§12). One code path, so a
-rescued payment is priced exactly as a normal one would have been — from the
-order's own snapshot, however long ago it was created.
+from state for the life of the canister. It can now only equal `usdCents`, and it
+is stored anyway: "what Stripe said" and "what we asked for" being the same is
+worth being able to check rather than assume.
 
 ## 8a. What the buyer sees before paying
 
@@ -421,25 +431,35 @@ admission gate is about refusing *before* the user pays, not about replacing it.
 `can_purchase(usdCents)` is a public query that returns the same decision, so the
 frontend can disable the button with a real reason instead of failing at submit.
 
-## 10. Order lifecycle and retention
+## 10. Order lifecycle — Stripe owns the deadline
 
-**Orders are never deleted.** `Retention.mo` has exactly one effect: a `#created`
-order past `orderTtlNs` flips to `#expired`.
+**Orders are never deleted, and nothing sweeps them.** #33 deleted `Retention.mo`
+entirely: there is no TTL, no band, no cursor. An order's deadline is its
+session's `expires_at` (~35 min; Stripe's floor is 30), stored on the order as
+`expiresAtNs`, and the only thing that moves it to `#expired` is Stripe's
+`checkout.session.expired`.
 
-| Status | Age | Payable? | Record |
+| Status | Payable? | Moved there by | Record |
 |---|---|---|---|
-| `#created` | < `orderTtlNs` (default 48 h) | yes | kept forever |
-| `#expired` | ≥ TTL, forever | **no** (#34) | kept forever |
-| `#cancelled` | any | **no** (#34) | kept forever |
+| `#created` | yes, until its own `expiresAtNs` | `create_order` | kept forever |
+| `#expired` | **no** (#34) | `checkout.session.expired`, or a failed session creation | kept forever |
+| `#cancelled` | **no** (#34) | the buyer, via `cancel_order` | kept forever |
+
+⚠️ **A missed expiry event leaves the order visibly `#created` past its deadline,
+and that is the design.** A sweep as a backstop was specified and rejected: it
+would flip the order while its reserve promise stayed held, so a broken order
+would look like a correctly expired one and the reserve would leak silently. The
+stuck order **is** the detection signal (#30's predicate 1).
 
 **Expiry is terminal.** #34 deleted `#expired → #paid`, so `Card.handleWebhook`
-admits `#created` alone and `attach_payment` refuses anything else with
-`notClaimable`. The flip is still bookkeeping in that it deletes nothing, but it
-is now a real deadline: it also frees the buyer's open-order slot.
+admits `#created` alone — the only guard left, now that #33 deleted
+`attach_payment` and its sibling guard. Expiry deletes nothing, but it is a real
+deadline, and it frees the buyer's open-order slot.
 
-**The "we lost track" worry, resolved by not losing track.** A Payment Link is
-permanent, so a payment can arrive for an order abandoned months or years ago
-from a bookmarked URL. Because the record is still there, that payment is
+**The "we lost track" worry, resolved by not losing track.** A session dies at
+its own `expires_at`, but Stripe can still deliver a late `completed` for one
+that was paid just before it, and an event can be resent from the Dashboard years
+later. Because the record is still there, that payment is
 **attributable** — the gateway can say whose it was and which order it names. It
 is therefore **refunded**, not delivered: a Type 1 `#unattributed` obligation is
 filed carrying the payment intent, and a `charge.refunded` resolves it.
@@ -448,9 +468,9 @@ That is a deliberate narrowing. Until #34 the late payment was honoured at the
 locked quantity for the life of the canister; the price of that guarantee was an
 order that could be paid long after the buyer, the operator and the rate had all
 moved on. What survives is the half that matters — **the record is never deleted,
-so a late payment is never a mystery charge.** #33 closes the window further by
-taking the deadline from Stripe (30 minutes, Stripe-enforced), so a session that
-can still be paid always belongs to an order that can still accept it.
+so a late payment is never a mystery charge.** #33 narrowed the window itself:
+the session and the order now die together, so a session that can still be paid
+always belongs to an order that can still accept it.
 
 Deleting records past a horizon — even with a tombstone set, so a late payment
 could at least be *diagnosed* before being refunded — would contradict the
@@ -468,7 +488,7 @@ is going to deliver, and offering a cancel would promise something untrue.
 ⚠️ **It exists because the open-order cap counts unpaid orders.** The gate's
 refusal tells the user to pay or abandon one, and `abandon_order` is admin-only —
 so without this, someone who opened the cap's worth of checkouts and finished none
-would be locked out until the TTL expired them, reading advice they could not
+would be locked out until their sessions expired, reading advice they could not
 follow.
 
 ⚠️ **A payment racing a cancellation is refunded, not converted.** `#cancelled →
@@ -479,25 +499,18 @@ resolves. The buyer's decision wins, and their money is recorded and refundable
 rather than silently kept or converted against it.
 
 Until #34 the opposite was true — `#expired` stayed payable, so the in-flight
-payment delivered. The window itself is what #33 removes: `cancel_order` will
-expire the Stripe session first, so the race stops being possible rather than
-merely recorded. The audit trail carries `order.cancelled` either way.
+payment delivered. #33 removed the window itself: `cancel_order` expires the
+Stripe session **first**, and marks the order only if that succeeded, so the race
+stops being possible rather than merely recorded. The audit trail carries
+`order.cancelled` either way.
 
-**Growth is bounded at its source, which is why retention never needed to bound
+**Growth is bounded at its source, which is why no sweep was ever needed to bound
 it.** `Gate.maxOpenOrdersPerPrincipal` (default 20) bounds the records a user can
 create for free — abandoned orders are the only ones that cost them nothing — and
 the burn cap bounds legitimate volume. An order is a few hundred bytes, so a
 million is a few hundred MB, and a million orders is millions of dollars of
-volume. If retention ever genuinely binds, archival to a separate canister
+volume. If store size ever genuinely binds, archival to a separate canister
 preserves the record; deletion does not.
-
-**Sweeping is cleanup, not protection.** The bound that actually stops unbounded
-state growth is `maxOpenOrdersPerPrincipal`, because abandoned orders are the
-only thing an attacker can create for free.
-
-The sweep runs inside the existing recovery timer (hourly by default),
-synchronously and before the money sweep so it cannot interleave with an await.
-`run_retention()` is the admin lever to apply retuned bands immediately.
 
 ## 11. Refunds, disputes, and what is not automated
 
@@ -517,12 +530,30 @@ but the audit ring — which drops. `#refundAfterDelivery` likewise records
 `refundedCents` and `fullRefund`, because a partial refund after delivery is a
 partial loss and reconciliation happens by amount.
 
-⚠️ **Prefer delivering to refunding whenever the buyer is identifiable.** A
-refund makes the customer start over, and a customer who has paid and received
-nothing files a chargeback — which costs more than the refund and counts against
-the Stripe account. For a payment that arrived but could not be attributed,
-`attach_payment` credits the order the buyer meant, at that order's own
-creation-time price (§8). Refund only when you cannot tell what they bought.
+⚠️ **A Type 1 payment can now only be refunded** — including the ones where we
+know exactly whose it is. `attach_payment`, which credited the order the buyer
+meant, was deleted in #33 along with the failure it existed for: the canister
+sets `client_reference_id` through the API, so there is no URL parameter for a
+buyer to strip or edit.
+
+That leaves the `#unattributed` variant named for a case it rarely covers. What
+still reaches it is mostly **attributable but unpayable** — the entry names the
+order and we refuse to credit it anyway:
+
+- the per-purchase ceiling was lowered under an existing order (needs nothing to
+  go wrong: the order still matches its own quote);
+- `amount_total` is not the quoted amount, which means an account-level setting
+  is moving the total (§8);
+- the order is `#cancelled` or `#expired` (#34).
+
+The genuinely unattributable cases — no reference, a malformed one, one naming no
+order, a non-USD session — are unreachable through this app. Reaching one means a
+session created outside it, a reinstalled order store, or a bug. This is the one thing
+the deletion makes *harder* rather than simpler, and it was decided knowing that:
+a refund makes the customer start over, and a customer who paid and received
+nothing may file a chargeback, which costs more than the refund. The trade is
+accepted because the failure it answered is now unreachable by construction — so
+if you see one, treat it as a bug to find rather than a queue to work.
 
 1. Resolve every unresolved **Type 1** entry carrying that `payment_intent`. This
    closes the normal loop: duplicate/unattributed payment → operator refunds →
@@ -571,8 +602,8 @@ rail-specific summary:
 | `checkout.session.async_payment_failed` | 200 | nothing happened | audited; the order stays payable |
 | livemode mismatch | 200 | depends which way | audited `stripe.livemodeMismatch`; a *live* payment on a test-configured gateway is queued as an obligation |
 | Redelivered `event.id` / `payment_intent` | 200 | already handled | none |
-| `payment_status ≠ paid` | 200 | no money yet | audited `stripe.unpaidSession`; check the link is card-only |
-| Type 1 `#unattributed` | 200 | **fiat in, nothing minted** | `attach_payment` if you can identify the order; refund if not |
+| `payment_status ≠ paid` | 200 | no money yet | audited `stripe.unpaidSession`; the request asks for card-only, so check the account for a delayed method enabled at that level |
+| Type 1 `#unattributed` | 200 | **fiat in, nothing minted** | refund in Stripe — the only remedy since #33. Includes an `amount_total` that is not the quoted one, which additionally means a Stripe setting is moving the total (§8) |
 | Type 1 `#duplicate` | 200 | **fiat in ×2, minted ×1** | refund the second charge |
 | Type 2 `#undeliverable` | 200 | **cycles minted, in the app's own balance** | re-deliver or refund |
 | `#stuckMint` | 200 | **uncertain** — see the stage | per-stage rules in RUNBOOK §6 |
@@ -614,15 +645,17 @@ failures. A permanent one used to be the dangerous case; it is now acked.
 
 ### Async payment methods
 
-A Payment Link can offer delayed methods, and several are enabled by default in
-the Dashboard — which the canister cannot enforce. The sequence is:
+A session can offer delayed methods. Ours asks for `payment_method_types[]=card`
+so it does not — but an account-level setting or a future Stripe default could
+still produce one, and the handler is what makes that safe rather than a support
+ticket. The sequence is:
 `checkout.session.completed` with `payment_status != "paid"` (no money yet), then
 `checkout.session.async_payment_succeeded` when it settles.
 
 Both parse into the same shape and run the same handler, so a delayed payment
 mints correctly. Handling only `completed` would mean fiat arriving with nothing
-minted and nothing on the worklist. **Still pin the link to card-only** (§14
-checklist) — this handles the case, it does not make it desirable.
+minted and nothing on the worklist. The request pins card-only anyway — this
+handles the case, it does not make it desirable.
 
 ### Test-mode/live-mode confusion
 
@@ -632,14 +665,25 @@ otherwise mint real cycles for payments that never happened, and the secret is t
 only thing separating the two. Unset by default so a sandbox works without
 configuration; the go-live checklist sets it to `?true`.
 
-## 13. The secret
+## 13. The two secrets
 
-The Stripe **webhook signing secret** (`whsec_…`) is the only secret in the
-system. It is stored **plaintext in canister state, by design** (`Secret.mo`).
+There are **two** since #33: the webhook **signing secret** (`whsec_…`) and the
+Stripe **API key** (`rk_…`). Both are stored **plaintext in canister state, by
+design**, through the same `Secret.mo` store.
 
-HMAC is symmetric, so *verify = forge*: anything that can check a signature can
-mint one. Encrypting the stored blob would only move the problem to a key the
-canister also needs at verify time, so it buys nothing.
+HMAC is symmetric, so for the signing secret *verify = forge*: anything that can
+check a signature can mint one. Encrypting the stored blob would only move the
+problem to a key the canister also needs at verify time, so it buys nothing. The
+API key must be sent to Stripe on every session creation, so the same applies.
+
+⚠️ **What a leak of each one buys an attacker is different, and it is the
+argument for the key's scope:**
+
+| Leaked | What it enables |
+|---|---|
+| Webhook signing secret | forge "paid" events → mint cycles at operator expense. Bounded by the burn cap, detectable against Stripe's event log, recovered by rotation. |
+| A restricted `rk_` key scoped to write Checkout Sessions | create sessions that pay **us**. Annoying, not a loss. |
+| An unrestricted `sk_` (**do not use one**) | refunds, payouts, customer data — the whole account. This is why the scope, not the storage, is the control that matters. |
 
 What actually protects it:
 
@@ -647,7 +691,7 @@ What actually protects it:
 |---|---|
 | **SEV-SNP confidential subnet** | The deployment target. Confidentiality rests on hardware and attestation, not on cryptography in the canister. |
 | **Checkpoint / state-sync confidentiality** | **Must be verified separately.** Memory encryption does not cover state written to disk and state-synced between nodes. If those are not also confidential, a plaintext secret leaks through that path. |
-| **Provisioning channel** | Known-exposed: `set_webhook_secret`'s argument transits the TLS-terminating boundary node as ordinary ingress. Treat the first set over any untrusted path as burned and rotate. |
+| **Provisioning channel** | Known-exposed: the argument to `set_webhook_secret` / `set_stripe_api_key` transits the TLS-terminating boundary node as ordinary ingress. Treat the first set over any untrusted path as burned and rotate. |
 | **ICP burn cap** | The always-on backstop, independent of SEV. Bounds how much a forger can drain per window. |
 
 Interface (`Main.mo`):
@@ -656,16 +700,23 @@ Interface (`Main.mo`):
   16 bytes and leaves a working secret untouched on rejection, so a
   fat-fingered rotation cannot brick the webhook. Pass the **whole `whsec_…`
   string**, prefix included — that is the HMAC key.
-- `webhook_secret_status()` — `{isSet, generation, setAtNs}`. **There is no
+- `set_stripe_api_key(text)` / `set_stripe_origin(text)` — same posture. The
+  origin is validated at set time: https, no query, no fragment.
+- `webhook_secret_status()` / `stripe_api_key_status()` — `{isSet, generation, setAtNs}`. **There is no
   read-back path, not even for controllers.** `generation` increments per
   successful set, which is how ops confirms a rotation landed.
 
-If the secret leaks, an attacker can forge "paid" webhooks and mint cycles at
-operator expense — bounded by the burn cap, detectable by reconciling against
-Stripe's event log (forged payments have no matching `payment_intent` there), and
-recoverable by rotation. The Stripe account, customers, and cardholder data are
-untouched, because there is no API key to steal. See `RUNBOOK.md` §2 for the
-leak procedure — **cap to 0 first**, then rotate.
+If the signing secret leaks, an attacker can forge "paid" webhooks and mint
+cycles at operator expense — bounded by the burn cap, detectable by reconciling
+against Stripe's event log (forged payments have no matching `payment_intent`
+there), and recoverable by rotation. Customers and cardholder data are untouched
+either way; with a restricted key, so is the Stripe account. See `RUNBOOK.md` §2
+for the leak procedure — **cap to 0 first**, then rotate.
+
+Rotation needs no dual-secret window here: while a rolled Stripe signing secret's
+predecessor is still live, Stripe sends one `v1=` per active secret and
+`Card.verify` accepts any single match, so swapping the stored blob at any point
+during the overlap never drops a delivery.
 
 > This is a deliberate departure from `canister-security` pitfall 9 ("never store
 > secrets in canister state"). The reasoning above is the justification; do not
@@ -678,11 +729,12 @@ privileges — any controller can do any of this):
 
 | Method | Purpose |
 |---|---|
-| `set_webhook_secret` | provision / rotate (§13) |
-| `webhook_secret_status` | confirm a rotation landed |
+| `set_stripe_api_key` | provision / rotate the restricted `rk_` key (§13) |
+| `set_stripe_origin` | where Stripe returns the buyer; https, no query, no fragment |
+| `set_webhook_secret` | provision / rotate the signing secret (§13) |
+| `webhook_secret_status` / `stripe_api_key_status` | confirm a rotation landed, without reading either secret back |
 | `set_card_tiers` | register the preset amounts. Since #33 an empty vector shows no tiles and does **not** disable the rail — the switch is both Stripe secrets |
 | `set_gate_config` | open-order cap, own-cycles floor, per-purchase ceiling |
-| `set_retention_config` | order TTL (the expiry flip; nothing is deleted) |
 | `set_pricing_config` | fee formula, staleness window (capped at 1 h), delta bound, minimum rate sources |
 | `refresh_rates` | force a rate tick now instead of waiting for the timer |
 | `set_treasury_config` | burn cap, window, alert-after, max hold, low-float threshold |
@@ -691,8 +743,6 @@ privileges — any controller can do any of this):
 | `mint_journal` | money-out record for one order |
 | `audit_log` | operational trail; gaps in `seq` mean ring-buffer drops |
 | `process_order` | manual mint kick; safe to spam |
-| `run_retention` | apply a retuned TTL now |
-| `attach_payment` | credit an unattributable payment to the order it was meant for (§12) |
 | `set_pricing_config` | fee formula, staleness window, delta bound, minimum rate sources |
 | `abandon_order` | void an unpaid order, with the reason recorded in the audit trail |
 | `recount_orders` | rebuild the O(1) per-status counters from the store |
@@ -701,7 +751,7 @@ privileges — any controller can do any of this):
 
 Public queries (transparency is the product thesis): `card_tiers`,
 `pricing_status`, `quote_previews`, `treasury_status`, `recovery_status`,
-`lifecycle_config`, `retention_status`, `can_purchase`, `cycles_status`,
+`lifecycle_config`, `order_stats`, `can_purchase`, `cycles_status`,
 `error_queue_depth`, `health`.
 
 **Owner-scoped, not admin-scoped:** `get_order`, `list_orders`, `cancel_order`,
@@ -712,26 +762,32 @@ with their XRC quality signal, so a buyer can recompute
 `netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros` from canisters they
 query themselves and confirm they were charged correctly.
 
-### Stripe Dashboard setup
+### Stripe setup
 
-1. Create one **Payment Link** per price point: a Product, a fixed **one-time**
-   Price in USD, and a card-only link with adjustable quantity, promotion codes and
-   automatic tax all **off**. Those four settings are what keep
-   `amount_total == tier.usdCents`, and the failure mode is not an error — the order
-   delivers a different cycle quantity and looks successful. **RUNBOOK §3 is the
-   reference**: how to create them, what each setting does if enabled, and why
-   test-mode links cannot be reused in live mode.
-2. Register them with `set_card_tiers`. The URL is **not validated** (Stripe custom
-   checkout domains make a host allowlist wrong), so click each tile once on the
-   deployed site: a wrong link still creates an order, locks a rate and consumes an
-   open-order slot before dead-ending.
+**There are no Dashboard objects to create for this rail** — no Products, no
+Prices, no Payment Links. The session carries inline `price_data`, so the amount
+is pinned by the request rather than by a link's configuration.
+
+1. Create a **restricted API key** (`rk_...`) scoped to write Checkout Sessions
+   and nothing else, and provision it with `set_stripe_api_key`. Not an `sk_`:
+   §13 covers why the scope matters more than the storage.
+2. `set_stripe_origin` — where Stripe returns the buyer, and the origin the
+   session's `success_url`/`cancel_url` are built from.
 3. Create a webhook endpoint pointing at
-   `https://<canister-id>.icp0.io/webhook/stripe`, subscribed to exactly
-   **`checkout.session.completed`** and **`charge.refunded`**.
-4. Copy the endpoint's signing secret into `set_webhook_secret`.
-5. Size the burn cap (`set_treasury_config`) — until then the gate refuses every
+   `https://<canister-id>.icp0.io/webhook/stripe`, subscribed to
+   **`checkout.session.completed`**, **`checkout.session.expired`**,
+   **`charge.refunded`** and **`charge.dispute.created`**.
+   ⚠️ `checkout.session.expired` is not optional: it is the *only* thing that
+   expires an order and releases its reserve promise (§10).
+4. Copy the endpoint's signing secret into `set_webhook_secret`. Provisioning the
+   key and this secret is what **opens** the rail, so do it last.
+5. Optionally register price tiles with `set_card_tiers` — a buyer can type any
+   amount within the gate's bounds without them.
+6. Size the burn cap (`set_treasury_config`) — until then the gate refuses every
    order.
-6. `refresh_float` after funding, so the gate has an observation.
+7. `refresh_float` after funding, so the gate has an observation.
+8. Record the account's **Stripe API version** and treat changing it as a code
+   change: webhook payload shapes follow the account default.
 
 ## 15. Local development against a Stripe sandbox
 
@@ -778,9 +834,10 @@ Two further caveats:
 
 - `stripe trigger` builds a *synthetic* session with **no
   `client_reference_id`**, so it lands as Type 1 `#unattributed` — which is
-  itself a useful test. To exercise the happy path, create a real order, open
-  the sandbox Payment Link with `?client_reference_id=<ref>` appended, and pay
-  with test card `4242 4242 4242 4242`.
+  itself a useful test. To exercise the happy path, create a real order through
+  the app and pay the URL it returns (`order.stripeSessionUrl`) with test card
+  `4242 4242 4242 4242`. There is nothing to append: the canister already set the
+  reference on that session.
 - The canister compares the signature timestamp against **its own clock**. A
   local replica whose time has drifted more than 300 s from real time will
   reject every live webhook with a 400.

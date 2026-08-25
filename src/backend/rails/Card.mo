@@ -11,8 +11,8 @@
 /// Ingestion invariants (§4.1): dedup gates the mint; every verified dollar
 /// resolves to a `#paid` order or a Type 1 error-queue entry (Type 2 only
 /// exists after minting, §5); `client_reference_id` is claimed, not trusted;
-/// the *actual* paid amount is honored, repriced from the order's creation
-/// pricing snapshot when it differs from the quoted tier. The whole path is
+/// the paid amount must EQUAL the quoted one — the session carried our figure,
+/// so a difference is a misconfiguration, not a choice. The whole path is
 /// synchronous — no awaits, so no interleaving between check and write.
 /// State lives in `Deps` (Main.mo's stores, injected) so the path unit-tests
 /// without an IC environment.
@@ -27,7 +27,6 @@ import Runtime "mo:core/Runtime";
 import Text "mo:core/Text";
 import AuditLog "../AuditLog";
 import ErrorQueue "../ErrorQueue";
-import Pricing "../Pricing";
 import Hmac "../Hmac";
 import Http "../Http";
 import Idempotency "../Idempotency";
@@ -336,9 +335,10 @@ module {
     /// record — never pruned, and bounded by real volume (which the burn cap
     /// bounds), unlike the `#unattributed` spam the dedup sets absorb.
     paidIntents : Map.Map<Text, Types.OrderId>;
-    /// Per-purchase ceiling (`Gate.Config.maxPurchaseUsdCents`) — the webhook
-    /// honours the *actual* paid amount, so without this an implausible
-    /// payment would be repriced upward and minted.
+    /// Per-purchase ceiling (`Gate.Config.maxPurchaseUsdCents`) — defence in
+    /// depth now that the webhook honours only the quoted amount: an order
+    /// created under a higher ceiling still matches its own quote after the
+    /// ceiling is lowered, and this is what refuses it.
     maxPurchaseUsdCents : Nat;
   };
 
@@ -366,25 +366,32 @@ module {
     ignore AuditLog.append(deps.auditLog, deps.auditLogCapacity, nowNs, tag, detail);
   };
 
-  /// How many cycles a given paid amount is worth for this order (§3/§6.1).
+  /// Whether a paid amount may be honoured for this order (§3/§6.1) — since
+  /// #33 an **equality check, not a computation**.
   ///
-  /// Extracted so the webhook path and the operator's `attach_payment` lever
-  /// share one implementation. They must agree exactly: two copies of money
-  /// arithmetic on a payment path is how a manual rescue silently credits a
-  /// different quantity than the automatic path would have.
+  /// Repricing existed because a fixed Payment Link could legitimately be paid
+  /// for an amount the order was not created for: the buyer picked the link,
+  /// not the order. A per-order Checkout Session carries the amount *we* set,
+  /// so `amount_total` can now differ from the quote only if a Stripe feature
+  /// that moves the total is enabled — the list is next to `Session.createBody`,
+  /// and each entry is one Dashboard toggle away. That is a misconfiguration
+  /// for the operator to look at, not a choice the buyer made, so a mismatch
+  /// files a Type 1 and mints nothing.
+  ///
+  /// ⚠️ The collapse is what makes `lockedCycles` immutable after creation, and
+  /// #30's accounting is exact rather than conservative because of it. Anything
+  /// that reintroduces "honour a different amount" reintroduces both problems.
   public type Honored = {
     /// The amount matched the quote, so the locked quantity stands verbatim.
     #asQuoted : Nat;
-    /// A different amount, repriced from the order's OWN rate snapshot — never
-    /// a fresh rate, so "no quote drift" holds off the happy path too.
-    #repriced : Nat;
-    /// The fee formula swallows the amount; nothing can be minted.
-    #belowFeeFloor;
-    /// Above the per-purchase ceiling. Repricing is an upward path, so without
-    /// this a tampered link or a mis-set Stripe price would mint arbitrarily.
+    /// Stripe reported an amount we never asked for. Type 1: the operator
+    /// refunds and fixes the session configuration.
+    #mismatch : { paidUsdCents : Nat; quotedUsdCents : Nat };
+    /// Above the per-purchase ceiling, kept as defence in depth even though the
+    /// session pins the amount. It is reachable without any tampering: an order
+    /// created under a higher ceiling still matches its own quote after the
+    /// ceiling is lowered.
     #aboveCeiling : { paidUsdCents : Nat; maxUsdCents : Nat };
-    /// The order's rate snapshot cannot produce a quantity (zero ICP price).
-    #unusableSnapshot;
   };
 
   public func honoredCycles(
@@ -395,14 +402,10 @@ module {
     if (paidUsdCents > maxPurchaseUsdCents) {
       return #aboveCeiling({ paidUsdCents; maxUsdCents = maxPurchaseUsdCents });
     };
-    if (paidUsdCents == order.pricing.usdCents) return #asQuoted(order.lockedCycles);
-    let ?net = Pricing.netCents(order.pricing, paidUsdCents) else return #belowFeeFloor;
-    let ?repriced = Pricing.cyclesForCents(
-      net,
-      order.pricing.xdrPermyriadPerIcp,
-      order.pricing.usdPerIcpMicros,
-    ) else return #unusableSnapshot;
-    #repriced(repriced);
+    if (paidUsdCents != order.pricing.usdCents) {
+      return #mismatch({ paidUsdCents; quotedUsdCents = order.pricing.usdCents });
+    };
+    #asQuoted(order.lockedCycles);
   };
 
   /// Queue a Type 1 entry (§4.1: fiat exists, nothing minted — operator
@@ -526,9 +529,12 @@ module {
   /// An intent that has already funded an order arrived again. Two shapes:
   ///
   /// - **names the same order** → a redelivery past the dedup retention. Ack it.
-  /// - **names anything else** → an `attach_payment` went to the wrong order, or the
-  ///   reference is wrong. Never mint (the money is spent), but surface the
-  ///   contradiction — it used to be entirely silent.
+  /// - **names anything else** → the reference and our record disagree. Since #33
+  ///   nothing writes an attribution but the webhook itself and nothing but the
+  ///   canister sets `client_reference_id`, so this should be unreachable — which
+  ///   is exactly why it stays: an unreachable contradiction that fires means a
+  ///   bug in attribution or something odd on Stripe's side, and it used to be
+  ///   entirely silent. Never mint (the money is spent), but surface it.
   ///
   /// Reads the order id straight from `clientReferenceId` rather than taking a
   /// resolved order, so it stays reachable when the reference is unusable. That is
@@ -569,7 +575,7 @@ module {
       #duplicate({ orderId = credited; paymentRef = session.paymentIntent }),
       "intent " # session.paymentIntent # " was credited to order " # credited
       # " but its Stripe session names " # namedText
-      # " — an attach_payment went to the wrong order, or the reference is wrong. Nothing was minted twice. Decide which order the buyer paid for; if it is not the credited one, deliver that one from operator funds and reconcile.",
+      # " — the reference and our record disagree, which should not be reachable. Nothing was minted twice. Decide which order the buyer paid for; there is no way to credit the other one, so settle it by refunding in Stripe.",
       nowNs,
     );
   };
@@ -623,7 +629,7 @@ module {
               );
               paymentRef = session.paymentIntent;
             }),
-            "LIVE payment arrived but this gateway is configured for test mode — money is in the live Stripe account and nothing was minted; fix set_expected_livemode, then attach_payment to the referenced order or refund",
+            "LIVE payment arrived but this gateway is configured for test mode — money is in the live Stripe account and nothing was minted; fix set_expected_livemode, then RESEND this event from the Stripe Dashboard so the referenced order is credited, or refund",
             nowNs,
           );
         };
@@ -733,12 +739,16 @@ module {
     if (session.currency != "usd") {
       return unattributed("unexpected currency " # session.currency # " for order " # orderId);
     };
-    // ── §3/§6.1: honor the ACTUAL paid amount, through the shared helper so
-    // this path and `attach_payment` cannot diverge.
-    let honored = switch (honoredCycles(order, session.amountTotalCents, deps.maxPurchaseUsdCents)) {
-      case (#asQuoted(cycles) or #repriced(cycles)) cycles;
-      case (#belowFeeFloor) {
-        return unattributed("paid amount " # session.amountTotalCents.toText() # " cents is below the fee floor of order " # orderId);
+    // ── §3/§6.1: the session carried our amount, so the only thing to decide is
+    // whether Stripe reported it back unchanged.
+    switch (honoredCycles(order, session.amountTotalCents, deps.maxPurchaseUsdCents)) {
+      case (#asQuoted(_)) {};
+      case (#mismatch({ paidUsdCents; quotedUsdCents })) {
+        return unattributed(
+          "paid amount " # paidUsdCents.toText() # " cents is not the " # quotedUsdCents.toText()
+          # " cents order " # orderId # " asked Stripe for — a session feature that moves the total is"
+          # " enabled (see Session.createBody); nothing minted, refund and fix the configuration"
+        );
       };
       case (#aboveCeiling({ paidUsdCents; maxUsdCents })) {
         return unattributed(
@@ -746,18 +756,12 @@ module {
           # maxUsdCents.toText() # " cents for order " # orderId # " — not minted; refund or raise the ceiling"
         );
       };
-      case (#unusableSnapshot) {
-        return unattributed("order " # orderId # " carries an unusable rate snapshot; cannot reprice " # session.amountTotalCents.toText() # " cents");
-      };
     };
-    switch (Orders.markPaid(deps.orders, orderId, honored, session.amountTotalCents, nowNs)) {
+    switch (Orders.markPaid(deps.orders, orderId, session.amountTotalCents, nowNs)) {
       case (#ok(_)) {
         // Link the payment to the order it funded, so a later refund of this
         // intent can tell whether cycles were already delivered.
         deps.paidIntents.add(session.paymentIntent, orderId);
-        if (honored != order.lockedCycles) {
-          audit(deps, nowNs, "stripe.amountMismatch", "order " # orderId # " honored at " # session.amountTotalCents.toText() # " cents = " # honored.toText() # " cycles (quoted " # order.pricing.usdCents.toText() # " cents)");
-        };
         // The one path that creates money-out work.
         { response = Http.text(200, "ok"); paidOrder = ?orderId };
       };

@@ -23,7 +23,7 @@ buyer's cycles-ledger account. Verified from the canister rather than from the U
   obligation left open
 - `heldOrders = 0`, `paidOrders = 0` — nothing stuck mid-pipeline
 - 5.20 ICP burned against the 100 ICP/24 h cap, consistent with the two mints
-- `cancel_order` exercised twice, and one order expired through the retention sweep
+- `cancel_order` exercised twice, and one order expired (through the retention sweep, which #33 has since deleted — an order now expires only when Stripe says its session did)
 
 **What that run did NOT cover**, and is still open:
 
@@ -442,19 +442,29 @@ icp canister call backend receipt '("<orderId>")'           # owner identity onl
 | B2 | No reference | `stripe trigger checkout.session.completed` | `200`; Type 1 `#unattributed`, `claimedRef` empty |
 | B3 | Forged owner | hand-edit the ref to another principal, same order id | Type 1 — "claimed owner does not match" |
 | B4 | Malformed reference | ref = `garbage` | Type 1 — "malformed" |
-| B5 | Payment for an **expired** order | shorten the TTL (dev bootstrap uses 10 min), let the order expire, then pay | `200`; order **stays `Expired`**, Type 1 `#unattributed` whose detail says "cannot be paid". **Refund it in Stripe.** Not honoured — #34 made expiry terminal |
-| B6 | Payment for a **cancelled** order | `cancel_order`, then pay the link | `200`; order **stays `Cancelled`**, same Type 1 obligation. The buyer's decision wins; the money is refundable, never converted against it (#34) |
-| B7 | `attach_payment` on either of the above | attach the intent from B5 or B6 | refused with `notClaimable` — the lever past expiry or cancellation is a refund, not a conversion |
+| B5 | Payment for an **expired** order | there is no TTL to shorten since #33 — open the order's session URL, expire that session in the Stripe Dashboard so `checkout.session.expired` arrives, then pay a *previously opened* copy of the page | `200`; order **stays `Expired`**, Type 1 `#unattributed` whose detail says "cannot be paid". **Refund it in Stripe.** Not honoured — #34 made expiry terminal |
+| B6 | Payment for a **cancelled** order | `cancel_order`, then pay a page you opened before cancelling | `200`; order **stays `Cancelled`**, same Type 1 obligation. The buyer's decision wins; the money is refundable, never converted against it (#34). ⚠️ Hard to reach on purpose: cancel expires the session on Stripe *first*, so the payment usually cannot start at all |
+| B7 | There is no rescue lever | — | `attach_payment` was deleted in #33. For B5 and B6 the only remedy is a refund in Stripe, which auto-resolves the entry |
 
 ## C. Amount honouring
 
 | # | Scenario | How | Expect |
 |---|---|---|---|
-| C1 | Exact tier amount | pay the tier price | `lockedCycles` verbatim; `paidUsdCents == pricing.usdCents` |
-| C2 | **Different amount** | apply a partial-discount promo code to the link | repriced from the order's own snapshot, **not** today's rate |
-| C3 | Below the fee floor | a link priced at e.g. $0.31 | Type 1 — the fee would swallow it |
-| C4 | Above the per-purchase ceiling | lower `maxPurchaseUsdCents` below the tier, then pay | Type 1, **not** minted |
-| C5 | Wrong currency | a EUR-priced link | Type 1 — "unexpected currency" |
+⚠️ **Rewritten by #33.** The canister sets the amount on the session, so C2 and
+C3 can no longer be produced through the app at all — which is the point of the
+change, and is why they are listed as *unreachable* rather than dropped. To
+exercise the mismatch branch you have to create a session outside the app (a
+hand-made `POST /v1/checkout/sessions` at a different `unit_amount`, carrying an
+order's `client_reference_id`) — worth doing once, because it is the branch that
+used to mint silently.
+
+| # | Scenario | How | Expect |
+|---|---|---|---|
+| C1 | Exact quoted amount | pay the order's own session | `lockedCycles` verbatim; `paidUsdCents == pricing.usdCents` |
+| C2 | **Different amount** | not reachable through the app — hand-make a session at another `unit_amount` with the order's reference | `200`; **nothing minted**, order stays `Created`, Type 1 naming both figures. It used to be repriced and delivered |
+| C3 | Below the fee floor | same, at e.g. $0.31 | the same Type 1 as C2 — since #33 "below the floor" is not a separate outcome, it is just a different amount |
+| C4 | Above the per-purchase ceiling | lower `maxPurchaseUsdCents` below an existing order's amount, then pay that order's session | Type 1, **not** minted. This is the ceiling's one reachable case, and it needs no tampering |
+| C5 | Wrong currency | not reachable through the app — the request pins `usd`; hand-make a EUR session | Type 1 — "unexpected currency" |
 
 ## D. Dedup and replay
 
@@ -463,7 +473,7 @@ icp canister call backend receipt '("<orderId>")'           # owner identity onl
 | D1 | Dashboard resend | Dashboard → the event → "Resend" | `200 duplicate event`; **no** second credit |
 | D2 | Two genuine payments | pay the same link twice (two intents) | second → Type 1 `#duplicate` |
 | D3 | Same intent, new event id | resend after >7 days if you can arrange it, else trust D1 | `200 already credited`, `stripe.replayedAfterPruning` |
-| D4 | Credited elsewhere | `attach_payment` an intent to order X, then let the real webhook for order Y arrive | not minted; `stripe.creditedElsewhere` + a `#duplicate` naming both |
+| D4 | Credited elsewhere | not reachable through the app since #33 — nothing but the webhook writes an attribution. To force it, deliver a hand-made `completed` for order Y carrying an intent already credited to order X | not minted; `stripe.creditedElsewhere` + a `#duplicate` naming both |
 
 ## E. Refunds — the highest-value group
 
@@ -573,9 +583,10 @@ The plan is a **precondition** to `RUNBOOK.md` §1: the go-live checklist assume
 the rail has already been shown to work.
 
 ⚠️ **Configuration is not duplicated, and the values differ on purpose.**
-`scripts/stripe-dev.sh` bootstraps *dev* values — 10-minute TTL, 2-minute alert
-threshold, float gating off, `expected_livemode = false` — so failure modes are
-reachable inside a session. **None of them are safe on mainnet.** `RUNBOOK.md` §1
+`scripts/stripe-dev.sh` bootstraps *dev* values — 2-minute alert threshold, float
+gating off, `expected_livemode = false` — so failure modes are reachable inside a
+session. (It set a 10-minute order TTL too, until #33 deleted retention: the
+deadline is Stripe's now, and nothing local shortens it.) **None of them are safe on mainnet.** `RUNBOOK.md` §1
 is the sole authority for go-live configuration.
 
 Where this plan states an *expected outcome* (a Type 1 entry, a `#unprocessable`,

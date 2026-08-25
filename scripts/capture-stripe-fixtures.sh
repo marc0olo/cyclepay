@@ -48,9 +48,9 @@ die() {
 # the closing summary cannot drift apart.
 wanted() {
   cat <<'LIST'
-checkout.session.completed.paid|pay a test-mode Payment Link with 4242 4242 4242 4242
-checkout.session.completed.unpaid|MANUAL: pay with a DELAYED method (e.g. SEPA debit) enabled on the link
-checkout.session.completed.no-intent|MANUAL: use a 100%-off promo code, or a subscription-mode link
+checkout.session.completed.paid|create an order in the app and pay its session URL with 4242 4242 4242 4242
+checkout.session.completed.unpaid|OUT OF BAND: hand-make a session with a DELAYED method (see the note below)
+checkout.session.completed.no-intent|OUT OF BAND: hand-make a session at unit_amount=0 (see the note below)
 checkout.session.async_payment_succeeded|stripe trigger checkout.session.async_payment_succeeded
 checkout.session.async_payment_failed|stripe trigger checkout.session.async_payment_failed
 charge.refunded.full|refund a charge IN FULL in the Dashboard
@@ -114,7 +114,25 @@ rather than the output of a real payment, which is still far better than the
 hand-written JSON they replace, but note the distinction for the async pair: a
 real SEPA settlement is the thing group F of docs/SANDBOX-TESTPLAN.md exercises.
 
-Only the two marked MANUAL need a configured Payment Link.
+⚠️ The two marked OUT OF BAND cannot be produced by this app at all since #33.
+Its sessions are card-only, mode=payment, at a fixed unit_amount above the $10
+floor, with no promo codes — so `payment_status` is never `unpaid` and
+`payment_intent` is never absent. Both used to come from Payment Link settings,
+which no longer exist here.
+
+To capture them, create the session yourself against the sandbox and pay it:
+
+  stripe checkout sessions create --mode=payment \
+    --payment-method-types=sepa_debit --success-url=https://example.com \
+    -d "line_items[0][price_data][currency]=eur" \
+    -d "line_items[0][price_data][unit_amount]=1000" \
+    -d "line_items[0][price_data][product_data][name]=fixture" \
+    -d "line_items[0][quantity]=1"
+
+(and the same at unit_amount=0 for the no-intent case). The handlers they
+exercise are still live — a delayed method could be enabled at account level, and
+a zero-amount session is still a shape Stripe can send — which is why the
+fixtures are still wanted even though the app cannot produce them.
 
 Ctrl-C when the list is complete.
 
@@ -122,7 +140,7 @@ NOTES
 
 # `--print-json` emits one JSON object per line. Sort by type, and by the field that
 # distinguishes the variants we care about — paid vs unpaid, full vs partial refund,
-# and the missing-payment_intent case that a promo code or subscription link produces.
+# and the missing-payment_intent case a zero-amount or subscription session produces.
 stripe listen --print-json "${FORWARD_ARGS[@]}" 2>/dev/null | node -e '
 const fs = require("fs");
 const dir = process.argv[1];

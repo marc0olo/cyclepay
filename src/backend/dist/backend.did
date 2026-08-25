@@ -47,22 +47,22 @@ type SetError = variant {tooShort: record {
                                    };};
 type Result_9 = 
  variant {
+   err: CreateOrderError;
+   ok: CreatedOrder;
+ };
+type Result_8 = 
+ variant {
    err: ProcessOrderError;
    ok: Order;
  };
-type Result_8 = 
+type Result_7 = 
  variant {
    err: ResolveError;
    ok: Entry;
  };
-type Result_7 = 
- variant {
-   err: ValidateError;
-   ok;
- };
 type Result_6 = 
  variant {
-   err: ConfigError__3;
+   err: ValidateError;
    ok;
  };
 type Result_5 = 
@@ -72,12 +72,12 @@ type Result_5 =
  };
 type Result_4 = 
  variant {
-   err: IntervalError;
+   err: ConfigError__1;
    ok;
  };
 type Result_3 = 
  variant {
-   err: ConfigError__1;
+   err: IntervalError;
    ok;
  };
 type Result_2 = 
@@ -85,25 +85,15 @@ type Result_2 =
    err: OriginError;
    ok;
  };
-type Result_13 = 
- variant {
-   err: AttachPaymentError;
-   ok: Order;
- };
-type Result_12 = 
+type Result_11 = 
  variant {
    err: Reason;
    ok;
  };
-type Result_11 = 
+type Result_10 = 
  variant {
    err: text;
    ok: Order;
- };
-type Result_10 = 
- variant {
-   err: CreateOrderError;
-   ok: CreatedOrder;
  };
 type Result_1 = 
  variant {
@@ -387,14 +377,14 @@ type CreateOrderError =
    tierBelowFees: text;
    unknownTier: text;
  };
-type Config__3 = 
+type Config__2 = 
  record {
    maxOpenOrdersPerPrincipal: nat;
    maxPurchaseUsdCents: nat;
    minCanisterCycles: nat;
    minPurchaseUsdCents: nat;
  };
-type Config__2 = 
+type Config__1 = 
  record {
    feeBps: nat;
    feeFixedCents: nat;
@@ -402,8 +392,7 @@ type Config__2 =
    maxRateDeltaBps: nat;
    minRateSources: nat;
  };
-type Config__1 = record {orderTtlNs: nat;};
-type ConfigError__3 = 
+type ConfigError__2 = 
  variant {
    floorAboveCeiling: record {
                         maxUsdCents: nat;
@@ -422,7 +411,7 @@ type ConfigError__3 =
    zeroOpenOrderCap;
    zeroPurchaseCeiling;
  };
-type ConfigError__2 = 
+type ConfigError__1 = 
  variant {
    feeBpsTooHigh;
    maxAgeTooLong: record {
@@ -433,7 +422,6 @@ type ConfigError__2 =
    zeroRateDelta;
    zeroRateSources;
  };
-type ConfigError__1 = variant {zeroTtl;};
 type ConfigError = 
  variant {
    alertNotBeforeMaxHold: record {
@@ -452,20 +440,6 @@ type Config =
    lowFloatThresholdE8s: nat;
    maxHoldNs: int;
  };
-type AttachPaymentError = 
- variant {
-   aboveCeiling: record {
-                   maxUsdCents: nat;
-                   paidUsdCents: nat;
-                 };
-   alreadyCredited: text;
-   belowFeeFloor: nat;
-   noOrder: OrderId;
-   notClaimable: text;
-   transitionRefused: text;
-   unusableSnapshot;
-   wrongRail;
- };
 type Amount = 
  variant {
    custom: nat;
@@ -482,37 +456,18 @@ type Account =
 /// module layout this actor grows into: Orders.mo wiring, rails/, Cmc.mo,
 /// Pricing.mo, Treasury.mo, ErrorQueue.mo, Auth.mo.
 service : {
-  abandon_order: (id: OrderId, reason: text) -> (Result_11);
-  /// Credit a Stripe charge the canister never saw (admin, §6.1).
+  /// Stop trying to deliver an order (admin, §7) — **the only path to a
+  /// terminal non-delivered state.**
   /// 
-  /// The recovery path for the one card-rail failure that otherwise has none:
-  /// **the webhook never arrived.** Stripe retries a failed delivery for about
-  /// three days and then stops; we hold no API key, so we never poll. Past that
-  /// horizon the charge exists in Stripe with no on-chain trace at all, the
-  /// buyer's money is gone, and their order reads "Awaiting payment" forever.
+  /// Nothing in the system gives up on a purchase automatically: a delay raises
+  /// `#deliveryDelayed` and keeps retrying, because its causes are all
+  /// operator-fixable. This is the deliberate human decision that a purchase
+  /// will not be completed, and it demands a reason so the trail records *why*
+  /// alongside *who*.
   /// 
-  /// ⚠️ **Only while the order is `#created`.** #34 deleted `#expired → #paid`,
-  /// so a cancelled or expired order cannot be converted at all — the lever there
-  /// is a refund in Stripe. That narrows this method considerably, because the
-  /// retention sweep expires an order at 48 h while Stripe is still retrying: a
-  /// webhook lost for longer than the TTL now leaves a payment that must be
-  /// refunded rather than delivered. Deliberate, and transitional — #33 takes the
-  /// deadline from Stripe (30 minutes, enforced by Stripe), so a session that can
-  /// still be paid belongs to an order that can still accept it, and this method
-  /// is deleted along with the whole Payment Link mechanism.
-  /// 
-  /// Also rescues an unattributed payment the operator *can* identify, while the
-  /// order is still `#created` — turning "refund and ask them to re-order at
-  /// today's price" into "deliver what they bought". Any open Type 1 entry for the
-  /// charge is resolved, since attaching it discharges that obligation.
-  /// 
-  /// The operator supplies the amount because Stripe is the authority on it, and
-  /// it is honoured through exactly the same helper the webhook uses.
-  /// 
-  /// This is a money-creating lever, so: controller-only, dedup-guarded against
-  /// double credit, and audited with the calling principal.
-  attach_payment: (paymentRef: text, id: OrderId, paidUsdCents: nat) ->
-   (Result_13);
+  /// Only reachable from a pre-delivery money-bearing state. A `#created` order
+  /// has taken no money and needs no decision; a `#delivered` one is done.
+  abandon_order: (id: OrderId, reason: text) -> (Result_10);
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
   audit_log: () -> (vec Event) query;
@@ -525,36 +480,28 @@ service : {
   /// anonymous callers may ask: it reveals only operational state that
   /// `treasury_status` already publishes. Answered for the *calling* principal,
   /// so the open-order cap it reports is the caller's own.
-  can_purchase: (usdCents: nat) -> (Result_12) query;
-  /// Stop trying to deliver an order (admin, §7) — **the only path to a
-  /// terminal non-delivered state.**
-  /// 
-  /// Nothing in the system gives up on a purchase automatically: a delay raises
-  /// `#deliveryDelayed` and keeps retrying, because its causes are all
-  /// operator-fixable. This is the deliberate human decision that a purchase
-  /// will not be completed, and it demands a reason so the trail records *why*
-  /// alongside *who*.
-  /// 
-  /// Only reachable from a pre-delivery money-bearing state. A `#created` order
-  /// has taken no money and needs no decision; a `#delivered` one is done.
+  can_purchase: (usdCents: nat) -> (Result_11) query;
   /// Let a buyer give up on their own unpaid order (owner-scoped).
   /// 
   /// `Gate.maxOpenOrdersPerPrincipal` counts `#created` orders, and its refusal
   /// tells the user to pay or abandon one — advice they could not follow without
   /// this: `abandon_order` is admin-only and only accepts *paid* orders. A buyer
   /// who opened the cap's worth of checkouts and completed none would be locked
-  /// out until the TTL expired them.
+  /// out until their sessions expired.
   /// 
-  /// Marks the order `#expired`, which is the existing retention transition, not
-  /// a new state. Two consequences, both wanted: the slot frees immediately, and
-  /// a payment that arrives anyway is **still honoured** at the locked quantity,
-  /// because `#expired` is payable (§4). So this can never strand a payment that
-  /// was already in flight when the buyer clicked cancel.
+  /// ⚠️ This paragraph said the order is marked `#expired` and that a payment
+  /// arriving afterwards is **still honoured**, because `#expired` was payable.
+  /// Both halves stopped being true and the text did not follow: #34 gave the
+  /// buyer's own decision the distinct `#cancelled` state, and deleted
+  /// `#expired → #paid` along with it. Nothing is stranded, but the reason is
+  /// now the opposite one — the session is expired on Stripe BEFORE the order
+  /// moves, so an in-flight payment either wins that race and the order is not
+  /// cancelled at all, or it cannot start. See the ordering note in the body.
   /// 
   /// No error-queue entry: nothing is owed. The record and the audit line are the
   /// trail, and queueing an obligation for an order where no money moved is
   /// exactly the orphan state the queue must not accumulate.
-  cancel_order: (id: OrderId) -> (Result_11);
+  cancel_order: (id: OrderId) -> (Result_10);
   /// Public — the frontend renders the amount tiles from this. There is no link
   /// to render: the canister creates a session per order (#33).
   card_tiers: () -> (vec Tier) query;
@@ -578,7 +525,7 @@ service : {
   /// favour passes through and they keep the extra cycles. The guard can only
   /// ever protect the buyer. `null` opts out entirely.
   create_order: (amount: Amount, destination: Destination, minCycles:
-   opt nat) -> (Result_10);
+   opt nat) -> (Result_9);
   /// §5.2 liveness observability, public (operational transparency, same
   /// stance as treasury_status): cadence + last completed timer sweep. A
   /// null or stale `lastSweep` means recovery is not running.
@@ -635,15 +582,16 @@ service : {
   /// dispatcher re-applies every guard; the route handlers themselves are
   /// payload-authenticated (HMAC), never caller-authenticated.
   http_request_update: (req: Request) -> (Response);
-  /// Public: the frontend needs the ceiling to bound its amount input, and the
-  /// TTL to tell the user how long an order stays live. Same transparency
-  /// stance as `forex_status` and `treasury_status` — these are the rules users
-  /// are held to, not secrets.
-  lifecycle_config: () ->
-   (record {
-      gate: Config__3;
-      retention: Config__1;
-    }) query;
+  /// Public: the frontend needs the bounds to size its amount input and to say
+  /// what it will accept before the buyer types. Same transparency stance as
+  /// `forex_status` and `treasury_status` — these are the rules users are held
+  /// to, not secrets.
+  /// 
+  /// It carried a `retention` half until #33. There is no lifecycle *policy* of
+  /// ours any more: the deadline is the Stripe session's `expires_at`, which
+  /// lives on each order rather than in config, so there is nothing global to
+  /// report.
+  lifecycle_config: () -> (record {gate: Config__2;}) query;
   /// Order history for the caller (§2, fixes the lost-receipt problem).
   list_orders: () -> (vec Order) query;
   /// Money-out journal for one order (admin, §4.2) — intent, block_index,
@@ -654,12 +602,31 @@ service : {
   /// order it funded. Null means the payment was never attributed to an order
   /// here — check the error queue for a Type 1 entry carrying it.
   order_for_payment: (paymentRef: text) -> (opt OrderId) query;
+  /// Order counters for monitoring (public, same stance as `treasury_status`).
+  /// 
+  /// This was `retention_status` until #33 deleted retention. None of the four
+  /// counters was ever about retention — they were sharing a query with a config
+  /// field — so the query outlived the mechanism under an honest name rather
+  /// than being deleted with it. ⚠️ #30 rehomes them into `reserve_status`;
+  /// this is a waypoint, not a destination.
+  /// 
+  /// `openOrders` climbing while `delivered` does not is the signature of
+  /// order-creation abuse; the lever is `Gate.maxOpenOrdersPerPrincipal`.
+  /// `totalOrders` and `paidIntentsIndexed` should grow together — a divergence
+  /// means an index and its records disagree.
+  order_stats: () ->
+   (record {
+      expiredOrders: nat;
+      openOrders: nat;
+      paidIntentsIndexed: nat;
+      totalOrders: nat;
+    }) query;
   /// Rates + params + refresh liveness, public: both rates are market data any
   /// third party can query for themselves, and the fee formula is what users
   /// are charged. Nothing here is secret, and reproducibility is the point.
   pricing_status: () ->
    (record {
-      config: Config__2;
+      config: Config__1;
       lastAttempt: opt record {
                          atNs: int;
                          detail: text;
@@ -670,7 +637,7 @@ service : {
     }) query;
   /// Manual mint kick (admin, §7) — ops lever for a stuck-looking order;
   /// safe to spam, every step is deduped/idempotent/single-flighted.
-  process_order: (id: OrderId) -> (Result_9);
+  process_order: (id: OrderId) -> (Result_8);
   /// Batch pre-purchase quote, public.
   /// 
   /// This exists so the price a buyer is shown is **computed by the same code
@@ -745,34 +712,7 @@ service : {
   /// Manual resolution (§4.1/§7): refund issued off-chain, or Type 2 cycles
   /// re-delivered/refunded. (`charge.refunded` resolves Type 1 entries
   /// automatically; this is the fallback and the only path for Type 2.)
-  resolve_error: (id: nat) -> (Result_8);
-  /// Retention counters for monitoring (public, same stance as
-  /// `treasury_status`).
-  /// 
-  /// `openOrders` climbing while `delivered` does not is the signature of
-  /// order-creation abuse; the lever is `Gate.maxOpenOrdersPerPrincipal`.
-  /// `totalOrders` and `paidIntentsIndexed` should grow together — a divergence
-  /// means an index and its records disagree.
-  retention_status: () ->
-   (record {
-      config: Config__1;
-      expiredOrders: nat;
-      openOrders: nat;
-      paidIntentsIndexed: nat;
-      totalOrders: nat;
-    }) query;
-  /// Manual retention kick (admin, §7) — ops lever to apply a retuned TTL
-  /// immediately instead of waiting up to a full sweep interval. Safe to spam:
-  /// the band is an absolute age, so a second run is a no-op.
-  /// 
-  /// Returns `scanned` alongside `expired` because the sweep is bounded per call
-  /// (`maxRetentionScanPerSweep`) and resumes from a cursor: on a large store it
-  /// takes several calls to cover everything, and `scanned` is how an operator
-  /// tells "nothing left to expire" from "did not look at everything yet".
-  run_retention: () -> (record {
-                          expired: nat;
-                          scanned: nat;
-                        });
+  resolve_error: (id: nat) -> (Result_7);
   /// Replace the card presets (§3/§7 — admin, validated atomically: a bad config
   /// never partially applies).
   /// 
@@ -781,7 +721,7 @@ service : {
   /// amounts (#33) a buyer can order without any preset, so an empty list stops
   /// nothing — it just shows no tiles. The switch is both Stripe secrets being
   /// provisioned; `railsLive` is where that lives.
-  set_card_tiers: (tiers: vec Tier) -> (Result_7);
+  set_card_tiers: (tiers: vec Tier) -> (Result_6);
   /// Adjust the admission gate (§7): open-order cap, own-cycles floor,
   /// per-purchase ceiling. Validated atomically — a bad config never partially
   /// applies. Lowering `maxPurchaseUsdCents` below an existing tier does NOT
@@ -794,16 +734,14 @@ service : {
   /// deployment. `null` restores "accept either", which only makes sense while
   /// nothing of value is at stake.
   set_expected_livemode: (expected: opt bool) -> ();
-  set_gate_config: (config: Config__3) -> (Result_6);
+  set_gate_config: (config: Config__2) -> (Result_5);
   /// Adjust pricing params (§7): fee formula, staleness window, delta guard.
   /// Validated atomically — a bad config never partially applies.
-  set_pricing_config: (config: Config__2) -> (Result_5);
+  set_pricing_config: (config: Config__1) -> (Result_4);
   /// Tune the sweep cadence (admin, §7) — re-arms immediately, no redeploy.
   /// Validated against the §5.1 bound: the cadence must stay well inside
   /// the ledger dedup window or replay loses its safety margin.
-  set_recovery_interval: (intervalNs: nat) -> (Result_4);
-  /// Adjust retention (§4/§4.2): the `#created` TTL and the delete horizon.
-  set_retention_config: (config: Config__1) -> (Result_3);
+  set_recovery_interval: (intervalNs: nat) -> (Result_3);
   /// Provision or rotate the Stripe API key (#33) — admin, mirroring
   /// `set_webhook_secret` in every respect including the provisioning caveat:
   /// the argument transits the TLS-terminating boundary node as plain ingress.

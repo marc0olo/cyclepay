@@ -94,9 +94,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       maxUsdCents: IDL.Nat,
     }),
   });
-  const RetentionConfig = IDL.Record({ orderTtlNs: IDL.Nat });
-  const RetentionConfigError = IDL.Variant({ zeroTtl: IDL.Null });
-  const RetentionSweepResult = IDL.Record({ expired: IDL.Nat, scanned: IDL.Nat });
   const CreateOrderError = IDL.Variant({
     anonymous: IDL.Null,
     cancelledDuringCreation: IDL.Null,
@@ -314,37 +311,19 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     ),
     lifecycle_config: IDL.Func(
       [],
-      [IDL.Record({ gate: GateConfig, retention: RetentionConfig })],
+      [IDL.Record({ gate: GateConfig })],
       ['query'],
     ),
     order_for_payment: IDL.Func([IDL.Text], [IDL.Opt(IDL.Text)], ['query']),
-    attach_payment: IDL.Func(
-      [IDL.Text, IDL.Text, IDL.Nat],
-      [IDL.Variant({
-        ok: Order,
-        err: IDL.Variant({
-          aboveCeiling: IDL.Record({ maxUsdCents: IDL.Nat, paidUsdCents: IDL.Nat }),
-          alreadyCredited: IDL.Text,
-          belowFeeFloor: IDL.Nat,
-          noOrder: IDL.Text,
-          notClaimable: IDL.Text,
-          transitionRefused: IDL.Text,
-          unusableSnapshot: IDL.Null,
-          wrongRail: IDL.Null,
-        }),
-      })],
-      [],
-    ),
     abandon_order: IDL.Func(
       [IDL.Text, IDL.Text],
       [IDL.Variant({ ok: Order, err: IDL.Text })],
       [],
     ),
-    retention_status: IDL.Func(
+    order_stats: IDL.Func(
       [],
       [
         IDL.Record({
-          config: RetentionConfig,
           expiredOrders: IDL.Nat,
           openOrders: IDL.Nat,
           paidIntentsIndexed: IDL.Nat,
@@ -359,7 +338,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       ['query'],
     ),
     recount_orders: IDL.Func([], [IDL.Vec(IDL.Tuple(IDL.Text, IDL.Nat))], []),
-    run_retention: IDL.Func([], [RetentionSweepResult], []),
     receipt: IDL.Func(
       [IDL.Text],
       [IDL.Opt(IDL.Record({
@@ -380,11 +358,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     set_gate_config: IDL.Func(
       [GateConfig],
       [IDL.Variant({ ok: IDL.Null, err: GateConfigError })],
-      [],
-    ),
-    set_retention_config: IDL.Func(
-      [RetentionConfig],
-      [IDL.Variant({ ok: IDL.Null, err: RetentionConfigError })],
       [],
     ),
     pricing_status: IDL.Func(

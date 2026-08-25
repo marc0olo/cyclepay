@@ -12,7 +12,9 @@
 /// orders, and it still could not guarantee delivery (the operator can withdraw
 /// the float, the CMC rate can move). Nothing is escrowed at creation —
 /// `lockedCycles` is a *price*, not a hold — so an order that lapses releases
-/// nothing (see Retention.mo).
+/// nothing. (It pointed at `Retention.mo` until #33 deleted it: an order lapses
+/// when Stripe expires its session, and #30 is what will make the release
+/// non-trivial by giving the promise something to hold.)
 ///
 /// Every check here is pure arithmetic over values the caller reads, so the
 /// whole policy unit-tests without an IC environment.
@@ -91,10 +93,9 @@ module {
     /// `set_card_tiers` already refuses a tier above the ceiling; without the
     /// inverse check, lowering the ceiling leaves that tier **sellable but
     /// unpayable**: the buyer completes checkout and the webhook files a Type 1,
-    /// because the honoured amount exceeds the ceiling. Worse, `attach_payment`
-    /// refuses to rescue it until the ceiling is raised back — so the operator has
-    /// to work out the connection between a refused rescue and a config change
-    /// made earlier.
+    /// because the honoured amount exceeds the ceiling. Since #33 deleted
+    /// `attach_payment` there is no rescue at all — the only remedy is a refund,
+    /// so the money is taken and given back for a config change made earlier.
     #tierAboveCeiling : { tierId : Text; usdCents : Nat; maxUsdCents : Nat };
     /// The mirror: a registered tier costs less than the new floor.
     #tierBelowFloor : { tierId : Text; usdCents : Nat; minUsdCents : Nat };

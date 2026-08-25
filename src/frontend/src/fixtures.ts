@@ -160,7 +160,6 @@ export function installFixtures(host: FixtureHost): void {
         minPurchaseUsdCents: 1_000n,
         maxPurchaseUsdCents: 10_000n,
       },
-      retention: { orderTtlNs: 172_800_000_000_000n },
     }),
     pricing_status: async () => ({
       config: { feeBps: 290n, feeFixedCents: 30n },

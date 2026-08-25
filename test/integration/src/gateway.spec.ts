@@ -114,12 +114,12 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
   // so the open-order cap does not either. Unbounded storage at zero cost.
   expect((await gw.asAdmin.stripe_api_key_status()).isSet).toBe(false);
   expect(await gw.asAdmin.stripe_origin()).toHaveLength(0);
-  const ordersBefore = (await gw.asAdmin.retention_status()).totalOrders;
+  const ordersBefore = (await gw.asAdmin.order_stats()).totalOrders;
   const noKey = expectErr(
     await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []),
   ) as { sessionUnavailable: string };
   expect(noKey.sessionUnavailable).toContain('API key');
-  expect((await gw.asAdmin.retention_status()).totalOrders).toBe(ordersBefore);
+  expect((await gw.asAdmin.order_stats()).totalOrders).toBe(ordersBefore);
 
   // The key alone is not enough: without a return origin there is no URL to send
   // the buyer back to, and the same no-record rule applies.
@@ -128,7 +128,7 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
     await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []),
   ) as { sessionUnavailable: string };
   expect(noOrigin.sessionUnavailable).toContain('origin');
-  expect((await gw.asAdmin.retention_status()).totalOrders).toBe(ordersBefore);
+  expect((await gw.asAdmin.order_stats()).totalOrders).toBe(ordersBefore);
 
   // Validated at set time, so a bad value fails in front of the operator who
   // typed it rather than breaking every purchase later.
@@ -764,13 +764,14 @@ test('17 — admission gate: the per-purchase ceiling bounds tiers and amounts',
   // used to say the opposite — it described the old behaviour as a convenience
   // ("pause a tier without rewriting the tier list"). It was a footgun dressed as a
   // feature: order creation stopped, but a buyer already on the Stripe page could
-  // still pay, and the webhook would then honour an amount above the ceiling, file a
-  // Type 1, and `attach_payment` would refuse to rescue it until the ceiling went
-  // back up. Nobody connects a refused rescue to a config change made hours earlier.
+  // still pay, and the webhook would then file a Type 1 rather than mint. Since #33
+  // there is no rescue lever either, so the buyer is refunded.
   //
-  // The pause lever is the tier list itself — an empty vector disables card order
-  // creation and leaves in-flight orders payable, because a paid order prices from
-  // its own snapshot and never re-reads the tier.
+  // ⚠️ **The pause lever is NOT the tier list.** This comment said it was, and
+  // PR-B (#48) falsified that: with custom amounts a buyer can order without any
+  // preset, so an empty vector only hides the tiles. The rail is live iff **both
+  // Stripe secrets are provisioned** — scenario 29 in this file asserts exactly
+  // that, and asserted the opposite before #48.
   expectErr(await gw.asAdmin.set_gate_config({ ...gate, maxPurchaseUsdCents: TIER_USD_CENTS - 1n }));
   expect((await gw.asAnon.lifecycle_config()).gate.maxPurchaseUsdCents)
     .toBe(gate.maxPurchaseUsdCents);
@@ -778,33 +779,37 @@ test('17 — admission gate: the per-purchase ceiling bounds tiers and amounts',
   expectOk(await gw.asAdmin.set_gate_config(gate));
 });
 
-test('18 — retention expires an abandoned order but never deletes it', async () => {
+test('18 — an expired order is never deleted, and a late payment is refunded not converted', async () => {
+  // Rewritten by #33, which deleted `Retention.mo`: there is no TTL and no
+  // sweep, so the ONLY thing that expires an order is Stripe telling us the
+  // session did. The scenario keeps its real subject — what survives, and what a
+  // payment arriving afterwards does — and drops the mechanism that is gone.
   await ensureRates(gw);
-  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
+  const created = expectOk(
+    await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, [], { sessionId: 'cs_lapsed' }),
+  );
   const lapsed = created.order;
   const lapsedRef = clientReferenceFor(created.order.id);
 
-  // Short TTL so the flip is observable.
-  expectOk(await gw.asAdmin.set_retention_config({ orderTtlNs: 3_600_000_000_000n })); // 1 h
-
-  // Inside the TTL nothing happens, however often the sweep runs.
-  await gw.asAdmin.run_retention();
+  // Time alone does nothing now. Past its own deadline the order is still
+  // `#created` — which is the point: a missed webhook is VISIBLE as an order
+  // sitting past `expiresAtNs`, and that is #30's detection predicate. A sweep
+  // would have hidden it by flipping the status while the reserve stayed held.
+  await gw.pic.advanceTime(3 * 3_600_000);
+  await gw.pic.tick(3);
   expect(await orderStatus(gw, lapsed.id)).toBe('created');
 
-  // Past the TTL it is marked expired — and STAYS expired, because nothing here
-  // deletes and #34 gave the status no outgoing edge.
-  await gw.pic.advanceTime(3_600_000 + 60_000);
-  await gw.pic.tick();
-  await gw.asAdmin.run_retention();
+  expect(await deliverWebhook(gw, sessionExpiredBody({
+    eventId: 'evt_lapsed', sessionId: 'cs_lapsed', clientReferenceId: lapsedRef,
+  }))).toMatchObject({ status_code: 200 });
+  await gw.pic.tick(3);
   expect(await orderStatus(gw, lapsed.id)).toBe('expired');
 
-  // No horizon deletes it. Age it enormously and it is still there — a deleted
-  // financial record would contradict every other retention rule here, and it
-  // would orphan the paidIntents entry a later payment creates.
+  // Nothing deletes it. Age it enormously and it is still there — a deleted
+  // financial record would orphan the paidIntents entry a later payment creates,
+  // and would make an unattributable payment unrefundable.
   await gw.pic.advanceTime(365 * 86_400_000);
   await gw.pic.tick();
-  await gw.asAdmin.run_retention();
-  await gw.asAdmin.run_retention();
   expect(await gw.asUser.get_order(lapsed.id)).toHaveLength(1);
   expect((await gw.asUser.list_orders()).map((o) => o.id)).toContain(lapsed.id);
 
@@ -816,6 +821,12 @@ test('18 — retention expires an abandoned order but never deletes it', async (
   // TRAPS on an illegal transition and `Card.mo` relies on its status guard to
   // make that unreachable — and a trap here is a 5xx Stripe retries for ~3 days.
   // So: 200, status unmoved, obligation filed.
+  //
+  // #33 removed the second half this scenario used to assert: `attach_payment`
+  // refusing the same order. There is no rescue lever at all now, so the ONLY
+  // remedy for the payment below is a refund in Stripe — which is why the
+  // obligation being filed, rather than the payment being silently dropped, is
+  // the whole safety property here.
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
   expect(await deliverWebhook(gw, checkoutSessionBody({
@@ -831,20 +842,6 @@ test('18 — retention expires an abandoned order but never deletes it', async (
   expect(obligation!.detail).toContain('cannot be paid');
   // Nothing was minted for it.
   expect((await gw.asUser.get_order(lapsed.id))[0]!.paidUsdCents).toHaveLength(0);
-
-  // ── AND `attach_payment` REFUSES IT TOO. `Orders.markPaid` has two callers,
-  // and both guards must mirror what the matrix admits into `#paid`; `-Werror`
-  // sees neither coupling. `Card.handleWebhook` files the obligation above; this
-  // is the operator's manual lever, and past expiry the answer is a refund.
-  //
-  // `#notClaimable` specifically — the same clean refusal a `#cancelled` order
-  // gives (scenario 39). Letting the call reach `markPaid` instead returned
-  // `#transitionRefused(debug_show …)`, an internal blob, alongside a
-  // `payment.attachFailed` audit line that reads like a bug rather than a policy.
-  const attachRefused = expectErr(await gw.asAdmin.attach_payment('pi_late_attach', lapsed.id, TIER_USD_CENTS));
-  expect(attachRefused).toHaveProperty('notClaimable');
-  expect(attachRefused).not.toHaveProperty('transitionRefused');
-  expect(await orderStatus(gw, lapsed.id)).toBe('expired');
 });
 
 test('19 — a buyer can verify their own purchase from the receipt', async () => {
@@ -926,7 +923,7 @@ test('20 — an unauthenticated webhook that pays nothing triggers no sweep (DoS
 test('21 — status counters are O(1) and reconcile against a full recount', async () => {
   // The public status queries read maintained tallies rather than scanning the
   // order store, so a drift would silently misreport operational state.
-  const before = await gw.asAnon.retention_status();
+  const before = await gw.asAnon.order_stats();
   const rebuilt = await gw.asAdmin.recount_orders();
   const asMap = new Map(rebuilt);
 
@@ -1424,144 +1421,43 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   await ensureRates(gw);
 });
 
-test('36 — attach_payment rescues a charge the webhook never delivered', async () => {
-  // The one card-rail failure that otherwise has NO recovery: Stripe retries a
-  // failed webhook for ~3 days then stops, and we hold no API key so we never
-  // poll. Past that horizon the charge exists in Stripe with no on-chain trace,
-  // the buyer's money is gone, and their order reads "Awaiting payment" forever.
-  await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-
-  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  const orphan = created.order;
-  // No webhook is delivered at all — this is the whole point.
-  expect(await orderStatus(gw, orphan.id)).toBe('created');
-  expect(orphan.paidUsdCents).toEqual([]);
-
-  // Admin-gated: this creates money, so it is not a user-facing lever.
-  await expect(gw.asUser.attach_payment('pi_lost', orphan.id, TIER_USD_CENTS))
-    .rejects.toThrow(/not a controller/);
-
-  const attached = expectOk(await gw.asAdmin.attach_payment('pi_lost', orphan.id, TIER_USD_CENTS));
-  expect(statusKey(attached)).toBe('paid');
-  // The actual amount paid is now ON the order, not only in a ring buffer.
-  expect(attached.paidUsdCents).toEqual([TIER_USD_CENTS]);
-  expect(attached.lockedCycles).toBe(TIER_LOCKED_CYCLES);
-
-  // Reconciliation works both ways afterwards.
-  expect(await gw.asAdmin.order_for_payment('pi_lost')).toEqual([orphan.id]);
-
-  // The audit trail names who did it and what it was worth.
-  const line = (await gw.asAdmin.audit_log()).find(
-    (e) => e.tag === 'payment.attached' && e.detail.includes(orphan.id),
-  );
-  expect(line).toBeDefined();
-  expect(line!.detail).toContain('by ');
-  expect(line!.detail).toContain('pi_lost');
-
-  // And it delivers through the ordinary money-out path.
-  expect(await tickUntilStatus(gw, orphan.id, ['delivered'])).toBe('delivered');
-});
-
-test('37 — a charge can never be credited twice, by either route', async () => {
-  // The dangerous property of a money-creating lever. attach_payment shares the
-  // webhook's dedup set, so the same payment_intent cannot be credited via both.
-  await ensureRates(gw);
-  const first = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  const second = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-
-  expectOk(await gw.asAdmin.attach_payment('pi_once', first.order.id, TIER_USD_CENTS));
-
-  // Same intent, different order → refused.
-  const reused = expectErr(await gw.asAdmin.attach_payment('pi_once', second.order.id, TIER_USD_CENTS));
-  expect(reused).toHaveProperty('alreadyCredited');
-  expect(await orderStatus(gw, second.order.id)).toBe('created');
-
-  // And the webhook cannot credit it either — one dedup set, both routes.
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_once', paymentIntent: 'pi_once', clientReferenceId: clientReferenceFor(second.order.id),
-    amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-  expect(await orderStatus(gw, second.order.id)).toBe('created');
-
-  // Attaching to an order past money-in is refused rather than double-crediting.
-  const late = expectErr(await gw.asAdmin.attach_payment('pi_other', first.order.id, TIER_USD_CENTS));
-  expect(late).toHaveProperty('notClaimable');
-});
-
-test('38 — attaching an identified payment closes its Type 1 obligation', async () => {
-  // Turns "refund and ask them to re-order at today's price" into "deliver what
-  // they bought" — and the open obligation must not survive as an orphan.
-  await ensureRates(gw);
-  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-
-  // A payment arrives with an unusable reference → Type 1 unattributed.
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_mangled', paymentIntent: 'pi_mangled', clientReferenceId: 'not-a-reference',
-    amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-  const obligation = (await openErrorEntries(gw)).find(
-    (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_mangled',
-  ) as ErrorEntry;
-  expect(obligation).toBeDefined();
-
-  // The operator identifies the buyer in Stripe and attaches it.
-  expectOk(await gw.asAdmin.attach_payment('pi_mangled', created.order.id, TIER_USD_CENTS));
-
-  // The Type 1 entry is resolved, not left open describing a settled matter.
-  expect((await openErrorEntries(gw)).find((e) => e.id === obligation.id)).toBeUndefined();
-  expect(await tickUntilStatus(gw, created.order.id, ['delivered'])).toBe('delivered');
-});
-
-test('39 — attach_payment enforces the same amount rules as the webhook', async () => {
-  await ensureRates(gw);
-  const { gate } = await gw.asAnon.lifecycle_config();
-
-  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  // Above the per-purchase ceiling — repricing is an upward path, so a manual
-  // rescue must not become a way around the bound.
-  const over = expectErr(await gw.asAdmin.attach_payment(
-    'pi_toobig', created.order.id, gate.maxPurchaseUsdCents + 1n,
-  ));
-  expect(over).toHaveProperty('aboveCeiling');
-
-  // Below the fee floor — nothing can be minted from it.
-  const tiny = expectErr(await gw.asAdmin.attach_payment('pi_tiny', created.order.id, 5n));
-  expect(tiny).toHaveProperty('belowFeeFloor');
-
-  // A refused attach must not consume the intent, or a corrected retry would be
-  // permanently blocked.
-  const fixed = expectOk(await gw.asAdmin.attach_payment('pi_toobig', created.order.id, TIER_USD_CENTS));
-  expect(statusKey(fixed)).toBe('paid');
-
-  // A different amount than quoted is repriced from the order's OWN snapshot.
-  const other = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  const repriced = expectOk(await gw.asAdmin.attach_payment('pi_double', other.order.id, TIER_USD_CENTS * 2n));
-  expect(repriced.paidUsdCents).toEqual([TIER_USD_CENTS * 2n]);
-  expect(repriced.lockedCycles).toBeGreaterThan(TIER_LOCKED_CYCLES);
-  expect(await tickUntilStatus(gw, other.order.id, ['delivered'])).toBe('delivered');
-
-  // ── AND THE SECOND GUARD ON `markPaid`. #34 deleted `#expired → #paid`, so
-  // this method's guard had to lose `#expired` in the same change — the same
-  // coupling `Card.handleWebhook` has, on the other caller of the same function,
-  // which neither `-Werror` nor any test previously covered.
+test('39 — a payment against a CANCELLED order is a Type 1, never a trap', async () => {
+  // What survives of scenarios 36–39, which #33 deleted with `attach_payment`.
   //
-  // The refusal must be `#notClaimable`, i.e. the same clean answer a `#cancelled`
-  // order gives. Reaching `markPaid` instead produced
-  // `#transitionRefused(debug_show …)` — an internal blob, plus a
-  // `payment.attachFailed` audit line that reads like a bug rather than a policy.
-  // Cancelled here, because it needs no clock. The `#expired` half lives in
-  // scenario 18, which already holds an aged-out order — advancing time here
-  // would leak into every scenario after this one.
+  // Those four covered the operator's manual rescue: the lost-webhook recovery,
+  // its dedup against the webhook route, its obligation-closing, and its amount
+  // rules. All four are gone — under per-order sessions WE set
+  // `client_reference_id` through the API, so the attribution failure the lever
+  // existed for cannot happen, and an unattributable payment is refunded rather
+  // than converted.
+  //
+  // One half had to be kept, and it is the dangerous one. `Orders.markPaid` TRAPS
+  // on an illegal transition; `Card.handleWebhook`'s status guard is what makes
+  // that unreachable, and `-Werror` checks neither against the matrix. That guard
+  // had a sibling in `attach_payment` — #34 fixed the webhook's and missed the
+  // other one. With one caller left, this is the whole coupling, and a trap here
+  // is a 5xx Stripe retries for ~3 days.
+  //
+  // Cancelled rather than expired, because it needs no clock: advancing time here
+  // would leak into every scenario after this one (scenario 18 holds the expired
+  // half, where an aged order already exists).
+  await ensureRates(gw);
   const doomed = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   expectOk(await cancelOrderWithExpire(gw, doomed.order.id));
-  const refused = expectErr(await gw.asAdmin.attach_payment(
-    'pi_attach_cancelled', doomed.order.id, TIER_USD_CENTS,
-  ));
-  expect(refused).toHaveProperty('notClaimable');
-  expect(refused).not.toHaveProperty('transitionRefused');
+
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_pay_cancelled', paymentIntent: 'pi_pay_cancelled',
+    clientReferenceId: clientReferenceFor(doomed.order.id), amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  await gw.pic.tick(5);
+
   expect(await orderStatus(gw, doomed.order.id)).toBe('cancelled');
   expect((await gw.asUser.get_order(doomed.order.id))[0]!.paidUsdCents).toHaveLength(0);
+  const filed = (await openErrorEntries(gw)).find(
+    (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_pay_cancelled',
+  );
+  expect(filed).toBeDefined();
+  expect(filed!.detail).toContain('cannot be paid');
 });
 
 test('40 — the price a buyer is shown comes from the same code that locks it', async () => {
@@ -1682,7 +1578,7 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
   const mine = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  const openBefore = (await gw.asAdmin.retention_status()).openOrders;
+  const openBefore = (await gw.asAdmin.order_stats()).openOrders;
 
   // Owner-scoped: nobody else can cancel your order, including an admin.
   expect(expectErr(await gw.asAdmin.cancel_order(mine.order.id))).toContain('no order');
@@ -1693,7 +1589,7 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
   // who had cancelled that their order had expired.
   expect(statusKey(cancelled)).toBe('cancelled');
   // The slot is freed, which is the point.
-  expect((await gw.asAdmin.retention_status()).openOrders).toBe(openBefore - 1n);
+  expect((await gw.asAdmin.order_stats()).openOrders).toBe(openBefore - 1n);
   // Idempotent — a double-click is not an error.
   expect(statusKey(expectOk(await cancelOrderWithExpire(gw, mine.order.id)))).toBe('cancelled');
 
@@ -2074,71 +1970,6 @@ test('49 — an out-of-order async settlement still mints exactly once', async (
   expect(await orderStatus(gw, created.order.id)).toBe('delivered');
 });
 
-test('50 — retention covers every order across ticks and resets its cursor', async () => {
-  // The sweep is bounded per tick and resumes from an id cursor, so the property
-  // that matters is that repeated runs eventually expire EVERY lapsed order and
-  // then settle to doing nothing.
-  await setCmcRate(gw);
-  await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-
-  const before = await gw.asAnon.retention_status();
-  const ids: string[] = [];
-  for (let i = 0; i < 5; i++) {
-    ids.push(expectOk(
-      await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []),
-    ).order.id);
-  }
-  expect((await gw.asAnon.retention_status()).openOrders).toBe(before.openOrders + 5n);
-
-  // Past the TTL (48 h default).
-  await gw.pic.advanceTime(50 * 3_600 * 1_000);
-  await gw.pic.tick(3);
-
-  // Drive the sweep to completion; several calls may be needed on a large store.
-  let guard = 0;
-  while (guard < 20) {
-    const swept = await gw.asAdmin.run_retention();
-    guard += 1;
-    if (swept.scanned === 0n) break;
-  }
-  expect(guard).toBeLessThan(20);
-
-  // Every one of them expired — none skipped by the cursor.
-  for (const id of ids) {
-    expect(await orderStatus(gw, id)).toBe('expired');
-  }
-  expect((await gw.asAnon.retention_status()).openOrders).toBe(0n);
-
-  // A swept order is expired and stays expired. It used to remain payable, which
-  // was what made bounding the sweep safe — "lateness costs nothing". #34 deleted
-  // `#expired → #paid`, so lateness now costs the buyer a refund cycle instead,
-  // and what makes bounding the sweep safe is simply that expiry is never
-  // *deletion*: the order and its reference survive, so the payment is
-  // attributable and therefore refundable.
-  //
-  // Advancing 50 h staled both rates; re-arm before quoting again.
-  await setCmcRate(gw);
-  await ensureRates(gw);
-  const late = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  await gw.pic.advanceTime(50 * 3_600 * 1_000);
-  await gw.pic.tick(3);
-  let g2 = 0;
-  while (g2 < 20 && (await gw.asAdmin.run_retention()).scanned !== 0n) g2 += 1;
-  expect(await orderStatus(gw, late.order.id)).toBe('expired');
-  await fundFloat(gw, ORDER_E8S * 2n + ICP_FEE_E8S * 2n);
-  await ensureRates(gw);
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_late_pay', paymentIntent: 'pi_late_pay',
-    clientReferenceId: clientReferenceFor(late.order.id), amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-  await gw.pic.tick(5);
-  expect(await orderStatus(gw, late.order.id)).toBe('expired');
-  expect((await openErrorEntries(gw)).some(
-    (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_late_pay',
-  )).toBe(true);
-});
-
 test('51 — a CMC outage stalls the mint, alerts, and never invents a money position', async () => {
   // Reachable because PocketIC lets us stop the real NNS canisters (impersonating
   // NNS root, the same trick setCmcRate uses for governance). Money-out failure
@@ -2347,11 +2178,15 @@ test('54 — a rate move between transfer and notify escalates instead of subsid
 test('56 — the purchase ceiling cannot be lowered under a live tier', async () => {
   // `set_card_tiers` already refuses a tier priced above the ceiling. Without the
   // inverse check, lowering the ceiling left the tier SELLABLE BUT UNPAYABLE: a
-  // buyer completes checkout, the webhook honours an amount above the ceiling and
-  // files a Type 1 instead of minting — and `attach_payment` then refuses to rescue
-  // it until the ceiling goes back up. The operator has to connect a refused rescue
-  // to a config change made earlier, which is exactly the kind of link nobody makes
-  // under pressure.
+  // buyer completes checkout and the webhook files a Type 1 instead of minting.
+  // Since #33 deleted `attach_payment` the only remedy is a refund, so the buyer
+  // pays and is repaid over a config change made earlier — exactly the kind of
+  // link nobody makes under pressure.
+  //
+  // ⚠️ This is also the ceiling's ONE remaining reachable case on the money path:
+  // with the paid amount required to equal the quote, an order that matches its
+  // own quote after the ceiling moved beneath it is the only thing `#aboveCeiling`
+  // still catches (webhook.test.mo pins it directly).
   const gate = (await gw.asAnon.lifecycle_config()).gate;
 
   const refused = expectErr(await gw.asAdmin.set_gate_config({
@@ -2837,7 +2672,7 @@ test('65 — a session that cannot be created fails the order in the same call (
   // complication chained off that. The buyer's slot frees immediately and they
   // start over.
   await ensureRates(gw);
-  const openBefore = (await gw.asAdmin.retention_status()).openOrders;
+  const openBefore = (await gw.asAdmin.order_stats()).openOrders;
 
   const settle = await gw.deferredUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []);
   const outcall = await awaitPendingOutcall(gw);
@@ -2852,7 +2687,7 @@ test('65 — a session that cannot be created fails the order in the same call (
   expect(theOrder).toBeDefined();
   expect(theOrder!.stripeSessionUrl).toHaveLength(0);
   // The slot is free again: openOrders is back where it started.
-  expect((await gw.asAdmin.retention_status()).openOrders).toBe(openBefore);
+  expect((await gw.asAdmin.order_stats()).openOrders).toBe(openBefore);
 
   // And a livemode mismatch is refused at CREATION, before any money moves —
   // cheaper than catching it at webhook time, and the reason the check lives here.

@@ -12,13 +12,12 @@
 #   local-dev-seed.sh  the money levers — tiers, treasury, ICP float, the CMC rate,
 #                      the canister's own cycles
 #   this script        the Stripe levers — expected livemode, the forwarding
-#                      session's signing secret, a dev-short order TTL, forwarding
+#                      session's signing secret, forwarding
 #
 # It used to set tiers and the treasury config too, which made the ORDER of the two
-# scripts silently decide the outcome: run the seed with your real Payment Links and
-# then this, and your links were replaced by a placeholder. The symptom is Stripe
-# answering AccessDenied, which reads as a Stripe problem. It no longer touches
-# either, and it refuses to start if the gateway cannot price.
+# scripts silently decide the outcome: whichever ran last overwrote the other's
+# tiers with a placeholder. It no longer touches either, and it refuses to start if
+# the gateway cannot price.
 #
 # `npm --prefix test/integration run sandbox` is the scripted alternative when you do
 # not need the frontend in a browser — it boots its own PocketIC and needs none of
@@ -114,19 +113,16 @@ echo "priceable:   a \$10 purchase quotes (presets, both rates, and own-cycles a
 
 # --- bootstrap the STRIPE-side config ---------------------------------------
 # Tiers, treasury, float, the CMC rate and the canister's own cycles belong to
-# scripts/local-dev-seed.sh and are deliberately not touched here. Setting tiers
-# from both scripts meant whichever ran last decided which Payment Links the app
-# would open.
+# scripts/local-dev-seed.sh and are deliberately not touched here — setting them
+# from both scripts made whichever ran last the winner, silently.
 if [ "$BOOTSTRAP" -eq 1 ]; then
   echo
   echo "--- bootstrapping Stripe-side config (dev values, never for mainnet) ---"
 
-  # Short TTL so expiry is reachable in a dev session instead of 48 h. There is
-  # no horizon: orders are never deleted.
-  icp canister call backend set_retention_config \
-    '(record { orderTtlNs = 600_000_000_000 : nat })' \
-    >/dev/null
-  echo "retention:   TTL 10 min (dev-short; nothing is ever deleted)"
+  # No TTL to set: #33 deleted retention, so an order's deadline is its Stripe
+  # session's `expires_at` (~35 min, Stripe's own floor is 30). Nothing local
+  # shortens it — to see an expiry in a dev session, expire the session in the
+  # Stripe Dashboard and let `checkout.session.expired` arrive.
 
   # Declare the Stripe world. A sandbox forwarder sends livemode=false events, so
   # without this every honoured payment records `stripe.livemodeUnset`. On mainnet

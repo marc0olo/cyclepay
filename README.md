@@ -32,7 +32,7 @@ Key documents:
 | Document | What it is |
 |----------|------------|
 | `design-docs/ONCHAIN_GATEWAY_SPEC.md` | The decision record — *why* it is built this way. Non-binding rationale; the implementation wins where they disagree |
-| `docs/STRIPE.md` | **Start here.** The Card rail end to end, written from the code: ingress, signature verification, attribution, dedup, pricing, retention, refunds, the secret, and the local Stripe-sandbox loop |
+| `docs/STRIPE.md` | **Start here.** The Card rail end to end, written from the code: ingress, session creation, signature verification, attribution, dedup, pricing, the order lifecycle, refunds, the two secrets, and the local Stripe-sandbox loop |
 | `docs/TEST-COVERAGE.md` | What is tested, how, and what is not — one place to answer "is X covered?" |
 | `docs/SANDBOX-TESTPLAN.md` | The manual Stripe-sandbox verification pass required before go-live, and an explicit statement of what a green run does not prove |
 | `RUNBOOK.md` | Operations, authoritative for procedure: go-live checklist, secret rotation, rate diagnosis, treasury levers, error-queue triage, monitoring plan |
@@ -130,7 +130,7 @@ scripts/stripe-dev.sh                     # asserts the gateway can price, then 
 The two scripts own different levers and the order matters: `local-dev-seed.sh` owns
 the money (tiers, treasury, float, the CMC rate, the canister's own cycles) and
 `stripe-dev.sh` owns Stripe (expected livemode, the forwarding session's signing
-secret, a dev-short order TTL). Run the seed first.
+secret, forwarding). Run the seed first.
 
 **For the full buy → pay → deliver → link the CLI → see the cycles walkthrough,
 including the local Internet Identity step and how to prove the cycles arrived, see

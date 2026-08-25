@@ -60,7 +60,6 @@ async function main(): Promise<void> {
   expectOk(await gw.asAdmin.set_card_tiers([
     { id: 'tier5', usdCents: TIER_USD_CENTS },
   ]));
-  expectOk(await gw.asAdmin.set_retention_config({ orderTtlNs: 600_000_000_000n }));
   await gw.asAdmin.set_expected_livemode([false]);
   await fundFloat(gw, ORDER_E8S * 50n + ICP_FEE_E8S * 50n);
 
@@ -108,7 +107,8 @@ async function main(): Promise<void> {
      VITE_II_URL already exists as the override for when a local II works.
 
   Config in effect (DEV values — never mainnet): burn cap 1000 ICP/day,
-  alert after 2 min, order TTL 10 min, expected livemode = false.
+  alert after 2 min, expected livemode = false. There is no order TTL: #33
+  deleted retention, so the deadline is the Stripe session's own ~35 minutes.
 `);
 
   // Create a first order so there is something to pay immediately.

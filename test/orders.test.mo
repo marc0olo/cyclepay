@@ -394,20 +394,27 @@ suite("parseClientReferenceId (§4.1 claimed-not-trusted)", func() {
 });
 
 suite("markPaid (§6.1 amount honoring)", func() {
-  test("created -> paid, lockedCycles replaced by the honored quantity", func() {
+  test("created -> paid, and the LOCKED quantity is what survives", func() {
+    // Inverted by #33. `markPaid` used to take an honored quantity and overwrite
+    // `lockedCycles` with it, because a Payment Link could be paid for a
+    // different amount. Per-order sessions carry our own figure, so the webhook
+    // honours only the quoted amount and this argument is gone: what was locked
+    // at creation is what is delivered, for the order's whole life. #30's tally
+    // is exact rather than conservative because of that.
     let store = Orders.emptyStore();
-    ignore newOrder(store, "ord-1", alice);
-    switch (Orders.markPaid(store, "ord-1", 42, 500, 300)) {
+    let created = newOrder(store, "ord-1", alice);
+    switch (Orders.markPaid(store, "ord-1", 500, 300)) {
       case (#ok(paid)) {
         assert paid.status == #paid;
-        assert paid.lockedCycles == 42;
+        assert paid.lockedCycles == created.lockedCycles;
+        assert paid.paidUsdCents == ?500;
         assert paid.updatedAtNs == 300;
         assert paid.pricing == pricing; // snapshot untouched
       };
       case (#err(_)) assert false;
     };
     switch (Orders.get(store, "ord-1")) {
-      case (?stored) assert stored.lockedCycles == 42 and stored.status == #paid;
+      case (?stored) assert stored.lockedCycles == created.lockedCycles and stored.status == #paid;
       case null assert false;
     };
   });
@@ -425,7 +432,7 @@ suite("markPaid (§6.1 amount honoring)", func() {
       let store = Orders.emptyStore();
       ignore newOrder(store, "ord-1", alice);
       drive(store, "ord-1", [unpayable]);
-      switch (Orders.markPaid(store, "ord-1", 7, 500, 300)) {
+      switch (Orders.markPaid(store, "ord-1", 500, 300)) {
         case (#err(#illegalTransition({ from; to = #paid }))) assert from == unpayable;
         case (_) assert false;
       };
@@ -439,24 +446,24 @@ suite("markPaid (§6.1 amount honoring)", func() {
 
   test("already-paid order refuses a second markPaid, store unchanged", func() {
     let store = Orders.emptyStore();
-    ignore newOrder(store, "ord-1", alice);
-    switch (Orders.markPaid(store, "ord-1", 42, 500, 300)) {
+    let created = newOrder(store, "ord-1", alice);
+    switch (Orders.markPaid(store, "ord-1", 500, 300)) {
       case (#ok(_)) {};
       case (#err(_)) assert false;
     };
-    switch (Orders.markPaid(store, "ord-1", 99, 500, 400)) {
+    switch (Orders.markPaid(store, "ord-1", 500, 400)) {
       case (#err(#illegalTransition({ from = #paid; to = #paid }))) {};
       case _ assert false;
     };
     switch (Orders.get(store, "ord-1")) {
-      case (?stored) assert stored.lockedCycles == 42 and stored.updatedAtNs == 300;
+      case (?stored) assert stored.lockedCycles == created.lockedCycles and stored.updatedAtNs == 300;
       case null assert false;
     };
   });
 
   test("unknown order id returns notFound", func() {
     let store = Orders.emptyStore();
-    switch (Orders.markPaid(store, "missing", 1, 500, 100)) {
+    switch (Orders.markPaid(store, "missing", 500, 100)) {
       case (#err(#notFound("missing"))) {};
       case _ assert false;
     };
@@ -489,7 +496,7 @@ suite("openOrderCount — the Gate admission input", func() {
     // would lock themselves out permanently.
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    ignore Orders.markPaid(store, "ord-1", 1, 500, 200);
+    ignore Orders.markPaid(store, "ord-1", 500, 200);
     assert Orders.openOrderCount(store, alice) == 0;
   });
 });
@@ -519,7 +526,7 @@ suite("status counts — the O(1) query inputs", func() {
     // this is the path most likely to be forgotten.
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    ignore Orders.markPaid(store, "ord-1", 1, 500, 200);
+    ignore Orders.markPaid(store, "ord-1", 500, 200);
     assert Orders.countOf(store, #created) == 0;
     // #paid is untracked, so nothing else moved.
     assert Orders.countOf(store, #expired) == 0;
@@ -529,7 +536,7 @@ suite("status counts — the O(1) query inputs", func() {
   test("the awaitingTreasury hold is tracked in both directions", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    ignore Orders.markPaid(store, "ord-1", 1, 500, 200);
+    ignore Orders.markPaid(store, "ord-1", 500, 200);
     ignore Orders.applyTransition(store, "ord-1", #awaitingTreasury, 300);
     assert Orders.countOf(store, #awaitingTreasury) == 1;
     ignore Orders.applyTransition(store, "ord-1", #minting, 400);
@@ -636,68 +643,3 @@ suite("status counts — the O(1) query inputs", func() {
   });
 });
 
-suite("idsFrom — resumable scan", func() {
-  // Backs the retention sweep's bounded per-tick cost. The cursor must be a
-  // KEY, not an index: with a positional cursor an insert shifts every later
-  // position, so successive ticks skip some orders and re-scan others.
-  func storeWith(n : Nat) : Orders.Store {
-    let store = Orders.emptyStore();
-    for (i in Nat.range(0, n)) {
-      // Ids are fixed-width hex in production; pad so text order is stable.
-      let id = if (i < 10) "0" # i.toText() else i.toText();
-      switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1_000, pricing, 0)) {
-        case (#ok(_)) {};
-        case (#err(_)) assert false;
-      };
-    };
-    store;
-  };
-
-  test("a null cursor starts at the beginning and honours the limit", func() {
-    let store = storeWith(10);
-    let page = Orders.idsFrom(store, null, 4);
-    assert page.size() == 4;
-  });
-
-  test("the cursor is exclusive, so nothing is visited twice", func() {
-    let store = storeWith(10);
-    let first = Orders.idsFrom(store, null, 4);
-    let second = Orders.idsFrom(store, ?first[first.size() - 1], 4);
-    for (id in second.values()) {
-      var clash = false;
-      for (seen in first.values()) { if (seen == id) clash := true };
-      assert not clash;
-    };
-  });
-
-  test("successive pages cover every order exactly once", func() {
-    let store = storeWith(10);
-    let seen = List.empty<Text>();
-    var cursor : ?Text = null;
-    label pages loop {
-      let page = Orders.idsFrom(store, cursor, 3);
-      if (page.size() == 0) break pages;
-      for (id in page.values()) seen.add(id);
-      cursor := ?page[page.size() - 1];
-    };
-    assert seen.size() == 10;
-    // No duplicates: every id in the store appears exactly once.
-    for (id in Orders.allIds(store).values()) {
-      var hits = 0;
-      for (s in seen.values()) { if (s == id) hits += 1 };
-      assert hits == 1;
-    };
-  });
-
-  test("an empty store and a limit of zero both terminate", func() {
-    assert Orders.idsFrom(Orders.emptyStore(), null, 10).size() == 0;
-    assert Orders.idsFrom(storeWith(5), null, 0).size() == 0;
-  });
-
-  test("a cursor past the end returns nothing, ending the pass", func() {
-    let store = storeWith(3);
-    let all = Orders.idsFrom(store, null, 10);
-    assert all.size() == 3;
-    assert Orders.idsFrom(store, ?all[2], 10).size() == 0;
-  });
-});
