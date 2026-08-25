@@ -117,7 +117,7 @@ git commit && git push   # needs a workflow-scoped token (a normal `gh auth` tok
 | 47 | a `#deliveryDelayed` alert is resolved when the order **escalates**, not only when it delivers | no orphan worklist entries |
 | 48 | the alert/terminate timeline covers every in-flight status; a delivered order is never caught by it; the terminal stage matches the money position | notify stage bounded by time |
 | 49 | `async_payment_succeeded` arriving **before** `completed` still mints once; the later event raises no obligation | out-of-order events |
-| 50 | the bounded retention sweep expires **every** lapsed order across ticks, settles to `scanned == 0`, and an expired order is still payable | cursor completeness |
+| 50 | the bounded retention sweep expires **every** lapsed order across ticks, settles to `scanned == 0`, and a payment against an expired order files a Type 1 obligation rather than delivering (#34) | cursor completeness |
 | 51 | a CMC outage stalls the mint in `#paid`, audits the fetch failure, alerts at 2 h, and **delivers for real** once restored | rate-source outage |
 | 52 | an ICP ledger outage moves no money and records no block; recovery debits the float **exactly once** | ledger outage + §5.1 replay |
 | 53 | CMC stopped *after* the transfer → order parks at `#icpAtCmc` with a block and no minted cycles → `notifyDelayed` alert → terminates as `retriesExhausted` **carrying the real block index** | notify stall, end to end |

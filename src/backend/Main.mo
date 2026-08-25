@@ -1576,10 +1576,20 @@ persistent actor CyclesGateway {
   /// horizon the charge exists in Stripe with no on-chain trace at all, the
   /// buyer's money is gone, and their order reads "Awaiting payment" forever.
   ///
-  /// Also rescues an unattributed payment the operator *can* identify — turning
-  /// "refund and ask them to re-order at today's price" into "deliver what they
-  /// bought". Any open Type 1 entry for the charge is resolved, since attaching
-  /// it discharges that obligation.
+  /// ⚠️ **Only while the order is `#created`.** #34 deleted `#expired → #paid`,
+  /// so a cancelled or expired order cannot be converted at all — the lever there
+  /// is a refund in Stripe. That narrows this method considerably, because the
+  /// retention sweep expires an order at 48 h while Stripe is still retrying: a
+  /// webhook lost for longer than the TTL now leaves a payment that must be
+  /// refunded rather than delivered. Deliberate, and transitional — #33 takes the
+  /// deadline from Stripe (30 minutes, enforced by Stripe), so a session that can
+  /// still be paid belongs to an order that can still accept it, and this method
+  /// is deleted along with the whole Payment Link mechanism.
+  ///
+  /// Also rescues an unattributed payment the operator *can* identify, while the
+  /// order is still `#created` — turning "refund and ask them to re-order at
+  /// today's price" into "deliver what they bought". Any open Type 1 entry for the
+  /// charge is resolved, since attaching it discharges that obligation.
   ///
   /// The operator supplies the amount because Stripe is the authority on it, and
   /// it is honoured through exactly the same helper the webhook uses.
@@ -1594,8 +1604,22 @@ persistent actor CyclesGateway {
     requireAdmin(caller);
     let ?order = Orders.get(orderStore, id) else return #err(#noOrder(id));
     if (order.rail != #card) return #err(#wrongRail);
+    // `#created` alone. This guard must mirror what the matrix admits into
+    // `#paid`, exactly as `Card.handleWebhook`'s does — `markPaid` is the shared
+    // callee and `-Werror` cannot see the coupling from either side.
+    //
+    // `#expired` was here until #34 deleted `#expired → #paid`. Keeping it let
+    // the call through to a refusal `markPaid` then reported as
+    // `#transitionRefused(debug_show …)` plus a `payment.attachFailed` audit
+    // line — an internal blob and a bug-shaped trail for what is a policy. Worse,
+    // it made two statuses with identical meaning refuse differently:
+    // `#cancelled` got a clean `#notClaimable`, `#expired` did not.
+    //
+    // Past expiry or cancellation the operator's lever is a **refund**, not a
+    // conversion — the decided end state (#12), which #33 completes by deleting
+    // this method outright.
     switch (order.status) {
-      case (#created or #expired) {};
+      case (#created) {};
       case (status) return #err(#notClaimable(Types.statusToText(status)));
     };
     let honored = switch (Card.honoredCycles(order, paidUsdCents, gateConfig.maxPurchaseUsdCents)) {
@@ -1822,10 +1846,11 @@ persistent actor CyclesGateway {
   /// and makes each tick more expensive exactly when the canister is under the
   /// order-creation pressure that made the store large.
   ///
-  /// Bounding the work is safe because **expiry is advisory** (§4): an order that
-  /// expires a few ticks late is still payable and nothing downstream reads the
-  /// flip. Correctness does not depend on promptness here, so throughput is the
-  /// right thing to trade away.
+  /// Bounding the work is safe because lateness errs in the BUYER's favour: an
+  /// order the sweep has not reached yet is still `#created`, so it stays payable
+  /// slightly longer than the TTL promised. Nothing downstream reads the flip, and
+  /// no money decision depends on its promptness, so throughput is the right thing
+  /// to trade away.
   transient let maxRetentionScanPerSweep : Nat = 2_000;
 
   /// The last order id this sweep handled, so the next tick resumes after it.
@@ -1909,7 +1934,7 @@ persistent actor CyclesGateway {
     };
     retentionCursor := ?ids[ids.size() - 1];
     if (expired > 0) {
-      audit("retention.sweep", expired.toText() # " order(s) marked expired (still payable, §4)");
+      audit("retention.sweep", expired.toText() # " order(s) marked expired (terminal since #34 — a later payment is refunded, not converted)");
     };
     { expired; scanned = ids.size() };
   };

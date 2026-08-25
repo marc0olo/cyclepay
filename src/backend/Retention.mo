@@ -1,10 +1,15 @@
 /// Order lifecycle retention — expiry policy (§4).
 ///
 /// Owns the one transition nothing else performed: `#created → #expired` past a
-/// TTL. **Advisory only**, per §4 — an expired order is still fully payable and
-/// a late genuine payment is honoured at the locked quantity. The flip exists so
-/// abandoned attempts are visibly stale rather than indistinguishable from live
-/// ones.
+/// TTL. The flip exists so abandoned attempts are visibly stale rather than
+/// indistinguishable from live ones, and so an abandoned attempt stops holding an
+/// open-order slot.
+///
+/// ⚠️ **Expiry is TERMINAL as of #34**, which deleted `#expired → #paid`. It used
+/// to be advisory — an expired order stayed payable and a late payment was
+/// honoured at the locked quantity. It is not: a payment arriving now becomes a
+/// Type 1 obligation for the operator to refund. #33 deletes this module
+/// entirely and takes the deadline from Stripe.
 ///
 /// **Orders are never deleted.** Every order is a financial record and is kept
 /// for the life of the canister, which is what keeps `paidIntents` entries
@@ -44,13 +49,14 @@ import Types "Types";
 module {
 
   public type Config = {
-    /// Age past which a `#created` order flips to `#expired`.
-    /// Advisory only, per §4: an expired order is still fully payable and a
-    /// late genuine payment is still honoured at the locked quantity. The flip
-    /// makes an abandoned attempt visibly stale rather than indistinguishable
-    /// from a live one.
+    /// Age past which a `#created` order flips to `#expired`. Terminal since
+    /// #34, so this is a real deadline rather than a label.
+    ///
     /// Size it past the Stripe Checkout Session lifetime (24 h) plus delivery
-    /// slack, so a user who is mid-checkout never sees their order expire.
+    /// slack, so a user who is mid-checkout never sees their order expire — and
+    /// note that now costs them a refund cycle rather than a wait. Stripe also
+    /// retries a lost webhook for ~3 days, so a TTL below that can expire an
+    /// order whose payment is still being delivered.
     orderTtlNs : Nat;
   };
 
@@ -79,11 +85,11 @@ module {
 
   /// Pure band decision from status and age.
   ///
-  /// Only `#created` and `#expired` are ever touched. Every other status means
-  /// money is or was in play: `#paid`/`#minting`/`#icpAtCmc`/
-  /// `#awaitingTreasury` are in flight, and `#delivered`/`#errorQueue` are
-  /// **financial records kept forever** — they are bounded by real volume,
-  /// which the burn cap bounds, so they can never be a growth vector.
+  /// `#created` is the only status this ever *acts* on, and expiry is the only
+  /// action: nothing here deletes. Every other status is a record kept forever —
+  /// `#paid`/`#minting`/`#icpAtCmc`/`#awaitingTreasury` because money is in
+  /// flight, the rest because money was. Their volume is bounded by the burn cap,
+  /// so they can never be a growth vector.
   public func bandOf(
     status : Types.OrderStatus,
     createdAtNs : Int,

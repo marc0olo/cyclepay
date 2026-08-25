@@ -424,8 +424,9 @@ icp canister call backend receipt '("<orderId>")'           # owner identity onl
 | B2 | No reference | `stripe trigger checkout.session.completed` | `200`; Type 1 `#unattributed`, `claimedRef` empty |
 | B3 | Forged owner | hand-edit the ref to another principal, same order id | Type 1 — "claimed owner does not match" |
 | B4 | Malformed reference | ref = `garbage` | Type 1 — "malformed" |
-| B5 | Payment for an **expired** order | shorten the TTL (dev bootstrap uses 10 min), let the order expire, then pay | **honoured** at the locked quantity — expiry is advisory |
-| B6 | Payment for a **cancelled** order | `cancel_order`, then pay the link | **honoured** — cancelling must never strand a payment |
+| B5 | Payment for an **expired** order | shorten the TTL (dev bootstrap uses 10 min), let the order expire, then pay | `200`; order **stays `Expired`**, Type 1 `#unattributed` whose detail says "cannot be paid". **Refund it in Stripe.** Not honoured — #34 made expiry terminal |
+| B6 | Payment for a **cancelled** order | `cancel_order`, then pay the link | `200`; order **stays `Cancelled`**, same Type 1 obligation. The buyer's decision wins; the money is refundable, never converted against it (#34) |
+| B7 | `attach_payment` on either of the above | attach the intent from B5 or B6 | refused with `notClaimable` — the lever past expiry or cancellation is a refund, not a conversion |
 
 ## C. Amount honouring
 

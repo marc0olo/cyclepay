@@ -4,8 +4,8 @@ import Types "../src/backend/Types";
 
 // Unit suite for §4 expiry policy. `bandOf` is pure over status and age, so
 // every boundary is pinned here. Nothing deletes orders — the only transition
-// this drives is #created → #expired, and expiry is advisory (an expired order
-// stays payable).
+// this drives is #created → #expired, which is terminal since #34 — a payment
+// arriving afterwards is refunded, not converted.
 
 let config = Retention.defaultConfig();
 let created : Int = 1_000_000;

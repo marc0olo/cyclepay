@@ -448,10 +448,20 @@ service : {
   /// horizon the charge exists in Stripe with no on-chain trace at all, the
   /// buyer's money is gone, and their order reads "Awaiting payment" forever.
   /// 
-  /// Also rescues an unattributed payment the operator *can* identify — turning
-  /// "refund and ask them to re-order at today's price" into "deliver what they
-  /// bought". Any open Type 1 entry for the charge is resolved, since attaching
-  /// it discharges that obligation.
+  /// ⚠️ **Only while the order is `#created`.** #34 deleted `#expired → #paid`,
+  /// so a cancelled or expired order cannot be converted at all — the lever there
+  /// is a refund in Stripe. That narrows this method considerably, because the
+  /// retention sweep expires an order at 48 h while Stripe is still retrying: a
+  /// webhook lost for longer than the TTL now leaves a payment that must be
+  /// refunded rather than delivered. Deliberate, and transitional — #33 takes the
+  /// deadline from Stripe (30 minutes, enforced by Stripe), so a session that can
+  /// still be paid belongs to an order that can still accept it, and this method
+  /// is deleted along with the whole Payment Link mechanism.
+  /// 
+  /// Also rescues an unattributed payment the operator *can* identify, while the
+  /// order is still `#created` — turning "refund and ask them to re-order at
+  /// today's price" into "deliver what they bought". Any open Type 1 entry for the
+  /// charge is resolved, since attaching it discharges that obligation.
   /// 
   /// The operator supplies the amount because Stripe is the authority on it, and
   /// it is honoured through exactly the same helper the webhook uses.

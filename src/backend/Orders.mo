@@ -178,11 +178,18 @@ module {
     #illegalTransition : { from : Types.OrderStatus; to : Types.OrderStatus };
   };
 
-  /// The §4 diagram plus the two error-queue edges it implies:
-  /// `#minting → #errorQueue` (stale intent without a block_index, §5.1) and
-  /// `#icpAtCmc → #errorQueue` (failed forward → Type 2, §4.1/§5).
-  /// `#delivered` and `#errorQueue` are terminal — error-queue resolution is
-  /// human/off-chain on the queue entry (§4.1), not an order transition.
+  /// The §4 diagram plus the escalation edges it implies, all of which land in
+  /// `#needsReview` — the order still owes cycles, so its promise stays held.
+  ///
+  /// **The terminal set is `#delivered`, `#cancelled`, `#expired`, `#abandoned`.**
+  /// Resolving an error-queue *entry* is human and off-chain (§4.1) and never
+  /// transitions an order; `abandon_order` is the only thing that ends one, and
+  /// `#needsReview → #abandoned` is its single outgoing edge.
+  ///
+  /// ⚠️ **Two guards mirror this matrix and the compiler checks neither**:
+  /// `Card.handleWebhook`'s status switch and `attach_payment`'s. Both feed
+  /// `markPaid`, so anything they admit that this refuses is a bug — a trap on the
+  /// webhook path, an internal blob on the admin one. Change this and check both.
   public func isLegalTransition(from : Types.OrderStatus, to : Types.OrderStatus) : Bool {
     switch (from, to) {
       case (#created, #cancelled) true; // the buyer gave up before paying (#34)

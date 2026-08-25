@@ -701,7 +701,8 @@ test('18 — retention expires an abandoned order but never deletes it', async (
   await gw.asAdmin.run_retention();
   expect(await orderStatus(gw, lapsed.id)).toBe('created');
 
-  // Past the TTL it is marked expired — and STAYS, because expiry is advisory.
+  // Past the TTL it is marked expired — and STAYS expired, because nothing here
+  // deletes and #34 gave the status no outgoing edge.
   await gw.pic.advanceTime(3_600_000 + 60_000);
   await gw.pic.tick();
   await gw.asAdmin.run_retention();
@@ -740,6 +741,20 @@ test('18 — retention expires an abandoned order but never deletes it', async (
   expect(obligation!.detail).toContain('cannot be paid');
   // Nothing was minted for it.
   expect((await gw.asUser.get_order(lapsed.id))[0]!.paidUsdCents).toHaveLength(0);
+
+  // ── AND `attach_payment` REFUSES IT TOO. `Orders.markPaid` has two callers,
+  // and both guards must mirror what the matrix admits into `#paid`; `-Werror`
+  // sees neither coupling. `Card.handleWebhook` files the obligation above; this
+  // is the operator's manual lever, and past expiry the answer is a refund.
+  //
+  // `#notClaimable` specifically — the same clean refusal a `#cancelled` order
+  // gives (scenario 39). Letting the call reach `markPaid` instead returned
+  // `#transitionRefused(debug_show …)`, an internal blob, alongside a
+  // `payment.attachFailed` audit line that reads like a bug rather than a policy.
+  const attachRefused = expectErr(await gw.asAdmin.attach_payment('pi_late_attach', lapsed.id, TIER_USD_CENTS));
+  expect(attachRefused).toHaveProperty('notClaimable');
+  expect(attachRefused).not.toHaveProperty('transitionRefused');
+  expect(await orderStatus(gw, lapsed.id)).toBe('expired');
 });
 
 test('19 — a buyer can verify their own purchase from the receipt', async () => {
@@ -1419,6 +1434,28 @@ test('39 — attach_payment enforces the same amount rules as the webhook', asyn
   expect(repriced.paidUsdCents).toEqual([TIER_USD_CENTS * 2n]);
   expect(repriced.lockedCycles).toBeGreaterThan(TIER_LOCKED_CYCLES);
   expect(await tickUntilStatus(gw, other.order.id, ['delivered'])).toBe('delivered');
+
+  // ── AND THE SECOND GUARD ON `markPaid`. #34 deleted `#expired → #paid`, so
+  // this method's guard had to lose `#expired` in the same change — the same
+  // coupling `Card.handleWebhook` has, on the other caller of the same function,
+  // which neither `-Werror` nor any test previously covered.
+  //
+  // The refusal must be `#notClaimable`, i.e. the same clean answer a `#cancelled`
+  // order gives. Reaching `markPaid` instead produced
+  // `#transitionRefused(debug_show …)` — an internal blob, plus a
+  // `payment.attachFailed` audit line that reads like a bug rather than a policy.
+  // Cancelled here, because it needs no clock. The `#expired` half lives in
+  // scenario 18, which already holds an aged-out order — advancing time here
+  // would leak into every scenario after this one.
+  const doomed = expectOk(await gw.asUser.create_order('tier5', USER_ACCOUNT, []));
+  expectOk(await gw.asUser.cancel_order(doomed.order.id));
+  const refused = expectErr(await gw.asAdmin.attach_payment(
+    'pi_attach_cancelled', doomed.order.id, TIER_USD_CENTS,
+  ));
+  expect(refused).toHaveProperty('notClaimable');
+  expect(refused).not.toHaveProperty('transitionRefused');
+  expect(await orderStatus(gw, doomed.order.id)).toBe('cancelled');
+  expect((await gw.asUser.get_order(doomed.order.id))[0]!.paidUsdCents).toHaveLength(0);
 });
 
 test('40 — the price a buyer is shown comes from the same code that locks it', async () => {
