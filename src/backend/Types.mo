@@ -39,10 +39,10 @@ module {
     };
   };
 
-  /// Money-in rail. Single-case from #35, which deleted the ck-USDC rail — kept
-  /// as a variant for the same reason `Owner` is one: it names the dimension, so
-  /// a future second rail is an additive change rather than a schema-wide edit.
-  /// The audit log, the error queue and the delivery journal are all keyed by it.
+  /// Money-in rail. Single-case, and a variant for the same reason `Owner` is
+  /// one: it names the dimension, so a second rail is an additive change rather
+  /// than a schema-wide edit. The audit log, the error queue and the mint
+  /// journal are all keyed by it.
   public type Rail = { #card };
 
   /// ICRC-1 account (cycles ledger destination).

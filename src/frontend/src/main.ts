@@ -668,12 +668,6 @@ function renderAudience(): void {
   // put two destination inputs on screen at once, only one of which was read.
   show("dest-ledger-advanced", audience === "live" && kind === "cyclesLedgerAccount");
 
-  // The rail nav is a nav only when there is something to navigate between. A
-  // single visible tab is noise, and a disabled second one promises a rail that
-  // may never ship — so when it is off the markup is removed outright.
-  // Hidden here, removed later. At first paint `ckConfig` is still null, so
-  // `ckRailDisabled()` is true for a rail that may turn out to be enabled —
-  // removing on that guess deleted the markup before the answer arrived.
   renderDestinationNote();
 }
 
