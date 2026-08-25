@@ -194,6 +194,27 @@ export function estimateLine(cycles: bigint | null, depositFee: bigint): string 
   return `≈ ${shown} cycles`;
 }
 
+/// How long until a deadline, for a live countdown.
+///
+/// ⚠️ **A countdown, not a timestamp.** #33 requires this because the window is
+/// thirty-five minutes: "reserved until 14:32" misleads a buyer who looked away,
+/// and a buyer who starts paying near the deadline loses the attempt — they are
+/// not charged, but the session closes under them. So the copy leans on the
+/// remaining time rather than the wall clock.
+///
+/// Returns null when the deadline has passed, which the caller renders as expired
+/// rather than as "0 minutes left".
+export function timeUntil(deadlineMs: number, nowMs: number): string | null {
+  const remainingMs = deadlineMs - nowMs;
+  if (remainingMs <= 0) return null;
+  const totalMinutes = Math.floor(remainingMs / 60_000);
+  if (totalMinutes >= 1) {
+    const seconds = Math.floor((remainingMs % 60_000) / 1_000);
+    return `${totalMinutes} min ${String(seconds).padStart(2, "0")} s`;
+  }
+  return `${Math.max(1, Math.ceil(remainingMs / 1_000))} s`;
+}
+
 /// Tolerance the UI allows between the figure a buyer was shown and the one the
 /// gateway locks: 5%.
 ///

@@ -64,6 +64,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   const CreatedOrder = IDL.Record({ order: Order });
   const GateReason = IDL.Variant({
     amountAboveMax: IDL.Record({ maxUsdCents: IDL.Nat, usdCents: IDL.Nat }),
+    amountBelowMin: IDL.Record({ minUsdCents: IDL.Nat, usdCents: IDL.Nat }),
     burnCapExhausted: IDL.Record({ burnedE8s: IDL.Nat, capE8s: IDL.Nat }),
     canisterCyclesLow: IDL.Record({ balance: IDL.Nat, min: IDL.Nat }),
     floatLow: IDL.Record({ observedE8s: IDL.Opt(IDL.Nat), thresholdE8s: IDL.Nat }),
@@ -72,6 +73,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   const GateConfig = IDL.Record({
     maxOpenOrdersPerPrincipal: IDL.Nat,
     maxPurchaseUsdCents: IDL.Nat,
+    minPurchaseUsdCents: IDL.Nat,
     minCanisterCycles: IDL.Nat,
   });
   const GateConfigError = IDL.Variant({
@@ -80,6 +82,15 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     tierAboveCeiling: IDL.Record({
       tierId: IDL.Text,
       usdCents: IDL.Nat,
+      maxUsdCents: IDL.Nat,
+    }),
+    tierBelowFloor: IDL.Record({
+      tierId: IDL.Text,
+      usdCents: IDL.Nat,
+      minUsdCents: IDL.Nat,
+    }),
+    floorAboveCeiling: IDL.Record({
+      minUsdCents: IDL.Nat,
       maxUsdCents: IDL.Nat,
     }),
   });
@@ -153,13 +164,18 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   });
   const Tier = IDL.Record({
     id: IDL.Text,
-    paymentLinkUrl: IDL.Text,
     usdCents: IDL.Nat,
   });
+  const Amount = IDL.Variant({ custom: IDL.Nat, tier: IDL.Text });
   const TiersValidateError = IDL.Variant({
     aboveCeiling: IDL.Record({
       id: IDL.Text,
       maxUsdCents: IDL.Nat,
+      usdCents: IDL.Nat,
+    }),
+    belowFloor: IDL.Record({
+      id: IDL.Text,
+      minUsdCents: IDL.Nat,
       usdCents: IDL.Nat,
     }),
     duplicateTierId: IDL.Text,
@@ -247,7 +263,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     audit_log: IDL.Func([], [IDL.Vec(AuditEvent)], ['query']),
     card_tiers: IDL.Func([], [IDL.Vec(Tier)], ['query']),
     create_order: IDL.Func(
-      [IDL.Text, Destination, IDL.Opt(IDL.Nat)],
+      [Amount, Destination, IDL.Opt(IDL.Nat)],
       [IDL.Variant({ ok: CreatedOrder, err: CreateOrderError })],
       [],
     ),

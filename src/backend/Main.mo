@@ -169,7 +169,9 @@ persistent actor CyclesGateway {
   let orderStore : Orders.Store = Orders.emptyStore();
 
   /// §3 fixed card tiers. Operator config (§7): controllers create the
-  /// Payment Links in the Stripe Dashboard and register them here. Empty
+  /// amounts the UI offers as tiles. Presentational since #33: a buyer can order
+  /// any amount between the gate's floor and ceiling, so an empty list means "no
+  /// tiles", not "rail off". Empty
   /// until first `set_card_tiers` — no made-up default prices.
   var cardTiers : [Tiers.Tier] = [];
 
@@ -270,8 +272,23 @@ persistent actor CyclesGateway {
 
   /// Is the rail live enough to be worth spending cycles keeping a rate warm?
   /// A dark gateway refreshes nothing.
+  /// Is the card rail capable of completing a purchase?
+  ///
+  /// **Both Stripe secrets, and nothing else** (#33). Derived from actual
+  /// capability rather than declared separately:
+  ///
+  /// - no **API key** → `create_order` cannot produce a payable session at all;
+  /// - no **webhook secret** → `handleWebhook` answers 503, so a buyer can pay
+  ///   and we cannot credit them.
+  ///
+  /// Neither state can complete a purchase, so neither should accept one. This
+  /// used to read `cardTiers.size() > 0`, which was a proxy inherited from the
+  /// Payment Link design — and with custom amounts it would stop nothing.
+  ///
+  /// It gates the rate-refresh timer, so this also fixes a real waste: a gateway
+  /// with presets but no API key used to pay for XRC calls it could never use.
   func railsLive() : Bool {
-    cardTiers.size() > 0;
+    Secret.status(stripeApiKey).isSet and Secret.status(webhookSecret).isSet;
   };
 
   func recordRateAttempt(ok : Bool, detail : Text) {
@@ -491,7 +508,7 @@ persistent actor CyclesGateway {
   public type CreateOrderError = {
     /// Anonymous principal — a shared identity can't own orders (§7).
     #anonymous;
-    /// No configured tier with this id.
+    /// No configured preset with this id. Only reachable for `#tier`.
     #unknownTier : Text;
     /// §3 fee formula swallows the tier's gross amount — a tier/fee config
     /// problem for the operator, not something a retry fixes.
@@ -525,6 +542,21 @@ persistent actor CyclesGateway {
     /// created. The session exists at Stripe but its URL never left the canister,
     /// so it is unreachable and dies at its own `expires_at`.
     #cancelledDuringCreation;
+  };
+
+  /// What the buyer is paying for: a preset, or an amount they typed (#33).
+  ///
+  /// A variant rather than a second method, so the quote, the gate and the
+  /// session path stay single. Everything downstream keys off gross USD cents,
+  /// which is what both cases resolve to — the floor and the ceiling then apply
+  /// uniformly instead of one bound per entry point.
+  public type Amount = {
+    #tier : Text;
+    /// Gross USD cents, straight from the buyer. Bounded by
+    /// `Gate.Config`'s floor and ceiling like any other amount — and bounded
+    /// **here**, not only in the frontend, because a frontend-only bound is not a
+    /// bound.
+    #custom : Nat;
   };
 
   public type CreatedOrder = {
@@ -818,7 +850,7 @@ persistent actor CyclesGateway {
   /// favour passes through and they keep the extra cycles. The guard can only
   /// ever protect the buyer. `null` opts out entirely.
   public shared ({ caller }) func create_order(
-    tierId : Text,
+    amount : Amount,
     destination : Types.Destination,
     minCycles : ?Nat,
   ) : async Result.Result<CreatedOrder, CreateOrderError> {
@@ -846,18 +878,31 @@ persistent actor CyclesGateway {
         return #err(#sessionUnavailable(sessionErrorToText(e)));
       };
     };
-    let ?tier = Tiers.find(cardTiers, tierId) else return #err(#unknownTier(tierId));
+    // Both cases collapse to gross USD cents here, and everything after this is
+    // identical for a preset and a typed amount — which is the point of the
+    // variant: one quote path, one gate, one session.
+    let (usdCents, quoteLabel) = switch (amount) {
+      case (#tier(tierId)) {
+        let ?tier = Tiers.find(cardTiers, tierId) else return #err(#unknownTier(tierId));
+        (tier.usdCents, tierId);
+      };
+      // NOT validated against the presets: a custom amount is any amount the
+      // gate admits, and the gate is the only bound. Checking it against the
+      // tier list would make presets a constraint again.
+      case (#custom(cents)) (cents, cents.toText() # " cents");
+    };
     // Admission BEFORE the quote, so a spamming principal is turned away before
     // it can make the canister do work (`canister-security`: anyone can burn
-    // your cycles with update calls).
-    switch (admit(caller, tier.usdCents)) {
+    // your cycles with update calls). The floor and ceiling are enforced here,
+    // for both cases alike.
+    switch (admit(caller, usdCents)) {
       case (#err(reason)) return #err(#notAdmitted(reason));
       case (#ok) {};
     };
     let fee = { feeBps = pricingConfig.feeBps; feeFixedCents = pricingConfig.feeFixedCents };
-    let (lockedCycles, pricing) = switch (quoteCents(fee, tier.usdCents)) {
+    let (lockedCycles, pricing) = switch (quoteCents(fee, usdCents)) {
       case (#ok(quoted)) quoted;
-      case (#unpriceable) return #err(#tierBelowFees(tierId));
+      case (#unpriceable) return #err(#tierBelowFees(quoteLabel));
       case (#stale) return #err(#rateUnavailable);
     };
     switch (minCycles) {
@@ -938,14 +983,20 @@ persistent actor CyclesGateway {
     Orders.ordersFor(orderStore, caller);
   };
 
-  /// Replace the card tier config (§3/§7 — admin, validated atomically: a
-  /// bad config never partially applies).
+  /// Replace the card presets (§3/§7 — admin, validated atomically: a bad config
+  /// never partially applies).
+  ///
+  /// ⚠️ **This is no longer the rail's on/off switch.** An empty list used to
+  /// pause the rail, and the audit line said "CARD RAIL PAUSED". With custom
+  /// amounts (#33) a buyer can order without any preset, so an empty list stops
+  /// nothing — it just shows no tiles. The switch is both Stripe secrets being
+  /// provisioned; `railsLive` is where that lives.
   public shared ({ caller }) func set_card_tiers(tiers : [Tiers.Tier]) : async Result.Result<(), Tiers.ValidateError> {
     requireAdmin(caller);
-    switch (Tiers.validate(tiers, gateConfig.maxPurchaseUsdCents)) {
+    switch (Tiers.validate(tiers, gateConfig.minPurchaseUsdCents, gateConfig.maxPurchaseUsdCents)) {
       case (#ok) {
         cardTiers := tiers;
-        auditAdmin(caller, "tiers.set", tiers.size().toText() # " tier(s)" # (if (tiers.size() == 0) " — CARD RAIL PAUSED" else ""));
+        auditAdmin(caller, "tiers.set", tiers.size().toText() # " preset(s)" # (if (tiers.size() == 0) " — no presets shown; the rail is unaffected" else ""));
         #ok;
       };
       case (#err(e)) #err(e);
@@ -1032,7 +1083,8 @@ persistent actor CyclesGateway {
     Gate.admit(gateConfig, gateObservation(caller), usdCents);
   };
 
-  /// Public — the frontend renders tiers and their Payment Links from this.
+  /// Public — the frontend renders the amount tiles from this. There is no link
+  /// to render: the canister creates a session per order (#33).
   public query func card_tiers() : async [Tiers.Tier] {
     cardTiers;
   };

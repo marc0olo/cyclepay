@@ -97,11 +97,20 @@ consciously set. Work the list in order:
    `icp canister call backend set_expected_livemode '(opt true)' -e ic --identity <operator>`.
    Until this is set, a test-mode webhook secret would mint **real** cycles for
    payments that never happened. Verify with `expected_livemode`.
-12. **Create the Payment Links in LIVE mode and configure them per §3.** Your
-   sandbox links are different objects and cannot be reused here. Card-only, USD, a
-   fixed **one-time** price, and adjustable quantity, promotion codes and automatic
-   tax all **off**. Those settings are what make `amount_total == tier.usdCents`
-   true, and when it is not true nothing fails — the order silently delivers a
+12. **Create a LIVE restricted API key (`rk_...`) scoped to write Checkout
+   Sessions**, and provision it with `set_stripe_api_key`. Your sandbox key cannot
+   be reused. There are no Payment Links, Products or Prices to create: the
+   session carries inline `price_data`, and `amount_total == usdCents` holds
+   because of what the session does NOT enable — the eight settings are listed in
+   `rails/Session.mo` beside the body builder, and `test/session.test.mo` asserts
+   their absence.
+
+   ⚠️ Also set the **origin** (`set_stripe_origin`) before the key: with either
+   missing, `create_order` refuses. Provisioning both is what OPENS the rail, so do
+   it last; rotating either closes it until both are valid again.
+
+   Historically, when `amount_total != tier.usdCents` nothing failed — the order
+   silently delivered a
    different cycle quantity. Register with `set_card_tiers`, then click each tile
    once on the deployed site: the URL itself is not validated, so a typo is
    otherwise discovered by a buyer.
@@ -214,7 +223,7 @@ them:
 
 ```bash
 icp canister call backend set_card_tiers \
-  '(vec { record { id = "t10"; usdCents = 1_000; paymentLinkUrl = "https://buy.stripe.com/…" } })' \
+  '(vec { record { id = "t10"; usdCents = 1_000 : nat } })' \
   -e ic --identity <operator>
 ```
 
@@ -313,27 +322,32 @@ Plus the two already in §1: **USD** (any other currency is refused as
 `#unattributed`, which is a Type 1 obligation and a manual refund) and
 **card-only** (delayed methods are handled, but they make money-in asynchronous).
 
-⚠️ **`paymentLinkUrl` is not validated.** `Tiers.validate` checks ids and amounts,
-not the URL — it is not parsed, and the host is not checked (deliberately: Stripe
-supports custom checkout domains, so a `buy.stripe.com` allowlist would reject a
-legitimate setup). A typo is accepted and the buyer finds out: the order is created,
-the rate is locked, an open-order slot is consumed, and the link 404s or answers
-`AccessDenied`. **In production a wrong link is worse than no tier at all** — with
-no tier the buyer cannot start; with a wrong one they get a live unpaid order that
-sits until the TTL expires it. Paste the links, then click each tile once on the
-deployed site before announcing it.
+⚠️ **There is no `paymentLinkUrl` any more** (#33), and with it goes the whole
+class of failure this paragraph used to describe: an unvalidated, unparsed URL
+that a typo turned into a 404 the buyer discovered *after* an order was created,
+a rate locked and an open-order slot consumed. A preset is now an id and an
+amount, both validated against the gate's floor and ceiling, and the payment page
+is a session the canister creates.
 
-### What the app does with no links
+### What the app does with no presets
 
-An empty tier vector is the rail's off switch, and it fails closed cleanly: the
-frontend renders "No amounts are configured yet." (distinct from "Amounts could not
-be loaded", which is a network claim), and `create_order` answers
-`#unknownTier` for any id. Nothing is half-open.
+⚠️ **An empty preset list is NOT the rail's off switch any anymore** (#33). It was,
+and the audit line said "CARD RAIL PAUSED". With custom amounts it stops nothing: a
+buyer can order any amount between the floor and the ceiling without a preset, so
+an empty list means only that no tiles are shown. `create_order` still answers
+`#unknownTier` for a `#tier` id that is not registered.
 
-`scripts/local-dev-seed.sh` fills in **placeholder** links for any of
-`STRIPE_LINK_T5` / `_T20` / `_T50` you have not exported, names the missing
-variables in its output, and is for local development only. Those tiles create real
-orders and then dead-end on Stripe.
+**The switch is both Stripe secrets being provisioned**, which is derived from
+capability rather than declared: no API key means no payable session, no webhook
+secret means a buyer can pay and cannot be credited. Neither state can complete a
+purchase, so neither accepts one. `railsLive` is where that lives, and it also
+gates the rate-refresh timer — so a gateway with presets and no API key no longer
+pays for XRC calls it cannot use.
+
+To take the rail down deliberately, there is no lever short of rotating a secret to
+a value Stripe rejects. That is a gap worth naming rather than working around;
+`can_purchase` and the distinguishable `#sessionUnavailable` refusal are what an
+operator has instead.
 
 ## 4. Pricing rates (§3.1)
 

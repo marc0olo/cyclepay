@@ -3,7 +3,7 @@
 /// **Why this exists.** The delivered view is the flagship surface of this app,
 /// and it shipped broken twice. Both times the reason was the same: nothing
 /// outside jsdom could reach it. Getting there for real needs a
-/// signed-in Internet Identity, a funded local network, a Stripe payment link and
+/// signed-in Internet Identity, a funded local network, a Stripe API key and
 /// a signed webhook, so the only pictures anyone ever had of that screen were
 /// produced by injecting DOM state directly. A test can pass that way while a
 /// visitor sees nothing, which is exactly what happened.
@@ -55,8 +55,12 @@ export type OrderSpec = {
 /// hand-written principal fails its own checksum.
 const BUYER = Principal.selfAuthenticating(new Uint8Array(32).fill(7));
 
-const USD_CENTS = 500n;
-const NET_CENTS = 455n;
+// $10 — the smallest preset as of #33, and the gate's floor. A $5 fixture would
+// match no preset, so "buy again" would select nothing.
+const USD_CENTS = 1_000n;
+// 1000 − (ceil(1000 × 290/10000) + 30) = 1000 − 59. Derived, not guessed: the
+// receipt's own verification recomputes from it, so a wrong value fails visibly.
+const NET_CENTS = 941n;
 const USD_PER_ICP_MICROS = 4_550_000n;
 const XDR_PERMYRIAD_PER_ICP = 35_000n;
 /// Recomputed rather than written down, so the receipt's own verification passes
@@ -140,11 +144,24 @@ export function installFixtures(host: FixtureHost): void {
   // them would be noise standing in for coverage the PocketIC suite already has.
   const backend = {
     card_tiers: async () => [
-      { id: "t5", usdCents: 500n, paymentLinkUrl: "https://buy.stripe.com/test_fixture" },
-      { id: "t20", usdCents: 2_000n, paymentLinkUrl: "https://buy.stripe.com/test_fixture" },
-      { id: "t50", usdCents: 5_000n, paymentLinkUrl: "https://buy.stripe.com/test_fixture" },
+      // The #33 presets: $10 / $20 / $50. `paymentLinkUrl` went with the links.
+      { id: "t10", usdCents: 1_000n },
+      { id: "t20", usdCents: 2_000n },
+      { id: "t50", usdCents: 5_000n },
     ],
     treasury_status: async () => ({ lowFloat: false }),
+    // The gate's bounds, which the custom-amount field renders its range from.
+    // Without this the field stays disabled on "Loading amounts…" — which a
+    // screenshot caught and no assertion would have.
+    lifecycle_config: async () => ({
+      gate: {
+        maxOpenOrdersPerPrincipal: 1n,
+        minCanisterCycles: 5_000_000_000_000n,
+        minPurchaseUsdCents: 1_000n,
+        maxPurchaseUsdCents: 10_000n,
+      },
+      retention: { orderTtlNs: 172_800_000_000_000n },
+    }),
     pricing_status: async () => ({
       config: { feeBps: 290n, feeFixedCents: 30n },
       rates: {

@@ -1,4 +1,11 @@
-/// Stripe webhook signing secret — the system's only stored secret (§7).
+/// A stored Stripe secret (§7). **Two stores use this module**: the webhook
+/// signing secret and, since #33, the Checkout Sessions API key. It said "the
+/// system's only stored secret" until then.
+///
+/// Both share the posture below. They also share the rail's on/off switch:
+/// `railsLive` is "both provisioned", because neither state can complete a
+/// purchase — no API key means no payable session, no webhook secret means a
+/// buyer can pay and we cannot credit them.
 ///
 /// Stored **plaintext in canister state, by design** (no vetKeys). HMAC is
 /// symmetric, so "verify" = "forge": whoever reads this blob can mint
@@ -14,6 +21,15 @@
 ///   attacker mint cycles at operator expense; the per-period ICP burn cap
 ///   (§5.3, task 10) bounds the drain, off-chain reconciliation detects it,
 ///   and rotation recovers. Launch must not block on SEV availability.
+///   ⚠️ Per #36 the bound becomes the **reserve balance** rather than the burn
+///   cap, once settlement stops minting per order.
+///
+/// The two secrets differ in what a leak buys an attacker, which is worth
+/// knowing when choosing key scopes: the webhook secret lets them forge "paid"
+/// events, so it mints at operator expense. A restricted `rk_` API key scoped to
+/// *write Checkout Sessions* only lets them create sessions that pay **us** —
+/// which is why the scope matters and why an unrestricted `sk_`, able to refund,
+/// would be a materially worse thing to leak.
 ///
 /// Rotation needs no dual-secret window on this side: while a rolled Stripe
 /// secret's predecessor is live, Stripe sends one `v1=` per active secret

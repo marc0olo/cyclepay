@@ -46,6 +46,10 @@ export type Backend = ReturnType<typeof makeBackend>;
 export type Order = NonNullable<Awaited<ReturnType<Backend["get_order"]>>>;
 export type Tier = Awaited<ReturnType<Backend["card_tiers"]>>[number];
 export type Destination = Parameters<Backend["create_order"]>[1];
+/// What the buyer is paying for: a preset or a typed amount (#33). Derived from
+/// the method signature rather than restated, so a backend change to the variant
+/// is a typecheck failure here rather than a silent divergence.
+export type Amount = Parameters<Backend["create_order"]>[0];
 export type CreateOrderResult = Awaited<ReturnType<Backend["create_order"]>>;
 export type TreasuryStatus = Awaited<ReturnType<Backend["treasury_status"]>>;
 export type PricingStatus = Awaited<ReturnType<Backend["pricing_status"]>>;

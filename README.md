@@ -71,7 +71,7 @@ five axes at once, and the result looks like a broken app rather than a safe one
 
 | What you see | Why |
 |---|---|
-| "No amounts are configured yet" | The tier list *is* the card rail's on/off switch (RUNBOOK §3) |
+| "No amounts are configured yet" | No presets are registered. Since #33 that is **not** a paused rail — a custom amount still works; run the seed to register the tiles |
 | "No exchange rate available yet" | Pricing needs the CMC rate, which only NNS governance can set |
 | "temporarily unavailable while the gateway is topped up" | `minCanisterCycles` defaults to 5 T and `icp deploy` creates the canister with less, so the gate refuses every purchase. This one is about the canister's own **gas**, not the treasury; the seed script fixes it with `icp canister top-up backend --amount 20t`, which is what you would do on mainnet, rather than by lowering the floor |
 | Orders never mint | Burn cap defaults to 0 (the §5.3 pause lever) and there is no ICP float |
@@ -96,9 +96,14 @@ Put the key in **`scripts/.local-dev.env`** once (gitignored, and sourced by the
 seed) rather than on a command line, where it would land in your shell history:
 
 ```sh
-# scripts/.local-dev.env
+cat > scripts/.local-dev.env <<'ENV'
 STRIPE_API_KEY=rk_test_...
+ENV
+scripts/local-dev-seed.sh
 ```
+
+That is the whole file — the `STRIPE_LINK_*` variables it used to hold went with
+`Tier.paymentLinkUrl` (#33).
 
 `scripts/stripe-dev.sh` then provisions the **webhook signing secret** from the
 forwarding session and starts the forwarder. The rail is live only when **both**
@@ -106,20 +111,6 @@ are in; check with `stripe_api_key_status` and `webhook_secret_status`.
 
 ⚠️ A `--mode reinstall` wipes both. The seed restores the key from that file; the
 webhook secret needs `stripe-dev.sh` again.
-
-The `STRIPE_LINK_*` block below is superseded machinery — it still populates a
-field nothing reads, and it goes when the field does (#33 PR-C):
-
-```sh
-cat > scripts/.local-dev.env <<'LINKS'
-# Superseded (#33 PR-C deletes these): they populate Tier.paymentLinkUrl, which
-# nothing reads. Only STRIPE_API_KEY above matters for paying.
-STRIPE_LINK_T5=https://buy.stripe.com/test_xxx
-STRIPE_LINK_T20=https://buy.stripe.com/test_yyy
-STRIPE_LINK_T50=https://buy.stripe.com/test_zzz
-LINKS
-scripts/local-dev-seed.sh
-```
 
 Precedence is environment → that file → **the link already registered on the
 canister** → a placeholder naming the variable. The third rule is what makes

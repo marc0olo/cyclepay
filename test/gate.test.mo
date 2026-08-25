@@ -17,7 +17,9 @@ let healthy : Gate.Observation = {
 };
 
 let config = Gate.defaultConfig();
-let amount : Nat = 500; // well inside the default ceiling
+/// Well inside BOTH default bounds as of #33: the floor is $10 and the ceiling
+/// is $100, so the old $5 fixture is now below the floor.
+let amount : Nat = 2_000;
 
 suite("defaults", func() {
   test("safety limits ship non-zero, unlike the money levers", func() {
@@ -52,6 +54,27 @@ suite("admit", func() {
     let over = config.maxPurchaseUsdCents + 1;
     assert Gate.admit(config, healthy, over)
       == #err(#amountAboveMax({ usdCents = over; maxUsdCents = config.maxPurchaseUsdCents }));
+  });
+
+  test("amount below the floor is refused, and distinguishably so (#33)", func() {
+    // Distinct from the ceiling case because the buyer acts on them differently
+    // — "ask for less" versus "ask for more" — and with custom amounts both are
+    // reachable by typing.
+    let under = config.minPurchaseUsdCents - 1;
+    assert Gate.admit(config, healthy, under)
+      == #err(#amountBelowMin({ usdCents = under; minUsdCents = config.minPurchaseUsdCents }));
+  });
+
+  test("both bounds are inclusive", func() {
+    assert Gate.admit(config, healthy, config.minPurchaseUsdCents) == #ok;
+    assert Gate.admit(config, healthy, config.maxPurchaseUsdCents) == #ok;
+  });
+
+  test("the ceiling is checked before the floor, so a typo names one bound", func() {
+    // Not a property worth much on its own, but it pins that an absurd amount
+    // reports `#amountAboveMax` rather than whichever check happens to run first
+    // after a refactor.
+    assert Gate.admit(config, healthy, 0) == #err(#amountBelowMin({ usdCents = 0; minUsdCents = config.minPurchaseUsdCents }));
   });
 
   test("exactly at the ceiling is admitted", func() {
@@ -140,7 +163,10 @@ suite("the ceiling cannot be lowered under a live tier", func() {
   // completes checkout and the webhook files a Type 1, and `attach_payment` then
   // refuses to rescue it until the ceiling goes back up — so the operator has to
   // connect a refused rescue to a config change made earlier.
-  let tiers : [(Text, Nat)] = [("tier5", 500), ("tier50", 5_000)];
+  // The #33 presets: $10 / $20 / $50. The old $5 entry is below the new floor,
+  // so it would be refused by `#tierBelowFloor` before the ceiling check ran and
+  // every assertion here would be about the wrong bound.
+  let tiers : [(Text, Nat)] = [("tier10", 1_000), ("tier50", 5_000)];
 
   test("a ceiling above every tier is fine", func() {
     assert Gate.validateConfig({ config with maxPurchaseUsdCents = 5_000 }, tiers) == #ok;
@@ -159,17 +185,33 @@ suite("the ceiling cannot be lowered under a live tier", func() {
   });
 
   test("no tiers registered means nothing to contradict", func() {
-    assert Gate.validateConfig({ config with maxPurchaseUsdCents = 1 }, []) == #ok;
+    // The floor moves with it: a ceiling of 1 under a $10 floor is refused as
+    // `#floorAboveCeiling`, which is a different (and correct) complaint.
+    assert Gate.validateConfig({ config with maxPurchaseUsdCents = 1; minPurchaseUsdCents = 1 }, []) == #ok;
+  });
+
+  test("a floor above the ceiling admits nothing, so it is refused (#33)", func() {
+    assert Gate.validateConfig({ config with minPurchaseUsdCents = 20_000 }, [])
+      == #err(#floorAboveCeiling({ minUsdCents = 20_000; maxUsdCents = config.maxPurchaseUsdCents }));
+  });
+
+  test("raising the floor over a live tier is refused, and names it (#33)", func() {
+    // The mirror of the ceiling rule, for the same reason: it would leave the
+    // tier sellable but unpayable, and the operator would have to connect a
+    // refused order to a config change made earlier.
+    assert Gate.validateConfig({ config with minPurchaseUsdCents = 2_000 }, tiers)
+      == #err(#tierBelowFloor({ tierId = "tier10"; usdCents = 1_000; minUsdCents = 2_000 }));
   });
 
   test("the error carries what the operator needs to fix it", func() {
-    switch (Gate.validateConfig({ config with maxPurchaseUsdCents = 100 }, tiers)) {
+    switch (Gate.validateConfig({ config with maxPurchaseUsdCents = 100; minPurchaseUsdCents = 100 }, tiers)) {
       case (#err(e)) {
         let text = Gate.configErrorToText(e);
-        // The full rendered sentence, not a substring: `#text "tier5"` also
-        // matches a "tier50", so a passing assertion would not have told us the
-        // right tier was named.
-        assert text == "tierAboveCeiling(tier tier5 costs 500 cents, ceiling would be 100)";
+        // The full rendered sentence, not a substring: `#text "tier10"` is also
+        // a prefix of nothing here, but the same trap applied to "tier5"/"tier50"
+        // before — a substring assertion would not have told us which tier was
+        // named.
+        assert text == "tierAboveCeiling(tier tier10 costs 1000 cents, ceiling would be 100)";
       };
       case (#ok) assert false;
     };

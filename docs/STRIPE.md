@@ -89,7 +89,8 @@ problem, and no operator-settable rate source to audit.
                        ▼
                     #created  +  clientReferenceId = <principal>_<orderId>
                        │
- frontend ─────────────┤ opens  <paymentLinkUrl>?client_reference_id=<ref>
+ frontend ─────────────┤ opens  order.stripeSessionUrl  (#33: the canister set
+                       │        client_reference_id on the session itself)
                        ▼
  user pays Stripe (card data never touches the canister)
                        │
@@ -678,7 +679,7 @@ privileges — any controller can do any of this):
 |---|---|
 | `set_webhook_secret` | provision / rotate (§13) |
 | `webhook_secret_status` | confirm a rotation landed |
-| `set_card_tiers` | register Payment Links; **empty vector disables the rail** |
+| `set_card_tiers` | register the preset amounts. Since #33 an empty vector shows no tiles and does **not** disable the rail — the switch is both Stripe secrets |
 | `set_gate_config` | open-order cap, own-cycles floor, per-purchase ceiling |
 | `set_retention_config` | order TTL (the expiry flip; nothing is deleted) |
 | `set_pricing_config` | fee formula, staleness window (capped at 1 h), delta bound, minimum rate sources |

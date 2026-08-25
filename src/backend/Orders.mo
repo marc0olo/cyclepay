@@ -34,7 +34,8 @@ module {
     ?Util.hexEncode(Blob.fromArray(prefix));
   };
 
-  /// §6.1 — the value carried on the tier's Payment Link URL:
+  /// §6.1 — the reference the canister sets on the Checkout Session it creates
+  /// (#33); it used to be appended to a Payment Link URL by the frontend:
   /// `<principal>_<orderId>`. Unambiguous to split: principal text is
   /// `[a-z0-9-]`, the ID is hex, so the one `_` is the separator. Claimed,
   /// not trusted — webhook ingestion re-resolves and verifies it.

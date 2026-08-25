@@ -30,7 +30,7 @@ import {
 import type {
   BackendService, CmcService, ErrorEntry,
   Destination, HttpResponse, Icrc1Service, Order, OrderStatusKey, Result, StatusVariant,
-  CreatedOrder, CreateOrderError,
+  CreatedOrder, CreateOrderError, Amount,
 } from './types';
 
 // Mainnet principals — identical on PocketIC's NNS subnet (Cmc.mo pins the
@@ -732,7 +732,7 @@ export function outcallBody(outcall: PendingHttpsOutcall): string {
 /// update call is still in flight.
 export async function createOrderWithSession(
   gw: Gateway,
-  tierId: string,
+  amount: Amount,
   destination: Destination,
   minCycles: [] | [bigint],
   opts: {
@@ -743,7 +743,7 @@ export async function createOrderWithSession(
     status?: number;
   } = {},
 ): Promise<Result<CreatedOrder, CreateOrderError>> {
-  const settle = await gw.deferredUser.create_order(tierId, destination, minCycles);
+  const settle = await gw.deferredUser.create_order(amount, destination, minCycles);
   const outcall = await awaitPendingOutcall(gw);
   const expiresAtSeconds =
     opts.expiresAtSeconds ?? Number(await nowSeconds(gw.pic)) + 2_100;
