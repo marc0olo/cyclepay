@@ -178,6 +178,20 @@ prerequisite; see issue #32.
 Reinstalling wipes local orders, the audit log and the mint journal. That is
 expected: re-seed, and restart a manual run from the top.
 
+⚠️ **It also wipes the Stripe webhook secret, and `local-dev-seed.sh` does not
+put it back** — only `scripts/stripe-dev.sh` does, because the secret belongs to
+a `stripe listen` session rather than to the deployment. So after a reinstall,
+re-run `scripts/stripe-dev.sh` before paying anything.
+
+Skipping it costs more than it looks: an unprovisioned secret makes the canister
+drop every event it cannot verify, so a real payment produces **no order
+movement, no error-queue entry and no audit line at all**. Check it in one call
+rather than guessing:
+
+```sh
+icp canister call backend webhook_secret_status '()'    # isSet must be true
+```
+
 ### Stopping
 
 ```sh

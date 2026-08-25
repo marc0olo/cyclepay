@@ -126,6 +126,30 @@ Then, in the browser at the frontend URL `icp deploy` printed
 5. **Watch the page.** Leave the order tab open. The webhook arrives at the
    forwarder, the mint runs, and the page reaches **delivered** on its own 3 s poll
    with the guided tour leading. It should never need a reload.
+
+   **If nothing happens**, work these three in order — each has produced a silent
+   stall in a real run:
+
+   | Check | Command | Wrong looks like |
+   |---|---|---|
+   | the secret is provisioned | `icp canister call backend webhook_secret_status '()'` | `isSet = false` — every event is dropped unverified, with no audit line and no error-queue entry |
+   | the forwarder is up | `pgrep -fl "stripe listen"` | nothing — Stripe delivered to a closed door, and a resend is delivered **once**, so resending before the forwarder is up wastes it |
+   | the CMC rate is fresh | `icp canister call backend audit_log '()' \| grep rates.refresh` | `rates.refreshFailed: cmc rate is stale or zero` — re-arm with `./scripts/local-dev-seed.sh --rate-only`. The order's *price* is locked at creation, but the mint refuses a CMC rate older than 15 minutes |
+
+   To replay a payment the canister missed, resend the **`checkout.session.completed`**
+   event — not `charge.updated`, `charge.succeeded` or `payment_intent.succeeded`,
+   which Stripe lists just as prominently and none of which this canister acts on
+   (see `Card.mo` for the four types it handles). A resent event of the wrong type
+   logs `stripe.unhandledType` and changes nothing:
+
+   ```sh
+   stripe events list --limit 25          # find the checkout.session.completed
+   stripe events resend <evt_...>
+   ```
+
+   `audit_log` is the diagnostic that separates these: a verified-but-unactionable
+   event, a bad signature and an event that never arrived all look identical from
+   the UI, and all three read differently there.
 6. **Follow the tour.** Copy `icp identity link web dev --app <host>`, run it, then
    `icp identity principal --identity dev` and compare with the principal the page
    printed. **They must match.** A mismatch means the `--app` value did not match
