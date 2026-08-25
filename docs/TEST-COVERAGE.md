@@ -13,7 +13,7 @@ for the scenario map by id — ids are stable, counts are not.
 |---|---|---|
 | **Motoko unit** (`test/*.test.mo`) | pure logic: HMAC, the Stripe signature scheme, JSON parsing, fee/rate arithmetic, the §4 state machine, dedup, retention bands, the error queue, `Cmc.terminationFor`'s eight money positions, `stageOf`'s resume decisions | `mops test`. No IC environment — every module takes its dependencies as a record (`Card.Deps`), which is why the whole ingestion path is unit-testable |
 | **Frontend pure** (`format.test.ts`) | status mapping, cycle/USD formatting, the §3 pricing vector, slippage flooring, deposit-fee subtraction, receipt verification, every error-message mapping | `vitest` |
-| **Frontend DOM** (`main.test.ts`) | the real `index.html` body in jsdom with a stubbed backend: tier estimates, fee split, destination switch, the acknowledge-then-confirm quote flow, cancel visibility, the receipt render, the view machine (including the poll's own arrival at `delivered`, under fake timers) | `vitest` + jsdom |
+| **Frontend DOM** (`main.test.ts`) | the real `index.html` body in jsdom with a stubbed backend: tier estimates, fee split, the single route into the buy form, the destination it sends (read from the session, never the form), the acknowledge-then-confirm quote flow, cancel visibility, the receipt render, the view machine (including the poll's own arrival at `delivered`, under fake timers) | `vitest` + jsdom |
 | **Browser** (`test/browser/*.spec.ts`) | what jsdom is structurally blind to: the cascade, layout, reachability, and — via committed screenshot baselines — paint. Runs against a production build served statically, with an unreachable gateway by default and a canned one where a spec needs answers | `npm --prefix test/browser test` (Playwright, Chromium) |
 | **PocketIC** (`test/integration/src/*.spec.ts`) | end-to-end against the **real** ICP ledger, CMC and cycles ledger, plus a sha256-pinned XRC mock at the mainnet id | `npm --prefix test/integration test` |
 
@@ -24,8 +24,10 @@ for the scenario map by id — ids are stable, counts are not.
   implementation — so it is not testing our signer against our verifier.
 - **Time control**: the 2 h delay alert and the 72 h terminate bound are reachable
   in seconds; the ledger's 24 h dedup window likewise.
-- **Failure injection**: the ledger and CMC can be *stopped* (`stopNns`,
-  impersonating NNS root) to force real outages — scenarios 51–54.
+- **Failure injection**: the ledger, CMC and cycles ledger can be *stopped*
+  (`stopNns`, impersonating NNS root) to force real outages — scenarios 51–54, and
+  scenario 11, where a stopped cycles ledger is what makes the Type 2
+  `#undeliverable` path reachable.
 - **Real HTTP**: `pic.makeLive()` serves an actual gateway, so scenario 55 proves
   the webhook route over genuine HTTP rather than a Candid call to
   `http_request_update`.

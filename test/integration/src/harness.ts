@@ -103,11 +103,9 @@ export const TIER_LOCKED_CYCLES = 3_500_000_000_000n;
 /// ceil(3_500_000_000_000 / 35_000) — exactly 1 ICP, the point of the vector.
 export const ORDER_E8S = 100_000_000n;
 export const ICP_FEE_E8S = 10_000n;
-/// The cycles ledger charges this on `deposit`. It makes the two §5 forward
-/// arms asymmetric: a `#cyclesLedgerAccount` destination receives
-/// `lockedCycles - CYCLES_LEDGER_DEPOSIT_FEE`, while a `#canister` destination
-/// (`deposit_cycles`) receives the full locked quantity. See the note in
-/// scenario 10 for why this is not grossed up.
+/// The cycles ledger charges this on `deposit`, so a delivery credits exactly
+/// `lockedCycles - CYCLES_LEDGER_DEPOSIT_FEE` — on every order, since #29 left
+/// one destination. See scenario 10 for why it is not grossed up.
 export const CYCLES_LEDGER_DEPOSIT_FEE = 100_000_000n;
 
 export const WEBHOOK_SECRET = 'whsec_8fJ3kQ9mN2pX7vR4tL6wY1zB5cD0eH';
@@ -119,10 +117,6 @@ export interface Gateway {
   server: PocketIcServer;
   pic: PocketIc;
   backendId: Principal;
-  /// A canister id inside the application subnet's range that is never
-  /// allocated (the top of the range) — the §4.1 Type-2 trigger: a forward
-  /// to it is cleanly rejected and the cycles refund to the app balance.
-  neverCanisterId: Principal;
   /// Backend actors per caller role.
   asAdmin: Actor<BackendService>;
   asUser: Actor<BackendService>;
@@ -187,8 +181,6 @@ export async function setupGateway(): Promise<Gateway> {
     targetSubnetId: appSubnet.id,
   });
   const backendId = fixture.canisterId;
-  const ranges = appSubnet.canisterRanges;
-  const neverCanisterId = ranges[ranges.length - 1].end;
 
   const asAdmin = fixture.actor;
   asAdmin.setIdentity(admin);
@@ -204,7 +196,7 @@ export async function setupGateway(): Promise<Gateway> {
   cmcAsGovernance.setPrincipal(GOVERNANCE_ID);
 
   return {
-    server, pic, backendId, neverCanisterId,
+    server, pic, backendId,
     asAdmin, asUser, asAnon, deferredUser,
     ledger, cyclesLedger, cmcAsGovernance,
     xrcInstalled: false,

@@ -64,7 +64,7 @@ func freshDeps() : Card.Deps {
 };
 
 func withOrder(deps : Card.Deps, rail : Types.Rail) {
-  switch (Orders.create(deps.orders, orderId, #ii(alice), rail, #canister(alice), lockedCycles, pricing, 100)) {
+  switch (Orders.create(deps.orders, orderId, #ii(alice), rail, #cyclesLedgerAccount({ owner = alice; subaccount = null }), lockedCycles, pricing, 100)) {
     case (#ok(_)) {};
     case (#err(_)) Runtime.trap("test order creation failed");
   };

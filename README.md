@@ -158,13 +158,31 @@ TypeScript bindings are regenerated from the committed Candid interface
 dev/build run. Change the backend API, run `mops build` to refresh the `.did`,
 and the frontend picks it up — or fails to typecheck, which is the point.
 
+### After a change to the stable shape
+
+A new field on `Order`, a removed variant tag, a changed config record: the
+upgrade **traps in `register_stable_type`** because enhanced orthogonal
+persistence refuses to reinterpret the existing memory. Locally that is not a
+migration problem, it is a two-command problem:
+
+```sh
+icp deploy --mode reinstall --yes
+./scripts/local-dev-seed.sh
+```
+
+`scripts/e2e-local.sh` detects the trap and does this for you. Do **not** add a
+mops migration file to avoid it — the app holds no data anyone needs, and every
+migration replays forever on a fresh install. The chain is a go-live
+prerequisite; see issue #32.
+
+Reinstalling wipes local orders, the audit log and the mint journal. That is
+expected: re-seed, and restart a manual run from the top.
+
 ### Stopping
 
 ```sh
 icp network stop
 ```
-
-State does not survive `--mode reinstall`, so re-run the seed after one.
 
 ## Testing the Stripe rail locally
 

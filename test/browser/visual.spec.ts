@@ -62,7 +62,7 @@ test.describe("visual baselines", () => {
   test("the landing view, light", async ({ page }) => {
     await page.goto("/");
     await settleForShot(page);
-    await expect(page.locator("#chooser")).toBeVisible();
+    await expect(page.locator("#start-buy")).toBeVisible();
     await expect(page).toHaveScreenshot("landing-light.png", shot);
   });
 
@@ -78,7 +78,7 @@ test.describe("visual baselines", () => {
   test("the buy view with real amounts, light", async ({ page }) => {
     await page.goto("/");
     await useFixtureBackend(page);
-    await page.locator("#choose-new").click();
+    await page.locator("#start-buy").click();
     await expect(page.locator("#buy-flow")).toBeVisible();
     // Wait for the priced tiles rather than the empty grid.
     await expect(page.locator("#tiers button.tier")).toHaveCount(3);
@@ -94,7 +94,7 @@ test.describe("visual baselines", () => {
     // receipt figures and the `--app` domain are all fixed by the fixture.
     await page.goto("/");
     await signInAsFixtureBuyer(page);
-    await openFixtureOrder(page, { status: "delivered", destination: "account" });
+    await openFixtureOrder(page, { status: "delivered" });
     await expect(page.locator("#cmd-link")).toBeVisible();
     await settleForShot(page);
     await expect(page).toHaveScreenshot("delivered-light.png", shot);
@@ -104,7 +104,7 @@ test.describe("visual baselines", () => {
     await page.goto("/");
     await page.locator("#theme-toggle").click();
     await useFixtureBackend(page);
-    await page.locator("#choose-new").click();
+    await page.locator("#start-buy").click();
     await expect(page.locator("#tiers button.tier")).toHaveCount(3);
     await settleForShot(page);
     await expect(page).toHaveScreenshot("buy-dark.png", shot);

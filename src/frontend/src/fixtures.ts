@@ -1,8 +1,8 @@
 /// Test-only fixtures: drive the post-purchase surfaces without a backend.
 ///
-/// **Why this exists.** The delivered view is the flagship surface of the
-/// two-audience flow, and it shipped broken twice. Both times the reason was the
-/// same: nothing outside jsdom could reach it. Getting there for real needs a
+/// **Why this exists.** The delivered view is the flagship surface of this app,
+/// and it shipped broken twice. Both times the reason was the same: nothing
+/// outside jsdom could reach it. Getting there for real needs a
 /// signed-in Internet Identity, a funded local network, a Stripe payment link and
 /// a signed webhook, so the only pictures anyone ever had of that screen were
 /// produced by injecting DOM state directly. A test can pass that way while a
@@ -44,19 +44,16 @@ export type FixtureHost = {
 export type OrderSpec = {
   /// An `OrderStatus` label. `delivered` is the interesting one.
   status?: string;
-  /// `account` is the newcomer shape and the only one that earns a tour;
-  /// `canister` is the already-live shape, which needs none.
-  destination?: "account" | "canister";
-  /// Credit someone else's account. The tour's printed commands cannot reach a
-  /// balance that is not the buyer's, so this is a distinct surface.
-  thirdParty?: boolean;
 };
 
-/// A buyer and a stranger, both real self-authenticating principals so they are
-/// the length and shape a visitor actually sees. Derived from fixed bytes rather
-/// than typed out, because a hand-written principal fails its own checksum.
+/// One destination shape and one owner, so `status` is the only thing worth
+/// parameterising: `create_order` accepts only the caller's own account (#29), so
+/// a fixture for any other would depict a screen no buyer can reach.
+///
+/// A real self-authenticating principal, so it is the length and shape a visitor
+/// actually sees. Derived from fixed bytes rather than typed out, because a
+/// hand-written principal fails its own checksum.
 const BUYER = Principal.selfAuthenticating(new Uint8Array(32).fill(7));
-const STRANGER = Principal.selfAuthenticating(new Uint8Array(32).fill(9));
 
 const USD_CENTS = 500n;
 const NET_CENTS = 455n;
@@ -73,16 +70,12 @@ const CREATED_AT_NS = 1_770_000_000_000_000_000n;
 
 function cannedOrder(spec: OrderSpec): Order {
   const status = spec.status ?? "delivered";
-  const toAccount = (spec.destination ?? "account") === "account";
-  const owner = spec.thirdParty ? STRANGER : BUYER;
   return {
     id: ORDER_ID,
     status: status as Order["status"],
     rail: "card" as Order["rail"],
     owner: { __kind__: "ii", ii: BUYER },
-    destination: toAccount
-      ? { __kind__: "cyclesLedgerAccount", cyclesLedgerAccount: { owner } }
-      : { __kind__: "canister", canister: STRANGER },
+    destination: { __kind__: "cyclesLedgerAccount", cyclesLedgerAccount: { owner: BUYER } },
     lockedCycles: LOCKED_CYCLES,
     pricing: {
       usdCents: USD_CENTS,

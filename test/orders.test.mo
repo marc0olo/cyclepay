@@ -72,7 +72,7 @@ func newOrder(store : Orders.Store, id : Types.OrderId, owner : Principal) : Typ
       id,
       #ii(owner),
       #card,
-      #canister(alice),
+      #cyclesLedgerAccount({ owner = alice; subaccount = null }),
       1_000_000_000_000, // 1T cycles locked at creation (§3)
       pricing,
       100,
@@ -169,7 +169,7 @@ suite("store: create", func() {
   test("duplicate id is rejected, original order untouched", func() {
     let store = Orders.emptyStore();
     let original = newOrder(store, "ord-1", alice);
-    switch (Orders.create(store, "ord-1", #ii(bob), #card, #canister(bob), 7, pricing, 999)) {
+    switch (Orders.create(store, "ord-1", #ii(bob), #card, #cyclesLedgerAccount({ owner = bob; subaccount = null }), 7, pricing, 999)) {
       case (#err(#duplicateId("ord-1"))) {};
       case _ assert false;
     };
@@ -256,6 +256,15 @@ suite("store: ownership and history", func() {
     assert Types.isOwnedBy(#ii(alice), alice);
     assert not Types.isOwnedBy(#ii(alice), bob);
   });
+
+  test("isOwnDestination accepts only the caller's default subaccount (#29)", func() {
+    assert Types.isOwnDestination(#cyclesLedgerAccount({ owner = alice; subaccount = null }), alice);
+    // Someone else's account — the case `create_order` used to accept.
+    assert not Types.isOwnDestination(#cyclesLedgerAccount({ owner = bob; subaccount = null }), alice);
+    // The caller's own account, but not the one the app and the CLI read.
+    let sub : Blob = "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\01";
+    assert not Types.isOwnDestination(#cyclesLedgerAccount({ owner = alice; subaccount = ?sub }), alice);
+  });
 });
 
 suite("order ids from raw_rand entropy (task 6, §2)", func() {
@@ -289,13 +298,13 @@ suite("order ids from raw_rand entropy (task 6, §2)", func() {
     let ?id = Orders.idFromEntropy(rawRandShaped) else Runtime.trap("entropy too short");
     ignore newOrder(store, id, alice);
     // Same entropy again: duplicate id, order untouched.
-    switch (Orders.create(store, id, #ii(alice), #card, #canister(alice), 1, pricing, 200)) {
+    switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1, pricing, 200)) {
       case (#err(#duplicateId(dup))) assert dup == id;
       case (#ok(_)) assert false;
     };
     // Fresh entropy: succeeds.
     let ?id2 = Orders.idFromEntropy("\AA\01\02\03\04\05\06\07\08\09\0A\0B\0C\0D\0E\0F" : Blob) else Runtime.trap("entropy too short");
-    switch (Orders.create(store, id2, #ii(alice), #card, #canister(alice), 1, pricing, 200)) {
+    switch (Orders.create(store, id2, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1, pricing, 200)) {
       case (#ok(order)) assert order.id == id2;
       case (#err(_)) assert false;
     };
@@ -576,7 +585,7 @@ suite("idsFrom — resumable scan", func() {
     for (i in Nat.range(0, n)) {
       // Ids are fixed-width hex in production; pad so text order is stable.
       let id = if (i < 10) "0" # i.toText() else i.toText();
-      switch (Orders.create(store, id, #ii(alice), #card, #canister(alice), 1_000, pricing, 0)) {
+      switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1_000, pricing, 0)) {
         case (#ok(_)) {};
         case (#err(_)) assert false;
       };

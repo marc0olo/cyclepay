@@ -2,7 +2,6 @@
 // creation, Stripe Payment Link hand-off / approve→claim flow, live status
 // polling, order history.
 //
-import { Principal } from "@icp-sdk/core/principal";
 import type { Identity } from "@icp-sdk/core/agent";
 import {
   makeBackend,
@@ -24,14 +23,12 @@ import {
   parseIcEnvCookies,
   resolveLiveBackendId,
 } from "./ic-env";
-import { type Audience, recall, remember, forget, suggestFrom } from "./audience";
 import { type View, type Route, parseRoute, routeHash, TOUR_STEPS, stepStates } from "./view";
 import {
   RATE_LOCK_NOTE,
   STEPS,
   checkReceipt,
   createOrderErrorMessage,
-  type DestinationKind,
   estimateLine,
   type FeeConfig,
   feeBreakdown,
@@ -43,7 +40,6 @@ import {
   formatCycles,
   formatUsdCents,
   nsToMillis,
-  parseSubaccountHex,
   paymentLinkWithRef,
   rateSourceNote,
   shortPrincipal,
@@ -92,15 +88,8 @@ let tiers: Tier[] = [];
 let selectedTierId: string | null = null;
 let lowFloat = false;
 
-/// Null means "show the chooser". See audience.ts for why only "live" persists.
 /// The order the order/delivered view is showing. Null on every other view.
 let activeOrder: Order | null = null;
-
-let audience: Audience | null = null;
-/// The newcomer arm hides the destination question entirely; this opens the
-/// escape hatch for funding someone else's canister without promoting it to a
-/// co-equal choice.
-let newcomerAdvanced = false;
 // Payment links keyed by order id — known only for orders created this
 // session (the backend stores no link; the tier carries it).
 const payLinks = new Map<string, string>();
@@ -225,34 +214,18 @@ let currentView: View = "landing";
 /// Orders this principal has, so the header link can hide when there are none.
 let orderCount = 0;
 
-/// Whose steps 3 and 4 are these?
+/// Steps 3 and 4 — link the CLI, deploy — are the deliverable for every order,
+/// because every order credits the buyer's own account (#29). So the only
+/// question is whether there is an order at all.
 ///
-/// - `none` — a canister top-up. The cycles are already where they will be spent,
-///   so there is nothing to link and nothing to deploy against; a four-step strip
-///   would promise this buyer two steps that never complete.
-/// - `self` — the buyer's own cycles-ledger account. The two commands ARE the
-///   deliverable.
-/// - `third-party` — somebody else's account. `icp identity link web` links the
-///   BUYER's identity, which is not the account that was funded, so the commands
-///   cannot reach the balance and must not be printed. An unknown identity counts
-///   as third-party: printing commands that may be for the wrong account is worse
-///   than printing none.
-type TourKind = "none" | "self" | "third-party";
-
-function tourKind(order: Order | null): TourKind {
-  if (order === null || !("cyclesLedgerAccount" in order.destination)) return "none";
-  const owner = order.destination.cyclesLedgerAccount.owner;
-  return identity !== null && owner.toText() === identity.getPrincipal().toText()
-    ? "self"
-    : "third-party";
-}
-
+/// ⚠️ A second destination kind brings back the question this used to answer:
+/// `icp identity link web` links the CALLER's identity, so for a balance that is
+/// not theirs the commands reach the wrong account and must not be printed.
 function renderStepper(view: View, order: Order | null): void {
   const node = document.getElementById("stepper");
   if (!node) return;
-  // Steps 3 and 4 belong to the buyer only when the balance is theirs.
   const relevant =
-    view === "buy" || ((view === "order" || view === "delivered") && tourKind(order) === "self");
+    view === "buy" || ((view === "order" || view === "delivered") && order !== null);
   if (!relevant) {
     node.hidden = true;
     return;
@@ -302,7 +275,6 @@ function renderView(): void {
 
   show("view-landing", effective === "landing");
   show("buy-flow", effective === "buy");
-  show("chooser-back", effective === "buy" && audience === "live");
   // Nothing to show is not the same as an empty panel: signing out drops the
   // order, and the order view then has no content of its own.
   const ready = orderLoad === "ok" && order !== null;
@@ -350,16 +322,10 @@ function navigate(route: Route, replace = false): void {
 }
 
 function applyRoute(route: Route): void {
-  // A deep link or a reload on #/buy with no arm chosen renders a form with no
-  // destination question on it at all: the newcomer block is hidden, the
-  // already-live radios are hidden, and the only thing left is an amount grid
-  // wired to a destination the visitor was never asked about. Send them to the
-  // question first. Replaced, not pushed, so Back leaves rather than bouncing.
-  if (route.view === "buy" && audience === null) {
-    navigate({ view: "landing" }, true);
-    return;
-  }
-
+  // #/buy is answerable from a cold deep link: there is one destination and the
+  // page states it, so the form is complete on arrival and nothing has to be
+  // asked first.
+  //
   // Leaving the order view ends the poll. The other half of `#active-order`
   // having one owner: a tick that arrives after the visitor has moved on has
   // nothing left to repaint.
@@ -458,8 +424,9 @@ function setIdentity(next: Identity | null): void {
   // reveals the header link, not the table.
   renderView();
   if (identity) {
-    const owner = el<HTMLInputElement>("ledger-owner");
-    if (!owner.value) owner.value = identity.getPrincipal().toText();
+    // No field to prefill any more: the destination is the caller's own account
+    // and `readDestination` reads it from the session (#29), so signing in has
+    // nothing to write into the form.
     void refreshHistory();
   } else {
     stopPolling();
@@ -504,18 +471,6 @@ async function loadMarket(): Promise<void> {
   renderSubmitGate();
 }
 
-/// Which destination the form is currently pointing at — the landing quantity
-/// differs by destination, so every estimate needs it.
-function selectedDestinationKind(): DestinationKind {
-  // On the newcomer arm the radios are not rendered at all: cycles go to the
-  // signed-in account unless the advanced disclosure is open.
-  if (audience === "newcomer") {
-    return newcomerAdvanced ? "canister" : "cyclesLedgerAccount";
-  }
-  const checked = document.querySelector<HTMLInputElement>('input[name="dest-kind"]:checked');
-  return checked?.value === "cyclesLedgerAccount" ? "cyclesLedgerAccount" : "canister";
-}
-
 /// One round trip for the whole tier grid. Prices come from the backend's
 /// `quote_previews`, which runs the same code `create_order` runs.
 async function refreshTierQuotes(): Promise<void> {
@@ -540,15 +495,22 @@ async function refreshTierQuotes(): Promise<void> {
 
 /// The cycles-ledger deposit fee, disclosed where the choice is made rather
 /// than buried in a total.
+/// The deposit fee, disclosed beside the destination it applies to.
+///
+/// Every order pays it, so the note depends on nothing the visitor can change —
+/// only on whether a quote has named a fee yet. It is also the ONLY place the
+/// fee is spelled out: the amount tiles show what lands, because repeating the
+/// parenthetical on each of them put three copies of one sentence around the
+/// figure a buyer is choosing between.
 function renderDestinationNote(): void {
   const node = el("dest-fee-note");
-  if (selectedDestinationKind() === "canister" || depositFee === 0n) {
+  if (depositFee === 0n) {
     show("dest-fee-note", false);
     return;
   }
   node.textContent =
     `The cycles ledger charges ${formatCycles(depositFee)} cycles to accept a deposit, ` +
-    `so an account receives that much less than a canister top-up. It is not added to your price.`;
+    `so your account receives that much less than the order locks. It is not added to your price.`;
   show("dest-fee-note", true);
 }
 
@@ -606,7 +568,6 @@ function renderTiers(): void {
     container.append(p);
     return;
   }
-  const destination = selectedDestinationKind();
   for (const tier of tiers) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -620,7 +581,7 @@ function renderTiers(): void {
     const quoted = tierQuotes.get(tier.id);
     label.textContent = quoted === undefined
       ? "not yet"
-      : estimateLine(quoted.cycles ?? null, destination, depositFee);
+      : estimateLine(quoted.cycles ?? null, depositFee);
     btn.append(amount, label);
     btn.onclick = () => {
       selectedTierId = tier.id;
@@ -647,39 +608,9 @@ function renderTierDetail(): void {
   show("tier-detail", true);
 }
 
-/// Show the chooser, or the arm the visitor picked.
-///
-/// The two arms differ in what they ASK, not only in wording: the newcomer arm
-/// renders no destination question at all, because a canister-id field is
-/// unanswerable for someone whose first canister does not exist yet.
-/// Owns the DESTINATION arms only. View visibility belongs to `renderView`;
-/// having both toggle `#buy-flow` meant two owners for one decision, and they
-/// disagreed the moment routing arrived.
-function renderAudience(): void {
-  const chosen = audience !== null;
-  show("dest-newcomer", audience === "newcomer");
-  show("dest-choice", audience === "live");
-
-  const kind = selectedDestinationKind();
-  show("dest-canister", chosen && kind === "canister");
-  // The newcomer escape hatch is "sending to someone else's canister?", so it
-  // reveals the canister field and nothing else. The owner/subaccount fields
-  // belong to the already-live account option; showing them on the newcomer arm
-  // put two destination inputs on screen at once, only one of which was read.
-  show("dest-ledger-advanced", audience === "live" && kind === "cyclesLedgerAccount");
-
-  renderDestinationNote();
-}
-
-function chooseAudience(next: Audience): void {
-  audience = next;
-  newcomerAdvanced = false;
-  remember(next);
-  renderAudience();
-  renderTiers();
-  renderSubmitGate();
-  // A chosen arm IS the buy view. Pushed, not replaced: the visitor asked for
-  // this, so Back should return them to the chooser.
+/// The one way into the buy view. Pushed, not replaced: the visitor asked for
+/// it, so Back returns them to the landing page.
+function startBuying(): void {
   navigate({ view: "buy" });
 }
 
@@ -753,50 +684,26 @@ function pinFor(usdCents: bigint, shown: bigint | null): bigint | null {
 /// Show a `#quoteChanged` refusal and arm the confirming click.
 function onQuoteChanged(usdCents: bigint, quoted: bigint): void {
   acknowledgedQuote = { cents: usdCents, cycles: quoted };
-  showQuoteNotice(quoteChangedMessage(quoted, selectedDestinationKind(), depositFee));
+  showQuoteNotice(quoteChangedMessage(quoted, depositFee));
   renderSubmitGate();
 }
 
 // --- order creation ------------------------------------------------------
 
+/// The signed-in principal's own account, default subaccount — the only
+/// destination `create_order` accepts (#29).
+///
+/// Nothing is read from the form, because there is nothing on it to read: no
+/// canister id to mistype and no other-account fields to leave stale. The
+/// remaining failure is having no identity, and that is a state the submit
+/// button already prevents.
 function readDestination(): { ok: true; value: Destination } | { ok: false; error: string } {
-  // Newcomer arm, default path: their own account. No field to fill in, and no
-  // way to mistype a principal, which is the whole point of hiding the question.
-  if (audience === "newcomer" && !newcomerAdvanced) {
-    if (!identity) return { ok: false, error: "Sign in to continue." };
-    return {
-      ok: true,
-      value: {
-        __kind__: "cyclesLedgerAccount",
-        cyclesLedgerAccount: { owner: identity.getPrincipal(), subaccount: undefined },
-      },
-    };
-  }
-  const kind = selectedDestinationKind();
-  if (kind === "canister") {
-    const text = el<HTMLInputElement>("canister-principal").value.trim();
-    if (!text) return { ok: false, error: "Enter the canister id to top up." };
-    try {
-      return { ok: true, value: { __kind__: "canister", canister: Principal.fromText(text) } };
-    } catch {
-      return { ok: false, error: `"${text}" is not a valid principal.` };
-    }
-  }
-  const ownerText = el<HTMLInputElement>("ledger-owner").value.trim();
-  if (!ownerText) return { ok: false, error: "Enter the account owner principal." };
-  let owner: Principal;
-  try {
-    owner = Principal.fromText(ownerText);
-  } catch {
-    return { ok: false, error: `"${ownerText}" is not a valid principal.` };
-  }
-  const sub = parseSubaccountHex(el<HTMLInputElement>("ledger-subaccount").value);
-  if (!sub.ok) return { ok: false, error: sub.error };
+  if (!identity) return { ok: false, error: "Sign in to continue." };
   return {
     ok: true,
     value: {
       __kind__: "cyclesLedgerAccount",
-      cyclesLedgerAccount: { owner, subaccount: sub.value ?? undefined },
+      cyclesLedgerAccount: { owner: identity.getPrincipal(), subaccount: undefined },
     },
   };
 }
@@ -915,24 +822,13 @@ async function createCardOrder(dest: Destination): Promise<void> {
 // --- active order + polling ----------------------------------------------
 
 function describeDestination(order: Order): string {
-  const dest = order.destination;
-  switch (dest.__kind__) {
-    case "canister":
-      return `canister ${dest.canister.toText()}`;
-    case "cyclesLedgerAccount": {
-      const account = dest.cyclesLedgerAccount;
-      const sub = account.subaccount;
-      const subText = sub && sub.length > 0
-        ? `, subaccount ${[...sub].map((b) => b.toString(16).padStart(2, "0")).join("")}`
-        : "";
-      // "cycles-ledger account <62-char principal>" is operator vocabulary. The
-      // buyer's own account is the common case by far and needs no id at all;
-      // anything else is someone else's, and there the id is the whole point.
-      const mine = identity !== null && account.owner.toText() === identity.getPrincipal().toText();
-      if (mine && subText === "") return "your account";
-      return `account ${account.owner.toText()}${subText}`;
-    }
-  }
+  const account = order.destination.cyclesLedgerAccount;
+  // "cycles-ledger account <62-char principal>" is operator vocabulary, and the
+  // account is the caller's own by construction (#29) — so for the signed-in
+  // owner it needs no id at all. The id still appears when the page cannot
+  // confirm whose it is, rather than asserting "yours" on no evidence.
+  const mine = identity !== null && account.owner.toText() === identity.getPrincipal().toText();
+  return mine ? "your account" : `account ${account.owner.toText()}`;
 }
 
 function renderOrder(order: Order, clientReferenceId?: string): void {
@@ -943,8 +839,7 @@ function renderOrder(order: Order, clientReferenceId?: string): void {
   if (currentView !== "order") return;
   el("order-id-short").textContent = `${order.id.slice(0, 8)}…`;
   // No "≈" here: the rate is locked, so this figure is what the order pays out.
-  const destination = order.destination.__kind__ === "canister" ? "canister" : "cyclesLedgerAccount";
-  el("order-cycles").textContent = estimateLine(order.lockedCycles, destination, depositFee)
+  el("order-cycles").textContent = estimateLine(order.lockedCycles, depositFee)
     .replace(/^≈ /, "");
   el("order-price").textContent = formatUsdCents(order.pricing.usdCents);
   el("order-dest").textContent = describeDestination(order);
@@ -1007,29 +902,21 @@ function renderOrder(order: Order, clientReferenceId?: string): void {
 /// reach from the CLI are worth nothing to them — so on delivery they lead and
 /// the order facts collapse beneath.
 ///
-/// A canister top-up gets none of it: the cycles are already where they will be
-/// spent. An already-live buyer funding their ACCOUNT does get it, but collapsed,
-/// because a repeat buyer has probably linked already (issue #21).
-/// A third-party account gets the fact and none of the commands: `icp identity
-/// link web` links the buyer's own identity, so following it would land them on
-/// their own empty balance and read as the cycles having gone missing.
+/// Every delivered order gets it, because every order credits the buyer's own
+/// account (#29). The two suppressed cases — a canister top-up, where there was
+/// nothing to link, and somebody else's account, where the buyer's identity
+/// could not reach the balance — are destinations the gateway no longer accepts.
 function renderTour(order: Order | null, delivered: boolean): void {
   const node = document.getElementById("tour");
   if (!node) return;
-  const kind = tourKind(order);
-  if (!delivered || kind === "none") {
+  if (!delivered || order === null) {
     node.hidden = true;
     return;
   }
-  show("tour-steps", kind === "self");
-  show("tour-third-party", kind === "third-party");
-  if (kind === "self") {
-    const owner = (order!.destination as { cyclesLedgerAccount: { owner: Principal } })
-      .cyclesLedgerAccount.owner;
-    el("credited-principal").textContent = owner.toText();
-    el("cmd-link").textContent = linkIdentityCommand();
-    el("cmd-verify").textContent = verifyIdentityCommand();
-  }
+  el("credited-principal").textContent =
+    order.destination.cyclesLedgerAccount.owner.toText();
+  el("cmd-link").textContent = linkIdentityCommand();
+  el("cmd-verify").textContent = verifyIdentityCommand();
   node.hidden = false;
 }
 
@@ -1160,17 +1047,6 @@ async function refreshHistory(): Promise<void> {
   }
   orders.sort((a, b) => (b.createdAtNs > a.createdAtNs ? 1 : -1));
 
-  // Post-sign-in there is a second signal beyond the stored preference: what
-  // this principal last bought. It PRE-SELECTS an arm; it never skips the
-  // chooser, because a returning buyer's intent legitimately differs between
-  // visits (last month a top-up, today a new project).
-  const latest = orders[0];
-  const suggestion = suggestFrom(
-    latest ? ("canister" in latest.destination ? "canister" : "cyclesLedgerAccount") : null,
-  );
-  el("choose-new").classList.toggle("suggested", suggestion === "newcomer");
-  el("choose-live").classList.toggle("suggested", suggestion === "live");
-
   orderCount = orders.length;
   // The header link appears only once there is something behind it, so this has
   // to run after the count is known rather than at sign-in.
@@ -1216,7 +1092,9 @@ async function refreshHistory(): Promise<void> {
   }
 }
 
-/// Prefill a new order from an existing one: same amount, same destination.
+/// Prefill a new order from an existing one: the amount, which is all an order
+/// carries that a buyer can choose. Every order goes to the caller's own
+/// account, so there is nothing about *where* to carry across.
 ///
 /// Deliberately does NOT submit. The price is re-quoted at today's rate, and
 /// charging a card from a table row without showing the new figure would be the
@@ -1224,41 +1102,6 @@ async function refreshHistory(): Promise<void> {
 function repeatOrder(order: Order): void {
   lockNotice = null;
   stopPolling();
-
-  const toCanister = "canister" in order.destination;
-  // Match `suggestFrom`: an account-funded order means this buyer was topping up
-  // their own balance, which is the newcomer arm's shape. Defaulting that case to
-  // "live" contradicted the very helper that decides the same question elsewhere.
-  audience = toCanister ? "live" : "newcomer";
-  newcomerAdvanced = false;
-  // Deliberately NOT remembered. Repeating a past order says nothing about which
-  // arm this visitor wants next time, and `remember` exists to record a choice
-  // they made in the chooser — not one inferred from a table row.
-  renderAudience();
-
-  if (toCanister) {
-    setDestinationKind("canister");
-    el<HTMLInputElement>("canister-principal").value =
-      (order.destination as { canister: Principal }).canister.toText();
-    validateCanisterId();
-  } else {
-    // Carry the WHOLE account across, owner and subaccount both. Prefilling only
-    // the kind left whatever happened to be sitting in the collapsed advanced
-    // fields to decide where the money went — a silent substitution of one
-    // destination for another.
-    const account = (order.destination as {
-      cyclesLedgerAccount: { owner: Principal; subaccount?: Uint8Array | number[] };
-    }).cyclesLedgerAccount;
-    if (audience === "live") setDestinationKind("cyclesLedgerAccount");
-    const ownerField = document.getElementById("ledger-owner") as HTMLInputElement | null;
-    if (ownerField) ownerField.value = account.owner.toText();
-    const subField = document.getElementById("ledger-subaccount") as HTMLInputElement | null;
-    if (subField) {
-      subField.value = account.subaccount
-        ? [...account.subaccount].map((b) => b.toString(16).padStart(2, "0")).join("")
-        : "";
-    }
-  }
 
   // Match the tier by price. A tier that no longer exists (retired, or repriced)
   // leaves nothing selected rather than silently picking a neighbour.
@@ -1280,46 +1123,6 @@ function repeatOrder(order: Order): void {
   // returns them to their orders.
   navigate({ view: "buy" });
   el("card-panel").scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-/// Validate the canister id's shape as it is typed.
-///
-/// Only the already-live arm can produce an `Undeliverable` order (spec §1: only
-/// canister destinations can), so catching a malformed id before payment is the
-/// cheapest place to stop that. This checks SHAPE only — whether the canister
-/// exists, and whether it accepts deposits, is not knowable from here.
-function validateCanisterId(): boolean {
-  const field = document.getElementById("canister-principal") as HTMLInputElement | null;
-  const error = document.getElementById("canister-id-error");
-  if (!field || !error) return true;
-  const text = field.value.trim();
-  if (text === "") {
-    error.hidden = true;
-    return false;
-  }
-  try {
-    Principal.fromText(text);
-    error.hidden = true;
-    return true;
-  } catch {
-    error.textContent = `"${text}" is not a valid canister id.`;
-    error.hidden = false;
-    return false;
-  }
-}
-
-/// Set the destination radio AND run the app's reaction to it.
-///
-/// Assigning `.checked` fires no `change` event, so the handler that owns
-/// `#dest-canister` / `#dest-ledger-advanced` visibility never ran and the two
-/// could disagree with the radio. One owner: this function.
-function setDestinationKind(kind: DestinationKind): void {
-  const radio = document.querySelector<HTMLInputElement>(
-    `input[name="dest-kind"][value="${kind}"]`,
-  );
-  if (!radio) return;
-  radio.checked = true;
-  radio.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 /// Copy-to-clipboard for the CLI commands. Falls back to selecting the text:
@@ -1382,19 +1185,6 @@ function wireThemeToggle(): void {
 
 // --- wiring ----------------------------------------------------------------
 
-function wireDestinationToggle(): void {
-  for (const radio of document.querySelectorAll<HTMLInputElement>('input[name="dest-kind"]')) {
-    radio.onchange = () => {
-      show("dest-canister", radio.value === "canister" ? radio.checked : !radio.checked);
-      show("dest-ledger", radio.value === "cyclesLedgerAccount" ? radio.checked : !radio.checked);
-      // The landing quantity depends on the destination, so every estimate on
-      // screen has to follow the toggle.
-      renderDestinationNote();
-      renderTiers();
-    };
-  }
-}
-
 /// Load the market, and say something a person can act on if it fails.
 ///
 /// The previous version printed the raw error into the page. An agent or HTTP
@@ -1453,30 +1243,9 @@ async function loadMarketWithRetry(): Promise<void> {
 
 async function init(): Promise<void> {
   renderAuth();
-  wireDestinationToggle();
   el<HTMLFormElement>("order-form").onsubmit = (e) => void onCreateOrder(e);
-  // Optional chaining, not el(): when the rail is disabled these nodes are
-  // removed from the document rather than hidden.
-  const canisterField = document.getElementById("canister-principal") as HTMLInputElement | null;
-  if (canisterField) canisterField.oninput = () => validateCanisterId();
   el("cancel-order").onclick = () => void onCancelOrder();
-
-  el("choose-new").onclick = () => chooseAudience("newcomer");
-  el("choose-live").onclick = () => chooseAudience("live");
-  el("back-to-chooser").onclick = () => {
-    // Always available from the remembered arm, so the preference can never
-    // trap someone in a path that stopped fitting.
-    audience = null;
-    forget();
-    renderAudience();
-    navigate({ view: "landing" });
-  };
-  el("show-advanced-dest").onclick = () => {
-    newcomerAdvanced = true;
-    renderAudience();
-    renderTiers();
-    renderSubmitGate();
-  };
+  el("start-buy").onclick = startBuying;
   wireCopyButtons();
   wireThemeToggle();
   // Hash routing so Back works. An asset canister would need SPA rewrites for
@@ -1510,8 +1279,7 @@ async function init(): Promise<void> {
   // ic_env cookies, find the id that actually answers and use that one.
   await resolveStaleIcEnv();
 
-  audience = recall();
-  renderAudience();
+  renderDestinationNote();
 
   // The session BEFORE the route, because the route can depend on it. `get_order`
   // answers per caller, so resolving `#/order/<id>` while still anonymous looks up

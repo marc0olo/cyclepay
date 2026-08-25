@@ -110,9 +110,10 @@ scripts/stripe-dev.sh
 Then, in the browser at the frontend URL `icp deploy` printed
 (`http://frontend.local.localhost:8000/` with the default gateway port):
 
-1. **Pick an arm.** "I'm new here" is the arm worth testing: it asks no destination
-   question and sends the cycles to your own account, which is what makes steps 6
-   and 7 meaningful.
+1. **Click "Get cycles".** The landing page has one route into the buy form, and
+   the form asks nothing about where the cycles go: they go to the account of the
+   principal you sign in as, and the gateway refuses any other destination (#29).
+   That is what makes steps 6 and 7 meaningful.
 2. **Sign in.** You get **local** Internet Identity automatically —
    `http://id.ai.localhost:8000`, deployed by `ii: true` in `icp.yaml`, chosen by
    `auth.ts` because the origin ends in `.localhost`. Nothing to configure, and a
@@ -470,7 +471,9 @@ Automated, and where — do **not** repeat these manually:
 | Was | Now covered by |
 |---|---|
 | H1 tier buttons show a cycle estimate, not a tier id | `main.test.ts` |
-| H2 destination toggle changes the estimate and names the 100 M deposit fee | `main.test.ts` |
+| H2 the estimate names what lands, and the deposit fee is disclosed once | `main.test.ts` + `layout.spec.ts` |
+| the form offers no destination question, and none of its old inputs exist | `layout.spec.ts` (`toHaveCount(0)`, so `display:none` cannot satisfy it) |
+| a crafted order for someone else's account, or a non-default subaccount, is refused | `gateway.spec.ts` scenario 61 — the canister's refusal, which no UI test can show |
 | H3 fee breakdown accounts for every cent, "operator margin: none" | `main.test.ts` |
 | H5 a moved quote asks for confirmation, and the second click goes through | `main.test.ts` |
 | H6 cancel appears only pre-payment | `main.test.ts` |

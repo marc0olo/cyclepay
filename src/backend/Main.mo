@@ -18,7 +18,6 @@ import Set "mo:core/Set";
 import Text "mo:core/Text";
 import Time "mo:core/Time";
 import Timer "mo:core/Timer";
-import { ic } "mo:ic";
 import AuditLog "AuditLog";
 import Auth "Auth";
 import Cmc "Cmc";
@@ -426,6 +425,10 @@ persistent actor CyclesGateway {
     /// Gate.mo admission refusal — carries the observed value and the bound so
     /// the frontend can say *why* rather than failing generically.
     #notAdmitted : Gate.Reason;
+    /// The destination is not the caller's own default-subaccount cycles-ledger
+    /// account. Cycles go to the buyer and nowhere else, and that is a property
+    /// of the canister rather than of whichever frontend called it (#29).
+    #destinationNotOwned;
   };
 
   public type CreatedOrder = {
@@ -557,6 +560,14 @@ persistent actor CyclesGateway {
     switch (Auth.checkUser(caller)) {
       case (#err(#anonymous)) return #err(#anonymous);
       case (#ok) {};
+    };
+    // Argument validation before any work, and before the gate: cycles go to the
+    // caller's own account or the order is not created (#29). Checked HERE
+    // rather than in the frontend, because a hand-crafted call reaches this
+    // method too — "the cycles come to you" is only true if the gateway enforces
+    // it.
+    if (not Types.isOwnDestination(destination, caller)) {
+      return #err(#destinationNotOwned);
     };
     let ?tier = Tiers.find(cardTiers, tierId) else return #err(#unknownTier(tierId));
     // Admission BEFORE the quote, so a spamming principal is turned away before
@@ -714,8 +725,9 @@ persistent actor CyclesGateway {
     /// The rate pair the quotes came from, so a caller can reproduce the
     /// arithmetic without a second call. Null when nothing usable is cached.
     rates : ?Pricing.Rates;
-    /// Deducted by the cycles ledger from a `#cyclesLedgerAccount` delivery; a
-    /// `#canister` top-up receives the full quantity.
+    /// Deducted by the cycles ledger on delivery, so the buyer receives the
+    /// locked quantity minus this. There is one destination kind (#29), so it
+    /// applies to every order.
     cyclesLedgerDepositFee : Nat;
   };
 
@@ -1114,9 +1126,6 @@ persistent actor CyclesGateway {
   func forwardCycles(order : Types.Order) : async* { #ok; #failed : Text } {
     try {
       switch (order.destination) {
-        case (#canister(canisterId)) {
-          await (with cycles = order.lockedCycles) ic.deposit_cycles({ canister_id = canisterId });
-        };
         case (#cyclesLedgerAccount(account)) {
           ignore await (with cycles = order.lockedCycles) cyclesLedger.deposit({ to = account; memo = null });
         };

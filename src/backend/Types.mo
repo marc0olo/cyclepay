@@ -48,13 +48,35 @@ module {
   /// ICRC-1 account (cycles ledger destination).
   public type Account = { owner : Principal; subaccount : ?Blob };
 
-  /// Where minted cycles are forwarded (§5, mint-to-self-then-forward).
-  /// `#canister` deposits to a canister's cycle balance and can fail (deleted
-  /// target → error queue Type 2); `#cyclesLedgerAccount` essentially never
-  /// fails (§5, "no pre-validation" decision).
+  /// Where cycles are delivered (§5). The buyer's **own** cycles-ledger
+  /// account, default subaccount — `create_order` refuses anything else, so a
+  /// crafted call cannot send cycles to a third party.
+  ///
+  /// Single-case, and a variant for the same reason `Owner` and `Rail` are: it
+  /// names the dimension, so a second destination kind is an additive change
+  /// rather than a schema-wide edit.
+  ///
+  /// ⚠️ Depositing straight to a canister's cycle balance is **not** the case to
+  /// add. It fails on a deleted or refusing target *after* the cycles have left,
+  /// which is a mint-then-lose class this app no longer has (#29).
   public type Destination = {
-    #canister : Principal;
     #cyclesLedgerAccount : Account;
+  };
+
+  /// Whether a destination delivers to `caller` and nobody else (#29).
+  ///
+  /// The default subaccount specifically: a non-null subaccount is still an
+  /// account the caller owns, but it is not one the app can show a balance for
+  /// or that `icp cycles balance` reads by default, so accepting it would let a
+  /// buyer strand their own cycles somewhere the UI cannot see. One destination,
+  /// one place to look.
+  ///
+  /// Centralised beside `isOwnedBy` for the same reason: `-Werror` then names
+  /// every site when a second destination kind arrives.
+  public func isOwnDestination(destination : Destination, caller : Principal) : Bool {
+    switch (destination) {
+      case (#cyclesLedgerAccount(account)) account.owner == caller and account.subaccount == null;
+    };
   };
 
   /// Random, raw_rand-derived (hex text), not a monotonic counter (§2) — the

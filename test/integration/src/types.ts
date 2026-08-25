@@ -12,9 +12,9 @@ export interface Account {
   subaccount: Opt<Bytes>;
 }
 
-export type Destination =
-  | { canister: Principal }
-  | { cyclesLedgerAccount: Account };
+/// Single-case since #29: the caller's own cycles-ledger account, default
+/// subaccount. `create_order` refuses anything else.
+export type Destination = { cyclesLedgerAccount: Account };
 
 export type OrderStatusKey =
   | 'created' | 'expired' | 'paid' | 'minting' | 'icpAtCmc'
@@ -108,7 +108,8 @@ export type CreateOrderError =
   | { rateUnavailable: null }
   | { quoteChanged: { quoted: bigint; minimum: bigint } }
   | { idGeneration: null }
-  | { notAdmitted: GateReason };
+  | { notAdmitted: GateReason }
+  | { destinationNotOwned: null };
 
 export type Rail = { card: null };
 

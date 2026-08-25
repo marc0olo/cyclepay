@@ -3,10 +3,11 @@ import { defineConfig, devices } from "@playwright/test";
 /// Browser specs for the frontend (issue #6).
 ///
 /// These exist because the jsdom suite is structurally blind to a whole class of
-/// bug, and that blindness shipped: `.chooser { display: grid }` outranks the UA
-/// stylesheet's `[hidden] { display: none }`, so the chooser stayed on screen and
-/// a disabled rail nav was always visible — while every DOM test passed,
-/// because `el.hidden` was true and jsdom has no cascade and no layout.
+/// bug, and that blindness shipped: a class selector's `display` outranks the UA
+/// stylesheet's `[hidden] { display: none }`, so an audience chooser the app had
+/// hidden stayed on screen and a disabled rail nav was always visible — while
+/// every DOM test passed, because `el.hidden` was true and jsdom has no cascade
+/// and no layout.
 ///
 /// Anything asserted here must be about **rendering and reachability**. Backend
 /// behaviour belongs in the PocketIC suite; UI state transitions belong in

@@ -171,7 +171,11 @@ In a second terminal:
 
   Or from the CLI:
       1. icp canister call backend create_order \
-             '("t5", variant { canister = principal "<some-canister>" }, null)'
+             '("t5", variant { cyclesLedgerAccount = record {
+                  owner = principal "<your-principal>"; subaccount = null } }, null)'
+         The account must be the caller's own, default subaccount — anything else
+         is refused with #destinationNotOwned. Get yours with
+         `icp identity principal`, and pass the same --identity to the call.
          (the third argument pins a minimum cycle quantity; null opts out)
       2. Take the returned clientReferenceId.
       3. Open YOUR sandbox Payment Link with ?client_reference_id=<ref> appended.
