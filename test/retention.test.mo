@@ -41,8 +41,9 @@ suite("band boundaries", func() {
   });
 
   test("an expired order is kept forever, however long past the TTL", func() {
-    // It stays payable (§4 advisory expiry) and it is a record of an attempt
-    // either way. Nothing deletes orders.
+    // Not because it stays payable — #34 made expiry terminal — but because it is
+    // a record of an attempt, and keeping it is what makes a late payment
+    // attributable and therefore refundable. Nothing deletes orders.
     assert Retention.bandOf(#expired, created, at(config.orderTtlNs), config) == #keep;
     assert Retention.bandOf(#expired, created, at(config.orderTtlNs * 1_000), config) == #keep;
   });

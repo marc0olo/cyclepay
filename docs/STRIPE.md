@@ -406,20 +406,28 @@ order past `orderTtlNs` flips to `#expired`.
 | Status | Age | Payable? | Record |
 |---|---|---|---|
 | `#created` | < `orderTtlNs` (default 48 h) | yes | kept forever |
-| `#expired` | ≥ TTL, forever | **yes** | kept forever |
+| `#expired` | ≥ TTL, forever | **no** (#34) | kept forever |
+| `#cancelled` | any | **no** (#34) | kept forever |
 
-**Expiry is advisory.** An `#expired` order is still fully payable and a late
-genuine payment is honoured at the locked quantity (`Card.mo` accepts
-`#created or #expired`; `Orders.mo` allows `#expired → #paid`). The flip is
-bookkeeping — it makes an abandoned attempt visibly stale rather than
-indistinguishable from a live one.
+**Expiry is terminal.** #34 deleted `#expired → #paid`, so `Card.handleWebhook`
+admits `#created` alone and `attach_payment` refuses anything else with
+`notClaimable`. The flip is still bookkeeping in that it deletes nothing, but it
+is now a real deadline: it also frees the buyer's open-order slot.
 
 **The "we lost track" worry, resolved by not losing track.** A Payment Link is
 permanent, so a payment can arrive for an order abandoned months or years ago
 from a bookmarked URL. Because the record is still there, that payment is
-**delivered** — at the quantity locked when the order was created. It does not
-degrade to a refund, because there is nothing to degrade: the §4 late-payment
-guarantee holds for the life of the canister.
+**attributable** — the gateway can say whose it was and which order it names. It
+is therefore **refunded**, not delivered: a Type 1 `#unattributed` obligation is
+filed carrying the payment intent, and a `charge.refunded` resolves it.
+
+That is a deliberate narrowing. Until #34 the late payment was honoured at the
+locked quantity for the life of the canister; the price of that guarantee was an
+order that could be paid long after the buyer, the operator and the rate had all
+moved on. What survives is the half that matters — **the record is never deleted,
+so a late payment is never a mystery charge.** #33 closes the window further by
+taking the deadline from Stripe (30 minutes, Stripe-enforced), so a session that
+can still be paid always belongs to an order that can still accept it.
 
 Deleting records past a horizon — even with a tombstone set, so a late payment
 could at least be *diagnosed* before being refunded — would contradict the
@@ -429,21 +437,28 @@ and money facts live on permanent records. It would also create orphans,
 
 ### A buyer can give up on an unpaid order
 
-`cancel_order(id)` is owner-scoped and marks a `#created` order `#expired`. It is
-idempotent, and it is refused for a paid order — that one is going to deliver, and
-offering a cancel would promise something untrue.
+`cancel_order(id)` is owner-scoped and marks a `#created` order **`#cancelled`** —
+its own status since #34, so a reload no longer tells a buyer who cancelled that
+their order expired. It is idempotent, and it is refused for a paid order: that one
+is going to deliver, and offering a cancel would promise something untrue.
 
 ⚠️ **It exists because the open-order cap counts unpaid orders.** The gate's
-refusal tells the user to pay or abandon one, and `abandon_order` is admin-only
-and only accepts a *paid* order — so without this, someone who opened the cap's
-worth of checkouts and finished none would be locked out until the 48 h TTL
-expired them, reading advice they could not follow.
+refusal tells the user to pay or abandon one, and `abandon_order` is admin-only —
+so without this, someone who opened the cap's worth of checkouts and finished none
+would be locked out until the TTL expired them, reading advice they could not
+follow.
 
-⚠️ **Cancelling can never strand a payment.** `#expired` stays payable, so a
-payment already in flight when they clicked cancel still delivers at the locked
-quantity. No error-queue entry is created either: nothing is owed, and an entry
-with no obligation behind it is exactly the orphan the queue must not accumulate.
-The audit trail carries `order.cancelled`.
+⚠️ **A payment racing a cancellation is refunded, not converted.** `#cancelled →
+#paid` is absent from the transition matrix, and that absence is the guarantee.
+So a payment already in flight when the buyer clicked cancel does **not** deliver:
+it lands as a Type 1 obligation carrying the payment intent, which a Stripe refund
+resolves. The buyer's decision wins, and their money is recorded and refundable
+rather than silently kept or converted against it.
+
+Until #34 the opposite was true — `#expired` stayed payable, so the in-flight
+payment delivered. The window itself is what #33 removes: `cancel_order` will
+expire the Stripe session first, so the race stops being possible rather than
+merely recorded. The audit trail carries `order.cancelled` either way.
 
 **Growth is bounded at its source, which is why retention never needed to bound
 it.** `Gate.maxOpenOrdersPerPrincipal` (default 20) bounds the records a user can

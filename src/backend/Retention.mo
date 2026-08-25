@@ -79,7 +79,8 @@ module {
   public type Band = {
     /// Inside the TTL, or in a state that must not be touched. Leave alone.
     #keep;
-    /// Flip `#created` to `#expired`. Still fully payable.
+    /// Flip `#created` to `#expired`, which is terminal since #34: a payment
+    /// arriving afterwards is refunded, not converted.
     #expire;
   };
 

@@ -95,7 +95,7 @@ git commit && git push   # needs a workflow-scoped token (a normal `gh auth` tok
 | 15 | audit-log seq monotonicity + error-queue accounting | — |
 | 16 | admission gate: no burn-cap headroom refuses the quote; `can_purchase` agrees; restoring headroom re-opens the rail | pre-creation gate |
 | 17 | per-purchase ceiling bounds both tier registration and the amount | pre-creation gate |
-| 18 | expiry: created → expired, survives a simulated year, and **still honours a late payment** | retention |
+| 18 | expiry: created → expired, survives a simulated year, and a late payment against it files a Type 1 obligation instead of delivering — `attach_payment` refuses it too (#34) | retention |
 | 19 | owner-only `receipt`; recomputes `net × P × 10¹² / U == lockedCycles` from it | price verifiability |
 
 ### Added with the pricing-transparency work

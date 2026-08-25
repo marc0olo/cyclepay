@@ -300,7 +300,13 @@ module {
     };
   };
 
-  /// Webhook money-in (§6.1): `#created`/`#expired` → `#paid`.
+  /// Webhook money-in (§6.1): `#created → #paid`, and only that. #34 deleted the
+  /// `#expired` edge, so this REFUSES an order that stopped being payable.
+  ///
+  /// ⚠️ Two callers guard the status before reaching here — `Card.handleWebhook`
+  /// and `attach_payment` — and `-Werror` checks neither against the matrix. The
+  /// webhook one **traps** on this error rather than swallowing it, so a guard that
+  /// drifts open is a 5xx Stripe retries for ~3 days rather than a silent mint.
   ///
   /// `honoredCycles` replaces the locked quantity (equal to it when the paid
   /// amount matches the quote, repriced from the order's own snapshot when it

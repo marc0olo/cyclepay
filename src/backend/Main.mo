@@ -1946,8 +1946,9 @@ persistent actor CyclesGateway {
   /// `pending` before that order turned #paid) was still in flight.
   ///
   /// Retention runs FIRST and synchronously: it must not race the money sweep's
-  /// awaits, and expiring an order is a no-op for money-out (`#expired` is not
-  /// sweepable, and a late payment on it is still honoured per §4).
+  /// awaits, and expiring an order is a no-op for money-out — `#expired` is not
+  /// sweepable, and since #34 no payment against it converts either, so there is
+  /// nothing for the money sweep to pick up afterwards.
   func recoverySweep() : async () {
     if (recoverySweepInFlight) return;
     recoverySweepInFlight := true;
