@@ -86,12 +86,34 @@ it ever reports that the CMC did not take the rate, that check is real: the scri
 queries the CMC and compares what it actually stored rather than trusting the `Ok`
 reply, because PocketIC returning 200 only means the message was delivered.
 
-To click all the way through payment you also need real Stripe Payment Links. Put
-them in **`scripts/.local-dev.env`** once (gitignored) and every later run picks them
-up:
+To click all the way through payment you need a **restricted Stripe API key**
+(`rk_...`) scoped to **write Checkout Sessions** and nothing else. There are no
+Payment Links to create: the canister builds a Checkout Session per order through
+the API and sets `client_reference_id` on it, so nothing is configured in the
+Stripe Dashboard (#33).
+
+Put the key in **`scripts/.local-dev.env`** once (gitignored, and sourced by the
+seed) rather than on a command line, where it would land in your shell history:
+
+```sh
+# scripts/.local-dev.env
+STRIPE_API_KEY=rk_test_...
+```
+
+`scripts/stripe-dev.sh` then provisions the **webhook signing secret** from the
+forwarding session and starts the forwarder. The rail is live only when **both**
+are in; check with `stripe_api_key_status` and `webhook_secret_status`.
+
+⚠️ A `--mode reinstall` wipes both. The seed restores the key from that file; the
+webhook secret needs `stripe-dev.sh` again.
+
+The `STRIPE_LINK_*` block below is superseded machinery — it still populates a
+field nothing reads, and it goes when the field does (#33 PR-C):
 
 ```sh
 cat > scripts/.local-dev.env <<'LINKS'
+# Superseded (#33 PR-C deletes these): they populate Tier.paymentLinkUrl, which
+# nothing reads. Only STRIPE_API_KEY above matters for paying.
 STRIPE_LINK_T5=https://buy.stripe.com/test_xxx
 STRIPE_LINK_T20=https://buy.stripe.com/test_yyy
 STRIPE_LINK_T50=https://buy.stripe.com/test_zzz

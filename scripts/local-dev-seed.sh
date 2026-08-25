@@ -174,6 +174,13 @@ step "card tiers"
 # The tier list IS the card rail's on/off switch (RUNBOOK §3), so an empty list is
 # the fail-closed default rather than a missing step.
 #
+# ⚠️ **SUPERSEDED MACHINERY (#33).** Nothing opens these links any more: the
+# canister creates a Checkout Session per order through the Stripe API, and
+# `Tier.paymentLinkUrl` is read by nothing. This block still runs only because the
+# field is still required, and it goes when the field does (#33 PR-C). Do not add
+# to it, and do not treat a missing link as a reason paying will fail — the API
+# key is that reason.
+#
 # Where each tier's Payment Link comes from, in precedence order:
 #
 #   1. STRIPE_LINK_T5 / _T20 / _T50 in the environment
@@ -386,10 +393,31 @@ cat <<NOTES
 
   What works now, and what needs Stripe:
     - Browsing amounts, signing in, creating an order, cancelling: all work.
-    - PAYING needs two things Stripe owns: a real Payment Link (set
-      STRIPE_LINK_T5 / _T20 / _T50 above) and a signed webhook to deliver.
-      Run scripts/capture-stripe-fixtures.sh to forward real sandbox events
-      here, or drive the webhook by hand per docs/SANDBOX-TESTPLAN.md.
+    - PAYING needs BOTH Stripe secrets. There are no Payment Links any more:
+      the canister creates a Checkout Session per order and sets
+      client_reference_id on it through the API, so nothing has to be
+      configured in the Dashboard.
+
+        1. A restricted API key (rk_...) scoped to write Checkout Sessions and
+           nothing else. Put it in scripts/.local-dev.env (gitignored, sourced
+           by this script) rather than on a command line, then re-run.
+        2. A signed webhook to deliver: scripts/stripe-dev.sh starts the
+           forwarder and provisions the signing secret from that session.
+
+      Check both with stripe_api_key_status and webhook_secret_status.
+
+  Two things in a paying run that look like bugs and are not:
+    - After paying, Stripe redirects to the configured origin
+      (https://<frontend-id>.icp0.io), which does NOT serve your local
+      frontend, so that tab shows an error. The payment completes and the
+      webhook still fires — watch the order in the tab you already had open.
+      There is no local https origin to point at, and a caller-supplied
+      success_url is deliberately impossible: it would be an open redirect
+      Stripe renders after a real payment.
+    - The session expires 35 minutes after creation, enforced by Stripe. The
+      pay button disappears at the deadline, and it goes before the
+      checkout.session.expired webhook lands, because the UI renders expiry
+      from expiresAtNs rather than from the status.
 
   ⚠️ The CMC rate goes stale in 15 minutes. Re-run with --rate-only.
 NOTES

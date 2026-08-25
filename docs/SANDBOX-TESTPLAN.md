@@ -71,10 +71,11 @@ This is **the** procedure. Everything below it in this file is either a group of
 scenarios to work through or a by-hand reference for one of these steps.
 
 What you have to supply: a **Stripe sandbox account** with the Stripe CLI logged in
-to it, and **one Payment Link per tier** in that account. Nothing else, and no
-mainnet.
+to it, and a **restricted API key** (`rk_...`) scoped to **write Checkout Sessions**
+and nothing else. No Payment Links, no Products, no Prices — the canister creates a
+session per order through the API (#33). Nothing else, and no mainnet.
 
-**How to create those links — and how each must be configured — is RUNBOOK §3.**
+**How to create the key, and the go-live ordering, is RUNBOOK §3.**
 Get it right here rather than at go-live: the four settings that break
 `amount_total == tier.usdCents` produce no error, just a different cycle quantity,
 so a sandbox run with automatic tax left on would "pass" while proving the wrong
@@ -87,17 +88,17 @@ stripe login                                    # a SANDBOX account, never live
 npm --prefix test/integration run fetch:wasm    # the sha256-pinned xrc mock
 npm --prefix test/browser ci                    # only if you also want the suites
 
-# 1. A sellable local gateway. Put your Payment Links in scripts/.local-dev.env
-#    (gitignored) so you set them once rather than per shell; the environment still
-#    overrides it, and a re-run keeps links already registered on the canister
-#    rather than replacing them with placeholders. Any that ARE placeholders are
-#    named in the output, and those tiles create a real order before dead-ending.
-#    Configure each link as RUNBOOK §3 requires — fixed price, USD, card-only, and
-#    adjustable quantity / promotion codes / automatic tax all off. Sandbox links
-#    with a "wrong" setting will not error; they deliver a different cycle quantity.
-export STRIPE_LINK_T5=https://buy.stripe.com/test_...
-export STRIPE_LINK_T20=https://buy.stripe.com/test_...
-export STRIPE_LINK_T50=https://buy.stripe.com/test_...
+# 1. A sellable local gateway. Put STRIPE_API_KEY=rk_... in scripts/.local-dev.env
+#    (gitignored, sourced by the seed) so you set it once rather than per shell,
+#    and so it never lands in your shell history. Without it the seed sets a
+#    placeholder: everything except paying works, and create_order fails with a
+#    real Stripe 401 rather than at a config check.
+#    Nothing to configure in the Dashboard: the session carries inline price_data
+#    with a fixed unit_amount and quantity 1, and none of the settings that could
+#    move amount_total is enabled — src/backend/rails/Session.mo lists all eight
+#    next to the body builder, and test/session.test.mo asserts their absence.
+#    The STRIPE_LINK_* variables the seed still reads populate a field nothing
+#    reads; they go with the field (#33 PR-C).
 icp network start -d
 icp deploy
 scripts/local-dev-seed.sh
