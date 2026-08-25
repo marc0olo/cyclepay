@@ -36,7 +36,7 @@ module {
     /// continue automatically (stale mint intent whose transfer fate is
     /// unknowable, a CMC rejection/refund, an ambiguous forward, a treasury
     /// hold past its max wait — there the position is certain: fiat in,
-    /// nothing minted — or a ck-USDC pull intent aged past the ledger dedup
+    /// nothing minted — or a pull intent aged past the ledger dedup
     /// window). Neither Type 1 nor Type 2: the operator inspects the
     /// ledger/CMC/destination, then refunds or re-delivers manually.
     /// `stage` = Cmc.EscalateReason text, "treasuryWaitExceeded", or

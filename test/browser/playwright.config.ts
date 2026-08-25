@@ -5,7 +5,7 @@ import { defineConfig, devices } from "@playwright/test";
 /// These exist because the jsdom suite is structurally blind to a whole class of
 /// bug, and that blindness shipped: `.chooser { display: grid }` outranks the UA
 /// stylesheet's `[hidden] { display: none }`, so the chooser stayed on screen and
-/// the disabled ck-USDC rail nav was always visible — while every DOM test passed,
+/// a disabled rail nav was always visible — while every DOM test passed,
 /// because `el.hidden` was true and jsdom has no cascade and no layout.
 ///
 /// Anything asserted here must be about **rendering and reachability**. Backend

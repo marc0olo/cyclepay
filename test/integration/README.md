@@ -1,4 +1,4 @@
-# PocketIC integration suite — the Card and ck-USDC go-live bars (spec §9)
+# PocketIC integration suite — the Card rail go-live bar (spec §9)
 
 > **Looking for what is tested where, across all suites?** See
 > `docs/TEST-COVERAGE.md`. This file documents the PocketIC suite specifically.
@@ -7,11 +7,6 @@ End-to-end scenarios against PocketIC instances running the **real**
 canisters: the ICP ledger, the cycles minting canister, and the cycles ledger
 are deployed at their mainnet IDs by PocketIC's `icpFeatures` (the same Wasms
 mainnet runs, kept in sync with the instance topology by the server), and the
-ck-USDC suite installs the real `ic-icrc1-ledger` at the exact mainnet ck-USDC id
-on the fiduciary subnet, whose canister range mirrors mainnet's. Both that ledger
-and the **released XRC mock** are pinned by sha256 and fetched by
-`scripts/fetch-wasms.mjs` in pretest. The suite plays every external role
-itself:
 
 - **Stripe** — crafted `checkout.session.completed` / `charge.refunded`
   payloads, HMAC-SHA256-signed exactly per the `Stripe-Signature` scheme,
@@ -26,9 +21,6 @@ itself:
 - **NNS governance** — the CMC's ICP/XDR conversion rate is set by calling
   `set_icp_xdr_conversion_rate` with the governance canister principal as
   sender (PocketIC permits arbitrary senders).
-- **The ck-USDC user's wallet** — `icrc2_approve` calls straight to the
-  installed ledger (including deliberately short approvals for the §6.2
-  amount-short mismatch), with balance/allowance audits around every pull.
 - **Time** — staleness windows, the recovery timer, and the treasury
   max-wait are driven with PocketIC time control; mid-flight interruption
   tests step rounds one tick at a time and upgrade the canister inside the
@@ -181,26 +173,3 @@ reachable end to end (scenarios 51–54).
 - **A recorded real Stripe event.** Every payload here is hand-crafted JSON. Only
   the `docs/STRIPE.md` §15 sandbox run closes that.
 
-## Scenario map — ck-USDC go-live bar (`ckusdc.spec.ts`, task 15)
-
-⚠️ **The ck-USDC rail ships disabled** (`maxUsdCents = 0`) and receives no new
-feature work — the Card rail is the product. This suite is maintained so the rail
-stays a working fallback if Stripe ever restricts the account; ck-01 asserts the
-disabled default, and every other scenario enables the rail first.
-
-Own instance (vitest runs spec files sequentially); real `ic-icrc1-ledger`
-at `xevnm-gaaaa-aaaar-qafnq-cai` with ICRC-2 enabled and a 10_000-unit fee.
-
-| # | Scenario | Coverage |
-|---|----------|----------|
-| ck-01 | `maxUsdCents = 0` default rejects orders; config admin-gated, validated, public | fail-closed rail config |
-| ck-02 | zero / below-min / above-max rejected before any quote | amount bounds |
-| ck-03 | 500¢ order through the shared §3 quote path with the rail's 0/0 fee formula | pricing |
-| ck-04 | anonymous/non-owner/unknown/wrong-rail claim guards; no-approval claim drops the intent | claim guards |
-| ck-05 | short approval → `insufficientAllowance` with `required`; full approve → pull → `Paid`; exact ledger accounting; cap-0 hold | amount-short mismatch, approve/pull happy path, treasury interplay |
-| ck-06 | cap sized → held ck order resumes → real CMC mint → delivery; settled pull never resettable | treasury interplay, shared money-out |
-| ck-07 | balance short of the pull → definite rejection, order stays claimable | amount-short (funds arm) |
-| ck-08 | upgrade mid-pull → the stop drains the pull, debited exactly once, re-claim refused | dedup/replay (§5.1 money-in) |
-| ck-09 | 24 h stale intent → once-only `stalePullIntent` escalation, order stays `Created`; `reset_ck_usdc_pull` re-opens; settles after | stale-intent escalation + ops levers |
-| ck-10 | `withdraw_ck_usdc` moves the accrued balance; over-withdraw surfaces the ledger error | hold-ckUSDC posture |
-| ck-11 | audit tags + error-queue accounting across the rail | — |

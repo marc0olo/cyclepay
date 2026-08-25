@@ -472,7 +472,6 @@ Automated, and where — do **not** repeat these manually:
 | H1 tier buttons show a cycle estimate, not a tier id | `main.test.ts` |
 | H2 destination toggle changes the estimate and names the 100 M deposit fee | `main.test.ts` |
 | H3 fee breakdown accounts for every cent, "operator margin: none" | `main.test.ts` |
-| H4 the disabled ck-USDC rail | `main.test.ts` + `layout.spec.ts`. **The expectation changed**: there is no "disabled notice" any more. The nav and panel are *removed from the document*, and the browser spec asserts nothing about the rail is legible |
 | H5 a moved quote asks for confirmation, and the second click goes through | `main.test.ts` |
 | H6 cancel appears only pre-payment | `main.test.ts` |
 | H7 the receipt recomputes and reports a match | `main.test.ts` + `delivered.spec.ts` |

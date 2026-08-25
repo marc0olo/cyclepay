@@ -46,8 +46,8 @@ module {
     maxPurchaseUsdCents : Nat;
   };
 
-  /// Deliberately non-zero, unlike the burn cap and the ck-USDC bound. Those
-  /// are *money* decisions that must ship dark. These three are *safety
+  /// Deliberately non-zero, unlike the burn cap — that is a *money* decision and
+  /// must ship dark. These three are *safety
   /// limits*: a default of 0 would brick the canister rather than protect it,
   /// which is the wrong direction of fail-closed. The card rail's real on/off
   /// switch remains the tier list, which does ship empty.

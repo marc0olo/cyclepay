@@ -4,8 +4,6 @@
 /// committed; this script is, so what the suite tested against is verifiable
 /// from the repo alone.
 ///
-/// - **ic-icrc1-ledger** — the real ICRC-1/2 ledger, installed at the mainnet
-///   ck-USDC id (§6.2).
 /// - **xrc_mock** — DFINITY's own Exchange Rate Canister mock, installed at the
 ///   mainnet XRC id. Its response is fixed by the init argument, so the suite
 ///   reinstalls it to change the rate or to make it return a specific
@@ -19,12 +17,6 @@ import { dirname, resolve } from 'node:path';
 const WASM_DIR = resolve(import.meta.dirname, '..', 'wasm');
 
 const TARGETS = [
-  {
-    name: 'ic-icrc1-ledger.wasm.gz',
-    label: 'ck-USDC ledger',
-    url: 'https://github.com/dfinity/ic/releases/download/ledger-suite-icrc-2026-03-09/ic-icrc1-ledger.wasm.gz',
-    sha256: '354dd6ecfdc72b5409805b31dea22c9db11df6e14095a5a68924eb63535e6d8a',
-  },
   {
     name: 'xrc_mock.wasm.gz',
     label: 'XRC mock',

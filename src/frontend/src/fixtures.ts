@@ -147,14 +147,7 @@ export function installFixtures(host: FixtureHost): void {
     }),
     // The rail ships disabled, and these fixtures keep it that way: a spec that
     // silently enabled it would be asserting against a product nobody ships.
-    ck_usdc_config: async () => ({
-      minUsdCents: 100n,
-      maxUsdCents: 0n,
-      feeBps: 0n,
-      feeFixedCents: 0n,
-      ledgerFeeUnits: 10_000n,
-    }),
-    quote_previews: async (_rail: unknown, amounts: bigint[]) => ({
+    quote_previews: async (amounts: bigint[]) => ({
       cyclesLedgerDepositFee: DEPOSIT_FEE,
       quotes: amounts.map((usdCents) => {
         const feeCents = (usdCents * 290n) / 10_000n + 30n;

@@ -112,8 +112,7 @@ module {
 
   /// §3 fee formula plus the freshness and sanity bounds.
   public type Config = {
-    /// Card rail: ≈2.9% + $0.30, recovering Stripe's cut at cost. The ck-USDC
-    /// rail carries its own formula (`CkUsdc.Config`).
+    /// ≈2.9% + $0.30, recovering Stripe's cut at cost.
     feeBps : Nat;
     feeFixedCents : Nat;
     /// How long a cached pair may price orders.

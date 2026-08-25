@@ -169,7 +169,7 @@ suite("store: create", func() {
   test("duplicate id is rejected, original order untouched", func() {
     let store = Orders.emptyStore();
     let original = newOrder(store, "ord-1", alice);
-    switch (Orders.create(store, "ord-1", #ii(bob), #ckUsdc, #canister(bob), 7, pricing, 999)) {
+    switch (Orders.create(store, "ord-1", #ii(bob), #card, #canister(bob), 7, pricing, 999)) {
       case (#err(#duplicateId("ord-1"))) {};
       case _ assert false;
     };
