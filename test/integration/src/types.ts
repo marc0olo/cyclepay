@@ -20,8 +20,9 @@ export type OrderStatusKey =
   | 'created' | 'cancelled' | 'expired' | 'paid' | 'minting' | 'icpAtCmc'
   | 'delivered' | 'awaitingTreasury' | 'needsReview' | 'abandoned';
 
-/// Why an `#expired` order expired. Both producers arrive with #33; until then
-/// the retention sweep expires orders and leaves this null.
+/// Why an `#expired` order expired. Both producers arrived with #33, and since
+/// it deleted the retention sweep they are the only ones — nothing else in the
+/// system can expire an order, so this is never null on an `#expired` order.
 export type ExpiredBy = { sessionExpired: null } | { sessionFailed: null };
 
 export type StatusVariant = Partial<Record<OrderStatusKey, null>>;
@@ -107,12 +108,7 @@ export interface GateConfig {
   minPurchaseUsdCents: bigint;
 }
 
-export interface RetentionConfig {
-  orderTtlNs: bigint;
-}
-
-export interface RetentionStatus {
-  config: RetentionConfig;
+export interface OrderStats {
   openOrders: bigint;
   expiredOrders: bigint;
   totalOrders: bigint;
@@ -252,14 +248,12 @@ export interface BackendService {
   error_queue(afterId: Opt<bigint>, limit: bigint): Promise<ErrorQueuePage>;
   error_queue_unresolved(afterId: Opt<bigint>, limit: bigint): Promise<ErrorQueuePage>;
   error_queue_depth(): Promise<{ unresolved: bigint; retained: bigint }>;
-  lifecycle_config(): Promise<{ gate: GateConfig; retention: RetentionConfig }>;
+  lifecycle_config(): Promise<{ gate: GateConfig }>;
   order_for_payment(paymentRef: string): Promise<Opt<string>>;
   abandon_order(id: string, reason: string): Promise<Result<Order, string>>;
-  attach_payment(paymentRef: string, id: string, paidUsdCents: bigint): Promise<Result<Order, Record<string, unknown>>>;
-  retention_status(): Promise<RetentionStatus>;
+  order_stats(): Promise<OrderStats>;
   cycles_status(): Promise<{ balance: bigint; floor: bigint }>;
   recount_orders(): Promise<Array<[string, bigint]>>;
-  run_retention(): Promise<{ expired: bigint; scanned: bigint }>;
   receipt(id: string): Promise<Opt<{
     order: Order;
     paidUsdCents: Opt<bigint>;
@@ -274,7 +268,6 @@ export interface BackendService {
     };
   }>>;
   set_gate_config(config: GateConfig): Promise<Result<null, unknown>>;
-  set_retention_config(config: RetentionConfig): Promise<Result<null, unknown>>;
   pricing_status(): Promise<{
     rates: Opt<PricingRates>;
     config: PricingConfig;

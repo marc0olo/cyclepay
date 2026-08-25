@@ -60,7 +60,6 @@ async function main(): Promise<void> {
   expectOk(await gw.asAdmin.set_card_tiers([
     { id: 'tier5', usdCents: TIER_USD_CENTS },
   ]));
-  expectOk(await gw.asAdmin.set_retention_config({ orderTtlNs: 600_000_000_000n }));
   await gw.asAdmin.set_expected_livemode([false]);
   await fundFloat(gw, ORDER_E8S * 50n + ICP_FEE_E8S * 50n);
 

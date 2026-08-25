@@ -102,13 +102,14 @@ the authoritative list. If you change what a scenario asserts, change its row.
 | 15 | audit-log seq monotonicity + error-queue accounting | — |
 | 16 | admission gate: no burn-cap headroom refuses the quote; `can_purchase` agrees; restoring headroom re-opens the rail | pre-creation gate |
 | 17 | per-purchase ceiling bounds both tier registration and the amount | pre-creation gate |
-| 18 | expiry: created → expired, survives a simulated year, and a late payment against it files a Type 1 obligation instead of delivering — `attach_payment` refuses it too (#34) | retention |
+| 18 | expiry: only `checkout.session.expired` moves an order there — time alone never does — it survives a simulated year undeleted, and a late payment files a Type 1 obligation instead of delivering (#33, #34) | Stripe owns the deadline |
 | 19 | owner-only `receipt`; recomputes `net × P × 10¹² / U == lockedCycles` from it | price verifiability |
 
 ### Added with the pricing-transparency work
 
 | # | Scenario | Coverage |
 |---|----------|----------|
+| 39 | a payment against a **cancelled** order files a Type 1 and never traps — the surviving half of scenarios 36–39, which #33 deleted with `attach_payment` | the guard that keeps `markPaid`'s trap unreachable |
 | 40 | `quote_previews` fee split, §3 vector, deposit fee, and an order locking exactly the previewed figure | quote/lock agreement |
 | 41 | a +40% ICP move → `#quoteChanged` naming the new figure, nothing created; the new figure is accepted; a favourable move never refuses; `null` opts out | server-side quote pinning |
 | 42 | owner-only `cancel_order` produces `#cancelled` and frees a slot, is idempotent, refuses a paid order, and a payment racing the cancel is **refunded, not converted** — one Type 1 obligation carrying the intent (#34) | buyer never locked out, buyer's decision wins |
@@ -124,7 +125,6 @@ the authoritative list. If you change what a scenario asserts, change its row.
 | 47 | a `#deliveryDelayed` alert is resolved when the order **escalates**, not only when it delivers | no orphan worklist entries |
 | 48 | the alert/terminate timeline covers every in-flight status; a delivered order is never caught by it; the terminal stage matches the money position | notify stage bounded by time |
 | 49 | `async_payment_succeeded` arriving **before** `completed` still mints once; the later event raises no obligation | out-of-order events |
-| 50 | the bounded retention sweep expires **every** lapsed order across ticks, settles to `scanned == 0`, and a payment against an expired order files a Type 1 obligation rather than delivering (#34) | cursor completeness |
 | 51 | a CMC outage stalls the mint in `#paid`, audits the fetch failure, alerts at 2 h, and **delivers for real** once restored | rate-source outage |
 | 52 | an ICP ledger outage moves no money and records no block; recovery debits the float **exactly once** | ledger outage + §5.1 replay |
 | 53 | CMC stopped *after* the transfer → order parks at `#icpAtCmc` with a block and no minted cycles → `notifyDelayed` alert → terminates as `retriesExhausted` **carrying the real block index** | notify stall, end to end |

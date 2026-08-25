@@ -33,7 +33,6 @@ import Http "Http";
 import Idempotency "Idempotency";
 import Orders "Orders";
 import Recovery "Recovery";
-import Retention "Retention";
 import Card "rails/Card";
 import Session "rails/Session";
 import Secret "Secret";
@@ -180,10 +179,6 @@ persistent actor CyclesGateway {
   /// values: they are safety limits, and a zero default would brick the
   /// canister rather than protect it.
   var gateConfig : Gate.Config = Gate.defaultConfig();
-
-  /// Order-lifecycle retention policy (Retention.mo) — the `#created` TTL, which
-  /// is retention's only effect. Nothing deletes orders.
-  var retentionConfig : Retention.Config = Retention.defaultConfig();
 
   /// `payment_intent` → the order it paid for. Financial record, never pruned;
   /// the only way `charge.refunded` can tell whether the refunded payment had
@@ -1049,25 +1044,17 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Adjust retention (§4/§4.2): the `#created` TTL and the delete horizon.
-  public shared ({ caller }) func set_retention_config(config : Retention.Config) : async Result.Result<(), Retention.ConfigError> {
-    requireAdmin(caller);
-    switch (Retention.validateConfig(config)) {
-      case (#ok) {
-        retentionConfig := config;
-        auditAdmin(caller, "retention.configSet", "ttlNs=" # config.orderTtlNs.toText());
-        #ok;
-      };
-      case (#err(e)) #err(e);
-    };
-  };
-
-  /// Public: the frontend needs the ceiling to bound its amount input, and the
-  /// TTL to tell the user how long an order stays live. Same transparency
-  /// stance as `forex_status` and `treasury_status` — these are the rules users
-  /// are held to, not secrets.
-  public query func lifecycle_config() : async { gate : Gate.Config; retention : Retention.Config } {
-    { gate = gateConfig; retention = retentionConfig };
+  /// Public: the frontend needs the bounds to size its amount input and to say
+  /// what it will accept before the buyer types. Same transparency stance as
+  /// `forex_status` and `treasury_status` — these are the rules users are held
+  /// to, not secrets.
+  ///
+  /// It carried a `retention` half until #33. There is no lifecycle *policy* of
+  /// ours any more: the deadline is the Stripe session's `expires_at`, which
+  /// lives on each order rather than in config, so there is nothing global to
+  /// report.
+  public query func lifecycle_config() : async { gate : Gate.Config } {
+    { gate = gateConfig };
   };
 
   /// Admission preflight, public: lets the frontend disable the buy button with
@@ -1884,36 +1871,25 @@ persistent actor CyclesGateway {
     rebuilt;
   };
 
-  /// Manual retention kick (admin, §7) — ops lever to apply a retuned TTL
-  /// immediately instead of waiting up to a full sweep interval. Safe to spam:
-  /// the band is an absolute age, so a second run is a no-op.
+  /// Order counters for monitoring (public, same stance as `treasury_status`).
   ///
-  /// Returns `scanned` alongside `expired` because the sweep is bounded per call
-  /// (`maxRetentionScanPerSweep`) and resumes from a cursor: on a large store it
-  /// takes several calls to cover everything, and `scanned` is how an operator
-  /// tells "nothing left to expire" from "did not look at everything yet".
-  public shared ({ caller }) func run_retention() : async { expired : Nat; scanned : Nat } {
-    requireAdmin(caller);
-    auditAdmin(caller, "retention.manualSweep", "operator-triggered");
-    retentionSweep();
-  };
-
-  /// Retention counters for monitoring (public, same stance as
-  /// `treasury_status`).
+  /// This was `retention_status` until #33 deleted retention. None of the four
+  /// counters was ever about retention — they were sharing a query with a config
+  /// field — so the query outlived the mechanism under an honest name rather
+  /// than being deleted with it. ⚠️ #30 rehomes them into `reserve_status`;
+  /// this is a waypoint, not a destination.
   ///
   /// `openOrders` climbing while `delivered` does not is the signature of
   /// order-creation abuse; the lever is `Gate.maxOpenOrdersPerPrincipal`.
   /// `totalOrders` and `paidIntentsIndexed` should grow together — a divergence
   /// means an index and its records disagree.
-  public query func retention_status() : async {
-    config : Retention.Config;
+  public query func order_stats() : async {
     openOrders : Nat;
     expiredOrders : Nat;
     totalOrders : Nat;
     paidIntentsIndexed : Nat;
   } {
     {
-      config = retentionConfig;
       // O(1), same reasoning as treasury_status.
       openOrders = Orders.countOf(orderStore, #created);
       expiredOrders = Orders.countOf(orderStore, #expired);
@@ -1931,141 +1907,22 @@ persistent actor CyclesGateway {
     paidIntents.get(paymentRef);
   };
 
-  public type AttachPaymentError = {
-    #noOrder : Types.OrderId;
-    #wrongRail;
-    /// Past money-in already; attaching again would credit twice.
-    #notClaimable : Text;
-    /// This `payment_intent` was already credited — the dedup set is the same
-    /// one the webhook path uses, so a charge can never be counted twice
-    /// whichever route it arrives by.
-    #alreadyCredited : Text;
-    #belowFeeFloor : Nat;
-    #aboveCeiling : { paidUsdCents : Nat; maxUsdCents : Nat };
-    #unusableSnapshot;
-    #transitionRefused : Text;
-  };
-
-  /// Credit a Stripe charge the canister never saw (admin, §6.1).
-  ///
-  /// The recovery path for the one card-rail failure that otherwise has none:
-  /// **the webhook never arrived.** Stripe retries a failed delivery for about
-  /// three days and then stops; we hold no API key, so we never poll. Past that
-  /// horizon the charge exists in Stripe with no on-chain trace at all, the
-  /// buyer's money is gone, and their order reads "Awaiting payment" forever.
-  ///
-  /// ⚠️ **Only while the order is `#created`.** #34 deleted `#expired → #paid`,
-  /// so a cancelled or expired order cannot be converted at all — the lever there
-  /// is a refund in Stripe. That narrows this method considerably, because the
-  /// retention sweep expires an order at 48 h while Stripe is still retrying: a
-  /// webhook lost for longer than the TTL now leaves a payment that must be
-  /// refunded rather than delivered. Deliberate, and transitional — #33 takes the
-  /// deadline from Stripe (30 minutes, enforced by Stripe), so a session that can
-  /// still be paid belongs to an order that can still accept it, and this method
-  /// is deleted along with the whole Payment Link mechanism.
-  ///
-  /// Also rescues an unattributed payment the operator *can* identify, while the
-  /// order is still `#created` — turning "refund and ask them to re-order at
-  /// today's price" into "deliver what they bought". Any open Type 1 entry for the
-  /// charge is resolved, since attaching it discharges that obligation.
-  ///
-  /// The operator supplies the amount because Stripe is the authority on it, and
-  /// it is honoured through exactly the same helper the webhook uses.
-  ///
-  /// This is a money-creating lever, so: controller-only, dedup-guarded against
-  /// double credit, and audited with the calling principal.
-  public shared ({ caller }) func attach_payment(
-    paymentRef : Text,
-    id : Types.OrderId,
-    paidUsdCents : Nat,
-  ) : async Result.Result<Types.Order, AttachPaymentError> {
-    requireAdmin(caller);
-    let ?order = Orders.get(orderStore, id) else return #err(#noOrder(id));
-    if (order.rail != #card) return #err(#wrongRail);
-    // `#created` alone. This guard must mirror what the matrix admits into
-    // `#paid`, exactly as `Card.handleWebhook`'s does — `markPaid` is the shared
-    // callee and `-Werror` cannot see the coupling from either side.
-    //
-    // `#expired` was here until #34 deleted `#expired → #paid`. Keeping it let
-    // the call through to a refusal `markPaid` then reported as
-    // `#transitionRefused(debug_show …)` plus a `payment.attachFailed` audit
-    // line — an internal blob and a bug-shaped trail for what is a policy. Worse,
-    // it made two statuses with identical meaning refuse differently:
-    // `#cancelled` got a clean `#notClaimable`, `#expired` did not.
-    //
-    // Past expiry or cancellation the operator's lever is a **refund**, not a
-    // conversion — the decided end state (#12), which #33 completes by deleting
-    // this method outright.
-    switch (order.status) {
-      case (#created) {};
-      case (status) return #err(#notClaimable(Types.statusToText(status)));
-    };
-    let honored = switch (Card.honoredCycles(order, paidUsdCents, gateConfig.maxPurchaseUsdCents)) {
-      case (#asQuoted(cycles) or #repriced(cycles)) cycles;
-      case (#belowFeeFloor) return #err(#belowFeeFloor(paidUsdCents));
-      case (#aboveCeiling(bound)) return #err(#aboveCeiling(bound));
-      case (#unusableSnapshot) return #err(#unusableSnapshot);
-    };
-    // Guard on `paidIntents`, NOT on the dedup set.
-    //
-    // The two answer different questions. The dedup set means "this webhook has
-    // been processed" — and `handleCheckout` records the intent *before*
-    // attribution, so an unattributed payment is already in it. Guarding on that
-    // would make the primary rescue case unreachable: the operator could never
-    // attach the very payments that need attaching.
-    //
-    // `paidIntents` is only written when an order is actually marked paid, so it
-    // is the authority on "has this charge been credited", which is the thing
-    // that must never happen twice.
-    if (paidIntents.containsKey(paymentRef)) return #err(#alreadyCredited(paymentRef));
-    switch (Orders.markPaid(orderStore, id, honored, paidUsdCents, Time.now())) {
-      case (#err(e)) {
-        auditAdmin(caller, "payment.attachFailed", id # ": transition refused for " # paymentRef);
-        #err(#transitionRefused(debug_show (e)));
-      };
-      case (#ok(paid)) {
-        paidIntents.add(paymentRef, id);
-        // Claim the intent in the webhook's dedup set too. If the charge was
-        // attached before its webhook ever landed, a late delivery is then
-        // cleanly deduped rather than raising a spurious #duplicate obligation
-        // against an order that is already paid.
-        ignore Idempotency.recordStripeIntent(dedup, paymentRef, Time.now());
-        // Attaching the charge discharges any Type 1 obligation it raised.
-        for (entry in ErrorQueue.resolveByPaymentRef(errorQueue, paymentRef, Time.now()).values()) {
-          audit("errorQueue.resolvedByAttach", "entry " # entry.id.toText() # " closed by attaching " # paymentRef);
-        };
-        auditAdmin(caller, "payment.attached", id # ": " # paymentRef # " at " # paidUsdCents.toText() # " cents = " # honored.toText() # " cycles");
-        // Same detached money-out kick the webhook uses.
-        ignore async { await* processMint(id) };
-        #ok(paid);
-      };
-    };
-  };
-
-  /// Stop trying to deliver an order (admin, §7) — **the only path to a
-  /// terminal non-delivered state.**
-  ///
-  /// Nothing in the system gives up on a purchase automatically: a delay raises
-  /// `#deliveryDelayed` and keeps retrying, because its causes are all
-  /// operator-fixable. This is the deliberate human decision that a purchase
-  /// will not be completed, and it demands a reason so the trail records *why*
-  /// alongside *who*.
-  ///
-  /// Only reachable from a pre-delivery money-bearing state. A `#created` order
-  /// has taken no money and needs no decision; a `#delivered` one is done.
   /// Let a buyer give up on their own unpaid order (owner-scoped).
   ///
   /// `Gate.maxOpenOrdersPerPrincipal` counts `#created` orders, and its refusal
   /// tells the user to pay or abandon one — advice they could not follow without
   /// this: `abandon_order` is admin-only and only accepts *paid* orders. A buyer
   /// who opened the cap's worth of checkouts and completed none would be locked
-  /// out until the TTL expired them.
+  /// out until their sessions expired.
   ///
-  /// Marks the order `#expired`, which is the existing retention transition, not
-  /// a new state. Two consequences, both wanted: the slot frees immediately, and
-  /// a payment that arrives anyway is **still honoured** at the locked quantity,
-  /// because `#expired` is payable (§4). So this can never strand a payment that
-  /// was already in flight when the buyer clicked cancel.
+  /// ⚠️ This paragraph said the order is marked `#expired` and that a payment
+  /// arriving afterwards is **still honoured**, because `#expired` was payable.
+  /// Both halves stopped being true and the text did not follow: #34 gave the
+  /// buyer's own decision the distinct `#cancelled` state, and deleted
+  /// `#expired → #paid` along with it. Nothing is stranded, but the reason is
+  /// now the opposite one — the session is expired on Stripe BEFORE the order
+  /// moves, so an in-flight payment either wins that race and the order is not
+  /// cancelled at all, or it cannot start. See the ordering note in the body.
   ///
   /// No error-queue entry: nothing is owed. The record and the audit line are the
   /// trail, and queueing an obligation for an order where no money moved is
@@ -2138,6 +1995,17 @@ persistent actor CyclesGateway {
     #ok(cancelled);
   };
 
+  /// Stop trying to deliver an order (admin, §7) — **the only path to a
+  /// terminal non-delivered state.**
+  ///
+  /// Nothing in the system gives up on a purchase automatically: a delay raises
+  /// `#deliveryDelayed` and keeps retrying, because its causes are all
+  /// operator-fixable. This is the deliberate human decision that a purchase
+  /// will not be completed, and it demands a reason so the trail records *why*
+  /// alongside *who*.
+  ///
+  /// Only reachable from a pre-delivery money-bearing state. A `#created` order
+  /// has taken no money and needs no decision; a `#delivered` one is done.
   public shared ({ caller }) func abandon_order(
     id : Types.OrderId,
     reason : Text,
@@ -2245,39 +2113,6 @@ persistent actor CyclesGateway {
   /// "is it actually firing" must be observable).
   var lastRecoverySweep : ?{ atNs : Int; pending : Nat } = null;
 
-  /// Retention pass (Retention.mo): flip lapsed `#created` orders to `#expired`.
-  /// That is the whole job — no order is ever deleted, so there is nothing here
-  /// that has to be guarded against destroying a financial record.
-  ///
-  /// Synchronous and awaitless, so it cannot interleave with the money path.
-  /// Retention pass: flip lapsed `#created` orders to `#expired` (§4).
-  ///
-  /// Synchronous and awaitless, so it cannot interleave with the money path.
-  /// Nothing is ever deleted — see Retention.mo for why an earlier
-  /// delete-past-a-horizon design was dropped.
-  /// Cap on orders inspected per sweep.
-  ///
-  /// Only `#created` orders can expire, but the store is not indexed by status,
-  /// so finding them means a scan. Left unbounded, every tick would cost O(all
-  /// orders forever) — which grows without limit, since orders are never deleted,
-  /// and makes each tick more expensive exactly when the canister is under the
-  /// order-creation pressure that made the store large.
-  ///
-  /// Bounding the work is safe because lateness errs in the BUYER's favour: an
-  /// order the sweep has not reached yet is still `#created`, so it stays payable
-  /// slightly longer than the TTL promised. Nothing downstream reads the flip, and
-  /// no money decision depends on its promptness, so throughput is the right thing
-  /// to trade away.
-  transient let maxRetentionScanPerSweep : Nat = 2_000;
-
-  /// The last order id this sweep handled, so the next tick resumes after it.
-  ///
-  /// An **id**, not an index: an index into a snapshot is meaningless across
-  /// ticks, because an insert shifts every later position and a positional cursor
-  /// then silently skips some orders and re-scans others. Order ids are stable,
-  /// so resuming from one visits every order exactly once per pass.
-  var retentionCursor : ?Types.OrderId = null;
-
   /// How often the sweep reconciles the per-status tallies against the order
   /// store. Daily, not per-sweep: the reconcile is O(orders) while the tallies
   /// exist precisely so the hot queries are O(1), and drift can only come from a
@@ -2322,55 +2157,19 @@ persistent actor CyclesGateway {
     };
   };
 
-  func retentionSweep() : { expired : Nat; scanned : Nat } {
-    // O(1) short-circuit, mirroring the mint sweep: no `#created` order means
-    // nothing can expire, so the scan is pure waste.
-    if (Orders.countOf(orderStore, #created) == 0) {
-      retentionCursor := null;
-      return { expired = 0; scanned = 0 };
-    };
-    let now = Time.now();
-    var expired = 0;
-    // Bounded slice, so the per-tick cost is O(maxRetentionScanPerSweep) and not
-    // O(total orders) — the store only ever grows, so anything proportional to it
-    // gets more expensive every tick forever.
-    let ids = Orders.idsFrom(orderStore, retentionCursor, maxRetentionScanPerSweep);
-    if (ids.size() == 0) {
-      // Reached the end; the next tick starts a fresh pass.
-      retentionCursor := null;
-      return { expired = 0; scanned = 0 };
-    };
-    for (id in ids.values()) {
-      let ?order = Orders.get(orderStore, id) else continue;
-      switch (Retention.bandOf(order.status, order.createdAtNs, now, retentionConfig)) {
-        case (#keep) {};
-        case (#expire) {
-          if (tryTransition(id, #expired) != null) expired += 1;
-        };
-      };
-    };
-    retentionCursor := ?ids[ids.size() - 1];
-    if (expired > 0) {
-      audit("retention.sweep", expired.toText() # " order(s) marked expired (terminal since #34 — a later payment is refunded, not converted)");
-    };
-    { expired; scanned = ids.size() };
-  };
-
   /// The timer job. Correctness against concurrent drivers is processMint's
   /// per-order single-flight; this flag only stops sweep pile-up. The
   /// webhook kick deliberately bypasses it — a just-paid order must not
   /// wait a full interval because a background sweep (which enumerated
   /// `pending` before that order turned #paid) was still in flight.
   ///
-  /// Retention runs FIRST and synchronously: it must not race the money sweep's
-  /// awaits, and expiring an order is a no-op for money-out — `#expired` is not
-  /// sweepable, and since #34 no payment against it converts either, so there is
-  /// nothing for the money sweep to pick up afterwards.
+  /// ⚠️ This is the **§5.2 recovery** timer and it stays. A retention sweep ran
+  /// ahead of it until #33; only that went. The two were never the same job —
+  /// this one backstops a money-out message that died, which no webhook reports.
   func recoverySweep() : async () {
     if (recoverySweepInFlight) return;
     recoverySweepInFlight := true;
     try {
-      ignore retentionSweep();
       // Detached into its own message rather than run inline. It reads the whole
       // order store, so at enough orders it could hit the instruction limit — and
       // inline that trap would take the entire sweep down with it, leaving

@@ -715,36 +715,85 @@ suite("handleWebhook: attribution failures are Type 1 #unattributed (§4.1)", fu
     assert statusOf(deps) == #created;
   });
 
-  test("paid amount below the order's fee floor", func() {
-    let deps = freshDeps();
-    withOrder(deps, #card);
-    // 31¢: fee = ⌈31·290/10_000⌉ + 30 = 31 ≥ 31 → no net amount
-    expectUnattributed(deps, paidBody("evt_1", "pi_1", ?goodRef, 31), goodRef, "pi_1");
-    assert statusOf(deps) == #created;
+  test("a paid amount that is not the quoted one, at any size", func() {
+    // Was two outcomes with two messages — `#belowFeeFloor` under the quote and
+    // repricing over it. #33 collapsed both into "not the amount we asked for",
+    // so 31¢ and 1000¢ against a 500¢ order are now the SAME case, and neither
+    // marks the order paid.
+    for (cents in ([31, 499, 501, 1_000] : [Nat]).values()) {
+      let deps = freshDeps();
+      withOrder(deps, #card);
+      expectUnattributed(deps, paidBody("evt_1", "pi_1", ?goodRef, cents), goodRef, "pi_1");
+      assert statusOf(deps) == #created;
+    };
   });
 });
 
-suite("handleWebhook: actual paid amount is honored (§3/§6.1)", func() {
-  test("mismatched amount is repriced from the creation pricing snapshot", func() {
+suite("handleWebhook: the paid amount must EQUAL the quote (§3/§6.1)", func() {
+  // Inverted by #33. This suite used to assert that a different amount was
+  // REPRICED from the order's own snapshot and minted — correct while a fixed
+  // Payment Link could be paid for an amount the order was not created for.
+  // A per-order session carries our own figure, so a difference now means a
+  // Stripe feature that moves the total is enabled, which is an operator
+  // problem, not a buyer's choice.
+
+  test("the quoted amount delivers exactly what was locked at creation", func() {
     let deps = freshDeps();
     withOrder(deps, #card);
-    // 1000¢ ≠ the 500¢ tier: fee = ⌈1000·290/10⁴⌉ + 30 = 59, net 941¢, repriced
-    // from the order's OWN rate snapshot (not a fresh rate):
-    // 941 · 35_000 · 10¹² / 4_550_000, floored.
-    assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 1_000)).status_code == 200;
+    assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
     switch (Orders.get(deps.orders, orderId)) {
       case (?order) {
         assert order.status == #paid;
-        assert order.lockedCycles == 7_238_461_538_461;
+        assert order.lockedCycles == lockedCycles; // untouched by money-in
+        assert order.paidUsdCents == ?500;
       };
       case (null) assert false;
     };
-    // the mismatch is on the audit trail
-    var seen = false;
-    for (event in AuditLog.events(deps.auditLog).values()) {
-      if (event.tag == "stripe.amountMismatch") seen := true;
+  });
+
+  test("a different amount mints NOTHING and files a Type 1", func() {
+    // 1000¢ against the 500¢ order — the exact input that used to mint
+    // 7_238_461_538_461 cycles. It must now leave the order payable and the
+    // money queued for a refund.
+    let deps = freshDeps();
+    withOrder(deps, #card);
+    assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 1_000)).status_code == 200;
+    switch (Orders.get(deps.orders, orderId)) {
+      case (?order) {
+        assert order.status == #created;
+        assert order.lockedCycles == lockedCycles;
+        assert order.paidUsdCents == null;
+      };
+      case (null) assert false;
     };
-    assert seen;
+    let open = ErrorQueue.unresolved(deps.errorQueue);
+    assert open.size() == 1;
+    // The detail names both figures, because the operator's next step is to find
+    // which session setting produced the difference.
+    assert open[0].detail.contains(#text "1000");
+    assert open[0].detail.contains(#text "500");
+  });
+
+  test("no order is ever paid at a quantity other than its locked one", func() {
+    // The property behind the two tests above, stated once: whatever amount
+    // arrives, an order that reaches #paid carries the quantity it was created
+    // with. This is what makes #30's tally exact.
+    for (cents in ([1, 31, 499, 500, 501, 1_000] : [Nat]).values()) {
+      let deps = freshDeps();
+      withOrder(deps, #card);
+      assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, cents)).status_code == 200;
+      switch (Orders.get(deps.orders, orderId)) {
+        case (?order) {
+          if (order.status == #paid) {
+            assert cents == 500;
+            assert order.lockedCycles == lockedCycles;
+          } else {
+            assert order.status == #created;
+          };
+        };
+        case (null) assert false;
+      };
+    };
   });
 });
 
@@ -853,10 +902,28 @@ suite("handleWebhook: the purchase ceiling", func() {
   test("a payment above the ceiling is not minted — Type 1 instead", func() {
     let deps = { freshDeps() with maxPurchaseUsdCents = 1_000 };
     withOrder(deps, #card);
-    // Repricing is an upward path, so without the ceiling this would mint an
-    // arbitrary quantity off a tampered or misconfigured Stripe price.
+    // Defence in depth since #33: the amount check alone would already refuse
+    // 5000¢ against a 500¢ order. The ceiling is what catches the case the
+    // equality cannot — an order created under a higher ceiling, matching its
+    // OWN quote, after the ceiling is lowered.
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 5_000)).status_code == 200;
     assert statusOf(deps) == #created; // never marked paid
+    let open = ErrorQueue.unresolved(deps.errorQueue);
+    assert open.size() == 1;
+    assert open[0].detail.contains(#text "exceeds the per-purchase ceiling");
+  });
+
+  test("the ceiling's one REACHABLE case: lowered under an existing order", func() {
+    // Since #33 the paid amount must equal the quote, so a "tampered price" can
+    // no longer reach the ceiling — this is the only path left to it, and it
+    // needs no tampering at all. The order quotes 500¢ and is paid 500¢; the
+    // ceiling moved to 100¢ underneath it. Without this branch the equality
+    // check would pass and the order would mint above a limit the operator has
+    // since set. (Delete this test and `#aboveCeiling` becomes dead code.)
+    let deps = { freshDeps() with maxPurchaseUsdCents = 100 };
+    withOrder(deps, #card);
+    assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
+    assert statusOf(deps) == #created;
     let open = ErrorQueue.unresolved(deps.errorQueue);
     assert open.size() == 1;
     assert open[0].detail.contains(#text "exceeds the per-purchase ceiling");

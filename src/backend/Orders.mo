@@ -187,10 +187,13 @@ module {
   /// transitions an order; `abandon_order` is the only thing that ends one, and
   /// `#needsReview → #abandoned` is its single outgoing edge.
   ///
-  /// ⚠️ **Two guards mirror this matrix and the compiler checks neither**:
-  /// `Card.handleWebhook`'s status switch and `attach_payment`'s. Both feed
-  /// `markPaid`, so anything they admit that this refuses is a bug — a trap on the
-  /// webhook path, an internal blob on the admin one. Change this and check both.
+  /// ⚠️ **A guard mirrors this matrix and the compiler does not check it**:
+  /// `Card.handleWebhook`'s status switch, which feeds `markPaid`, so anything it
+  /// admits that this refuses is a bug — and on that path a trap, i.e. a 5xx
+  /// Stripe retries for ~3 days. Change this and check the guard. It was two
+  /// guards until #33 deleted `attach_payment`; #34 shipped the first fix and
+  /// missed the second, so the lesson is to grep for `markPaid`'s CALLERS, not
+  /// for the trap.
   public func isLegalTransition(from : Types.OrderStatus, to : Types.OrderStatus) : Bool {
     switch (from, to) {
       case (#created, #cancelled) true; // the buyer gave up before paying (#34)
@@ -414,18 +417,21 @@ module {
   /// Webhook money-in (§6.1): `#created → #paid`, and only that. #34 deleted the
   /// `#expired` edge, so this REFUSES an order that stopped being payable.
   ///
-  /// ⚠️ Two callers guard the status before reaching here — `Card.handleWebhook`
-  /// and `attach_payment` — and `-Werror` checks neither against the matrix. The
-  /// webhook one **traps** on this error rather than swallowing it, so a guard that
-  /// drifts open is a 5xx Stripe retries for ~3 days rather than a silent mint.
+  /// ⚠️ `Card.handleWebhook` guards the status before reaching here and `-Werror`
+  /// does not check that guard against the matrix. It **traps** on this error
+  /// rather than swallowing it, so a guard that drifts open is a 5xx Stripe
+  /// retries for ~3 days rather than a silent mint. (It was two callers until
+  /// #33 deleted `attach_payment`; one is not a reason to relax the trap.)
   ///
-  /// `honoredCycles` replaces the locked quantity (equal to it when the paid
-  /// amount matches the quote, repriced from the order's own snapshot when it
-  /// does not), and `paidUsdCents` records what actually arrived.
+  /// **`lockedCycles` is not written here.** Since #33 the webhook honours only
+  /// the quoted amount, so the quantity locked at creation is the quantity
+  /// delivered — immutable for the order's whole life, which is what makes #30's
+  /// tally exact rather than conservative. `paidUsdCents` records what arrived,
+  /// and it can only equal `pricing.usdCents`; it is stored because "what Stripe
+  /// said" and "what we asked for" being the same is worth being able to check.
   public func markPaid(
     store : Store,
     id : Types.OrderId,
-    honoredCycles : Nat,
     paidUsdCents : Nat,
     nowNs : Int,
   ) : Result.Result<Types.Order, TransitionError> {
@@ -434,7 +440,7 @@ module {
       case (?order) {
         switch (transition(order, #paid, nowNs)) {
           case (#ok(updated)) {
-            let paid = { updated with lockedCycles = honoredCycles; paidUsdCents = ?paidUsdCents };
+            let paid = { updated with paidUsdCents = ?paidUsdCents };
             store.orders.add(id, paid);
             // markPaid writes status directly rather than going through
             // applyTransition, so it maintains the counts itself.
@@ -471,39 +477,6 @@ module {
         open;
       };
     };
-  };
-
-  /// Every order id in the store, materialised so a caller can mutate the store
-  /// while iterating (the retention sweep transitions orders as it goes, which
-  /// would otherwise invalidate a live iterator).
-  public func allIds(store : Store) : [Types.OrderId] {
-    store.orders.keys().toArray();
-  };
-
-  /// Up to `limit` ids at or after `afterId` in key order, for a resumable scan.
-  ///
-  /// Exists so the retention sweep costs O(limit) per tick instead of O(all
-  /// orders): `allIds` materialises the whole key set into an array, which grows
-  /// forever because orders are never deleted, so a bounded *scan* over an
-  /// unbounded *materialisation* still gets more expensive every tick.
-  ///
-  /// The cursor is an order id rather than an index. An index into a snapshot is
-  /// meaningless across ticks — inserts shift everything after them, so a
-  /// positional cursor silently skips and re-scans. Keys are stable, so
-  /// resuming from one visits every order exactly once per pass.
-  public func idsFrom(store : Store, afterId : ?Types.OrderId, limit : Nat) : [Types.OrderId] {
-    let out = List.empty<Types.OrderId>();
-    let iter = switch (afterId) {
-      case (?id) store.orders.entriesFrom(id);
-      case null store.orders.entries();
-    };
-    for ((id, _) in iter) {
-      // entriesFrom is inclusive; the cursor is the last id already handled.
-      if (afterId == ?id) continue;
-      if (out.size() >= limit) return out.toArray();
-      out.add(id);
-    };
-    out.toArray();
   };
 
   /// Authz-guarded lookup for the user API: `caller == order.owner` (§2).
