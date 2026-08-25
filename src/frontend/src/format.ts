@@ -59,9 +59,26 @@ export function statusInfo(key: StatusKey): StatusInfo {
 
 /// Append client_reference_id to a Stripe Payment Link (§6.1). The one URL
 /// param the whole attribution flow hangs off.
+///
+/// ⚠️ Unused as of #33 — the canister sets `client_reference_id` through the API
+/// when it creates the session, so no URL is ever assembled here. Kept only until
+/// PR-C deletes the Payment Link mechanism wholesale; do not build on it.
 export function paymentLinkWithRef(url: string, clientReferenceId: string): string {
   const sep = url.includes("?") ? "&" : "?";
   return `${url}${sep}client_reference_id=${encodeURIComponent(clientReferenceId)}`;
+}
+
+/// The payment reference for an order: `<principal>_<orderId>`.
+///
+/// Computed here rather than returned by `create_order`, which used to hand it
+/// back so the frontend could append it to a Payment Link URL (#33 removed that).
+/// It still appears on the order page, because it is the reference on the buyer's
+/// card receipt and therefore the thing they quote to support.
+///
+/// It must match `Orders.clientReferenceId` exactly — the whole webhook
+/// attribution path parses this shape.
+export function clientReferenceFor(principalText: string, orderId: string): string {
+  return `${principalText}_${orderId}`;
 }
 
 /// "3.353 T" style cycle quantities; exact below 1M.

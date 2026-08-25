@@ -84,8 +84,10 @@ export interface Order {
 }
 
 export interface CreatedOrder {
+  /// Carrying `stripeSessionUrl`, which is all a caller needs. `clientReferenceId`
+  /// was dropped in #33 — a Payment-Link relic in a public response type — and is
+  /// derivable as `<principal>_<orderId>`.
   order: Order;
-  clientReferenceId: string;
 }
 
 /// Gate.mo admission refusal — each case carries the observed value and the
@@ -123,7 +125,9 @@ export type CreateOrderError =
   | { quoteChanged: { quoted: bigint; minimum: bigint } }
   | { idGeneration: null }
   | { notAdmitted: GateReason }
-  | { destinationNotOwned: null };
+  | { destinationNotOwned: null }
+  | { sessionUnavailable: string }
+  | { cancelledDuringCreation: null };
 
 export type Rail = { card: null };
 
@@ -232,6 +236,10 @@ export interface BackendService {
   audit_log(): Promise<AuditEvent[]>;
   card_tiers(): Promise<Tier[]>;
   create_order(tierId: string, destination: Destination, minCycles: [] | [bigint]): Promise<Result<CreatedOrder, CreateOrderError>>;
+  set_stripe_api_key(key: string): Promise<Result<null, { tooShort: { size: bigint; min: bigint } }>>;
+  stripe_api_key_status(): Promise<{ isSet: boolean; setAtNs: Opt<bigint>; generation: bigint }>;
+  set_stripe_origin(origin: string): Promise<Result<null, { notHttps: null } | { hasQueryOrFragment: null } | { empty: null }>>;
+  stripe_origin(): Promise<[] | [string]>;
   quote_previews(amounts: bigint[]): Promise<QuotePreviews>;
   cancel_order(id: string): Promise<Result<Order, string>>;
   set_expected_livemode(expected: [] | [boolean]): Promise<void>;

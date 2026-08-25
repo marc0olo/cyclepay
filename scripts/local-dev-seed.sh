@@ -174,9 +174,19 @@ step "card tiers"
 # The tier list IS the card rail's on/off switch (RUNBOOK §3), so an empty list is
 # the fail-closed default rather than a missing step.
 #
+# ⚠️ **SUPERSEDED MACHINERY (#33).** Nothing opens these links any more: the
+# canister creates a Checkout Session per order through the Stripe API, and
+# `Tier.paymentLinkUrl` is read by nothing. This block still runs only because the
+# field is still required, and it goes when the field does (#33 PR-C). Do not add
+# to it, and do not treat a missing link as a reason paying will fail — the API
+# key is that reason.
+#
 # Where each tier's Payment Link comes from, in precedence order:
 #
 #   1. STRIPE_LINK_T5 / _T20 / _T50 in the environment
+#
+# `STRIPE_API_KEY` follows the same precedence and is read by the Stripe session
+# step below — put it in the file rather than on a command line (see there).
 #   2. scripts/.local-dev.env, if it exists — gitignored, so you set your sandbox
 #      links ONCE instead of exporting them into every new shell
 #   3. the link already registered on this canister, when it is not a placeholder
@@ -195,12 +205,14 @@ if [ -f "$LINKS_FILE" ]; then
   BEFORE_T5="${STRIPE_LINK_T5:-}"
   BEFORE_T20="${STRIPE_LINK_T20:-}"
   BEFORE_T50="${STRIPE_LINK_T50:-}"
+  BEFORE_KEY="${STRIPE_API_KEY:-}"
   # shellcheck disable=SC1090
   . "$LINKS_FILE"
   [ -z "$BEFORE_T5" ] || STRIPE_LINK_T5="$BEFORE_T5"
   [ -z "$BEFORE_T20" ] || STRIPE_LINK_T20="$BEFORE_T20"
   [ -z "$BEFORE_T50" ] || STRIPE_LINK_T50="$BEFORE_T50"
-  ok "read Payment Links from $LINKS_FILE"
+  [ -z "$BEFORE_KEY" ] || STRIPE_API_KEY="$BEFORE_KEY"
+  ok "read local dev config from $LINKS_FILE"
 fi
 
 # `<tier id>\t<url>` for what is registered right now. Paired by id rather than by
@@ -286,6 +298,52 @@ fi
 ok "float funded and observed: $((OBSERVED_E8S / 100000000)) ICP"
 
 # ── the admission gate ───────────────────────────────────────────────────────
+# ── Stripe API key + return origin (#33) ─────────────────────────────────────
+step "Stripe session config"
+# ⚠️ **`STRIPE_API_KEY` belongs in `scripts/.local-dev.env`, not on a command
+# line.** That file is gitignored and is sourced above, so the key never appears
+# in your shell history, in `ps` output, or in a terminal transcript. An
+# `export`-then-run also works and wins over the file, but it leaves the value
+# where something can read it back.
+#
+#   echo 'STRIPE_API_KEY=rk_test_...' >> scripts/.local-dev.env
+# The rail is live only when BOTH the API key and the webhook secret are
+# provisioned. This step does the KEY and the ORIGIN; `scripts/stripe-dev.sh`
+# does the webhook secret, because that one belongs to a `stripe listen` session
+# rather than to the deployment.
+#
+# ⚠️ A reinstall wipes both secrets and this script only restores the key, so
+# after `--mode reinstall` you still need `scripts/stripe-dev.sh` before paying.
+if [ -n "${STRIPE_API_KEY:-}" ]; then
+  icp canister call backend set_stripe_api_key "(\"${STRIPE_API_KEY}\")" >/dev/null \
+    || die "set_stripe_api_key was refused (too short?)"
+  ok "Stripe API key provisioned from STRIPE_API_KEY"
+else
+  # A placeholder, deliberately: it lets every non-paying path work — browsing,
+  # signing in, quoting — while `create_order` fails at the outcall with a real
+  # Stripe 401 rather than at a config check. That is a better local default than
+  # refusing to create orders at all, and the failure names itself.
+  icp canister call backend set_stripe_api_key '("rk_test_PLACEHOLDER_set_STRIPE_API_KEY_to_create_sessions")' >/dev/null \
+    || die "set_stripe_api_key was refused"
+  printf '  \033[33m!\033[0m placeholder API key set — export STRIPE_API_KEY=rk_... to create real sessions\n'
+fi
+
+# The origin Stripe returns the buyer to. The frontend canister's own URL, since
+# no domain is chosen yet (#40/#23). Must be https, so a local run uses the
+# canister's icp0.io origin rather than the localhost gateway.
+# `icp canister id` does not exist; the deploy records the mapping here.
+# `canister status` would also print it, but it needs a running network and a
+# reachable canister, where this is just a read.
+FRONTEND_ID="$(sed -n 's/.*"frontend": *"\([^"]*\)".*/\1/p' .icp/cache/mappings/local.ids.json 2>/dev/null || true)"
+if [ -n "$FRONTEND_ID" ]; then
+  ORIGIN="https://${FRONTEND_ID}.icp0.io"
+  icp canister call backend set_stripe_origin "(\"${ORIGIN}\")" >/dev/null \
+    || die "set_stripe_origin refused ${ORIGIN} — it must be https with no query or fragment"
+  ok "return origin set to ${ORIGIN}"
+else
+  printf '  \033[33m!\033[0m could not read the frontend canister id; set_stripe_origin skipped\n'
+fi
+
 step "admission gate"
 # The one that is genuinely confusing: `minCanisterCycles` defaults to 5 T, and
 # `icp deploy` creates the canister with less. So a freshly deployed local gateway
@@ -335,10 +393,31 @@ cat <<NOTES
 
   What works now, and what needs Stripe:
     - Browsing amounts, signing in, creating an order, cancelling: all work.
-    - PAYING needs two things Stripe owns: a real Payment Link (set
-      STRIPE_LINK_T5 / _T20 / _T50 above) and a signed webhook to deliver.
-      Run scripts/capture-stripe-fixtures.sh to forward real sandbox events
-      here, or drive the webhook by hand per docs/SANDBOX-TESTPLAN.md.
+    - PAYING needs BOTH Stripe secrets. There are no Payment Links any more:
+      the canister creates a Checkout Session per order and sets
+      client_reference_id on it through the API, so nothing has to be
+      configured in the Dashboard.
+
+        1. A restricted API key (rk_...) scoped to write Checkout Sessions and
+           nothing else. Put it in scripts/.local-dev.env (gitignored, sourced
+           by this script) rather than on a command line, then re-run.
+        2. A signed webhook to deliver: scripts/stripe-dev.sh starts the
+           forwarder and provisions the signing secret from that session.
+
+      Check both with stripe_api_key_status and webhook_secret_status.
+
+  Two things in a paying run that look like bugs and are not:
+    - After paying, Stripe redirects to the configured origin
+      (https://<frontend-id>.icp0.io), which does NOT serve your local
+      frontend, so that tab shows an error. The payment completes and the
+      webhook still fires — watch the order in the tab you already had open.
+      There is no local https origin to point at, and a caller-supplied
+      success_url is deliberately impossible: it would be an open redirect
+      Stripe renders after a real payment.
+    - The session expires 35 minutes after creation, enforced by Stripe. The
+      pay button disappears at the deadline, and it goes before the
+      checkout.session.expired webhook lands, because the UI renders expiry
+      from expiresAtNs rather than from the status.
 
   ⚠️ The CMC rate goes stale in 15 minutes. Re-run with --rate-only.
 NOTES

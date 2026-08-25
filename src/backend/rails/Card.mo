@@ -181,6 +181,25 @@ module {
     #chargeRefunded : ChargeRefunded;
     /// An async payment method failed for good — the session will never pay.
     #asyncPaymentFailed : { eventId : Text; paymentIntent : Text };
+    /// Stripe closed the session unpaid (#33). **The only mechanism that expires
+    /// an order** — there is no TTL sweep, deliberately: a sweep would flip a
+    /// stuck order to `#expired` while its promise stayed held, so a broken order
+    /// would look like a correctly expired one and the reserve would leak
+    /// silently. Without it, a missed event leaves the order visibly `#created`
+    /// past its `expiresAtNs`, which IS the detection signal (#30).
+    #sessionExpired : {
+      eventId : Text;
+      /// The session's own id, so the event can be bound to the order that
+      /// stored it rather than trusted on the reference alone.
+      sessionId : Text;
+      /// `<principal>_<orderId>`. Attribution when the order has no session id
+      /// recorded — the residue case whose create-response was lost.
+      clientReferenceId : ?Text;
+    };
+    /// A chargeback. **Audit only** (#33): cycles are delivered and irreversible
+    /// and the card network pulls the funds, so there is nothing to react to — but
+    /// without the subscription a dispute is invisible to the operator.
+    #disputeCreated : { eventId : Text; paymentIntent : Text; amountCents : ?Nat };
     /// Recognized envelope, event type we don't handle — acked and dropped
     /// (an extra subscribed type must not look like a delivery failure).
     #unhandled : { eventId : Text; eventType : Text };
@@ -265,6 +284,31 @@ module {
     } else if (eventType == "checkout.session.async_payment_failed") {
       switch (required("data.object.payment_intent")) {
         case (#ok(paymentIntent)) #ok(#asyncPaymentFailed({ eventId; paymentIntent }));
+        case (#err(e)) #err(e);
+      };
+    } else if (eventType == "checkout.session.expired") {
+      // The session id is required — it is what binds the event to an order.
+      // `client_reference_id` is optional here because a session can legitimately
+      // carry none, and the handler falls back to the id match.
+      switch (required("data.object.id")) {
+        case (#ok(sessionId)) {
+          #ok(#sessionExpired({
+            eventId;
+            sessionId;
+            clientReferenceId = Json.textAt(json, "data.object.client_reference_id");
+          }));
+        };
+        case (#err(e)) #err(e);
+      };
+    } else if (eventType == "charge.dispute.created") {
+      switch (required("data.object.payment_intent")) {
+        case (#ok(paymentIntent)) {
+          #ok(#disputeCreated({
+            eventId;
+            paymentIntent;
+            amountCents = Json.natAt(json, "data.object.amount");
+          }));
+        };
         case (#err(e)) #err(e);
       };
     } else {
@@ -769,9 +813,88 @@ module {
         };
         ack(Http.text(200, "ok"));
       };
+      case (#ok(#disputeCreated({ eventId; paymentIntent; amountCents }))) {
+        // Audit only, deliberately. A chargeback is the one loss nothing can
+        // prevent: the cycles are delivered and irreversible while the card
+        // network pulls the funds back. There is no automated response worth
+        // making — but an operator has to be able to see it happened.
+        if (Idempotency.recordStripeEvent(deps.dedup, eventId, nowNs)) {
+          let amount = switch (amountCents) {
+            case (?cents) cents.toText() # " cents";
+            case null "an unstated amount";
+          };
+          audit(deps, nowNs, "stripe.disputeCreated", "intent " # paymentIntent # " disputed for " # amount # " — reconcile in Stripe; cycles cannot be recovered");
+        };
+        ack(Http.text(200, "ok"));
+      };
+      case (#ok(#sessionExpired(expired))) handleSessionExpired(deps, expired, nowNs);
       case (#ok(#chargeRefunded(refund))) handleRefund(deps, refund, nowNs);
       case (#ok(#checkoutCompleted(session))) handleCheckout(deps, session, nowNs);
     };
+  };
+
+  /// Stripe closed a session unpaid (#33).
+  ///
+  /// ⚠️ **This handler must never trap.** A trap here is a 5xx, which Stripe
+  /// retries for about three days. Three reachable cases, all of which end 200:
+  ///
+  /// 1. **A `#cancelled` order — the NORMAL path.** Cancelling expires the
+  ///    session, so Stripe fires this event for *every* cancel. "Mark it expired"
+  ///    is an illegal transition there, so it degrades to a status no-op through
+  ///    `applyTransition` rather than being treated as an error.
+  /// 2. **A session we do not recognise** — an order from before a reinstall, or
+  ///    another integration pointed at this endpoint. Audit and ack.
+  /// 3. **A redelivery.** Deduped on the event id, so the status and (once #30
+  ///    lands) the tally are both no-ops.
+  ///
+  /// **Binding:** if the order has a `stripeSessionId`, the event's must match it
+  /// — a mismatch is audited and treated as unattributed. If it is null, attribute
+  /// by `client_reference_id` and backfill the id. That null-accept half is
+  /// load-bearing: it is how the residue order whose session-create response was
+  /// lost heals itself when that session's own expiry arrives ~30 minutes later.
+  func handleSessionExpired(
+    deps : Deps,
+    expired : { eventId : Text; sessionId : Text; clientReferenceId : ?Text },
+    nowNs : Int,
+  ) : Outcome {
+    if (not Idempotency.recordStripeEvent(deps.dedup, expired.eventId, nowNs)) {
+      // A redelivery. Everything below is idempotent anyway, but returning here
+      // keeps the audit log from filling with copies.
+      return ack(Http.text(200, "duplicate event"));
+    };
+    let ?ref = expired.clientReferenceId else {
+      audit(deps, nowNs, "stripe.expiredUnattributed", "session " # expired.sessionId # " expired with no client_reference_id");
+      return ack(Http.text(200, "ok"));
+    };
+    let ?(_, orderId) = Orders.parseClientReferenceId(ref) else {
+      audit(deps, nowNs, "stripe.expiredUnattributed", "session " # expired.sessionId # " expired with a malformed reference");
+      return ack(Http.text(200, "ok"));
+    };
+    let ?order = Orders.get(deps.orders, orderId) else {
+      audit(deps, nowNs, "stripe.expiredUnattributed", "session " # expired.sessionId # " names order " # orderId # ", which this gateway does not hold");
+      return ack(Http.text(200, "ok"));
+    };
+    switch (order.stripeSessionId) {
+      case (?stored) {
+        if (stored != expired.sessionId) {
+          audit(deps, nowNs, "stripe.expiredSessionMismatch", "order " # orderId # " holds session " # stored # " but the event names " # expired.sessionId);
+          return ack(Http.text(200, "ok"));
+        };
+      };
+      // Null is accepted and backfilled — see the note above.
+      case null {};
+    };
+    switch (Orders.expireBySession(deps.orders, orderId, expired.sessionId, nowNs)) {
+      case (#ok(_)) {
+        audit(deps, nowNs, "stripe.sessionExpired", "order " # orderId # " expired by Stripe (session " # expired.sessionId # ")");
+      };
+      case (#err(_)) {
+        // Case 1 above, almost always: the order is already `#cancelled`, which
+        // is what cancelling it did. Not an error, and not silent.
+        audit(deps, nowNs, "stripe.sessionExpiredNoop", "order " # orderId # " was already " # Types.statusToText(order.status));
+      };
+    };
+    ack(Http.text(200, "ok"));
   };
 
   /// A verified event we cannot process — e.g. a checkout session with no

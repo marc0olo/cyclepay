@@ -1,5 +1,26 @@
 # The Stripe (Card) rail, end to end
 
+> ⚠️ **Money-in changed in #33 and parts of this document describe the old shape.**
+>
+> The gateway creates a **Stripe Checkout Session per order** through the API. It
+> does not send buyers to a fixed Payment Link, `Tier.paymentLinkUrl` is read by
+> nothing, and no Stripe Dashboard objects are involved at all — the session
+> carries inline `price_data`.
+>
+> | Now | Was |
+> |---|---|
+> | one session per order, `expires_at` set by us and enforced by Stripe | one permanent link per price point |
+> | `client_reference_id` set by the canister through the API | appended to the link URL by the frontend |
+> | the pay URL lives on the order, so a reload keeps it | held in browser-session memory |
+> | expiry comes from `checkout.session.expired` | a TTL sweep |
+> | the rail is live iff **both** the API key and the webhook secret are provisioned | an empty tier list paused it |
+>
+> Passages about creating or configuring Payment Links have **no effect**. They
+> are still here because deleting them belongs in the same PR that deletes the
+> mechanism (#33 PR-C) — a half-deleted procedure is worse than a marked one. The
+> replacement procedure is in **RUNBOOK §3**.
+
+
 How fiat becomes cycles. Written from the code — every claim names the module it
 came from, so you can check it. (Module names, not line numbers: a stale line
 number is worse than no line number, and they drift on every edit.) The *why* behind the design decisions lives in

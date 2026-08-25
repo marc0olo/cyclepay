@@ -71,10 +71,11 @@ This is **the** procedure. Everything below it in this file is either a group of
 scenarios to work through or a by-hand reference for one of these steps.
 
 What you have to supply: a **Stripe sandbox account** with the Stripe CLI logged in
-to it, and **one Payment Link per tier** in that account. Nothing else, and no
-mainnet.
+to it, and a **restricted API key** (`rk_...`) scoped to **write Checkout Sessions**
+and nothing else. No Payment Links, no Products, no Prices — the canister creates a
+session per order through the API (#33). Nothing else, and no mainnet.
 
-**How to create those links — and how each must be configured — is RUNBOOK §3.**
+**How to create the key, and the go-live ordering, is RUNBOOK §3.**
 Get it right here rather than at go-live: the four settings that break
 `amount_total == tier.usdCents` produce no error, just a different cycle quantity,
 so a sandbox run with automatic tax left on would "pass" while proving the wrong
@@ -87,17 +88,17 @@ stripe login                                    # a SANDBOX account, never live
 npm --prefix test/integration run fetch:wasm    # the sha256-pinned xrc mock
 npm --prefix test/browser ci                    # only if you also want the suites
 
-# 1. A sellable local gateway. Put your Payment Links in scripts/.local-dev.env
-#    (gitignored) so you set them once rather than per shell; the environment still
-#    overrides it, and a re-run keeps links already registered on the canister
-#    rather than replacing them with placeholders. Any that ARE placeholders are
-#    named in the output, and those tiles create a real order before dead-ending.
-#    Configure each link as RUNBOOK §3 requires — fixed price, USD, card-only, and
-#    adjustable quantity / promotion codes / automatic tax all off. Sandbox links
-#    with a "wrong" setting will not error; they deliver a different cycle quantity.
-export STRIPE_LINK_T5=https://buy.stripe.com/test_...
-export STRIPE_LINK_T20=https://buy.stripe.com/test_...
-export STRIPE_LINK_T50=https://buy.stripe.com/test_...
+# 1. A sellable local gateway. Put STRIPE_API_KEY=rk_... in scripts/.local-dev.env
+#    (gitignored, sourced by the seed) so you set it once rather than per shell,
+#    and so it never lands in your shell history. Without it the seed sets a
+#    placeholder: everything except paying works, and create_order fails with a
+#    real Stripe 401 rather than at a config check.
+#    Nothing to configure in the Dashboard: the session carries inline price_data
+#    with a fixed unit_amount and quantity 1, and none of the settings that could
+#    move amount_total is enabled — src/backend/rails/Session.mo lists all eight
+#    next to the body builder, and test/session.test.mo asserts their absence.
+#    The STRIPE_LINK_* variables the seed still reads populate a field nothing
+#    reads; they go with the field (#33 PR-C).
 icp network start -d
 icp deploy
 scripts/local-dev-seed.sh
@@ -120,9 +121,11 @@ Then, in the browser at the frontend URL `icp deploy` printed
    production origin cannot take that branch. Register a passkey; it is throwaway
    and local to this network, which is wiped by `icp network stop`.
 3. **Pick an amount and create the order.** The rate is locked here, not at payment.
-4. **Pay.** "Pay with card ↗" opens your Payment Link with `?client_reference_id=`
-   already appended — that reference is the whole attribution mechanism, so do not
-   open the bare link. Card `4242 4242 4242 4242`, any future expiry, any CVC.
+4. **Pay.** "Pay with card ↗" opens the order's own Checkout Session — the
+   canister created it and set `client_reference_id` on it through the API (#33),
+   so there is no link to configure and no parameter to append. Card
+   `4242 4242 4242 4242`, any future expiry, any CVC. **You have 35 minutes**,
+   enforced by Stripe; the button disappears at the deadline.
 5. **Watch the page.** Leave the order tab open. The webhook arrives at the
    forwarder, the mint runs, and the page reaches **delivered** on its own 3 s poll
    with the guided tour leading. It should never need a reload.
@@ -230,10 +233,25 @@ icp canister call backend refresh_rates '()'
 icp canister call backend pricing_status '()' --query   # expect ok = true
 ```
 
-Create an order, append its `clientReferenceId` to your test-mode Payment Link as
-`?client_reference_id=<ref>`, pay with `4242 4242 4242 4242`, and watch `get_order`
-reach `delivered`. `process_order` kicks the mint without waiting for the sweep.
-`mint_journal` and `receipt` then carry the real ICP block index and minted quantity.
+Create an order and open the `stripeSessionUrl` on the returned order — that is
+the payment page. The canister creates a **Checkout Session per order** and sets
+`client_reference_id` through the API (#33), so there is no Payment Link to
+configure and no URL parameter to append. Pay with `4242 4242 4242 4242` and watch
+`get_order` reach `delivered`. `process_order` kicks the mint without waiting for
+the sweep; `mint_journal` and `receipt` then carry the real ICP block index and
+minted quantity.
+
+⚠️ **Two things that look like bugs and are not:**
+
+- **The session expires 35 minutes after creation**, enforced by Stripe. Past that
+  the pay button disappears — the UI renders expiry from `expiresAtNs`, not from
+  the status, so it goes even before the `checkout.session.expired` webhook lands.
+- **After paying, Stripe redirects to the configured origin**
+  (`https://<frontend-id>.icp0.io`), which does **not** serve your local frontend.
+  The payment completes and the webhook fires regardless; only the landing page
+  fails to load. There is no local https origin to point at, and a caller-supplied
+  `success_url` is deliberately impossible — it would be an open redirect Stripe
+  renders after a real payment.
 
 #### Giving the local CMC a current rate
 
@@ -420,7 +438,7 @@ icp canister call backend receipt '("<orderId>")'           # owner identity onl
 
 | # | Scenario | How | Expect |
 |---|---|---|---|
-| B1 | Happy path | your link + `?client_reference_id=<ref>` from `create_order`, card `4242 4242 4242 4242` | order → `#paid`; → `#delivered` |
+| B1 | Happy path | open the order's `stripeSessionUrl`, card `4242 4242 4242 4242` | order → `#paid`; → `#delivered` |
 | B2 | No reference | `stripe trigger checkout.session.completed` | `200`; Type 1 `#unattributed`, `claimedRef` empty |
 | B3 | Forged owner | hand-edit the ref to another principal, same order id | Type 1 — "claimed owner does not match" |
 | B4 | Malformed reference | ref = `garbage` | Type 1 — "malformed" |

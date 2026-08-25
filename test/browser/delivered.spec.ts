@@ -60,6 +60,30 @@ test.describe("the delivered view", () => {
     await expect(page.locator("#receipt-verdict")).toContainText(/verified/i);
   });
 
+  test("a payable order offers a REACHABLE pay button, and a reload keeps it", async ({ page }) => {
+    // The defect this pins was found in a manual run, not by a test: the session
+    // URL lived in a browser-session `Map`, so any reload lost the pay button on
+    // an order that was still payable. With a one-open-order cap the buyer could
+    // not even start over.
+    //
+    // Here rather than only in jsdom because jsdom cannot tell "in the DOM" from
+    // "on screen and clickable" — and the button being *reachable* is the whole
+    // property. `toBeVisible` plus a real href is what a buyer actually needs.
+    await page.goto("/");
+    await signInAsFixtureBuyer(page);
+    await openFixtureOrder(page, { status: "created" });
+    const pay = page.locator("#pay-link");
+    await expect(pay).toBeVisible();
+    await expect(pay).toHaveAttribute("href", /^https:\/\/checkout\.stripe\.com\//);
+
+    // The reload. Nothing was cached, because `create_order` never ran.
+    await page.reload();
+    await signInAsFixtureBuyer(page);
+    await openFixtureOrder(page, { status: "created" });
+    await expect(page.locator("#pay-link")).toBeVisible();
+    await expect(page.locator("#pay-link")).toHaveAttribute("href", /^https:\/\/checkout\.stripe\.com\//);
+  });
+
   test("an undelivered order is offered no commands yet", async ({ page }) => {
     // The two cases that used to suppress the tour — a canister top-up, with
     // nothing to link, and somebody else's account, which the buyer's identity

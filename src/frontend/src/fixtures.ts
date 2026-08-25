@@ -67,6 +67,12 @@ const DEPOSIT_FEE = 100_000_000n;
 /// tolerate a fresh one per run.
 const ORDER_ID = "f1c7ea0b9d2e4a6580b3c1d7e9f20a4b";
 const CREATED_AT_NS = 1_770_000_000_000_000_000n;
+/// Fixed like the order id, and far enough ahead that the order is payable no
+/// matter when the suite runs — the order view renders expiry from this rather
+/// than from the status.
+const EXPIRES_AT_NS = 4_000_000_000_000_000_000n;
+const SESSION_ID = "cs_test_a1b2c3d4";
+const SESSION_URL = "https://checkout.stripe.com/c/pay/cs_test_a1b2c3d4";
 
 function cannedOrder(spec: OrderSpec): Order {
   const status = spec.status ?? "delivered";
@@ -91,6 +97,14 @@ function cannedOrder(spec: OrderSpec): Order {
       ratesFetchedAtNs: CREATED_AT_NS - 60_000_000_000n,
     },
     paidUsdCents: status === "created" || status === "expired" ? undefined : USD_CENTS,
+    // ⚠️ Set EXPLICITLY, even though the bindgen makes these optional properties
+    // so omitting them typechecks. A forgotten `stripeSessionUrl` is silently
+    // `undefined`, which the order view reads as "no session" and renders as no
+    // pay button — a fixture that quietly depicts a state no real order is in.
+    expiredBy: undefined,
+    expiresAtNs: EXPIRES_AT_NS,
+    stripeSessionId: SESSION_ID,
+    stripeSessionUrl: SESSION_URL,
     createdAtNs: CREATED_AT_NS,
     updatedAtNs: CREATED_AT_NS,
   };

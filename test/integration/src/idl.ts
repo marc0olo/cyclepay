@@ -61,7 +61,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     status: OrderStatus,
     updatedAtNs: IDL.Int,
   });
-  const CreatedOrder = IDL.Record({ clientReferenceId: IDL.Text, order: Order });
+  const CreatedOrder = IDL.Record({ order: Order });
   const GateReason = IDL.Variant({
     amountAboveMax: IDL.Record({ maxUsdCents: IDL.Nat, usdCents: IDL.Nat }),
     burnCapExhausted: IDL.Record({ burnedE8s: IDL.Nat, capE8s: IDL.Nat }),
@@ -88,8 +88,10 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   const RetentionSweepResult = IDL.Record({ expired: IDL.Nat, scanned: IDL.Nat });
   const CreateOrderError = IDL.Variant({
     anonymous: IDL.Null,
+    cancelledDuringCreation: IDL.Null,
     destinationNotOwned: IDL.Null,
     idGeneration: IDL.Null,
+    sessionUnavailable: IDL.Text,
     quoteChanged: IDL.Record({ minimum: IDL.Nat, quoted: IDL.Nat }),
 
     notAdmitted: GateReason,
@@ -436,6 +438,14 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Variant({ ok: IDL.Null, err: TreasuryConfigError })],
       [],
     ),
+    set_stripe_api_key: IDL.Func([IDL.Text], [IDL.Variant({ ok: IDL.Null, err: SecretSetError })], []),
+    stripe_api_key_status: IDL.Func([], [SecretStatus], ['query']),
+    set_stripe_origin: IDL.Func(
+      [IDL.Text],
+      [IDL.Variant({ ok: IDL.Null, err: IDL.Variant({ empty: IDL.Null, hasQueryOrFragment: IDL.Null, notHttps: IDL.Null }) })],
+      [],
+    ),
+    stripe_origin: IDL.Func([], [IDL.Opt(IDL.Text)], ['query']),
     set_webhook_secret: IDL.Func(
       [IDL.Text],
       [IDL.Variant({ ok: IDL.Null, err: SecretSetError })],

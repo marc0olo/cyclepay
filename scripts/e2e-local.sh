@@ -326,8 +326,8 @@ UNSIGNED_STATUS="$(printf '{}' | curl -sS -o /dev/null -w '%{http_code}' \
 ok "a body with no signature header is refused 400"
 
 # And a WELL-FORMED header whose MAC does not verify — a different branch, and the
-# one that actually happens in production: a rotated secret, or a Payment Link
-# pointed at the wrong endpoint. The timestamp is current on purpose, so a refusal
+# one that actually happens in production: a rotated secret, or a webhook endpoint
+# configured against a different Stripe account than the one paying. The timestamp is current on purpose, so a refusal
 # is attributable to the MAC and not to the ±300 s tolerance window.
 BAD_SIG_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' \
   -X POST "${GATEWAY}/webhook/stripe?canisterId=${BACKEND_ID}" \

@@ -54,6 +54,12 @@ const state = {
   signInError: undefined as unknown,
 };
 
+/// A session URL and a deadline far in the future, so an order is payable by
+/// default. `expiresAtNs` is what the UI renders expiry from — see the deadline
+/// tests below.
+const SESSION_URL = "https://checkout.stripe.com/c/pay/cs_test_a1b2";
+const FUTURE_NS = 4_000_000_000_000_000_000n;
+
 function anOrder(status: string, lockedCycles = TIER_CYCLES) {
   return {
     id: "abcdef0123456789abcdef0123456789",
@@ -78,6 +84,10 @@ function anOrder(status: string, lockedCycles = TIER_CYCLES) {
     },
     status,
     paidUsdCents: status === "created" || status === "expired" ? undefined : TIER_CENTS,
+    expiredBy: undefined,
+    expiresAtNs: FUTURE_NS,
+    stripeSessionId: "cs_test_a1b2",
+    stripeSessionUrl: SESSION_URL,
     createdAtNs: 1_700_000_000_000_000_000n,
     updatedAtNs: 1_700_000_000_000_000_000n,
   };
@@ -110,7 +120,7 @@ const backend = {
       return { __kind__: "err", err: { __kind__: "quoteChanged", quoteChanged: { quoted, minimum: minCycles ?? 0n } } };
     }
     state.order = anOrder("created");
-    return { __kind__: "ok", ok: { order: state.order, clientReferenceId: "aaaaa-aa_abcdef0123456789abcdef0123456789" } };
+    return { __kind__: "ok", ok: { order: state.order } };
   },
   get_order: async () => state.order ?? null,
   list_orders: async () => (state.order ? [state.order] : []),
@@ -776,5 +786,77 @@ describe("the rate strip never contradicts the tiers", () => {
     const strip = el("rate-line").textContent ?? "";
     expect(strip).toContain("XDR/ICP");
     expect(strip).not.toMatch(/no exchange rate/i);
+  });
+});
+
+// ── paying an order, and still being able to after a reload (#33) ─────────────
+
+describe("the pay button comes from the ORDER, not from browser memory", () => {
+  test("a created order with a session offers it, pointing at Stripe's URL", async () => {
+    await mount();
+    tierButton().click();
+    await settle();
+    el<HTMLFormElement>("order-form").dispatchEvent(new Event("submit"));
+    await settle();
+    expect(el("pay-area").hidden).toBe(false);
+    expect(el<HTMLAnchorElement>("pay-link").getAttribute("href")).toBe(SESSION_URL);
+  });
+
+  test("A RELOAD KEEPS IT — the defect this replaces", async () => {
+    // THE REGRESSION. The URL used to live in a session-scoped `Map` populated
+    // only when `create_order` returned, so any reload lost the pay button on an
+    // order that was still payable — and with a one-open-order cap the buyer
+    // could not even start over. Found in a real manual run, not by a test.
+    //
+    // Opening from history is the reload: `create_order` never ran in this
+    // session, so nothing could have been cached.
+    state.order = anOrder("created");
+    await mount();
+    await openFromHistory();
+    expect(el("pay-area").hidden).toBe(false);
+    expect(el<HTMLAnchorElement>("pay-link").getAttribute("href")).toBe(SESSION_URL);
+  });
+
+  test("the payment reference is shown, derived rather than handed back", async () => {
+    // It is the reference on the buyer's card receipt, so it stays on screen —
+    // but `create_order` no longer returns it (#33 dropped a Payment-Link relic
+    // from a public response type), so the page computes it.
+    state.order = anOrder("created");
+    await mount();
+    await openFromHistory();
+    expect(el("client-ref").textContent).toBe("aaaaa-aa_abcdef0123456789abcdef0123456789");
+  });
+
+  test("no session yet means no button, rather than a broken one", async () => {
+    const noSession = anOrder("created") as Record<string, unknown>;
+    noSession.stripeSessionUrl = undefined;
+    noSession.expiresAtNs = undefined;
+    state.order = noSession;
+    await mount();
+    await openFromHistory();
+    expect(el("pay-area").hidden).toBe(true);
+  });
+});
+
+describe("expiry renders from the DEADLINE, not the status", () => {
+  test("past expiresAtNs the pay button is gone, even while status is created", async () => {
+    // An order can sit in `#created` past its deadline whenever the
+    // `checkout.session.expired` webhook is late or lost. Stripe has closed the
+    // session on its own clock, so offering the button would send the buyer to
+    // spend money the gateway would then have to refund.
+    const stale = anOrder("created") as Record<string, unknown>;
+    stale.expiresAtNs = 1_700_000_000_000_000_000n; // long past
+    state.order = stale;
+    await mount();
+    await openFromHistory();
+    expect(el("pay-area").hidden).toBe(true);
+    // And the page SAYS expired rather than "Awaiting payment", which would tell
+    // the buyer to do something that cannot work.
+    expect(el("order-status-line").textContent).toMatch(/expired/i);
+    // Cancel is hidden too, and that is deliberate rather than incidental:
+    // Stripe's expire endpoint accepts open sessions only, so past the deadline
+    // `cancel_order` can only fail. A button that always fails is worse than
+    // none. (Freeing the buyer's slot in this state is #30's open-order-cap work.)
+    expect(el("cancel-area").hidden).toBe(true);
   });
 });

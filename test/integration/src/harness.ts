@@ -18,6 +18,7 @@ import {
   createIdentity,
   IcpFeaturesConfig,
   SubnetStateType,
+  type PendingHttpsOutcall,
   type Actor,
   type DeferredActor,
 } from '@dfinity/pic';
@@ -29,6 +30,7 @@ import {
 import type {
   BackendService, CmcService, ErrorEntry,
   Destination, HttpResponse, Icrc1Service, Order, OrderStatusKey, Result, StatusVariant,
+  CreatedOrder, CreateOrderError,
 } from './types';
 
 // Mainnet principals — identical on PocketIC's NNS subnet (Cmc.mo pins the
@@ -593,3 +595,202 @@ export function decodeBody(response: { body: Uint8Array | number[] }): string {
 }
 
 
+
+// ── HTTPS outcalls (#33) ──────────────────────────────────────────────────────
+//
+// PocketIC does not perform real outcalls: it parks each one and lets the test
+// answer it. That is *better* coverage than a live call for the request shape,
+// because the exact bytes the canister sends can be asserted — and nothing
+// pinned them before #33.
+//
+// ⚠️ It is a MOCK, so two things it cannot tell you: the real cycle cost, and
+// whether the size cap is big enough for a real Stripe response. Both are first
+// observable in a manual run.
+
+/// Wait for the canister to park an outcall, ticking to let it get there.
+///
+/// Returns the pending request so a test can assert on the URL, headers and body
+/// the canister actually built.
+export async function awaitPendingOutcall(gw: Gateway, rounds = 40): Promise<PendingHttpsOutcall> {
+  for (let i = 0; i < rounds; i += 1) {
+    const pending = await gw.pic.getPendingHttpsOutcalls();
+    if (pending.length > 0) return pending[0]!;
+    await gw.pic.tick();
+  }
+  throw new Error('no HTTPS outcall was made');
+}
+
+/// Like `awaitPendingOutcall`, but tolerates there being none.
+///
+/// Needed because some calls complete WITHOUT an outcall and a test cannot always
+/// know in advance which: `cancel_order` on an already-cancelled order returns
+/// early (it is idempotent), and on an order that never got a session there is
+/// nothing to expire. Waiting for an outcall there hangs until the ingress
+/// deadline and reports as a confusing timeout rather than as what happened.
+export async function maybePendingOutcall(
+  gw: Gateway,
+  rounds = 15,
+): Promise<PendingHttpsOutcall | undefined> {
+  for (let i = 0; i < rounds; i += 1) {
+    const pending = await gw.pic.getPendingHttpsOutcalls();
+    if (pending.length > 0) return pending[0]!;
+    await gw.pic.tick();
+  }
+  return undefined;
+}
+
+/// Answer a parked outcall with the SAME response from every replica.
+export async function answerOutcall(
+  gw: Gateway,
+  outcall: PendingHttpsOutcall,
+  status: number,
+  body: string,
+): Promise<void> {
+  await gw.pic.mockPendingHttpsOutcall({
+    subnetId: outcall.subnetId,
+    requestId: outcall.requestId,
+    response: { type: 'success', body: new TextEncoder().encode(body), statusCode: status, headers: [] },
+  });
+}
+
+/// ⚠️ **`additionalResponses` does NOT let this suite test the transform, and
+/// that is MEASURED, not assumed.**
+///
+/// pic-js can answer an outcall with one response per replica, which looks like a
+/// way to reproduce what real Stripe does — a unique `request-id` per request —
+/// and so to check that the transform strips it. A scenario was written on that
+/// basis and then **mutation-tested**: with `Session.strip` changed to pass every
+/// header through, the whole suite still passed. So the mock does not enforce
+/// consensus the way a real subnet does, and such a scenario asserts nothing.
+///
+/// #33's claim stands: the transform is first observable in a manual run against
+/// real Stripe, where the failure is `No consensus could be reached` and the
+/// symptom is the entire rail down. `Session.classifyFailure` names that case so
+/// the audit log points at the transform when it happens.
+///
+/// A minimal but realistic session-create response body.
+export function sessionCreatedBody(opts: {
+  id?: string;
+  url?: string;
+  expiresAtSeconds: number;
+  livemode?: boolean;
+}): string {
+  return JSON.stringify({
+    id: opts.id ?? 'cs_test_a1b2',
+    object: 'checkout.session',
+    url: opts.url ?? `https://checkout.stripe.com/c/pay/${opts.id ?? 'cs_test_a1b2'}`,
+    expires_at: opts.expiresAtSeconds,
+    livemode: opts.livemode ?? false,
+    status: 'open',
+  });
+}
+
+/// `checkout.session.expired`, the only thing that expires an order (#33).
+export function sessionExpiredBody(opts: {
+  eventId: string;
+  sessionId: string;
+  clientReferenceId?: string;
+}): string {
+  return JSON.stringify({
+    id: opts.eventId,
+    type: 'checkout.session.expired',
+    livemode: false,
+    data: {
+      object: {
+        id: opts.sessionId,
+        object: 'checkout.session',
+        status: 'expired',
+        client_reference_id: opts.clientReferenceId ?? null,
+      },
+    },
+  });
+}
+
+/// Read a header from a pending outcall, case-insensitively.
+export function outcallHeader(outcall: PendingHttpsOutcall, name: string): string | undefined {
+  const lower = name.toLowerCase();
+  for (const [k, v] of outcall.headers) {
+    if (k.toLowerCase() === lower) return v;
+  }
+  return undefined;
+}
+
+export function outcallBody(outcall: PendingHttpsOutcall): string {
+  return new TextDecoder().decode(outcall.body);
+}
+
+/// `create_order`, answering the Checkout Session outcall it now blocks on (#33).
+///
+/// ⚠️ **Every successful `create_order` needs this.** The method awaits an HTTPS
+/// outcall before it returns, so a plain `await gw.asUser.create_order(...)`
+/// never resolves under PocketIC — nothing answers the parked request. Calls that
+/// are expected to FAIL before the outcall (anonymous, a bad destination, an
+/// unknown tier, an unpriceable rate, a closed gate) still use the direct actor,
+/// because they never reach it.
+///
+/// Submitted through `deferredUser` so the outcall can be answered while the
+/// update call is still in flight.
+export async function createOrderWithSession(
+  gw: Gateway,
+  tierId: string,
+  destination: Destination,
+  minCycles: [] | [bigint],
+  opts: {
+    sessionId?: string;
+    /// Absolute Unix seconds. Defaults to Stripe's floor plus slack from now.
+    expiresAtSeconds?: number;
+    livemode?: boolean;
+    status?: number;
+  } = {},
+): Promise<Result<CreatedOrder, CreateOrderError>> {
+  const settle = await gw.deferredUser.create_order(tierId, destination, minCycles);
+  const outcall = await awaitPendingOutcall(gw);
+  const expiresAtSeconds =
+    opts.expiresAtSeconds ?? Number(await nowSeconds(gw.pic)) + 2_100;
+  const body = sessionCreatedBody({
+    id: opts.sessionId,
+    expiresAtSeconds,
+    livemode: opts.livemode,
+  });
+  const status = opts.status ?? 200;
+  await answerOutcall(gw, outcall, status, body);
+  return settle();
+}
+
+/// `cancel_order`, answering the expire outcall it now blocks on (#33).
+///
+/// Cancellation is atomic with Stripe: the session is expired first, so this is
+/// an outcall too. `expireStatus` drives the three outcomes — 200 cancels, a
+/// "not open" body leaves the order alone, anything else is a failure that leaves
+/// it payable.
+export async function cancelOrderWithExpire(
+  gw: Gateway,
+  orderId: string,
+  opts: { expireStatus?: number; expireBody?: string } = {},
+): Promise<Result<Order, string>> {
+  const settle = await gw.deferredUser.cancel_order(orderId);
+  // Optional on purpose: an already-cancelled order returns early without an
+  // outcall (idempotent), and so does one that never got a session — the residue
+  // case where no URL ever left the canister, so nothing needs expiring.
+  const outcall = await maybePendingOutcall(gw);
+  if (outcall !== undefined) {
+    await answerOutcall(
+      gw,
+      outcall,
+      opts.expireStatus ?? 200,
+      opts.expireBody ?? JSON.stringify({ id: 'cs_test_a1b2', status: 'expired' }),
+    );
+  }
+  return settle();
+}
+
+/// `<principal>_<orderId>` — the attribution reference.
+///
+/// Derived here because #33 dropped it from `create_order`'s response: the
+/// canister sets `client_reference_id` through the Stripe API now, so handing it
+/// back was a Payment-Link relic. Building it in the test is also stricter — it
+/// asserts the canister and the suite agree on the shape rather than trusting
+/// whatever the canister returned.
+export function clientReferenceFor(orderId: string, who = user): string {
+  return `${who.getPrincipal().toText()}_${orderId}`;
+}

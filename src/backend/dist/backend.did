@@ -43,58 +43,63 @@ type SetError = variant {tooShort: record {
                                    };};
 type Result_9 = 
  variant {
-   err: CreateOrderError;
-   ok: CreatedOrder;
- };
-type Result_8 = 
- variant {
    err: ProcessOrderError;
    ok: Order;
  };
-type Result_7 = 
+type Result_8 = 
  variant {
    err: ResolveError;
    ok: Entry;
  };
-type Result_6 = 
+type Result_7 = 
  variant {
    err: ValidateError;
    ok;
  };
-type Result_5 = 
+type Result_6 = 
  variant {
    err: ConfigError__3;
    ok;
  };
-type Result_4 = 
+type Result_5 = 
  variant {
    err: ConfigError__2;
    ok;
  };
-type Result_3 = 
+type Result_4 = 
  variant {
    err: IntervalError;
    ok;
  };
-type Result_2 = 
+type Result_3 = 
  variant {
    err: ConfigError__1;
    ok;
  };
-type Result_12 = 
+type Result_2 = 
+ variant {
+   err: OriginError;
+   ok;
+ };
+type Result_13 = 
  variant {
    err: AttachPaymentError;
    ok: Order;
  };
-type Result_11 = 
+type Result_12 = 
  variant {
    err: Reason;
    ok;
  };
-type Result_10 = 
+type Result_11 = 
  variant {
    err: text;
    ok: Order;
+ };
+type Result_10 = 
+ variant {
+   err: CreateOrderError;
+   ok: CreatedOrder;
  };
 type Result_1 = 
  variant {
@@ -213,6 +218,12 @@ type Page =
    nextCursor: opt nat;
  };
 type Owner = variant {ii: principal;};
+type OriginError = 
+ variant {
+   "empty";
+   hasQueryOrFragment;
+   notHttps;
+ };
 type OrderStatus = 
  variant {
    abandoned;
@@ -302,6 +313,17 @@ type IntervalError =
    intervalTooShort: record {minNs: nat;};
    zeroInterval;
  };
+type HttpRequestResult = 
+ record {
+   body: blob;
+   headers: vec HttpHeader;
+   status: nat;
+ };
+type HttpHeader = 
+ record {
+   name: text;
+   value: text;
+ };
 type HeaderField = 
  record {
    text;
@@ -340,14 +362,11 @@ type Drift =
    was: nat;
  };
 type Destination = variant {cyclesLedgerAccount: Account;};
-type CreatedOrder = 
- record {
-   clientReferenceId: text;
-   order: Order;
- };
+type CreatedOrder = record {order: Order;};
 type CreateOrderError = 
  variant {
    anonymous;
+   cancelledDuringCreation;
    destinationNotOwned;
    idGeneration;
    notAdmitted: Reason;
@@ -356,6 +375,7 @@ type CreateOrderError =
                    quoted: nat;
                  };
    rateUnavailable;
+   sessionUnavailable: text;
    tierBelowFees: text;
    unknownTier: text;
  };
@@ -439,7 +459,7 @@ type Account =
 /// module layout this actor grows into: Orders.mo wiring, rails/, Cmc.mo,
 /// Pricing.mo, Treasury.mo, ErrorQueue.mo, Auth.mo.
 service : {
-  abandon_order: (id: OrderId, reason: text) -> (Result_10);
+  abandon_order: (id: OrderId, reason: text) -> (Result_11);
   /// Credit a Stripe charge the canister never saw (admin, §6.1).
   /// 
   /// The recovery path for the one card-rail failure that otherwise has none:
@@ -469,7 +489,7 @@ service : {
   /// This is a money-creating lever, so: controller-only, dedup-guarded against
   /// double credit, and audited with the calling principal.
   attach_payment: (paymentRef: text, id: OrderId, paidUsdCents: nat) ->
-   (Result_12);
+   (Result_13);
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
   audit_log: () -> (vec Event) query;
@@ -482,7 +502,7 @@ service : {
   /// anonymous callers may ask: it reveals only operational state that
   /// `treasury_status` already publishes. Answered for the *calling* principal,
   /// so the open-order cap it reports is the caller's own.
-  can_purchase: (usdCents: nat) -> (Result_11) query;
+  can_purchase: (usdCents: nat) -> (Result_12) query;
   /// Stop trying to deliver an order (admin, §7) — **the only path to a
   /// terminal non-delivered state.**
   /// 
@@ -511,7 +531,7 @@ service : {
   /// No error-queue entry: nothing is owed. The record and the audit line are the
   /// trail, and queueing an obligation for an order where no money moved is
   /// exactly the orphan state the queue must not accumulate.
-  cancel_order: (id: OrderId) -> (Result_10);
+  cancel_order: (id: OrderId) -> (Result_11);
   /// Public — the frontend renders tiers and their Payment Links from this.
   card_tiers: () -> (vec Tier) query;
   /// Create a card-rail order: II caller becomes the owner (ownership is
@@ -534,7 +554,7 @@ service : {
   /// favour passes through and they keep the extra cycles. The guard can only
   /// ever protect the buyer. `null` opts out entirely.
   create_order: (tierId: text, destination: Destination, minCycles:
-   opt nat) -> (Result_9);
+   opt nat) -> (Result_10);
   /// §5.2 liveness observability, public (operational transparency, same
   /// stance as treasury_status): cadence + last completed timer sweep. A
   /// null or stale `lastSweep` means recovery is not running.
@@ -626,7 +646,7 @@ service : {
     }) query;
   /// Manual mint kick (admin, §7) — ops lever for a stuck-looking order;
   /// safe to spam, every step is deduped/idempotent/single-flighted.
-  process_order: (id: OrderId) -> (Result_8);
+  process_order: (id: OrderId) -> (Result_9);
   /// Batch pre-purchase quote, public.
   /// 
   /// This exists so the price a buyer is shown is **computed by the same code
@@ -701,7 +721,7 @@ service : {
   /// Manual resolution (§4.1/§7): refund issued off-chain, or Type 2 cycles
   /// re-delivered/refunded. (`charge.refunded` resolves Type 1 entries
   /// automatically; this is the fallback and the only path for Type 2.)
-  resolve_error: (id: nat) -> (Result_7);
+  resolve_error: (id: nat) -> (Result_8);
   /// Retention counters for monitoring (public, same stance as
   /// `treasury_status`).
   /// 
@@ -731,7 +751,7 @@ service : {
                         });
   /// Replace the card tier config (§3/§7 — admin, validated atomically: a
   /// bad config never partially applies).
-  set_card_tiers: (tiers: vec Tier) -> (Result_6);
+  set_card_tiers: (tiers: vec Tier) -> (Result_7);
   /// Adjust the admission gate (§7): open-order cap, own-cycles floor,
   /// per-purchase ceiling. Validated atomically — a bad config never partially
   /// applies. Lowering `maxPurchaseUsdCents` below an existing tier does NOT
@@ -744,16 +764,28 @@ service : {
   /// deployment. `null` restores "accept either", which only makes sense while
   /// nothing of value is at stake.
   set_expected_livemode: (expected: opt bool) -> ();
-  set_gate_config: (config: Config__3) -> (Result_5);
+  set_gate_config: (config: Config__3) -> (Result_6);
   /// Adjust pricing params (§7): fee formula, staleness window, delta guard.
   /// Validated atomically — a bad config never partially applies.
-  set_pricing_config: (config: Config__2) -> (Result_4);
+  set_pricing_config: (config: Config__2) -> (Result_5);
   /// Tune the sweep cadence (admin, §7) — re-arms immediately, no redeploy.
   /// Validated against the §5.1 bound: the cadence must stay well inside
   /// the ledger dedup window or replay loses its safety margin.
-  set_recovery_interval: (intervalNs: nat) -> (Result_3);
+  set_recovery_interval: (intervalNs: nat) -> (Result_4);
   /// Adjust retention (§4/§4.2): the `#created` TTL and the delete horizon.
-  set_retention_config: (config: Config__1) -> (Result_2);
+  set_retention_config: (config: Config__1) -> (Result_3);
+  /// Provision or rotate the Stripe API key (#33) — admin, mirroring
+  /// `set_webhook_secret` in every respect including the provisioning caveat:
+  /// the argument transits the TLS-terminating boundary node as plain ingress.
+  /// #11 covers vetKeys for encrypted delivery, and now applies to two secrets.
+  set_stripe_api_key: (key: text) -> (Result);
+  /// Set the origin Stripe returns buyers to (#33) — admin.
+  /// 
+  /// Validated at set time rather than at session-create time, so a bad value
+  /// fails in front of the operator who typed it instead of breaking every
+  /// purchase later. Until a domain is chosen (#40/#23) this is the canister's
+  /// own asset origin.
+  set_stripe_origin: (origin: text) -> (Result_2);
   /// Adjust treasury policy (§5.3/§7): burn cap, window, max hold, alert
   /// threshold. Validated atomically — a bad config never partially applies.
   set_treasury_config: (config: Config) -> (Result_1);
@@ -763,6 +795,23 @@ service : {
   /// TLS-terminating boundary node as plain ingress (§7 provisioning
   /// exposure); rotate after provisioning over an untrusted path.
   set_webhook_secret: (secret: text) -> (Result);
+  stripe_api_key_status: () -> (Status) query;
+  /// The origin, readable back because it is not a secret — it is the URL
+  /// buyers are sent to, and an operator needs to confirm it.
+  stripe_origin: () -> (opt text) query;
+  /// The outcall transform (#33). Referenced by name in the request, so it has to
+  /// be a public `shared query` on the actor even though nothing should ever call
+  /// it directly.
+  /// 
+  /// Its whole job is `Session.strip`: **remove every response header.** Stripe
+  /// returns a unique `request-id` per HTTP request, and each replica issues its
+  /// own request — so passing headers through fails consensus on *every* call, not
+  /// occasionally. Replication-count independent: any `n > 1` breaks.
+  transform_stripe_response: (args:
+   record {
+     context: blob;
+     response: HttpRequestResult;
+   }) -> (HttpRequestResult) query;
   /// §5.3 balance alert + soft UI gate, public: the frontend disables tiers
   /// off `lowFloat`, and cap consumption is operational transparency (the
   /// thesis), not a secret. The float observation may be stale — `atNs` says
