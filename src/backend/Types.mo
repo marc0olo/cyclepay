@@ -244,10 +244,10 @@ module {
     updatedAtNs : Int;
   };
 
-  /// Why an `#expired` order expired. Both producers arrive with #33: Stripe's
-  /// `checkout.session.expired` event, and a failure to create the session at
-  /// all. Until then every expiry comes from the retention sweep and leaves this
-  /// null.
+  /// Why an `#expired` order expired. Two producers, and they are the only two:
+  /// Stripe's `checkout.session.expired` event, and a failure to create the
+  /// session at all. #33 deleted the retention sweep, so nothing else can reach
+  /// `#expired` and no expiry leaves this null — null means "not `#expired`".
   public type ExpiredBy = {
     #sessionExpired;
     #sessionFailed;
