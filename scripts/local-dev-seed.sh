@@ -177,6 +177,9 @@ step "card tiers"
 # Where each tier's Payment Link comes from, in precedence order:
 #
 #   1. STRIPE_LINK_T5 / _T20 / _T50 in the environment
+#
+# `STRIPE_API_KEY` follows the same precedence and is read by the Stripe session
+# step below — put it in the file rather than on a command line (see there).
 #   2. scripts/.local-dev.env, if it exists — gitignored, so you set your sandbox
 #      links ONCE instead of exporting them into every new shell
 #   3. the link already registered on this canister, when it is not a placeholder
@@ -195,12 +198,14 @@ if [ -f "$LINKS_FILE" ]; then
   BEFORE_T5="${STRIPE_LINK_T5:-}"
   BEFORE_T20="${STRIPE_LINK_T20:-}"
   BEFORE_T50="${STRIPE_LINK_T50:-}"
+  BEFORE_KEY="${STRIPE_API_KEY:-}"
   # shellcheck disable=SC1090
   . "$LINKS_FILE"
   [ -z "$BEFORE_T5" ] || STRIPE_LINK_T5="$BEFORE_T5"
   [ -z "$BEFORE_T20" ] || STRIPE_LINK_T20="$BEFORE_T20"
   [ -z "$BEFORE_T50" ] || STRIPE_LINK_T50="$BEFORE_T50"
-  ok "read Payment Links from $LINKS_FILE"
+  [ -z "$BEFORE_KEY" ] || STRIPE_API_KEY="$BEFORE_KEY"
+  ok "read local dev config from $LINKS_FILE"
 fi
 
 # `<tier id>\t<url>` for what is registered right now. Paired by id rather than by
@@ -288,6 +293,13 @@ ok "float funded and observed: $((OBSERVED_E8S / 100000000)) ICP"
 # ── the admission gate ───────────────────────────────────────────────────────
 # ── Stripe API key + return origin (#33) ─────────────────────────────────────
 step "Stripe session config"
+# ⚠️ **`STRIPE_API_KEY` belongs in `scripts/.local-dev.env`, not on a command
+# line.** That file is gitignored and is sourced above, so the key never appears
+# in your shell history, in `ps` output, or in a terminal transcript. An
+# `export`-then-run also works and wins over the file, but it leaves the value
+# where something can read it back.
+#
+#   echo 'STRIPE_API_KEY=rk_test_...' >> scripts/.local-dev.env
 # The rail is live only when BOTH the API key and the webhook secret are
 # provisioned. This step does the KEY and the ORIGIN; `scripts/stripe-dev.sh`
 # does the webhook secret, because that one belongs to a `stripe listen` session
