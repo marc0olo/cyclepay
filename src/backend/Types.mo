@@ -65,11 +65,25 @@ module {
 
   /// Whether a destination delivers to `caller` and nobody else (#29).
   ///
-  /// The default subaccount specifically: a non-null subaccount is still an
-  /// account the caller owns, but it is not one the app can show a balance for
-  /// or that `icp cycles balance` reads by default, so accepting it would let a
-  /// buyer strand their own cycles somewhere the UI cannot see. One destination,
-  /// one place to look.
+  /// **`null` is the one accepted spelling of the default subaccount, and
+  /// equivalent forms are refused rather than normalised.** ICRC-1 makes an
+  /// all-zero 32-byte subaccount the *same account* as `null` — measured against
+  /// the cycles ledger, both spellings return one balance — so this rejects a
+  /// request that names an account the caller does in fact own. That is
+  /// deliberate: a destination is stored, compared and rendered, and two stable
+  /// values that are semantically one account is a defect source (an audit line
+  /// and a receipt that disagree about the same account). One representation in,
+  /// nothing to canonicalise later.
+  ///
+  /// ⚠️ So `#destinationNotOwned` is imprecise for exactly that input — the
+  /// account IS owned, it is spelled non-canonically. Accepted because the app
+  /// never sends it and nothing else calls this method; revisit if a third-party
+  /// integrator ever does, and canonicalise at the edge rather than widening the
+  /// predicate.
+  ///
+  /// A genuinely different subaccount is refused for the plain reason: it is not
+  /// the balance the app shows or that `icp cycles balance` reads by default, so
+  /// delivering there strands the buyer's cycles somewhere they will not look.
   ///
   /// Centralised beside `isOwnedBy` for the same reason: `-Werror` then names
   /// every site when a second destination kind arrives.

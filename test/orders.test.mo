@@ -264,6 +264,12 @@ suite("store: ownership and history", func() {
     // The caller's own account, but not the one the app and the CLI read.
     let sub : Blob = "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\01";
     assert not Types.isOwnDestination(#cyclesLedgerAccount({ owner = alice; subaccount = ?sub }), alice);
+    // The all-zero subaccount is the SAME account as `null` under ICRC-1 —
+    // verified against the cycles ledger, both spellings report one balance — and
+    // it is refused anyway. `null` is the one accepted representation; see
+    // `Types.isOwnDestination` for why equivalent forms are not normalised.
+    let zeros : Blob = "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00";
+    assert not Types.isOwnDestination(#cyclesLedgerAccount({ owner = alice; subaccount = ?zeros }), alice);
   });
 });
 

@@ -493,8 +493,6 @@ async function refreshTierQuotes(): Promise<void> {
   renderRateLine();
 }
 
-/// The cycles-ledger deposit fee, disclosed where the choice is made rather
-/// than buried in a total.
 /// The deposit fee, disclosed beside the destination it applies to.
 ///
 /// Every order pays it, so the note depends on nothing the visitor can change —
@@ -1285,7 +1283,8 @@ async function init(): Promise<void> {
   // answers per caller, so resolving `#/order/<id>` while still anonymous looks up
   // an order this principal cannot see, gets nothing back, and lands on "we could
   // not find that order" — for an order the visitor owns, on a plain reload. It
-  // also decides whose steps 3 and 4 the tour is showing (see `tourKind`).
+  // also decides whether the delivered tour renders at all, and which principal
+  // it prints as the credited account.
   const restored = await currentIdentity();
   if (restored) setIdentity(restored);
 

@@ -24,10 +24,13 @@ import type { Destination, ErrorEntry, Order } from './types';
 let gw: Gateway;
 
 /// The only destination `create_order` accepts (#29): the caller's own
-/// cycles-ledger account, default subaccount. Every order below is addressed
-/// here, which is also why the delivered figure is exact rather than bounded —
-/// `icrc1_transfer`'s fee is deterministic, where `deposit_cycles` to a canister
-/// lost an unpredictable slice to execution.
+/// cycles-ledger account, default subaccount.
+///
+/// Every order below is addressed here, which is also why the delivered figure is
+/// exact rather than bounded: delivery goes through `cyclesLedger.deposit`, whose
+/// 100 M deposit fee is a constant, where `deposit_cycles` to a canister lost an
+/// unpredictable slice to execution. (Delivery becomes `icrc1_transfer` in #30;
+/// the fee stays deterministic, so these assertions carry over.)
 const USER_ACCOUNT: Destination = {
   cyclesLedgerAccount: { owner: user.getPrincipal(), subaccount: [] },
 };
@@ -2448,6 +2451,8 @@ test('61 — cycles go to the caller and nowhere else, enforced by the canister 
   // does not ask — never that the canister refuses.
   await ensureRates(gw);
 
+  const ordersBefore = (await gw.asUser.list_orders()).length;
+
   // Someone else's account.
   expect(expectErr(await gw.asUser.create_order('tier5', {
     cyclesLedgerAccount: { owner: admin.getPrincipal(), subaccount: [] },
@@ -2463,11 +2468,18 @@ test('61 — cycles go to the caller and nowhere else, enforced by the canister 
     cyclesLedgerAccount: { owner: user.getPrincipal(), subaccount: [subaccount] },
   }, []))).toEqual({ destinationNotOwned: null });
 
-  // Refused BEFORE the gate and before any pricing work, so a rejected
-  // destination cannot consume admission or leave an order behind.
-  const mine = await gw.asUser.list_orders();
-  expect(mine.every((o) => statusKey(o) !== 'created'
-    || 'cyclesLedgerAccount' in o.destination)).toBe(true);
+  // No order is left behind. An earlier version of this checked that every
+  // stored order had a `cyclesLedgerAccount` destination, which is true of every
+  // order BY TYPE now that the variant has one case — it asserted nothing.
+  expect((await gw.asUser.list_orders()).length).toBe(ordersBefore);
+
+  // And the refusal comes FIRST, pinned against the next check in the method: an
+  // unknown tier *and* a bad destination returns the destination error, so
+  // nothing after the caller comparison has run. Moving the check below the tier
+  // lookup or the admission gate flips this to `unknownTier`.
+  expect(expectErr(await gw.asUser.create_order('no-such-tier', {
+    cyclesLedgerAccount: { owner: admin.getPrincipal(), subaccount: [] },
+  }, []))).toEqual({ destinationNotOwned: null });
 
   // And the anonymous check still wins over this one: an anonymous caller gets
   // told about the session rather than about the destination.
