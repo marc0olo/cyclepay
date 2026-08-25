@@ -2875,6 +2875,28 @@ test('67 — checkout.session.expired is the only thing that expires an order (#
   // Still cancelled, not expired: the buyer's own decision is what the record says.
   expect(await orderStatus(gw, cancelled.order.id)).toBe('cancelled');
 
+  // ── The event names a DIFFERENT session than the order holds. Audited and
+  // treated as unattributed rather than trusted: `client_reference_id` is an
+  // attacker-editable URL parameter, so a reference that resolves to one of our
+  // orders is not on its own permission to expire it. The order must not move.
+  const bound = expectOk(
+    await createOrderWithSession(gw, 'tier5', USER_ACCOUNT, [], { sessionId: 'cs_the_real_one' }),
+  );
+  expect(await deliverWebhook(gw, sessionExpiredBody({
+    eventId: 'evt_exp_mismatch',
+    sessionId: 'cs_some_other_session',
+    clientReferenceId: clientReferenceFor(bound.order.id),
+  }))).toMatchObject({ status_code: 200 });
+  await gw.pic.tick(3);
+  expect(await orderStatus(gw, bound.order.id)).toBe('created');
+  const mismatchLog = await gw.asAdmin.audit_log();
+  expect(mismatchLog.some((e) => e.tag === 'stripe.expiredSessionMismatch'
+    && e.detail.includes('cs_the_real_one')
+    && e.detail.includes('cs_some_other_session'))).toBe(true);
+  // Still payable, because nothing legitimate happened to it.
+  expect((await gw.asUser.get_order(bound.order.id))[0]!.stripeSessionUrl).toHaveLength(1);
+  expectOk(await cancelOrderWithExpire(gw, bound.order.id));
+
   // ── An event for a session nobody holds is acked, not an error.
   expect(await deliverWebhook(gw, sessionExpiredBody({
     eventId: 'evt_exp_3',
