@@ -1,6 +1,11 @@
 [dependencies]
 core = "2.5.0"
 sha2 = "0.2.1"
+# Nothing imports `mo:ic` right now: #29 removed the last use (`ic.deposit_cycles`,
+# the deleted `#canister` delivery branch). Kept rather than removed and re-added
+# because #33's Stripe outcall needs `Call.httpRequest` from it — that is the
+# function that attaches the exact `ic0.cost_http_request` price, so hand-attaching
+# cycles is never the answer.
 ic = "4.2.0"
 
 [toolchain]

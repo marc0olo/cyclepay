@@ -15,10 +15,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     owner: IDL.Principal,
     subaccount: IDL.Opt(IDL.Vec(IDL.Nat8)),
   });
-  const Destination = IDL.Variant({
-    canister: IDL.Principal,
-    cyclesLedgerAccount: Account,
-  });
+  const Destination = IDL.Variant({ cyclesLedgerAccount: Account });
   const Owner = IDL.Variant({ ii: IDL.Principal });
   const Rail = IDL.Variant({ card: IDL.Null });
   const OrderStatus = IDL.Variant({
@@ -80,6 +77,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   const RetentionSweepResult = IDL.Record({ expired: IDL.Nat, scanned: IDL.Nat });
   const CreateOrderError = IDL.Variant({
     anonymous: IDL.Null,
+    destinationNotOwned: IDL.Null,
     idGeneration: IDL.Null,
     quoteChanged: IDL.Record({ minimum: IDL.Nat, quoted: IDL.Nat }),
 

@@ -122,22 +122,15 @@ export function feeBreakdown(
   );
 }
 
-export type DestinationKind = "canister" | "cyclesLedgerAccount";
-
-/// What actually lands, given where it is going. The cycles ledger charges a
-/// flat fee to accept a deposit, so an account destination receives less than a
-/// canister top-up. Not grossed up on-chain by design (minting extra to cover a
-/// per-order fee would be griefable), so it has to be shown here instead.
+/// What actually lands. The cycles ledger charges a flat fee to accept a
+/// deposit, so the buyer receives less than the order locks, on every order.
+/// Not grossed up on-chain by design (minting extra to cover a per-order fee
+/// would be griefable), so it has to be shown here instead.
 ///
 /// `depositFee` comes from `quote_previews` rather than a constant in this file —
 /// it is the ledger's number, not ours.
-export function cyclesAtDestination(
-  cycles: bigint | null,
-  destination: DestinationKind,
-  depositFee: bigint,
-): bigint | null {
+export function cyclesCredited(cycles: bigint | null, depositFee: bigint): bigint | null {
   if (cycles === null) return null;
-  if (destination === "canister") return cycles;
   return cycles > depositFee ? cycles - depositFee : 0n;
 }
 
@@ -149,34 +142,27 @@ export function cyclesAtDestination(
 /// arrives for a different amount than quoted, the quantity is re-derived at
 /// that same locked rate. Saying "cycles are locked" would be wrong in that one
 /// case; saying the rate is locked is always true.
-export function estimateLine(
-  cycles: bigint | null,
-  destination: DestinationKind,
-  depositFee: bigint,
-): string {
+export function estimateLine(cycles: bigint | null, depositFee: bigint): string {
   if (cycles === null) {
     return "No exchange rate available right now. Orders are paused until one is.";
   }
-  const landing = cyclesAtDestination(cycles, destination, depositFee);
-  if (destination === "cyclesLedgerAccount" && landing !== null) {
-    // Only spell out the split when the two figures actually *read* differently.
-    // `formatCycles` shows three decimals, so on a multi-trillion order the
-    // deposit fee rounds away entirely. And "3.5 T credited (3.5 T minted, less
-    // the 100 M deposit fee)" reads as a contradiction rather than a disclosure.
-    // The fee is still disclosed unconditionally next to the destination choice.
-    const shown = formatCycles(landing);
-    if (shown !== formatCycles(cycles)) {
-      return (
-        `≈ ${shown} cycles credited ` +
-        `(${formatCycles(cycles)} minted, less the cycles ledger's ${formatCycles(depositFee)} deposit fee)`
-      );
-    }
-    // The deposit fee is real and must be disclosed, but "(after the cycles
-    // ledger's 100 M deposit fee)" makes the buyer parse a subtraction to learn
-    // what they get. Lead with the number that lands.
-    return `≈ ${shown} cycles (the cycles ledger takes ${formatCycles(depositFee)} to accept the deposit)`;
+  const shown = formatCycles(cyclesCredited(cycles, depositFee)!);
+  // Only spell out the split when the two figures actually *read* differently.
+  // `formatCycles` shows three decimals, so on a multi-trillion order the 100 M
+  // deposit fee rounds away entirely, and "3.5 T credited (3.5 T minted, less the
+  // 100 M deposit fee)" reads as a contradiction rather than a disclosure.
+  if (shown !== formatCycles(cycles)) {
+    return (
+      `≈ ${shown} cycles credited ` +
+      `(${formatCycles(cycles)} minted, less the cycles ledger's ${formatCycles(depositFee)} deposit fee)`
+    );
   }
-  return `≈ ${formatCycles(cycles)} cycles`;
+  // Just the number that lands. The fee is disclosed once, in `#dest-fee-note`
+  // under the destination; naming it here as well puts the same parenthetical on
+  // every amount tile and in the note below them, three copies of one sentence
+  // around the figure a buyer is choosing between. Visible in a screenshot only —
+  // every assertion passes either way.
+  return `≈ ${shown} cycles`;
 }
 
 /// Tolerance the UI allows between the figure a buyer was shown and the one the
@@ -278,25 +264,6 @@ export function rateSourceNote(received: bigint, queried: bigint): string {
   return `priced from ${received} of ${queried} exchange sources`;
 }
 
-export type SubaccountParse =
-  | { ok: true; value: Uint8Array | null }
-  | { ok: false; error: string };
-
-/// Optional ICRC-1 subaccount as hex: empty = none; up to 64 hex digits,
-/// left-padded to 32 bytes (the conventional short form for low subaccounts).
-export function parseSubaccountHex(input: string): SubaccountParse {
-  const hex = input.trim().replace(/^0x/i, "");
-  if (hex.length === 0) return { ok: true, value: null };
-  if (!/^[0-9a-fA-F]+$/.test(hex)) return { ok: false, error: "subaccount must be hex" };
-  if (hex.length > 64) return { ok: false, error: "subaccount is at most 32 bytes (64 hex digits)" };
-  const padded = hex.padStart(64, "0");
-  const bytes = new Uint8Array(32);
-  for (let i = 0; i < 32; i++) {
-    bytes[i] = parseInt(padded.slice(i * 2, i * 2 + 2), 16);
-  }
-  return { ok: true, value: bytes };
-}
-
 export type UsdAmountParse = { ok: true; cents: bigint } | { ok: false; error: string };
 
 /// User-typed dollar amount → cents. Strict shape (optional $, up to two
@@ -342,14 +309,10 @@ export function gateReasonMessage(reason: GateReason): string {
 /// The `#quoteChanged` refusal, in the buyer's terms. Leads with "nothing was
 /// charged" because that is the first thing someone wants to know when a payment
 /// flow refuses.
-export function quoteChangedMessage(
-  quoted: bigint,
-  destination: DestinationKind,
-  depositFee: bigint,
-): string {
+export function quoteChangedMessage(quoted: bigint, depositFee: bigint): string {
   return (
     `The exchange rate moved while this page was open. Nothing was charged. ` +
-    `This amount now buys ${estimateLine(quoted, destination, depositFee)}. ` +
+    `This amount now buys ${estimateLine(quoted, depositFee)}. ` +
     `Click again to create the order and lock that rate.`
   );
 }
@@ -378,6 +341,12 @@ export function createOrderErrorMessage(key: string): string {
       return "Sign in with Internet Identity first.";
     case "idGeneration":
       return "Could not generate an order id. Try again.";
+    case "destinationNotOwned":
+      // Unreachable from this app — it only ever sends the signed-in
+      // principal's own account. Worded for the buyer anyway, because the one
+      // way to see it is a page running against a gateway that disagrees with
+      // it about who the caller is.
+      return "Cycles can only be delivered to your own account. Nothing was charged. Reload the page and try again.";
     default:
       return `Order creation failed: ${key}`;
   }

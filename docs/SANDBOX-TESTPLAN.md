@@ -110,9 +110,10 @@ scripts/stripe-dev.sh
 Then, in the browser at the frontend URL `icp deploy` printed
 (`http://frontend.local.localhost:8000/` with the default gateway port):
 
-1. **Pick an arm.** "I'm new here" is the arm worth testing: it asks no destination
-   question and sends the cycles to your own account, which is what makes steps 6
-   and 7 meaningful.
+1. **Click "Get cycles".** The landing page has one route into the buy form, and
+   the form asks nothing about where the cycles go: they go to the account of the
+   principal you sign in as, and the gateway refuses any other destination (#29).
+   That is what makes steps 6 and 7 meaningful.
 2. **Sign in.** You get **local** Internet Identity automatically —
    `http://id.ai.localhost:8000`, deployed by `ii: true` in `icp.yaml`, chosen by
    `auth.ts` because the origin ends in `.localhost`. Nothing to configure, and a
@@ -125,6 +126,30 @@ Then, in the browser at the frontend URL `icp deploy` printed
 5. **Watch the page.** Leave the order tab open. The webhook arrives at the
    forwarder, the mint runs, and the page reaches **delivered** on its own 3 s poll
    with the guided tour leading. It should never need a reload.
+
+   **If nothing happens**, work these three in order — each has produced a silent
+   stall in a real run:
+
+   | Check | Command | Wrong looks like |
+   |---|---|---|
+   | the secret is provisioned | `icp canister call backend webhook_secret_status '()'` | `isSet = false` — every event is dropped unverified, with no audit line and no error-queue entry |
+   | the forwarder is up | `pgrep -fl "stripe listen"` | nothing — Stripe delivered to a closed door, and a resend is delivered **once**, so resending before the forwarder is up wastes it |
+   | the CMC rate is fresh | `icp canister call backend audit_log '()' \| grep rates.refresh` | `rates.refreshFailed: cmc rate is stale or zero` — re-arm with `./scripts/local-dev-seed.sh --rate-only`. The order's *price* is locked at creation, but the mint refuses a CMC rate older than 15 minutes |
+
+   To replay a payment the canister missed, resend the **`checkout.session.completed`**
+   event — not `charge.updated`, `charge.succeeded` or `payment_intent.succeeded`,
+   which Stripe lists just as prominently and none of which this canister acts on
+   (see `Card.mo` for the four types it handles). A resent event of the wrong type
+   logs `stripe.unhandledType` and changes nothing:
+
+   ```sh
+   stripe events list --limit 25          # find the checkout.session.completed
+   stripe events resend <evt_...>
+   ```
+
+   `audit_log` is the diagnostic that separates these: a verified-but-unactionable
+   event, a bad signature and an event that never arrived all look identical from
+   the UI, and all three read differently there.
 6. **Follow the tour.** Copy `icp identity link web dev --app <host>`, run it, then
    `icp identity principal --identity dev` and compare with the principal the page
    printed. **They must match.** A mismatch means the `--app` value did not match
@@ -470,7 +495,9 @@ Automated, and where — do **not** repeat these manually:
 | Was | Now covered by |
 |---|---|
 | H1 tier buttons show a cycle estimate, not a tier id | `main.test.ts` |
-| H2 destination toggle changes the estimate and names the 100 M deposit fee | `main.test.ts` |
+| H2 the estimate names what lands, and the deposit fee is disclosed once | `main.test.ts` + `layout.spec.ts` |
+| the form offers no destination question, and none of its old inputs exist | `layout.spec.ts` (`toHaveCount(0)`, so `display:none` cannot satisfy it) |
+| a crafted order for someone else's account, or a non-default subaccount, is refused | `gateway.spec.ts` scenario 61 — the canister's refusal, which no UI test can show |
 | H3 fee breakdown accounts for every cent, "operator margin: none" | `main.test.ts` |
 | H5 a moved quote asks for confirmation, and the second click goes through | `main.test.ts` |
 | H6 cancel appears only pre-payment | `main.test.ts` |

@@ -39,11 +39,6 @@ const IC_ENV = icEnvCookie({
 export const test = base.extend({
   page: async ({ page, baseURL }, use) => {
     await page.context().addCookies([{ name: "ic_env", value: IC_ENV, url: baseURL! }]);
-    // A fresh chooser on every spec: the "live" arm persists by design, and a
-    // leaked preference would skip the very gate under test. Only that key —
-    // clearing all of localStorage also wipes the theme choice, which runs on
-    // every navigation and so makes "survives a reload" unpassable.
-    await page.addInitScript(() => window.localStorage.removeItem("icp.audience"));
     // The page must be alive for any of these assertions to mean anything. A
     // module-load throw leaves the initial markup on screen, so assertions about
     // things that start hidden would pass against a dead page.
@@ -71,8 +66,6 @@ export { expect } from "@playwright/test";
 
 export type OrderSpec = {
   status?: string;
-  destination?: "account" | "canister";
-  thirdParty?: boolean;
 };
 
 type FixtureApi = {

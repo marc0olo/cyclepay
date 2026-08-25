@@ -303,15 +303,25 @@ Once locked, nothing re-reads a rate: money-out uses the stored snapshot, so
 market movement after creation changes nothing, however long the buyer takes to
 pay (§10 — even a year).
 
+### One destination: the buyer's own account
+
+Cycles go to the **signed-in principal's own cycles-ledger account**, default
+subaccount, and `create_order` refuses anything else with
+`#destinationNotOwned`. That is a property of the canister, not of the frontend —
+a hand-crafted call reaches the same method (#29).
+
+So "the cycles come to you" needs no field, no question and no validation on the
+page. A buyer funding a canister transfers on afterwards from the CLI, and pays
+that second fee themselves.
+
 ### The cycles-ledger deposit fee is disclosed, not absorbed
 
-A `#cyclesLedgerAccount` destination loses **100 M cycles** to the ledger's
-deposit fee; a `#canister` top-up loses nothing. The estimate follows the
-destination toggle and names the deduction.
+Delivery loses **100 M cycles** to the ledger's deposit fee, on every order. The
+amount tiles show what lands; the note under the destination names the fee once.
 
 ⚠️ **Deliberately not grossed up into the price.** Minting extra to cover a
-per-order fee would let anyone drain the operator by opening account-destination
-orders — a griefable gas drain. Disclosure is the honest fix.
+per-order fee would let anyone drain the operator by opening orders — a griefable
+gas drain. Disclosure is the honest fix.
 
 ### Afterwards: a receipt the buyer can check
 
@@ -462,7 +472,7 @@ recorded. Only a human closes that one.
 ### Disputes and chargebacks are not handled on-chain
 
 `charge.dispute.created` is **not subscribed**, by decision. The canister cannot
-claw back cycles already forwarded to an arbitrary destination, so no amount of
+claw back cycles already forwarded to the buyer's account, so no amount of
 on-chain plumbing changes the outcome. Chargeback risk is managed where it can
 be: **Stripe Radar rules and 3DS** on the Stripe side, and the **per-purchase
 ceiling** plus the **burn cap** on ours.

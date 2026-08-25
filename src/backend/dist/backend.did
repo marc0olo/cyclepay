@@ -327,11 +327,7 @@ type Drift =
    status: text;
    was: nat;
  };
-type Destination = 
- variant {
-   canister: principal;
-   cyclesLedgerAccount: Account;
- };
+type Destination = variant {cyclesLedgerAccount: Account;};
 type CreatedOrder = 
  record {
    clientReferenceId: text;
@@ -340,6 +336,7 @@ type CreatedOrder =
 type CreateOrderError = 
  variant {
    anonymous;
+   destinationNotOwned;
    idGeneration;
    notAdmitted: Reason;
    quoteChanged: record {

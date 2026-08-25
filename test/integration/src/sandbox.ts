@@ -20,7 +20,7 @@
 import { Principal } from '@icp-sdk/core/principal';
 import {
   ICP_FEE_E8S, ORDER_E8S, TIER_USD_CENTS, WEBHOOK_SECRET,
-  ensureRates, expectOk, fundFloat, setCmcRate, setXrcRate, setupGateway,
+  ensureRates, expectOk, fundFloat, setCmcRate, setXrcRate, setupGateway, user,
 } from './harness';
 
 const SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? WEBHOOK_SECRET;
@@ -63,7 +63,6 @@ async function main(): Promise<void> {
   await gw.asAdmin.set_expected_livemode([false]);
   await fundFloat(gw, ORDER_E8S * 50n + ICP_FEE_E8S * 50n);
 
-  const destination = await gw.pic.createCanister();
   const port = await gw.pic.makeLive();
   const backendId = gw.backendId.toText();
   const webhookUrl = `http://127.0.0.1:${port}/webhook/stripe?canisterId=${backendId}`;
@@ -75,7 +74,7 @@ async function main(): Promise<void> {
 
   backend canister   ${backendId}
   gateway            http://127.0.0.1:${port}
-  a spare canister   ${destination.toText()}   (use as an order destination)
+  cycles credited to ${user.getPrincipal().toText()}   (the buyer's own account)
 
   1. Forward real Stripe events here:
 
@@ -111,8 +110,14 @@ async function main(): Promise<void> {
 `);
 
   // Create a first order so there is something to pay immediately.
+  // One destination, and the gateway refuses any other (#29): the caller's own
+  // cycles-ledger account, default subaccount.
   const created = expectOk(
-    await gw.asUser.create_order('tier5', { canister: destination }, []),
+    await gw.asUser.create_order(
+      'tier5',
+      { cyclesLedgerAccount: { owner: user.getPrincipal(), subaccount: [] } },
+      [],
+    ),
   );
   console.log(`  ready-made order      ${created.order.id}`);
   console.log(`  clientReferenceId     ${created.clientReferenceId}\n`);

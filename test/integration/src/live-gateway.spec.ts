@@ -2,7 +2,8 @@ import { afterAll, beforeAll, expect, test } from 'vitest';
 import {
   ICP_FEE_E8S, ORDER_E8S, TIER_LOCKED_CYCLES, TIER_USD_CENTS, WEBHOOK_SECRET,
   checkoutSessionBody, ensureRates, expectOk, fundFloat, orderStatus, setCmcRate,
-  setupGateway, setXrcRate, stripeSignature, teardownGateway, tickUntilStatus, type Gateway,
+  setupGateway, setXrcRate, stripeSignature, teardownGateway, tickUntilStatus, user,
+  type Gateway,
 } from './harness';
 
 const WORKING_TREASURY = {
@@ -46,9 +47,13 @@ test('55 — the webhook route serves real HTTP end to end, and delivers', async
     { id: 'tier5', usdCents: TIER_USD_CENTS, paymentLinkUrl: 'https://buy.stripe.com/test_tier5' },
   ]));
   await fundFloat(gw, ORDER_E8S * 2n + ICP_FEE_E8S * 2n);
-  const destination = await gw.pic.createCanister();
+  // One destination, and the gateway refuses any other (#29).
   const created = expectOk(
-    await gw.asUser.create_order('tier5', { canister: destination }, []),
+    await gw.asUser.create_order(
+      'tier5',
+      { cyclesLedgerAccount: { owner: user.getPrincipal(), subaccount: [] } },
+      [],
+    ),
   );
 
   // 3. Go live: a real HTTP gateway on a real port. Log the URL so a human can

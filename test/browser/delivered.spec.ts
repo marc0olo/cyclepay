@@ -12,9 +12,9 @@ import {
 /// Everything here was previously unreachable from any browser: getting to a
 /// delivered order needs an Internet Identity session, a funded local network, a
 /// Stripe payment and a signed webhook. So the delivered view — the flagship
-/// surface of the two-audience flow — shipped broken twice, and both times the
-/// only evidence it worked came from injecting DOM state, which a test can pass
-/// against while a visitor sees nothing.
+/// surface of this app — shipped broken twice, and both times the only evidence
+/// it worked came from injecting DOM state, which a test can pass against while a
+/// visitor sees nothing.
 ///
 /// The hook replaces the BACKEND and nothing else (see fixtures.ts), so sign-in,
 /// routing, the view machine, the 3 s poll and every render below are the app's.
@@ -22,7 +22,7 @@ test.describe("the delivered view", () => {
   test("the tour is on screen and legible, with the real commands", async ({ page }) => {
     await page.goto("/");
     await signInAsFixtureBuyer(page);
-    await openFixtureOrder(page, { status: "delivered", destination: "account" });
+    await openFixtureOrder(page, { status: "delivered" });
 
     const tour = page.locator("#tour");
     await expect(tour).toBeVisible();
@@ -37,7 +37,6 @@ test.describe("the delivered view", () => {
 
     // On delivery the next action leads and the facts collapse beneath it.
     await expect(page.locator("#order-details")).not.toHaveAttribute("open", /.*/);
-    await expect(page.locator("#tour-third-party")).toBeHidden();
   });
 
   test("the POLL brings the tour up, with no navigation at all", async ({ page }) => {
@@ -47,7 +46,7 @@ test.describe("the delivered view", () => {
     // machine. Nothing outside a browser could see that.
     await page.goto("/");
     await signInAsFixtureBuyer(page);
-    await openFixtureOrder(page, { status: "paid", destination: "account" });
+    await openFixtureOrder(page, { status: "paid" });
     await expect(page.locator("#active-order")).toBeVisible();
     await expect(page.locator("#tour")).toBeHidden();
 
@@ -61,30 +60,16 @@ test.describe("the delivered view", () => {
     await expect(page.locator("#receipt-verdict")).toContainText(/verified/i);
   });
 
-  test("a canister top-up is offered no commands, because it needs none", async ({ page }) => {
+  test("an undelivered order is offered no commands yet", async ({ page }) => {
+    // The two cases that used to suppress the tour — a canister top-up, with
+    // nothing to link, and somebody else's account, which the buyer's identity
+    // cannot reach — are destinations `create_order` refuses (#29), so their
+    // specs went with them. Status is the only thing left that withholds it.
     await page.goto("/");
     await signInAsFixtureBuyer(page);
-    await openFixtureOrder(page, { status: "delivered", destination: "canister" });
+    await openFixtureOrder(page, { status: "paid" });
     await expect(page.locator("#active-order")).toBeVisible();
     await expect(page.locator("#tour")).toBeHidden();
-    // And no four-step strip promising two steps that never complete.
-    await expect(page.locator("#stepper")).toBeHidden();
-  });
-
-  test("cycles credited to someone else's account promise the buyer nothing", async ({ page }) => {
-    await page.goto("/");
-    await signInAsFixtureBuyer(page);
-    await openFixtureOrder(page, {
-      status: "delivered",
-      destination: "account",
-      thirdParty: true,
-    });
-    await expect(page.locator("#tour-third-party")).toBeVisible();
-    // The commands would link the BUYER's identity, which is not the funded
-    // account, so nothing about them may be on screen.
-    await expect(page.locator("#tour-steps")).toBeHidden();
-    await expect(page.locator("#cmd-link")).toBeHidden();
-    await expect(page.locator("#stepper")).toBeHidden();
   });
 });
 
@@ -92,7 +77,7 @@ test.describe("one view owns the screen, under a live poll", () => {
   test("a poll tick does not repaint the order over the orders table", async ({ page }) => {
     await page.goto("/");
     await signInAsFixtureBuyer(page);
-    await openFixtureOrder(page, { status: "paid", destination: "account" });
+    await openFixtureOrder(page, { status: "paid" });
     await expect(page.locator("#active-order")).toBeVisible();
 
     await page.locator("#history-link").click();
@@ -110,7 +95,7 @@ test.describe("one view owns the screen, under a live poll", () => {
     // only place the button exists — one click plus payment did nothing visible.
     await page.goto("/");
     await signInAsFixtureBuyer(page);
-    await openFixtureOrder(page, { status: "delivered", destination: "canister" });
+    await openFixtureOrder(page, { status: "delivered" });
     await page.locator("#history-link").click();
     await expect(page.locator("#history")).toBeVisible();
 
@@ -118,7 +103,9 @@ test.describe("one view owns the screen, under a live poll", () => {
     await expect(page.locator("#buy-flow")).toBeVisible();
     await expect(page.locator("#history")).toBeHidden();
     await expect(page).toHaveURL(/#\/buy$/);
-    await expect(page.locator("#canister-principal")).toHaveValue(/.+/);
+    // The amount is the whole prefill now: the destination is the caller's own
+    // account, so there is no field to carry it into (#29).
+    await expect(page.locator("button.tier.selected")).toBeVisible();
   });
 });
 
@@ -132,11 +119,12 @@ test.describe("routes that name nothing", () => {
     await expect(page.locator("#active-order")).toBeHidden();
   });
 
-  test("#/buy with no arm chosen shows the chooser", async ({ page }) => {
-    // Deep-linked, this rendered an amount grid with no destination question on
-    // screen at all.
+  test("#/buy is a bookmarkable route, not a redirect", async ({ page }) => {
+    // It used to send the visitor back to the chooser: with no arm picked the
+    // form had no destination question on it at all. With one destination the
+    // form is complete on arrival (#29), so a deep link has to resolve to it.
     await page.goto("/#/buy");
-    await expect(page.locator("#chooser")).toBeVisible();
-    await expect(page.locator("#buy-flow")).toBeHidden();
+    await expect(page.locator("#buy-flow")).toBeVisible();
+    await expect(page.locator("#view-landing")).toBeHidden();
   });
 });

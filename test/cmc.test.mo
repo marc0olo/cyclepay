@@ -33,7 +33,7 @@ func entryWith(
   {
     orderId = "aabbccddeeff00112233445566778899";
     status = #minting;
-    destination = #canister(Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai"));
+    destination = #cyclesLedgerAccount({ owner = Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai"); subaccount = null });
     transferIntent = intent;
     blockIndex;
     cyclesMinted;
@@ -220,7 +220,7 @@ suite("journal", func() {
       id = "aabbccddeeff00112233445566778899";
       owner = #ii(Principal.fromText("2ibo7-dia"));
       rail = #card;
-      destination = #canister(Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai"));
+      destination = #cyclesLedgerAccount({ owner = Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai"); subaccount = null });
       lockedCycles = 1_000_000_000_000;
       pricing = {
   usdCents = 500;

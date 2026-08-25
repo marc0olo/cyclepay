@@ -100,7 +100,7 @@ fi
 # Assert it rather than re-configuring it. A quote is the honest check: it proves
 # tiers exist AND both rate inputs answered AND the canister is above the gate's
 # own-cycles floor, which is every money lever this script does not own.
-QUOTE="$(icp canister call backend quote_previews '(variant { card }, vec { 500 : nat })' 2>&1 || true)"
+QUOTE="$(icp canister call backend quote_previews '(vec { 500 : nat })' 2>&1 || true)"
 if ! printf '%s' "$QUOTE" | grep -q 'cycles = opt'; then
   echo "error: the gateway cannot price a \$5 purchase, so an order cannot be created." >&2
   echo "       Run this first, and note the CMC rate expires after 15 minutes:" >&2
@@ -171,7 +171,11 @@ In a second terminal:
 
   Or from the CLI:
       1. icp canister call backend create_order \
-             '("t5", variant { canister = principal "<some-canister>" }, null)'
+             '("t5", variant { cyclesLedgerAccount = record {
+                  owner = principal "<your-principal>"; subaccount = null } }, null)'
+         The account must be the caller's own, default subaccount — anything else
+         is refused with #destinationNotOwned. Get yours with
+         `icp identity principal`, and pass the same --identity to the call.
          (the third argument pins a minimum cycle quantity; null opts out)
       2. Take the returned clientReferenceId.
       3. Open YOUR sandbox Payment Link with ?client_reference_id=<ref> appended.

@@ -1,4 +1,4 @@
-import { test, expect } from "./fixtures";
+import { test, expect, useFixtureBackend } from "./fixtures";
 
 /// The bugs jsdom is structurally blind to: the CASCADE and LAYOUT.
 ///
@@ -7,29 +7,45 @@ import { test, expect } from "./fixtures";
 /// selector's `display` outranks the UA stylesheet's `[hidden] { display: none }`.
 /// That is precisely what shipped, and what these specs exist to catch.
 test.describe("the hidden attribute actually hides", () => {
-  test("the chooser is the only thing offered before an arm is picked", async ({ page }) => {
+  test("the landing view is the only thing offered before the visitor asks to buy", async ({ page }) => {
     await page.goto("/");
-    await expect(page.locator("#chooser")).toBeVisible();
-    // THE regression. `.chooser { display: grid }` re-showed this.
+    await expect(page.locator("#start-buy")).toBeVisible();
+    // THE regression, in its current form. It was `.chooser { display: grid }`
+    // re-showing a chooser; the rule it broke is the one still under test here.
     await expect(page.locator("#buy-flow")).toBeHidden();
     await expect(page.locator("#tiers")).toBeHidden();
   });
 
-  test("picking an arm reveals the flow and removes the chooser", async ({ page }) => {
+  test("the call to action reveals the flow and removes the landing view", async ({ page }) => {
     await page.goto("/");
-    await page.locator("#choose-live").click();
-    await expect(page.locator("#chooser")).toBeHidden();
+    await page.locator("#start-buy").click();
+    await expect(page.locator("#view-landing")).toBeHidden();
     await expect(page.locator("#buy-flow")).toBeVisible();
   });
 
-  test("the newcomer arm shows no canister-id field on screen", async ({ page }) => {
+  test("the form states the destination and asks for no id", async ({ page }) => {
+    // Not "the field is hidden": the field is GONE (#29), along with the radios
+    // and the other-account disclosure. `toHaveCount(0)` is the assertion that a
+    // reintroduced input cannot satisfy by being display:none.
     await page.goto("/");
-    await page.locator("#choose-new").click();
-    await expect(page.locator("#dest-newcomer")).toBeVisible();
-    await expect(page.locator("#dest-choice")).toBeHidden();
-    await expect(page.locator("#canister-principal")).toBeHidden();
+    await page.locator("#start-buy").click();
+    await expect(page.locator("#dest-own")).toBeVisible();
+    await expect(page.locator("#canister-principal")).toHaveCount(0);
+    await expect(page.locator("#dest-choice")).toHaveCount(0);
+    await expect(page.locator("#dest-ledger-advanced")).toHaveCount(0);
+    await expect(page.locator('input[name="dest-kind"]')).toHaveCount(0);
   });
 
+  test("the deposit fee is disclosed without anything to toggle", async ({ page }) => {
+    // It used to appear only after switching to the account destination. With one
+    // destination it applies to every order, so it is on screen as soon as a
+    // quote has named it.
+    await page.goto("/");
+    await useFixtureBackend(page);
+    await page.locator("#start-buy").click();
+    await expect(page.locator("#dest-fee-note")).toBeVisible();
+    await expect(page.locator("#dest-fee-note")).toContainText("not added to your price");
+  });
 });
 
 test.describe("brand rendering", () => {

@@ -48,13 +48,49 @@ module {
   /// ICRC-1 account (cycles ledger destination).
   public type Account = { owner : Principal; subaccount : ?Blob };
 
-  /// Where minted cycles are forwarded (§5, mint-to-self-then-forward).
-  /// `#canister` deposits to a canister's cycle balance and can fail (deleted
-  /// target → error queue Type 2); `#cyclesLedgerAccount` essentially never
-  /// fails (§5, "no pre-validation" decision).
+  /// Where cycles are delivered (§5). The buyer's **own** cycles-ledger
+  /// account, default subaccount — `create_order` refuses anything else, so a
+  /// crafted call cannot send cycles to a third party.
+  ///
+  /// Single-case, and a variant for the same reason `Owner` and `Rail` are: it
+  /// names the dimension, so a second destination kind is an additive change
+  /// rather than a schema-wide edit.
+  ///
+  /// ⚠️ Depositing straight to a canister's cycle balance is **not** the case to
+  /// add. It fails on a deleted or refusing target *after* the cycles have left,
+  /// which is a mint-then-lose class this app no longer has (#29).
   public type Destination = {
-    #canister : Principal;
     #cyclesLedgerAccount : Account;
+  };
+
+  /// Whether a destination delivers to `caller` and nobody else (#29).
+  ///
+  /// **`null` is the one accepted spelling of the default subaccount, and
+  /// equivalent forms are refused rather than normalised.** ICRC-1 makes an
+  /// all-zero 32-byte subaccount the *same account* as `null` — measured against
+  /// the cycles ledger, both spellings return one balance — so this rejects a
+  /// request that names an account the caller does in fact own. That is
+  /// deliberate: a destination is stored, compared and rendered, and two stable
+  /// values that are semantically one account is a defect source (an audit line
+  /// and a receipt that disagree about the same account). One representation in,
+  /// nothing to canonicalise later.
+  ///
+  /// ⚠️ So `#destinationNotOwned` is imprecise for exactly that input — the
+  /// account IS owned, it is spelled non-canonically. Accepted because the app
+  /// never sends it and nothing else calls this method; revisit if a third-party
+  /// integrator ever does, and canonicalise at the edge rather than widening the
+  /// predicate.
+  ///
+  /// A genuinely different subaccount is refused for the plain reason: it is not
+  /// the balance the app shows or that `icp cycles balance` reads by default, so
+  /// delivering there strands the buyer's cycles somewhere they will not look.
+  ///
+  /// Centralised beside `isOwnedBy` for the same reason: `-Werror` then names
+  /// every site when a second destination kind arrives.
+  public func isOwnDestination(destination : Destination, caller : Principal) : Bool {
+    switch (destination) {
+      case (#cyclesLedgerAccount(account)) account.owner == caller and account.subaccount == null;
+    };
   };
 
   /// Random, raw_rand-derived (hex text), not a monotonic counter (§2) — the

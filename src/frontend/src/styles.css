@@ -19,10 +19,10 @@
 
 /* The `hidden` attribute must beat every layout rule in this file.
    The UA stylesheet's `[hidden] { display: none }` has lower specificity than a
-   class selector, so `.chooser { display: grid }`
-   silently re-showed elements the app had hidden — the chooser never went away
-   and the disabled rail nav was always on screen.
-   jsdom has no layout and no cascade, so the DOM suite could not see any of it:
+   class selector, so any `.foo { display: grid }` here silently re-shows an
+   element the app had hidden. It shipped twice that way — an audience chooser
+   that never went away, and a disabled rail's nav that was always on screen.
+   jsdom has no layout and no cascade, so the DOM suite could not see either:
    `el.hidden` was true the whole time. */
 [hidden] {
   display: none !important;
@@ -224,38 +224,11 @@ a:hover {
   color: var(--icp-accent);
 }
 
-/* ── chooser ──────────────────────────────────────────────────────────────── */
+/* ── the way in ───────────────────────────────────────────────────────────── */
 
-.chooser {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-  gap: var(--space-4);
+/* One button, on the landing view, and nothing to choose before it. */
+.start-row {
   margin-block: var(--space-6);
-}
-.choice {
-  display: block;
-  text-align: left;
-  padding: var(--space-4);
-  background: var(--icp-bg-elev);
-  border: 1px solid var(--icp-rule);
-  border-left: 3px solid var(--icp-section-default);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  font: inherit;
-  color: inherit;
-}
-.choice:hover {
-  background: var(--icp-accent-dim);
-}
-.choice-title {
-  display: block;
-  margin-top: var(--space-2);
-  font-family: var(--font-display);
-  font-size: 1.0625rem;
-  line-height: 1.4;
-}
-.back-link {
-  margin-block: var(--space-4);
 }
 
 /* ── buttons ──────────────────────────────────────────────────────────────── */
@@ -370,57 +343,11 @@ button:disabled {
   color: var(--icp-fg-secondary);
 }
 
-.amount-label,
-.dest-fields label {
-  display: block;
-  font-family: var(--font-ui);
-  font-size: 0.9375rem;
-  margin-bottom: var(--space-3);
-}
-
-input[type='text'] {
-  display: block;
-  width: 100%;
-  margin-top: var(--space-1);
-  padding: 0.5rem 0.65rem;
-  font-size: 0.9375rem;
-  background: var(--icp-bg-elev);
-  border: 1px solid var(--icp-rule);
-  border-radius: var(--radius-md);
-  color: var(--icp-fg);
-}
-input[type='text']:focus {
-  border-color: var(--icp-accent);
-}
-
-fieldset {
-  border: 0;
-  padding: 0;
-  margin: var(--space-5) 0 0;
-}
-legend {
-  padding: 0;
-}
-.radio {
-  display: block;
-  font-family: var(--font-ui);
-  font-size: 0.9375rem;
-  margin-block: var(--space-2);
-}
-.dest-fields {
-  margin-block: var(--space-3);
-}
+/* The form has no text inputs, no fieldset and no radios: there is one
+   destination and the page states it (#29). Styles for those controls return
+   with the controls, if a field ever earns its place here. */
 .dest-implicit {
   margin-top: var(--space-5);
-}
-.advanced {
-  margin-block: var(--space-4);
-  font-family: var(--font-ui);
-  font-size: 0.9375rem;
-}
-.advanced summary {
-  cursor: pointer;
-  color: var(--icp-fg-secondary);
 }
 #create-order {
   margin-top: var(--space-4);
@@ -643,13 +570,6 @@ tbody tr:hover {
   margin-top: var(--space-7);
   padding-block: var(--space-5) var(--space-8);
   border-top: 1px solid var(--icp-rule);
-}
-
-/* The arm suggested by this principal's last order. A pre-selection, never a
-   skip — the chooser is still shown and either arm is one click away. */
-.choice.suggested {
-  border-color: var(--icp-accent);
-  background: var(--icp-accent-dim);
 }
 
 

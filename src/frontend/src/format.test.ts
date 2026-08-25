@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   checkReceipt,
   createOrderErrorMessage,
-  cyclesAtDestination,
+  cyclesCredited,
   cyclesForCents,
   estimateLine,
   feeBreakdown,
@@ -13,7 +13,6 @@ import {
   lockedVsEstimate,
   minAcceptableCycles,
   nsToMillis,
-  parseSubaccountHex,
   parseUsdAmount,
   paymentLinkWithRef,
   rateSourceNote,
@@ -116,34 +115,6 @@ describe("shortPrincipal", () => {
 describe("nsToMillis", () => {
   test("truncates to milliseconds", () => {
     expect(nsToMillis(1_700_000_000_123_456_789n)).toBe(1_700_000_000_123);
-  });
-});
-
-describe("parseSubaccountHex", () => {
-  test("empty means no subaccount", () => {
-    expect(parseSubaccountHex("")).toEqual({ ok: true, value: null });
-    expect(parseSubaccountHex("   ")).toEqual({ ok: true, value: null });
-  });
-  test("short hex left-pads to 32 bytes", () => {
-    const r = parseSubaccountHex("1f");
-    if (!r.ok) throw new Error(r.error);
-    expect(r.value).toHaveLength(32);
-    expect(r.value![31]).toBe(0x1f);
-    expect(r.value![0]).toBe(0);
-  });
-  test("0x prefix and uppercase accepted", () => {
-    const r = parseSubaccountHex("0xFF");
-    if (!r.ok) throw new Error(r.error);
-    expect(r.value![31]).toBe(0xff);
-  });
-  test("full 64 digits round-trips", () => {
-    const r = parseSubaccountHex("ab".repeat(32));
-    if (!r.ok) throw new Error(r.error);
-    expect([...r.value!].every((b) => b === 0xab)).toBe(true);
-  });
-  test("rejects non-hex and over-length", () => {
-    expect(parseSubaccountHex("zz").ok).toBe(false);
-    expect(parseSubaccountHex("0".repeat(65)).ok).toBe(false);
   });
 });
 
@@ -264,39 +235,42 @@ describe("minAcceptableCycles", () => {
   });
 });
 
-describe("cyclesAtDestination", () => {
-  test("a canister top-up receives the full quantity", () => {
-    expect(cyclesAtDestination(5_000_000_000n, "canister", 100_000_000n)).toBe(5_000_000_000n);
-  });
-
-  test("an account destination loses the ledger's deposit fee", () => {
-    expect(cyclesAtDestination(5_000_000_000n, "cyclesLedgerAccount", 100_000_000n)).toBe(
-      4_900_000_000n,
-    );
+describe("cyclesCredited", () => {
+  test("the delivery loses the ledger's deposit fee", () => {
+    expect(cyclesCredited(5_000_000_000n, 100_000_000n)).toBe(4_900_000_000n);
   });
 
   test("never goes negative when the fee exceeds the quantity", () => {
-    expect(cyclesAtDestination(50n, "cyclesLedgerAccount", 100_000_000n)).toBe(0n);
+    expect(cyclesCredited(50n, 100_000_000n)).toBe(0n);
   });
 
   test("passes an unavailable quote straight through", () => {
-    expect(cyclesAtDestination(null, "cyclesLedgerAccount", 100_000_000n)).toBeNull();
+    expect(cyclesCredited(null, 100_000_000n)).toBeNull();
   });
 });
 
 describe("estimateLine", () => {
-  test("names the deposit fee for an account destination, so the gap is never a surprise", () => {
-    const line = estimateLine(5_000_000_000n, "cyclesLedgerAccount", 100_000_000n);
+  test("names the deposit fee when it moves the figure, so the gap is never a surprise", () => {
+    const line = estimateLine(5_000_000_000n, 100_000_000n);
     expect(line).toContain("4.9 G");
     expect(line).toContain("deposit fee");
   });
 
-  test("shows one figure for a canister top-up, where nothing is deducted", () => {
-    expect(estimateLine(5_000_000_000n, "canister", 100_000_000n)).toBe("≈ 5 G cycles");
+  test("states the credited figure alone when the fee rounds away", () => {
+    // 3.5 T less 100 M is still "3.5 T" at three decimals, so a split would read
+    // as a contradiction. Repeating the fee here instead put the same
+    // parenthetical on every amount tile and in the note below them — the fee is
+    // disclosed once, in `#dest-fee-note`.
+    expect(estimateLine(3_500_000_000_000n, 100_000_000n)).toBe("≈ 3.5 T cycles");
+  });
+
+  test("says nothing about a fee it has not been told", () => {
+    // `depositFee` is 0n until the first quote answers, and after a failed one.
+    expect(estimateLine(5_000_000_000n, 0n)).toBe("≈ 5 G cycles");
   });
 
   test("says orders are paused rather than showing a zero when unpriceable", () => {
-    expect(estimateLine(null, "canister", 100_000_000n)).toContain("paused");
+    expect(estimateLine(null, 100_000_000n)).toContain("paused");
   });
 });
 
