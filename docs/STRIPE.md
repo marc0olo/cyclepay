@@ -530,10 +530,25 @@ but the audit ring — which drops. `#refundAfterDelivery` likewise records
 `refundedCents` and `fullRefund`, because a partial refund after delivery is a
 partial loss and reconciliation happens by amount.
 
-⚠️ **An unattributable payment can now only be refunded.** `attach_payment`,
-which credited the order the buyer meant, was deleted in #33 along with the
-failure it existed for: the canister sets `client_reference_id` through the API,
-so there is no URL parameter for a buyer to strip or edit. This is the one thing
+⚠️ **A Type 1 payment can now only be refunded** — including the ones where we
+know exactly whose it is. `attach_payment`, which credited the order the buyer
+meant, was deleted in #33 along with the failure it existed for: the canister
+sets `client_reference_id` through the API, so there is no URL parameter for a
+buyer to strip or edit.
+
+That leaves the `#unattributed` variant named for a case it rarely covers. What
+still reaches it is mostly **attributable but unpayable** — the entry names the
+order and we refuse to credit it anyway:
+
+- the per-purchase ceiling was lowered under an existing order (needs nothing to
+  go wrong: the order still matches its own quote);
+- `amount_total` is not the quoted amount, which means an account-level setting
+  is moving the total (§8);
+- the order is `#cancelled` or `#expired` (#34).
+
+The genuinely unattributable cases — no reference, a malformed one, one naming no
+order, a non-USD session — are unreachable through this app. Reaching one means a
+session created outside it, a reinstalled order store, or a bug. This is the one thing
 the deletion makes *harder* rather than simpler, and it was decided knowing that:
 a refund makes the customer start over, and a customer who paid and received
 nothing may file a chargeback, which costs more than the refund. The trade is

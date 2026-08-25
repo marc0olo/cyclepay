@@ -663,7 +663,20 @@ icp canister call backend resolve_error '(137 : nat)' -e ic --identity <operator
 | `#unprocessable {eventId; field}` | **Unknown — establish it first.** A verified Stripe event was missing a required field, so the canister could not tell whether money moved | Look the `eventId` up in the Stripe Dashboard. Paid → refund. Not paid → nothing happened; `resolve_error`. Then find the configuration that produced it: with per-order sessions (#33) the canister controls every field it sends, so a missing one points at an account-level API-version change (RUNBOOK §1 pins it) rather than at a link setting, and it will recur until fixed. One event never becomes two entries: a Dashboard resend inside the ~7-day event-dedup window is dropped there, and past it the worklist itself is checked (audited `stripe.unprocessableResend`). Once you `resolve_error` it, a later resend is allowed to file again — so resolve only after you have established the money position. |
 | `#refundAfterDelivery {orderId; paymentRef; cycles; refundedCents; fullRefund}` | **A loss, not a recoverable position**: the fiat was refunded (or charged back) *after* the cycles were credited to the buyer's account. Cycles cannot be clawed back. | There is nothing to recover on-chain. Reconcile in the Stripe Dashboard by `paymentRef` to see whether this was your own refund (a support decision — expected) or a customer-initiated dispute (fraud signal). For repeated disputes, tighten Stripe Radar rules and lower the per-purchase ceiling (§5a); the burn cap does **not** bound this, because each payment is individually legitimate. `resolve_error` once reconciled — nothing auto-resolves it, deliberately: the refund is what created the entry. |
 
-### An `#unattributed` payment has exactly one remedy: refund
+### A Type 1 payment has exactly one remedy: refund — and it is usually not "unattributable"
+
+⚠️ **Read the entry's `detail`, not its kind.** `#unattributed` is one variant
+covering two very different situations, and since #33 the common one is the
+second:
+
+| | What it means | How common now |
+|---|---|---|
+| Genuinely unattributable | no order can be named: missing, malformed, or unresolvable `client_reference_id`, wrong currency | **should not happen** — the canister sets that field itself through the API, so treat one as a bug to find (or as a session someone created outside the app) |
+| Attributable but unpayable | the entry names the order; we refuse to credit it — a lowered ceiling, an amount that is not the quoted one, a cancelled or expired order | the normal producer |
+
+The second kind needs no hunting in the Dashboard: the order id is in the detail.
+What it needs is fixing the cause, or the next order fails the same way.
+
 
 `attach_payment` — the admin lever that credited a payment the canister never
 saw — was **deleted in #33**, along with the failure it existed for. Under
@@ -674,7 +687,8 @@ Checkout Sessions API: there is no URL parameter to touch, so the class is gone
 by construction.
 
 What remains is refunding, in the Stripe Dashboard, by `paymentRef`. There is no
-path that turns an unattributable payment into cycles for that buyer — that is
+path that turns a Type 1 payment into cycles for that buyer, whether or not we
+know which order it was for — that is
 the deliberate cost of the deletion, and it matches the decision that this app
 does not model refunds. A refund auto-resolves the entry (a partial one leaves it
 open, carrying the remainder).
