@@ -207,8 +207,13 @@ suite("delivery: the fee is RECOVERABLE from the intent (#30 PR-A)", func() {
 
 suite("interpretTransfer (§5.1)", func() {
   test("Ok and Duplicate both recover the block index — the replay payoff", func() {
-    assert Cmc.interpretTransfer(#Ok(7)) == #blockIndex(7);
-    assert Cmc.interpretTransfer(#Err(#Duplicate({ duplicate_of = 9 }))) == #blockIndex(9);
+    // ⚠️ These are DISTINCT outcomes since #30 PR-B, and the reserve floor is why:
+    // a fresh block means this call debited the ledger, a duplicate means an earlier
+    // one did. The floor is decremented when a transfer is issued, so a duplicate
+    // must credit that decrement back while a fresh block must keep it. Collapsing
+    // them refunds real debits (optimistic) or under-counts healed replays.
+    assert Cmc.interpretTransfer(#Ok(7)) == #delivered(7);
+    assert Cmc.interpretTransfer(#Err(#Duplicate({ duplicate_of = 9 }))) == #deduplicated(9);
   });
 
   test("nothing-recorded errors are retriable with identical args", func() {

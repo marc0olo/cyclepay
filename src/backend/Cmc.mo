@@ -330,9 +330,20 @@ module {
   /// What the driver does next; `#retriable` leaves state untouched for the
   /// recovery sweep, `#escalate` is terminal (error queue, §5.1).
   public type TransferOutcome = {
-    /// Block index recovered — `#Ok` or `#Duplicate` (the §5.1 replay payoff:
-    /// a replayed intent that already executed *returns* its block).
-    #blockIndex : Nat;
+    /// This call moved the money: the ledger accepted it and recorded a block.
+    #delivered : Nat;
+    /// An EARLIER call moved the money; this one was deduplicated and handed back
+    /// the original block. Still success — the §5.1 replay payoff.
+    ///
+    /// ⚠️ **Distinct from `#delivered`, and #30 PR-B is why.** These were one case
+    /// (`#blockIndex`) until the reserve floor needed to know whether *this* call
+    /// debited the ledger: the floor is decremented when a transfer is issued, so a
+    /// deduplicated call must credit its decrement back (an earlier attempt's
+    /// decrement is the real one and is still standing), while a fresh block must
+    /// keep it. Collapsing them refunds real debits — optimistic — or under-counts
+    /// every healed replay by a whole order. Every other consumer treats them
+    /// identically, and says so.
+    #deduplicated : Nat;
     #retriable : Text;
     /// The ledger's fee is not what we passed; it reports the expected one.
     ///
@@ -348,8 +359,8 @@ module {
 
   public func interpretTransfer(result : TransferResult) : TransferOutcome {
     switch (result) {
-      case (#Ok(block)) #blockIndex(block);
-      case (#Err(#Duplicate({ duplicate_of }))) #blockIndex(duplicate_of);
+      case (#Ok(block)) #delivered(block);
+      case (#Err(#Duplicate({ duplicate_of }))) #deduplicated(duplicate_of);
       // Retriable: the ledger did NOT record a transfer, and the identical
       // intent can succeed later (float refilled, ledger back up, ledger
       // clock caught up to created_at_time).

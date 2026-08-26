@@ -143,49 +143,54 @@ suite("applyDelta — saturation is reported, not swallowed", func() {
   });
 });
 
-suite("promisedForDecision — a stale balance with a live tally (#30 PR-B)", func() {
-  // ⚠️ **This exists because the interleaving trace got case (A) WRONG, and wrong
-  // in the optimistic direction.** The decision carries a balance captured before
-  // an await and reads the tally live. A delivery whose continuation runs in that
-  // gap debits the ledger AND releases its promise — so a live-only read pairs a
-  // not-yet-lowered balance with an already-released promise:
-  //
-  //   available = B − (P − L_X)  =  (B − P) + L_X     while the truth is B − P
-  //
-  // Phantom capacity of a full order at the ceiling (~72 T), not fractions of a
-  // fee. An order admitted into it makes `promised > balance`, and the eventual
-  // `#InsufficientFunds` sends an operator hunting a fee delta — what its triage
-  // note tells them to check — for a cause that is a whole over-promise.
+suite("the reserve floor (#30 PR-B)", func() {
+  // ⚠️ **This suite replaced one that tested `promisedForDecision`** — a `max` of a
+  // snapshotted and a live tally, which managed a race between a stale awaited
+  // balance and a live tally. The floor design removes the race instead: the
+  // balance can only fall when WE transfer out, so a maintained lower bound is
+  // sound and the decision needs no ledger call at all. What is tested here is the
+  // bound's maintenance rules, since there is no longer any pairing to get wrong.
 
-  test("a delivery releasing in the gap does NOT create capacity", func() {
-    // The bug, stated as arithmetic. Snapshot 10_000 (order X's 3_000 included),
-    // live 7_000 after X delivered. A live-only read would offer 3_000 of the
-    // balance that X's own delivery just spent.
-    assert Reserve.promisedForDecision(10_000, 7_000) == 10_000;
-    // Which makes `available` the truth at the read, and delivery does not move it.
-    assert Reserve.available(12_000, Reserve.promisedForDecision(10_000, 7_000)) == 2_000;
+  test("an outflow lowers the floor by what is actually debited", func() {
+    assert Reserve.floorAfterOutflow(10_000, 3_000) == 7_000;
+    // Saturating rather than trapping: an over-debit means the floor was already
+    // wrong, and trapping on the money path over bookkeeping is worse than zero.
+    assert Reserve.floorAfterOutflow(100, 100) == 0;
+    assert Reserve.floorAfterOutflow(100, 101) == 0;
   });
 
-  test("a concurrent hold in the gap IS honoured", func() {
-    // The other direction must not be clamped away, or two creates could both be
-    // admitted against one balance.
-    assert Reserve.promisedForDecision(10_000, 13_000) == 13_000;
-    assert Reserve.available(12_000, Reserve.promisedForDecision(10_000, 13_000)) == 0;
+  test("a QUIET observation is adopted, which is how a top-up becomes sellable", func() {
+    let higher = Reserve.adoptObservation(1_000, 5_000, true);
+    assert higher.floor == 5_000 and higher.adopted and higher.unexplainedShortfall == 0;
+    let same = Reserve.adoptObservation(1_000, 1_000, true);
+    assert same.floor == 1_000 and same.adopted;
   });
 
-  test("no change in the gap is exact", func() {
-    assert Reserve.promisedForDecision(10_000, 10_000) == 10_000;
+  test("⚠️ a NON-quiet observation is NOT adopted — the bug this guards", func() {
+    // Adoption across an in-flight outflow overwrites a floor that moved in the
+    // gap: reconcile reads B = F, a delivery issues and drops the floor to F − L,
+    // the continuation adopts B = F, and the decrement is ERASED while the transfer
+    // still debits. Optimistic by a whole order, with nothing left to re-apply it.
+    // Same shape as the stale-balance/live-tally bug, one level up.
+    let skipped = Reserve.adoptObservation(7_000, 10_000, false);
+    assert not skipped.adopted;
+    assert skipped.floor == 7_000; // the maintained floor survives untouched
   });
 
-  test("⚠️ the accepted cost: an expiry in the gap understates for one gap", func() {
-    // An expiry releases the tally without touching the balance, so keeping the
-    // snapshot refuses a sale that would have worked — for the duration of one
-    // scheduling gap. Documented as the price of the fix, not as a defect.
-    assert Reserve.promisedForDecision(10_000, 6_000) == 10_000;
-    // Conservative: strictly less available than the truth.
-    let conservative = Reserve.available(12_000, Reserve.promisedForDecision(10_000, 6_000));
-    let truth = Reserve.available(12_000, 6_000);
-    assert conservative < truth;
+  test("a quiet observation BELOW the floor is the impossible case, and is reported", func() {
+    // Nothing in flight and the ledger holds less than our bound means an outflow
+    // this canister did not cause — no allowance exists and `withdraw` is unused,
+    // so it cannot happen. Reported, and the truth adopted anyway: selling against
+    // a bound the ledger contradicts is worse than under-selling.
+    let short = Reserve.adoptObservation(10_000, 6_000, true);
+    assert short.adopted and short.floor == 6_000;
+    assert short.unexplainedShortfall == 4_000;
+  });
+
+  test("available and coverage read off the floor, not off a balance", func() {
+    assert Reserve.available(10_000, 4_000) == 6_000;
+    assert Reserve.canCover(10_000, 4_000, 6_000);
+    assert not Reserve.canCover(10_000, 4_000, 6_001);
   });
 });
 
