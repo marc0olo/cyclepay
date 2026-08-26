@@ -546,7 +546,10 @@ cap is unbounded loss. Start tight.
   ⚠️ **The timeline covers every in-flight status, not just `paid`.** `minting`
   and `icpAtCmc` can sit still too — a ledger or CMC answering retriably leaves an
   order there — and the retry count alone is not a time bound. The alert names
-  which stage is stuck (`mintDelayed`, `transferDelayed`, `notifyDelayed`).
+  which stage is stuck. ⚠️ Only **`deliveryDelayed`** is reachable today (`#paid` is
+  the one in-flight status); `transferDelayed` and `notifyDelayed` belong to the
+  legacy mint stages and go with them in #36. It was called `mintDelayed` until
+  #30 PR-C, while reporting a delivery delay.
 
   **The terminal stage differs by status, because the money position does**, and
   the position is what determines the action:
@@ -1034,7 +1037,7 @@ claims an alert nobody can wire is worse than a documented gap.
   `stripe.unprocessable` / `stripe.unhandledType` (a Dashboard config producing
   events this gateway cannot use — it will recur until changed),
   `orders.countDrift` (the status tallies were wrong; see the table above),
-  `stripe.refundPartial` (an obligation deliberately left open), and `mint.stuck`.
+  `stripe.refundPartial` (an obligation deliberately left open), and `delivery.stuck`.
 - **`error_queue_unresolved`** for the entries themselves. `error_queue_depth` is
   public, so **alert on the public depth and only fetch details when it fires** —
   that keeps the key out of the polling loop.

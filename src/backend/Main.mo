@@ -1484,7 +1484,14 @@ persistent actor CyclesGateway {
   /// alerts while `#paid` and later stalls in `#icpAtCmc` is a different problem with
   /// a different recovery, and leaving the first wording in place would have the
   /// operator chasing a cause that has moved on.
-  let delayedAlerts = Map.empty<Types.OrderId, (Nat, Text)>();
+  /// ⚠️ **The stage half of this pair is gone (#30 PR-C).** It existed so a stall
+  /// that MOVED between stages could close the stale alert and raise one describing
+  /// where the order actually is. With one in-flight status there is nowhere to move
+  /// to: `#minting` and `#icpAtCmc` have had no entrance since PR-A, so a `#paid`
+  /// order's stage is always the same string. Keeping the comparison would have kept
+  /// a whole branch, and an audit tag, describing a transition that cannot occur.
+  /// #36 deletes the two legacy stages that made it conceivable.
+  let delayedAlerts = Map.empty<Types.OrderId, Nat>();
 
   /// Raise the §5 delivery-delayed alert for an order, at most once.
   ///
@@ -1492,29 +1499,16 @@ persistent actor CyclesGateway {
   /// and the order must stay sweepable so that fixing it delivers with no
   /// further intervention. Only `abandon_order` ends an order without delivery.
   func alertDelayed(order : Types.Order, stage : Text, detail : Text) {
-    // The guard lives inside the body rather than on a `case ... if`: a guarded
-    // case is irrefutable to the coverage checker, so the second `?` case would
-    // be reported as unmatched (M0146) even though it is reached.
-    switch (delayedAlerts.get(order.id)) {
-      case (?(staleId, reported)) {
-        // Same stall, already reported. Staying silent is the point: re-raising
-        // on every sweep would flood the worklist and the audit ring.
-        if (reported == stage) return;
-        // A *different* stall. Close the stale entry and raise one that describes
-        // where the order actually is now, rather than leaving day-one wording on
-        // the worklist.
-        ignore ErrorQueue.resolve(errorQueue, staleId, Time.now());
-        audit("mint.delayedStageChanged", order.id # ": " # reported # " → " # stage);
-      };
-      case null {};
-    };
+    // Already alerted for this order, so stay silent: re-raising on every sweep
+    // would flood the worklist and the audit ring.
+    if (delayedAlerts.get(order.id) != null) return;
     let entryId = queueMintError(
       order.rail,
       #deliveryDelayed({ orderId = order.id; stage; sinceNs = order.updatedAtNs }),
       detail,
     );
-    delayedAlerts.add(order.id, (entryId, stage));
-    audit("mint.delayed", order.id # " [" # stage # "]: " # detail);
+    delayedAlerts.add(order.id, entryId);
+    audit("delivery.delayed", order.id # " [" # stage # "]: " # detail);
   };
 
   /// The delay ended, so close the alert it raised.
@@ -1524,7 +1518,7 @@ persistent actor CyclesGateway {
   /// worklist, and the worklist is only useful if everything on it is live.
   func clearDelayed(orderId : Types.OrderId) {
     switch (delayedAlerts.get(orderId)) {
-      case (?(entryId, _)) {
+      case (?entryId) {
         ignore ErrorQueue.resolve(errorQueue, entryId, Time.now());
         delayedAlerts.remove(orderId);
       };
@@ -1741,7 +1735,7 @@ persistent actor CyclesGateway {
     // suppress a legitimate line if it were ever re-driven.
     mintBlockedAudited.remove(order.id);
     ignore queueMintError(order.rail, #stuckMint({ orderId = order.id; stage }), detail);
-    audit("mint.stuck", order.id # " [" # stage # "]: " # detail);
+    audit("delivery.stuck", order.id # " [" # stage # "]: " # detail);
   };
 
   /// §5 forward half of mint-to-self-then-forward. The cycles ride the call
@@ -1807,9 +1801,12 @@ persistent actor CyclesGateway {
               alertDelayed(
                 order,
                 switch (order.status) {
-                  case (#minting) "transferDelayed";
-                  case (#icpAtCmc) "notifyDelayed";
-                  case (_) "mintDelayed";
+                  case (#minting) "transferDelayed"; // LEGACY, dies with #36
+                  case (#icpAtCmc) "notifyDelayed"; // LEGACY, dies with #36
+                  // ⚠️ The reachable one, and it was called `mintDelayed` while
+                  // reporting a DELIVERY delay (#30 PR-C). `#paid` is the only status
+                  // that reaches this today.
+                  case (_) "deliveryDelayed";
                 },
                 switch (order.status) {
                   case (#minting) "paid, ICP transfer not yet confirmed past the alert threshold — check the ICP ledger; it resumes on the next sweep";

@@ -691,7 +691,7 @@ test('15 — operational trail is coherent end-to-end (§4.2)', async () => {
   // the surviving `mint.*` family and this is what makes that rename falsifiable
   // instead of grep-and-hope.** If PR-C changes a tag without changing this line,
   // the suite says so.
-  // ⚠️ Only what has happened BY HERE. `mint.delayed` (the delay alert) is
+  // ⚠️ Only what has happened BY HERE. `delivery.delayed` (the delay alert) is
   // asserted in 47, where a delay actually exists — asserting it here failed for
   // the most ordinary reason in an order-coupled suite: the event had not
   // happened yet. See the coupling note in this directory's README.
@@ -702,12 +702,13 @@ test('15 — operational trail is coherent end-to-end (§4.2)', async () => {
     expect(tags).not.toContain(gone);
   }
 
-  // ⚠️ `mint.delayed` is a SURVIVING MISNOMER, not an oversight: it is the delay
-  // alert, it now fires for delivery delays, and PR-C renames it to
-  // `delivery.delayed` along with the rest of the family. PR-A did not rename it
-  // because PR-A's own code did not force it — the two names that WERE forced
-  // (`cyclesDelivered`, `amountCycles`) are also PR-C's, and are called out in
-  // that issue.
+  // ⚠️ **`mint.delayed` → `delivery.delayed`, done in #30 PR-C**, along with
+  // `mint.stuck` → `delivery.stuck`. The rest of the `mint.*` family is legacy-only
+  // and dies with the pipeline in #36, so renaming it there would be churn on code
+  // being deleted. ⚠️ `amountCycles` moved to #36 as well: one `TransferIntent` type
+  // serves both the ICP transfer (where `amountE8s` is accurate) and the cycles
+  // delivery, so renaming it before the ICP path dies trades one false name for
+  // another.
 
   // The server-side worklist, which is what an operator actually reads.
   const open = await openErrorEntries(gw);
@@ -2011,7 +2012,7 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
   // before any delay has happened. ⚠️ `mint.delayed` is a surviving misnomer: it
   // reports a DELIVERY delay now, and #30 PR-C renames the family. This line is
   // what makes that rename falsifiable.
-  expect((await gw.asAdmin.audit_log()).map((e) => e.tag)).toContain('mint.delayed');
+  expect((await gw.asAdmin.audit_log()).map((e) => e.tag)).toContain('delivery.delayed');
 
   // THE ASSERTION: the delay alert is **resolved**, not merely absent — an entry that
   // promised "it delivers on the next sweep" must not sit on the worklist next to the
@@ -2306,8 +2307,9 @@ test('59 — a Stripe resend past the dedup window does not file a second unproc
 // alert closed and a second raised carrying the new stage's wording.
 //
 // There are no longer two stages to move between. Money-out runs from `#paid`
-// alone, so `mint.delayedStageChanged` is unreachable and the whole
-// stage-transition machinery it exercised has nothing to transition between. That
+// alone, so `mint.delayedStageChanged` was unreachable — and #30 PR-C **deleted it**,
+// along with the branch that raised it and the stage half of the `delayedAlerts`
+// pair, which existed only to detect a change that cannot happen. That
 // is a simplification, not a coverage loss: the confusion the scenario guarded
 // against — two open alerts for one order, or wording describing a state the
 // order has left — cannot arise from one stage.
