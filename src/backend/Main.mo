@@ -780,13 +780,6 @@ persistent actor CyclesGateway {
     {
       openOrders = Orders.openOrderCount(orderStore, caller);
       canisterCycles = Cycles.balance();
-      burnedInWindowE8s = Treasury.burnedInWindow(burnLedger, treasuryConfig.burnWindowNs, Time.now());
-      burnCapE8s = treasuryConfig.burnCapE8s;
-      observedFloatE8s = switch (lastFloatObservation) {
-        case (?observation) ?observation.e8s;
-        case null null;
-      };
-      lowFloatThresholdE8s = treasuryConfig.lowFloatThresholdE8s;
     };
   };
 

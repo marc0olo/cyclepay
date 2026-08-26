@@ -20,6 +20,7 @@
 /// whole policy unit-tests without an IC environment.
 import Nat "mo:core/Nat";
 import Result "mo:core/Result";
+import Reserve "Reserve";
 
 module {
 
@@ -141,8 +142,11 @@ module {
   public type Reason = {
     #tooManyOpenOrders : { open : Nat; max : Nat };
     #canisterCyclesLow : { balance : Nat; min : Nat };
-    #burnCapExhausted : { burnedE8s : Nat; capE8s : Nat };
-    #floatLow : { observedE8s : ?Nat; thresholdE8s : Nat };
+    /// The reserve cannot cover this order on top of what is already owed.
+    /// Carries both figures so the frontend can offer a smaller amount instead of
+    /// a bare failure, and an operator reading a ticket knows whether to top the
+    /// reserve up or hunt a leak.
+    #reserveShort : { requested : Nat; available : Nat };
     #amountAboveMax : { usdCents : Nat; maxUsdCents : Nat };
     /// Below the floor. Distinguishable from `#amountAboveMax` because the buyer
     /// acts on them differently — one means "ask for less", the other "ask for
@@ -177,11 +181,7 @@ module {
     switch (reason) {
       case (#tooManyOpenOrders({ open; max })) "tooManyOpenOrders(" # open.toText() # "/" # max.toText() # ")";
       case (#canisterCyclesLow({ balance; min })) "canisterCyclesLow(" # balance.toText() # "<" # min.toText() # ")";
-      case (#burnCapExhausted({ burnedE8s; capE8s })) "burnCapExhausted(" # burnedE8s.toText() # "/" # capE8s.toText() # ")";
-      case (#floatLow({ observedE8s; thresholdE8s })) {
-        let observed = switch (observedE8s) { case (?e8s) e8s.toText(); case null "never observed" };
-        "floatLow(" # observed # "<" # thresholdE8s.toText() # ")";
-      };
+      case (#reserveShort({ requested; available })) "reserveShort(need " # requested.toText() # ", have " # available.toText() # ")";
       case (#amountAboveMax({ usdCents; maxUsdCents })) "amountAboveMax(" # usdCents.toText() # ">" # maxUsdCents.toText() # ")";
       case (#amountBelowMin({ usdCents; minUsdCents })) "amountBelowMin(" # usdCents.toText() # "<" # minUsdCents.toText() # ")";
     };
@@ -195,14 +195,7 @@ module {
     openOrders : Nat;
     /// `Cycles.balance()` — this canister's own gas.
     canisterCycles : Nat;
-    /// `Treasury.burnedInWindow` for the live rolling window.
-    burnedInWindowE8s : Nat;
-    /// The operator's rolling ICP burn cap.
-    burnCapE8s : Nat;
-    /// Last observed ICP float, or null if it has never been read.
-    observedFloatE8s : ?Nat;
-    /// `Treasury.Config.lowFloatThresholdE8s`. Zero opts out of float gating.
-    lowFloatThresholdE8s : Nat;
+
   };
 
   /// Admission decision. Cheapest checks first so a spammed principal is
@@ -232,35 +225,39 @@ module {
         min = config.minCanisterCycles;
       }));
     };
-    // Burn-cap headroom: if the window is already spent, a new order could
-    // only ever land in #awaitingTreasury and then time out into a manual
-    // refund. Refusing to quote is strictly kinder than taking the money.
-    // Checked with `>=` because a cap of 0 (the fail-closed default) means
-    // "no minting at all" and must refuse every order.
-    if (observation.burnedInWindowE8s >= observation.burnCapE8s) {
-      return #err(#burnCapExhausted({
-        burnedE8s = observation.burnedInWindowE8s;
-        capE8s = observation.burnCapE8s;
-      }));
-    };
-    // Float gating is opt-in: a threshold of 0 means the operator has chosen
-    // not to gate on it. Once a threshold IS configured, a missing
-    // observation is treated as failing it — "I asked for this to be
-    // enforced" plus "I have never looked" is not a state to sell into. The
-    // go-live checklist calls `refresh_float` after funding for this reason.
-    if (observation.lowFloatThresholdE8s > 0) {
-      let sufficient = switch (observation.observedFloatE8s) {
-        case (?e8s) e8s >= observation.lowFloatThresholdE8s;
-        case null false;
-      };
-      if (not sufficient) {
-        return #err(#floatLow({
-          observedE8s = observation.observedFloatE8s;
-          thresholdE8s = observation.lowFloatThresholdE8s;
-        }));
-      };
-    };
+    // ⚠️ **Solvency is NOT decided here — see `solvent` below.** The burn-cap and
+    // float checks that used to be at this point went with the mint path (#30
+    // PR-A): both bounded ICP spend, and delivery spends no ICP. Their stated
+    // justification had already become false — the burn-cap comment cited
+    // `#awaitingTreasury`, a status with no entrance — so keeping them would have
+    // refused sales to protect a resource nothing consumes.
     #ok;
+  };
+
+  /// Can the reserve cover this order, on top of everything already owed?
+  ///
+  /// ⚠️ **Separate from `admit`, and that separation is structural rather than
+  /// stylistic.** Reading the reserve means awaiting the cycles ledger, and
+  /// `admit` is synchronous precisely so there is no TOCTOU window between
+  /// observing and deciding. Folding solvency into it would force every caller to
+  /// supply a balance — including `can_purchase`, which is a **query** and cannot
+  /// await one. #30 asks for `can_purchase`'s contract to be narrowed to "gas,
+  /// open-order cap, ceiling, floor"; splitting the functions makes that narrowing
+  /// a fact about the code rather than a sentence in a doc comment.
+  ///
+  /// ⚠️ **The caller must hold `lockedCycles` in the SAME synchronous block as
+  /// this check.** Two concurrent `create_order` calls that both pass here against
+  /// one `promisedTotal` and only then hold will together promise more than the
+  /// balance they checked — two honest buyers, no attacker. #30's own earlier
+  /// draft claimed interleaved creates were safe because "each resumes after the
+  /// other has recorded its promise", which is true only if the check and the hold
+  /// cannot be separated by an await.
+  public func solvent(reserveBalance : Nat, promisedTotal : Nat, lockedCycles : Nat) : Result.Result<(), Reason> {
+    if (Reserve.canCover(reserveBalance, promisedTotal, lockedCycles)) return #ok;
+    #err(#reserveShort({
+      requested = lockedCycles;
+      available = Reserve.available(reserveBalance, promisedTotal);
+    }));
   };
 
 };

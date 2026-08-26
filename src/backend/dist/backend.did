@@ -149,18 +149,14 @@ type Reason =
                      minUsdCents: nat;
                      usdCents: nat;
                    };
-   burnCapExhausted: record {
-                       burnedE8s: nat;
-                       capE8s: nat;
-                     };
    canisterCyclesLow: record {
                         balance: nat;
                         min: nat;
                       };
-   floatLow: record {
-               observedE8s: opt nat;
-               thresholdE8s: nat;
-             };
+   reserveShort: record {
+                   available: nat;
+                   requested: nat;
+                 };
    tooManyOpenOrders: record {
                         max: nat;
                         open: nat;

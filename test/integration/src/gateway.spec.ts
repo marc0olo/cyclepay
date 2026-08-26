@@ -695,23 +695,39 @@ test('15 — operational trail is coherent end-to-end (§4.2)', async () => {
   expect((await gw.asAnon.error_queue_depth()).retained).toBeGreaterThan(0n);
 });
 
-test('16 — admission gate: no burn-cap headroom refuses the quote before any money moves', async () => {
-  // Pause minting. The gate refuses to *quote* rather than accepting money it
-  // could only park in #awaitingTreasury and later refund.
-  expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
+test('16 — admission gate: the gas floor refuses the quote before any money moves', async () => {
+  // ⚠️ **The burn-cap axis this scenario was written for is gone** (#30 PR-B
+  // deleted `#burnCapExhausted` with the ICP it bounded). The property survives —
+  // the gate refuses to *quote* rather than taking money it cannot fulfil — so the
+  // scenario keeps that and exercises it on the axis that is still live and still
+  // reachable from a query: the canister's own gas floor.
+  //
+  // ⚠️ The reserve axis (`#reserveShort`) is deliberately NOT asserted here. It
+  // needs a balance read, so it cannot live in `Gate.admit` or answer from
+  // `can_purchase` — it is checked inside `create_order`, and its scenario arrives
+  // with that wiring. Which is also this scenario's remaining point: **`admit` and
+  // `can_purchase` agree exactly**, and they can only keep agreeing because
+  // solvency is not one of the questions they answer.
+  const { gate } = await gw.asAnon.lifecycle_config();
+  const floor = gate.minCanisterCycles;
+
+  // Raise the floor above the canister's own balance: fulfilment is impossible
+  // because the gateway cannot pay for its own execution.
+  const balance = (await gw.asAnon.cycles_status()).balance;
+  expectOk(await gw.asAdmin.set_gate_config({ ...gate, minCanisterCycles: balance + 1_000_000_000_000n }));
 
   const refused = expectErr(await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []));
   expect(refused).toHaveProperty('notAdmitted');
   expect((refused as { notAdmitted: Record<string, unknown> }).notAdmitted)
-    .toHaveProperty('burnCapExhausted');
+    .toHaveProperty('canisterCyclesLow');
 
-  // can_purchase reports the same refusal, so the frontend can disable the
-  // button with a real reason instead of failing at submit time.
+  // can_purchase reports the SAME refusal, so the frontend can disable the button
+  // with a real reason instead of failing at submit.
   expect(expectErr(await gw.asAnon.can_purchase(TIER_USD_CENTS)))
-    .toHaveProperty('burnCapExhausted');
+    .toHaveProperty('canisterCyclesLow');
 
-  // Restoring headroom re-opens the rail with no other intervention.
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  // Restoring the floor re-opens the rail with no other intervention.
+  expectOk(await gw.asAdmin.set_gate_config({ ...gate, minCanisterCycles: floor }));
   await ensureRates(gw);
   expectOk(await gw.asAnon.can_purchase(TIER_USD_CENTS));
   const admitted = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
