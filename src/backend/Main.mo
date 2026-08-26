@@ -1792,9 +1792,36 @@ persistent actor CyclesGateway {
           // fall through the loop → #replayDelivery issues the transfer
         };
         case (#replayDelivery(intent)) {
-          let fee = try { await cyclesLedger.icrc1_fee() } catch (e) {
-            Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
-            audit("delivery.feeFetchFailed", orderId # ": " # e.message());
+          // ⚠️ **The fee is DERIVED from the intent, never re-read here.**
+          //
+          // An earlier version read `icrc1_fee()` on every replay and a comment
+          // claimed the fee is outside the ledger's dedup key, so a replay with a
+          // corrected fee was "still byte-identical as far as the ledger is
+          // concerned". **Nobody verified that**, and the whole at-most-once
+          // guarantee rested on it: if the fee IS in the key, then a transfer that
+          // executed, lost its response, and is replayed after a fee change is a
+          // DISTINCT transaction — and the buyer is paid twice.
+          //
+          // So the claim is removed rather than checked. `deliverableCycles` set
+          // `amount = lockedCycles - fee`, which means the fee it used is
+          // recoverable exactly: `lockedCycles - amount`. A replay therefore
+          // reproduces the original args **bit for bit**, and it does not matter
+          // what the ledger's dedup key contains.
+          //
+          // ⚠️ **NO TEST CAN CATCH A REGRESSION HERE — verified by mutation.**
+          // Putting `await cyclesLedger.icrc1_fee()` back on this line passes all
+          // 562 Motoko assertions and the whole PocketIC suite, because the unit
+          // tests pin the *arithmetic* (`test/cmc.test.mo`) and the integration
+          // suite runs against a real ledger whose fee never moves. The failure
+          // needs a fee change inside the 24 h dedup window, which nothing here
+          // can arrange. Same class as #33's transform/consensus gap: the comment
+          // is the guard, so do not re-read the fee on this path.
+          let fee : Nat = if (order.lockedCycles >= intent.amountE8s) {
+            order.lockedCycles - intent.amountE8s : Nat;
+          } else {
+            // Unreachable: the amount was derived by subtracting a fee from this
+            // very quantity. Escalating beats guessing a fee on a money path.
+            escalateDelivery(order, "journalInconsistent", "delivery intent amount " # intent.amountE8s.toText() # " exceeds the order's locked " # order.lockedCycles.toText() # " — the fee cannot be recovered; establish the transfer's fate on the cycles ledger before re-sending");
             return;
           };
           let result = try { await cyclesLedger.icrc1_transfer(Cmc.deliveryArgs(intent, fee)) } catch (e) {
@@ -1817,16 +1844,48 @@ persistent actor CyclesGateway {
             };
             case (#badFee(expected)) {
               // The reserve absorbs a risen fee; the buyer is never shorted, so
-              // the intent's AMOUNT is not touched — only the fee we pass.
+              // the intent's AMOUNT is untouched — only the fee we pass.
+              //
+              // ⚠️ **Re-issued HERE, in the same message, rather than left to the
+              // next sweep.** The fee is derived from the intent, so a later
+              // replay would derive the same rejected fee and bounce again — the
+              // order would loop until retries ran out. Changing it is safe
+              // precisely because `#BadFee` is *definitive*: the ledger did not
+              // execute, so this is a first attempt with corrected args, not a
+              // replay of something that might already have happened.
               //
               // ⚠️ The reserve then drops by `lockedCycles + delta` while #30's
               // tally drops by `lockedCycles`, so `available` drifts down by the
-              // delta. It is fractions of a fee and errs conservative, but the
-              // "exactly invariant under delivery" claim holds only while the fee
-              // is unchanged — do not read this small drift as a bug.
-              Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
-              audit("delivery.feeChanged", orderId # ": ledger expects " # expected.toText() # ", reserve absorbs the difference; retrying");
-              return;
+              // delta. Fractions of a fee, erring conservative — but the "exactly
+              // invariant under delivery" claim holds only while the fee is
+              // unchanged, so do not read that small drift as a bug.
+              audit("delivery.feeChanged", orderId # ": ledger expects " # expected.toText() # " (intent implies " # fee.toText() # "); reserve absorbs the difference");
+              let retried = try {
+                await cyclesLedger.icrc1_transfer(Cmc.deliveryArgs(intent, expected));
+              } catch (e) {
+                Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+                audit("delivery.transferFailed", orderId # " (after fee correction): " # e.message());
+                return;
+              };
+              switch (Cmc.interpretTransfer(retried)) {
+                case (#blockIndex(block)) {
+                  mintBlockedAudited.remove(orderId);
+                  ignore tryTransition(orderId, #delivered);
+                  Cmc.patch(mintJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
+                  clearDelayed(orderId);
+                  audit("delivery.sent", orderId # ": " # intent.amountE8s.toText() # " cycles at the corrected fee, ledger block " # block.toText());
+                  return;
+                };
+                case (_) {
+                  // One correction attempt per pass, no loop. If the fee moved
+                  // again mid-flight the next sweep starts over from the derived
+                  // fee — which is still the byte-identical replay, so the
+                  // at-most-once guarantee is never traded for convergence.
+                  Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+                  audit("delivery.retriable", orderId # ": fee correction to " # expected.toText() # " did not settle; retrying next sweep");
+                  return;
+                };
+              };
             };
             case (#retriable(detail)) {
               // Includes `#InsufficientFunds`, which #30 argues is unreachable:

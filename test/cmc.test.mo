@@ -153,6 +153,58 @@ suite("buildIntent + transferArgs (§5.1 determinism)", func() {
   });
 });
 
+suite("delivery: the fee is RECOVERABLE from the intent (#30 PR-A)", func() {
+  // ⚠️ This is what replaced an unverified claim about the cycles ledger's dedup
+  // key. The replay path must send the fee the intent was BUILT with, or a
+  // transfer that executed and lost its response could be replayed as a distinct
+  // transaction and pay the buyer twice. Rather than checking what the ledger
+  // keys on, the fee is derived: `deliverableCycles` subtracts it, so
+  // `locked - amount` gives it back exactly.
+  //
+  // This suite is that arithmetic, pinned. If `deliverableCycles` ever stops
+  // being a plain subtraction, the replay path silently starts sending a wrong
+  // fee — and these are the assertions that would catch it.
+  test("locked - amount recovers the exact fee, across magnitudes", func() {
+    for ((locked, fee) in ([
+      (3_500_000_000_000, 100_000_000), // the §3 vector at today's fee
+      (7_238_461_538_461, 100_000_000), // a $10 order
+      (1_000, 1),
+      (2, 1), // the tightest non-degenerate case
+    ] : [(Nat, Nat)]).values()) {
+      let ?amount = Cmc.deliverableCycles(locked, fee) else { assert false; return };
+      assert amount == locked - fee;
+      // THE INVARIANT the replay path depends on.
+      assert locked - amount == fee;
+    };
+  });
+
+  test("a fee that swallows the order yields no amount, so nothing is derivable", func() {
+    // Guarded rather than trapped: the replay path escalates on an
+    // unrecoverable fee instead of guessing one on a money path.
+    assert Cmc.deliverableCycles(100, 100) == null;
+    assert Cmc.deliverableCycles(100, 101) == null;
+    assert Cmc.deliverableCycles(0, 1) == null;
+  });
+
+  test("the intent carries the amount, not the fee — so the args are reproducible", func() {
+    // `TransferIntent` has no fee field on purpose: a second copy of the fee
+    // could disagree with the amount, and then neither would be authoritative.
+    let intent = Cmc.buildDeliveryIntent(
+      "aabbccddeeff00112233445566778899",
+      { owner = Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai"); subaccount = null },
+      3_499_900_000_000,
+      42,
+    );
+    assert intent.amountE8s == 3_499_900_000_000;
+    // Two projections of the same intent at the same fee are identical — which is
+    // the whole meaning of "byte-identical replay".
+    assert Cmc.deliveryArgs(intent, 100_000_000) == Cmc.deliveryArgs(intent, 100_000_000);
+    // And a different fee produces DIFFERENT args, which is exactly why the
+    // caller must not re-read it.
+    assert Cmc.deliveryArgs(intent, 100_000_000) != Cmc.deliveryArgs(intent, 200_000_000);
+  });
+});
+
 suite("interpretTransfer (§5.1)", func() {
   test("Ok and Duplicate both recover the block index — the replay payoff", func() {
     assert Cmc.interpretTransfer(#Ok(7)) == #blockIndex(7);
