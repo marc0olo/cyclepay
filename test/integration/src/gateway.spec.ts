@@ -6,7 +6,7 @@
 /// earlier ones. Coverage demanded by §9: happy path, duplicate/replay,
 /// ambiguous-transfer recovery, AwaitingTreasury, error queue Type 1/Type 2,
 /// forex fail-closed, upgrade-mid-flight, postupgrade timer re-arm.
-import { afterAll, beforeAll, expect, test } from 'vitest';
+import { afterAll, afterEach, beforeAll, expect, test } from 'vitest';
 import {
   CYCLES_LEDGER_FEE, ICP_FEE_E8S, ICP_USD_RATE, ORDER_E8S,
   TIER_LOCKED_CYCLES, TIER_USD_CENTS, WEBHOOK_SECRET, XDR_PERMYRIAD_PER_ICP, admin, user,
@@ -36,6 +36,36 @@ let gw: Gateway;
 const USER_ACCOUNT: Destination = {
   cyclesLedgerAccount: { owner: user.getPrincipal(), subaccount: [] },
 };
+
+/// ⚠️ **THE FLOOR'S BOUND, after every single scenario.**
+///
+/// `reserveFloor` must never exceed the real ledger balance, because the gate sells
+/// against it — an optimistic floor admits orders the reserve cannot cover, and it does
+/// so silently.
+///
+/// This started as one assertion inside scenario 73. That was enough to catch a
+/// mutation (crediting the floor back on a real debit) and **not** enough to be the
+/// safety net it was described as: it checked history up to 73 and nothing after, so
+/// anything first reachable in a later scenario walked past it. Widening it to three
+/// scenarios fixed those three; a hook fixes the **class** — every scenario anyone adds
+/// from here is born checkpointed, including ones written by someone who never reads
+/// this comment.
+///
+/// Costs one query and one ledger read per scenario. A read failure is skipped rather
+/// than asserted: a scenario that fails with the ledger stopped would otherwise get a
+/// confusing secondary error on top of its real one.
+afterEach(async () => {
+  try {
+    const floor = (await gw.asAnon.reserve_status()).reserveFloor;
+    expect(floor, 'reserveFloor exceeded the real reserve balance').toBeLessThanOrEqual(
+      await reserveBalance(gw),
+    );
+  } catch (e) {
+    if (e instanceof Error && /exceeded the real reserve/.test(e.message)) throw e;
+    // Ledger unreadable (a scenario left it stopped, or teardown has begun) — let the
+    // scenario's own failure be the one that is reported.
+  }
+});
 
 /// What the buyer actually holds, on the cycles ledger.
 async function userCycles(): Promise<bigint> {
@@ -3046,10 +3076,6 @@ test('76 — one escalated order must not freeze the reserve reconcile forever (
   // Its promise is still HELD, which is the other half of the fix being safe: the
   // order is excluded from the in-flight predicate, not forgiven its obligation.
   expect(after.promisedTotal).toBeGreaterThanOrEqual(orderEscalated.lockedCycles);
-  // THE BOUND again — see the note in 73. Repeated rather than trusted from there,
-  // because it is a claim about *now*, and adoption is the operation most able to
-  // break it.
-  expect(after.reserveFloor).toBeLessThanOrEqual(await reserveBalance(gw));
 });
 
 test('77 — an escalated order whose cycles DID arrive can be recorded, not filed as abandoned (#30 PR-B)', async () => {
@@ -3155,16 +3181,6 @@ test('78 — an order whose delivery is unsettled cannot be abandoned into a dou
   // was certain by the time they were allowed to act.
   expect(await reserveBalance(gw)).toBe(reserveBefore);
 
-  // ⚠️ **THE BOUND, at the end of the last scenario** — `reserveFloor` must never
-  // exceed the real balance, because the gate sells against it.
-  //
-  // Asserted here as well as at the start of 73 because the claim "the bound holds
-  // across the suite's accumulated history" was only true up to 73 while 73 was the
-  // sole check: a mutation whose effect first appears in a path exercised *after* it
-  // would have slipped through. Now the suite opens and closes on the same invariant,
-  // with every escalation, abandonment, owner kick and adoption in between.
-  expect((await gw.asAnon.reserve_status()).reserveFloor)
-    .toBeLessThanOrEqual(await reserveBalance(gw));
   // ⚠️ ~80 h of clock advance stales BOTH rates; skipping this fails whatever runs
   // next on rates it never touched (see the README).
   await setCmcRate(gw);
