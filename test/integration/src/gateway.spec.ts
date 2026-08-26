@@ -3046,6 +3046,10 @@ test('76 — one escalated order must not freeze the reserve reconcile forever (
   // Its promise is still HELD, which is the other half of the fix being safe: the
   // order is excluded from the in-flight predicate, not forgiven its obligation.
   expect(after.promisedTotal).toBeGreaterThanOrEqual(orderEscalated.lockedCycles);
+  // THE BOUND again — see the note in 73. Repeated rather than trusted from there,
+  // because it is a claim about *now*, and adoption is the operation most able to
+  // break it.
+  expect(after.reserveFloor).toBeLessThanOrEqual(await reserveBalance(gw));
 });
 
 test('77 — an escalated order whose cycles DID arrive can be recorded, not filed as abandoned (#30 PR-B)', async () => {
@@ -3150,6 +3154,17 @@ test('78 — an order whose delivery is unsettled cannot be abandoned into a dou
   // Nothing moved out of the reserve throughout — the position the operator acted on
   // was certain by the time they were allowed to act.
   expect(await reserveBalance(gw)).toBe(reserveBefore);
+
+  // ⚠️ **THE BOUND, at the end of the last scenario** — `reserveFloor` must never
+  // exceed the real balance, because the gate sells against it.
+  //
+  // Asserted here as well as at the start of 73 because the claim "the bound holds
+  // across the suite's accumulated history" was only true up to 73 while 73 was the
+  // sole check: a mutation whose effect first appears in a path exercised *after* it
+  // would have slipped through. Now the suite opens and closes on the same invariant,
+  // with every escalation, abandonment, owner kick and adoption in between.
+  expect((await gw.asAnon.reserve_status()).reserveFloor)
+    .toBeLessThanOrEqual(await reserveBalance(gw));
   // ⚠️ ~80 h of clock advance stales BOTH rates; skipping this fails whatever runs
   // next on rates it never touched (see the README).
   await setCmcRate(gw);

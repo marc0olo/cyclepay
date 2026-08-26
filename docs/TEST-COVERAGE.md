@@ -128,7 +128,7 @@ suite run:
 | Mutation | Caught by |
 |---|---|
 | drop the `#paid` clause from `unsettledDelivery` (the escalation-freeze bug, which shipped into the branch once) | scenarios **73** and **76** — 76 by design, 73 because a frozen reconcile stops adopting a top-up |
-| credit the floor back on `#delivered` — a **real** debit, i.e. breaking rule 2/3's asymmetry in the optimistic direction | scenario **73**'s opening `reserveFloor ≤ reserveBalance`. ⚠️ Worth knowing *which* line: the bound is enforced by one assertion against the suite's whole accumulated history, not by the scenario's own subject |
+| credit the floor back on `#delivered` — a **real** debit, i.e. breaking rule 2/3's asymmetry in the optimistic direction | scenario **73**'s opening `reserveFloor ≤ reserveBalance`. ⚠️ Worth knowing *which* line: the bound is caught by a standalone assertion, not by any scenario's subject. It was a single check at 73 when this mutation was run, which made the catch partly luck — a mutation first reachable *after* 73 would have slipped — so the bound is now asserted at 73, 76 and at the end of 78, opening and closing the suite on the same invariant |
 | `openEntry` recording a hardcoded status instead of the order's | `test/cmc.test.mo`'s coupling test, added after the bug — and scenario **75**, which found it originally by asserting a set was non-empty |
 
 ### 2. Structural limits in PocketIC — verified, not assumed
