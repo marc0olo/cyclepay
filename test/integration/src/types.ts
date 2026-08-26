@@ -139,7 +139,6 @@ export interface QuotePreview {
 export interface QuotePreviews {
   quotes: QuotePreview[];
   rates: [] | [PricingRates];
-  cyclesLedgerDepositFee: bigint;
 }
 
 export interface TransferIntent {
@@ -303,6 +302,9 @@ export interface BackendService {
 
 export interface Icrc1Service {
   icrc1_balance_of(account: Account): Promise<bigint>;
+  /// #30 PR-A: the delivery fee, read from the ledger rather than disclosed by
+  /// `quote_previews`.
+  icrc1_fee(): Promise<bigint>;
   icrc1_transfer(arg: {
     from_subaccount: Opt<Bytes>;
     to: Account;

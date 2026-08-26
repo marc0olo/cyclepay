@@ -289,7 +289,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
             }),
           ),
           rates: IDL.Opt(Rates),
-          cyclesLedgerDepositFee: IDL.Nat,
         }),
       ],
       ['query'],
@@ -472,6 +471,7 @@ export const icrc1IdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   });
   return IDL.Service({
     icrc1_balance_of: IDL.Func([Account], [IDL.Nat], ['query']),
+    icrc1_fee: IDL.Func([], [IDL.Nat], ['query']),
     icrc1_transfer: IDL.Func(
       [TransferArg],
       [IDL.Variant({ Ok: IDL.Nat, Err: TransferError })],

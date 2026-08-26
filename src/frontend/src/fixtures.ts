@@ -20,7 +20,7 @@
 /// bundle for the hook's name to keep that claim true rather than assumed.
 import { Principal } from "@icp-sdk/core/principal";
 import type { Identity } from "@icp-sdk/core/agent";
-import type { Backend, Order } from "./actor";
+import type { Backend, CyclesLedger, Order } from "./actor";
 import { cyclesForCents } from "./format";
 
 /// The seams main.ts hands over. Deliberately narrow: fixtures may choose what
@@ -30,6 +30,7 @@ export type FixtureHost = {
   /// Replace backend construction. Called for every actor the app builds after
   /// this point, including the one `setIdentity` rebuilds on sign-in.
   useBackend(factory: (identity: Identity | null) => Backend): void;
+  useCyclesLedger(factory: () => CyclesLedger): void;
   /// The app's own `setIdentity`.
   signIn(identity: Identity | null): void;
   /// The app's own `openOrder` — routes, renders and starts the poll.
@@ -142,6 +143,15 @@ export function installFixtures(host: FixtureHost): void {
   // Cast once, here, with the reason stated: the generated actor type carries
   // admin methods and config records this surface never touches, and stubbing
   // them would be noise standing in for coverage the PocketIC suite already has.
+  // #30 PR-A: the fee comes from the ledger now, not from `quote_previews`. The
+  // browser fixture answers it so the buy view still shows what lands, and so a
+  // spec can tell "fee not known yet" (0) from "fee is 100 M" — the two render
+  // differently and only one of them is a bug.
+  const cyclesLedger: CyclesLedger = {
+    icrc1_fee: async () => DEPOSIT_FEE,
+    icrc1_balance_of: async () => 0n,
+  };
+
   const backend = {
     card_tiers: async () => [
       // The #33 presets: $10 / $20 / $50. `paymentLinkUrl` went with the links.
@@ -174,7 +184,6 @@ export function installFixtures(host: FixtureHost): void {
     // The rail ships disabled, and these fixtures keep it that way: a spec that
     // silently enabled it would be asserting against a product nobody ships.
     quote_previews: async (amounts: bigint[]) => ({
-      cyclesLedgerDepositFee: DEPOSIT_FEE,
       quotes: amounts.map((usdCents) => {
         const feeCents = (usdCents * 290n) / 10_000n + 30n;
         const netCents = usdCents > feeCents ? usdCents - feeCents : undefined;
@@ -215,10 +224,12 @@ export function installFixtures(host: FixtureHost): void {
   const api: FixtureApi = {
     async useBackend() {
       host.useBackend(() => backend);
+      host.useCyclesLedger(() => cyclesLedger);
       await host.reloadMarket();
     },
     async signIn() {
       host.useBackend(() => backend);
+      host.useCyclesLedger(() => cyclesLedger);
       host.signIn(identity);
       await host.reloadMarket();
     },

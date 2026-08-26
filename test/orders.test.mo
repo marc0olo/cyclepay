@@ -33,6 +33,11 @@ let legalTransitions : [(Types.OrderStatus, Types.OrderStatus)] = [
   (#created, #cancelled),
   (#created, #expired),
   (#created, #paid),
+  // #30 PR-A: the whole money-out path is now one transfer from the reserve.
+  // ⚠️ It did NOT exist before — `#icpAtCmc → #delivered` was the only route to
+  // `#delivered`, so without this edge the transfer lands and the order sits
+  // `#paid` forever with the buyer already holding their cycles.
+  (#paid, #delivered),
   (#paid, #minting),
   (#paid, #awaitingTreasury),
   (#paid, #needsReview),
@@ -117,14 +122,14 @@ suite("legal-transition matrix (exhaustive, 8×8)", func() {
     };
   };
 
-  test("exactly 12 legal transitions exist", func() {
+  test("exactly 16 legal transitions exist", func() {
     var count = 0;
     for (from in allStatuses.values()) {
       for (to in allStatuses.values()) {
         if (Orders.isLegalTransition(from, to)) count += 1;
       };
     };
-    assert count == 15;
+    assert count == 16;
   });
 
   test("the terminal statuses have no outgoing edge at all", func() {

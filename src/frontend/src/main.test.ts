@@ -42,6 +42,7 @@ const state = {
     cycles: TIER_CYCLES,
   } as Quote,
   depositFee: 100_000_000n,
+  depositFeeError: false,
   ckMaxUsdCents: 0n,
   /// When set, the next create_order returns #quoteChanged with this quantity.
   quoteChangedTo: undefined as bigint | undefined,
@@ -123,7 +124,6 @@ const backend = {
   quote_previews: async (amounts: bigint[]) => ({
     quotes: amounts.map(() => state.quote),
     rates: undefined,
-    cyclesLedgerDepositFee: state.depositFee,
   }),
   create_order: async (amount: unknown, dest: unknown, minCycles: bigint | null) => {
     state.lastMinCycles = minCycles;
@@ -151,6 +151,17 @@ const identity = { getPrincipal: () => ({ toText: () => "aaaaa-aa" }) };
 vi.mock("./actor", () => ({
   backendCanisterId: "aaaaa-aa",
   makeBackend: () => backend,
+  // #30 PR-A: the ledger's fee is read from the LEDGER, not disclosed by
+  // `quote_previews`. `state.depositFee` still drives it, so every existing
+  // assertion about how the fee is displayed keeps its lever — only where the
+  // number comes from changed.
+  makeCyclesLedger: () => ({
+    icrc1_fee: async () => {
+      if (state.depositFeeError) throw new Error("cycles ledger unreachable");
+      return state.depositFee;
+    },
+    icrc1_balance_of: async () => 0n,
+  }),
   agentOptions: () => ({}),
   Rail: { card: "card" },
 }));
@@ -237,6 +248,7 @@ async function settle(): Promise<void> {
 beforeEach(() => {
   state.quote = { usdCents: TIER_CENTS, feeCents: 45n, netCents: 455n, cycles: TIER_CYCLES };
   state.depositFee = 100_000_000n;
+  state.depositFeeError = false;
   state.ckMaxUsdCents = 0n;
   state.quoteChangedTo = undefined;
   state.lastMinCycles = undefined;
@@ -302,6 +314,20 @@ describe("the deposit fee is disclosed on every order", () => {
     const note = el("dest-fee-note");
     expect(note.hidden).toBe(false);
     expect(note.textContent).toContain("not added to your price");
+  });
+
+  test("an unreachable ledger hides the fee rather than inventing one", async () => {
+    // #30 PR-A moved the fee from `quote_previews` (always answered, because the
+    // backend was already being called) to the cycles ledger (a second canister
+    // that can be down on its own). That is a NEW failure mode, and the safe
+    // direction is to show the locked quantity with no fee note: shown-too-high
+    // costs a buyer nothing, while a guessed fee promises cycles that will not
+    // arrive.
+    state.depositFeeError = true;
+    await mount();
+    expect(el("dest-fee-note").hidden).toBe(true);
+    // And the tile still prices, because the quote came from the backend.
+    expect(tierButton().querySelector(".cycles")!.textContent).toContain("cycles");
   });
 
   test("a fee large enough to move the figure is shown as a split", async () => {

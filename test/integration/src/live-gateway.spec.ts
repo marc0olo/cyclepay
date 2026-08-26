@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from 'vitest';
 import {
   ICP_FEE_E8S, ORDER_E8S, TIER_LOCKED_CYCLES, TIER_USD_CENTS, WEBHOOK_SECRET,
-  checkoutSessionBody, ensureRates, expectOk, fundFloat, orderStatus, setCmcRate,
+  checkoutSessionBody, ensureRates, expectOk, fundFloat, fundReserve, orderStatus, setCmcRate,
   setupGateway, setXrcRate, stripeSignature, teardownGateway, tickUntilStatus, user,
   clientReferenceFor, createOrderWithSession,
   type Gateway,
@@ -56,6 +56,11 @@ test('55 — the webhook route serves real HTTP end to end, and delivers', async
     { id: 'tier5', usdCents: TIER_USD_CENTS },
   ]));
   await fundFloat(gw, ORDER_E8S * 2n + ICP_FEE_E8S * 2n);
+  // #30 PR-A: delivery transfers OUT of the gateway's own cycles-ledger account,
+  // so that account must hold cycles or the order is paid and never delivered.
+  // ⚠️ This spec runs its own PocketIC instance, so the main suite's reserve
+  // funding does not reach it — which is exactly how this scenario failed once.
+  await fundReserve(gw, 100_000_000_000_000n);
   // One destination, and the gateway refuses any other (#29).
   // Created BEFORE `makeLive()`, deliberately: the session outcall is answered
   // deterministically here. Once the instance is live it auto-progresses, so a

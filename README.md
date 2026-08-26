@@ -5,11 +5,15 @@ is the whole point: it exists to get a developer from "I have a card" to "my
 canister has cycles" without first solving crypto onboarding.
 
 It runs entirely on the Internet Computer: a single verifiable Motoko backend
-canister plus an asset canister serving the frontend. The **Card** rail (Stripe
-webhook, inbound only — there is no Stripe API key anywhere in the system) mints
-through the Cycles Minting Canister from an operator ICP float. Purchases are
-Internet-Identity-authenticated, one-shot, and delivered either to a canister
-(`notify_top_up`) or a cycles-ledger account (`notify_mint_cycles`).
+canister plus an asset canister serving the frontend. The **Card** rail creates a
+Stripe Checkout Session per order through the API (#33) and **sells cycles from a
+reserve it already holds** — the canister's own cycles-ledger account — rather
+than minting them per payment (#30). Purchases are Internet-Identity-authenticated,
+one-shot, and delivered by one `icrc1_transfer` to the buyer's cycles-ledger
+account.
+
+The operator funds that reserve with `icp cycles transfer`. **The canister never
+holds ICP**: no float, no mint path, no burn cap.
 
 **Pricing is derived on-chain and reproducible by anyone.** Two rates, both read
 from canisters — USD/ICP from the Exchange Rate Canister, XDR/ICP from the CMC —
@@ -74,7 +78,7 @@ five axes at once, and the result looks like a broken app rather than a safe one
 | "No amounts are configured yet" | No presets are registered. Since #33 that is **not** a paused rail — a custom amount still works; run the seed to register the tiles |
 | "No exchange rate available yet" | Pricing needs the CMC rate, which only NNS governance can set |
 | "temporarily unavailable while the gateway is topped up" | `minCanisterCycles` defaults to 5 T and `icp deploy` creates the canister with less, so the gate refuses every purchase. This one is about the canister's own **gas**, not the treasury; the seed script fixes it with `icp canister top-up backend --amount 20t`, which is what you would do on mainnet, rather than by lowering the floor |
-| Orders never mint | Burn cap defaults to 0 (the §5.3 pause lever) and there is no ICP float |
+| Orders are paid but never delivered | The **cycles reserve** is empty — delivery transfers from the gateway's own cycles-ledger account, so it needs funding with `icp cycles transfer`. The seed does this; without it an order pays and then retries delivery forever |
 
 `scripts/local-dev-seed.sh` sets all five and verifies a $5 purchase is admitted
 before reporting success. It reaches the CMC through the local network's PocketIC

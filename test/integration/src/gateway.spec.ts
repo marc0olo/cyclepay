@@ -8,14 +8,14 @@
 /// forex fail-closed, upgrade-mid-flight, postupgrade timer re-arm.
 import { afterAll, beforeAll, expect, test } from 'vitest';
 import {
-  CYCLES_LEDGER_DEPOSIT_FEE, ICP_FEE_E8S, ICP_USD_RATE, ORDER_E8S,
+  CYCLES_LEDGER_FEE, ICP_FEE_E8S, ICP_USD_RATE, ORDER_E8S,
   TIER_LOCKED_CYCLES, TIER_USD_CENTS, WEBHOOK_SECRET, XDR_PERMYRIAD_PER_ICP, admin, user,
   bigIntReplacer, partialRefundBody, stopNns, startNns, CMC_ID, ICP_LEDGER_ID,
   CYCLES_LEDGER_ID, clientReferenceFor, createOrderWithSession, cancelOrderWithExpire,
   awaitPendingOutcall, answerOutcall, outcallHeader, outcallBody, sessionExpiredBody,
   sessionCreatedBody,
   Gateway, setupGateway, teardownGateway, upgradeBackendMidFlight,
-  setCmcRate, fundFloat, floatBalance,
+  setCmcRate, fundFloat, floatBalance, fundReserve, reserveBalance,
   checkoutSessionBody, chargeRefundedBody, deliverWebhook, stripeSignature,
   nowSeconds, setXrcRate, setXrcResponse, warmRates, ensureRates, tickRateTimer,
   orderStatus, statusKey, tickUntilStatus, expectOk, expectErr,
@@ -51,11 +51,17 @@ let orderE: Order; let refE: string; // upgrade-mid-transfer replay
 let orderF: Order; let refF: string; // treasury max-wait escalation
 
 const FLOAT_E8S = 5_000_000_000n; // 50 ICP
+/// #30 PR-A: delivery is a transfer OUT of the gateway's own cycles-ledger
+/// account, so the suite has to fund that account or every order retries
+/// forever. Sized generously — an unfunded reserve is PR-B's subject, and a
+/// scenario that runs short here fails as a hang rather than as an assertion.
+const RESERVE_CYCLES = 500_000_000_000_000n; // 500 T
 
 beforeAll(async () => {
   gw = await setupGateway();
   await setCmcRate(gw);
   await fundFloat(gw, FLOAT_E8S);
+  await fundReserve(gw, RESERVE_CYCLES);
   // The admission gate (Gate.mo) refuses to quote when the burn window has no
   // headroom, and the fail-closed default cap is 0 — so orders cannot be
   // created at all until the operator sizes the cap. Every scenario below that
@@ -316,60 +322,87 @@ test('05 — HTTP ingress guards on the live route table (§6.0/§6.1)', async (
   expect(await orderStatus(gw, orderA.id)).toBe('created');
 });
 
-test('06 — AwaitingTreasury: a burn cap of 0 holds the mint of an already-created order (§5.3)', async () => {
-  // orderA was created in scenario 04 while the cap had headroom. Pausing now
-  // is the realistic shape of this hold: the operator drops the cap (or an
-  // earlier order exhausts the window) between creation and payment.
-  expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
+test('06 — the money-out path is ONE transfer out of the reserve (#30 PR-A)', async () => {
+  // Replaces two scenarios, because #30 PR-A replaced the mechanism they were
+  // about. 06 asserted that a burn cap of 0 held the mint at `#awaitingTreasury`;
+  // 07 asserted the held order then resumed and the CMC mint landed. Delivery no
+  // longer mints and no longer consults the burn cap or the float — it transfers
+  // cycles the reserve already holds — so **`#awaitingTreasury` has no entrance
+  // any more**. #30 lists that status under #36's deletions and does not mention
+  // that PR-A already strands it; it does.
+  //
+  // Gating a cycles transfer on an ICP burn cap would have kept the old
+  // scenarios passing and been nonsense: the cap bounds ICP burn, and delivery
+  // burns no ICP.
+  //
+  // What that leaves worth asserting is the arithmetic, and it is exact in both
+  // directions — which is the whole point of the fee being charged on top:
+  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+
+  const reserveBefore = await reserveBalance(gw);
+  const creditedBefore = await userCycles();
+  const feeNow = await gw.cyclesLedger.icrc1_fee();
+  expect(feeNow).toBe(CYCLES_LEDGER_FEE);
 
   const response = await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_a1', paymentIntent: 'pi_a', clientReferenceId: refA,
     amountCents: TIER_USD_CENTS,
   }));
   expect(response.status_code).toBe(200);
+  expect(await tickUntilStatus(gw, orderA.id, ['delivered'])).toBe('delivered');
 
-  // The detached money-out kick runs #begin (CMC rate + float reads), then
-  // the pre-gate holds: cap 0 means "operator has not sized the bound yet".
-  expect(await tickUntilStatus(gw, orderA.id, ['awaitingTreasury'])).toBe('awaitingTreasury');
+  // The buyer receives the locked quantity LESS the fee.
+  expect((await userCycles()) - creditedBefore).toBe(TIER_LOCKED_CYCLES - feeNow);
+  // And the reserve falls by EXACTLY the locked quantity — the fee is charged on
+  // top of the amount, so sending `locked - fee` debits `locked`. That is why
+  // #30's promise tally is `Σ lockedCycles` with no separate fee term; an earlier
+  // draft wrote `Σ (lockedCycles + fee)` and double-counted.
+  expect(reserveBefore - (await reserveBalance(gw))).toBe(TIER_LOCKED_CYCLES);
 
-  const treasury = await gw.asAnon.treasury_status();
-  expect(treasury.heldOrders).toBe(1n);
-  expect(treasury.config.burnCapE8s).toBe(0n);
-  expect(treasury.lastObservedFloat[0]?.e8s).toBe(FLOAT_E8S);
-
-  const audit = await gw.asAdmin.audit_log();
-  expect(audit.some((e) => e.tag === 'mint.held' && e.detail.includes(orderA.id))).toBe(true);
-});
-
-test('07 — happy path: cap sized → held order resumes → real CMC mint lands at the destination (§5)', async () => {
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-
-  const floatBefore = await floatBalance(gw);
-  const creditedBefore = await userCycles();
-
-  const driven = expectOk(await gw.asAdmin.process_order(orderA.id));
-  expect(statusKey(driven)).toBe('delivered');
-
-  // Exactly one ledger debit: the order's e8s + the protocol fee.
-  expect(await floatBalance(gw)).toBe(floatBefore - ORDER_E8S - ICP_FEE_E8S);
-
-  // The CMC minted e8s × permyriad = exactly the locked quantity, and the
-  // forward credited it to the buyer's account less the ledger's deposit fee.
-  // An EXACT assertion, where the canister arm this scenario used to deliver to
-  // could only be bounded: `deposit_cycles` charged an unpredictable slice of
-  // execution against the deposit.
-  expect((await userCycles()) - creditedBefore)
-    .toBe(TIER_LOCKED_CYCLES - CYCLES_LEDGER_DEPOSIT_FEE);
-
-  // §4.2 journal: block recorded, minted quantity recorded, terminal status.
+  // §4.2 journal: the ledger block, the delivered quantity, terminal status.
   const journal = (await gw.asAdmin.mint_journal(orderA.id))[0]!;
   expect(journal.blockIndex.length).toBe(1);
-  expect(journal.cyclesMinted).toEqual([TIER_LOCKED_CYCLES]);
+  expect(journal.cyclesMinted).toEqual([TIER_LOCKED_CYCLES - feeNow]);
   expect(statusKey(journal)).toBe('delivered');
 
-  // §5.3 cap consumption is recorded against the rolling window.
-  expect((await gw.asAnon.treasury_status()).burnedInWindowE8s).toBe(ORDER_E8S);
+  // ⚠️ No ICP moved, and no burn was recorded. Delivery is not a mint.
+  expect((await gw.asAnon.treasury_status()).burnedInWindowE8s).toBe(0n);
   expect((await gw.asAnon.treasury_status()).heldOrders).toBe(0n);
+});
+
+test('07 — the transfer memo is the ORDER id, so two identical orders both deliver', async () => {
+  // The subtlest money bug #30 names, and it is unreachable only because of the
+  // memo. The ledger dedups on `(created_at_time, from, to, amount, memo)` —
+  // NOT on the order. Two `#paid` orders from one buyer for the same amount are
+  // reachable (the open-order cap counts only `#created`, so pay → create → pay
+  // produces exactly that), and if both intents are built in the same round they
+  // share the timestamp, the destination and the amount. Without the order id in
+  // the memo the second transfer is falsely deduplicated: order B is marked
+  // delivered against order A's block and the buyer is shorted a whole purchase.
+  await ensureRates(gw);
+  const creditedBefore = await userCycles();
+
+  const first = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
+  const second = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
+
+  for (const [i, o] of [first, second].entries()) {
+    expect(await deliverWebhook(gw, checkoutSessionBody({
+      eventId: `evt_memo_${i}`, paymentIntent: `pi_memo_${i}`,
+      clientReferenceId: clientReferenceFor(o.order.id), amountCents: TIER_USD_CENTS,
+    }))).toMatchObject({ status_code: 200 });
+  }
+  expect(await tickUntilStatus(gw, first.order.id, ['delivered'])).toBe('delivered');
+  expect(await tickUntilStatus(gw, second.order.id, ['delivered'])).toBe('delivered');
+
+  // TWO purchases arrived, not one. This is the assertion that fails if the memo
+  // ever stops being per-order.
+  const fee = await gw.cyclesLedger.icrc1_fee();
+  expect((await userCycles()) - creditedBefore).toBe((TIER_LOCKED_CYCLES - fee) * 2n);
+
+  // Distinct ledger blocks, which is the same fact from the ledger's side.
+  const blockA = (await gw.asAdmin.mint_journal(first.order.id))[0]!.blockIndex[0]!;
+  const blockB = (await gw.asAdmin.mint_journal(second.order.id))[0]!.blockIndex[0]!;
+  expect(blockA).not.toBe(blockB);
 });
 
 test('08 — duplicate/replay: every dedup layer holds through real ingress (§4.1/§4.2)', async () => {
@@ -452,7 +485,7 @@ test('10 — the ledger\'s deposit fee lands on the buyer, and is not grossed up
 
   expect(await tickUntilStatus(gw, orderB.id, ['delivered'])).toBe('delivered');
 
-  // The buyer receives `lockedCycles - CYCLES_LEDGER_DEPOSIT_FEE` (documented in
+  // The buyer receives `lockedCycles - CYCLES_LEDGER_FEE` (documented in
   // docs/STRIPE.md and disclosed in the UI). This used to be described as an
   // asymmetry between two forward arms; #29 deleted the canister arm, so it is
   // simply what every delivery does.
@@ -465,228 +498,144 @@ test('10 — the ledger\'s deposit fee lands on the buyer, and is not grossed up
   // On the delta, not the balance: every scenario in this suite delivers to this
   // one account now, so an absolute figure would encode how many ran before this.
   expect((await userCycles()) - creditedBefore)
-    .toBe(TIER_LOCKED_CYCLES - CYCLES_LEDGER_DEPOSIT_FEE);
+    .toBe(TIER_LOCKED_CYCLES - CYCLES_LEDGER_FEE);
 });
 
-test('11 — Type 2 undeliverable: a failed forward refunds cycles to the app balance (§4.1)', async () => {
-  // THE TRIGGER CHANGED IN #29; THE CASE DID NOT. This used to forward to a
-  // never-allocated canister id, which the IC rejects cleanly. That destination no
-  // longer exists — but `forwardCycles`' `try` wraps the ledger-deposit branch
-  // too, so a `cyclesLedger.deposit` that cannot be served lands in exactly the
-  // same `#failed → #undeliverable`. #29's spec called this out: the queue case is
-  // NOT deleted here, it dies in #30/#36 when delivery stops being deposit-based.
+test('11 — a cycles-ledger outage strands NOTHING: the order stays payable-out and retries (#30 PR-A)', async () => {
+  // INVERTED BY #30 PR-A, and the inversion is the improvement.
+  //
+  // This asserted Type 2 `#undeliverable`: the canister had already MINTED the
+  // cycles into its own balance, so a failed `deposit` left real value stranded
+  // in the app canister with a queue entry telling an operator to re-deliver it
+  // by hand. #29's own comment predicted this case would "die in #30/#36 when
+  // delivery stops being deposit-based". It has.
+  //
+  // Nothing is minted now. The cycles sit in the reserve until a transfer
+  // succeeds, so a ledger outage is simply a call that failed: the order stays
+  // `#paid`, the recovery sweep replays the identical intent, and it delivers
+  // when the ledger comes back. **There is no stranded-value state to enter.**
   //
   // The outage is real rather than mocked: PocketIC accepts NNS root as an
   // impersonated sender, so the cycles ledger can genuinely be stopped, which is
-  // what a ledger outage looks like to the backend.
+  // what an outage looks like to the backend.
   const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   orderC = created.order;
   refC = clientReferenceFor(created.order.id);
 
-  const appBalanceBefore = await gw.pic.getCyclesBalance(gw.backendId);
+  const reserveBefore = await reserveBalance(gw);
   const creditedBefore = await userCycles();
 
   await stopNns(gw, CYCLES_LEDGER_ID);
   try {
-    const response = await deliverWebhook(gw, checkoutSessionBody({
+    expect(await deliverWebhook(gw, checkoutSessionBody({
       eventId: 'evt_c1', paymentIntent: 'pi_c', clientReferenceId: refC,
       amountCents: TIER_USD_CENTS,
-    }));
-    expect(response.status_code).toBe(200);
+    }))).toMatchObject({ status_code: 200 });
+    await gw.pic.tick(5);
 
-    expect(await tickUntilStatus(gw, orderC.id, ['needsReview'])).toBe('needsReview');
+    // Still #paid — retrying, not escalated, not delivered.
+    expect(await orderStatus(gw, orderC.id)).toBe('paid');
+    // No queue entry: an outage is not an obligation.
+    expect((await allErrorEntries(gw)).some(
+      (e) => 'undeliverable' in e.kind && e.kind.undeliverable.orderId === orderC.id,
+    )).toBe(false);
+    // ⚠️ Do NOT read the ledger here. It is stopped, so a balance query is
+    // rejected — the first version of this scenario asserted the balances inside
+    // the outage and failed on the assertion rather than on the behaviour.
   } finally {
-    // Restarted inside the scenario: every later one delivers through this ledger,
-    // so leaving it stopped would fail all of them for the wrong reason.
     await startNns(gw, CYCLES_LEDGER_ID);
   }
 
-  // Nothing reached the buyer.
+  // Now that it answers again: nothing moved during the outage.
+  expect(await reserveBalance(gw)).toBe(reserveBefore);
   expect(await userCycles()).toBe(creditedBefore);
 
-  const entry = (await allErrorEntries(gw)).find(
-    (e) => 'undeliverable' in e.kind && e.kind.undeliverable.orderId === orderC.id,
-  ) as ErrorEntry;
-  expect(entry).toBeDefined();
-  if ('undeliverable' in entry.kind) {
-    expect(entry.kind.undeliverable.cycles).toBe(TIER_LOCKED_CYCLES);
-  }
-  expect(statusKey((await gw.asAdmin.mint_journal(orderC.id))[0]!)).toBe('needsReview');
-
-  // The §4.1 Type-2 invariant: the minted cycles refunded into the app
-  // canister's own balance (minus execution costs accrued along the way).
-  const appBalanceAfter = await gw.pic.getCyclesBalance(gw.backendId);
-  expect(appBalanceAfter - appBalanceBefore).toBeGreaterThan((TIER_LOCKED_CYCLES * 9n) / 10n);
+  // The ledger is back, but nothing re-drives the order on its own: the webhook's
+  // detached kick already ran and failed, and the recovery sweep is hourly. So
+  // advance to the sweep — which is also the real-world shape of this incident.
+  // Ticking alone would sit here forever and read as a delivery bug.
+  await gw.pic.advanceTime(3_601_000);
+  await gw.pic.tick(3);
+  expect(await tickUntilStatus(gw, orderC.id, ['delivered'])).toBe('delivered');
+  const fee = await gw.cyclesLedger.icrc1_fee();
+  expect((await userCycles()) - creditedBefore).toBe(TIER_LOCKED_CYCLES - fee);
+  expect(reserveBefore - (await reserveBalance(gw))).toBe(TIER_LOCKED_CYCLES);
+  // Exactly one block, so the retry did not pay twice.
+  expect((await gw.asAdmin.mint_journal(orderC.id))[0]!.blockIndex.length).toBe(1);
 });
 
-test('12 — upgrade mid-transfer: §5.1 write-intent replay recovers without a double spend, timer re-arms', async () => {
+test('12 — an upgrade concurrent with delivery pays exactly once, and the timer re-arms', async () => {
+  // ⚠️ **The interruption point this scenario used to catch no longer exists.**
+  // It waited for status `#minting` — a persisted marker meaning "the intent is
+  // journaled and the ledger call is in flight". Delivery is now ONE message: the
+  // intent is written and the transfer issued inside the same `drive` loop pass,
+  // with the order `#paid` throughout. The first version of this rewrite tried to
+  // hold the order in that state by stopping the ledger, and learned something
+  // worth keeping: `#beginDelivery` reads `icrc1_fee` BEFORE writing the intent,
+  // so a ledger outage produces no intent at all. There is nothing to freeze.
+  //
+  // The replay DECISION is pinned where it is deterministic — `Cmc.stageOf` in
+  // test/cmc.test.mo asserts intent-and-no-block → `#replayDelivery(intent)`, the
+  // stale-intent boundary, and that the STORED args are what get replayed. What
+  // this scenario can still prove, and what actually protects a buyer, is the
+  // outcome: an upgrade landing on a delivery pays exactly once.
+  await ensureRates(gw);
   const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   orderE = created.order;
   refE = clientReferenceFor(created.order.id);
 
-  const floatBefore = await floatBalance(gw);
+  const reserveBefore = await reserveBalance(gw);
+  const creditedBefore = await userCycles();
   const sweepBefore = await gw.asAnon.recovery_status();
 
-  const response = await deliverWebhook(gw, checkoutSessionBody({
+  expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_e1', paymentIntent: 'pi_e', clientReferenceId: refE,
     amountCents: TIER_USD_CENTS,
-  }));
-  expect(response.status_code).toBe(200);
+  }))).toMatchObject({ status_code: 200 });
 
-  // Tick one round at a time and interrupt the instant the intent commits:
-  // #minting means the transfer args are journaled and the ledger call is in
-  // flight — its fate is exactly what §5.1 calls unknowable.
-  expect(await tickUntilStatus(gw, orderE.id, ['minting'])).toBe('minting');
+  // Upgrade immediately, without ticking: the webhook's detached kick is either
+  // still queued or mid-delivery. `stop_canister` drains outstanding callbacks
+  // before the canister reaches `Stopped`, so the stop → upgrade → start
+  // procedure cannot strand a transfer — it can only land either side of one.
   await upgradeBackendMidFlight(gw);
 
-  // The §5.1 intent is journaled and survived the upgrade — that is what makes
-  // the resume replay-identical regardless of where the interruption landed.
-  const journal = (await gw.asAdmin.mint_journal(orderE.id))[0]!;
-  expect(journal.transferIntent.length).toBe(1);
-
-  // The transient-initializer timer re-armed on upgrade: advancing past the
-  // sweep interval fires recovery with no manual kick. The CMC rate is not
-  // refreshed on purpose — the §5.1 replay path must not need one.
+  // The timer re-armed on upgrade (transient initializer): advancing past the
+  // sweep interval delivers with no manual kick.
   await gw.pic.advanceTime(3_601_000);
   await gw.pic.tick(3);
   expect(await tickUntilStatus(gw, orderE.id, ['delivered'])).toBe('delivered');
 
-  // THE §5.1 invariant: replaying the identical intent moved the money
-  // exactly once (the ledger either executed it once or answered Duplicate).
-  expect(await floatBalance(gw)).toBe(floatBefore - ORDER_E8S - ICP_FEE_E8S);
+  // EXACTLY once, and "exactly" is literal: a second transfer would show as a
+  // second `locked - fee` credit, not as a figure inside a tolerance band.
+  const fee = await gw.cyclesLedger.icrc1_fee();
+  expect((await userCycles()) - creditedBefore).toBe(TIER_LOCKED_CYCLES - fee);
+  expect(reserveBefore - (await reserveBalance(gw))).toBe(TIER_LOCKED_CYCLES);
   expect((await gw.asAdmin.mint_journal(orderE.id))[0]!.blockIndex.length).toBe(1);
 
   // Liveness observability: the post-upgrade timer completed a sweep.
   const sweepAfter = await gw.asAnon.recovery_status();
   expect(sweepAfter.lastSweep.length).toBe(1);
-  const beforeAt = sweepBefore.lastSweep[0]?.atNs ?? -1n;
-  expect(sweepAfter.lastSweep[0]!.atNs).toBeGreaterThan(beforeAt);
+  expect(sweepAfter.lastSweep[0]!.atNs).toBeGreaterThan(sweepBefore.lastSweep[0]?.atNs ?? -1n);
 });
 
-test('13 — upgrade mid-forward: the stop-first procedure drains the forward, delivering exactly once (§5.1)', async () => {
-  // Scenario 12 advanced past both the CMC window and the rate staleness bound;
-  // ensureRates re-arms both.
-  await ensureRates(gw);
-  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  const orderG = created.order;
-  const creditedBefore = await userCycles();
-
-  const response = await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_g1', paymentIntent: 'pi_g', clientReferenceId: clientReferenceFor(created.order.id),
-    amountCents: TIER_USD_CENTS,
-  }));
-  expect(response.status_code).toBe(200);
-
-  // Catch the pre-forward window: `cyclesMinted` is journaled *before* the
-  // forward await, so this is the moment where the forward's outcome would be
-  // unknowable if the callback were lost.
-  let caught = false;
-  for (let i = 0; i < 300; i++) {
-    const entry = await gw.asAdmin.mint_journal(orderG.id);
-    if (entry.length === 1 && entry[0].cyclesMinted.length === 1
-      && statusKey(entry[0]) !== 'delivered') {
-      caught = true;
-      break;
-    }
-    if (entry.length === 1 && statusKey(entry[0]) === 'delivered') {
-      throw new Error('forward completed before the suite could interrupt it');
-    }
-    await gw.pic.tick();
-  }
-  expect(caught).toBe(true);
-  await upgradeBackendMidFlight(gw);
-
-  // `stop_canister` does not drop outstanding callbacks: the canister enters
-  // `Stopping`, the IC delivers the replies to its in-flight calls, and only
-  // once every call context is closed does it reach `Stopped`. The operator
-  // procedure (stop → upgrade → start, mandatory because an upgrade with
-  // outstanding callbacks is rejected) therefore cannot strand a forward — the
-  // forward completes before the upgrade happens.
-  //
-  // So `#ambiguousForward` is unreachable via a controlled upgrade. It covers
-  // genuine faults instead (a call that never replies, a subnet incident,
-  // running out of cycles mid-call), and its escalation logic is pinned by unit
-  // tests — see `Cmc.stageOf` in test/cmc.test.mo, which asserts `#icpAtCmc` +
-  // `cyclesMinted` → `#escalate(#ambiguousForward)`.
-  expect(await tickUntilStatus(gw, orderG.id, ['delivered'])).toBe('delivered');
-
-  // Delivered exactly once — not skipped, and not double-forwarded. "Exactly"
-  // is now literal: a second forward would show up as a second
-  // `lockedCycles - fee` credit rather than as a figure inside a tolerance band.
-  expect((await userCycles()) - creditedBefore)
-    .toBe(TIER_LOCKED_CYCLES - CYCLES_LEDGER_DEPOSIT_FEE);
-  expect((await gw.asAdmin.mint_journal(orderG.id))[0]!.blockIndex.length).toBe(1);
-
-  // No error-queue entry: nothing about this needed an operator.
-  expect((await allErrorEntries(gw)).find(
-    (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === orderG.id,
-  )).toBeUndefined();
-});
-
-test('14 — a treasury hold alerts but keeps waiting, then delivers when fixed (§5.3)', async () => {
-  // The behaviour this pins: a hold past the alert threshold does NOT terminate
-  // the order. Its causes — a spent burn window, a short float — are all
-  // operator-fixable, so giving up would be abandoning a sale that was always
-  // going to complete. The buyer waits; they do not get an unrequested refund.
-  await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-
-  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  orderF = created.order;
-  refF = clientReferenceFor(created.order.id);
-
-  expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_f1', paymentIntent: 'pi_f', clientReferenceId: refF,
-    amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-  expect(await tickUntilStatus(gw, orderF.id, ['awaitingTreasury'])).toBe('awaitingTreasury');
-
-  const floatBefore = await floatBalance(gw);
-
-  // Past the ALERT threshold (2 h) but far short of the terminal bound (72 h):
-  // the operator is told while the cause is still fixable, and the order waits.
-  await gw.pic.advanceTime(3 * 3_600 * 1_000);
-  await gw.pic.tick(5);
-
-  const alert = (await openErrorEntries(gw)).find(
-    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === orderF.id,
-  ) as ErrorEntry;
-  expect(alert).toBeDefined();
-  if ('deliveryDelayed' in alert.kind) {
-    expect(alert.kind.deliveryDelayed.stage).toBe('treasuryDelayed');
-  }
-  expect(await orderStatus(gw, orderF.id)).toBe('awaitingTreasury'); // NOT terminal
-  expect(await floatBalance(gw)).toBe(floatBefore); // nothing moved
-
-  // The alert is raised once, not once per sweep — it is a worklist item, not a
-  // log line.
-  await gw.pic.advanceTime(2 * 3_600 * 1_000);
-  await gw.pic.tick(5);
-  expect((await openErrorEntries(gw)).filter(
-    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === orderF.id,
-  )).toHaveLength(1);
-
-  // THE POINT: fixing the cause delivers it, with no further intervention.
-  //
-  // The default sweep cadence is hourly, but the CMC rate guard is 15 min — so
-  // time cannot be advanced far enough to fire a sweep without staling the rate.
-  // Shorten the cadence, which is what an operator working an incident would do
-  // anyway.
-  expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n)); // 60 s
-  await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-  await gw.pic.advanceTime(90_000);
-  await gw.pic.tick(5);
-  expect(await tickUntilStatus(gw, orderF.id, ['delivered'])).toBe('delivered');
-  expect(await floatBalance(gw)).toBe(floatBefore - ORDER_E8S - ICP_FEE_E8S);
-
-  // The alert closes itself: an open obligation describing a delay that is over
-  // would be an orphan on the worklist.
-  expect((await openErrorEntries(gw)).find(
-    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === orderF.id,
-  )).toBeUndefined();
-});
+// ── 13 and 14 were deleted by #30 PR-A, and the reasons differ ──────────────
+//
+// **13 (upgrade mid-forward)** exercised the pre-forward window: the mint set
+// `cyclesMinted` before a SEPARATE forward await, so an interruption between them
+// left the forward's fate unknown (`#ambiguousForward`). Delivery is now one
+// call — mint-then-forward does not exist — so there is no window to catch. Its
+// surviving property, "delivered exactly once across an upgrade", is asserted in
+// 12 above.
+//
+// **14 (a treasury hold alerts, waits, then delivers)** exercised the mint
+// pre-gate. `#awaitingTreasury` had exactly one entrance, `Treasury.gate` inside
+// the mint path, so PR-A strands it: delivery consults neither the burn cap nor
+// the float, because it transfers cycles the reserve already holds and burns no
+// ICP. #30 lists that status under #36's deletions without noting that PR-A
+// already makes it unreachable — it does, and keeping the scenario would have
+// meant gating a cycles transfer on an ICP burn cap.
+//
+// Both are recorded on #36 so the deletion is not discovered as a gap.
 
 test('15 — operational trail is coherent end-to-end (§4.2)', async () => {
   const audit = await gw.asAdmin.audit_log();
@@ -695,20 +644,46 @@ test('15 — operational trail is coherent end-to-end (§4.2)', async () => {
     expect(audit[i].seq).toBeGreaterThan(audit[i - 1].seq);
   }
   const tags = audit.map((e) => e.tag);
-  for (const expected of ['mint.held', 'mint.delivered', 'mint.undeliverable', 'mint.delayed']) {
-    expect(tags).toContain(expected);
+
+  // ── The delivery path's TAG CONTRACT (#30 PR-A) ──────────────────────────
+  //
+  // This asserted four mint-era tags. Three of them can no longer fire at all:
+  // `mint.held` came from the mint pre-gate, `mint.delivered` and
+  // `mint.undeliverable` from the mint-then-forward step. Asserting tags the code
+  // cannot emit is asserting nothing, so the list is now what the delivery path
+  // actually writes.
+  //
+  // ⚠️ **This list is deliberately the whole contract, because #30 PR-C renames
+  // the surviving `mint.*` family and this is what makes that rename falsifiable
+  // instead of grep-and-hope.** If PR-C changes a tag without changing this line,
+  // the suite says so.
+  // ⚠️ Only what has happened BY HERE. `mint.delayed` (the delay alert) is
+  // asserted in 47, where a delay actually exists — asserting it here failed for
+  // the most ordinary reason in an order-coupled suite: the event had not
+  // happened yet. See the coupling note in this directory's README.
+  expect(tags).toContain('delivery.sent');
+  // And the three that died with the pipeline stay dead. A regression that routed
+  // an order back into the mint path would show up here first.
+  for (const gone of ['mint.held', 'mint.delivered', 'mint.undeliverable']) {
+    expect(tags).not.toContain(gone);
   }
 
-  // Every queue entry is accounted for: the C undeliverable (open — operator
-  // re-delivers off-chain) and the F max-wait (open). Scenario 13's order
-  // delivers cleanly across its upgrade, so it contributes no entry.
+  // ⚠️ `mint.delayed` is a SURVIVING MISNOMER, not an oversight: it is the delay
+  // alert, it now fires for delivery delays, and PR-C renames it to
+  // `delivery.delayed` along with the rest of the family. PR-A did not rename it
+  // because PR-A's own code did not force it — the two names that WERE forced
+  // (`cyclesDelivered`, `amountCycles`) are also PR-C's, and are called out in
+  // that issue.
+
   // The server-side worklist, which is what an operator actually reads.
   const open = await openErrorEntries(gw);
-  // Only the Type 2 undeliverable is still live. Note what is absent and why:
-  //  - no terminal escalation for a recoverable delay (scenario 14 recovered),
-  //  - and no leftover delay alert either — it closed itself when the order
-  //    delivered, so the worklist holds only obligations that are still real.
-  expect(open.map((e) => Object.keys(e.kind)[0]).sort()).toEqual(['undeliverable']);
+  // ⚠️ `undeliverable` is gone from this list, and that is the headline of #30
+  // PR-A: it was Type 2 — cycles MINTED into the canister's own balance and
+  // stranded there by a failed forward, with a queue entry telling an operator to
+  // re-deliver by hand. Nothing is minted now, so a failed delivery strands
+  // nothing and leaves no obligation. What is left open here is only what is
+  // genuinely owed.
+  expect(open.map((e) => Object.keys(e.kind)[0])).not.toContain('undeliverable');
   // Depth agrees with the paged content — the number ops monitors.
   expect((await gw.asAnon.error_queue_depth()).unresolved).toBe(BigInt(open.length));
 
@@ -855,9 +830,14 @@ test('19 — a buyer can verify their own purchase from the receipt', async () =
   expect(await gw.asAnon.receipt(orderA.id)).toHaveLength(0);
 
   expect(receipt.paidUsdCents).toEqual([TIER_USD_CENTS]);
-  // The on-chain delivery proof: a real ICP ledger block anyone can look up.
+  // The on-chain delivery proof: a real cycles-ledger block anyone can look up.
   expect(receipt.mintBlockIndex).toHaveLength(1);
-  expect(receipt.cyclesMinted).toEqual([TIER_LOCKED_CYCLES]);
+  // ⚠️ What the buyer RECEIVED, which is the locked quantity less the ledger's
+  // transfer fee. It equalled `lockedCycles` while the canister minted and then
+  // deposited (the deposit fee came off separately); since #30 PR-A the transfer
+  // IS the delivery, so the fee is inside this figure. A receipt that reported
+  // the locked quantity here would overstate what arrived.
+  expect(receipt.cyclesMinted).toEqual([TIER_LOCKED_CYCLES - CYCLES_LEDGER_FEE]);
 
   // THE POINT: recompute the price from the two recorded rate inputs and it must
   // equal what was locked. Both are queryable from the XRC and the CMC, so this
@@ -876,28 +856,35 @@ test('20 — an unauthenticated webhook that pays nothing triggers no sweep (DoS
   // over every order — which makes paid inter-canister calls per sweepable
   // order — must be reachable only from an actual payment.
   //
-  // Observable: the mint pre-gate calls observeFloat, so a sweep that reaches
-  // any order's #begin stage moves treasury_status.lastObservedFloat.atNs. Park
-  // an order in #awaitingTreasury so a sweep would have work to do, then prove
-  // junk traffic leaves that timestamp untouched.
+  // WARNING: both the vehicle and the observable changed in #30 PR-A. This parked
+  // an order in `#awaitingTreasury` and watched `treasury_status.lastObservedFloat`,
+  // which the mint pre-gate moved via `observeFloat`. Delivery calls neither, so
+  // `#awaitingTreasury` has no entrance and the float is never observed.
+  //
+  // The replacement is more direct, and tests the same thing: park an undelivered
+  // `#paid` order with the ledger down, bring the ledger BACK, then send junk
+  // traffic. A sweep triggered by that traffic would deliver the order. If nothing
+  // sweeps, it stays `#paid` until the hourly timer fires -- and ten ticks do not
+  // advance an hour.
   // Scenario 19 advanced 30 days, which staled both rates. Re-arm the CMC rate
-  // and force a refresh through the admin lever — deterministic, and it is the
-  // documented ops path for exactly this situation. Note the staleness window is
-  // capped at 1 h by validation, so widening it is deliberately not an option.
+  // and force a refresh through the admin lever.
   await setCmcRate(gw);
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
   const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const held = created.order;
 
-  expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_dos', paymentIntent: 'pi_dos', clientReferenceId: clientReferenceFor(created.order.id),
-    amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-  expect(await tickUntilStatus(gw, held.id, ['awaitingTreasury'])).toBe('awaitingTreasury');
-
-  const observedBefore = (await gw.asAnon.treasury_status()).lastObservedFloat[0]!.atNs;
+  await stopNns(gw, CYCLES_LEDGER_ID);
+  try {
+    expect(await deliverWebhook(gw, checkoutSessionBody({
+      eventId: 'evt_dos', paymentIntent: 'pi_dos', clientReferenceId: clientReferenceFor(created.order.id),
+      amountCents: TIER_USD_CENTS,
+    }))).toMatchObject({ status_code: 200 });
+    await gw.pic.tick(5);
+    expect(await orderStatus(gw, held.id)).toBe('paid');
+  } finally {
+    await startNns(gw, CYCLES_LEDGER_ID);
+  }
 
   // Four ways to reach the canister without paying anything.
   const body = checkoutSessionBody({
@@ -914,10 +901,17 @@ test('20 — an unauthenticated webhook that pays nothing triggers no sweep (DoS
   await deliverWebhook(gw, chargeRefundedBody('evt_junk2', 'pi_nothing'));     // valid, pays nothing
   await gw.pic.tick(10);
 
-  expect((await gw.asAnon.treasury_status()).lastObservedFloat[0]!.atNs).toBe(observedBefore);
-  expect(await orderStatus(gw, held.id)).toBe('awaitingTreasury');
+  // The order is deliverable now -- the ledger is back and the reserve is funded.
+  // It stays `#paid` anyway, because none of the junk above is allowed to start a
+  // sweep. THIS is the DoS property: a sweep makes a paid inter-canister call per
+  // sweepable order, so anyone on the internet triggering one is a cost attack.
+  expect(await orderStatus(gw, held.id)).toBe('paid');
 
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  // And the control: the timer's own sweep DOES deliver it, so the assertion
+  // above is about the trigger and not about a broken delivery path.
+  await gw.pic.advanceTime(3_601_000);
+  await gw.pic.tick(3);
+  expect(await tickUntilStatus(gw, held.id, ['delivered'])).toBe('delivered');
 });
 
 test('21 — status counters are O(1) and reconcile against a full recount', async () => {
@@ -984,7 +978,7 @@ test('22 — a rate change between order and mint does not move the locked quant
   // Delivered at the ORIGINAL locked quantity, and the snapshot still records
   // the rate it was quoted at — not the rate at mint time.
   expect((await userCycles()) - creditedBefore)
-    .toBe(TIER_LOCKED_CYCLES - CYCLES_LEDGER_DEPOSIT_FEE);
+    .toBe(TIER_LOCKED_CYCLES - CYCLES_LEDGER_FEE);
   const stored = (await gw.asUser.get_order(order.id))[0]!;
   expect(stored.lockedCycles).toBe(TIER_LOCKED_CYCLES);
   expect(stored.pricing.usdPerIcpMicros).toBe(4_550_000n);
@@ -1278,48 +1272,69 @@ test('32 — rates going bad after payment cannot affect an order already #paid'
   // racing it with process_order (which would answer #inFlight).
   expect(await tickUntilStatus(gw, order.id, ['delivered'])).toBe('delivered');
   const settled = (await gw.asUser.get_order(order.id))[0]!;
+  // The LOCKED quantity is untouched by a rate move — that is the guarantee.
   expect(settled.lockedCycles).toBe(TIER_LOCKED_CYCLES);
-  expect((await gw.asAdmin.mint_journal(order.id))[0]!.cyclesMinted).toEqual([TIER_LOCKED_CYCLES]);
+  // What was delivered is that quantity less the ledger fee (#30 PR-A).
+  expect((await gw.asAdmin.mint_journal(order.id))[0]!.cyclesMinted)
+    .toEqual([TIER_LOCKED_CYCLES - CYCLES_LEDGER_FEE]);
 
   // New orders are refused once the cached rate lapses — the fail-closed half.
   await setXrcRate(gw, ICP_USD_RATE);
   await ensureRates(gw);
 });
 
-test('33 — an unmintable order alerts and waits; only abandon_order ends it', async () => {
+test('33 — an UNDELIVERABLE order alerts and waits, then delivers when the cause clears', async () => {
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
   const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const stuck = created.order;
 
-  // Let the CMC rate go stale BEFORE payment (its guard is 15 min) so the mint
-  // kick cannot proceed and the order parks in #paid.
-  await gw.pic.advanceTime(20 * 60 * 1_000);
-  await gw.pic.tick(3);
+  // ⚠️ The PARKING MECHANISM changed with #30 PR-A; the property did not.
+  //
+  // It used to let the CMC rate go stale before payment, because the mint kick
+  // read a rate and refused on a stale one. Delivery reads no rate — it moves
+  // cycles the reserve already holds — so the way to hold an order undelivered is
+  // a real cycles-ledger outage. That is also a more honest incident: a stale
+  // rate was a self-inflicted pause, an outage is the thing operators actually
+  // page on.
+  await stopNns(gw, CYCLES_LEDGER_ID);
   expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_stuck', paymentIntent: 'pi_stuck', clientReferenceId: clientReferenceFor(created.order.id),
     amountCents: TIER_USD_CENTS,
   }))).toMatchObject({ status_code: 200 });
   await gw.pic.tick(10);
   expect(await orderStatus(gw, stuck.id)).toBe('paid');
-  expect((await gw.asAnon.treasury_status()).paidOrders).toBeGreaterThanOrEqual(1n);
 
-  // Past the alert threshold but short of the terminal bound.
+  // Past the alert threshold but short of the terminal bound: SOMEONE IS TOLD,
+  // and the order keeps its money and keeps retrying. That split is the point —
+  // an alert that only fired at the give-up would be useless.
   await gw.pic.advanceTime(3 * 3_600 * 1_000);
   await gw.pic.tick(5);
   const alert = (await openErrorEntries(gw)).find(
     (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === stuck.id,
   ) as ErrorEntry;
   expect(alert).toBeDefined();
-  if ('deliveryDelayed' in alert.kind) {
-    expect(alert.kind.deliveryDelayed.stage).toBe('mintDelayed');
-  }
   expect(await orderStatus(gw, stuck.id)).toBe('paid');
 
-  // Fixing the cause delivers it, automatically, on the next sweep.
+  // ── Salvaged from scenario 60, which #30 PR-A deleted ────────────────────
+  // Repeated sweeps at the SAME stall must stay silent. 60's subject was a stall
+  // moving between stages, and there is only one stage now — but this direction
+  // has nothing to do with stages and a live failure mode: an alert re-filed on
+  // every tick would flood the worklist and push real obligations out of the ring
+  // buffer.
+  await gw.pic.advanceTime(3 * 3_600 * 1_000);
+  await gw.pic.tick(5);
+  const stillOne = (await openErrorEntries(gw)).filter(
+    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === stuck.id,
+  );
+  expect(stillOne).toHaveLength(1);
+  expect(stillOne[0]!.id).toBe(alert.id);
+
+  // Fixing the cause delivers it, automatically, on the next sweep — no operator
+  // action on the order itself.
+  await startNns(gw, CYCLES_LEDGER_ID);
   expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n));
-  await ensureRates(gw);
   await gw.pic.advanceTime(90_000);
   await gw.pic.tick(5);
   expect(await tickUntilStatus(gw, stuck.id, ['delivered'])).toBe('delivered');
@@ -1334,21 +1349,30 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
   // Not abandonable before money is involved — nothing to decide about.
   expectErr(await gw.asAdmin.abandon_order(doomed.id, 'too early'));
 
-  expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_aband', paymentIntent: 'pi_aband', clientReferenceId: clientReferenceFor(created.order.id),
-    amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-  expect(await tickUntilStatus(gw, doomed.id, ['awaitingTreasury'])).toBe('awaitingTreasury');
+  // Park it in `#paid` with a real outage. The burn-cap pause that used to hold
+  // an order at `#awaitingTreasury` went with the mint pre-gate (#30 PR-A), and
+  // `#paid` is the state that matters here anyway: money in, nothing delivered.
+  await stopNns(gw, CYCLES_LEDGER_ID);
+  try {
+    expect(await deliverWebhook(gw, checkoutSessionBody({
+      eventId: 'evt_aband', paymentIntent: 'pi_aband', clientReferenceId: clientReferenceFor(created.order.id),
+      amountCents: TIER_USD_CENTS,
+    }))).toMatchObject({ status_code: 200 });
+    await gw.pic.tick(5);
+    expect(await orderStatus(gw, doomed.id)).toBe('paid');
 
-  // Admin-gated, and a reason is mandatory so the trail records why.
+    // Admin-gated, and a reason is mandatory so the trail records why.
   await expect(gw.asUser.abandon_order(doomed.id, 'nope')).rejects.toThrow(/not a controller/);
   expectErr(await gw.asAdmin.abandon_order(doomed.id, ''));
 
-  const abandoned = expectOk(await gw.asAdmin.abandon_order(doomed.id, 'buyer asked to cancel'));
-  // `#abandoned`, the released half of the old `#errorQueue` (#34): the operator
-  // ended it, so nothing is owed.
-  expect(statusKey(abandoned)).toBe('abandoned');
+    const abandoned = expectOk(await gw.asAdmin.abandon_order(doomed.id, 'buyer asked to cancel'));
+    // `#abandoned`, the released half of the old `#errorQueue` (#34): the operator
+    // ended it, so nothing is owed. ⚠️ #30 depends on this releasing the promise —
+    // an abandoned order must not keep reserving cycles nobody will receive.
+    expect(statusKey(abandoned)).toBe('abandoned');
+  } finally {
+    await startNns(gw, CYCLES_LEDGER_ID);
+  }
 
   const entry = (await openErrorEntries(gw)).find(
     (e) => 'abandoned' in e.kind && e.kind.abandoned.orderId === doomed.id,
@@ -1382,42 +1406,78 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const doomed = created.order;
 
-  expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_maxwait', paymentIntent: 'pi_maxwait', clientReferenceId: clientReferenceFor(created.order.id),
-    amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-  expect(await tickUntilStatus(gw, doomed.id, ['awaitingTreasury'])).toBe('awaitingTreasury');
+  // Parked with a real cycles-ledger outage (#30 PR-A): the burn-cap pause that
+  // used to hold an order at `#awaitingTreasury` went with the mint pre-gate.
+  // ⚠️ Balance first, THEN stop. Reading it after the stop throws, and a throw
+  // between `stopNns` and the `try` skips the `finally` — which leaves the ledger
+  // stopped for every scenario after this one. That is how one mistake here
+  // became nine failures elsewhere; see the coupling note in the README.
+  const reserveBefore = await reserveBalance(gw);
+  await stopNns(gw, CYCLES_LEDGER_ID);
+  try {
+    expect(await deliverWebhook(gw, checkoutSessionBody({
+      eventId: 'evt_maxwait', paymentIntent: 'pi_maxwait', clientReferenceId: clientReferenceFor(created.order.id),
+      amountCents: TIER_USD_CENTS,
+    }))).toMatchObject({ status_code: 200 });
+    await gw.pic.tick(5);
+    expect(await orderStatus(gw, doomed.id)).toBe('paid');
 
-  const floatBefore = await floatBalance(gw);
+    // Alert first (2 h), then terminate (72 h) — two tiers, one timeline. The
+    // order stays payable-out through the alert: that split is the whole point.
+    await gw.pic.advanceTime(3 * 3_600 * 1_000);
+    await gw.pic.tick(5);
+    expect(await orderStatus(gw, doomed.id)).toBe('paid');
 
-  // Alert first (2 h), then terminate (72 h) — two tiers, one timeline.
-  await gw.pic.advanceTime(3 * 3_600 * 1_000);
-  await gw.pic.tick(5);
-  expect(await orderStatus(gw, doomed.id)).toBe('awaitingTreasury');
-
-  await gw.pic.advanceTime(70 * 3_600 * 1_000);
-  await gw.pic.tick(5);
-  expect(await tickUntilStatus(gw, doomed.id, ['needsReview'])).toBe('needsReview');
+    await gw.pic.advanceTime(70 * 3_600 * 1_000);
+    await gw.pic.tick(5);
+    expect(await tickUntilStatus(gw, doomed.id, ['needsReview'])).toBe('needsReview');
+  } finally {
+    await startNns(gw, CYCLES_LEDGER_ID);
+  }
 
   const entry = (await openErrorEntries(gw)).find(
     (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === doomed.id,
   ) as ErrorEntry;
   expect(entry).toBeDefined();
-  if ('stuckMint' in entry.kind) {
-    expect(entry.kind.stuckMint.stage).toBe('treasuryWaitExceeded');
-  }
-  // The money position is stated so the operator knows the action: refund.
-  expect(entry.detail).toContain('nothing minted');
+  // ⚠️ The money position must say NOTHING WAS DELIVERED, because the action it
+  // implies is a refund. Emitting a position that hedged here is what put an
+  // operator in front of a buyer who may or may not hold their cycles.
   expect(entry.detail).toContain('refund');
-  expect(await floatBalance(gw)).toBe(floatBefore); // nothing moved
+  // Nothing moved out of the reserve — the position is certain, not merely likely.
+  expect(await reserveBalance(gw)).toBe(reserveBefore);
 
   // The superseded delay alert was closed, not left orphaned alongside it.
   expect((await openErrorEntries(gw)).filter(
     (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === doomed.id,
   )).toHaveLength(0);
 
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  // ── Salvaged from scenario 48, which #30 PR-A deleted ────────────────────
+  // 48's subject was "the NOTIFY stage is bounded by time, not only by the retry
+  // count", and there is no notify stage — delivery's time bound is this
+  // scenario's job. But it carried a second assertion that is not about notify at
+  // all: **the alert/terminate timeline never fires on an order that already
+  // delivered.** A false alert promising action on a settled order is the orphan
+  // class scenario 47 exists to prevent, so the guard outlives the mechanism.
+  await ensureRates(gw);
+  const settled = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_settled', paymentIntent: 'pi_settled',
+    clientReferenceId: clientReferenceFor(settled.order.id), amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  expect(await tickUntilStatus(gw, settled.order.id, ['delivered'])).toBe('delivered');
+  // Well past BOTH bounds. A delivered order must attract neither tier.
+  await gw.pic.advanceTime(100 * 3_600 * 1_000);
+  await gw.pic.tick(5);
+  expect(await orderStatus(gw, settled.order.id)).toBe('delivered');
+  expect((await openErrorEntries(gw)).filter(
+    (e) => ('deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === settled.order.id)
+      || ('stuckMint' in e.kind && e.kind.stuckMint.orderId === settled.order.id),
+  )).toHaveLength(0);
+  // ⚠️ This scenario advanced the clock by ~170 h in total, which stales BOTH
+  // rates. `ensureRates` alone is not enough — the CMC rate needs governance to
+  // re-arm — and skipping it fails the next nine scenarios on rates they never
+  // touched. `advanceTime` is global and irreversible; see the README.
+  await setCmcRate(gw);
   await ensureRates(gw);
 });
 
@@ -1476,9 +1536,12 @@ test('40 — the price a buyer is shown comes from the same code that locks it',
   expect(quoted.netCents[0]! + quoted.feeCents).toBe(TIER_USD_CENTS);
   // The §3 vector, from the public query.
   expect(quoted.cycles).toEqual([TIER_LOCKED_CYCLES]);
-  // The ledger's deposit fee is disclosed here rather than silently deducted at
-  // delivery, and it is the ledger's number, not one the frontend invented.
-  expect(preview.cyclesLedgerDepositFee).toBe(CYCLES_LEDGER_DEPOSIT_FEE);
+  // ⚠️ The ledger's fee is NOT here any more (#30 PR-A). A query cannot await
+  // `icrc1_fee`, so disclosing it meant the backend storing a copy and
+  // correcting it on `#BadFee`. The frontend asks the ledger instead — asserted
+  // below to be the same number this suite uses, so the two cannot drift.
+  expect('cyclesLedgerDepositFee' in preview).toBe(false);
+  expect(await gw.cyclesLedger.icrc1_fee()).toBe(CYCLES_LEDGER_FEE);
   // Reproducible from the returned inputs alone.
   const rates = preview.rates[0]!;
   expect(quoted.netCents[0]! * rates.xdrPermyriadPerIcp * 10n ** 12n / rates.usdPerIcpMicros)
@@ -1522,7 +1585,14 @@ test('41 — an order can never lock fewer cycles than the buyer was shown', asy
   // is inside it. This is the widest single move the guards permit.
   const APPRECIATED = ICP_USD_RATE * 14n / 10n;
   await setXrcRate(gw, APPRECIATED);
-  await tickRateTimer(gw);
+  // ⚠️ `ensureRates`, not `tickRateTimer`. The timer honours the §3.1 backoff
+  // (`rateTicksToSkip`), so a single earlier FAILED refresh makes the next tick a
+  // no-op — and this scenario then reads the stale quote and fails on arithmetic
+  // that was never recomputed. Scenario 35's time advances can arm that backoff.
+  // The admin lever refreshes unconditionally, so the rate move is deterministic
+  // and the subject here stays "the quote a buyer was shown is honoured", not
+  // "the timer fired".
+  await ensureRates(gw);
   const dearer = (await gw.asAnon.quote_previews([TIER_USD_CENTS]))
     .quotes[0]!.cycles[0]!;
   // 455¢ net × 35_000 × 10¹² / 6_370_000 — checked against the arithmetic, not
@@ -1553,7 +1623,11 @@ test('41 — an order can never lock fewer cycles than the buyer was shown', asy
   // A move in the buyer's FAVOUR must never refuse — the guard is a floor, not
   // an equality, so it can only ever protect the buyer.
   await setXrcRate(gw, ICP_USD_RATE);
-  await tickRateTimer(gw);
+  // Same reason as the appreciation above: the timer honours the §3.1 backoff, so
+  // a tick can be a no-op and this reads the unchanged quote — which fails as
+  // "2500000000000 is not greater than 2500000000000", a diff that says nothing
+  // about the real cause.
+  await ensureRates(gw);
   const better = expectOk(
     await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, [dearer]),
   );
@@ -1811,28 +1885,40 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
   const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const doomed = created.order;
 
-  // Park it in #paid: a stale CMC rate stops the mint before it starts.
-  await gw.pic.advanceTime(20 * 60 * 1_000);
-  await gw.pic.tick(3);
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_orphan', paymentIntent: 'pi_orphan', clientReferenceId: clientReferenceFor(created.order.id),
-    amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-  await gw.pic.tick(10);
-  expect(await orderStatus(gw, doomed.id)).toBe('paid');
+  // Park it in #paid with a real cycles-ledger outage. It used to be a stale CMC
+  // rate, which stopped the mint before it started — delivery reads no rate, so
+  // the outage is what holds an order undelivered now (#30 PR-A).
+  await stopNns(gw, CYCLES_LEDGER_ID);
+  let alert;
+  try {
+    expect(await deliverWebhook(gw, checkoutSessionBody({
+      eventId: 'evt_orphan', paymentIntent: 'pi_orphan', clientReferenceId: clientReferenceFor(created.order.id),
+      amountCents: TIER_USD_CENTS,
+    }))).toMatchObject({ status_code: 200 });
+    await gw.pic.tick(10);
+    expect(await orderStatus(gw, doomed.id)).toBe('paid');
 
-  // Past the 2 h alert threshold: the delay alert opens.
-  await gw.pic.advanceTime(3 * 3_600 * 1_000);
-  await gw.pic.tick(5);
-  const alert = (await openErrorEntries(gw)).find(
-    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === doomed.id,
-  )!;
-  expect(alert).toBeDefined();
+    // Past the 2 h alert threshold: the delay alert opens.
+    await gw.pic.advanceTime(3 * 3_600 * 1_000);
+    await gw.pic.tick(5);
+    alert = (await openErrorEntries(gw)).find(
+      (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === doomed.id,
+    )!;
+    expect(alert).toBeDefined();
+  } finally {
+    await startNns(gw, CYCLES_LEDGER_ID);
+  }
 
   // Now terminate it instead of fixing it. abandon_order is the operator's
   // explicit "stop trying", and it drives the order to #abandoned.
   expectOk(await gw.asAdmin.abandon_order(doomed.id, 'operator gave up (test)'));
   expect(await orderStatus(gw, doomed.id)).toBe('abandoned');
+
+  // The delay alert's own audit tag exists — moved here from 15, which runs
+  // before any delay has happened. ⚠️ `mint.delayed` is a surviving misnomer: it
+  // reports a DELIVERY delay now, and #30 PR-C renames the family. This line is
+  // what makes that rename falsifiable.
+  expect((await gw.asAdmin.audit_log()).map((e) => e.tag)).toContain('mint.delayed');
 
   // THE ASSERTION: the delay alert is closed, not left promising delivery.
   const after = (await allErrorEntries(gw)).find((e) => e.id === alert.id)!;
@@ -1845,95 +1931,23 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
   expect(openForOrder[0]!.kind).toMatchObject({ abandoned: { orderId: doomed.id } });
 });
 
-test('48 — the notify stage is bounded by time, not only by the retry count', async () => {
-  // The regression this pins: #icpAtCmc (ICP transferred, block recorded,
-  // notify_top_up answering retriable) was bounded ONLY by maxMintRetries.
-  // staleIntent stops applying once a block exists, and the alert tier used to
-  // cover #paid alone — so raising the retry budget silently stretched the
-  // silently-stuck window from ~25 h to ~21 days at the default cadence.
-  //
-  // Every in-flight status now alerts at alertAfterNs and terminates at
-  // maxHoldNs, which makes the retry count a backstop rather than the only exit.
-  await setCmcRate(gw);
-  await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-  await fundFloat(gw, ORDER_E8S * 2n + ICP_FEE_E8S * 2n);
-
-  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  const order = created.order;
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_notify', paymentIntent: 'pi_notify', clientReferenceId: clientReferenceFor(created.order.id),
-    amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-  expect(await tickUntilStatus(gw, order.id, ['delivered'])).toBe('delivered');
-
-  // A delivered order is terminal, so it can never be caught by the wait bound —
-  // which is the other half of the property: the timeline must not touch orders
-  // that are progressing normally.
-  const alerts = (await allErrorEntries(gw)).filter(
-    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === order.id,
-  );
-  expect(alerts).toHaveLength(0);
-
-  // Now the stuck shape, from the money-out side. Create first and pause after:
-  // a zero burn cap also refuses order *creation* (the admission gate), so the
-  // order has to exist before minting is stopped.
-  const held = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_held', paymentIntent: 'pi_held', clientReferenceId: clientReferenceFor(held.order.id),
-    amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-  expect(await tickUntilStatus(gw, held.order.id, ['awaitingTreasury', 'paid'])).not.toBe('delivered');
-
-  await gw.pic.advanceTime(3 * 3_600 * 1_000);
-  await gw.pic.tick(5);
-  const stuckAlert = (await openErrorEntries(gw)).find(
-    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === held.order.id,
-  )!;
-  expect(stuckAlert).toBeDefined();
-
-  // Pin WHY it is stalled, so the terminal-stage assertion below is
-  // deterministic in meaning rather than by luck.
-  //
-  // Advancing 3 h staled the CMC rate (15 min guard), so the sweep returns at the
-  // rate check and never reaches the treasury pre-gate — the order therefore stays
-  // #paid rather than transitioning to #awaitingTreasury. (The zero burn cap
-  // WOULD hold it, and Treasury.gate's #hold branch does perform that transition;
-  // it simply is not reached here. Without pinning the cause, a timing change
-  // could park the order in the other state and flip the expected stage.)
-  expect(await orderStatus(gw, held.order.id)).toBe('paid');
-  const log = await gw.asAdmin.audit_log();
-  expect(log.some((e) => e.tag === 'mint.rateStale')).toBe(true);
-
-  // Terminating at the max wait uses the stage that matches the MONEY POSITION.
-  // Here no ICP moved, so it is the refundable one — not retriesExhausted, which
-  // would tell the operator to notify a block index that does not exist.
-  await gw.pic.advanceTime(80 * 3_600 * 1_000);
-  await gw.pic.tick(10);
-  expect(await tickUntilStatus(gw, held.order.id, ['needsReview'])).toBe('needsReview');
-  const terminal = (await openErrorEntries(gw)).find(
-    (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === held.order.id,
-  )!;
-  expect(terminal).toBeDefined();
-  if ('stuckMint' in terminal.kind) {
-    // Exact, not a set: this order never moved any ICP (the burn cap stopped it
-    // before the transfer), so the position is certain and the instruction must
-    // be the refundable one. Accepting either stage here would let the
-    // journal-derived mapping regress silently — the per-status arms are pinned
-    // exhaustively in the Cmc.terminationFor unit suite.
-    // #paid (asserted above, with its cause pinned) → the refundable position:
-    // fiat in, no ICP moved. Exact, not a set — accepting either stage would let
-    // the journal-derived mapping regress silently.
-    expect(terminal.kind.stuckMint.stage).toBe('mintWaitExceeded');
-    expect(terminal.detail).toContain('nothing minted');
-  }
-  // And the delay alert did not survive the escalation.
-  const afterAlert = (await allErrorEntries(gw)).find((e) => e.id === stuckAlert.id)!;
-  expect(afterAlert.resolvedAtNs).toHaveLength(1);
-
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-});
+// -- 48 was deleted by #30 PR-A, and one assertion was salvaged into 35 -------
+//
+// Its subject was "**the notify stage** is bounded by time, not only by the retry
+// count" — a real regression at the time: `#icpAtCmc` (ICP transferred, block
+// recorded, `notify_top_up` answering retriable) was bounded ONLY by
+// `maxMintRetries`, so raising the retry budget silently stretched the
+// silently-stuck window from ~25 h to ~21 days.
+//
+// There is no notify stage. Delivery is one transfer, and "paid and undelivered
+// is bounded by TIME, not just by retries" is scenario 35's property now.
+//
+// ⚠️ **Salvaged, because it outlives the mechanism:** 48 also asserted that the
+// alert/terminate timeline never fires on an order that already **delivered**. A
+// false alert promising action on a settled order is the orphan class 47 exists to
+// prevent, and it has nothing to do with notify. That assertion is folded into the
+// end of 35 rather than deleted with the rest — the same disposal 39 got in #49:
+// delete the mechanism's test, keep the guard that survives it.
 
 test('49 — an out-of-order async settlement still mints exactly once', async () => {
   // Stripe does not guarantee ordering. If async_payment_succeeded arrives BEFORE
@@ -1970,210 +1984,37 @@ test('49 — an out-of-order async settlement still mints exactly once', async (
   expect(await orderStatus(gw, created.order.id)).toBe('delivered');
 });
 
-test('51 — a CMC outage stalls the mint, alerts, and never invents a money position', async () => {
-  // Reachable because PocketIC lets us stop the real NNS canisters (impersonating
-  // NNS root, the same trick setCmcRate uses for governance). Money-out failure
-  // paths were previously written off as untestable; they are not.
-  await setCmcRate(gw);
-  await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-  await fundFloat(gw, ORDER_E8S * 3n + ICP_FEE_E8S * 3n);
-
-  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  const order = created.order;
-
-  // The CMC is down when the payment lands: money-out reads its rate directly, so
-  // the mint cannot even start. Nothing may be minted and nothing may be invented.
-  await stopNns(gw, CMC_ID);
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_cmc_out', paymentIntent: 'pi_cmc_out',
-    clientReferenceId: clientReferenceFor(created.order.id), amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-  await gw.pic.tick(10);
-  expect(await orderStatus(gw, order.id)).toBe('paid');
-
-  // The failure is audited rather than silent — with the CMC stopped the call is
-  // rejected outright, which is the fetch-failure arm, not the staleness arm.
-  const log = await gw.asAdmin.audit_log();
-  expect(log.some((e) => e.tag === 'mint.rateFetchFailed' || e.tag === 'mint.rateStale')).toBe(true);
-
-  // Past the alert threshold the operator is told, and retries continue.
-  await gw.pic.advanceTime(3 * 3_600 * 1_000);
-  await gw.pic.tick(5);
-  const alert = (await openErrorEntries(gw)).find(
-    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === order.id,
-  )!;
-  expect(alert).toBeDefined();
-  expect(await orderStatus(gw, order.id)).toBe('paid');
-
-  // Restoring the CMC delivers the order for real — an outage is not a loss.
-  await startNns(gw, CMC_ID);
-  await setCmcRate(gw);
-  await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n));
-  await gw.pic.advanceTime(90_000);
-  await gw.pic.tick(5);
-  expect(await tickUntilStatus(gw, order.id, ['delivered'])).toBe('delivered');
-  // And the alert did not outlive the delay.
-  const closed = (await allErrorEntries(gw)).find((e) => e.id === alert.id)!;
-  expect(closed.resolvedAtNs).toHaveLength(1);
-});
-
-test('52 — an ICP ledger outage cannot move money or fabricate a block', async () => {
-  await setCmcRate(gw);
-  await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-  await fundFloat(gw, ORDER_E8S * 3n + ICP_FEE_E8S * 3n);
-
-  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  const order = created.order;
-
-  await stopNns(gw, ICP_LEDGER_ID);
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_ledger_out', paymentIntent: 'pi_ledger_out',
-    clientReferenceId: clientReferenceFor(created.order.id), amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-  await gw.pic.tick(10);
-
-  // Fiat is in and the order is paid, but no ICP moved and no journal block was
-  // recorded — the §5.1 discipline is what makes this safe to resume.
-  expect(await orderStatus(gw, order.id)).toBe('paid');
-  const journal = await gw.asAdmin.mint_journal(order.id);
-  if (journal.length > 0) {
-    expect(journal[0]!.blockIndex).toHaveLength(0);
-  }
-  const log = await gw.asAdmin.audit_log();
-  expect(log.some((e) => e.tag === 'mint.balanceFetchFailed' || e.tag === 'mint.transferFailed')).toBe(true);
-
-  // Recovery: the ledger comes back and the same order completes. Exactly one
-  // debit — the replay discipline, now proven against a real outage rather than
-  // an upgrade.
-  await startNns(gw, ICP_LEDGER_ID);
-  const floatBefore = await floatBalance(gw);
-  await setCmcRate(gw);
-  await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n));
-  await gw.pic.advanceTime(90_000);
-  await gw.pic.tick(5);
-  expect(await tickUntilStatus(gw, order.id, ['delivered'])).toBe('delivered');
-  const floatAfter = await floatBalance(gw);
-  expect(floatBefore - floatAfter).toBe(ORDER_E8S + ICP_FEE_E8S);
-});
-
-test('53 — a CMC outage after the transfer parks the order at icpAtCmc, alerts, then terminates with the block', async () => {
-  // The window `tickUntilStatus(['minting'])` gives us: the intent is journaled
-  // and the ledger call is in flight, so stopping the CMC here lets the TRANSFER
-  // succeed and the NOTIFY fail — the only way to park an order at #icpAtCmc.
-  // Every code path below had zero end-to-end coverage before.
-  await setCmcRate(gw);
-  await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-  expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n));
-  await fundFloat(gw, ORDER_E8S * 3n + ICP_FEE_E8S * 3n);
-
-  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  const order = created.order;
-  const floatBefore = await floatBalance(gw);
-
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_notify_out', paymentIntent: 'pi_notify_out',
-    clientReferenceId: clientReferenceFor(created.order.id), amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-
-  expect(await tickUntilStatus(gw, order.id, ['minting'])).toBe('minting');
-  await stopNns(gw, CMC_ID);
-  await gw.pic.tick(10);
-
-  // The ICP left the float and a block IS recorded — notify is the only thing
-  // outstanding. This is the position the whole terminationFor work exists for.
-  expect(await orderStatus(gw, order.id)).toBe('icpAtCmc');
-  const journal = (await gw.asAdmin.mint_journal(order.id))[0]!;
-  expect(journal.blockIndex).toHaveLength(1);
-  expect(journal.cyclesMinted).toHaveLength(0);
-  expect(floatBefore - (await floatBalance(gw))).toBe(ORDER_E8S + ICP_FEE_E8S);
-  const log = await gw.asAdmin.audit_log();
-  expect(log.some((e) => e.tag === 'mint.notifyFailed')).toBe(true);
-
-  // The alert names the stalled stage — previously unreachable, so untested.
-  await gw.pic.advanceTime(3 * 3_600 * 1_000);
-  await gw.pic.tick(5);
-  const alert = (await openErrorEntries(gw)).find(
-    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === order.id,
-  )!;
-  expect(alert).toBeDefined();
-  if ('deliveryDelayed' in alert.kind) {
-    expect(alert.kind.deliveryDelayed.stage).toBe('notifyDelayed');
-  }
-  expect(await orderStatus(gw, order.id)).toBe('icpAtCmc');
-
-  // Past the max wait it terminates — and THE POINT: the entry carries the money
-  // position, with the real block index, not a bare "pipeline stopped".
-  await gw.pic.advanceTime(80 * 3_600 * 1_000);
-  await gw.pic.tick(10);
-  expect(await tickUntilStatus(gw, order.id, ['needsReview'])).toBe('needsReview');
-  const terminal = (await openErrorEntries(gw)).find(
-    (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === order.id,
-  )!;
-  expect(terminal).toBeDefined();
-  if ('stuckMint' in terminal.kind) {
-    expect(terminal.kind.stuckMint.stage).toBe('retriesExhausted');
-  }
-  const block = journal.blockIndex[0]!;
-  expect(terminal.detail).toContain(`block ${block}`);
-  expect(terminal.detail).toContain('parked at the CMC');
-  // The alert did not outlive the delay.
-  expect((await allErrorEntries(gw)).find((e) => e.id === alert.id)!.resolvedAtNs).toHaveLength(1);
-
-  await startNns(gw, CMC_ID);
-});
-
-test('54 — a rate move between transfer and notify escalates instead of subsidising the buyer', async () => {
-  // The last money branch with no coverage. The e8s are sized from the CMC rate
-  // at transfer time; the CMC mints at ITS rate when notified. Drop the rate in
-  // between and the same ICP mints materially fewer cycles — forwarding
-  // lockedCycles anyway would quietly cover the gap from this canister's gas.
-  await setCmcRate(gw);
-  await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-  expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n));
-  await fundFloat(gw, ORDER_E8S * 3n + ICP_FEE_E8S * 3n);
-
-  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  const order = created.order;
-
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_shortfall', paymentIntent: 'pi_shortfall',
-    clientReferenceId: clientReferenceFor(created.order.id), amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-
-  // Freeze the pipeline with the transfer in flight, then halve the CMC's rate
-  // so the notify mints against a much worse conversion.
-  expect(await tickUntilStatus(gw, order.id, ['minting'])).toBe('minting');
-  await stopNns(gw, CMC_ID);
-  await gw.pic.tick(10);
-  expect(await orderStatus(gw, order.id)).toBe('icpAtCmc');
-
-  await startNns(gw, CMC_ID);
-  await setCmcRate(gw, XDR_PERMYRIAD_PER_ICP / 2n);
-  await gw.pic.advanceTime(90_000);
-  await gw.pic.tick(10);
-
-  // Escalated, not delivered — and the minted quantity is preserved so the
-  // operator can settle the position.
-  expect(await tickUntilStatus(gw, order.id, ['needsReview'])).toBe('needsReview');
-  const entry = (await openErrorEntries(gw)).find(
-    (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === order.id,
-  )!;
-  expect(entry).toBeDefined();
-  if ('stuckMint' in entry.kind) {
-    expect(entry.kind.stuckMint.stage).toBe('mintShortfall');
-  }
-  const minted = (await gw.asAdmin.mint_journal(order.id))[0]!.cyclesMinted[0]!;
-  expect(minted).toBeLessThan(TIER_LOCKED_CYCLES);
-  expect(entry.detail).toContain(minted.toString());
-
-  await setCmcRate(gw);
-});
+// -- 51-54 were deleted by #30 PR-A, with their subjects recorded ------------
+//
+// Four scenarios about a settlement path this app no longer has. Delivery is one
+// `icrc1_transfer` out of the reserve: there is no CMC to notify, no ICP to move,
+// and no rate between payment and delivery. What each one PROVED still matters,
+// so the heir is named rather than left to be re-derived — and where there is no
+// heir, that is stated too. #36 carries the same list.
+//
+// **51 (a CMC outage stalls the mint, alerts, never invents a money position)**
+// and **53 (an outage after the transfer parks the order at `#icpAtCmc`, alerts,
+// then terminates carrying the block)**. The mechanism is gone; the property —
+// *an order paid and undelivered past a bound alerts, then terminates so the
+// operator can refund* — is alive and lands in 33/35/47/48, re-expressed against
+// a stopped cycles ledger.
+//
+// **52 (an ICP ledger outage cannot move money or fabricate a block)**. The §5.1
+// replay contract it guarded survives as delivery's write-intent replay, and
+// scenarios 11 and 12 own it: an outage strands nothing and a retry pays exactly
+// once, evidenced by one ledger block.
+//
+// **54 (a rate move between transfer and notify escalates instead of subsidising
+// the buyer)** has **no heir, because the reserve model deletes the exposure
+// rather than handling it.** That scenario existed because the CMC minted at
+// whatever rate applied when `notify_top_up` landed, which could be days after
+// the ICP left — so the minted quantity could fall short of what was locked, and
+// covering the gap would have been an invisible subsidy out of the canister's own
+// gas. Now `lockedCycles` is fixed at creation, delivery moves exactly
+// `locked - fee`, and **no rate is read between payment and delivery at all**.
+// There is nothing to escalate. Reserve-flavoured versions of these would assert
+// nothing, which is the vacuous-assertion class this project has already buried
+// once.
 
 test('56 — the purchase ceiling cannot be lowered under a live tier', async () => {
   // `set_card_tiers` already refuses a tier priced above the ceiling. Without the
@@ -2359,125 +2200,25 @@ test('59 — a Stripe resend past the dedup window does not file a second unproc
   expect(await matching()).toHaveLength(1);
 });
 
-test('60 — a stall that moves to a different stage re-raises the alert instead of leaving stale wording', async () => {
-  // `alertDelayed` dedups per order so a persistent stall does not flood the
-  // worklist. That dedup used to be keyed on the entry id alone, so an order that
-  // stalled at one stage and then moved to another kept day-one wording on the
-  // worklist — the operator would read "fix the burn cap" for an order that had
-  // long since moved on, or vice versa.
-  //
-  // Both halves below are pinned by CAUSE, not by timing luck — but the cause is
-  // the order's STATUS, not the alert sites. Both `alertDelayed` calls sit at the
-  // top of `driveMint`, before any rate fetch. What the rate gates is the
-  // *transition*: reaching the treasury gate (and its #hold) requires a fresh CMC
-  // rate, so
-  //   stale rate  ⇒ the order is pinned #paid            ⇒ only mintDelayed is reachable
-  //   fresh rate  ⇒ the hold transition to #awaitingTreasury ⇒ treasuryDelayed
-  // and that transition resets updatedAtNs, so the new stage has to re-age past
-  // the 2 h threshold before it can alert. That re-aging is what the second time
-  // jump below is for.
-  await setCmcRate(gw);
-  await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-  await fundFloat(gw, ORDER_E8S * 2n + ICP_FEE_E8S * 2n);
-  // A 60 s cadence is what makes the second half possible at all: the sweep has
-  // to fire while the CMC rate is still inside its 15-min guard, so the time jump
-  // that triggers it must be small. On the default 1 h cadence any jump big
-  // enough to sweep also stales the rate.
-  expectOk(await gw.asAdmin.set_recovery_interval(60_000_000_000n));
-
-  // Create before pausing: a zero burn cap also refuses order creation.
-  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  const orderId = created.order.id;
-  expectOk(await gw.asAdmin.set_treasury_config(PAUSED_TREASURY));
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_stagechange', paymentIntent: 'pi_stagechange',
-    clientReferenceId: clientReferenceFor(created.order.id), amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-
-  const delayedFor = async (resolved: boolean) =>
-    (resolved ? await allErrorEntries(gw) : await openErrorEntries(gw)).filter(
-      (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === orderId,
-    );
-
-  // ── stage 1: #paid, rate stale ──────────────────────────────────────────────
-  // 3 h is past the 2 h alert threshold and also past the CMC's 15-min staleness
-  // guard, so the sweep returns at the rate check and the order stays #paid.
-  await gw.pic.advanceTime(3 * 3_600 * 1_000);
-  await gw.pic.tick(5);
-  expect(await orderStatus(gw, orderId)).toBe('paid');
-
-  const first = await delayedFor(false);
-  expect(first).toHaveLength(1);
-  if ('deliveryDelayed' in first[0]!.kind) {
-    expect(first[0]!.kind.deliveryDelayed.stage).toBe('mintDelayed');
-  }
-  const firstId = first[0]!.id;
-
-  // Repeated sweeps at the same stage stay silent — the dedup this test is about
-  // must still work in the direction it was written for.
-  await gw.pic.advanceTime(3 * 3_600 * 1_000);
-  await gw.pic.tick(5);
-  expect(await delayedFor(false)).toHaveLength(1);
-  expect((await delayedFor(false))[0]!.id).toBe(firstId);
-
-  // ── stage 2: the same stall moves to #awaitingTreasury ──────────────────────
-  // A fresh rate lets the sweep past the rate check and reach the treasury
-  // pre-gate, whose #hold branch transitions the order. The burn cap is still 0,
-  // so the order is no less stuck — only differently stuck.
-  await ensureRates(gw);
-  await gw.pic.advanceTime(90_000);
-  await gw.pic.tick(5);
-  expect(await orderStatus(gw, orderId)).toBe('awaitingTreasury');
-
-  // That transition reset updatedAtNs, so the new stage has to age past the
-  // threshold on its own before it can alert. The rate is kept fresh only so the
-  // sweep keeps making progress — the #awaitingTreasury alert itself fires before
-  // the rate fetch and does not depend on it.
-  await gw.pic.advanceTime(3 * 3_600 * 1_000);
-  await ensureRates(gw);
-  await gw.pic.advanceTime(90_000);
-  await gw.pic.tick(5);
-
-  const log = await gw.asAdmin.audit_log();
-  const changed = log.find((e) => e.tag === 'mint.delayedStageChanged');
-  expect(changed).toBeDefined();
-  expect(changed!.detail).toContain(orderId);
-  expect(changed!.detail).toContain('mintDelayed');
-  expect(changed!.detail).toContain('treasuryDelayed');
-
-  // The stale entry is CLOSED, not left open beside the new one: two open alerts
-  // for one order is the same operator confusion in a different shape.
-  const stale = (await allErrorEntries(gw)).find((e) => e.id === firstId)!;
-  expect(stale.resolvedAtNs).toHaveLength(1);
-
-  const second = await delayedFor(false);
-  expect(second).toHaveLength(1);
-  expect(second[0]!.id).not.toBe(firstId);
-  if ('deliveryDelayed' in second[0]!.kind) {
-    expect(second[0]!.kind.deliveryDelayed.stage).toBe('treasuryDelayed');
-    // The wording an operator acts on now describes where the order actually is.
-    expect(second[0]!.detail).toContain('burn cap');
-  }
-
-  // ── the alert does not outlive the delay ────────────────────────────────────
-  // Lifting the hold delivers the order, and BOTH entries must end up closed —
-  // the refreshed one is the entry that would leak if the re-raise forgot it.
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
-  // `tickUntilStatus` only ticks rounds, so the 60 s timer needs an explicit jump
-  // to fire — and the rate has to be fresh when it does, hence the pairing.
-  for (let i = 0; i < 3; i += 1) {
-    await ensureRates(gw);
-    await gw.pic.advanceTime(90_000);
-    await gw.pic.tick(10);
-    if ((await orderStatus(gw, orderId)) === 'delivered') break;
-  }
-  expect(await orderStatus(gw, orderId)).toBe('delivered');
-  expect(await delayedFor(false)).toHaveLength(0);
-  const all = await delayedFor(true);
-  expect(all).toHaveLength(2);
-  for (const entry of all) expect(entry.resolvedAtNs).toHaveLength(1);
-});
+// -- 60 was deleted by #30 PR-A, with its dedup half salvaged into 33 ---------
+//
+// Its subject was "**a stall that MOVES TO A DIFFERENT STAGE** re-raises the
+// alert instead of leaving stale wording" — an order stuck at `#paid` on a stale
+// rate, then stuck at `#awaitingTreasury` on a zero burn cap, with the first
+// alert closed and a second raised carrying the new stage's wording.
+//
+// There are no longer two stages to move between. Money-out runs from `#paid`
+// alone, so `mint.delayedStageChanged` is unreachable and the whole
+// stage-transition machinery it exercised has nothing to transition between. That
+// is a simplification, not a coverage loss: the confusion the scenario guarded
+// against — two open alerts for one order, or wording describing a state the
+// order has left — cannot arise from one stage.
+//
+// ⚠️ **Salvaged: the dedup direction.** "Repeated sweeps at the same stall stay
+// silent" is not about stage changes at all, and its failure mode is alive — a
+// sweep that re-filed on every tick would flood the worklist and push real
+// obligations out of the ring buffer. That assertion moved into 33, where a
+// stalled order already sits across multiple sweeps.
 
 test('61 — cycles go to the caller and nowhere else, enforced by the canister (#29)', async () => {
   // The property this asserts is the WHOLE point of #29: "the cycles come to

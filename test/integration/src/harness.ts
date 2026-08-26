@@ -105,10 +105,15 @@ export const TIER_LOCKED_CYCLES = 3_500_000_000_000n;
 /// ceil(3_500_000_000_000 / 35_000) — exactly 1 ICP, the point of the vector.
 export const ORDER_E8S = 100_000_000n;
 export const ICP_FEE_E8S = 10_000n;
-/// The cycles ledger charges this on `deposit`, so a delivery credits exactly
-/// `lockedCycles - CYCLES_LEDGER_DEPOSIT_FEE` — on every order, since #29 left
-/// one destination. See scenario 10 for why it is not grossed up.
-export const CYCLES_LEDGER_DEPOSIT_FEE = 100_000_000n;
+/// The cycles ledger's fee. Since #30 PR-A it is charged on the **transfer** out
+/// of the reserve rather than on a `deposit` into the buyer's account, so a
+/// delivery still credits exactly `lockedCycles - CYCLES_LEDGER_FEE` — the same
+/// number, charged on a different operation, measured at 100 M either way.
+///
+/// The name lost `DEPOSIT` because the operation changed; the constant is still
+/// a test-side copy of what `icrc1_fee` reports, and the suite asserts they
+/// agree rather than trusting this.
+export const CYCLES_LEDGER_FEE = 100_000_000n;
 
 export const WEBHOOK_SECRET = 'whsec_8fJ3kQ9mN2pX7vR4tL6wY1zB5cD0eH';
 
@@ -324,6 +329,37 @@ export async function fundFloat(gw: Gateway, e8s: bigint): Promise<void> {
   if (!('Ok' in result)) {
     throw new Error(`float funding transfer failed: ${JSON.stringify(result, bigIntReplacer)}`);
   }
+}
+
+/// Put cycles in the gateway's own cycles-ledger account — the reserve it
+/// delivers from since #30 PR-A.
+///
+/// ⚠️ **Measured, because it looks impossible.** Cycles normally enter a ledger
+/// account only through `deposit` with cycles attached, which an ingress message
+/// cannot do — so there appeared to be no way to fund a reserve in PocketIC
+/// without a purpose-built helper canister. A probe found that PocketIC's cycles
+/// ledger starts the **anonymous principal** with 2^127-1 cycles, and a transfer
+/// from the default sender to any account simply succeeds. That is a PocketIC
+/// fixture, not ledger behaviour: on mainnet the reserve is funded by
+/// `icp cycles transfer` from outside, and nothing mints into it.
+///
+/// Exactly parallel to `fundFloat` for ICP, and deliberately named to match.
+export async function fundReserve(gw: Gateway, cycles: bigint): Promise<void> {
+  const result = await gw.cyclesLedger.icrc1_transfer({
+    from_subaccount: [],
+    to: { owner: gw.backendId, subaccount: [] },
+    amount: cycles,
+    fee: [],
+    memo: [],
+    created_at_time: [],
+  });
+  if (!('Ok' in result)) {
+    throw new Error(`reserve funding transfer failed: ${JSON.stringify(result, bigIntReplacer)}`);
+  }
+}
+
+export async function reserveBalance(gw: Gateway): Promise<bigint> {
+  return await gw.cyclesLedger.icrc1_balance_of({ owner: gw.backendId, subaccount: [] });
 }
 
 export async function floatBalance(gw: Gateway): Promise<bigint> {

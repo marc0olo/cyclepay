@@ -44,6 +44,22 @@ module {
     /// `stage` = Cmc.EscalateReason text, "treasuryWaitExceeded", or
     /// "stalePullIntent".
     #stuckMint : { orderId : Types.OrderId; stage : Text };
+    /// #30 PR-A — a reserve delivery whose outcome cannot be established
+    /// automatically. Neither Type 1 nor Type 2: the fiat is in and whether the
+    /// cycles left the reserve is **unknown**, which is precisely why it cannot
+    /// be retried. The operator's question is *"did this transfer land?"*,
+    /// answerable from the cycles ledger by the order id in the transfer's memo
+    /// — not *"should we refund?"*.
+    ///
+    /// `blockIndex` is present only in the should-be-unreachable case where the
+    /// transfer is known to have landed and the order never moved; a `null` one
+    /// is the ordinary ambiguous case.
+    ///
+    /// ⚠️ Its own kind rather than `#stuckMint` because #36 deletes that one with
+    /// the mint path, and nothing else names a successor — every "resolve the
+    /// queue entry" sentence in #30 would otherwise refer to a type that stops
+    /// existing.
+    #transferUnresolved : { orderId : Types.OrderId; blockIndex : ?Nat };
     /// Neither Type 1 nor Type 2 — the money moved *both* ways. A
     /// `charge.refunded` arrived for a payment that had already been delivered
     /// as cycles, so the fiat went back to the payer and the cycles are
@@ -107,6 +123,11 @@ module {
       case (#duplicate(_) or #unattributed(_)) true;
       case (#undeliverable(_) or #stuckMint(_) or #refundAfterDelivery(_)) false;
       case (#deliveryDelayed(_) or #abandoned(_) or #unprocessable(_)) false;
+      // NOT Type 1. Type 1 means "fiat in, nothing minted" — a settled position
+      // the operator refunds. Here whether the cycles moved is unknown, so
+      // calling it Type 1 would tell them to refund a buyer who may already hold
+      // their cycles.
+      case (#transferUnresolved(_)) false;
     };
   };
 
@@ -138,6 +159,11 @@ module {
       // fixed, an abandonment was already a conscious decision, and an
       // unprocessable event has no established money position to settle.
       case (#deliveryDelayed(_) or #abandoned(_) or #unprocessable(_)) null;
+      // Same reasoning as #stuckMint, and sharper: a refund arriving does not
+      // tell us whether the cycles left the reserve, which is the only open
+      // question. Auto-resolving on it would close an entry whose answer nobody
+      // has looked up.
+      case (#transferUnresolved(_)) null;
     };
   };
 

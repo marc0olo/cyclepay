@@ -76,10 +76,14 @@ consciously set. Work the list in order:
    route answers 503 and Stripe retries.
 4. **Register card tiers** (§3 below). Until set, the tier list is empty
    and no card order can be created.
-5. **Size the burn cap** (§5 below). Until raised from the default 0,
-   every mint holds in `awaitingTreasury` — cap 0 is the pause lever.
-6. **Arm the low-float alert**: include a non-zero `lowFloatThresholdE8s`
-   in the same `set_treasury_config` call.
+5. **Fund the cycles reserve** (§5 below): `icp cycles transfer <amount> <backend-principal>`.
+   Delivery transfers out of the gateway's own cycles-ledger account, so an unfunded
+   reserve means orders that pay and then retry delivery forever. ⚠️ This is a
+   different pot from the canister's gas (step 4) — `icp canister top-up` does not
+   touch it.
+6. **Size the reserve to your exposure.** It is the blast-radius bound for a
+   leaked webhook secret (§2), and #30's per-purchase ceiling is the per-order
+   exposure inside it.
 8. **Configure the Stripe webhook endpoint**: in the Stripe Dashboard, add
    a webhook destination `https://<backend-canister-id>.icp0.io/webhook/stripe`
    sending exactly the events `checkout.session.completed` and
@@ -175,9 +179,18 @@ it once the endpoint is confirmed working.
 
 **Suspected leak — immediate actions** (in this order):
 
-1. Pause minting: `set_treasury_config` with `burnCapE8s = 0` (§5). The
-   cap is the blast-radius bound — this stops the drain even while forged
-   webhooks keep arriving.
+1. ⚠️ **The blast-radius bound changed with #30 PR-A, and this step changed with
+   it.** It used to be "pause minting: `set_treasury_config` with
+   `burnCapE8s = 0`", because the cap bounded how much ICP a forger could burn.
+   Nothing mints now, so the cap bounds nothing — **the bound is the reserve
+   balance**. A forged webhook can drain at most what the reserve holds.
+   There is deliberately no `withdraw_reserve` (#30 rejected it), so the reserve
+   cannot be emptied defensively. What you can do immediately is stop *new* orders
+   while you roll the secret — the rail is live iff both Stripe secrets are
+   provisioned, and rotating the webhook secret (step 2) closes it until the new
+   one is set. Keep the reserve sized to what you are willing to lose in the
+   window between detection and rotation; #30 PR-B's promise tally makes that
+   figure readable.
 2. Roll the secret in Stripe + `set_webhook_secret` (steps above).
 3. Reconcile: compare `audit_log` / order store against the Stripe
    Dashboard's event log; forged "payments" have no matching Stripe
@@ -361,10 +374,55 @@ single bad tick is invisible to buyers. The plausibility band and the implied
 cross-check are not configurable.
 
 **A rate outage never strands a paid order.** Fulfilment uses the quantity locked
-at creation, and money-out reads the CMC directly rather than the rate cache. An
-outage means *no new orders* — never a stuck buyer.
+at creation, and since #30 PR-A money-out reads **no rate at all** — it transfers a
+figure fixed when the order was created. An outage means *no new orders*, never a
+stuck buyer, and there is no longer a rate-move-mid-delivery exposure to bound.
 
-## 5. Treasury: float, burn cap, holds (§5.3)
+## 5. The cycles reserve — and the treasury machinery that no longer runs
+
+### Funding the reserve (this is the live part)
+
+```bash
+# The reserve IS the gateway's own cycles-ledger account.
+icp cycles transfer 100t <backend-principal>
+
+# Read it from the ledger — anyone can, including the frontend.
+icp canister call um5iw-rqaaa-aaaaq-qaaba-cai icrc1_balance_of \
+  '(record { owner = principal "<backend-principal>"; subaccount = null })'
+```
+
+Delivery is one `icrc1_transfer` out of that account, and the buyer receives
+`lockedCycles − icrc1_fee()`. The ledger charges its fee **on top of** the amount,
+so a delivery moves the reserve by exactly `lockedCycles` — which is why #30's
+promise tally has no separate fee term.
+
+⚠️ **Nothing mints into the reserve.** Refills are `icp cycles transfer` from
+outside, and there is deliberately no `withdraw_reserve` (#30 rejected it: the app
+is not in production and an over-funded local reserve costs nothing).
+
+⚠️ **Two pots, and confusing them is the most common local-setup failure.**
+`icp canister top-up` funds the canister's **gas** (what it spends to run, gated
+by `minCanisterCycles`). `icp cycles transfer` funds the **reserve** (what it
+sells). An unfunded reserve looks like orders that pay and then never deliver.
+
+### ⚠️ Everything below describes machinery that no longer runs
+
+> #30 PR-A replaced minting with selling from the reserve. The ICP float, the burn
+> cap, the rolling window and the mint pre-gate are **still in the code and still
+> callable, but unreachable**: `#awaitingTreasury` had exactly one entrance and it
+> was that pre-gate. So `burnCapE8s` bounds nothing, `lowFloatThresholdE8s` gates
+> nothing, `refresh_float` observes a balance nothing reads, and `heldOrders` is
+> permanently 0.
+>
+> It is described rather than deleted because deleting it is **#36**, and a
+> half-deleted procedure is worse than a marked one. Two consequences that are
+> live right now:
+>
+> - **The blast-radius bound for a leaked webhook secret is the reserve balance**,
+>   not the burn cap (§2 says so).
+> - **There is no solvency gate yet.** An order can be admitted that the reserve
+>   cannot cover; it fails at delivery and retries. #30 PR-B closes that with the
+>   promise tally and `#reserveShort`.
 
 **Status (public):** `treasury_status` returns
 `{config; burnedInWindowE8s; lastObservedFloat; lowFloat; heldOrders}`.
