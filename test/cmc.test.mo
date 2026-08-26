@@ -207,8 +207,13 @@ suite("delivery: the fee is RECOVERABLE from the intent (#30 PR-A)", func() {
 
 suite("interpretTransfer (§5.1)", func() {
   test("Ok and Duplicate both recover the block index — the replay payoff", func() {
-    assert Cmc.interpretTransfer(#Ok(7)) == #blockIndex(7);
-    assert Cmc.interpretTransfer(#Err(#Duplicate({ duplicate_of = 9 }))) == #blockIndex(9);
+    // ⚠️ These are DISTINCT outcomes since #30 PR-B, and the reserve floor is why:
+    // a fresh block means this call debited the ledger, a duplicate means an earlier
+    // one did. The floor is decremented when a transfer is issued, so a duplicate
+    // must credit that decrement back while a fresh block must keep it. Collapsing
+    // them refunds real debits (optimistic) or under-counts healed replays.
+    assert Cmc.interpretTransfer(#Ok(7)) == #delivered(7);
+    assert Cmc.interpretTransfer(#Err(#Duplicate({ duplicate_of = 9 }))) == #deduplicated(9);
   });
 
   test("nothing-recorded errors are retriable with identical args", func() {
@@ -311,17 +316,42 @@ suite("journal", func() {
     };
   };
 
-  test("openEntry persists the intent at #minting with zero retries", func() {
+  test("⚠️ openEntry records the ORDER's status, not a hardcoded #minting", func() {
+    // This assertion is inverted from what it was, and the inversion IS the bug fix.
+    // `openEntry` wrote `status = #minting` unconditionally — a leftover from when
+    // money-out meant the ICP mint path — and nothing read the field back, so the lie
+    // was free. The legacy caller transitions the order to `#minting` before opening
+    // the entry, so the two agreed there by coincidence.
+    //
+    // ⚠️ **Then #30 PR-B started reading it.** `Main.unsettledDeliveries` tests this
+    // field for `#paid` to decide whether a reserve observation may be adopted, so a
+    // hardcoded `#minting` made the predicate match NOTHING: the quiet window was
+    // always satisfied, and a reconcile could overwrite the floor while a transfer it
+    // could not see was still in flight. That is the exact failure the quiet window
+    // exists to prevent, reintroduced by a stale literal in a different file.
+    //
+    // So this test is the coupling's guard: the fixture order is `#paid`, which is
+    // what a delivery entry must record.
     let journal = Cmc.emptyJournal();
     let intent = intentAt(42);
     let entry = Cmc.openEntry(journal, order(), intent, 100);
     assert journal.get(order().id) == ?entry;
-    assert entry.status == #minting;
+    assert entry.status == #paid;
+    assert entry.status == order().status;
     assert entry.transferIntent == ?intent;
     assert entry.blockIndex == null;
     assert entry.cyclesMinted == null;
     assert entry.retries == 0;
     assert entry.createdAtNs == 100 and entry.updatedAtNs == 100;
+  });
+
+  test("and it still records #minting for the LEGACY caller, which transitions first", func() {
+    // The legacy ICP path moves the order to `#minting` and hands `openEntry` the
+    // transitioned copy, so reading the order's status preserves its behaviour
+    // exactly. Pinned so the fix above cannot be read as a change to that path.
+    let journal = Cmc.emptyJournal();
+    let entry = Cmc.openEntry(journal, { order() with status = #minting }, intentAt(42), 100);
+    assert entry.status == #minting;
   });
 
   test("patch updates only the requested fields and bumps updatedAt", func() {
@@ -393,10 +423,29 @@ suite("stageOf (§5.1/§5.2 resume decision)", func() {
     assert Cmc.stageOf(#paid, ?entry, 1_000, window, maxRetries) == #finishDelivery(77);
   });
 
-  test("#paid stops replaying once retries are exhausted", func() {
+  test("⚠️ #paid keeps replaying FOREVER — the retry cap does not apply to delivery", func() {
+    // #30 PR-B deleted the cap on this path, and the inverted assertion is the
+    // record of it: a replay here is provably safe (byte-identical args, the ledger
+    // deduplicates, `#Duplicate` recovers the block), so exhausting a counter turned
+    // a recoverable state into a manual one for no safety gain.
+    //
+    // "Forever" is bounded by TIME rather than by a count, twice over: the dedup
+    // window escalates the intent (the test above), and §5.3's 72 h max-wait gets a
+    // human involved long before. Ten times the old cap still replays.
     let intent = intentAt(1_000);
-    let entry = entryWith(?intent, null, null, maxRetries);
-    assert Cmc.stageOf(#paid, ?entry, 1_000, window, maxRetries) == #escalate(#retriesExhausted);
+    let entry = entryWith(?intent, null, null, maxRetries * 10);
+    assert Cmc.stageOf(#paid, ?entry, 1_000, window, maxRetries) == #replayDelivery(intent);
+  });
+
+  test("the two LEGACY stages keep the cap, because notify is not dedup-bounded", func() {
+    // Not an inconsistency: the cap's justification is "the stages the ledger's dedup
+    // window does not already bound", and `notify_top_up` is exactly that. #36 deletes
+    // both stages; until then their behaviour is unchanged and pinned here so the
+    // delivery-path deletion cannot quietly widen.
+    let entry = entryWith(?intentAt(1_000), null, null, maxRetries);
+    assert Cmc.stageOf(#minting, ?entry, 1_000, window, maxRetries) == #escalate(#retriesExhausted);
+    let atCmc = entryWith(?intentAt(1_000), ?9, null, maxRetries);
+    assert Cmc.stageOf(#icpAtCmc, ?atCmc, 1_000, window, maxRetries) == #escalate(#retriesExhausted);
   });
 
   test("#minting with a fresh intent and no block replays the identical transfer", func() {

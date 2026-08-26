@@ -15,6 +15,7 @@ import Iter "mo:core/Iter";
 import Principal "mo:core/Principal";
 import Text "mo:core/Text";
 import Result "mo:core/Result";
+import Reserve "Reserve";
 import Types "Types";
 import Util "Util";
 
@@ -78,6 +79,24 @@ module {
     /// Only the statuses the queries report are tracked; `countOf` returns 0
     /// for the rest. `recount` rebuilds them if they are ever suspected wrong.
     counts : Map.Map<Text, Nat>;
+    /// §30 PR-B — cycles promised to orders that exist and are not settled.
+    ///
+    /// ⚠️ **It lives HERE, in the store, deliberately.** `create`,
+    /// `applyTransition` and `markPaid` are the only three functions that write an
+    /// order's status, and they are all in this module — so the tally sits next to
+    /// every site that can move it, and adding a fourth writer means editing this
+    /// file and seeing the tally. Holding it in `Main.mo` instead would put the
+    /// state and its adjustment sites in different files, which is how per-status
+    /// counters drift.
+    ///
+    /// The value is `Σ lockedCycles` over orders whose status is **not terminal**
+    /// (`Reserve.holdsPromise`). See `Reserve.mo` for why it is a rule rather than
+    /// a list, and why there is no fee term.
+    var promised : Nat;
+    /// How many times `promised` had to saturate at zero — i.e. a release asked to
+    /// remove more than was held. **Any non-zero value means the tally diverged**,
+    /// and it is surfaced by `reserve_status` so it does not wait for a recount.
+    var tallySaturations : Nat;
   };
 
   public func emptyStore() : Store {
@@ -85,7 +104,14 @@ module {
       orders = Map.empty<Types.OrderId, Types.Order>();
       principalsToOrders = Map.empty<Principal, List.List<Types.OrderId>>();
       counts = Map.empty<Text, Nat>();
+      var promised = 0;
+      var tallySaturations = 0;
     };
+  };
+
+  /// Cycles promised to unsettled orders (#30 PR-B). O(1).
+  public func promised(store : Store) : Nat {
+    store.promised;
   };
 
   /// Statuses whose live counts are maintained. Keyed by `statusToText` so the
@@ -215,6 +241,21 @@ module {
       case (#minting, #needsReview) true; // intent aged past dedup window (§5.1)
       case (#icpAtCmc, #delivered) true; // notify + forward succeeded
       case (#icpAtCmc, #needsReview) true; // forward failed → Type 2 (§4.1)
+      // #30 PR-B — the operator read the ledger and the transfer HAD landed.
+      //
+      // ⚠️ **Added because its absence made the operator record a lie.** Until this
+      // edge existed, `#needsReview`'s only exit was `#abandoned`, so an escalated
+      // order whose cycles the buyer demonstrably has could only be filed as
+      // abandoned — auditing a refund that never happened. Money-correct,
+      // record-wrong, and the record is what this codebase trusts to keep illegal
+      // states unrepresentable.
+      //
+      // Not a routine path: `#needsReview` means the money position is unknown, and
+      // reaching it at all takes a ~24 h cycles-ledger outage. Only `record_delivered`
+      // drives it, admin-only, and it demands the ledger block as evidence — no
+      // automatic route to `#delivered` from an unknown position exists, because that
+      // is the double-delivery this status prevents.
+      case (#needsReview, #delivered) true;
       // `abandon_order` — the operator ends it, having refunded by hand. The
       // #needsReview edge is what the #errorQueue split made possible: an
       // escalated order could not previously be abandoned, because one status
@@ -276,6 +317,12 @@ module {
     };
     store.orders.add(id, order);
     bump(store, #created, 1);
+    // #30 PR-B: the hold at creation. ⚠️ **Not a transition** — an order appears in
+    // the counted set rather than moving into it — so it lives outside the
+    // transition machinery entirely, which is why #30 calls `create` an adjustment
+    // site in its own right. Missing this is the one leak the recount could not
+    // attribute to a status change.
+    store.promised += lockedCycles;
     let principal = switch (owner) { case (#ii(p)) p };
     switch (store.principalsToOrders.get(principal)) {
       case (?ids) ids.add(id);
@@ -289,6 +336,46 @@ module {
   };
 
   /// Look up, validate, and persist a transition in one step.
+  /// ⚠️ **The ONLY way a status reaches the store.** Writes the record, both
+  /// per-status counters, and the #30 promise tally, in one place.
+  ///
+  /// This exists because the alternative failed immediately. The tally was first
+  /// wired into the three writers a comment claimed were the only ones —
+  /// `create`, `applyTransition`, `markPaid` — and that comment was **false in the
+  /// very file it was written in**: `expireWithCause` and `expireBySession` (#47)
+  /// also write status, each with its own hand-rolled `add` plus two `bump`s.
+  ///
+  /// They are release points 1 and 4 of #30's five, and Stripe's
+  /// `checkout.session.expired` is the most common release in the whole design —
+  /// **every unpaid order ends there.** So every expired order would have left its
+  /// `lockedCycles` in `promised` forever: `available` ratchets down, the gate
+  /// starts refusing sales the reserve can cover, and the rail eventually closes
+  /// on a full reserve. Safe in direction (over-refusal, never a double-sell), and
+  /// a slow self-inflicted outage.
+  ///
+  /// Proximity was not enough, so the invariant is structural now: a sixth writer
+  /// cannot forget the tally, because writing a status *is* calling this.
+  /// (`attachSession` is the one writer that legitimately does not — it changes no
+  /// status, and says so at its own `add`.)
+  func commitTransition(store : Store, before : Types.Order, after : Types.Order) {
+    store.orders.add(after.id, after);
+    bump(store, before.status, -1);
+    bump(store, after.status, 1);
+    // Zero when the transition stays inside the counted set — `#created → #paid`
+    // is the live example — and called anyway, so no writer is a special case.
+    let moved = Reserve.applyDelta(
+      store.promised,
+      Reserve.tallyDelta(before.status, after.status),
+      before.lockedCycles,
+    );
+    store.promised := moved.total;
+    // ⚠️ Surfaced, not swallowed. Saturation means the tally was ALREADY wrong
+    // before this order reached here, and a silent zero is indistinguishable from
+    // an exact release — the first evidence would otherwise be the daily recount,
+    // up to 24 h of a wrong tally gating real sales. `Main` audits this.
+    if (moved.saturated) store.tallySaturations += 1;
+  };
+
   public func applyTransition(
     store : Store,
     id : Types.OrderId,
@@ -300,9 +387,14 @@ module {
       case (?order) {
         switch (transition(order, to, nowNs)) {
           case (#ok(updated)) {
-            store.orders.add(id, updated);
-            bump(store, order.status, -1);
-            bump(store, updated.status, 1);
+            // The tally moves only when a transition ACTUALLY succeeds.
+            // That is where idempotency comes from and why no extra guard is
+            // needed anywhere — `transition` refuses an illegal edge, so a
+            // redelivered `checkout.session.expired` for an already-cancelled
+            // order, a sweep racing a webhook, or a delivery retry answering
+            // `#Duplicate` after the transition already committed all no-op here
+            // rather than double-releasing.
+            commitTransition(store, order, updated);
             #ok(updated);
           };
           case (#err(e)) #err(e);
@@ -380,9 +472,9 @@ module {
               expiredBy = ?(#sessionExpired : Types.ExpiredBy);
               stripeSessionId = ?sessionId;
             };
-            store.orders.add(id, expired);
-            bump(store, order.status, -1);
-            bump(store, expired.status, 1);
+            // Release point 1 (#30), and the most common one: Stripe says the
+            // session died unpaid, so every unpaid order releases here.
+            commitTransition(store, order, expired);
             #ok(expired);
           };
           case (#err(e)) #err(e);
@@ -410,9 +502,8 @@ module {
         switch (transition(order, #expired, nowNs)) {
           case (#ok(updated)) {
             let expired = { updated with expiredBy = ?cause };
-            store.orders.add(id, expired);
-            bump(store, order.status, -1);
-            bump(store, expired.status, 1);
+            // Release point 4 (#30): in-call session-creation failure.
+            commitTransition(store, order, expired);
             #ok(expired);
           };
           case (#err(e)) #err(e);
@@ -448,11 +539,9 @@ module {
         switch (transition(order, #paid, nowNs)) {
           case (#ok(updated)) {
             let paid = { updated with paidUsdCents = ?paidUsdCents };
-            store.orders.add(id, paid);
-            // markPaid writes status directly rather than going through
-            // applyTransition, so it maintains the counts itself.
-            bump(store, order.status, -1);
-            bump(store, paid.status, 1);
+            // ⚠️ Release is at DELIVERY, never at payment, so this delta is ZERO.
+            // `Reserve.tallyDelta` carries the two-orders-one-reserve argument.
+            commitTransition(store, order, paid);
             #ok(paid);
           };
           case (#err(e)) #err(e);
@@ -497,6 +586,17 @@ module {
   };
 
   /// Order history for a principal, newest-last (insertion order).
+  /// Every order, for the #30 promise recount.
+  ///
+  /// ⚠️ Deliberately NOT paged: the recount has to see all of them or its answer
+  /// is wrong in the dangerous direction — a partial scan under-counts what is
+  /// owed, which reports a leak that is not there and hides one that is. O(n) over
+  /// orders that are never deleted, so it belongs on the daily reconcile and the
+  /// admin recount, never on a hot path. #37 adds a status index.
+  public func all(store : Store) : [Types.Order] {
+    store.orders.values().toArray();
+  };
+
   public func ordersFor(store : Store, caller : Principal) : [Types.Order] {
     switch (store.principalsToOrders.get(caller)) {
       case null [];

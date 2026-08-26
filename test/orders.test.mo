@@ -4,6 +4,8 @@ import List "mo:core/List";
 import Nat "mo:core/Nat";
 import Principal "mo:core/Principal";
 import Runtime "mo:core/Runtime";
+import Recovery "../src/backend/Recovery";
+import Reserve "../src/backend/Reserve";
 import Types "../src/backend/Types";
 import Map "mo:core/Map";
 import Text "mo:core/Text";
@@ -51,6 +53,10 @@ let legalTransitions : [(Types.OrderStatus, Types.OrderStatus)] = [
   (#paid, #abandoned),
   (#awaitingTreasury, #abandoned),
   (#needsReview, #abandoned),
+  // #30 PR-B — `record_delivered`: the operator checked the cycles ledger and the
+  // transfer HAD landed. Its absence forced them to file a delivered order as
+  // abandoned, auditing a refund that never happened.
+  (#needsReview, #delivered),
 ];
 
 func isExpectedLegal(from : Types.OrderStatus, to : Types.OrderStatus) : Bool {
@@ -111,6 +117,114 @@ func drive(store : Orders.Store, id : Types.OrderId, path : [Types.OrderStatus])
   };
 };
 
+suite("the promise tally (#30 PR-B) — every writer moves it", func() {
+  // ⚠️ **These exist because of a real bug in this PR.** The tally was first wired
+  // into the three writers a comment claimed were the only ones (`create`,
+  // `applyTransition`, `markPaid`), and that comment was false in the file it was
+  // written in: `expireWithCause` and `expireBySession` (#47) also write status.
+  // They are #30's release points 4 and 1 — and point 1 is where EVERY unpaid
+  // order ends — so every expired order would have left its `lockedCycles` in
+  // `promised` forever, ratcheting `available` down until the gate refused sales
+  // against a full reserve.
+  //
+  // The structural fix is `commitTransition`: one private function does the write,
+  // both counters and the tally, so a sixth writer cannot forget. These tests are
+  // what keep a hand-rolled writer from reopening the hole.
+
+  test("create takes the hold", func() {
+    let store = Orders.emptyStore();
+    assert Orders.promised(store) == 0;
+    let order = newOrder(store, "ord-1", alice);
+    assert Orders.promised(store) == order.lockedCycles;
+  });
+
+  test("⚠️ expireBySession returns the hold to zero — release point 1, the common one", func() {
+    // Stripe says the session died unpaid. This is the path every abandoned
+    // checkout takes, and the one that leaked.
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    switch (Orders.expireBySession(store, "ord-1", "cs_test", 300)) {
+      case (#ok(_)) {};
+      case (#err(_)) assert false;
+    };
+    assert Orders.promised(store) == 0;
+  });
+
+  test("⚠️ expireWithCause returns the hold to zero — release point 4", func() {
+    // In-call session-creation failure: no session ever existed.
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    switch (Orders.expireWithCause(store, "ord-1", #sessionFailed, 300)) {
+      case (#ok(_)) {};
+      case (#err(_)) assert false;
+    };
+    assert Orders.promised(store) == 0;
+  });
+
+  test("payment does NOT release; delivery does", func() {
+    // Release at `#paid` would let a second order claim capacity the first still
+    // needs — the two-orders-one-reserve failure in `Reserve.tallyDelta`.
+    let store = Orders.emptyStore();
+    let order = newOrder(store, "ord-1", alice);
+    switch (Orders.markPaid(store, "ord-1", 500, 300)) {
+      case (#ok(_)) {};
+      case (#err(_)) assert false;
+    };
+    assert Orders.promised(store) == order.lockedCycles;
+    ignore Orders.applyTransition(store, "ord-1", #delivered, 400);
+    assert Orders.promised(store) == 0;
+  });
+
+  test("cancel releases — release point 3", func() {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore Orders.applyTransition(store, "ord-1", #cancelled, 300);
+    assert Orders.promised(store) == 0;
+  });
+
+  test("an escalated order KEEPS its promise; abandoning releases it — point 5", func() {
+    // `#needsReview` means "we do not know whether the cycles left", so releasing
+    // it would free cycles that may still have to be delivered. Only the
+    // operator's explicit give-up ends it.
+    let store = Orders.emptyStore();
+    let order = newOrder(store, "ord-1", alice);
+    ignore Orders.applyTransition(store, "ord-1", #paid, 300);
+    ignore Orders.applyTransition(store, "ord-1", #needsReview, 400);
+    assert Orders.promised(store) == order.lockedCycles;
+    ignore Orders.applyTransition(store, "ord-1", #abandoned, 500);
+    assert Orders.promised(store) == 0;
+  });
+
+  test("an illegal transition moves nothing — idempotency comes from the matrix", func() {
+    // A redelivered `checkout.session.expired` for an already-cancelled order is
+    // the live example: the transition is refused, so the tally cannot
+    // double-release. No extra guard anywhere.
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore Orders.applyTransition(store, "ord-1", #cancelled, 300);
+    assert Orders.promised(store) == 0;
+    switch (Orders.expireBySession(store, "ord-1", "cs_test", 400)) {
+      case (#err(#illegalTransition(_))) {};
+      case (_) assert false;
+    };
+    assert Orders.promised(store) == 0;
+  });
+
+  test("the maintained tally agrees with the independent recount", func() {
+    // Two derivations of one quantity: incremental at the write sites, and
+    // recomputed from statuses. This is the drift check the daily reconcile runs.
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore newOrder(store, "ord-2", alice);
+    ignore newOrder(store, "ord-3", bob);
+    ignore Orders.applyTransition(store, "ord-1", #paid, 300);
+    ignore Orders.applyTransition(store, "ord-2", #cancelled, 300);
+    ignore Orders.applyTransition(store, "ord-3", #paid, 300);
+    ignore Orders.applyTransition(store, "ord-3", #delivered, 400);
+    assert Orders.promised(store) == Reserve.recount(Orders.all(store));
+  });
+});
+
 suite("legal-transition matrix (exhaustive, 8×8)", func() {
   for (from in allStatuses.values()) {
     for (to in allStatuses.values()) {
@@ -122,14 +236,14 @@ suite("legal-transition matrix (exhaustive, 8×8)", func() {
     };
   };
 
-  test("exactly 16 legal transitions exist", func() {
+  test("exactly 17 legal transitions exist", func() {
     var count = 0;
     for (from in allStatuses.values()) {
       for (to in allStatuses.values()) {
         if (Orders.isLegalTransition(from, to)) count += 1;
       };
     };
-    assert count == 16;
+    assert count == 17;
   });
 
   test("the terminal statuses have no outgoing edge at all", func() {
@@ -151,13 +265,19 @@ suite("legal-transition matrix (exhaustive, 8×8)", func() {
     assert not Orders.isLegalTransition(#expired, #paid);
   });
 
-  test("needsReview holds its promise: abandon is the only way out", func() {
-    // It is NOT re-drivable and NOT terminal. The single edge is what makes
-    // `abandon_order` able to end an escalated order — the thing one status
-    // meaning both "held" and "released" prevented.
+  test("needsReview has exactly TWO exits, and both need a human's finding", func() {
+    // It is NOT re-drivable and NOT terminal. `#abandoned` is "the operator
+    // refunded"; `#delivered` is "the operator read the cycles ledger and the
+    // transfer had landed" (#30 PR-B). Both are decisions, neither is automatic —
+    // `Recovery.isSweepable(#needsReview)` is false and stays false, because
+    // re-driving an unknown money position is the double-spend this status prevents.
+    //
+    // ⚠️ The exhaustive loop is the point: an escalated order must not acquire a
+    // third exit, or a *known* position becomes reachable from an unknown one.
     for (to in allStatuses.values()) {
-      assert Orders.isLegalTransition(#needsReview, to) == (to == #abandoned);
+      assert Orders.isLegalTransition(#needsReview, to) == (to == #abandoned or to == #delivered);
     };
+    assert not Recovery.isSweepable(#needsReview);
   });
 });
 

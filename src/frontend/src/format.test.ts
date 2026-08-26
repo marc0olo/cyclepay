@@ -186,25 +186,66 @@ describe("gateReasonMessage", () => {
     expect(msg.toLowerCase()).toMatch(/pay or abandon/);
   });
 
+  test("amountBelowMin tells the user the floor, not just that it failed", () => {
+    // Reachable by typing since #33 gave the rail custom amounts, and it was
+    // rendering `undefined` until #30 PR-B aliased this union to the bindings.
+    const msg = gateReasonMessage({
+      __kind__: "amountBelowMin",
+      amountBelowMin: { usdCents: 500n, minUsdCents: 1_000n },
+    });
+    expect(msg).toContain("$10.00");
+  });
+
+  test("reserveShort names both figures, because a smaller amount can succeed", () => {
+    // ⚠️ The one refusal where "try again later" is the WRONG advice: the gateway can
+    // still sell, just less. Sending the buyer away from a purchase it can make is a
+    // lost sale for a reason the copy could have explained.
+    const msg = gateReasonMessage({
+      __kind__: "reserveShort",
+      reserveShort: { requested: 7_000_000_000_000n, available: 3_500_000_000_000n },
+    });
+    expect(msg).toContain("3.5 T");
+    expect(msg).toContain("7 T");
+    expect(msg).toMatch(/smaller amount/i);
+    expect(msg).toContain("Nothing was charged");
+  });
+
   test("operational refusals promise nothing was charged", () => {
     // These are all pre-payment refusals, so the copy must say so — otherwise a
     // user seeing "unavailable" mid-purchase assumes money may have moved.
+    //
+    // ⚠️ This list used to hold `burnCapExhausted` and `floatLow`, which #30 PR-B
+    // deleted from `Gate.Reason` — and it kept passing, because the union was a
+    // hand-written mirror rather than the generated type. That is the whole reason
+    // `GateReason` is now an alias: a deleted variant fails to compile here.
     const operational: GateReason[] = [
-      { __kind__: "burnCapExhausted", burnCapExhausted: { burnedE8s: 1n, capE8s: 1n } },
-      { __kind__: "floatLow", floatLow: { thresholdE8s: 1n } },
       { __kind__: "canisterCyclesLow", canisterCyclesLow: { balance: 0n, min: 1n } },
+      { __kind__: "reserveShort", reserveShort: { requested: 2n, available: 1n } },
     ];
     for (const reason of operational) {
       expect(gateReasonMessage(reason)).toContain("Nothing was charged");
     }
   });
 
-  test("floatLow renders with no observation present", () => {
-    // observedE8s is absent when the float has never been read.
-    expect(gateReasonMessage({
-      __kind__: "floatLow",
-      floatLow: { thresholdE8s: 1_000n },
-    })).not.toBe("");
+  test("EVERY variant renders a non-empty message", () => {
+    // The gap this closes: `gateReasonMessage`'s switch has no default, so a variant
+    // it does not name returns `undefined` and the buyer sees "undefined" in the UI.
+    // Two variants were in exactly that state. Listing them all here means adding a
+    // refusal to Gate.mo without copy fails a test rather than shipping.
+    const all: GateReason[] = [
+      { __kind__: "amountAboveMax", amountAboveMax: { usdCents: 2n, maxUsdCents: 1n } },
+      { __kind__: "amountBelowMin", amountBelowMin: { usdCents: 1n, minUsdCents: 2n } },
+      { __kind__: "tooManyOpenOrders", tooManyOpenOrders: { open: 3n, max: 3n } },
+      { __kind__: "reserveShort", reserveShort: { requested: 2n, available: 1n } },
+      { __kind__: "canisterCyclesLow", canisterCyclesLow: { balance: 0n, min: 1n } },
+    ];
+    const kinds = new Set(all.map((r) => r.__kind__));
+    expect(kinds.size).toBe(5);
+    for (const reason of all) {
+      const msg = gateReasonMessage(reason);
+      expect(msg, reason.__kind__).toBeTypeOf("string");
+      expect(msg.length, reason.__kind__).toBeGreaterThan(0);
+    }
   });
 });
 

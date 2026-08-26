@@ -103,19 +103,34 @@ module {
 
   public type DepositArgs = { to : Types.Account; memo : ?Blob };
 
+  /// ⚠️ **THIS TYPE IS THE RESERVE FLOOR'S ENFORCEMENT MECHANISM.** `Reserve.mo`'s
+  /// floor is sound only because the reserve balance cannot fall except when we
+  /// transfer out — and the reason it cannot is right here: **the account's owner
+  /// could call `icrc2_approve` or `withdraw` on the cycles ledger, and neither is
+  /// declared, so neither can be called.** Not "we do not plan to add them"; the
+  /// compiler will not let this canister reach them.
+  ///
+  /// So breaking the floor's premise takes a visible act in this file — adding a
+  /// method to this type — and `scripts/test-all.sh` fails the gate on exactly that.
+  /// Adding one here without reading `Reserve.mo`'s floor section turns a bound into
+  /// a guess, silently and in the optimistic direction.
   public type CyclesLedgerService = actor {
+    /// LEGACY (#36 deletes it). ⚠️ **Not an outflow of the reserve**: it attaches
+    /// cycles from this canister's own *gas* balance and credits the buyer. It moves
+    /// the gas pot, never the ledger account, which is why the floor ignores it.
     deposit : shared DepositArgs -> async { balance : Nat; block_index : Nat };
-    /// Delivery since #30: the reserve pays the buyer from the canister's OWN
-    /// cycles-ledger account, rather than the canister minting per order and
-    /// depositing from its gas balance.
+    /// **The one outflow.** Delivery pays the buyer from the canister's own
+    /// cycles-ledger account. Two syntactic call sites — the attempt and its
+    /// `#BadFee` re-issue — are ONE logical transfer of one intent, and at most one
+    /// of them debits: the re-issue only runs after a definitively-rejected attempt,
+    /// and a duplicate is deduplicated by the ledger. That is precisely why rules 2
+    /// and 3 net to one floor decrement per real execution.
     icrc1_transfer : shared TransferArg -> async TransferResult;
-    /// The live transfer fee, read at delivery time. Not a constant here: the
-    /// buyer's delivered amount is `lockedCycles - fee`, so a stale copy would
-    /// either short the buyer or make every transfer answer `#BadFee`.
-    icrc1_fee : shared query () -> async Nat;
-    /// The reserve's authoritative balance. ⚠️ #30 PR-B calls this inside
-    /// `create_order` as the gate's read; nothing else should treat it as a
-    /// cached value.
+    /// The reserve's authoritative balance, read by the hourly reconcile and by
+    /// `refresh_reserve` — **never by the gate.** ⚠️ An earlier version of this
+    /// comment said `create_order` called it as the gate's read; #30 PR-B removed
+    /// that read entirely, because an awaited value is historical by the time it is
+    /// used. The gate decides against the maintained floor, synchronously.
     icrc1_balance_of : shared query Types.Account -> async Nat;
   };
 
@@ -161,15 +176,20 @@ module {
     minted + maxMintShortfallCycles < locked;
   };
 
-  /// Cycles the cycles ledger deducts from a `deposit`. The buyer therefore
-  /// receives this much less than the order's locked quantity, on every order —
-  /// there is one destination and it goes through the ledger (#29).
+  /// **Seed** for the stored cycles-ledger transfer fee (#30 PR-B). The live value
+  /// lives in `Main.cyclesLedgerFee`, because the ledger owns it and can move it.
   ///
-  /// Deliberately **not** grossed up into the quote: minting extra cycles to
-  /// cover a per-order fee would let anyone drain the operator by opening
-  /// orders, so the fee is disclosed to the buyer rather than absorbed. Exposed
-  /// through `quote_previews` for exactly that purpose.
-  public let cyclesLedgerDepositFee : Nat = 100_000_000;
+  /// It is a seed and not a constant: `#BadFee` carries the ledger's expected fee,
+  /// so the first delivery after any change corrects the stored copy and every
+  /// later one uses the corrected value. That self-correction is why delivery no
+  /// longer awaits `icrc1_fee` — see the stored variable's doc for the trade.
+  ///
+  /// ⚠️ This was `cyclesLedgerDepositFee`, documented as disclosed to the buyer
+  /// through `quote_previews`. Both halves stopped being true: #30 PR-A moved
+  /// money-out from `deposit` to `icrc1_transfer` and stopped disclosing the fee in
+  /// the quote (the frontend reads the ledger). It was dead by then — one test
+  /// asserted its ABSENCE from the preview and nothing read it.
+  public let cyclesLedgerDefaultFee : Nat = 100_000_000;
 
   /// The CMC recognizes a top-up by this icrc1 memo: the 8-byte little-endian
   /// encoding of 0x50555054 ("TPUP"). Pinned by test vector.
@@ -330,26 +350,41 @@ module {
   /// What the driver does next; `#retriable` leaves state untouched for the
   /// recovery sweep, `#escalate` is terminal (error queue, §5.1).
   public type TransferOutcome = {
-    /// Block index recovered — `#Ok` or `#Duplicate` (the §5.1 replay payoff:
-    /// a replayed intent that already executed *returns* its block).
-    #blockIndex : Nat;
+    /// This call moved the money: the ledger accepted it and recorded a block.
+    #delivered : Nat;
+    /// An EARLIER call moved the money; this one was deduplicated and handed back
+    /// the original block. Still success — the §5.1 replay payoff.
+    ///
+    /// ⚠️ **Distinct from `#delivered`, and #30 PR-B is why.** These were one case
+    /// (`#blockIndex`) until the reserve floor needed to know whether *this* call
+    /// debited the ledger: the floor is decremented when a transfer is issued, so a
+    /// deduplicated call must credit its decrement back (an earlier attempt's
+    /// decrement is the real one and is still standing), while a fresh block must
+    /// keep it. Collapsing them refunds real debits — optimistic — or under-counts
+    /// every healed replay by a whole order. Every other consumer treats them
+    /// identically, and says so.
+    #deduplicated : Nat;
     #retriable : Text;
     /// The ledger's fee is not what we passed; it reports the expected one.
     ///
     /// Its own case because the two callers answer it differently and both are
     /// right: the ICP mint path escalates (a protocol-wide ICP fee change is not
-    /// something to paper over), while reserve delivery (#30) re-reads
-    /// `icrc1_fee` and retries, so a risen fee is absorbed by the reserve rather
-    /// than shorting the buyer. Returning one verdict here would force one of
+    /// something to paper over), while reserve delivery (#30) re-sends with the
+    /// reported fee and **persists it**, so a risen fee is absorbed by the reserve
+    /// rather than shorting the buyer. Returning one verdict here would force one of
     /// them to be wrong.
+    ///
+    /// ⚠️ That persistence is what lets delivery stop awaiting `icrc1_fee` at all
+    /// (#30 PR-B): this case IS the fee-refresh mechanism, so a stale stored copy
+    /// costs one rejected call, once, and never a wrong debit.
     #badFee : Nat;
     #escalate : Text;
   };
 
   public func interpretTransfer(result : TransferResult) : TransferOutcome {
     switch (result) {
-      case (#Ok(block)) #blockIndex(block);
-      case (#Err(#Duplicate({ duplicate_of }))) #blockIndex(duplicate_of);
+      case (#Ok(block)) #delivered(block);
+      case (#Err(#Duplicate({ duplicate_of }))) #deduplicated(duplicate_of);
       // Retriable: the ledger did NOT record a transfer, and the identical
       // intent can succeed later (float refilled, ledger back up, ledger
       // clock caught up to created_at_time).
@@ -398,7 +433,24 @@ module {
   public func openEntry(journal : Journal, order : Types.Order, intent : Types.TransferIntent, nowNs : Int) : Types.JournalEntry {
     let entry : Types.JournalEntry = {
       orderId = order.id;
-      status = #minting;
+      // ⚠️ **The ORDER's status, not a hardcoded one — and this was a real bug.**
+      // It read `#minting` unconditionally, a leftover from when money-out meant the
+      // ICP mint path. Harmless while nothing read the field back: the legacy caller
+      // transitions the order to `#minting` before opening the entry, so the two
+      // agreed there by accident, and every other consumer takes the order's status
+      // as a parameter.
+      //
+      // Then #30 PR-B started reading it. `unsettledDeliveries` — the predicate that
+      // decides whether a reserve observation may be adopted — tests for `#paid`, so
+      // the hardcode made it match **nothing**: the quiet window was always
+      // satisfied, and a reconcile could overwrite the floor while a transfer it
+      // could not see was in flight. Exactly the class of bug the quiet window
+      // exists to prevent, reintroduced by a stale literal three files away.
+      //
+      // Found by a test written for something else entirely (`pending_deliveries`
+      // listing an outstanding delivery), which is the only reason it did not ship:
+      // the scenario that was supposed to cover it passed *vacuously*.
+      status = order.status;
       destination = order.destination;
       transferIntent = ?intent;
       blockIndex = null;
@@ -472,8 +524,10 @@ module {
     /// intent, transfer ICP. Reached only from the treasury-hold retry now that
     /// #30 PR-A routes `#paid` to `#beginDelivery`; #36 deletes it.
     #begin;
-    /// #30 PR-A — no delivery intent yet: read `icrc1_fee`, write the intent,
-    /// transfer cycles from the reserve.
+    /// #30 PR-A — no delivery intent yet: write the intent and transfer cycles from
+    /// the reserve. ⚠️ It used to say "read `icrc1_fee`" first; #30 PR-B removed that
+    /// await, so this stage is now synchronous through to the transfer issue — which
+    /// `Main.unsettledDeliveries` depends on.
     ///
     /// ⚠️ The delivery stages are deliberately **separate constructors** from the
     /// mint ones rather than a shared stage that branches on status. They address
@@ -681,7 +735,20 @@ module {
             switch (e.transferIntent) {
               case null #beginDelivery;
               case (?intent) {
-                if (e.retries >= maxRetries) return #escalate(#retriesExhausted);
+                // ⚠️ **No retry cap on this path, deliberately (#30 PR-B).** A
+                // replay here is *provably* safe — byte-identical args, the ledger
+                // deduplicates, `#Duplicate` recovers the block — so a cap converted
+                // a recoverable state into a manual one for no safety gain. And the
+                // cap's own justification (see `Recovery.maxMintRetries`: "the stages
+                // the ledger's dedup window does not already bound") never applied
+                // here, because the very next line IS that bound. The two legacy
+                // stages below keep it: `notify_top_up` has no dedup window.
+                //
+                // Retrying is therefore bounded twice over, by time rather than by a
+                // count: the ~24 h dedup window escalates the intent below, and §5.3's
+                // 72 h max-wait gets a human involved for the buyer's sake long before
+                // that. A retry budget added nothing between those two.
+                //
                 // Past the dedup window a replay is no longer protected, so a
                 // blind retry could pay twice. This is #30's ONE ambiguous case
                 // and the only thing that escalates on the delivery path.

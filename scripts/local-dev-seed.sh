@@ -317,11 +317,27 @@ step "cycles reserve"
 # operator convenience).
 RESERVE_TOP_UP=100t
 if icp cycles transfer "$RESERVE_TOP_UP" "$BACKEND_ID" >/dev/null 2>&1; then
-  echo "reserve:     $RESERVE_TOP_UP cycles in the gateway's own ledger account"
+  # ⚠️ **A funded reserve is not a SELLABLE reserve until the gateway looks.** #30
+  # PR-B decides solvency against a maintained lower bound on this account, and that
+  # bound only ever rises by observation: it starts at zero on a fresh install, and a
+  # transfer into the account is invisible to it. Without this call the seed produces
+  # a gateway that refuses every purchase with `#reserveShort{available = 0}` while
+  # the ledger holds 100 T — and nothing fails, compiles differently, or says why.
+  #
+  # The hourly sweep would eventually pick it up. "Eventually" is the wrong answer
+  # for a script whose whole job is to hand over a working gateway.
+  if ! icp canister call backend refresh_reserve '()' >/dev/null 2>&1; then
+    printf '  \033[33m!\033[0m funded the reserve but refresh_reserve failed.\n'
+    printf '    The gateway will refuse every sale until it observes the balance:\n'
+    printf '      icp canister call backend refresh_reserve %s\n' "'()'"
+  fi
+  echo "reserve:     $RESERVE_TOP_UP cycles in the gateway's own ledger account, observed"
 else
   printf '  \033[33m!\033[0m could not fund the cycles reserve with %s.\n' "$RESERVE_TOP_UP"
   printf '    Orders will be created and PAID and then retry delivery forever.\n'
-  printf '    Fund it by hand: icp cycles transfer %s %s\n' "$RESERVE_TOP_UP" "$BACKEND_ID"
+  printf '    Fund it by hand, then let the gateway observe it:\n'
+  printf '      icp cycles transfer %s %s\n' "$RESERVE_TOP_UP" "$BACKEND_ID"
+  printf '      icp canister call backend refresh_reserve %s\n' "'()'"
 fi
 
 step "admission gate"
@@ -349,6 +365,21 @@ ok "cycles floor kept at $((FLOOR / 1000000000000)) T; canister holds $((BALANCE
 icp canister call backend can_purchase '(1_000 : nat)' 2>&1 | grep -q 'variant { ok }' ||
   die "the gateway still refuses a \$10 purchase. Check: icp canister call backend can_purchase '(1_000 : nat)'"
 ok "a \$10 purchase is admitted"
+
+# ⚠️ `can_purchase` above does NOT cover solvency, and cannot: it is a query, and
+# reading the reserve is what the gate does synchronously inside `create_order`. So
+# the reserve is verified separately, against the same figure the gate decides on —
+# otherwise a missing `refresh_reserve` sails past every check in this script and
+# surfaces as a refusal on the first real order.
+RESERVE="$(icp canister call backend reserve_status '()' 2>/dev/null)"
+AVAILABLE="$(printf '%s' "$RESERVE" | grep -oE 'availableToSell = [0-9_]+' | tr -d '_' | grep -oE '[0-9]+$' || echo 0)"
+if [ "${AVAILABLE:-0}" -eq 0 ]; then
+  die "the gateway will sell 0 cycles even though the reserve was funded — its floor
+    has not observed the balance. Fix:
+      icp canister call backend refresh_reserve '()'
+      icp canister call backend reserve_status '()'"
+fi
+ok "reserve floor observed; $((AVAILABLE / 1000000000000)) T available to sell"
 
 printf '\n\033[32m✓ local gateway seeded\033[0m\n'
 cat <<NOTES

@@ -1,5 +1,7 @@
 // Pure presentation/encoding helpers. No DOM, no agent, unit-tested.
 
+import type { Reason } from "./bindings/backend";
+
 /// OrderStatus variant keys as the Candid wrapper surfaces them.
 export type StatusKey =
   | "created"
@@ -329,28 +331,37 @@ export function parseUsdAmount(input: string): UsdAmountParse {
 }
 
 /// Gate.mo admission refusal. Every case is a *temporary operational* state
-/// except `amountAboveMax`, so the copy has to tell the user whether to change
+/// except the two amount bounds, so the copy has to tell the user whether to change
 /// something or come back later. A generic failure would leave them retrying a
 /// button that cannot succeed.
-export type GateReason =
-  | { __kind__: "tooManyOpenOrders"; tooManyOpenOrders: { open: bigint; max: bigint } }
-  | { __kind__: "canisterCyclesLow"; canisterCyclesLow: { balance: bigint; min: bigint } }
-  | { __kind__: "burnCapExhausted"; burnCapExhausted: { burnedE8s: bigint; capE8s: bigint } }
-  // `observedE8s` is an `opt nat`, which the bindgen wrapper models as an
-  // optional property rather than a 0/1-element tuple.
-  | { __kind__: "floatLow"; floatLow: { observedE8s?: bigint; thresholdE8s: bigint } }
-  | { __kind__: "amountAboveMax"; amountAboveMax: { usdCents: bigint; maxUsdCents: bigint } };
+///
+/// ⚠️ **Aliased from the GENERATED bindings, never re-declared.** It WAS a
+/// hand-written mirror, and it had silently drifted two variants in each direction:
+/// it still carried `burnCapExhausted` and `floatLow`, which #30 PR-B deleted, and it
+/// was missing `amountBelowMin` (#33 PR-B) and `reserveShort` (#30 PR-B) — so the two
+/// refusals a buyer is most likely to see rendered as `undefined`. Nothing caught it,
+/// because the switch was exhaustive over the *stale* union and `main.ts` reached it
+/// through an `as` cast. Aliasing makes the next backend change a compile error here.
+/// A type-only import, so this module stays runtime-dependency-free.
+export type GateReason = Reason;
 
 export function gateReasonMessage(reason: GateReason): string {
   switch (reason.__kind__) {
     case "amountAboveMax":
       return `The maximum for a single purchase is ${formatUsdCents(reason.amountAboveMax.maxUsdCents)}.`;
+    case "amountBelowMin":
+      return `The minimum for a single purchase is ${formatUsdCents(reason.amountBelowMin.minUsdCents)}.`;
     case "tooManyOpenOrders":
       return `You already have ${reason.tooManyOpenOrders.open} unpaid orders open (limit ${reason.tooManyOpenOrders.max}). Pay or abandon one before starting another.`;
-    case "burnCapExhausted":
-      // The operator's rolling blast-radius bound is spent for this window.
-      return "Purchases are paused right now. The gateway has hit its limit for this period. Nothing was charged; please try again later.";
-    case "floatLow":
+    case "reserveShort":
+      // The one refusal a smaller amount can fix, so it says so and says how much
+      // is actually available rather than "try again later" — which would send the
+      // buyer away from a purchase the gateway can still make.
+      return (
+        `The gateway can only deliver ${formatCycles(reason.reserveShort.available)} cycles right now, ` +
+        `and this amount asks for ${formatCycles(reason.reserveShort.requested)}. ` +
+        `Nothing was charged. Try a smaller amount, or come back later.`
+      );
     case "canisterCyclesLow":
       return "Purchases are temporarily unavailable while the gateway is topped up. Nothing was charged; please try again later.";
   }

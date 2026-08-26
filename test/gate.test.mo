@@ -9,11 +9,7 @@ import Text "mo:core/Text";
 /// An observation that admits: room on every axis.
 let healthy : Gate.Observation = {
   openOrders = 0;
-  canisterCycles = 20_000_000_000_000; // 20T
-  burnedInWindowE8s = 0;
-  burnCapE8s = 10_000_000_000; // 100 ICP
-  observedFloatE8s = ?5_000_000_000; // 50 ICP
-  lowFloatThresholdE8s = 1_000_000_000; // 10 ICP
+  canisterCycles = 20_000_000_000_000; // 20T // 100 ICP // 50 ICP // 10 ICP
 };
 
 let config = Gate.defaultConfig();
@@ -95,38 +91,39 @@ suite("admit", func() {
       == #err(#canisterCyclesLow({ balance = floor - 1; min = floor }));
   });
 
-  test("a spent burn window refuses before any money is taken", func() {
-    assert Gate.admit(config, { healthy with burnedInWindowE8s = healthy.burnCapE8s }, amount)
-      == #err(#burnCapExhausted({ burnedE8s = healthy.burnCapE8s; capE8s = healthy.burnCapE8s }));
+  test("solvency is NOT decided here, and the split is the point", func() {
+    // The burn-cap and float tests that lived here went with the mint path (#30
+    // PR-A): both bounded ICP spend and delivery spends no ICP.
+    //
+    // Their replacement is `Gate.solvent`, deliberately a SEPARATE function.
+    // Reading the reserve means awaiting the cycles ledger, and `admit` is
+    // synchronous precisely so there is no window between observing and deciding.
+    // Folding solvency in would force every caller to supply a balance —
+    // including `can_purchase`, a query that cannot await one. So #30's ask to
+    // "narrow can_purchase's contract" is a fact about the code here, not a
+    // sentence in a doc comment.
+    assert Gate.admit(config, healthy, amount) == #ok;
   });
 
-  test("the fail-closed default cap of 0 refuses every order", func() {
-    // A cap of 0 means "no minting at all", so quoting would only ever lead to
-    // an #awaitingTreasury hold and a manual refund.
-    assert Gate.admit(config, { healthy with burnCapE8s = 0; burnedInWindowE8s = 0 }, amount)
-      == #err(#burnCapExhausted({ burnedE8s = 0; capE8s = 0 }));
+  test("solvent: the reserve must cover this order ON TOP of what is owed", func() {
+    // Inclusive at the boundary: the fee is charged on top of the amount, and the
+    // amount is what is promised, so an order that exactly exhausts what is left
+    // is fine. An exclusive check would strand the last order's cycles forever.
+    assert Gate.solvent(10_000, 0, 10_000) == #ok;
+    assert Gate.solvent(10_000, 4_000, 6_000) == #ok;
+    assert Gate.solvent(10_000, 4_000, 6_001)
+      == #err(#reserveShort({ requested = 6_001; available = 6_000 }));
   });
 
-  test("float below the threshold refuses; exactly at it admits", func() {
-    let threshold = healthy.lowFloatThresholdE8s;
-    assert Gate.admit(config, { healthy with observedFloatE8s = ?threshold }, amount) == #ok;
-    assert Gate.admit(config, { healthy with observedFloatE8s = ?(threshold - 1) }, amount)
-      == #err(#floatLow({ observedE8s = ?(threshold - 1); thresholdE8s = threshold }));
-  });
-
-  test("float gating is opt-in: threshold 0 admits even with no observation", func() {
-    assert Gate.admit(
-      config,
-      { healthy with lowFloatThresholdE8s = 0; observedFloatE8s = null },
-      amount,
-    ) == #ok;
-  });
-
-  test("a configured threshold with no observation refuses", func() {
-    // "Enforce this" plus "I have never looked" is not a state to sell into —
-    // the go-live checklist calls refresh_float after funding for this reason.
-    assert Gate.admit(config, { healthy with observedFloatE8s = null }, amount)
-      == #err(#floatLow({ observedE8s = null; thresholdE8s = healthy.lowFloatThresholdE8s }));
+  test("solvent: a fully promised reserve refuses, and names what is left", func() {
+    // The refusal carries both figures so the frontend can offer a smaller amount
+    // instead of a bare failure, and an operator knows whether to top up or hunt.
+    assert Gate.solvent(10_000, 10_000, 1)
+      == #err(#reserveShort({ requested = 1; available = 0 }));
+    // Over-promised (a risen ledger fee absorbed by the reserve) reads as zero
+    // available rather than trapping.
+    assert Gate.solvent(100, 101, 1)
+      == #err(#reserveShort({ requested = 1; available = 0 }));
   });
 
   test("the amount ceiling is checked before the per-principal cap", func() {
@@ -139,21 +136,23 @@ suite("admit", func() {
 });
 
 suite("reasonToText", func() {
-  test("every reason renders, including the never-observed float", func() {
-    // The audit trail records refusals through this, so no case may be empty.
+  test("every reason renders, including the new reserve one", func() {
+    // The audit trail records refusals through this, so no case may be empty —
+    // and `-Werror` makes this list exhaustive by construction, so a new reason
+    // cannot be added without appearing here.
     let reasons : [Gate.Reason] = [
       #tooManyOpenOrders({ open = 20; max = 20 }),
       #canisterCyclesLow({ balance = 1; min = 2 }),
-      #burnCapExhausted({ burnedE8s = 5; capE8s = 5 }),
-      #floatLow({ observedE8s = ?1; thresholdE8s = 2 }),
-      #floatLow({ observedE8s = null; thresholdE8s = 2 }),
+      #reserveShort({ requested = 7; available = 3 }),
       #amountAboveMax({ usdCents = 3; maxUsdCents = 2 }),
+      #amountBelowMin({ usdCents = 1; minUsdCents = 2 }),
     ];
     for (reason in reasons.values()) {
       assert Gate.reasonToText(reason) != "";
     };
-    assert Gate.reasonToText(#floatLow({ observedE8s = null; thresholdE8s = 2 }))
-      == "floatLow(never observed<2)";
+    // The figures an operator acts on are both in the text.
+    let short = Gate.reasonToText(#reserveShort({ requested = 7; available = 3 }));
+    assert short.contains(#text "7") and short.contains(#text "3");
   });
 });
 

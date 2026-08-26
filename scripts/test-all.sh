@@ -92,6 +92,36 @@ if grep -rl "__cyclepayFixtures" src/frontend/dist >/dev/null 2>&1; then
 fi
 printf '   dist/ carries no fixture hook\n'
 
+# The reserve floor's premise, enforced rather than asserted (#30 PR-B).
+#
+# `Reserve.mo`'s floor is a lower bound on the reserve balance ONLY because the
+# balance cannot fall except when we transfer out. What makes that true is that
+# `Cmc.CyclesLedgerService` does not declare the two methods the account's owner could
+# otherwise use — `icrc2_approve` (which would create an allowance for someone else to
+# pull from the account) and the ledger's `withdraw`. Undeclared means uncallable.
+#
+# So the premise has exactly one failure mode: someone widens that actor type. A
+# comment cannot catch that; this can. The floor breaks SILENTLY and in the optimistic
+# direction — it would keep admitting sales against cycles that had left — which is
+# why this is a gate failure and not a warning.
+step=$((step + 1))
+printf '\n\033[1m── %d. %s\033[0m\n' "$step" "the reserve account has exactly one outflow"
+# ⚠️ **The whole tree, not just Cmc.mo.** The first version of this check greped one
+# file, which did not match its own threat model: a second actor declaration anywhere
+# — `actor "um5iw-…" : actor { withdraw : … }` inline in Main.mo, a new Reserve-side
+# binding — widens what this canister can call without touching Cmc.mo at all. The
+# threat is "a declaration exists", so the search is for declarations, everywhere.
+if grep -rnE '(icrc2_approve|icrc2_transfer_from|withdraw)[[:space:]]*:' src/backend/ >/dev/null 2>&1; then
+  printf '\n\033[31m✗ a second way to move the reserve is declared somewhere in src/backend\033[0m\n' >&2
+  grep -rnE '(icrc2_approve|icrc2_transfer_from|withdraw)[[:space:]]*:' src/backend/ >&2
+  printf '\n  The reserve floor is a LOWER BOUND only while `icrc1_transfer` is the only\n' >&2
+  printf '  outflow. Adding one of these makes the balance fall in a way the floor cannot\n' >&2
+  printf '  see, so the gate admits sales against cycles that already left — silently.\n' >&2
+  printf '  Read the floor section in src/backend/Reserve.mo before proceeding.\n' >&2
+  exit 1
+fi
+printf '   icrc1_transfer is the only declared way out, tree-wide\n'
+
 # Brand guidelines: the mechanically checkable rules only (banned characters,
 # banned vocabulary, hardcoded colour, the no-auto-dark rule). Typography and
 # hierarchy still need eyes.
