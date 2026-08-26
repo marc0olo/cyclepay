@@ -74,6 +74,47 @@ git mv test/integration/ci/integration.yml .github/workflows/integration.yml
 git commit && git push   # needs a workflow-scoped token (a normal `gh auth` token is fine)
 ```
 
+## ⚠️ The suite is ORDER-COUPLED by design — read this before diagnosing a failure
+
+One gateway, one PocketIC instance, orders shared across scenarios (`orderA`…
+`orderF`), one mutable XRC mock, one clock that only moves forward. That is
+deliberate — it is what makes the scenarios cheap and what lets later ones assert
+against state earlier ones built — but it has a consequence worth knowing before
+you spend an afternoon on the wrong scenario:
+
+**When a scenario fails, suspect a neighbour's state before you suspect its
+subject.** Three measured instances, all from #30 PR-A:
+
+- One stale assertion in scenario 32 (`cyclesMinted` was `lockedCycles`, and had
+  become `lockedCycles - fee`) made it fail before it restored the XRC mock's
+  rate. The next **23** scenarios then failed in `ensureRates` with
+  `InconsistentRatesReceived` — twenty-three rate errors from one arithmetic
+  change, none of them about rates.
+- Scenario 39 failed with *"no HTTPS outcall was made"* and 41 with a wrong
+  locked quantity. Neither was about its own subject; both were neighbours whose
+  outcall accounting and rate state shifted when an earlier scenario's parking
+  mechanism changed.
+- Scenario 12 failed only because 11 failed ahead of it.
+
+Practical rules that follow:
+
+- **Every fix needs a full run.** Scenarios cannot be run in isolation — `-t` on
+  one of them skips the state it depends on. Budget ~4 minutes per verification.
+- **Read the failure list top-down and fix the FIRST one.** Durations are the
+  tell: a genuine failure takes hundreds of milliseconds to seconds because it
+  does work, while cascade victims fail in ~20–90 ms in `beforeAll`-ish setup.
+- **`advanceTime` is global and irreversible.** A scenario that advances the
+  clock changes the world for every scenario after it, which is why several carry
+  an explicit `ensureRates` / `setCmcRate` re-arm at their end rather than their
+  start.
+- **Read ledger balances BEFORE `stopNns`, and put the stop inside `try`/`finally`.**
+  A balance query against a stopped canister throws, and a throw between the stop
+  and the `try` skips the `finally` — leaving the ledger stopped for the whole
+  rest of the run. One misplaced line produced nine unrelated-looking failures,
+  twice.
+- If a scenario needs isolation badly enough to justify a second gateway, that is
+  its own issue with its own cost argument — not something to bolt on mid-change.
+
 ## Scenario map (spec §9 coverage)
 
 ⚠️ **Partial by construction, and it drifts.** This maps §9 coverage plus each
@@ -95,11 +136,9 @@ the authoritative list. If you change what a scenario asserts, change its row.
 | 08 | event-id dedup, intent dedup, Type 1 `#duplicate`, refund auto-resolve | duplicate/replay, Type 1 |
 | 09 | claimed-not-trusted attribution → Type 1 `#unattributed` | Type 1 |
 | 10 | delivery to a real cycles-ledger account | happy path (2nd forward arm) |
-| 11 | forward to a nonexistent canister → Type 2, cycles refunded to app balance | Type 2 |
-| 12 | upgrade mid-transfer → §5.1 intent replay, exactly-one ledger debit, timer re-arm | upgrade-mid-flight, ambiguous-transfer recovery, postupgrade re-arm |
-| 13 | upgrade mid-forward → the stop-first procedure drains the forward, delivering exactly once | upgrade-mid-flight |
-| 14 | treasury max-wait → `treasuryWaitExceeded` escalation | AwaitingTreasury |
-| 15 | audit-log seq monotonicity + error-queue accounting | — |
+| 11 | a cycles-ledger outage strands **nothing**: the order stays `#paid`, no obligation is filed, and the sweep replays the same intent and delivers | reserve delivery under outage |
+| 12 | an upgrade concurrent with delivery pays **exactly once**, and the timer re-arms | upgrade-mid-flight, §5.1 replay, postupgrade re-arm |
+| 15 | audit-log seq monotonicity, the delivery path's **tag contract**, and error-queue accounting with no `undeliverable` left to file | — |
 | 16 | admission gate: no burn-cap headroom refuses the quote; `can_purchase` agrees; restoring headroom re-opens the rail | pre-creation gate |
 | 17 | per-purchase ceiling bounds both tier registration and the amount | pre-creation gate |
 | 18 | expiry: only `checkout.session.expired` moves an order there — time alone never does — it survives a simulated year undeleted, and a late payment files a Type 1 obligation instead of delivering (#33, #34) | Stripe owns the deadline |
@@ -122,13 +161,29 @@ the authoritative list. If you change what a scenario asserts, change its row.
 | 44 | a verified-but-unprocessable event is acked 200 and queued once; unverifiable input still 400s | endpoint-disable avoidance |
 | 45 | `checkout.session.async_payment_succeeded` mints a payment that `completed` reported unpaid | delayed payment methods |
 | 46 | a test-mode event cannot mint on a gateway declared live; a live one still does | livemode gate |
-| 47 | a `#deliveryDelayed` alert is resolved when the order **escalates**, not only when it delivers | no orphan worklist entries |
-| 48 | the alert/terminate timeline covers every in-flight status; a delivered order is never caught by it; the terminal stage matches the money position | notify stage bounded by time |
+| 47 | a `#deliveryDelayed` alert is resolved when the order **escalates**, not only when it delivers, and its audit tag exists | no orphan worklist entries |
+
+### Changed by #30 PR-A (the reserve settlement swap)
+
+Delivery stopped minting and started transferring out of the reserve, so every
+scenario whose *mechanism* was the mint pipeline changed or went. **Five were
+deleted** — 13, 14, 48, and 51–54 collapsed into that set — and each names its
+heir where the deletion happened in `gateway.spec.ts`, so what it proved is not
+lost:
+
+| Deleted | Subject | Where the property lives now |
+|---|---|---|
+| 13 | upgrade mid-**forward** (the pre-forward window) | 12 — one transfer, so there is no window; "exactly once across an upgrade" survives |
+| 14 | a treasury hold alerts, waits, then delivers | 33 — re-expressed against a cycles-ledger outage |
+| 48 | the **notify** stage is bounded by time, not only retries | 35 — delivery's time bound. Its "a delivered order is never caught by the timeline" assertion was **salvaged into 35** |
+| 51, 53 | CMC outage stalls / parks at `#icpAtCmc` / escalates | 33, 35, 47 — alert then terminate, against a real outage |
+| 52 | an ICP ledger outage cannot fabricate a block | 11, 12 — the §5.1 replay contract, now delivery's |
+| 54 | a rate move between transfer and notify escalates instead of subsidising | **no heir, and none is needed**: `lockedCycles` is fixed at creation and no rate is read between payment and delivery, so the exposure is gone rather than handled |
+
+Rewritten rather than deleted: **06** (the reserve arithmetic, exact in both
+directions), **07** (the `memo = orderId` collision property), **11**, **12**,
+**20**, **33**, **34**, **35**, **47**.
 | 49 | `async_payment_succeeded` arriving **before** `completed` still mints once; the later event raises no obligation | out-of-order events |
-| 51 | a CMC outage stalls the mint in `#paid`, audits the fetch failure, alerts at 2 h, and **delivers for real** once restored | rate-source outage |
-| 52 | an ICP ledger outage moves no money and records no block; recovery debits the float **exactly once** | ledger outage + §5.1 replay |
-| 53 | CMC stopped *after* the transfer → order parks at `#icpAtCmc` with a block and no minted cycles → `notifyDelayed` alert → terminates as `retriesExhausted` **carrying the real block index** | notify stall, end to end |
-| 54 | the CMC rate halves between transfer and notify → `mintShortfall` escalation, minted quantity preserved, buyer not subsidised from canister gas | rate move mid-mint |
 | 56 | the per-purchase ceiling cannot be lowered under a live tier | config safety |
 | 57 | an already-credited intent is caught **before** attribution, not after | double-credit protection |
 | 58 | the sweep reconciles the status tallies on its own cadence and reports no drift | tally integrity |

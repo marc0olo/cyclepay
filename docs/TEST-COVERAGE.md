@@ -11,7 +11,7 @@ for the scenario map by id — ids are stable, counts are not.
 
 | Suite | What it covers | How |
 |---|---|---|
-| **Motoko unit** (`test/*.test.mo`) | pure logic: HMAC, the Stripe signature scheme, JSON parsing, fee/rate arithmetic, the §4 state machine, dedup, the error queue, `Cmc.terminationFor`'s eight money positions, `stageOf`'s resume decisions | `mops test`. No IC environment — every module takes its dependencies as a record (`Card.Deps`), which is why the whole ingestion path is unit-testable |
+| **Motoko unit** (`test/*.test.mo`) | pure logic: HMAC, the Stripe signature scheme, JSON parsing, fee/rate arithmetic, the §4 state machine, dedup, the error queue, every money position `Cmc.terminationFor` can report (including the delivery ones #30 PR-A added), `stageOf`'s resume decisions, and reserve solvency | `mops test`. No IC environment — every module takes its dependencies as a record (`Card.Deps`), which is why the whole ingestion path is unit-testable |
 | **Frontend pure** (`format.test.ts`) | status mapping, cycle/USD formatting, the §3 pricing vector, slippage flooring, deposit-fee subtraction, receipt verification, every error-message mapping | `vitest` |
 | **Frontend DOM** (`main.test.ts`) | the real `index.html` body in jsdom with a stubbed backend: tier estimates, fee split, the single route into the buy form, the destination it sends (read from the session, never the form), the acknowledge-then-confirm quote flow, cancel visibility, the receipt render, the view machine (including the poll's own arrival at `delivered`, under fake timers) | `vitest` + jsdom |
 | **Browser** (`test/browser/*.spec.ts`) | what jsdom is structurally blind to: the cascade, layout, reachability, and — via committed screenshot baselines — paint. Runs against a production build served statically, with an unreachable gateway by default and a canned one where a spec needs answers | `npm --prefix test/browser test` (Playwright, Chromium) |
@@ -38,10 +38,14 @@ for the scenario map by id — ids are stable, counts are not.
     the way a subnet does. That failure is first observable against real Stripe,
     where it takes the rail down; `Session.classifyFailure` labels it so the audit
     log points at the transform.
-- **Failure injection**: the ledger, CMC and cycles ledger can be *stopped*
-  (`stopNns`, impersonating NNS root) to force real outages — scenarios 51–54, and
-  scenario 11, where a stopped cycles ledger is what makes the Type 2
-  `#undeliverable` path reachable.
+- **Failure injection**: the NNS canisters can be *stopped* (`stopNns`,
+  impersonating NNS root) to force real outages. Since #30 PR-A the one that
+  matters is the **cycles ledger**, and stopping it is how scenarios 11, 33, 35 and
+  47 hold an order undelivered — it replaced a stale CMC rate and a zero burn cap,
+  neither of which can stall delivery any more.
+  ⚠️ Read balances **before** stopping and put the stop in `try`/`finally`: a throw
+  in between leaves the ledger stopped for the rest of the run. See the coupling
+  note in `test/integration/README.md`.
 - **Real HTTP**: `pic.makeLive()` serves an actual gateway, so scenario 55 proves
   the webhook route over genuine HTTP rather than a Candid call to
   `http_request_update`.
@@ -60,7 +64,8 @@ for the scenario map by id — ids are stable, counts are not.
 | Async payment methods (settle, fail, out-of-order) | unit + PocketIC | |
 | Pricing guards (plausibility, delta, source count, implied XDR/USD, staleness) | unit + PocketIC | every guard rejects in isolation |
 | Money-out: transfer → notify → forward, exactly-once, journal replay | PocketIC | incl. across real upgrades |
-| Outages: ledger down, CMC down, notify stalled, rate moved mid-mint | PocketIC | 51–54 |
+| Outages: the **cycles ledger** down — delivery retries, strands nothing, then delivers | PocketIC | 11, 33, 35, 47 |
+| Outages: ICP ledger down, CMC down, notify stalled, rate moved mid-mint | **gone with the mint path** (#30 PR-A) | the exposures no longer exist; see the deletion table in `test/integration/README.md` |
 | Escalation → the right money position and instruction | unit (all 8 arms) + PocketIC | see the gap below |
 | Delay alerts and terminal bounds per in-flight status | PocketIC | |
 | Buyer never stuck: cancel, expiry, late payment, quote pinning | PocketIC | |
@@ -120,7 +125,7 @@ queue, nothing held. The evidence and the exact figures are in
 |---|---|
 | `#ambiguousForward` end to end | needs a callback *dropped* between the pre-forward marker and delivery; `stopCanister` **drains** callbacks rather than dropping them. Unit-pinned is the ceiling |
 | a **trapping** daily reconcile | the reconcile is detached into its own message precisely so a trap cannot stop the sweep, but nothing can inject that trap: it would take an order store large enough to exhaust the instruction limit. What *is* covered is that the detached message runs, commits, and is cadence-gated in both directions (scenario 58); the isolation itself rests on the message boundary, not on a test |
-| `stageOf`'s `#escalate` arm wiring | reaching `retriesExhausted` through it needs `maxMintRetries` (2,000) sweeps. The *terminate* route reaches the same money positions and is covered (53); the decision function is exhaustively unit-pinned. What no test exercises is the two-line expression handing it to the queue |
+| `stageOf`'s `#escalate` arm wiring | reaching `retriesExhausted` through it needs `maxMintRetries` (2,000) sweeps. The *terminate* route reaches the queue the same way and **is** covered — by scenario **35** since #30 PR-A deleted 53, which this row used to cite. ⚠️ The claim is narrower than it was: 35 reaches the `deliveryWaitExceeded` position, not the four mint positions 53 also touched, and those are unreachable rather than untested. The decision function stays exhaustively unit-pinned |
 
 ### 3. The deployment layer — covered separately by `scripts/e2e-local.sh`
 
