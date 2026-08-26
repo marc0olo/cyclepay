@@ -152,12 +152,38 @@ module {
   // ledger call.** That is sound because of one asymmetry in who can move the
   // balance:
   //
-  //   - it can only **decrease** when WE transfer cycles out — there is no other
-  //     outflow. No `icrc2_approve` is ever called, so no allowance exists for
-  //     anyone to `icrc2_transfer_from` the account, and `withdraw` is owner-only
-  //     and never called.
+  //   - it can only **decrease** when WE transfer cycles out, and there is exactly
+  //     **one** such outflow: the delivery transfer. The two ways the account's owner
+  //     could otherwise move it — `icrc2_approve` (creating an allowance for someone
+  //     else to `icrc2_transfer_from`) and the ledger's `withdraw` — are **not
+  //     declared in `Cmc.CyclesLedgerService`**, so this canister cannot call them.
+  //     Not "we do not plan to": the compiler will not let it.
   //   - it can only **increase** when someone tops the account up, which we cannot
   //     observe without asking — and which is always positive.
+  //
+  // ⚠️ **ONE outflow, and the enforcement is the actor type — not this comment.**
+  // `Cmc.CyclesLedgerService` declares exactly three methods, and that declaration is
+  // what makes the asymmetry above a property rather than a promise:
+  //
+  //     `icrc1_transfer`     — **the outflow.** One logical transfer per order.
+  //     `icrc1_balance_of`   — a read; the reconcile's, never the gate's.
+  //     `deposit`            — LEGACY, and **not an outflow**: it moves this
+  //                            canister's *gas* balance, not the ledger account.
+  //                            #36 deletes it.
+  //
+  // ⚠️ **A grep finds `icrc1_transfer` at TWO call sites, and that is still one
+  // outflow.** They are the attempt and its `#BadFee` re-issue, of the *same* intent,
+  // and at most one of them can debit: the re-issue runs only after the ledger has
+  // definitively refused the first, and if an earlier attempt did land, the ledger
+  // deduplicates. Rules 2 and 3 are built on exactly that — decrement at issue,
+  // credit back on a definitive rejection — so the net is **one decrement per real
+  // execution.** Reading "two call sites" as "two outflows" and adding a second
+  // decrement would double-count every delivery.
+  //
+  // The premise's only failure mode is someone widening that actor type, so
+  // `scripts/test-all.sh` greps it: adding `icrc2_approve` or `withdraw` there fails
+  // the gate with a pointer to this section. #36 touches this surface next (it
+  // deletes `deposit`), so the same check is on its checklist.
   //
   // So every unobserved change is in our favour, and a floor maintained from our
   // own outflows is never optimistic. Deciding against it can refuse a sale the

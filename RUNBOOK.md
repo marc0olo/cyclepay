@@ -658,14 +658,22 @@ and then rejected: it would flip the order to `expired` while its reserve promis
 stayed held, so a broken order would look like a correctly expired one and the
 reserve would leak silently. The stuck order IS the detection signal (#30's
 predicate 1) — treat "created, past `expiresAtNs`" as an alert, not as noise.
-⚠️ **And since #30 PR-B it costs RESERVE CAPACITY, with no lever to reclaim it.** A
-`created` order holds its promise from the moment it exists (the gate admitted it
-against capacity), and the only thing that releases a `created` order is
-`checkout.session.expired` or the buyer's own `cancel_order`. `abandon_order` refuses
-a `created` order by design — no money was taken — so a missed expiry webhook strands
-`lockedCycles` of sellable reserve **permanently**, and `reserve_status.promisedTotal`
-climbing while `openOrders` also climbs is what it looks like. #30 carries the
-analysis and two candidate fixes; PR-B does not close it.
+⚠️ **And since #30 PR-B it costs RESERVE CAPACITY.** A `created` order holds its
+promise from the moment it exists (the gate admitted it against capacity), and the
+only things that release one are `checkout.session.expired` and the buyer's own
+`cancel_order` — `abandon_order` refuses a `created` order by design, since no money
+was taken. So a missed expiry webhook strands `lockedCycles` of sellable reserve
+until someone acts, and `reserve_status.promisedTotal` climbing while `openOrders`
+also climbs is what it looks like.
+
+**The lever is off-chain: resend `checkout.session.expired` from the Stripe
+Dashboard** (§9's P2 row). ⚠️ An earlier version of this note said there was "no
+operator lever at all", which contradicted that row — the honest statement is that
+the remedy exists but is **gated on noticing**, because nothing on-chain surfaces the
+stranded order. That observability gap, and an on-chain remedy, are what #30's ranked
+fixes describe; PR-B does not close them. Bounded per incident by the purchase
+ceiling, and unbounded only in aggregate against a failure that Stripe itself retries
+for ~3 days first.
 
 ⚠️ **Nothing exposes it yet**: order reads are owner-scoped and `reserve_status`
 carries only counts, so §8 records this as a gap with an interim signal rather
@@ -752,6 +760,21 @@ still owed, which is why #34 split the old `errorQueue` status in two:
 | `NeedsReview` | a money position nobody knows the outcome of — typically a transfer past the ledger's ~24 h dedup window. **Check the ledger.** | **still held** |
 | `Abandoned` | you ended it, having refunded by hand. Terminal. | **released** |
 
+**How an order GETS to `NeedsReview`**, since the triage depends on it and "it
+escalated" is not one thing:
+
+| Route | Money position | What you do |
+|---|---|---|
+| the intent aged past the ledger's ~24 h dedup window, or the ledger answered `#TooOld` (the same case, told to us) | **unknown** — a replay is no longer protected | establish the fate on the ledger; the order id is in the transfer's **memo** |
+| §5.3's 72 h max-wait, on an order where **nothing was ever sent** | **certain** — fiat in, nothing moved | refund in the Stripe Dashboard |
+| `journalInconsistent` | unreachable guard | ⚠️ if this ever fires, `lockedCycles` acquired a second writer — a much bigger problem than one order |
+
+⚠️ **So `NeedsReview` is NOT always an unknown position.** `mint_journal(orderId)` and
+the queue entry's `detail` say which — `terminationFor` derives it from the journal
+rather than the status, precisely because the status cannot tell these apart. Reaching
+the *unknown* case at all takes a ~day-long cycles-ledger outage with an hourly sweep
+and buyer kicks hammering it throughout: treat it as expected-never, not routine.
+
 `NeedsReview` has exactly **two** exits, and both are your finding rather than the
 gateway's:
 
@@ -759,6 +782,13 @@ gateway's:
 |---|---|---|
 | the transfer **did** land — the buyer has the cycles | `record_delivered '("<orderId>", <blockIndex>)'` | `Delivered`, with the block recorded in the journal |
 | it did **not**, and you refunded the fiat by hand | `abandon_order '("<orderId>", "<reason>")'` | `Abandoned`, reason in the audit trail |
+
+⚠️ **You cannot `abandon_order` a `Paid` order whose delivery is still outstanding**
+(#30 PR-B). The lever refuses and names `pending_deliveries`, because abandoning an
+unknown position releases the promise and files a refund while the transfer may
+already have landed — the buyer would keep the cycles and get the refund. It is a
+wait, not a block: the ~24 h fuse moves such an order to `NeedsReview`, which is this
+table, where establishing the fate first is the documented procedure.
 
 ⚠️ **`record_delivered` exists because its absence made the record lie** (#30 PR-B).
 Until it did, `abandon_order` was the only exit, so an order whose cycles the buyer

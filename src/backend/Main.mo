@@ -1674,6 +1674,43 @@ persistent actor CyclesGateway {
   /// queue kinds differ (`#transferUnresolved` survives #36, `#stuckMint` does
   /// not) and so does the operator's question. Here it is "did this transfer
   /// land?", answerable from the cycles ledger by the order id in the memo.
+  ///
+  /// ── EVERY route to `#needsReview` on the delivery path, because the count is
+  /// ── claimed elsewhere and a census beats a claim ─────────────────────────────
+  ///
+  /// **Unknown money position** — "we can no longer ask safely", the only kind that
+  /// needs a human to establish anything:
+  ///
+  ///  1. `#staleIntent` from `Cmc.stageOf`: the intent is past the ledger's ~24 h
+  ///     dedup window, so a replay is no longer protected. Reaching it means a
+  ///     ~day-long ledger outage with an hourly sweep and buyer kicks hammering it
+  ///     throughout — **expected never**, and documented as such rather than as a
+  ///     routine branch. (Via `escalateStuckMint`, the `#escalate` stage route.)
+  ///  2. The ledger's `#escalate` responses — `#TooOld`, `#BadBurn` — arriving here.
+  ///     ⚠️ Not a second cause: `#TooOld` **is** case 1 told to us by the ledger
+  ///     instead of derived from our own clock, and `#BadBurn` is meaningless for a
+  ///     transfer. Same position, different messenger.
+  ///
+  /// **Known money position** — no establishing needed, and this is the correction
+  /// to a claim of "one trigger" that was too tidy:
+  ///
+  ///  3. §5.3's 72 h max-wait terminate. It fires on an order that has been `#paid`
+  ///     too long *whatever* the reason, including one where **nothing was ever
+  ///     sent** — position certain, instruction "refund in the Stripe Dashboard".
+  ///     So `#needsReview` is genuinely reachable with the position known, and
+  ///     `Cmc.terminationFor` is what distinguishes the cases. Read the reduction's
+  ///     claim as scoped to the *unknown-position* triggers, which is what "we can
+  ///     no longer ask safely" means; the RUNBOOK's triage is organised by position
+  ///     for exactly this reason.
+  ///
+  /// **Unreachable guard**:
+  ///
+  ///  4. `journalInconsistent` — the intent's amount exceeds the order's locked
+  ///     quantity, which cannot happen because the amount was derived by
+  ///     subtracting a fee from that very quantity. ⚠️ If it ever fires, it is NOT
+  ///     a counter-example to the reduction: it means `lockedCycles` acquired a
+  ///     second writer, which is a much larger problem than one escalated order.
+  ///     Escalating rather than guessing a fee on a money path is the point.
   func escalateDelivery(order : Types.Order, stage : Text, detail : Text) {
     ignore tryTransition(order.id, #needsReview);
     let blockIndex = switch (mintJournal.get(order.id)) {
@@ -2007,10 +2044,12 @@ persistent actor CyclesGateway {
           // what the ledger's dedup key contains.
           //
           // ⚠️ **NO TEST CAN CATCH A REGRESSION HERE — verified by mutation.**
-          // Putting `await cyclesLedger.icrc1_fee()` back on this line passes all
-          // 562 Motoko assertions and the whole PocketIC suite, because the unit
-          // tests pin the *arithmetic* (`test/cmc.test.mo`) and the integration
-          // suite runs against a real ledger whose fee never moves. The failure
+          // Re-reading the fee on this line passed every Motoko assertion and the
+          // whole PocketIC suite, because the unit tests pin the *arithmetic*
+          // (`test/cmc.test.mo`) and the integration suite runs against a real ledger
+          // whose fee never moves. (#30 PR-B then deleted `icrc1_fee` from the ledger's
+          // service type entirely, so the mutation no longer even compiles — the
+          // strongest form of this guard, and the reason to keep it that way.) The failure
           // needs a fee change inside the 24 h dedup window, which nothing here
           // can arrange. Same class as #33's transform/consensus gap: the comment
           // is the guard, so do not re-read the fee on this path.
@@ -2422,6 +2461,27 @@ persistent actor CyclesGateway {
   /// now a stored value), which is why the two are adjacent today. Reintroduce an
   /// await there and a reconcile can adopt a balance while a transfer it cannot see
   /// is in flight. This comment is the guard.
+  /// ⚠️ **It counts a delivery PARKED BETWEEN RETRIES, not only one in flight**, and
+  /// that is deliberate: a transfer issued before a balance read can land after it,
+  /// and nothing in the journal distinguishes "issued and awaiting a reply" from
+  /// "failed and waiting for the next sweep". Tracking true in-flight state would
+  /// need a counter incremented before the await, which leaks upward for good if a
+  /// reply callback ever traps — trading a bounded pessimism for an unbounded one.
+  ///
+  /// The cost is therefore: while any delivery is retrying, a top-up is not adopted,
+  /// so **new sales** are refused against cycles the ledger already holds. Bounded
+  /// by the same ~24 h fuse (the intent goes stale, the order escalates, the entry
+  /// leaves this set), and it does **not** block delivery itself — deliveries never
+  /// consult the floor. So the one case that looks like a deadlock is not one: a dry
+  /// reserve makes deliveries fail with `#InsufficientFunds`, the operator tops up,
+  /// the retry succeeds *because the ledger has the cycles regardless of our floor*,
+  /// the entry settles, and the next reconcile adopts. The remaining pessimistic
+  /// case is a ledger outage — where refusing to sell is the correct posture anyway.
+  ///
+  /// ⚠️ There is deliberately **no force flag** on `refresh_reserve`. Adopting
+  /// across an unsettled delivery is the exact bug this predicate exists to prevent,
+  /// so a lever for it would be a lever for the bug.
+  ///
   /// ⚠️ **`entry.status` is the JOURNAL's copy of the order's status, and this
   /// predicate is the only thing that reads it.** `Cmc.openEntry` used to hardcode
   /// `#minting`, which made this match nothing at all and quietly disabled the quiet
@@ -2737,6 +2797,43 @@ persistent actor CyclesGateway {
         return #err("order " # id # " is " # Types.statusToText(status) # "; only a paid, held or under-review order can be abandoned");
       };
     };
+    // ── ⚠️ A PAID order with an unsettled delivery cannot be abandoned ────────
+    //
+    // **Otherwise this lever pays the buyer twice.** The order is `#paid` with a
+    // transfer issued and no block recorded, so the money position is UNKNOWN.
+    // Abandoning releases the promise and files a refund-by-hand obligation, while
+    // the transfer either lands afterwards or has already landed with its reply
+    // lost — and after `#abandoned` nothing sweeps the order, so nothing ever
+    // discovers which. The buyer keeps the cycles and gets the refund.
+    //
+    // ⚠️ It is not only a race with a call in flight. The wider case is the one that
+    // needs no timing at all: an intent whose transfer executed and whose reply was
+    // lost looks exactly like one that never executed, and this lever would decide
+    // between them by guessing. **Deciding an unknown money position is precisely
+    // what `#needsReview` exists to prevent**, and without this guard
+    // `abandon_order` reached the same outcome directly from `#paid`, skipping it.
+    //
+    // Second symptom, worth knowing for the post-mortem: the late reply patches the
+    // journal to `#delivered` while `tryTransition` no-ops against `#abandoned`, so
+    // the journal and the order end up contradicting each other.
+    //
+    // **Bounded, so this is a wait and not a refusal:** the ~24 h dedup fuse moves
+    // such an order to `#needsReview` on its own, where abandonment is allowed and
+    // the documented procedure is establish-the-fate-first. `#needsReview` is
+    // therefore untouched by this guard — escalation implies no outstanding call.
+    if (order.status == #paid) {
+      switch (mintJournal.get(id)) {
+        case (?entry) {
+          if (unsettledDelivery(entry)) {
+            return #err(
+              "order " # id # " has a delivery outstanding, so whether its cycles moved is not yet known — abandoning it now would refund a buyer who may already hold them. "
+              # "Check `pending_deliveries` for its state. Either it settles (and needs no refund), or the ~24 h dedup window escalates it to needsReview, where the ledger is the source of truth and the order id is in the transfer's memo."
+            );
+          };
+        };
+        case null {};
+      };
+    };
     if (reason.size() == 0) return #err("a reason is required — the audit trail must record why");
     let ?abandoned = tryTransition(id, #abandoned) else {
       return #err("order " # id # " refused the transition to abandoned");
@@ -2806,12 +2903,32 @@ persistent actor CyclesGateway {
   /// by the first delivery that reaches the ledger, and adding an `await icrc1_fee`
   /// to *this* method would put the read back on an operator path while leaving the
   /// deadlock case (where the read is not the problem) exactly as it was.
-  public shared ({ caller }) func set_cycles_ledger_fee(fee : Nat) : async Nat {
+  ///
+  /// ⚠️ **Bounded, because a fat-fingered value here silently SHORTS BUYERS.** The
+  /// next order's `amount = locked − fee_stored`, and the ledger refusing a wrong fee
+  /// does not undo that: `#BadFee` corrects the fee we pass, never the committed
+  /// intent's amount (rebuilding it is the double-pay this path exists to avoid). So
+  /// a typo'd fee below an order's locked quantity delivers less than was quoted and
+  /// the reserve keeps the difference — silently, for every intent built before the
+  /// first `#BadFee` corrects the copy. The cap turns that into a refused call.
+  ///
+  /// It does not impede the deadlock this lever exists for, which is a stored fee too
+  /// HIGH: lowering is always allowed. A real ledger fee above the cap would be a
+  /// protocol event, and one that wants a code change and a redeploy, not an
+  /// operator typing a large number into a money path.
+  public shared ({ caller }) func set_cycles_ledger_fee(fee : Nat) : async Result.Result<Nat, Text> {
     requireAdmin(caller);
+    if (fee > Cmc.maxSettableCyclesLedgerFee) {
+      return #err(
+        "refusing a cycles-ledger fee of " # fee.toText() # ": the cap is "
+        # Cmc.maxSettableCyclesLedgerFee.toText()
+        # ". A stored fee is subtracted from every order's locked quantity, so a value this large would deliver less than the buyer was quoted and `#BadFee` cannot undo it. If the ledger's real fee has moved beyond this cap, that is a code change, not an operator lever."
+      );
+    };
     let previous = cyclesLedgerFee;
     cyclesLedgerFee := fee;
     auditAdmin(caller, "reserve.feeOverridden", "cycles-ledger fee set to " # fee.toText() # " (was " # previous.toText() # ")");
-    previous;
+    #ok(previous);
   };
 
   public type Receipt = {

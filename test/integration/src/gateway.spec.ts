@@ -1382,8 +1382,29 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
     expect(await orderStatus(gw, doomed.id)).toBe('paid');
 
     // Admin-gated, and a reason is mandatory so the trail records why.
-  await expect(gw.asUser.abandon_order(doomed.id, 'nope')).rejects.toThrow(/not a controller/);
-  expectErr(await gw.asAdmin.abandon_order(doomed.id, ''));
+    await expect(gw.asUser.abandon_order(doomed.id, 'nope')).rejects.toThrow(/not a controller/);
+    expectErr(await gw.asAdmin.abandon_order(doomed.id, ''));
+
+    // ⚠️ **This scenario used to abandon the order HERE, and that was the unsafe
+    // procedure (#30 PR-B).** A `#paid` order with a transfer issued and no block
+    // recorded has an UNKNOWN money position: abandoning releases the promise and
+    // files a refund-by-hand obligation while the transfer may already have landed,
+    // and after `#abandoned` nothing sweeps the order, so nothing ever discovers
+    // which. The buyer would keep the cycles and get the refund.
+    //
+    // A reviewer found the hole; **this test and 47 were codifying it**, which is
+    // how we know it was reachable rather than theoretical. Scenario 78 owns the
+    // guard itself; here it is asserted only to show the ordering — authz first,
+    // then the reason, then the money position.
+    expect(expectErr(await gw.asAdmin.abandon_order(doomed.id, 'buyer asked to cancel')))
+      .toMatch(/delivery outstanding/);
+    expect(await orderStatus(gw, doomed.id)).toBe('paid');
+
+    // The legitimate route: let the 72 h bound escalate it, where the position can be
+    // established from the ledger and abandonment is the documented exit.
+    await gw.pic.advanceTime(80 * 3_600 * 1_000);
+    await gw.pic.tick(5);
+    expect(await tickUntilStatus(gw, doomed.id, ['needsReview'])).toBe('needsReview');
 
     const abandoned = expectOk(await gw.asAdmin.abandon_order(doomed.id, 'buyer asked to cancel'));
     // `#abandoned`, the released half of the old `#errorQueue` (#34): the operator
@@ -1413,6 +1434,10 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
   expectErr(await gw.asAdmin.abandon_order(doomed.id, 'again'));
 
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
+  // ⚠️ This scenario now advances ~80 h, which stales BOTH rates. `ensureRates` alone
+  // is not enough — the CMC rate needs governance to re-arm it — and skipping that
+  // fails whatever runs next on rates it never touched (see the README).
+  await setCmcRate(gw);
   await ensureRates(gw);
 });
 
@@ -1934,10 +1959,23 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
     await startNns(gw, CYCLES_LEDGER_ID);
   }
 
-  // Now terminate it instead of fixing it. abandon_order is the operator's
-  // explicit "stop trying", and it drives the order to #abandoned.
-  expectOk(await gw.asAdmin.abandon_order(doomed.id, 'operator gave up (test)'));
-  expect(await orderStatus(gw, doomed.id)).toBe('abandoned');
+  // Now let it terminate instead of being fixed — the 72 h bound escalates it.
+  //
+  // ⚠️ **This used to call `abandon_order` on the `#paid` order, and that was the
+  // unsafe procedure #30 PR-B closed**: the order has a transfer issued and no block
+  // recorded, so abandoning it would release the promise and file a refund while the
+  // transfer's fate was unknown. This test was codifying the hole a reviewer found —
+  // which is how we know it was reachable. The escalation is the honest terminator,
+  // and it is also this scenario's actual subject: the title says "even when the
+  // order escalates".
+  await stopNns(gw, CYCLES_LEDGER_ID);
+  try {
+    await gw.pic.advanceTime(80 * 3_600 * 1_000);
+    await gw.pic.tick(5);
+    expect(await tickUntilStatus(gw, doomed.id, ['needsReview'])).toBe('needsReview');
+  } finally {
+    await startNns(gw, CYCLES_LEDGER_ID);
+  }
 
   // The delay alert's own audit tag exists — moved here from 15, which runs
   // before any delay has happened. ⚠️ `mint.delayed` is a surviving misnomer: it
@@ -1945,15 +1983,20 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
   // what makes that rename falsifiable.
   expect((await gw.asAdmin.audit_log()).map((e) => e.tag)).toContain('mint.delayed');
 
-  // THE ASSERTION: the delay alert is closed, not left promising delivery.
+  // THE ASSERTION: the delay alert is **resolved**, not merely absent — an entry that
+  // promised "it delivers on the next sweep" must not sit on the worklist next to the
+  // real problem, and its `delayedAlerts` mapping must not leak.
   const after = (await allErrorEntries(gw)).find((e) => e.id === alert.id)!;
   expect(after.resolvedAtNs).toHaveLength(1);
-  // And exactly one entry for this order remains open — the abandonment itself.
+  // And exactly one entry for this order remains open — the escalation itself.
   const openForOrder = (await openErrorEntries(gw)).filter(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes(doomed.id),
   );
   expect(openForOrder).toHaveLength(1);
-  expect(openForOrder[0]!.kind).toMatchObject({ abandoned: { orderId: doomed.id } });
+  expect(openForOrder[0]!.kind).toMatchObject({ stuckMint: { orderId: doomed.id } });
+  // ⚠️ ~80 h of clock advance stales both rates; see the README.
+  await setCmcRate(gw);
+  await ensureRates(gw);
 });
 
 // -- 48 was deleted by #30 PR-A, and one assertion was salvaged into 35 -------
@@ -2846,8 +2889,16 @@ test('74 — the stored ledger fee self-corrects from #BadFee, so delivery never
   // is what a test against a ledger whose fee never moves would otherwise assert.
   await ensureRates(gw);
   const WRONG_FEE = 1n;
-  const previous = await gw.asAdmin.set_cycles_ledger_fee(WRONG_FEE);
+  const previous = expectOk(await gw.asAdmin.set_cycles_ledger_fee(WRONG_FEE));
   expect(previous).toBe(CYCLES_LEDGER_FEE);
+  // ⚠️ **The lever is capped, because a fat-fingered value SHORTS BUYERS.** The next
+  // order's amount is `locked - fee_stored`, and `#BadFee` corrects the fee we pass,
+  // never a committed intent's amount — so a typo would deliver less than was quoted
+  // and the reserve would keep the difference, silently. Lowering is always allowed,
+  // which is the only direction the deadlock this lever exists for needs.
+  expect(expectErr(await gw.asAdmin.set_cycles_ledger_fee(TIER_LOCKED_CYCLES)))
+    .toMatch(/refusing a cycles-ledger fee/);
+  expect((await gw.asAnon.reserve_status()).cyclesLedgerFee).toBe(WRONG_FEE);
   expect((await gw.asAnon.reserve_status()).cyclesLedgerFee).toBe(WRONG_FEE);
 
   const buyerBefore = await userCycles();
@@ -2915,11 +2966,15 @@ test('75 — a buyer can heal their OWN stuck delivery, and only their own (#30 
     await gw.pic.tick(5);
     expect(await orderStatus(gw, stuck.id)).toBe('paid');
 
-    // ⚠️ **Let a SWEEP attempt the delivery, not just the webhook's kick.** The
-    // detached kick does not reliably get as far as journalling an intent here, and
-    // without an intent there is no outstanding delivery for this scenario to be
-    // about — the first version of it asserted an empty set and failed. 20 min
-    // clears the 15 min sweep cadence; well inside every staleness window.
+    // ⚠️ **Correction to what this comment used to say.** It claimed the webhook's
+    // detached kick "does not reliably get as far as journalling an intent", offered
+    // as the reason for the advance. That was wrong: the intent was there all along,
+    // and the empty set that made the first version of this scenario fail was the
+    // `openEntry` bug (it recorded `#minting`, so the predicate matched nothing).
+    // The advance is kept because it makes the precondition robust rather than
+    // dependent on how many rounds one `tick(5)` happens to run — 20 min clears the
+    // 15 min sweep cadence and is well inside every staleness window — but it is
+    // belt-and-braces, not the fix, and reading it as the fix would hide the bug.
     await gw.pic.advanceTime(20 * 60 * 1_000);
     await gw.pic.tick(10);
     const journalled = (await gw.asAdmin.mint_journal(stuck.id))[0];
@@ -3066,4 +3121,69 @@ test('77 — an escalated order whose cycles DID arrive can be recorded, not fil
   expect(expectErr(await gw.asAdmin.record_delivered(live.order.id, 1n)))
     .toMatch(/only an under-review order/);
   expectOk(await cancelOrderWithExpire(gw, live.order.id));
+});
+
+test('78 — an order whose delivery is unsettled cannot be abandoned into a double payout (#30 PR-B)', async () => {
+  // ⚠️ **Found by a reviewer probing the predicate PR-B built, and it predates PR-B:**
+  // `abandon_order` accepted a `#paid` order whose transfer had been issued and whose
+  // block was not recorded — a money position that is UNKNOWN. Abandoning released the
+  // promise and filed a refund-by-hand obligation, and after `#abandoned` nothing
+  // sweeps the order, so nothing ever discovered whether the transfer had landed. The
+  // buyer keeps the cycles and gets the refund.
+  //
+  // Not merely a race with a call in flight: an intent whose transfer executed and
+  // whose reply was lost looks exactly like one that never executed, so the lever
+  // decided between them by guessing. Deciding an unknown position is what
+  // `#needsReview` exists to prevent, and this reached the same outcome from `#paid`.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
+  const target = created.order;
+  const reserveBefore = await reserveBalance(gw);
+
+  // ⚠️ Balance read BEFORE the stop (see the README's coupling note).
+  await stopNns(gw, CYCLES_LEDGER_ID);
+  try {
+    expect(await deliverWebhook(gw, checkoutSessionBody({
+      eventId: 'evt_abandonrace', paymentIntent: 'pi_abandonrace',
+      clientReferenceId: clientReferenceFor(target.id), amountCents: TIER_USD_CENTS,
+    }))).toMatchObject({ status_code: 200 });
+    // Let a sweep journal the intent against the dead ledger — that is what makes the
+    // position unknown, and without it this scenario asserts nothing.
+    await gw.pic.advanceTime(20 * 60 * 1_000);
+    await gw.pic.tick(10);
+    const entry = (await gw.asAdmin.mint_journal(target.id))[0];
+    expect(entry?.transferIntent).toHaveLength(1);
+    expect(entry?.blockIndex).toHaveLength(0);
+    expect(await orderStatus(gw, target.id)).toBe('paid');
+
+    // THE GUARD: the end-it lever refuses, and says what to look at.
+    const refused = expectErr(await gw.asAdmin.abandon_order(target.id, 'operator is impatient'));
+    expect(refused).toMatch(/delivery outstanding/);
+    expect(refused).toMatch(/pending_deliveries/);
+    expect(await orderStatus(gw, target.id)).toBe('paid');
+    // The promise is still held, which is the point — releasing it is the harm.
+    expect((await gw.asAnon.reserve_status()).promisedTotal)
+      .toBeGreaterThanOrEqual(target.lockedCycles);
+
+    // ⚠️ **A wait, not a refusal.** The 72 h bound escalates it to `needsReview`,
+    // where the position can be established from the ledger and abandonment is the
+    // documented exit. So the operator is never stuck — they are told to establish
+    // the fate first, which is exactly the procedure `#needsReview` carries.
+    await gw.pic.advanceTime(80 * 3_600 * 1_000);
+    await gw.pic.tick(5);
+    expect(await tickUntilStatus(gw, target.id, ['needsReview'])).toBe('needsReview');
+    const abandoned = expectOk(await gw.asAdmin.abandon_order(target.id, 'established on the ledger: never sent (test)'));
+    expect(statusKey(abandoned)).toBe('abandoned');
+  } finally {
+    await startNns(gw, CYCLES_LEDGER_ID);
+  }
+
+  // Nothing moved out of the reserve throughout — the position the operator acted on
+  // was certain by the time they were allowed to act.
+  expect(await reserveBalance(gw)).toBe(reserveBefore);
+  // ⚠️ ~80 h of clock advance stales BOTH rates; skipping this fails whatever runs
+  // next on rates it never touched (see the README).
+  await setCmcRate(gw);
+  await ensureRates(gw);
 });

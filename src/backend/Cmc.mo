@@ -103,19 +103,34 @@ module {
 
   public type DepositArgs = { to : Types.Account; memo : ?Blob };
 
+  /// ⚠️ **THIS TYPE IS THE RESERVE FLOOR'S ENFORCEMENT MECHANISM.** `Reserve.mo`'s
+  /// floor is sound only because the reserve balance cannot fall except when we
+  /// transfer out — and the reason it cannot is right here: **the account's owner
+  /// could call `icrc2_approve` or `withdraw` on the cycles ledger, and neither is
+  /// declared, so neither can be called.** Not "we do not plan to add them"; the
+  /// compiler will not let this canister reach them.
+  ///
+  /// So breaking the floor's premise takes a visible act in this file — adding a
+  /// method to this type — and `scripts/test-all.sh` fails the gate on exactly that.
+  /// Adding one here without reading `Reserve.mo`'s floor section turns a bound into
+  /// a guess, silently and in the optimistic direction.
   public type CyclesLedgerService = actor {
+    /// LEGACY (#36 deletes it). ⚠️ **Not an outflow of the reserve**: it attaches
+    /// cycles from this canister's own *gas* balance and credits the buyer. It moves
+    /// the gas pot, never the ledger account, which is why the floor ignores it.
     deposit : shared DepositArgs -> async { balance : Nat; block_index : Nat };
-    /// Delivery since #30: the reserve pays the buyer from the canister's OWN
-    /// cycles-ledger account, rather than the canister minting per order and
-    /// depositing from its gas balance.
+    /// **The one outflow.** Delivery pays the buyer from the canister's own
+    /// cycles-ledger account. Two syntactic call sites — the attempt and its
+    /// `#BadFee` re-issue — are ONE logical transfer of one intent, and at most one
+    /// of them debits: the re-issue only runs after a definitively-rejected attempt,
+    /// and a duplicate is deduplicated by the ledger. That is precisely why rules 2
+    /// and 3 net to one floor decrement per real execution.
     icrc1_transfer : shared TransferArg -> async TransferResult;
-    /// The live transfer fee, read at delivery time. Not a constant here: the
-    /// buyer's delivered amount is `lockedCycles - fee`, so a stale copy would
-    /// either short the buyer or make every transfer answer `#BadFee`.
-    icrc1_fee : shared query () -> async Nat;
-    /// The reserve's authoritative balance. ⚠️ #30 PR-B calls this inside
-    /// `create_order` as the gate's read; nothing else should treat it as a
-    /// cached value.
+    /// The reserve's authoritative balance, read by the hourly reconcile and by
+    /// `refresh_reserve` — **never by the gate.** ⚠️ An earlier version of this
+    /// comment said `create_order` called it as the gate's read; #30 PR-B removed
+    /// that read entirely, because an awaited value is historical by the time it is
+    /// used. The gate decides against the maintained floor, synchronously.
     icrc1_balance_of : shared query Types.Account -> async Nat;
   };
 
@@ -175,6 +190,21 @@ module {
   /// the quote (the frontend reads the ledger). It was dead by then — one test
   /// asserted its ABSENCE from the preview and nothing read it.
   public let cyclesLedgerDefaultFee : Nat = 100_000_000;
+
+  /// Ceiling on what `set_cycles_ledger_fee` will accept: **10× the default**.
+  ///
+  /// The lever exists for one deadlock — a stored fee at or above an order's locked
+  /// quantity, which stalls delivery before the ledger can correct it — and that is
+  /// fixed by *lowering*, so a ceiling costs the lever nothing. What it buys: a
+  /// typo'd large value would otherwise be subtracted from every order's locked
+  /// quantity, delivering less than the buyer was quoted, and `#BadFee` corrects the
+  /// fee we pass but never a committed intent's amount.
+  ///
+  /// 10× rather than "just above the current fee" so a genuine ledger fee rise still
+  /// lands inside it and self-corrects without an operator. A rise beyond 1 G cycles
+  /// (~0.13 ¢) would be a protocol event worth a code change, not a number typed
+  /// into a money path under incident pressure.
+  public let maxSettableCyclesLedgerFee : Nat = 1_000_000_000;
 
   /// The CMC recognizes a top-up by this icrc1 memo: the 8-byte little-endian
   /// encoding of 0x50555054 ("TPUP"). Pinned by test vector.
@@ -509,8 +539,10 @@ module {
     /// intent, transfer ICP. Reached only from the treasury-hold retry now that
     /// #30 PR-A routes `#paid` to `#beginDelivery`; #36 deletes it.
     #begin;
-    /// #30 PR-A — no delivery intent yet: read `icrc1_fee`, write the intent,
-    /// transfer cycles from the reserve.
+    /// #30 PR-A — no delivery intent yet: write the intent and transfer cycles from
+    /// the reserve. ⚠️ It used to say "read `icrc1_fee`" first; #30 PR-B removed that
+    /// await, so this stage is now synchronous through to the transfer issue — which
+    /// `Main.unsettledDeliveries` depends on.
     ///
     /// ⚠️ The delivery stages are deliberately **separate constructors** from the
     /// mint ones rather than a shared stage that branches on status. They address
