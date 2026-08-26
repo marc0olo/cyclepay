@@ -67,11 +67,21 @@ describe("statusInfo", () => {
       expect(s).toBeGreaterThanOrEqual(-1);
       expect(s).toBeLessThan(STEPS.length);
     }
-    const happy: StatusKey[] = ["created", "paid", "minting", "delivered"];
-    const steps = happy.map((k) => statusInfo(k).step);
-    expect(steps).toEqual([0, 1, 2, 3]);
-    // The two mid-flight composites sit on the same steps as their phase.
-    expect(statusInfo("icpAtCmc").step).toBe(2);
+    // ⚠️ **The happy path is THREE steps, and `minting` is not one of them** (#30
+    // PR-C). Money-out is one transfer from `paid` to `delivered`, so the timeline
+    // that used to read [created, paid, minting, delivered] → [0,1,2,3] had a fourth
+    // segment no buyer could ever reach, labelled with a mechanism the gateway had
+    // stopped performing.
+    const happy: StatusKey[] = ["created", "paid", "delivered"];
+    expect(happy.map((k) => statusInfo(k).step)).toEqual([0, 1, 2]);
+    expect(STEPS).toHaveLength(3);
+    // The unreachable legacy statuses are OFF the happy path, not occupying a
+    // segment of it. #36 deletes them; until then this is what stops them being
+    // rendered as progress.
+    expect(statusInfo("minting").step).toBe(-1);
+    expect(statusInfo("icpAtCmc").step).toBe(-1);
+    // `awaitingTreasury` is also unreachable, and also legacy — but it is a *hold*
+    // on a paid order rather than a mid-flight phase, so step 1 still describes it.
     expect(statusInfo("awaitingTreasury").step).toBe(1);
   });
 });
@@ -307,10 +317,15 @@ describe("cyclesCredited", () => {
 });
 
 describe("estimateLine", () => {
-  test("names the deposit fee when it moves the figure, so the gap is never a surprise", () => {
+  test("names the transfer fee when it moves the figure, so the gap is never a surprise", () => {
+    // ⚠️ It asserted "deposit fee" — the operation the ledger charged for before #30
+    // PR-A. Delivery is an `icrc1_transfer` out of the reserve now, so the fee the
+    // buyer is shown is a transfer fee, and "deposit" pointed them at a mechanism
+    // that no longer runs.
     const line = estimateLine(5_000_000_000n, 100_000_000n);
     expect(line).toContain("4.9 G");
-    expect(line).toContain("deposit fee");
+    expect(line).toContain("transfer fee");
+    expect(line).not.toContain("minted");
   });
 
   test("states the credited figure alone when the fee rounds away", () => {
@@ -322,7 +337,7 @@ describe("estimateLine", () => {
   });
 
   test("says nothing about a fee it has not been told", () => {
-    // `depositFee` is 0n until the first quote answers, and after a failed one.
+    // `transferFee` is 0n until the first quote answers, and after a failed one.
     expect(estimateLine(5_000_000_000n, 0n)).toBe("≈ 5 G cycles");
   });
 

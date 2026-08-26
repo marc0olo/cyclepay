@@ -362,7 +362,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Text],
       [IDL.Opt(IDL.Record({
         cyclesMinted: IDL.Opt(IDL.Nat),
-        mintBlockIndex: IDL.Opt(IDL.Nat),
+        deliveryBlockIndex: IDL.Opt(IDL.Nat),
         order: Order,
         paidUsdCents: IDL.Opt(IDL.Nat),
         verification: IDL.Record({

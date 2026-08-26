@@ -207,7 +207,7 @@ export function installFixtures(host: FixtureHost): void {
             order,
             paidUsdCents: USD_CENTS,
             cyclesMinted: LOCKED_CYCLES,
-            mintBlockIndex: 4_812n,
+            deliveryBlockIndex: 4_812n,
             verification: {
               netCents: NET_CENTS,
               usdPerIcpMicros: USD_PER_ICP_MICROS,

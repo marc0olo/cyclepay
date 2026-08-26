@@ -2905,9 +2905,20 @@ persistent actor CyclesGateway {
     order : Types.Order;
     /// What the buyer actually paid, if they have.
     paidUsdCents : ?Nat;
-    /// The ICP ledger block that funded the mint — the on-chain proof that the
-    /// cycles were bought, checkable by anyone against the ledger.
-    mintBlockIndex : ?Nat;
+    /// The **cycles-ledger** block the delivery transfer landed in — the on-chain
+    /// proof, checkable by anyone against that ledger.
+    ///
+    /// ⚠️ It was `deliveryBlockIndex`, documented as "the ICP ledger block that funded
+    /// the mint". Both halves were false after #30 PR-A: the block is on the cycles
+    /// ledger, and nothing is minted. Renamed in PR-C where `cyclesMinted` was
+    /// **not**, and the difference is the test this PR applies: a name may be renamed
+    /// when it describes a mechanism, or when only the live path reads it. This field
+    /// is a receipt-only projection of the journal's neutral `blockIndex`, and no
+    /// legacy triage prose references it by name — RUNBOOK's `staleIntent`,
+    /// `retriesExhausted` and `ambiguousForward` rows all say "the journaled block".
+    /// `cyclesMinted` failed that test: three RUNBOOK rows name it directly, on rows
+    /// where the cycles were minted and demonstrably **not** delivered.
+    deliveryBlockIndex : ?Nat;
     /// Cycles the CMC reported minting.
     cyclesMinted : ?Nat;
     /// Recompute the quote from these and it must equal `order.lockedCycles`:
@@ -2940,7 +2951,7 @@ persistent actor CyclesGateway {
     ?{
       order;
       paidUsdCents = order.paidUsdCents;
-      mintBlockIndex = switch (journal) { case (?entry) entry.blockIndex; case null null };
+      deliveryBlockIndex = switch (journal) { case (?entry) entry.blockIndex; case null null };
       cyclesMinted = switch (journal) { case (?entry) entry.cyclesMinted; case null null };
       verification = {
         netCents = Pricing.netCents(order.pricing, switch (order.paidUsdCents) {

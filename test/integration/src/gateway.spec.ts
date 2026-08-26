@@ -882,7 +882,7 @@ test('19 — a buyer can verify their own purchase from the receipt', async () =
 
   expect(receipt.paidUsdCents).toEqual([TIER_USD_CENTS]);
   // The on-chain delivery proof: a real cycles-ledger block anyone can look up.
-  expect(receipt.mintBlockIndex).toHaveLength(1);
+  expect(receipt.deliveryBlockIndex).toHaveLength(1);
   // ⚠️ What the buyer RECEIVED, which is the locked quantity less the ledger's
   // transfer fee. It equalled `lockedCycles` while the canister minted and then
   // deposited (the deposit fee came off separately); since #30 PR-A the transfer

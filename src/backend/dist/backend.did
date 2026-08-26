@@ -127,7 +127,7 @@ type Request =
 type Receipt = 
  record {
    cyclesMinted: opt nat;
-   mintBlockIndex: opt nat;
+   deliveryBlockIndex: opt nat;
    order: Order;
    paidUsdCents: opt nat;
    verification:

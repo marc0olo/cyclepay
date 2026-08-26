@@ -273,7 +273,7 @@ export interface BackendService {
   receipt(id: string): Promise<Opt<{
     order: Order;
     paidUsdCents: Opt<bigint>;
-    mintBlockIndex: Opt<bigint>;
+    deliveryBlockIndex: Opt<bigint>;
     cyclesMinted: Opt<bigint>;
     verification: {
       netCents: Opt<bigint>;

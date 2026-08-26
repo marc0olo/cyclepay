@@ -123,8 +123,9 @@ let activeOrder: Order | null = null;
 let tierQuotes = new Map<string, QuotePreview>();
 // Fee formulas, for rendering the split in words.
 let cardFee: FeeConfig | null = null;
-// The ledger's own deposit fee, from quote_previews.
-let depositFee = 0n;
+// The cycles ledger's own transfer fee. ⚠️ NOT from `quote_previews` any more —
+// #30 PR-A stopped disclosing it there, so this is read from the ledger directly.
+let transferFee = 0n;
 // Set when a created order's locked quantity differs from the estimate shown —
 // within tolerance, so the order went through, but the buyer should still hear
 // the real number rather than discover it.
@@ -482,7 +483,7 @@ async function loadMarket(): Promise<void> {
 
   // Both rate inputs are shown, because both are needed to reproduce a quote —
   // the ICP price from the Exchange Rate Canister and the XDR/ICP rate the CMC
-  // will actually mint at. A buyer can query either canister and check us.
+  // will actually price at. A buyer can query either canister and check us.
   lastPricing = pricing;
   renderRateLine();
 
@@ -544,20 +545,20 @@ async function refreshTierQuotes(): Promise<void> {
 /// cannot await the ledger — a staleness class in exchange for a number this
 /// app can just ask for.
 ///
-/// A failure leaves `depositFee` at 0, which `renderDestinationNote` and
+/// A failure leaves `transferFee` at 0, which `renderDestinationNote` and
 /// `estimateLine` already treat as "not known yet": the buyer sees the locked
 /// quantity with no fee note rather than a quantity computed from a guessed fee.
 /// Shown-too-high is the safe direction — the alternative is promising cycles
 /// that will not arrive.
 async function refreshDepositFee(): Promise<void> {
   try {
-    depositFee = await buildCyclesLedger().icrc1_fee();
+    transferFee = await buildCyclesLedger().icrc1_fee();
   } catch {
-    depositFee = 0n;
+    transferFee = 0n;
   }
 }
 
-/// The deposit fee, disclosed beside the destination it applies to.
+/// The ledger's transfer fee, disclosed beside the destination it applies to.
 ///
 /// Every order pays it, so the note depends on nothing the visitor can change —
 /// only on whether a quote has named a fee yet. It is also the ONLY place the
@@ -566,12 +567,12 @@ async function refreshDepositFee(): Promise<void> {
 /// figure a buyer is choosing between.
 function renderDestinationNote(): void {
   const node = el("dest-fee-note");
-  if (depositFee === 0n) {
+  if (transferFee === 0n) {
     show("dest-fee-note", false);
     return;
   }
   node.textContent =
-    `The cycles ledger charges ${formatCycles(depositFee)} cycles to accept a deposit, ` +
+    `The cycles ledger charges ${formatCycles(transferFee)} cycles to accept a deposit, ` +
     `so your account receives that much less than the order locks. It is not added to your price.`;
   show("dest-fee-note", true);
 }
@@ -643,7 +644,7 @@ function renderTiers(): void {
     const quoted = tierQuotes.get(tier.id);
     label.textContent = quoted === undefined
       ? "not yet"
-      : estimateLine(quoted.cycles ?? null, depositFee);
+      : estimateLine(quoted.cycles ?? null, transferFee);
     btn.append(amount, label);
     btn.onclick = () => {
       selectedTierId = tier.id;
@@ -757,7 +758,7 @@ function pinFor(usdCents: bigint, shown: bigint | null): bigint | null {
 /// Show a `#quoteChanged` refusal and arm the confirming click.
 function onQuoteChanged(usdCents: bigint, quoted: bigint): void {
   acknowledgedQuote = { cents: usdCents, cycles: quoted };
-  showQuoteNotice(quoteChangedMessage(quoted, depositFee));
+  showQuoteNotice(quoteChangedMessage(quoted, transferFee));
   renderSubmitGate();
 }
 
@@ -921,7 +922,7 @@ function renderCustomEstimate(): void {
   }
   node.textContent = customQuote === null
     ? "No exchange rate available right now. Orders are paused until one is."
-    : `${estimateLine(customQuote, depositFee)} ${RATE_LOCK_NOTE}`;
+    : `${estimateLine(customQuote, transferFee)} ${RATE_LOCK_NOTE}`;
   show("tier-detail", true);
 }
 
@@ -1053,7 +1054,7 @@ function renderOrder(order: Order): void {
   if (currentView !== "order") return;
   el("order-id-short").textContent = `${order.id.slice(0, 8)}…`;
   // No "≈" here: the rate is locked, so this figure is what the order pays out.
-  el("order-cycles").textContent = estimateLine(order.lockedCycles, depositFee)
+  el("order-cycles").textContent = estimateLine(order.lockedCycles, transferFee)
     .replace(/^≈ /, "");
   el("order-price").textContent = formatUsdCents(order.pricing.usdCents);
   el("order-dest").textContent = describeDestination(order);
@@ -1181,12 +1182,12 @@ async function renderReceipt(order: Order): Promise<void> {
   el("receipt-paid").textContent = receipt.paidUsdCents === undefined
     ? "not yet"
     : formatUsdCents(receipt.paidUsdCents);
-  el("receipt-minted").textContent = receipt.cyclesMinted === undefined
+  el("receipt-delivered").textContent = receipt.cyclesMinted === undefined
     ? "not yet"
     : formatCycles(receipt.cyclesMinted);
-  el("receipt-block").textContent = receipt.mintBlockIndex === undefined
+  el("receipt-block").textContent = receipt.deliveryBlockIndex === undefined
     ? "not yet"
-    : receipt.mintBlockIndex.toString();
+    : receipt.deliveryBlockIndex.toString();
   el("receipt-sources").textContent =
     rateSourceNote(v.rateReceivedRates, v.rateQueriedSources) || "not yet";
 
