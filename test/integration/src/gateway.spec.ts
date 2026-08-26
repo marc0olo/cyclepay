@@ -1585,7 +1585,14 @@ test('41 — an order can never lock fewer cycles than the buyer was shown', asy
   // is inside it. This is the widest single move the guards permit.
   const APPRECIATED = ICP_USD_RATE * 14n / 10n;
   await setXrcRate(gw, APPRECIATED);
-  await tickRateTimer(gw);
+  // ⚠️ `ensureRates`, not `tickRateTimer`. The timer honours the §3.1 backoff
+  // (`rateTicksToSkip`), so a single earlier FAILED refresh makes the next tick a
+  // no-op — and this scenario then reads the stale quote and fails on arithmetic
+  // that was never recomputed. Scenario 35's time advances can arm that backoff.
+  // The admin lever refreshes unconditionally, so the rate move is deterministic
+  // and the subject here stays "the quote a buyer was shown is honoured", not
+  // "the timer fired".
+  await ensureRates(gw);
   const dearer = (await gw.asAnon.quote_previews([TIER_USD_CENTS]))
     .quotes[0]!.cycles[0]!;
   // 455¢ net × 35_000 × 10¹² / 6_370_000 — checked against the arithmetic, not
@@ -1616,7 +1623,11 @@ test('41 — an order can never lock fewer cycles than the buyer was shown', asy
   // A move in the buyer's FAVOUR must never refuse — the guard is a floor, not
   // an equality, so it can only ever protect the buyer.
   await setXrcRate(gw, ICP_USD_RATE);
-  await tickRateTimer(gw);
+  // Same reason as the appreciation above: the timer honours the §3.1 backoff, so
+  // a tick can be a no-op and this reads the unchanged quote — which fails as
+  // "2500000000000 is not greater than 2500000000000", a diff that says nothing
+  // about the real cause.
+  await ensureRates(gw);
   const better = expectOk(
     await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, [dearer]),
   );

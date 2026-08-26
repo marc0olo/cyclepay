@@ -31,8 +31,9 @@ Checkout Session for that one order** over an HTTPS outcall, setting
 `client_reference_id = <principal>_<orderId>` itself; the buyer pays Stripe
 directly on that session's URL; and Stripe POSTs a signed
 `checkout.session.completed` webhook back, which the canister verifies by HMAC
-on-chain, attributes to the order, and mints the cycle quantity that was locked
-at order creation.
+on-chain, attributes to the order, and **transfers** the cycle quantity locked at
+order creation out of the gateway's own cycles-ledger account. It used to *mint*
+that quantity at the CMC; #30 PR-A replaced minting with selling from a reserve.
 
 ## 2. What the canister calls Stripe for, and what it still cannot do
 
@@ -192,7 +193,7 @@ removes the dominant attribution failure, and removed `attach_payment` with it
 (§12).
 
 The posture does not change: **claimed, not trusted.** Every dollar that arrives
-must still resolve to delivery, Type 1, or Type 2 — never a silent accept —
+must still resolve to delivery or Type 1 — never a silent accept —
 because the field arrives in a webhook body and a webhook body is data. It is a
 **pointer, not a credential**, which is what made it safe to expose at all. The order id is 16 bytes of `raw_rand`, so a reference cannot be guessed; and
 forging one gains nothing, because the claimed principal must equal the order's
@@ -235,7 +236,7 @@ In order (`Card.mo`):
 
 1. **`event.id`** — catches Stripe *redelivering one event*. Stripe's delivery is
    at-least-once and it retries for ~3 days.
-2. **`payment_intent`** — one mint per payment, even across distinct event
+2. **`payment_intent`** — one delivery per payment, even across distinct event
    deliveries that reference the same intent.
 
 Both live in `Idempotency.mo` and are pruned after ~7 days on the webhook path
@@ -291,10 +292,16 @@ Three guarantees, in the order they matter.
 
 ### The cycle quantity is shown before anything is committed
 
-`quote_previews(amounts)` is a **public query** returning, per amount, the
-fee, the net, and the cycle quantity — plus the rate pair it used and the cycles
-ledger's deposit fee. The preset grid is one round trip, and a typed custom
-amount is priced through the same query rather than in the client.
+`quote_previews(amounts)` is a **public query** returning, per amount, the fee,
+the net, and the cycle quantity — plus the rate pair it used. The preset grid is
+one round trip, and a typed custom amount is priced through the same query rather
+than in the client.
+
+⚠️ **It no longer discloses the cycles-ledger fee** (#30 PR-A). A query cannot
+`await icrc1_fee`, so disclosing it meant the backend storing a copy and
+correcting it whenever a transfer came back `#BadFee` — a stable field, a
+correction path and a staleness class, for one number the caller can read itself.
+The frontend asks the ledger directly (`actor.ts`) and shows `cycles − fee`.
 
 ⚠️ **It calls the same `quoteCents` that `create_order` calls.** Not the same
 formula reimplemented — the same function. A client computing its own estimate

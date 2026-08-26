@@ -63,7 +63,7 @@ for the scenario map by id — ids are stable, counts are not.
 | Refunds (full, partial, cumulative partials, after delivery, of an escalated order) | unit + PocketIC | |
 | Async payment methods (settle, fail, out-of-order) | unit + PocketIC | |
 | Pricing guards (plausibility, delta, source count, implied XDR/USD, staleness) | unit + PocketIC | every guard rejects in isolation |
-| Money-out: transfer → notify → forward, exactly-once, journal replay | PocketIC | incl. across real upgrades |
+| Money-out: **one transfer** out of the reserve, exactly-once, journal replay | PocketIC | incl. across real upgrades. `transfer → notify → forward` was three steps until #30 PR-A |
 | Outages: the **cycles ledger** down — delivery retries, strands nothing, then delivers | PocketIC | 11, 33, 35, 47 |
 | Outages: ICP ledger down, CMC down, notify stalled, rate moved mid-mint | **gone with the mint path** (#30 PR-A) | the exposures no longer exist; see the deletion table in `test/integration/README.md` |
 | Escalation → the right money position and instruction | unit (all 8 arms) + PocketIC | see the gap below |
@@ -123,7 +123,7 @@ queue, nothing held. The evidence and the exact figures are in
 
 | Not covered | Why |
 |---|---|
-| `#ambiguousForward` end to end | needs a callback *dropped* between the pre-forward marker and delivery; `stopCanister` **drains** callbacks rather than dropping them. Unit-pinned is the ceiling |
+| `#ambiguousForward` end to end | ⚠️ **Now unreachable rather than untested**: it needed a callback dropped between the pre-forward marker and the forward, and #30 PR-A deleted the two-step (delivery is one call). The row stays until #36 removes the variant, so nobody reads its absence as a coverage gap |
 | a **trapping** daily reconcile | the reconcile is detached into its own message precisely so a trap cannot stop the sweep, but nothing can inject that trap: it would take an order store large enough to exhaust the instruction limit. What *is* covered is that the detached message runs, commits, and is cadence-gated in both directions (scenario 58); the isolation itself rests on the message boundary, not on a test |
 | `stageOf`'s `#escalate` arm wiring | reaching `retriesExhausted` through it needs `maxMintRetries` (2,000) sweeps. The *terminate* route reaches the queue the same way and **is** covered — by scenario **35** since #30 PR-A deleted 53, which this row used to cite. ⚠️ The claim is narrower than it was: 35 reaches the `deliveryWaitExceeded` position, not the four mint positions 53 also touched, and those are unreachable rather than untested. The decision function stays exhaustively unit-pinned |
 
