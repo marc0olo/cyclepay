@@ -372,6 +372,7 @@ type CreateOrderError =
                    quoted: nat;
                  };
    rateUnavailable;
+   reserveUnavailable;
    sessionUnavailable: text;
    tierBelowFees: text;
    unknownTier: text;
@@ -711,6 +712,28 @@ service : {
   /// Force a rate refresh now (admin) — the ops lever after retuning config or
   /// while diagnosing a stale rate, without waiting for the next tick.
   refresh_rates: () -> (opt Rates);
+  /// Reserve solvency, public (#30 PR-B).
+  /// 
+  /// ⚠️ **It does NOT report the reserve balance, and that is deliberate.** The
+  /// balance belongs to the cycles ledger, `icrc1_balance_of` is a query anyone can
+  /// call for free, and a Motoko query cannot await it — so reporting it here would
+  /// mean caching it with an `observedAtNs` and inventing a staleness class. Two
+  /// earlier drafts of #30 went that way and were superseded. **The frontend reads
+  /// the balance from the ledger and computes `available = balance − promisedTotal`
+  /// itself**, which is the same split as delivery's fee: the canister owns what
+  /// only it knows, the ledger owns what it owns.
+  /// 
+  /// The displayed figure is therefore an **uncertified query answer, non-atomic
+  /// with `promisedTotal`, for display only**. ⚠️ **The gate is the only place
+  /// solvency is decided** — `create_order` awaits the authoritative balance.
+  reserve_status: () ->
+   (record {
+      canisterCycles: nat;
+      minCanisterCycles: nat;
+      promisedTotal: nat;
+      reserveAccount: Account;
+      tallySaturations: nat;
+    }) query;
   /// §5.3 manual override: clear the rolling window's consumption after
   /// confirming the traffic was legitimate (or rotating a leaked secret).
   /// Returns the e8s of consumption cleared. Held orders resume on the next

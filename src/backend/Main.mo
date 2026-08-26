@@ -33,6 +33,7 @@ import Http "Http";
 import Idempotency "Idempotency";
 import Orders "Orders";
 import Recovery "Recovery";
+import Reserve "Reserve";
 import Card "rails/Card";
 import Session "rails/Session";
 import Secret "Secret";
@@ -508,6 +509,11 @@ persistent actor CyclesGateway {
     /// §3 fee formula swallows the tier's gross amount — a tier/fee config
     /// problem for the operator, not something a retry fixes.
     #tierBelowFees : Text;
+    /// #30 PR-B: the reserve balance could not be read, so solvency is unknown.
+    /// Fails closed on purpose — selling against an unknown balance is exactly
+    /// what the check exists to prevent. (A short reserve is reported through
+    /// `#notAdmitted(#reserveShort)`, which carries both figures.)
+    #reserveUnavailable;
     /// §3.1 fail-closed: no fresh rate and the refresh failed (or one is
     /// already in flight), so no price, so no order. Retry shortly.
     #rateUnavailable;
@@ -797,27 +803,116 @@ persistent actor CyclesGateway {
     };
   };
 
+  /// **The** admission decision: everything `Gate.admit` asks, plus solvency.
+  ///
+  /// ⚠️ **One callable answer, deliberately.** #30 PR-B split solvency out of
+  /// `Gate.admit` because reading the reserve needs an `await` and `admit` is
+  /// synchronous by design — but that leaves the decision with two owners, and
+  /// `-Werror` cannot see that calling `admit` alone is *half* a decision. A future
+  /// entry point that called `admit` and forgot `solvent` would silently skip
+  /// solvency. So this is the only thing `create_order` consults, and the split
+  /// lives inside it as an implementation detail.
+  ///
+  /// ⚠️ **Must be called in the same synchronous block as `Orders.create`.** See
+  /// the interleaving trace at the call site.
+  func admitOrder(
+    caller : Principal,
+    usdCents : Nat,
+    lockedCycles : Nat,
+    reserveBalance : Nat,
+    promisedAtRead : Nat,
+  ) : Result.Result<(), Gate.Reason> {
+    switch (admit(caller, usdCents)) {
+      case (#err(reason)) return #err(reason);
+      case (#ok) {};
+    };
+    // ⚠️ **`max` of the snapshot and the live value, and this is a bug fix, not
+    // caution.**
+    //
+    // The balance is stale (captured beside the `await`) while `Orders.promised`
+    // is live, and that asymmetry was **optimistic by a whole order** in one
+    // reachable interleaving:
+    //
+    //   1. we capture balance `B`, with order X `#paid` and holding `L_X`, so the
+    //      tally is `P` — including `L_X`;
+    //   2. before our continuation runs, X's delivery continuation runs first:
+    //      the ledger has already debited (`B − L_X`) and the release drops the
+    //      tally to `P − L_X`;
+    //   3. we decide with the stale `B` and the live `P − L_X`, computing
+    //      `available = (B − P) + L_X` — while the truth is still `B − P`.
+    //
+    // One scheduling gap, and the phantom capacity is a full order at the ceiling.
+    // An order admitted into it makes `promised > balance`, and the eventual
+    // `#InsufficientFunds` sends an operator hunting a fee delta (what its triage
+    // note says to check) for a cause that is a whole over-promise.
+    //
+    // `max` makes the staleness one-sided:
+    //
+    // - **delivery released in the gap** → live is lower, `max` keeps the
+    //   snapshot → `B − P`, which is exactly true available (delivery settles a
+    //   counted promise with reserved cycles, so it does not move the difference);
+    // - **a concurrent create held in the gap** → live is higher, `max` takes it,
+    //   so the other order's hold is honoured;
+    // - **an expiry or cancel released in the gap** → `max` keeps the snapshot and
+    //   we understate by that order for one scheduling gap: we refuse a sale that
+    //   would have worked. That is the honest cost of the fix, and it is the safe
+    //   direction.
+    let promised = Reserve.promisedForDecision(promisedAtRead, Orders.promised(orderStore));
+    switch (Gate.solvent(reserveBalance, promised, lockedCycles)) {
+      case (#err(reason)) {
+        audit("order.notAdmitted", Gate.reasonToText(reason));
+        #err(reason);
+      };
+      case (#ok) #ok;
+    };
+  };
+
   /// raw_rand → Orders.create, re-drawing fresh entropy on an ID collision
   /// (§2). Null = the entropy source misbehaved (short blob or repeated
   /// collisions), never bad luck.
   func createOrderWithFreshId(
+    caller : Principal,
+    usdCents : Nat,
     owner : Types.Owner,
     rail : Types.Rail,
     destination : Types.Destination,
     lockedCycles : Nat,
     pricing : Types.Pricing,
-  ) : async* ?Types.Order {
+    reserveBalance : Nat,
+    promisedAtRead : Nat,
+  ) : async* Result.Result<Types.Order, { #idGeneration; #notAdmitted : Gate.Reason }> {
     var attempts = 0;
     while (attempts < maxIdAttempts) {
       let entropy = await management.raw_rand();
-      let ?id = Orders.idFromEntropy(entropy) else return null;
+      let ?id = Orders.idFromEntropy(entropy) else return #err(#idGeneration);
+      // ── ONE SYNCHRONOUS BLOCK: decide, then hold. No `await` between them. ──
+      //
+      // ⚠️ **This is #30 PR-B's actual identified correctness bug.** The check and
+      // the hold used to be separated by the `raw_rand` await above, so two
+      // concurrent `create_order` calls could both pass the gate against the same
+      // `promised` and only then both hold — together promising more than the
+      // balance either of them checked. **Two honest buyers, no attacker.** #30's
+      // own earlier draft called interleaved creates safe because "each resumes
+      // after the other has recorded its promise", which is true only when the
+      // check and the hold cannot be split.
+      //
+      // The redraw loop is why the decision is *inside* the loop rather than
+      // before it: a duplicate id sends us back through `raw_rand`, and re-deciding
+      // after that await is what stops the redraw reopening the same window.
+      // `admitOrder` re-reads `Orders.promised` each time, so the tally half is
+      // always fresh; the balance is deliberately not re-read (see the trace at
+      // the call site — a stale balance cannot make this optimistic).
+      switch (admitOrder(caller, usdCents, lockedCycles, reserveBalance, promisedAtRead)) {
+        case (#err(reason)) return #err(#notAdmitted(reason));
+        case (#ok) {};
+      };
       switch (Orders.create(orderStore, id, owner, rail, destination, lockedCycles, pricing, Time.now())) {
-        case (#ok(order)) return ?order;
-        case (#err(#duplicateId(_))) {}; // re-draw fresh entropy
+        case (#ok(order)) return #ok(order); // the hold is taken inside `create`
+        case (#err(#duplicateId(_))) {}; // re-draw fresh entropy, then re-decide
       };
       attempts += 1;
     };
-    null;
+    #err(#idGeneration);
   };
 
   /// Create a card-rail order: II caller becomes the owner (ownership is
@@ -881,10 +976,14 @@ persistent actor CyclesGateway {
       // tier list would make presets a constraint again.
       case (#custom(cents)) (cents, cents.toText() # " cents");
     };
-    // Admission BEFORE the quote, so a spamming principal is turned away before
-    // it can make the canister do work (`canister-security`: anyone can burn
-    // your cycles with update calls). The floor and ceiling are enforced here,
-    // for both cases alike.
+    // A cheap PRE-REFUSAL before any await, so a spamming principal is turned
+    // away before it can make the canister do work (`canister-security`: anyone
+    // can burn your cycles with update calls). The floor and ceiling are enforced
+    // here, for both cases alike.
+    //
+    // ⚠️ **This can only refuse, never admit.** The authoritative decision is
+    // `admitOrder` inside the create block below, which additionally checks
+    // solvency. Two calls, one decision — do not read this as the gate.
     switch (admit(caller, usdCents)) {
       case (#err(reason)) return #err(#notAdmitted(reason));
       case (#ok) {};
@@ -902,8 +1001,74 @@ persistent actor CyclesGateway {
       case null {};
     };
     let owner : Types.Owner = #ii(caller);
-    let ?order = (await* createOrderWithFreshId(owner, #card, destination, lockedCycles, pricing)) else {
-      return #err(#idGeneration);
+
+    // ── The reserve, read from the ledger ────────────────────────────────────
+    //
+    // ⚠️ **Why awaiting this is safe, when `Gate.admit` is synchronous precisely
+    // so nothing can change between observing and deciding.**
+    //
+    // Because `available = balance − promised` is **invariant under delivery**, and
+    // the three interleavings this codebase actually permits all land on
+    // conservative or exact. Written out, because "conservative, never optimistic"
+    // is a universal a reader can falsify in thirty seconds, and this comment is
+    // the only thing between a future maintainer and *"this await looks like a bug,
+    // let me cache the balance"*:
+    //
+    // **(A) racing a concurrent DELIVERY.** ⚠️ **This is the case an earlier version
+    // of this trace got WRONG, and the error was optimistic — the dangerous
+    // direction.** It reasoned about where the balance read falls relative to the
+    // ledger debit and concluded "read-before-debit cancels exactly, because the
+    // balance still includes those cycles and the tally still counts them". The
+    // second half does not follow: the tally is read at DECISION time, not at
+    // balance-read time. A delivery whose continuation runs in that gap debits the
+    // ledger *and* releases the promise, so the stale balance includes the cycles
+    // while the live tally no longer counts them — `available` overstated by a full
+    // order at the ceiling.
+    //
+    // The fix is in `admitOrder`: the tally is snapshotted beside this call and the
+    // decision uses `max(snapshot, live)`, which makes the staleness one-sided. The
+    // ordering fact the old trace relied on is still true and still worth knowing —
+    // the release runs strictly after the transfer response, which follows strictly
+    // after the debit, so *released-but-not-debited* cannot occur — it just was not
+    // sufficient on its own.
+    //
+    // **(B) racing a concurrent EXPIRY's release.** An expired order never moved
+    // cycles, so a release here changes the tally and not the balance. Read before
+    // → we understate `available` (conservative). Read after → exact. There is no
+    // optimistic case, because this path can only ever *reduce* what we consider
+    // owed; it can never raise the balance.
+    //
+    // **(C) racing a second `create_order`'s hold.** Both calls may read a balance
+    // and then decide, but each decides and holds in ONE synchronous block that
+    // re-reads `Orders.promised` — and Motoko messages do not interleave except at
+    // an await, of which that block has none. So whichever block runs second sees
+    // the first one's hold and answers against it. This is the case the reordering
+    // exists for: with the check and the hold split by the `raw_rand` await, both
+    // could pass against the same tally.
+    //
+    // A stale balance is therefore never optimistic **given the `max` in
+    // `admitOrder`** — and that qualifier is the whole content of the fix. Without
+    // it, (A) pairs a not-yet-lowered balance with an already-released promise, and
+    // that is precisely capacity that is free-looking and unaccounted.
+    // ⚠️ Snapshot the tally **beside** the balance call, so the pair is coherent.
+    // Read at decision time instead and a delivery releasing in the gap makes
+    // `available` optimistic by a whole order — see `admitOrder`.
+    let promisedAtRead = Orders.promised(orderStore);
+    let reserveBalance = try {
+      await cyclesLedger.icrc1_balance_of(Cmc.reserveAccount(selfPrincipal()));
+    } catch (e) {
+      // Fail closed. An unreadable reserve is an unknown reserve, and selling
+      // against an unknown balance is exactly what this check exists to prevent.
+      audit("reserve.readFailed", "create_order refused: " # e.message());
+      return #err(#reserveUnavailable);
+    };
+
+    let order = switch (
+      await* createOrderWithFreshId(caller, usdCents, owner, #card, destination, lockedCycles, pricing, reserveBalance, promisedAtRead)
+    ) {
+      case (#ok(o)) o;
+      case (#err(#idGeneration)) return #err(#idGeneration);
+      case (#err(#notAdmitted(reason))) return #err(#notAdmitted(reason));
     };
     let clientReferenceId = Orders.clientReferenceId(owner, order.id);
 
@@ -2075,6 +2240,45 @@ persistent actor CyclesGateway {
       expiredOrders = Orders.countOf(orderStore, #expired);
       totalOrders = orderStore.orders.size();
       paidIntentsIndexed = paidIntents.size();
+    };
+  };
+
+  /// Reserve solvency, public (#30 PR-B).
+  ///
+  /// ⚠️ **It does NOT report the reserve balance, and that is deliberate.** The
+  /// balance belongs to the cycles ledger, `icrc1_balance_of` is a query anyone can
+  /// call for free, and a Motoko query cannot await it — so reporting it here would
+  /// mean caching it with an `observedAtNs` and inventing a staleness class. Two
+  /// earlier drafts of #30 went that way and were superseded. **The frontend reads
+  /// the balance from the ledger and computes `available = balance − promisedTotal`
+  /// itself**, which is the same split as delivery's fee: the canister owns what
+  /// only it knows, the ledger owns what it owns.
+  ///
+  /// The displayed figure is therefore an **uncertified query answer, non-atomic
+  /// with `promisedTotal`, for display only**. ⚠️ **The gate is the only place
+  /// solvency is decided** — `create_order` awaits the authoritative balance.
+  public query func reserve_status() : async {
+    promisedTotal : Nat;
+    tallySaturations : Nat;
+    reserveAccount : Types.Account;
+    canisterCycles : Nat;
+    minCanisterCycles : Nat;
+  } {
+    {
+      promisedTotal = Orders.promised(orderStore);
+      /// ⚠️ **Any non-zero value means the tally has diverged.** A saturation is a
+      /// release asking to remove more than was held, so it says the tally was
+      /// already wrong *before* that order got there — strictly worse than a fault
+      /// in the order being released. The daily recount reports drift's SIZE; this
+      /// reports its EXISTENCE, same day. RUNBOOK §9 alerts on any increment.
+      tallySaturations = orderStore.tallySaturations;
+      // Named so an operator (or the frontend) can point a ledger query at the
+      // right account without reconstructing it.
+      reserveAccount = Cmc.reserveAccount(selfPrincipal());
+      // The gas half, which is a different pot from the reserve: what the canister
+      // spends to run, gated by `minCanisterCycles`.
+      canisterCycles = Cycles.balance();
+      minCanisterCycles = gateConfig.minCanisterCycles;
     };
   };
 

@@ -13,7 +13,7 @@ import {
   bigIntReplacer, partialRefundBody, stopNns, startNns, CMC_ID, ICP_LEDGER_ID,
   CYCLES_LEDGER_ID, clientReferenceFor, createOrderWithSession, cancelOrderWithExpire,
   awaitPendingOutcall, answerOutcall, outcallHeader, outcallBody, sessionExpiredBody,
-  sessionCreatedBody,
+  sessionCreatedBody, maybePendingOutcall,
   Gateway, setupGateway, teardownGateway, upgradeBackendMidFlight,
   setCmcRate, fundFloat, floatBalance, fundReserve, reserveBalance,
   checkoutSessionBody, chargeRefundedBody, deliverWebhook, stripeSignature,
@@ -2703,4 +2703,77 @@ test('71 — a custom amount is bounded by the gate, in both directions (#33)', 
     ...gate,
     minPurchaseUsdCents: gate.maxPurchaseUsdCents + 1n,
   }))).toHaveProperty('floorAboveCeiling');
+});
+
+test('72 — a delivery completing DURING a create cannot manufacture capacity (#30 PR-B)', async () => {
+  // ⚠️ **The interleaving that broke an earlier version of this PR's own
+  // correctness proof**, and the reason `admitOrder` decides against
+  // `max(snapshot, live)` rather than the live tally.
+  //
+  // `create_order` awaits the reserve balance, so its continuation resumes after
+  // other messages may have run. A delivery continuation in that gap moves BOTH
+  // numbers: it debits the ledger and releases the order's promise. Pairing the
+  // stale balance with a live tally therefore double-counts the release — the
+  // delivered cycles are still in the balance figure AND no longer in the promise
+  // figure — and `available` comes out high by a whole order.
+  //
+  // Staged so the harm would be visible rather than theoretical: the reserve holds
+  // **exactly one order's worth**. An optimistic admission here is an order the
+  // gateway provably cannot deliver, and it leaves `promised > balance`.
+  await ensureRates(gw);
+
+  // A dedicated tight reserve. `reserveBalance` is whatever earlier scenarios
+  // left, so the figure is computed rather than assumed.
+  const before = await reserveBalance(gw);
+  const fee = await gw.cyclesLedger.icrc1_fee();
+
+  const paid = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_race', paymentIntent: 'pi_race',
+    clientReferenceId: clientReferenceFor(paid.order.id), amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+
+  // Submit a second create WITHOUT awaiting it, then let the paid order's delivery
+  // continuation run.
+  //
+  // ⚠️ **VERIFIED BY MUTATION THAT THIS SCENARIO DOES NOT CATCH THE BUG IT
+  // DESCRIBES.** Replacing `Reserve.promisedForDecision` with a live-only read —
+  // the exact defect — leaves all 58 scenarios passing: PocketIC's scheduling does
+  // not put the delivery continuation inside the create's balance-read gap, and
+  // nothing here can force it to. The arithmetic is pinned in
+  // `test/reserve.test.mo` instead, and `docs/TEST-COVERAGE.md` carries the gap so
+  // its absence is not read as coverage.
+  //
+  // Kept anyway for what it DOES assert: the invariant below holds however the
+  // messages interleave, so an over-promise arriving by any other route is caught.
+  // A guard, not a proof.
+  const settle = await gw.deferredUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []);
+  // Let the paid order's delivery continuation run inside the create's await gap.
+  await gw.pic.tick(6);
+  // ⚠️ `maybePendingOutcall`, not `awaitPendingOutcall`: a create refused at the
+  // gate never reaches the session call, so demanding an outcall here would hang
+  // on exactly the outcome this scenario is looking for.
+  const outcall = await maybePendingOutcall(gw);
+  if (outcall !== undefined) {
+    await answerOutcall(gw, outcall, 200, sessionCreatedBody({
+      expiresAtSeconds: Number(await nowSeconds(gw.pic)) + 2_100,
+    }));
+  }
+  const second = await settle();
+
+  // THE INVARIANT, whichever way it went: the gateway never promises more than it
+  // holds. An order admitted into phantom capacity would break this, and the
+  // eventual `#InsufficientFunds` would send an operator hunting a fee delta for a
+  // cause that is a whole over-promise.
+  const promisedAfter = (await gw.asAnon.reserve_status()).promisedTotal;
+  expect(promisedAfter).toBeLessThanOrEqual(await reserveBalance(gw));
+
+  // And the first order delivered for real, out of the reserve.
+  expect(await tickUntilStatus(gw, paid.order.id, ['delivered'])).toBe('delivered');
+  expect(before - (await reserveBalance(gw))).toBeGreaterThanOrEqual(TIER_LOCKED_CYCLES);
+  if ('ok' in second) {
+    // If it was admitted, it must be genuinely coverable — not phantom capacity.
+    expectOk(await cancelOrderWithExpire(gw, second.ok.order.id));
+  }
+  expect(fee).toBe(CYCLES_LEDGER_FEE);
 });

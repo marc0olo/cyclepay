@@ -143,6 +143,52 @@ suite("applyDelta — saturation is reported, not swallowed", func() {
   });
 });
 
+suite("promisedForDecision — a stale balance with a live tally (#30 PR-B)", func() {
+  // ⚠️ **This exists because the interleaving trace got case (A) WRONG, and wrong
+  // in the optimistic direction.** The decision carries a balance captured before
+  // an await and reads the tally live. A delivery whose continuation runs in that
+  // gap debits the ledger AND releases its promise — so a live-only read pairs a
+  // not-yet-lowered balance with an already-released promise:
+  //
+  //   available = B − (P − L_X)  =  (B − P) + L_X     while the truth is B − P
+  //
+  // Phantom capacity of a full order at the ceiling (~72 T), not fractions of a
+  // fee. An order admitted into it makes `promised > balance`, and the eventual
+  // `#InsufficientFunds` sends an operator hunting a fee delta — what its triage
+  // note tells them to check — for a cause that is a whole over-promise.
+
+  test("a delivery releasing in the gap does NOT create capacity", func() {
+    // The bug, stated as arithmetic. Snapshot 10_000 (order X's 3_000 included),
+    // live 7_000 after X delivered. A live-only read would offer 3_000 of the
+    // balance that X's own delivery just spent.
+    assert Reserve.promisedForDecision(10_000, 7_000) == 10_000;
+    // Which makes `available` the truth at the read, and delivery does not move it.
+    assert Reserve.available(12_000, Reserve.promisedForDecision(10_000, 7_000)) == 2_000;
+  });
+
+  test("a concurrent hold in the gap IS honoured", func() {
+    // The other direction must not be clamped away, or two creates could both be
+    // admitted against one balance.
+    assert Reserve.promisedForDecision(10_000, 13_000) == 13_000;
+    assert Reserve.available(12_000, Reserve.promisedForDecision(10_000, 13_000)) == 0;
+  });
+
+  test("no change in the gap is exact", func() {
+    assert Reserve.promisedForDecision(10_000, 10_000) == 10_000;
+  });
+
+  test("⚠️ the accepted cost: an expiry in the gap understates for one gap", func() {
+    // An expiry releases the tally without touching the balance, so keeping the
+    // snapshot refuses a sale that would have worked — for the duration of one
+    // scheduling gap. Documented as the price of the fix, not as a defect.
+    assert Reserve.promisedForDecision(10_000, 6_000) == 10_000;
+    // Conservative: strictly less available than the truth.
+    let conservative = Reserve.available(12_000, Reserve.promisedForDecision(10_000, 6_000));
+    let truth = Reserve.available(12_000, 6_000);
+    assert conservative < truth;
+  });
+});
+
 suite("available and canCover", func() {
   test("available is balance minus promised", func() {
     assert Reserve.available(10_000, 4_000) == 6_000;

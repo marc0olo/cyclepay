@@ -319,6 +319,17 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Variant({ ok: Order, err: IDL.Text })],
       [],
     ),
+    reserve_status: IDL.Func(
+      [],
+      [IDL.Record({
+        canisterCycles: IDL.Nat,
+        minCanisterCycles: IDL.Nat,
+        promisedTotal: IDL.Nat,
+        reserveAccount: Account,
+        tallySaturations: IDL.Nat,
+      })],
+      ['query'],
+    ),
     order_stats: IDL.Func(
       [],
       [

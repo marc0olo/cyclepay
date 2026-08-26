@@ -251,6 +251,15 @@ export interface BackendService {
   order_for_payment(paymentRef: string): Promise<Opt<string>>;
   abandon_order(id: string, reason: string): Promise<Result<Order, string>>;
   order_stats(): Promise<OrderStats>;
+  /// #30 PR-B. ⚠️ Reports `promisedTotal`, NOT the reserve balance — that comes
+  /// from the ledger, and `available` is the caller's subtraction.
+  reserve_status(): Promise<{
+    promisedTotal: bigint;
+    tallySaturations: bigint;
+    reserveAccount: Account;
+    canisterCycles: bigint;
+    minCanisterCycles: bigint;
+  }>;
   cycles_status(): Promise<{ balance: bigint; floor: bigint }>;
   recount_orders(): Promise<Array<[string, bigint]>>;
   receipt(id: string): Promise<Opt<{

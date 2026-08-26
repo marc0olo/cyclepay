@@ -146,6 +146,26 @@ module {
     if (promised >= balance) 0 else balance - promised;
   };
 
+  /// The promise figure to decide against, given a **stale balance** and a **live
+  /// tally**.
+  ///
+  /// ⚠️ Pure and separate so it is testable, because the interleaving it guards is
+  /// hard to stage: a delivery whose continuation runs between the balance read
+  /// and the decision debits the ledger *and* releases its promise, so a live-only
+  /// read pairs a not-yet-lowered balance with an already-released promise and
+  /// overstates `available` by a whole order. `max` makes the staleness one-sided:
+  ///
+  /// - delivery released in the gap → snapshot wins → exact (delivery does not
+  ///   move `balance − promised`; it settles a counted promise with reserved
+  ///   cycles);
+  /// - a concurrent hold in the gap → live wins → the other order is honoured;
+  /// - an expiry or cancel released in the gap → snapshot wins → understates for
+  ///   one scheduling gap, refusing a sale that would have worked. The safe
+  ///   direction, and the honest cost.
+  public func promisedForDecision(promisedAtRead : Nat, promisedNow : Nat) : Nat {
+    if (promisedAtRead > promisedNow) promisedAtRead else promisedNow;
+  };
+
   /// Can the reserve cover one more order of this size?
   ///
   /// Inclusive: an order that exactly exhausts the reserve is fine, because the
