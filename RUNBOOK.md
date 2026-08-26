@@ -418,10 +418,12 @@ under-sells and can never over-sell.
 Delivery is one `icrc1_transfer` out of that account, and the buyer receives
 `lockedCycles − fee`, where the fee is the **stored** one (#30 PR-B: the ledger
 reports its own fee on `#BadFee`, so the copy self-corrects and delivery needs no
-`icrc1_fee` round trip). `set_cycles_ledger_fee` exists for the one state that
-cannot self-correct — a stored fee at or above an order's locked quantity, which
-stalls every delivery before it reaches the ledger. The ledger charges its fee
-**on top of** the amount,
+`icrc1_fee` round trip). ⚠️ **Nothing writes that stored fee but the ledger itself.**
+An admin lever for it existed briefly and was deleted as self-justifying: the only
+state it fixed was one it could create, and its own typo silently shorted buyers. If
+the ledger's fee ever exceeds an order's locked quantity, delivery stalls loudly on
+`delivery.feeExceedsOrder` and the answer is a redeploy — at that fee the rail cannot
+sell anyway. The ledger charges its fee **on top of** the amount,
 so a delivery moves the reserve by exactly `lockedCycles` — which is why #30's
 promise tally has no separate fee term.
 
@@ -780,8 +782,15 @@ gateway's:
 
 | You established, on the ledger | Call | Result |
 |---|---|---|
-| the transfer **did** land — the buyer has the cycles | `record_delivered '("<orderId>", <blockIndex>)'` | `Delivered`, with the block recorded in the journal |
-| it did **not**, and you refunded the fiat by hand | `abandon_order '("<orderId>", "<reason>")'` | `Abandoned`, reason in the audit trail |
+| the transfer **did** land — the buyer has the cycles | `record_delivered '("<orderId>", <blockIndex>)'` then `resolve_error '(<entryId>)'` | `Delivered`, with the block recorded in the journal |
+| it did **not**, and you refunded the fiat by hand | `abandon_order '("<orderId>", "<reason>")'` then `resolve_error '(<entryId>)'` | `Abandoned`, reason in the audit trail |
+
+⚠️ **Neither lever closes the queue entry — `resolve_error` is the last step, always.**
+Resolving lives on the entry and never transitions an order, and the reverse holds too:
+moving the order does not resolve the entry. The `#transferUnresolved` entry that
+brought you here stays open until you close it, which is deliberate (an obligation
+must not disappear because a status changed) but means a finished order can sit behind
+an open worklist item if you stop after the first command.
 
 ⚠️ **You cannot `abandon_order` a `Paid` order whose delivery is still outstanding**
 (#30 PR-B). The lever refuses and names `pending_deliveries`, because abandoning an
@@ -993,6 +1002,7 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | `reserve_status.openOrders` | climbing while `delivered` does not | **P3** | order-creation abuse; lever is `maxOpenOrdersPerPrincipal` (§5a) |
 | `reserve_status.availableToSell` | 0, or far below `reserveFloor` − `promisedTotal` as you expect it | **P2** | the gateway is refusing sales. Three causes and the same query separates them: the reserve is genuinely spent (`reserveFloor` low), it is committed to live orders (`promisedTotal` high), or **the floor has not observed a top-up** (`reserveObservedAtNs` old). The last is the common one and the lever is `refresh_reserve` |
 | `reserve_status.reserveObservedAtNs` | materially older than `recovery_status.lastReserveReconcileAttemptNs` | **P3** | the hourly reserve reconcile is attempting and not adopting: either the ledger read is failing (`reserve.observeFailed` in the audit log) or every attempt lands while a delivery is in flight (`reserve.reconcileSkipped`). Under-sells rather than over-sells, so it explains refusals; it is not a loss |
+| `delivery.feeChanged` in the audit log | on **every** delivery rather than once | **P3** | the stored cycles-ledger fee is stale, so every order pays one rejected call before its transfer lands. Self-correcting by design — the first `#BadFee` persists the ledger's value — so a *repeating* tag means the correction is not sticking (an upgrade reverting the stored value, or the ledger's fee moving repeatedly). ⚠️ **This is the ONLY detector for a stored fee that will not stick**, since nothing but the ledger writes that value and the persistence itself is untested (`docs/TEST-COVERAGE.md`). Each occurrence costs one rejected call, never a wrong debit — the buyer still gets the quoted amount and the reserve absorbs the real fee. If it repeats, redeploy rather than looking for a lever; there is none, deliberately |
 | `reserve.unexplainedShortfall` in the audit log | any occurrence | **P1** | the ledger holds LESS than the floor's lower bound, which the design says is impossible — no allowance exists and `withdraw` is unused. Treat as a bookkeeping breach: stop selling (`set_gate_config` with a high `minPurchaseUsdCents`, or pause), reconcile the journal against the ledger, and find the outflow before funding anything |
 | an order still `created` past its own `expiresAtNs` | any | **P2** | a `checkout.session.expired` was missed. Nothing sweeps it (§5b, deliberately — a sweep would hide a held reserve): resend the event from the Stripe Dashboard. ⚠️ **You cannot query this today** — see the gap below |
 | `pricing_status.xrcCanisterId` | anything other than `uf6dk-hyaaa-aaaaq-qaaaq-cai` | **P1** | **on mainnet this must be the real Exchange Rate Canister.** The id is resolved from a `PUBLIC_CANISTER_ID:xrc` canister environment variable so a local network can point at a mock; a mainnet canister reporting any other id is pricing real sales off something that is not the market. Only a controller can inject it, so this reads as either a misconfigured deploy or a compromised controller. Cap the burn to 0 (§2) before investigating. **`null` is not a pass** — it means no refresh has reached the XRC call at all (expected for seconds after an install or upgrade, since the value is transient). Do **not** wait on `lastAttempt` becoming non-null: that field is persistent, so it survives the upgrade and is already set while this one is still null. Re-read until `lastAttempt.atNs` post-dates the deploy. A *failing* refresh never shows null here — the id is recorded when the call is constructed, so a rejected call reads as a non-null id plus `lastAttempt.ok = false` |

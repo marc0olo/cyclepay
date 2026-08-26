@@ -326,9 +326,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Variant({ ok: Order, err: IDL.Text })],
       [],
     ),
-    // #30 PR-B — belt-and-braces for the one stored-fee state `#BadFee` cannot
-    // correct (a stored fee at or above an order's locked quantity).
-    set_cycles_ledger_fee: IDL.Func([IDL.Nat], [IDL.Variant({ ok: IDL.Nat, err: IDL.Text })], []),
     // #30 PR-B folded `order_stats`' four counters in here, as #33 planned when it
     // renamed `retention_status` to that waypoint. One query, one round trip, and the
     // three solvency figures sit next to the order counts that explain them.

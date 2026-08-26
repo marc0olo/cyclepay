@@ -755,7 +755,6 @@ privileges — any controller can do any of this):
 | `record_delivered` | record that an escalated order's cycles DID reach the buyer, evidenced by the ledger block (#30 PR-B) |
 | `pending_deliveries` | every delivery with work outstanding right now, self-clearing — the live view the 2 h queue alert cannot give (#30 PR-B) |
 | `refresh_reserve` | observe the reserve balance now — required after a top-up, or the gateway sells nothing (#30 PR-B) |
-| `set_cycles_ledger_fee` | correct the stored ledger fee; only needed for a stored value at or above an order's locked quantity, which stalls delivery before `#BadFee` can self-correct |
 | `recount_orders` | rebuild the O(1) per-status counters from the store |
 | `refresh_float` | refresh the float observation the gate reads |
 | `reset_burn_window` | clear window consumption after verifying traffic |

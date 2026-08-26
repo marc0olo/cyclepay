@@ -191,21 +191,6 @@ module {
   /// asserted its ABSENCE from the preview and nothing read it.
   public let cyclesLedgerDefaultFee : Nat = 100_000_000;
 
-  /// Ceiling on what `set_cycles_ledger_fee` will accept: **10× the default**.
-  ///
-  /// The lever exists for one deadlock — a stored fee at or above an order's locked
-  /// quantity, which stalls delivery before the ledger can correct it — and that is
-  /// fixed by *lowering*, so a ceiling costs the lever nothing. What it buys: a
-  /// typo'd large value would otherwise be subtracted from every order's locked
-  /// quantity, delivering less than the buyer was quoted, and `#BadFee` corrects the
-  /// fee we pass but never a committed intent's amount.
-  ///
-  /// 10× rather than "just above the current fee" so a genuine ledger fee rise still
-  /// lands inside it and self-corrects without an operator. A rise beyond 1 G cycles
-  /// (~0.13 ¢) would be a protocol event worth a code change, not a number typed
-  /// into a money path under incident pressure.
-  public let maxSettableCyclesLedgerFee : Nat = 1_000_000_000;
-
   /// The CMC recognizes a top-up by this icrc1 memo: the 8-byte little-endian
   /// encoding of 0x50555054 ("TPUP"). Pinned by test vector.
   public let topUpMemo : Blob = "\54\50\55\50\00\00\00\00";

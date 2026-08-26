@@ -211,7 +211,7 @@ before landing.)
 | 71 | a custom amount is bounded by the gate in both directions (#33) | floor and ceiling on typed input |
 | 72 | a delivery completing during a create cannot manufacture capacity (#30 PR-B) | guard on `promisedTotal ≤ balance` |
 | 73 | a funded reserve sells **nothing** until the gateway observes it; one quiet observation adopts the ledger's truth outright (#30 PR-B) | rule 1, and the trap the design accepts |
-| 74 | a deliberately wrong stored ledger fee still delivers, self-corrects from `#BadFee`, and the next order pays the corrected fee (#30 PR-B) | why delivery needs no `icrc1_fee` |
+| ~~74~~ | **deleted with the `set_cycles_ledger_fee` lever it depended on.** The lever was the only seam for making the stored fee differ from the ledger's, and it was removed as self-justifying — the one state it fixed was one it could create, and its typo silently shorted buyers. Shipping an admin money lever so a test can stage a state is the wrong trade | heirs: `interpretTransfer(#Err(#BadFee))` in `test/cmc.test.mo`, the `delivery.feeChanged` P3 row in RUNBOOK §9, and scenarios 06/10 for the fee arithmetic |
 | 75 | a buyer heals their **own** stuck delivery; a stranger and the anonymous principal cannot; the admin lever still works and is the only one audited (#30 PR-B) | owner-scoped `process_order` |
 | 76 | one escalated order must not freeze the reserve reconcile forever (#30 PR-B) | regression test for a shipped bug |
 | 77 | an escalated order whose cycles **did** arrive is recorded as delivered rather than filed as abandoned (#30 PR-B) | `#needsReview → #delivered` |

@@ -2880,64 +2880,26 @@ test('73 — a funded reserve is not a SELLABLE reserve until the gateway looks 
   );
 });
 
-test('74 — the stored ledger fee self-corrects from #BadFee, so delivery never reads it (#30 PR-B)', async () => {
-  // The mechanism that lets delivery drop its `await icrc1_fee()`: an ICRC-1 ledger
-  // rejects a wrong fee DEFINITIVELY and reports the expected one, so a stale copy
-  // costs one rejected call, once, and is corrected for every order after it.
-  //
-  // Staged with a deliberately wrong stored fee, because "it happens to be right"
-  // is what a test against a ledger whose fee never moves would otherwise assert.
-  await ensureRates(gw);
-  const WRONG_FEE = 1n;
-  const previous = expectOk(await gw.asAdmin.set_cycles_ledger_fee(WRONG_FEE));
-  expect(previous).toBe(CYCLES_LEDGER_FEE);
-  // ⚠️ **The lever is capped, because a fat-fingered value SHORTS BUYERS.** The next
-  // order's amount is `locked - fee_stored`, and `#BadFee` corrects the fee we pass,
-  // never a committed intent's amount — so a typo would deliver less than was quoted
-  // and the reserve would keep the difference, silently. Lowering is always allowed,
-  // which is the only direction the deadlock this lever exists for needs.
-  expect(expectErr(await gw.asAdmin.set_cycles_ledger_fee(TIER_LOCKED_CYCLES)))
-    .toMatch(/refusing a cycles-ledger fee/);
-  expect((await gw.asAnon.reserve_status()).cyclesLedgerFee).toBe(WRONG_FEE);
-  expect((await gw.asAnon.reserve_status()).cyclesLedgerFee).toBe(WRONG_FEE);
-
-  const buyerBefore = await userCycles();
-  const reserveBefore = await reserveBalance(gw);
-  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_badfee', paymentIntent: 'pi_badfee',
-    clientReferenceId: clientReferenceFor(created.order.id), amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-
-  // It DELIVERS. A wrong stored fee is a corrected round trip, not a stuck order.
-  expect(await tickUntilStatus(gw, created.order.id, ['delivered'])).toBe('delivered');
-
-  // ⚠️ **The buyer gets `locked − fee_stored`, and the reserve absorbs the
-  // difference.** The intent's amount was committed before the rejection and is NOT
-  // rebuilt — rebuilding it is the double-pay this path exists to avoid — so the
-  // correction changes only the fee we pass. Here the stored fee was too LOW, which
-  // is the harmless direction: the buyer is paid more than they would have been and
-  // the reserve pays the real fee on top.
-  expect(await userCycles()).toBe(buyerBefore + TIER_LOCKED_CYCLES - WRONG_FEE);
-  expect(reserveBefore - (await reserveBalance(gw))).toBe(
-    TIER_LOCKED_CYCLES - WRONG_FEE + CYCLES_LEDGER_FEE,
-  );
-
-  // THE ASSERTION: the ledger taught the canister its fee, and it persisted.
-  expect((await gw.asAnon.reserve_status()).cyclesLedgerFee).toBe(CYCLES_LEDGER_FEE);
-  expect((await gw.asAdmin.audit_log()).map((e) => e.tag)).toContain('delivery.feeChanged');
-
-  // And the next order pays the corrected fee with no rejection at all — the whole
-  // point of persisting it rather than correcting per order.
-  const second = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  const beforeSecond = await userCycles();
-  expect(await deliverWebhook(gw, checkoutSessionBody({
-    eventId: 'evt_feefixed', paymentIntent: 'pi_feefixed',
-    clientReferenceId: clientReferenceFor(second.order.id), amountCents: TIER_USD_CENTS,
-  }))).toMatchObject({ status_code: 200 });
-  expect(await tickUntilStatus(gw, second.order.id, ['delivered'])).toBe('delivered');
-  expect(await userCycles()).toBe(beforeSecond + TIER_LOCKED_CYCLES - CYCLES_LEDGER_FEE);
-});
+// -- 74 was deleted with the lever it depended on (#30 PR-B) ------------------
+//
+// Its subject was "a deliberately wrong stored ledger fee still delivers, and
+// `#BadFee` persists the correction". Staging that needed `set_cycles_ledger_fee` to
+// make the stored fee wrong — and that lever has been deleted as self-justifying: the
+// only state it fixed was one that it, or a ~70,000× ledger fee rise, could create,
+// and its own typo silently shorted buyers.
+//
+// ⚠️ **So the lever was also this test's only seam, and deleting it deletes the
+// scenario.** The alternative — shipping an admin money lever to production so a test
+// can stage a state — is the wrong trade. What covers the mechanism now:
+//
+//   - `test/cmc.test.mo` pins `interpretTransfer(#Err(#BadFee))` → `#badFee(expected)`,
+//     so the ledger's report is still read correctly.
+//   - The one thing left untested is the persistence itself (`cyclesLedgerFee :=
+//     expected`, one line). Its failure mode is loud rather than silent: the fee does
+//     not stick, so `delivery.feeChanged` fires on EVERY delivery instead of once,
+//     which RUNBOOK §9 carries as a P3 row. `docs/TEST-COVERAGE.md` records the gap.
+//   - Its other half — the buyer receives `locked - fee` and the reserve moves by
+//     exactly `locked` — is scenario 06's and 10's, and always was.
 
 test('75 — a buyer can heal their OWN stuck delivery, and only their own (#30 PR-B)', async () => {
   // `process_order` was admin-only. It is now admin **or** the order's owner, because

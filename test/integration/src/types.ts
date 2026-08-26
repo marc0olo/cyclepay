@@ -244,7 +244,6 @@ export interface BackendService {
   order_for_payment(paymentRef: string): Promise<Opt<string>>;
   abandon_order(id: string, reason: string): Promise<Result<Order, string>>;
   record_delivered(id: string, blockIndex: bigint): Promise<Result<Order, string>>;
-  set_cycles_ledger_fee(fee: bigint): Promise<Result<bigint, string>>;
   /// #30 PR-B. ⚠️ `reserveFloor` is a maintained lower BOUND on the ledger balance,
   /// not the balance — it rises only by observation (`refresh_reserve` or the hourly
   /// sweep) and falls when the gateway transfers out. `availableToSell` is what the

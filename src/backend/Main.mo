@@ -1428,6 +1428,10 @@ persistent actor CyclesGateway {
   /// await — and with it the `delivery.feeFetchFailed` failure mode, where a ledger
   /// hiccup on a *read* stalled a delivery that was fully funded and ready.
   ///
+  /// ⚠️ **No admin lever writes this** — `#BadFee` is the only writer, which is what
+  /// keeps it honest. See `delivery.feeExceedsOrder` for the one state that cannot
+  /// self-correct, and why a lever for it was deleted rather than kept.
+  ///
   /// ⚠️ **A fee DECREASE shorts that one buyer by the delta.** `amount = locked −
   /// fee_stored`, so if the ledger has become cheaper than our copy, the first order
   /// after the change delivers a little less than it could have, and the reserve
@@ -2009,9 +2013,19 @@ persistent actor CyclesGateway {
             // number surfaces as a stuck order with a reason instead of a trap.
             //
             // ⚠️ This is the ONE state the stored fee cannot correct itself out of:
-            // nothing reaches the ledger, so no `#BadFee` ever arrives to fix the
-            // copy, and every order stalls here. `set_cycles_ledger_fee` is the lever
-            // that exists for it.
+            // nothing reaches the ledger, so no `#BadFee` ever arrives to fix the copy,
+            // and every order stalls here — audited, loudly, once per order.
+            //
+            // ⚠️ **There is deliberately no admin lever to reset the fee, and the
+            // reason is worth keeping.** One existed briefly (#30 PR-B) and was
+            // deleted as self-justifying: reaching this state needs the ledger to
+            // report a fee above a whole order's locked quantity — a ~70,000× rise,
+            // at which point the rail cannot sell at all and the answer is a code
+            // change — or an operator typing a wrong number into the lever itself. A
+            // lever whose main reachable failure mode is itself, and whose typo
+            // silently shorts buyers, is worse than the stall it fixes. A stalled
+            // rail is loud and costs nothing; a shorted buyer is quiet and costs
+            // them.
             auditMintBlockedOnce(orderId, "delivery.feeExceedsOrder", orderId # ": fee " # fee.toText() # " >= locked " # order.lockedCycles.toText());
             return;
           };
@@ -2647,9 +2661,10 @@ persistent actor CyclesGateway {
       /// sale and this figure can never tell different stories.
       availableToSell = Reserve.available(reserveFloor, Orders.promised(orderStore));
       /// The fee the NEXT delivery will use, and the only way to see that `#BadFee`
-      /// self-correction actually happened (#30 PR-B). A value at or above an order's
-      /// locked quantity is the one state that cannot self-correct — deliveries stall
-      /// before reaching the ledger — and `set_cycles_ledger_fee` is its lever.
+      /// self-correction actually happened (#30 PR-B). ⚠️ Nothing but the ledger
+      /// writes it — there is deliberately no admin lever — so a value at or above an
+      /// order's locked quantity stalls delivery loudly and the answer is a redeploy;
+      /// at that fee the rail cannot sell anyway.
       cyclesLedgerFee;
       // O(1), same reasoning as treasury_status.
       openOrders = Orders.countOf(orderStore, #created);
@@ -2887,48 +2902,6 @@ persistent actor CyclesGateway {
     clearDelayed(id);
     auditAdmin(caller, "order.recordedDelivered", id # ": operator confirmed cycles-ledger block " # blockIndex.toText());
     #ok(delivered);
-  };
-
-  /// Correct the stored cycles-ledger transfer fee (admin, §7).
-  ///
-  /// ⚠️ **Belt and braces, for one specific deadlock.** `#BadFee` normally keeps
-  /// `cyclesLedgerFee` correct without help, in either direction — that is the whole
-  /// reason delivery may store it instead of awaiting it. The exception is a stored
-  /// value at or above an order's locked quantity: `deliverableCycles` then refuses
-  /// before anything reaches the ledger, so no `#BadFee` can ever arrive to correct
-  /// it, and every delivery stalls on `delivery.feeExceedsOrder` with no self-healing
-  /// path. This is the lever for that, and it is the only reason it exists.
-  ///
-  /// Deliberately not validated against the ledger here: a wrong value is corrected
-  /// by the first delivery that reaches the ledger, and adding an `await icrc1_fee`
-  /// to *this* method would put the read back on an operator path while leaving the
-  /// deadlock case (where the read is not the problem) exactly as it was.
-  ///
-  /// ⚠️ **Bounded, because a fat-fingered value here silently SHORTS BUYERS.** The
-  /// next order's `amount = locked − fee_stored`, and the ledger refusing a wrong fee
-  /// does not undo that: `#BadFee` corrects the fee we pass, never the committed
-  /// intent's amount (rebuilding it is the double-pay this path exists to avoid). So
-  /// a typo'd fee below an order's locked quantity delivers less than was quoted and
-  /// the reserve keeps the difference — silently, for every intent built before the
-  /// first `#BadFee` corrects the copy. The cap turns that into a refused call.
-  ///
-  /// It does not impede the deadlock this lever exists for, which is a stored fee too
-  /// HIGH: lowering is always allowed. A real ledger fee above the cap would be a
-  /// protocol event, and one that wants a code change and a redeploy, not an
-  /// operator typing a large number into a money path.
-  public shared ({ caller }) func set_cycles_ledger_fee(fee : Nat) : async Result.Result<Nat, Text> {
-    requireAdmin(caller);
-    if (fee > Cmc.maxSettableCyclesLedgerFee) {
-      return #err(
-        "refusing a cycles-ledger fee of " # fee.toText() # ": the cap is "
-        # Cmc.maxSettableCyclesLedgerFee.toText()
-        # ". A stored fee is subtracted from every order's locked quantity, so a value this large would deliver less than the buyer was quoted and `#BadFee` cannot undo it. If the ledger's real fee has moved beyond this cap, that is a code change, not an operator lever."
-      );
-    };
-    let previous = cyclesLedgerFee;
-    cyclesLedgerFee := fee;
-    auditAdmin(caller, "reserve.feeOverridden", "cycles-ledger fee set to " # fee.toText() # " (was " # previous.toText() # ")");
-    #ok(previous);
   };
 
   public type Receipt = {
