@@ -2422,6 +2422,12 @@ persistent actor CyclesGateway {
   /// now a stored value), which is why the two are adjacent today. Reintroduce an
   /// await there and a reconcile can adopt a balance while a transfer it cannot see
   /// is in flight. This comment is the guard.
+  /// ⚠️ **`entry.status` is the JOURNAL's copy of the order's status, and this
+  /// predicate is the only thing that reads it.** `Cmc.openEntry` used to hardcode
+  /// `#minting`, which made this match nothing at all and quietly disabled the quiet
+  /// window — see the comment there. If it ever stops recording the order's real
+  /// status, this silently returns 0 again and the reserve floor becomes adoptable
+  /// across an in-flight transfer. `test/cmc.test.mo` pins the coupling.
   func unsettledDelivery(entry : Types.JournalEntry) : Bool {
     entry.status == #paid and entry.transferIntent != null and entry.blockIndex == null;
   };

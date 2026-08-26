@@ -418,7 +418,24 @@ module {
   public func openEntry(journal : Journal, order : Types.Order, intent : Types.TransferIntent, nowNs : Int) : Types.JournalEntry {
     let entry : Types.JournalEntry = {
       orderId = order.id;
-      status = #minting;
+      // ⚠️ **The ORDER's status, not a hardcoded one — and this was a real bug.**
+      // It read `#minting` unconditionally, a leftover from when money-out meant the
+      // ICP mint path. Harmless while nothing read the field back: the legacy caller
+      // transitions the order to `#minting` before opening the entry, so the two
+      // agreed there by accident, and every other consumer takes the order's status
+      // as a parameter.
+      //
+      // Then #30 PR-B started reading it. `unsettledDeliveries` — the predicate that
+      // decides whether a reserve observation may be adopted — tests for `#paid`, so
+      // the hardcode made it match **nothing**: the quiet window was always
+      // satisfied, and a reconcile could overwrite the floor while a transfer it
+      // could not see was in flight. Exactly the class of bug the quiet window
+      // exists to prevent, reintroduced by a stale literal three files away.
+      //
+      // Found by a test written for something else entirely (`pending_deliveries`
+      // listing an outstanding delivery), which is the only reason it did not ship:
+      // the scenario that was supposed to cover it passed *vacuously*.
+      status = order.status;
       destination = order.destination;
       transferIntent = ?intent;
       blockIndex = null;

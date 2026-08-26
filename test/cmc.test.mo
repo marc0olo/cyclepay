@@ -316,17 +316,42 @@ suite("journal", func() {
     };
   };
 
-  test("openEntry persists the intent at #minting with zero retries", func() {
+  test("⚠️ openEntry records the ORDER's status, not a hardcoded #minting", func() {
+    // This assertion is inverted from what it was, and the inversion IS the bug fix.
+    // `openEntry` wrote `status = #minting` unconditionally — a leftover from when
+    // money-out meant the ICP mint path — and nothing read the field back, so the lie
+    // was free. The legacy caller transitions the order to `#minting` before opening
+    // the entry, so the two agreed there by coincidence.
+    //
+    // ⚠️ **Then #30 PR-B started reading it.** `Main.unsettledDeliveries` tests this
+    // field for `#paid` to decide whether a reserve observation may be adopted, so a
+    // hardcoded `#minting` made the predicate match NOTHING: the quiet window was
+    // always satisfied, and a reconcile could overwrite the floor while a transfer it
+    // could not see was still in flight. That is the exact failure the quiet window
+    // exists to prevent, reintroduced by a stale literal in a different file.
+    //
+    // So this test is the coupling's guard: the fixture order is `#paid`, which is
+    // what a delivery entry must record.
     let journal = Cmc.emptyJournal();
     let intent = intentAt(42);
     let entry = Cmc.openEntry(journal, order(), intent, 100);
     assert journal.get(order().id) == ?entry;
-    assert entry.status == #minting;
+    assert entry.status == #paid;
+    assert entry.status == order().status;
     assert entry.transferIntent == ?intent;
     assert entry.blockIndex == null;
     assert entry.cyclesMinted == null;
     assert entry.retries == 0;
     assert entry.createdAtNs == 100 and entry.updatedAtNs == 100;
+  });
+
+  test("and it still records #minting for the LEGACY caller, which transitions first", func() {
+    // The legacy ICP path moves the order to `#minting` and hands `openEntry` the
+    // transitioned copy, so reading the order's status preserves its behaviour
+    // exactly. Pinned so the fix above cannot be read as a change to that path.
+    let journal = Cmc.emptyJournal();
+    let entry = Cmc.openEntry(journal, { order() with status = #minting }, intentAt(42), 100);
+    assert entry.status == #minting;
   });
 
   test("patch updates only the requested fields and bumps updatedAt", func() {

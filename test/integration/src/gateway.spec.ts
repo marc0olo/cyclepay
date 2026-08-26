@@ -2914,6 +2914,17 @@ test('75 — a buyer can heal their OWN stuck delivery, and only their own (#30 
     }))).toMatchObject({ status_code: 200 });
     await gw.pic.tick(5);
     expect(await orderStatus(gw, stuck.id)).toBe('paid');
+
+    // ⚠️ **Let a SWEEP attempt the delivery, not just the webhook's kick.** The
+    // detached kick does not reliably get as far as journalling an intent here, and
+    // without an intent there is no outstanding delivery for this scenario to be
+    // about — the first version of it asserted an empty set and failed. 20 min
+    // clears the 15 min sweep cadence; well inside every staleness window.
+    await gw.pic.advanceTime(20 * 60 * 1_000);
+    await gw.pic.tick(10);
+    const journalled = (await gw.asAdmin.mint_journal(stuck.id))[0];
+    expect(journalled?.transferIntent).toHaveLength(1);
+    expect(journalled?.blockIndex).toHaveLength(0);
   } finally {
     await startNns(gw, CYCLES_LEDGER_ID);
   }
@@ -2968,6 +2979,9 @@ test('75 — a buyer can heal their OWN stuck delivery, and only their own (#30 
   expect('ok' in (await gw.asAdmin.process_order(stuck.id))).toBe(true);
   expect(kickLines(await gw.asAdmin.audit_log()).length).toBeGreaterThan(0);
   expect(await orderStatus(gw, stuck.id)).toBe('delivered');
+  // The clock moved, so leave the rates fresh for what follows (see the README).
+  await setCmcRate(gw);
+  await ensureRates(gw);
 });
 
 test('76 — one escalated order must not freeze the reserve reconcile forever (#30 PR-B)', async () => {
