@@ -4,6 +4,7 @@ import List "mo:core/List";
 import Nat "mo:core/Nat";
 import Principal "mo:core/Principal";
 import Runtime "mo:core/Runtime";
+import Recovery "../src/backend/Recovery";
 import Reserve "../src/backend/Reserve";
 import Types "../src/backend/Types";
 import Map "mo:core/Map";
@@ -52,6 +53,10 @@ let legalTransitions : [(Types.OrderStatus, Types.OrderStatus)] = [
   (#paid, #abandoned),
   (#awaitingTreasury, #abandoned),
   (#needsReview, #abandoned),
+  // #30 PR-B — `record_delivered`: the operator checked the cycles ledger and the
+  // transfer HAD landed. Its absence forced them to file a delivered order as
+  // abandoned, auditing a refund that never happened.
+  (#needsReview, #delivered),
 ];
 
 func isExpectedLegal(from : Types.OrderStatus, to : Types.OrderStatus) : Bool {
@@ -231,14 +236,14 @@ suite("legal-transition matrix (exhaustive, 8×8)", func() {
     };
   };
 
-  test("exactly 16 legal transitions exist", func() {
+  test("exactly 17 legal transitions exist", func() {
     var count = 0;
     for (from in allStatuses.values()) {
       for (to in allStatuses.values()) {
         if (Orders.isLegalTransition(from, to)) count += 1;
       };
     };
-    assert count == 16;
+    assert count == 17;
   });
 
   test("the terminal statuses have no outgoing edge at all", func() {
@@ -260,13 +265,19 @@ suite("legal-transition matrix (exhaustive, 8×8)", func() {
     assert not Orders.isLegalTransition(#expired, #paid);
   });
 
-  test("needsReview holds its promise: abandon is the only way out", func() {
-    // It is NOT re-drivable and NOT terminal. The single edge is what makes
-    // `abandon_order` able to end an escalated order — the thing one status
-    // meaning both "held" and "released" prevented.
+  test("needsReview has exactly TWO exits, and both need a human's finding", func() {
+    // It is NOT re-drivable and NOT terminal. `#abandoned` is "the operator
+    // refunded"; `#delivered` is "the operator read the cycles ledger and the
+    // transfer had landed" (#30 PR-B). Both are decisions, neither is automatic —
+    // `Recovery.isSweepable(#needsReview)` is false and stays false, because
+    // re-driving an unknown money position is the double-spend this status prevents.
+    //
+    // ⚠️ The exhaustive loop is the point: an escalated order must not acquire a
+    // third exit, or a *known* position becomes reachable from an unknown one.
     for (to in allStatuses.values()) {
-      assert Orders.isLegalTransition(#needsReview, to) == (to == #abandoned);
+      assert Orders.isLegalTransition(#needsReview, to) == (to == #abandoned or to == #delivered);
     };
+    assert not Recovery.isSweepable(#needsReview);
   });
 });
 

@@ -184,6 +184,20 @@ module {
   //      `#Duplicate` — which says *this* call moved nothing, so its decrement was
   //      not a real debit even though an earlier attempt's was.
   //
+  // ⚠️ **The floor and the tally OVERLAP while a transfer is in flight, and the
+  // overlap is deliberate.** Rule 2 decrements the floor when the transfer is issued;
+  // the promise is released when the order reaches `#delivered`, one response later.
+  // Between those two points the same order is subtracted twice — once out of the
+  // floor and once still standing in `promised` — so `available` reads a full order
+  // low for the duration of one ledger call.
+  //
+  // Do not "fix" it by moving either end. Releasing the promise at issue time would
+  // free capacity for a sale while the transfer that consumes it is unresolved, and
+  // decrementing the floor at settle time would leave the balance able to surprise us
+  // downward — which is the one direction this design exists to rule out. Both ends
+  // are placed on the pessimistic side of the same unknown, and double-counting
+  // downward for the length of one call is what that costs.
+  //
   /// The floor's own audit: what the ledger should read, at minimum.
   ///
   /// Every term is observed or derivable, so the daily reconcile can recompute this

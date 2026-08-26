@@ -36,7 +36,6 @@ import {
   type FeeConfig,
   feeBreakdown,
   gateReasonMessage,
-  type GateReason,
   lockedVsEstimate,
   minAcceptableCycles,
   quoteChangedMessage,
@@ -982,7 +981,7 @@ async function createCardOrder(dest: Destination): Promise<void> {
     }
     showFormError(
       result.err.__kind__ === "notAdmitted"
-        ? gateReasonMessage(result.err.notAdmitted as GateReason)
+        ? gateReasonMessage(result.err.notAdmitted)
         : createOrderErrorMessage(result.err.__kind__),
     );
     return;

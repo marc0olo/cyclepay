@@ -749,16 +749,19 @@ privileges — any controller can do any of this):
 | `order_for_payment` | reconciliation: Stripe charge → order it funded |
 | `mint_journal` | money-out record for one order |
 | `audit_log` | operational trail; gaps in `seq` mean ring-buffer drops |
-| `process_order` | manual mint kick; safe to spam |
+| `process_order` | manual delivery kick; safe to spam. **Admin or the order's own owner** (#30 PR-B) |
 | `set_pricing_config` | fee formula, staleness window, delta bound, minimum rate sources |
 | `abandon_order` | void an unpaid order, with the reason recorded in the audit trail |
+| `record_delivered` | record that an escalated order's cycles DID reach the buyer, evidenced by the ledger block (#30 PR-B) |
+| `refresh_reserve` | observe the reserve balance now — required after a top-up, or the gateway sells nothing (#30 PR-B) |
+| `set_cycles_ledger_fee` | correct the stored ledger fee; only needed for a stored value at or above an order's locked quantity, which stalls delivery before `#BadFee` can self-correct |
 | `recount_orders` | rebuild the O(1) per-status counters from the store |
 | `refresh_float` | refresh the float observation the gate reads |
 | `reset_burn_window` | clear window consumption after verifying traffic |
 
 Public queries (transparency is the product thesis): `card_tiers`,
 `pricing_status`, `quote_previews`, `treasury_status`, `recovery_status`,
-`lifecycle_config`, `order_stats`, `can_purchase`, `cycles_status`,
+`lifecycle_config`, `reserve_status`, `can_purchase`, `cycles_status`,
 `error_queue_depth`, `health`.
 
 **Owner-scoped, not admin-scoped:** `get_order`, `list_orders`, `cancel_order`,

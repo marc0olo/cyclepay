@@ -47,12 +47,12 @@ type SetError = variant {tooShort: record {
                                    };};
 type Result_9 = 
  variant {
-   err: CreateOrderError;
-   ok: CreatedOrder;
+   err: ProcessOrderError;
+   ok: Order;
  };
 type Result_8 = 
  variant {
-   err: ProcessOrderError;
+   err: text;
    ok: Order;
  };
 type Result_7 = 
@@ -92,8 +92,8 @@ type Result_11 =
  };
 type Result_10 = 
  variant {
-   err: text;
-   ok: Order;
+   err: CreateOrderError;
+   ok: CreatedOrder;
  };
 type Result_1 = 
  variant {
@@ -467,7 +467,7 @@ service : {
   /// 
   /// Only reachable from a pre-delivery money-bearing state. A `#created` order
   /// has taken no money and needs no decision; a `#delivered` one is done.
-  abandon_order: (id: OrderId, reason: text) -> (Result_10);
+  abandon_order: (id: OrderId, reason: text) -> (Result_8);
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
   audit_log: () -> (vec Event) query;
@@ -501,7 +501,7 @@ service : {
   /// No error-queue entry: nothing is owed. The record and the audit line are the
   /// trail, and queueing an obligation for an order where no money moved is
   /// exactly the orphan state the queue must not accumulate.
-  cancel_order: (id: OrderId) -> (Result_10);
+  cancel_order: (id: OrderId) -> (Result_8);
   /// Public — the frontend renders the amount tiles from this. There is no link
   /// to render: the canister creates a session per order (#33).
   card_tiers: () -> (vec Tier) query;
@@ -525,7 +525,7 @@ service : {
   /// favour passes through and they keep the extra cycles. The guard can only
   /// ever protect the buyer. `null` opts out entirely.
   create_order: (amount: Amount, destination: Destination, minCycles:
-   opt nat) -> (Result_9);
+   opt nat) -> (Result_10);
   /// §5.2 liveness observability, public (operational transparency, same
   /// stance as treasury_status): cadence + last completed timer sweep. A
   /// null or stale `lastSweep` means recovery is not running.
@@ -602,25 +602,6 @@ service : {
   /// order it funded. Null means the payment was never attributed to an order
   /// here — check the error queue for a Type 1 entry carrying it.
   order_for_payment: (paymentRef: text) -> (opt OrderId) query;
-  /// Order counters for monitoring (public, same stance as `treasury_status`).
-  /// 
-  /// This was `retention_status` until #33 deleted retention. None of the four
-  /// counters was ever about retention — they were sharing a query with a config
-  /// field — so the query outlived the mechanism under an honest name rather
-  /// than being deleted with it. ⚠️ #30 rehomes them into `reserve_status`;
-  /// this is a waypoint, not a destination.
-  /// 
-  /// `openOrders` climbing while `delivered` does not is the signature of
-  /// order-creation abuse; the lever is `Gate.maxOpenOrdersPerPrincipal`.
-  /// `totalOrders` and `paidIntentsIndexed` should grow together — a divergence
-  /// means an index and its records disagree.
-  order_stats: () ->
-   (record {
-      expiredOrders: nat;
-      openOrders: nat;
-      paidIntentsIndexed: nat;
-      totalOrders: nat;
-    }) query;
   /// Rates + params + refresh liveness, public: both rates are market data any
   /// third party can query for themselves, and the fee formula is what users
   /// are charged. Nothing here is secret, and reproducibility is the point.
@@ -635,9 +616,32 @@ service : {
       rates: opt Rates;
       xrcCanisterId: opt text;
     }) query;
-  /// Manual mint kick (admin, §7) — ops lever for a stuck-looking order;
-  /// safe to spam, every step is deduped/idempotent/single-flighted.
-  process_order: (id: OrderId) -> (Result_8);
+  /// Manual delivery kick — **admin, or the order's own owner** (#30 PR-B).
+  /// 
+  /// Safe to spam by construction: every step is journalled, deduplicated,
+  /// idempotent and single-flighted, which is what makes it safe to widen. It does
+  /// exactly the right thing for a buyer whose delivery is stuck — replay the stored
+  /// intent, `#Duplicate` recovers the block — so a page refresh heals their order in
+  /// seconds instead of waiting up to a sweep interval.
+  /// 
+  /// ⚠️ **Owner-scoped, not public.** `getOwned` is the guard, so a caller can only
+  /// kick their OWN order. The DoS question is real but bounded: one order per kick,
+  /// serialised by `mintsInFlight`, on an order they had to pay real money to
+  /// create — a self-funding attack at the purchase floor. Contrast scenario 20's
+  /// property, which is about *unauthenticated* traffic triggering a sweep over
+  /// **every** order; that is a different shape and stays refused.
+  /// 
+  /// ⚠️ **This does not replace the recovery sweep, and must not be read as making
+  /// it optional.** Two different jobs: the sweep is the *guarantee* — we took the
+  /// money, so we deliver whether or not the buyer ever comes back — and this is the
+  /// *latency fix*. A UI-only retry would make fulfilling an obligation depend on the
+  /// buyer returning, and whoever closed the tab is exactly who most needs us to
+  /// finish.
+  /// 
+  /// An admin kick is audited (it is an ops action on someone else's order); an owner
+  /// kicking their own is not, or a refresh loop would fill the ring buffer with
+  /// lines that say nothing.
+  process_order: (id: OrderId) -> (Result_9);
   /// Batch pre-purchase quote, public.
   /// 
   /// This exists so the price a buyer is shown is **computed by the same code
@@ -662,13 +666,18 @@ service : {
   /// caller to pick. `Types.Rail` still exists on the order — the type names the
   /// dimension, this query does not need to switch on it.
   /// 
-  /// ⚠️ **It no longer discloses the cycles-ledger fee** (#30 PR-A). A query
-  /// cannot `await icrc1_fee`, so disclosing it here meant storing a copy and
-  /// correcting it on `#BadFee` — a whole staleness class in exchange for one
-  /// number the caller can read itself. The frontend already queries the cycles
-  /// ledger directly for the reserve balance, so it reads `icrc1_fee` in the same
-  /// breath. Same split as `available = balance - promisedTotal`: **the canister
-  /// owns what only it knows; the ledger owns what it owns.**
+  /// ⚠️ **It no longer discloses the cycles-ledger fee** (#30 PR-A). The frontend
+  /// already queries the cycles ledger directly for the reserve balance, so it reads
+  /// `icrc1_fee` in the same breath. Same split as `available = balance -
+  /// promisedTotal`: **the canister owns what only it knows; the ledger owns what it
+  /// owns.**
+  /// 
+  /// ⚠️ This said disclosing it would mean "storing a copy and correcting it on
+  /// `#BadFee`", as the argument against. #30 PR-B then stored exactly such a copy
+  /// for the delivery path, so read the objection precisely: a stored fee is fine
+  /// where a wrong value is **self-correcting and cheap** (one rejected transfer),
+  /// and wrong here, where nothing checks the number a buyer was shown. Delivery
+  /// gets a mechanism; a quote would get only the staleness.
   quote_previews: (amounts: vec nat) -> (QuotePreviews) query;
   /// Everything the **buyer** needs to verify their own purchase (§2 authz:
   /// `caller == order.owner`).
@@ -681,6 +690,26 @@ service : {
   /// `mint_journal` stays admin-only — it carries retries and raw transfer
   /// intents, which are operational rather than the buyer's business.
   receipt: (id: OrderId) -> (opt Receipt) query;
+  /// Record that an escalated order's cycles **did** reach the buyer (admin, §7).
+  /// 
+  /// The counterpart to `abandon_order`, and the reason #30 PR-B added the
+  /// `#needsReview → #delivered` edge. `#needsReview` means "we could not establish
+  /// whether the transfer landed"; when the operator establishes on the cycles
+  /// ledger that it did, this is how they say so. Without it their only lever was
+  /// `abandon_order`, which files a delivered order as abandoned and audits a refund
+  /// that never happened.
+  /// 
+  /// ⚠️ **The block index is required, and it is not decoration.** It is the evidence
+  /// that this call is a *finding* rather than a guess, it goes into the journal so
+  /// the receipt shows the same proof any other delivered order shows, and demanding
+  /// it means the operator has actually looked. The order id is in the transfer's
+  /// memo, so the lookup is a search on the ledger, not a reconstruction.
+  /// 
+  /// ⚠️ It moves no money and must not: the cycles are already gone. It also does not
+  /// credit the reserve floor back — the floor already assumed the debit when the
+  /// transfer was issued (rule 2), and this call is the confirmation that the
+  /// assumption was right.
+  record_delivered: (id: OrderId, blockIndex: nat) -> (Result_8);
   /// Rebuild the per-status tallies from the order store (admin, §7).
   /// 
   /// The tallies are maintained incrementally so the public status queries stay
@@ -699,6 +728,7 @@ service : {
                                 drift: vec Drift;
                               };
       lastCountReconcileAttemptNs: int;
+      lastReserveReconcileAttemptNs: int;
       lastSweep: opt record {
                        atNs: int;
                        pending: nat;
@@ -712,27 +742,60 @@ service : {
   /// Force a rate refresh now (admin) — the ops lever after retuning config or
   /// while diagnosing a stale rate, without waiting for the next tick.
   refresh_rates: () -> (opt Rates);
-  /// Reserve solvency, public (#30 PR-B).
+  /// On-demand reserve refresh (admin — a public one would let anyone spend our
+  /// cycles on ledger calls). The sweep does this hourly; this is the lever for
+  /// right after `icp cycles transfer`, so a top-up is sellable immediately.
   /// 
-  /// ⚠️ **It does NOT report the reserve balance, and that is deliberate.** The
-  /// balance belongs to the cycles ledger, `icrc1_balance_of` is a query anyone can
-  /// call for free, and a Motoko query cannot await it — so reporting it here would
-  /// mean caching it with an `observedAtNs` and inventing a staleness class. Two
-  /// earlier drafts of #30 went that way and were superseded. **The frontend reads
-  /// the balance from the ledger and computes `available = balance − promisedTotal`
-  /// itself**, which is the same split as delivery's fee: the canister owns what
-  /// only it knows, the ledger owns what it owns.
+  /// ⚠️ **`scripts/local-dev-seed.sh` and RUNBOOK's top-up step call this**, and
+  /// forgetting it is invisible to every typecheck: the floor stays at zero, so the
+  /// gateway refuses every sale against a fully funded reserve and nothing anywhere
+  /// says why.
+  refresh_reserve: () -> (nat);
+  /// Reserve solvency and order counters, public (#30 PR-B).
   /// 
-  /// The displayed figure is therefore an **uncertified query answer, non-atomic
-  /// with `promisedTotal`, for display only**. ⚠️ **The gate is the only place
-  /// solvency is decided** — `create_order` awaits the authoritative balance.
+  /// **The three figures that decide whether a sale is admitted, in one answer**,
+  /// because "the ledger says 100 T and the gateway will sell 0" has to be
+  /// diagnosable at a glance rather than by inference:
+  /// 
+  ///   `reserveFloor` − `promisedTotal` = `availableToSell`
+  /// 
+  /// ⚠️ **`reserveFloor` is a maintained lower BOUND, not the balance.** The actual
+  /// reserve lives on the cycles ledger, where `icrc1_balance_of` is a free query
+  /// anyone can call — so this canister does not mirror it. What it reports is the
+  /// bound it will actually sell against, which is the number that explains a
+  /// refusal. A floor far below the ledger's balance means nothing has reconciled
+  /// since the last top-up: `reserveObservedAtNs` says when it last did, and
+  /// `refresh_reserve` is the lever. Two earlier drafts of #30 cached the balance
+  /// here instead and were superseded — caching it invents a staleness class over a
+  /// number the caller can read from the source.
+  /// 
+  /// ⚠️ These are **uncertified query answers, and `create_order` does not consult
+  /// them.** The gate decides solvency from the same state synchronously, inside the
+  /// order-creating message. This surface is for operators, monitoring and the
+  /// frontend; nothing reads it to decide anything, so it cannot be raced into an
+  /// over-sale.
+  /// 
+  /// The four order counters were `order_stats` (and `retention_status` before that,
+  /// until #33 deleted retention). Folded in here as #30 planned: `openOrders`
+  /// climbing while deliveries do not is the signature of order-creation abuse, and
+  /// its lever is `Gate.maxOpenOrdersPerPrincipal`; `totalOrders` and
+  /// `paidIntentsIndexed` should grow together, since a divergence means an index and
+  /// its records disagree.
   reserve_status: () ->
    (record {
+      availableToSell: nat;
       canisterCycles: nat;
+      cyclesLedgerFee: nat;
+      expiredOrders: nat;
       minCanisterCycles: nat;
+      openOrders: nat;
+      paidIntentsIndexed: nat;
       promisedTotal: nat;
       reserveAccount: Account;
+      reserveFloor: nat;
+      reserveObservedAtNs: opt int;
       tallySaturations: nat;
+      totalOrders: nat;
     }) query;
   /// §5.3 manual override: clear the rolling window's consumption after
   /// confirming the traffic was legitimate (or rotating a leaked secret).
@@ -752,6 +815,21 @@ service : {
   /// nothing — it just shows no tiles. The switch is both Stripe secrets being
   /// provisioned; `railsLive` is where that lives.
   set_card_tiers: (tiers: vec Tier) -> (Result_6);
+  /// Correct the stored cycles-ledger transfer fee (admin, §7).
+  /// 
+  /// ⚠️ **Belt and braces, for one specific deadlock.** `#BadFee` normally keeps
+  /// `cyclesLedgerFee` correct without help, in either direction — that is the whole
+  /// reason delivery may store it instead of awaiting it. The exception is a stored
+  /// value at or above an order's locked quantity: `deliverableCycles` then refuses
+  /// before anything reaches the ledger, so no `#BadFee` can ever arrive to correct
+  /// it, and every delivery stalls on `delivery.feeExceedsOrder` with no self-healing
+  /// path. This is the lever for that, and it is the only reason it exists.
+  /// 
+  /// Deliberately not validated against the ledger here: a wrong value is corrected
+  /// by the first delivery that reaches the ledger, and adding an `await icrc1_fee`
+  /// to *this* method would put the read back on an operator path while leaving the
+  /// deadlock case (where the read is not the problem) exactly as it was.
+  set_cycles_ledger_fee: (fee: nat) -> (nat);
   /// Adjust the admission gate (§7): open-order cap, own-cycles floor,
   /// per-purchase ceiling. Validated atomically — a bad config never partially
   /// applies. Lowering `maxPurchaseUsdCents` below an existing tier does NOT

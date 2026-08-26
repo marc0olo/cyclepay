@@ -1255,13 +1255,18 @@ persistent actor CyclesGateway {
   /// caller to pick. `Types.Rail` still exists on the order — the type names the
   /// dimension, this query does not need to switch on it.
   ///
-  /// ⚠️ **It no longer discloses the cycles-ledger fee** (#30 PR-A). A query
-  /// cannot `await icrc1_fee`, so disclosing it here meant storing a copy and
-  /// correcting it on `#BadFee` — a whole staleness class in exchange for one
-  /// number the caller can read itself. The frontend already queries the cycles
-  /// ledger directly for the reserve balance, so it reads `icrc1_fee` in the same
-  /// breath. Same split as `available = balance - promisedTotal`: **the canister
-  /// owns what only it knows; the ledger owns what it owns.**
+  /// ⚠️ **It no longer discloses the cycles-ledger fee** (#30 PR-A). The frontend
+  /// already queries the cycles ledger directly for the reserve balance, so it reads
+  /// `icrc1_fee` in the same breath. Same split as `available = balance -
+  /// promisedTotal`: **the canister owns what only it knows; the ledger owns what it
+  /// owns.**
+  ///
+  /// ⚠️ This said disclosing it would mean "storing a copy and correcting it on
+  /// `#BadFee`", as the argument against. #30 PR-B then stored exactly such a copy
+  /// for the delivery path, so read the objection precisely: a stored fee is fine
+  /// where a wrong value is **self-correcting and cheap** (one rejected transfer),
+  /// and wrong here, where nothing checks the number a buyer was shown. Delivery
+  /// gets a mechanism; a quote would get only the staleness.
   public query func quote_previews(amounts : [Nat]) : async QuotePreviews {
     let fee : { feeBps : Nat; feeFixedCents : Nat } = {
       feeBps = pricingConfig.feeBps;
@@ -1410,6 +1415,30 @@ persistent actor CyclesGateway {
   /// legible rather than invisible. Null until the first observation — which is
   /// also why a fresh canister sells nothing until the operator refreshes.
   var reserveObservedAtNs : ?Int = null;
+
+  /// The cycles ledger's transfer fee, as last learned from the ledger (#30 PR-B).
+  ///
+  /// ⚠️ **Stored rather than awaited, and `#BadFee` is why that is safe.** Delivery
+  /// used to `await icrc1_fee()` before building the intent, on the stated grounds
+  /// that a stale copy "either shorts the buyer or makes every transfer answer
+  /// `#BadFee`". The second half is the mechanism, not the objection: an ICRC-1
+  /// ledger rejects a wrong fee **definitively and reports the expected one**, so a
+  /// stale value costs one rejected call, self-corrects in the same message, and is
+  /// persisted here for every later order. In exchange the delivery path loses an
+  /// await — and with it the `delivery.feeFetchFailed` failure mode, where a ledger
+  /// hiccup on a *read* stalled a delivery that was fully funded and ready.
+  ///
+  /// ⚠️ **A fee DECREASE shorts that one buyer by the delta.** `amount = locked −
+  /// fee_stored`, so if the ledger has become cheaper than our copy, the first order
+  /// after the change delivers a little less than it could have, and the reserve
+  /// keeps the difference. The correction cannot recover it, because raising a
+  /// committed intent's *amount* would be rebuilding the intent — which is the
+  /// double-pay this whole path is built to avoid. Bounded by one fee-delta on one
+  /// order, and it self-corrects for every order after it.
+  ///
+  /// An increase is the harmless direction: the reserve absorbs `delta` and the
+  /// buyer gets exactly what was quoted (see the `#badFee` arm).
+  var cyclesLedgerFee : Nat = Cmc.cyclesLedgerDefaultFee;
 
   /// §4.2 `journal : Map<OrderId, JournalEntry>` — the money-out record:
   /// transfer intent (written *before* the ledger call, §5.1), block_index,
@@ -1925,24 +1954,31 @@ persistent actor CyclesGateway {
         case (#beginDelivery) {
           // #30 PR-A — delivery is ONE transfer out of the reserve.
           //
-          // The fee is read live rather than stored: what the buyer receives is
-          // `lockedCycles - fee`, so a stale copy either shorts them or makes
-          // every transfer answer `#BadFee`.
-          let fee = try { await cyclesLedger.icrc1_fee() } catch (e) {
-            auditMintBlockedOnce(orderId, "delivery.feeFetchFailed", orderId # ": " # e.message());
-            return; // stays #paid; the next sweep retries
-          };
-          // Re-read after the await; only an untouched paid order proceeds.
-          let ?fresh = Orders.get(orderStore, orderId) else return;
-          if (fresh.status != #paid) continue drive;
-          let ?amount = Cmc.deliverableCycles(fresh.lockedCycles, fee) else {
+          // ⚠️ **The fee is READ FROM STATE, and this whole case is now
+          // synchronous (#30 PR-B).** It used to `await icrc1_fee()` here; that
+          // await is gone because `#BadFee` is the ledger telling us the fee, which
+          // makes a stored copy self-correcting. See `cyclesLedgerFee`.
+          //
+          // ⚠️ **Do not put an await back between here and the transfer issue.** Two
+          // things depend on there being none: the post-await re-read this case used
+          // to need is gone (nothing can move the order in a synchronous stretch),
+          // and `unsettledDeliveries` — the reconcile's quiet-window predicate —
+          // relies on an intent never being visible without its transfer having been
+          // issued in the same message. Its doc spells that out.
+          let fee = cyclesLedgerFee;
+          let ?amount = Cmc.deliverableCycles(order.lockedCycles, fee) else {
             // Unreachable under the $10 floor (~7 T cycles against a 100 M fee),
             // and audited rather than silent so that a future move in either
             // number surfaces as a stuck order with a reason instead of a trap.
-            auditMintBlockedOnce(orderId, "delivery.feeExceedsOrder", orderId # ": fee " # fee.toText() # " >= locked " # fresh.lockedCycles.toText());
+            //
+            // ⚠️ This is the ONE state the stored fee cannot correct itself out of:
+            // nothing reaches the ledger, so no `#BadFee` ever arrives to fix the
+            // copy, and every order stalls here. `set_cycles_ledger_fee` is the lever
+            // that exists for it.
+            auditMintBlockedOnce(orderId, "delivery.feeExceedsOrder", orderId # ": fee " # fee.toText() # " >= locked " # order.lockedCycles.toText());
             return;
           };
-          let destination = switch (fresh.destination) {
+          let destination = switch (order.destination) {
             case (#cyclesLedgerAccount(account)) account;
           };
           // §5.1 step 1 — the intent commits BEFORE the transfer await, in a
@@ -1950,7 +1986,7 @@ persistent actor CyclesGateway {
           // them byte-identically; that is what makes two concurrent drivers
           // (the webhook kick and the recovery sweep) safe.
           let intent = Cmc.buildDeliveryIntent(orderId, destination, amount, Time.now());
-          ignore Cmc.openEntry(mintJournal, fresh, intent, Time.now());
+          ignore Cmc.openEntry(mintJournal, order, intent, Time.now());
           // fall through the loop → #replayDelivery issues the transfer
         };
         case (#replayDelivery(intent)) {
@@ -2044,19 +2080,30 @@ persistent actor CyclesGateway {
               // the intent's AMOUNT is untouched — only the fee we pass.
               //
               // ⚠️ **Re-issued HERE, in the same message, rather than left to the
-              // next sweep.** The fee is derived from the intent, so a later
-              // replay would derive the same rejected fee and bounce again — the
-              // order would loop until retries ran out. Changing it is safe
-              // precisely because `#BadFee` is *definitive*: the ledger did not
-              // execute, so this is a first attempt with corrected args, not a
-              // replay of something that might already have happened.
+              // next sweep.** The fee is derived from the intent, so a later replay
+              // derives the same rejected fee and bounces again — and since #30 PR-B
+              // deleted the retry cap on this path, "again" means every sweep until
+              // the 72 h max-wait, not until a counter runs out. Correcting in-message
+              // is what makes the loop terminate. Changing the fee is safe precisely
+              // because `#BadFee` is *definitive*: the ledger did not execute, so this
+              // is a first attempt with corrected args, not a replay of something that
+              // might already have happened.
               //
               // ⚠️ The reserve then drops by `lockedCycles + delta` while #30's
               // tally drops by `lockedCycles`, so `available` drifts down by the
               // delta. Fractions of a fee, erring conservative — but the "exactly
               // invariant under delivery" claim holds only while the fee is
               // unchanged, so do not read that small drift as a bug.
-              audit("delivery.feeChanged", orderId # ": ledger expects " # expected.toText() # " (intent implies " # fee.toText() # "); reserve absorbs the difference");
+              // ⚠️ **Learn the fee, for every LATER order (#30 PR-B).** This arm is
+              // the only place the ledger tells us its fee, now that delivery does not
+              // read it. Persisting here is what bounds the cost of a stale copy to a
+              // single rejected call: without it, every order after a fee change would
+              // pay the same round trip.
+              //
+              // It does NOT change this order's intent — the amount is committed and
+              // rebuilding it is the double-pay this path exists to avoid.
+              cyclesLedgerFee := expected;
+              audit("delivery.feeChanged", orderId # ": ledger expects " # expected.toText() # " (intent implies " # fee.toText() # "); reserve absorbs the difference, and " # expected.toText() # " is now the stored fee");
               // ── Rule 3 (#30 PR-B): a DEFINITIVE rejection credits the floor back ──
               // `#BadFee` means the ledger processed the call and refused it, so
               // nothing moved and rule 2's decrement was not a real debit. Credit it
@@ -2267,11 +2314,43 @@ persistent actor CyclesGateway {
 
   public type ProcessOrderError = { #notFound; #inFlight };
 
-  /// Manual mint kick (admin, §7) — ops lever for a stuck-looking order;
-  /// safe to spam, every step is deduped/idempotent/single-flighted.
+  /// Manual delivery kick — **admin, or the order's own owner** (#30 PR-B).
+  ///
+  /// Safe to spam by construction: every step is journalled, deduplicated,
+  /// idempotent and single-flighted, which is what makes it safe to widen. It does
+  /// exactly the right thing for a buyer whose delivery is stuck — replay the stored
+  /// intent, `#Duplicate` recovers the block — so a page refresh heals their order in
+  /// seconds instead of waiting up to a sweep interval.
+  ///
+  /// ⚠️ **Owner-scoped, not public.** `getOwned` is the guard, so a caller can only
+  /// kick their OWN order. The DoS question is real but bounded: one order per kick,
+  /// serialised by `mintsInFlight`, on an order they had to pay real money to
+  /// create — a self-funding attack at the purchase floor. Contrast scenario 20's
+  /// property, which is about *unauthenticated* traffic triggering a sweep over
+  /// **every** order; that is a different shape and stays refused.
+  ///
+  /// ⚠️ **This does not replace the recovery sweep, and must not be read as making
+  /// it optional.** Two different jobs: the sweep is the *guarantee* — we took the
+  /// money, so we deliver whether or not the buyer ever comes back — and this is the
+  /// *latency fix*. A UI-only retry would make fulfilling an obligation depend on the
+  /// buyer returning, and whoever closed the tab is exactly who most needs us to
+  /// finish.
+  ///
+  /// An admin kick is audited (it is an ops action on someone else's order); an owner
+  /// kicking their own is not, or a refresh loop would fill the ring buffer with
+  /// lines that say nothing.
   public shared ({ caller }) func process_order(id : Types.OrderId) : async Result.Result<Types.Order, ProcessOrderError> {
-    requireAdmin(caller);
-    auditAdmin(caller, "mint.manualKick", id);
+    let isAdmin = Auth.checkAdmin(caller, Principal.isController).isOk();
+    if (isAdmin) {
+      auditAdmin(caller, "mint.manualKick", id);
+    } else {
+      // Not an admin, so this must be the owner's own order. `getOwned` answers
+      // "not found" for someone else's, which is also the right answer to give:
+      // whether an id exists is not a stranger's business. No separate anonymous
+      // check is needed — `create_order` refuses the anonymous principal, so it
+      // owns no order and every id answers `#notFound` for it.
+      if (Orders.getOwned(orderStore, id, caller) == null) return #err(#notFound);
+    };
     if (Orders.get(orderStore, id) == null) return #err(#notFound);
     if (mintsInFlight.contains(id)) return #err(#inFlight);
     await* processMint(id);
@@ -2293,33 +2372,6 @@ persistent actor CyclesGateway {
     let rendered = rebuilt.map(func((status, n)) = status # "=" # n.toText());
     auditAdmin(caller, "orders.recounted", rendered.values().join(", "));
     rebuilt;
-  };
-
-  /// Order counters for monitoring (public, same stance as `treasury_status`).
-  ///
-  /// This was `retention_status` until #33 deleted retention. None of the four
-  /// counters was ever about retention — they were sharing a query with a config
-  /// field — so the query outlived the mechanism under an honest name rather
-  /// than being deleted with it. ⚠️ #30 rehomes them into `reserve_status`;
-  /// this is a waypoint, not a destination.
-  ///
-  /// `openOrders` climbing while `delivered` does not is the signature of
-  /// order-creation abuse; the lever is `Gate.maxOpenOrdersPerPrincipal`.
-  /// `totalOrders` and `paidIntentsIndexed` should grow together — a divergence
-  /// means an index and its records disagree.
-  public query func order_stats() : async {
-    openOrders : Nat;
-    expiredOrders : Nat;
-    totalOrders : Nat;
-    paidIntentsIndexed : Nat;
-  } {
-    {
-      // O(1), same reasoning as treasury_status.
-      openOrders = Orders.countOf(orderStore, #created);
-      expiredOrders = Orders.countOf(orderStore, #expired);
-      totalOrders = orderStore.orders.size();
-      paidIntentsIndexed = paidIntents.size();
-    };
   };
 
   /// Reconcile the floor against the ledger (#30 PR-B) — **rule 1 of three**.
@@ -2355,17 +2407,21 @@ persistent actor CyclesGateway {
   /// truth.
   ///
   /// ⚠️ Still a conservative SUPERSET of in-flight for live orders, which is what
-  /// makes it usable: `#beginDelivery` writes the intent and *then* awaits
-  /// `icrc1_fee` before issuing, so an order can sit here with nothing sent —
-  /// counting it costs a skipped reconcile, which is free. The direction that would
-  /// break the reconcile is the reverse: an outflow in flight with no intent to see.
-  /// That cannot happen, because `openEntry` commits the intent in a synchronous
-  /// block before any issue and the `#BadFee` re-issue runs under an existing one.
+  /// makes it usable: what it counts is "an intent exists and no block is recorded",
+  /// which includes the sweep-to-sweep gap after a retriable failure, when nothing
+  /// is in the air at all. Counting those costs a skipped reconcile, which is free.
   ///
-  /// ⚠️ **If that fee await ever moves BEFORE the intent write, this becomes a hole**
-  /// and a reconcile can adopt a balance while a transfer it cannot see is in
-  /// flight. Nothing in the type system prevents that reordering, so this comment is
-  /// the guard.
+  /// The direction that would break the reconcile is the reverse — an outflow in
+  /// flight with no intent to see — and it cannot happen, because `openEntry` commits
+  /// the intent in a synchronous block before any issue and the `#BadFee` re-issue
+  /// runs under an existing one.
+  ///
+  /// ⚠️ **That soundness is a property of there being no await between the intent
+  /// write and the transfer issue, and nothing in the type system enforces it.**
+  /// #30 PR-B removed the one await that used to sit in that stretch (`icrc1_fee`,
+  /// now a stored value), which is why the two are adjacent today. Reintroduce an
+  /// await there and a reconcile can adopt a balance while a transfer it cannot see
+  /// is in flight. This comment is the guard.
   func unsettledDeliveries() : Nat {
     var n = 0;
     for ((_, entry) in mintJournal.entries()) {
@@ -2396,16 +2452,16 @@ persistent actor CyclesGateway {
     reserveObservedAtNs := ?Time.now();
   };
 
-  /// On-demand reserve refresh (admin — a public one would let anyone spend our
-  /// cycles on ledger calls). The sweep does this hourly; this is the lever for
-  /// right after `icp cycles transfer`, so a top-up is sellable immediately.
-  public shared ({ caller }) func refresh_reserve() : async Nat {
-    requireAdmin(caller);
-    // ⚠️ **The quiet window is established across the await, not assumed.** Nothing
-    // unsettled before, nothing unsettled after, and no transfer issued in between
-    // — then and only then does the observed balance bound the current one. Any of
-    // the three failing means an outflow may have moved the balance in the gap, and
-    // adopting would erase rule 2's decrement.
+  /// Read the ledger balance and reconcile the floor against it — the ONE place
+  /// that establishes the quiet window, so the operator lever and the sweep cannot
+  /// drift apart on the property the whole design rests on.
+  ///
+  /// ⚠️ **The quiet window is established across the await, not assumed.** Nothing
+  /// unsettled before, nothing unsettled after, and no transfer issued in between —
+  /// then and only then does the observed balance bound the current one. Any of the
+  /// three failing means an outflow may have moved the balance in the gap, and
+  /// adopting would erase rule 2's decrement.
+  func observeReserve() : async* Nat {
     let unsettledBefore = unsettledDeliveries();
     let issuedBefore = outflowsIssued;
     let observed = await cyclesLedger.icrc1_balance_of(Cmc.reserveAccount(selfPrincipal()));
@@ -2414,28 +2470,83 @@ persistent actor CyclesGateway {
     observed;
   };
 
-  /// Reserve solvency, public (#30 PR-B).
+  /// On-demand reserve refresh (admin — a public one would let anyone spend our
+  /// cycles on ledger calls). The sweep does this hourly; this is the lever for
+  /// right after `icp cycles transfer`, so a top-up is sellable immediately.
   ///
-  /// ⚠️ **It does NOT report the reserve balance, and that is deliberate.** The
-  /// balance belongs to the cycles ledger, `icrc1_balance_of` is a query anyone can
-  /// call for free, and a Motoko query cannot await it — so reporting it here would
-  /// mean caching it with an `observedAtNs` and inventing a staleness class. Two
-  /// earlier drafts of #30 went that way and were superseded. **The frontend reads
-  /// the balance from the ledger and computes `available = balance − promisedTotal`
-  /// itself**, which is the same split as delivery's fee: the canister owns what
-  /// only it knows, the ledger owns what it owns.
+  /// ⚠️ **`scripts/local-dev-seed.sh` and RUNBOOK's top-up step call this**, and
+  /// forgetting it is invisible to every typecheck: the floor stays at zero, so the
+  /// gateway refuses every sale against a fully funded reserve and nothing anywhere
+  /// says why.
+  public shared ({ caller }) func refresh_reserve() : async Nat {
+    requireAdmin(caller);
+    await* observeReserve();
+  };
+
+  /// Reserve solvency and order counters, public (#30 PR-B).
   ///
-  /// The displayed figure is therefore an **uncertified query answer, non-atomic
-  /// with `promisedTotal`, for display only**. ⚠️ **The gate is the only place
-  /// solvency is decided** — `create_order` awaits the authoritative balance.
+  /// **The three figures that decide whether a sale is admitted, in one answer**,
+  /// because "the ledger says 100 T and the gateway will sell 0" has to be
+  /// diagnosable at a glance rather than by inference:
+  ///
+  ///   `reserveFloor` − `promisedTotal` = `availableToSell`
+  ///
+  /// ⚠️ **`reserveFloor` is a maintained lower BOUND, not the balance.** The actual
+  /// reserve lives on the cycles ledger, where `icrc1_balance_of` is a free query
+  /// anyone can call — so this canister does not mirror it. What it reports is the
+  /// bound it will actually sell against, which is the number that explains a
+  /// refusal. A floor far below the ledger's balance means nothing has reconciled
+  /// since the last top-up: `reserveObservedAtNs` says when it last did, and
+  /// `refresh_reserve` is the lever. Two earlier drafts of #30 cached the balance
+  /// here instead and were superseded — caching it invents a staleness class over a
+  /// number the caller can read from the source.
+  ///
+  /// ⚠️ These are **uncertified query answers, and `create_order` does not consult
+  /// them.** The gate decides solvency from the same state synchronously, inside the
+  /// order-creating message. This surface is for operators, monitoring and the
+  /// frontend; nothing reads it to decide anything, so it cannot be raced into an
+  /// over-sale.
+  ///
+  /// The four order counters were `order_stats` (and `retention_status` before that,
+  /// until #33 deleted retention). Folded in here as #30 planned: `openOrders`
+  /// climbing while deliveries do not is the signature of order-creation abuse, and
+  /// its lever is `Gate.maxOpenOrdersPerPrincipal`; `totalOrders` and
+  /// `paidIntentsIndexed` should grow together, since a divergence means an index and
+  /// its records disagree.
   public query func reserve_status() : async {
+    reserveFloor : Nat;
     promisedTotal : Nat;
+    availableToSell : Nat;
+    reserveObservedAtNs : ?Int;
+    cyclesLedgerFee : Nat;
     tallySaturations : Nat;
     reserveAccount : Types.Account;
     canisterCycles : Nat;
     minCanisterCycles : Nat;
+    openOrders : Nat;
+    expiredOrders : Nat;
+    totalOrders : Nat;
+    paidIntentsIndexed : Nat;
   } {
     {
+      reserveFloor;
+      /// Null means **no reconcile has ever run**, which is also why a freshly
+      /// installed canister sells nothing until the operator refreshes: the floor
+      /// starts at zero and only a look at the ledger can raise it.
+      reserveObservedAtNs;
+      /// Exactly what the gate computes, from the same two numbers, so a refused
+      /// sale and this figure can never tell different stories.
+      availableToSell = Reserve.available(reserveFloor, Orders.promised(orderStore));
+      /// The fee the NEXT delivery will use, and the only way to see that `#BadFee`
+      /// self-correction actually happened (#30 PR-B). A value at or above an order's
+      /// locked quantity is the one state that cannot self-correct — deliveries stall
+      /// before reaching the ledger — and `set_cycles_ledger_fee` is its lever.
+      cyclesLedgerFee;
+      // O(1), same reasoning as treasury_status.
+      openOrders = Orders.countOf(orderStore, #created);
+      expiredOrders = Orders.countOf(orderStore, #expired);
+      totalOrders = orderStore.orders.size();
+      paidIntentsIndexed = paidIntents.size();
       promisedTotal = Orders.promised(orderStore);
       /// ⚠️ **Any non-zero value means the tally has diverged.** A saturation is a
       /// release asking to remove more than was held, so it says the tally was
@@ -2588,6 +2699,72 @@ persistent actor CyclesGateway {
     #ok(abandoned);
   };
 
+  /// Record that an escalated order's cycles **did** reach the buyer (admin, §7).
+  ///
+  /// The counterpart to `abandon_order`, and the reason #30 PR-B added the
+  /// `#needsReview → #delivered` edge. `#needsReview` means "we could not establish
+  /// whether the transfer landed"; when the operator establishes on the cycles
+  /// ledger that it did, this is how they say so. Without it their only lever was
+  /// `abandon_order`, which files a delivered order as abandoned and audits a refund
+  /// that never happened.
+  ///
+  /// ⚠️ **The block index is required, and it is not decoration.** It is the evidence
+  /// that this call is a *finding* rather than a guess, it goes into the journal so
+  /// the receipt shows the same proof any other delivered order shows, and demanding
+  /// it means the operator has actually looked. The order id is in the transfer's
+  /// memo, so the lookup is a search on the ledger, not a reconstruction.
+  ///
+  /// ⚠️ It moves no money and must not: the cycles are already gone. It also does not
+  /// credit the reserve floor back — the floor already assumed the debit when the
+  /// transfer was issued (rule 2), and this call is the confirmation that the
+  /// assumption was right.
+  public shared ({ caller }) func record_delivered(
+    id : Types.OrderId,
+    blockIndex : Nat,
+  ) : async Result.Result<Types.Order, Text> {
+    requireAdmin(caller);
+    let ?order = Orders.get(orderStore, id) else return #err("no order " # id);
+    switch (order.status) {
+      case (#needsReview) {};
+      case (#delivered) return #ok(order); // idempotent: already recorded
+      case (status) {
+        return #err(
+          "order " # id # " is " # Types.statusToText(status)
+          # "; only an under-review order can be recorded as delivered — a live order delivers on its own"
+        );
+      };
+    };
+    let ?delivered = tryTransition(id, #delivered) else {
+      return #err("order " # id # " refused the transition to delivered");
+    };
+    Cmc.patch(mintJournal, id, { status = ?#delivered; blockIndex = ?blockIndex; cyclesMinted = null; bumpRetries = false }, Time.now());
+    clearDelayed(id);
+    auditAdmin(caller, "order.recordedDelivered", id # ": operator confirmed cycles-ledger block " # blockIndex.toText());
+    #ok(delivered);
+  };
+
+  /// Correct the stored cycles-ledger transfer fee (admin, §7).
+  ///
+  /// ⚠️ **Belt and braces, for one specific deadlock.** `#BadFee` normally keeps
+  /// `cyclesLedgerFee` correct without help, in either direction — that is the whole
+  /// reason delivery may store it instead of awaiting it. The exception is a stored
+  /// value at or above an order's locked quantity: `deliverableCycles` then refuses
+  /// before anything reaches the ledger, so no `#BadFee` can ever arrive to correct
+  /// it, and every delivery stalls on `delivery.feeExceedsOrder` with no self-healing
+  /// path. This is the lever for that, and it is the only reason it exists.
+  ///
+  /// Deliberately not validated against the ledger here: a wrong value is corrected
+  /// by the first delivery that reaches the ledger, and adding an `await icrc1_fee`
+  /// to *this* method would put the read back on an operator path while leaving the
+  /// deadlock case (where the read is not the problem) exactly as it was.
+  public shared ({ caller }) func set_cycles_ledger_fee(fee : Nat) : async Nat {
+    requireAdmin(caller);
+    let previous = cyclesLedgerFee;
+    cyclesLedgerFee := fee;
+    auditAdmin(caller, "reserve.feeOverridden", "cycles-ledger fee set to " # fee.toText() # " (was " # previous.toText() # ")");
+    previous;
+  };
+
   public type Receipt = {
     order : Types.Order;
     /// What the buyer actually paid, if they have.
@@ -2681,6 +2858,21 @@ persistent actor CyclesGateway {
   /// itself is failing (RUNBOOK §9).
   var lastCountReconcile : ?{ atNs : Int; drift : [Orders.Drift] } = null;
 
+  /// How often the sweep reconciles the reserve floor against the cycles ledger.
+  ///
+  /// Hourly rather than per-sweep because it costs a ledger round trip plus two
+  /// journal scans, and because what it detects — an unobserved top-up — is an
+  /// operator action that has `refresh_reserve` for immediacy. The cost of the delay
+  /// is bounded and one-directional: a floor below the truth under-sells, never over-
+  /// sells.
+  let reserveReconcileIntervalNs : Nat = 3_600 * 1_000_000_000;
+
+  /// When the reserve reconcile was last *attempted*. Same attempt-vs-success split
+  /// as the count reconcile below, for the same reason: `reserveObservedAtNs` records
+  /// success, and gating the cadence on that alone would retry a failing (or
+  /// perpetually non-quiet) read on every single tick.
+  var lastReserveReconcileAttemptNs : Int = 0;
+
   /// When a reconcile was last *attempted*, which is what gates the cadence.
   ///
   /// Separate from the success timestamp on purpose. A trap rolls back every
@@ -2746,6 +2938,29 @@ persistent actor CyclesGateway {
       };
       let pending = await* sweepMintable();
       lastRecoverySweep := ?{ atNs = Time.now(); pending };
+      // ── Rule 1 (#30 PR-B): the floor learns about top-ups only by looking ──
+      //
+      // ⚠️ **After the sweep, and INLINE — both deliberate, and for opposite
+      // reasons from the count reconcile above.**
+      //
+      // *After*, because a quiet window is what makes an observation adoptable, and
+      // the sweep is the one thing in this canister that issues transfers. Reading
+      // the balance first would race our own deliveries and skip almost every time
+      // a sweep had work — the floor would then only ever rise on idle ticks, which
+      // is precisely when nobody needs it to.
+      //
+      // *Inline*, because the detached-message trick the count reconcile uses would
+      // put this message's writes and the sweep's deliveries in flight together,
+      // recreating the same race. The trap risk it exists to avoid is handled by
+      // catching instead: a ledger that will not answer is a skipped reconcile, and
+      // the floor it leaves standing is a lower bound, so nothing unsafe follows.
+      let now2 = Time.now();
+      if (Recovery.reconcileDue(lastReserveReconcileAttemptNs, now2, reserveReconcileIntervalNs)) {
+        lastReserveReconcileAttemptNs := now2;
+        try { ignore await* observeReserve() } catch (e) {
+          audit("reserve.observeFailed", "could not read the reserve balance: " # e.message() # " — the floor stands, so the gateway under-sells until the next attempt");
+        };
+      };
     } finally {
       recoverySweepInFlight := false;
     };
@@ -2799,6 +3014,13 @@ persistent actor CyclesGateway {
     /// correlating against the sweep clock: an attempt materially newer than the
     /// success means the reconcile is trapping (RUNBOOK §9).
     lastCountReconcileAttemptNs : Int;
+    /// When the RESERVE reconcile was last attempted (#30 PR-B). Its success clock
+    /// is `reserve_status.reserveObservedAtNs`, and the two diverging is the one
+    /// signal that says "the floor is stale on purpose": either the ledger read is
+    /// failing, or every attempt has landed on a non-quiet window. Both under-sell
+    /// rather than over-sell, so this is a P3 that explains refusals — not an
+    /// incident.
+    lastReserveReconcileAttemptNs : Int;
   } {
     {
       intervalNs = recoverySweepIntervalNs;
@@ -2806,6 +3028,7 @@ persistent actor CyclesGateway {
       sweepInFlight = recoverySweepInFlight;
       lastCountReconcile;
       lastCountReconcileAttemptNs;
+      lastReserveReconcileAttemptNs;
     };
   };
 

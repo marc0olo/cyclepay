@@ -49,6 +49,10 @@ let orderB: Order; let refB: string; // cycles-ledger delivery
 let orderC: Order; let refC: string; // Type 2 undeliverable
 let orderE: Order; let refE: string; // upgrade-mid-transfer replay
 let orderF: Order; let refF: string; // treasury max-wait escalation
+/// The escalated order scenario 35 leaves in `needsReview` with a transfer intent
+/// and no block. 76 uses it as the freeze case the reserve reconcile has to survive,
+/// and 77 resolves it — so it is suite-global rather than local to 35.
+let orderEscalated: Order;
 
 const FLOAT_E8S = 5_000_000_000n; // 50 ICP
 /// #30 PR-A: delivery is a transfer OUT of the gateway's own cycles-ledger
@@ -120,12 +124,12 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
   // so the open-order cap does not either. Unbounded storage at zero cost.
   expect((await gw.asAdmin.stripe_api_key_status()).isSet).toBe(false);
   expect(await gw.asAdmin.stripe_origin()).toHaveLength(0);
-  const ordersBefore = (await gw.asAdmin.order_stats()).totalOrders;
+  const ordersBefore = (await gw.asAdmin.reserve_status()).totalOrders;
   const noKey = expectErr(
     await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []),
   ) as { sessionUnavailable: string };
   expect(noKey.sessionUnavailable).toContain('API key');
-  expect((await gw.asAdmin.order_stats()).totalOrders).toBe(ordersBefore);
+  expect((await gw.asAdmin.reserve_status()).totalOrders).toBe(ordersBefore);
 
   // The key alone is not enough: without a return origin there is no URL to send
   // the buyer back to, and the same no-record rule applies.
@@ -134,7 +138,7 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
     await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []),
   ) as { sessionUnavailable: string };
   expect(noOrigin.sessionUnavailable).toContain('origin');
-  expect((await gw.asAdmin.order_stats()).totalOrders).toBe(ordersBefore);
+  expect((await gw.asAdmin.reserve_status()).totalOrders).toBe(ordersBefore);
 
   // Validated at set time, so a bad value fails in front of the operator who
   // typed it rather than breaking every purchase later.
@@ -933,7 +937,7 @@ test('20 — an unauthenticated webhook that pays nothing triggers no sweep (DoS
 test('21 — status counters are O(1) and reconcile against a full recount', async () => {
   // The public status queries read maintained tallies rather than scanning the
   // order store, so a drift would silently misreport operational state.
-  const before = await gw.asAnon.order_stats();
+  const before = await gw.asAnon.reserve_status();
   const rebuilt = await gw.asAdmin.recount_orders();
   const asMap = new Map(rebuilt);
 
@@ -1421,6 +1425,11 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
   const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const doomed = created.order;
+  // Scenarios 76 and 77 need an order in exactly the state this one produces —
+  // `needsReview`, intent journalled, no block — and reproducing it costs another
+  // 72 h of clock advance plus the two rate re-arms that follow. They assert the
+  // shape they depend on rather than assuming it.
+  orderEscalated = doomed;
 
   // Parked with a real cycles-ledger outage (#30 PR-A): the burn-cap pause that
   // used to hold an order at `#awaitingTreasury` went with the mint pre-gate.
@@ -1668,7 +1677,7 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
   expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
 
   const mine = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
-  const openBefore = (await gw.asAdmin.order_stats()).openOrders;
+  const openBefore = (await gw.asAdmin.reserve_status()).openOrders;
 
   // Owner-scoped: nobody else can cancel your order, including an admin.
   expect(expectErr(await gw.asAdmin.cancel_order(mine.order.id))).toContain('no order');
@@ -1679,7 +1688,7 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
   // who had cancelled that their order had expired.
   expect(statusKey(cancelled)).toBe('cancelled');
   // The slot is freed, which is the point.
-  expect((await gw.asAdmin.order_stats()).openOrders).toBe(openBefore - 1n);
+  expect((await gw.asAdmin.reserve_status()).openOrders).toBe(openBefore - 1n);
   // Idempotent — a double-click is not an error.
   expect(statusKey(expectOk(await cancelOrderWithExpire(gw, mine.order.id)))).toBe('cancelled');
 
@@ -2429,7 +2438,7 @@ test('65 — a session that cannot be created fails the order in the same call (
   // complication chained off that. The buyer's slot frees immediately and they
   // start over.
   await ensureRates(gw);
-  const openBefore = (await gw.asAdmin.order_stats()).openOrders;
+  const openBefore = (await gw.asAdmin.reserve_status()).openOrders;
 
   const settle = await gw.deferredUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []);
   const outcall = await awaitPendingOutcall(gw);
@@ -2444,7 +2453,7 @@ test('65 — a session that cannot be created fails the order in the same call (
   expect(theOrder).toBeDefined();
   expect(theOrder!.stripeSessionUrl).toHaveLength(0);
   // The slot is free again: openOrders is back where it started.
-  expect((await gw.asAdmin.order_stats()).openOrders).toBe(openBefore);
+  expect((await gw.asAdmin.reserve_status()).openOrders).toBe(openBefore);
 
   // And a livemode mismatch is refused at CREATION, before any money moves —
   // cheaper than catching it at webhook time, and the reason the check lives here.
@@ -2707,15 +2716,18 @@ test('71 — a custom amount is bounded by the gate, in both directions (#33)', 
 
 test('72 — a delivery completing DURING a create cannot manufacture capacity (#30 PR-B)', async () => {
   // ⚠️ **The interleaving that broke an earlier version of this PR's own
-  // correctness proof**, and the reason `admitOrder` decides against
-  // `max(snapshot, live)` rather than the live tally.
+  // correctness proof.** It is worth keeping the shape on record even though the
+  // design no longer has the gap: `create_order` USED to await the reserve balance,
+  // and a delivery continuation landing in that gap moved both numbers at once — it
+  // debited the ledger and released the order's promise — so pairing the stale
+  // balance with a live tally double-counted the release and `available` came out
+  // high by a whole order.
   //
-  // `create_order` awaits the reserve balance, so its continuation resumes after
-  // other messages may have run. A delivery continuation in that gap moves BOTH
-  // numbers: it debits the ledger and releases the order's promise. Pairing the
-  // stale balance with a live tally therefore double-counts the release — the
-  // delivered cycles are still in the balance figure AND no longer in the promise
-  // figure — and `available` comes out high by a whole order.
+  // The fix was not a fresher read (any awaited value is historical by the time it is
+  // used); it was removing the read from the decision. `admitOrder` is now
+  // synchronous against `reserveFloor`, a maintained lower bound moved only by our own
+  // outflows, so there are no two values to pair and no gap to land in. What this
+  // scenario now guards is the INVARIANT rather than that mechanism — see below.
   //
   // Staged so the harm would be visible rather than theoretical: the reserve holds
   // **exactly one order's worth**. An optimistic admission here is an order the
@@ -2737,12 +2749,13 @@ test('72 — a delivery completing DURING a create cannot manufacture capacity (
   // continuation run.
   //
   // ⚠️ **VERIFIED BY MUTATION THAT THIS SCENARIO DOES NOT CATCH THE BUG IT
-  // DESCRIBES.** Replacing `Reserve.promisedForDecision` with a live-only read —
-  // the exact defect — leaves all 58 scenarios passing: PocketIC's scheduling does
-  // not put the delivery continuation inside the create's balance-read gap, and
-  // nothing here can force it to. The arithmetic is pinned in
-  // `test/reserve.test.mo` instead, and `docs/TEST-COVERAGE.md` carries the gap so
-  // its absence is not read as coverage.
+  // DESCRIBED.** With the stale-balance design still in place, replacing
+  // `Reserve.promisedForDecision` (since deleted with that design) by a live-only
+  // read — the exact defect — left all 58 scenarios passing: PocketIC's scheduling
+  // does not put the delivery continuation inside the create's await gap, and nothing
+  // here can force it to. The arithmetic is pinned in `test/reserve.test.mo` instead,
+  // and `docs/TEST-COVERAGE.md` carries the gap so its absence is not read as
+  // coverage.
   //
   // Kept anyway for what it DOES assert: the invariant below holds however the
   // messages interleave, so an over-promise arriving by any other route is caught.
@@ -2776,4 +2789,243 @@ test('72 — a delivery completing DURING a create cannot manufacture capacity (
     expectOk(await cancelOrderWithExpire(gw, second.ok.order.id));
   }
   expect(fee).toBe(CYCLES_LEDGER_FEE);
+});
+
+test('73 — a funded reserve is not a SELLABLE reserve until the gateway looks (#30 PR-B)', async () => {
+  // Rule 1, and the trap the whole design accepts in exchange for a synchronous
+  // admission decision: solvency is decided against `reserveFloor`, a maintained
+  // lower bound that moves DOWN when we transfer out and UP only when the canister
+  // reads the ledger. A top-up is therefore real money the gateway will not sell
+  // until someone tells it to look.
+  //
+  // ⚠️ This is why `fundReserve` observes by default and why the seed script and the
+  // RUNBOOK's top-up step both call `refresh_reserve`. Getting it wrong produces the
+  // single most confusing failure in this system: `#reserveShort{available = 0}`
+  // against a ledger account holding the full amount, with nothing anywhere saying
+  // why.
+  const TOP_UP = 7_000_000_000_000n; // 7 T — two tier5 orders' worth
+
+  const before = await gw.asAnon.reserve_status();
+  // THE BOUND, asserted before anything else: the floor never exceeds the balance.
+  // Everything the gate does rests on this, and it holds at every point in the
+  // suite — not only after a reconcile.
+  expect(before.reserveFloor).toBeLessThanOrEqual(await reserveBalance(gw));
+
+  // Fund WITHOUT observing — the state an operator produces by running
+  // `icp cycles transfer` and stopping there.
+  await fundReserve(gw, TOP_UP, false);
+  const unobserved = await gw.asAnon.reserve_status();
+  expect(unobserved.reserveFloor).toBe(before.reserveFloor);
+  expect(unobserved.reserveObservedAtNs).toEqual(before.reserveObservedAtNs);
+  // The money is unambiguously there. Only the gateway's view of it has not moved.
+  expect(await reserveBalance(gw)).toBeGreaterThanOrEqual(before.reserveFloor + TOP_UP);
+
+  // Now look. Adoption takes the ledger's truth outright rather than adding the
+  // top-up to the floor, which is what makes it self-healing: earlier scenarios
+  // left the floor BELOW the balance (scenario 35 parked a transfer against a
+  // stopped ledger, and rule 2's decrement correctly stands when a call gets no
+  // reply), and one quiet observation repairs that too.
+  const observedBalance = await gw.asAdmin.refresh_reserve();
+  const after = await gw.asAnon.reserve_status();
+  expect(after.reserveFloor).toBe(observedBalance);
+  expect(after.reserveFloor).toBe(await reserveBalance(gw));
+  expect(after.reserveFloor).toBeGreaterThan(before.reserveFloor);
+  expect(after.reserveObservedAtNs).toHaveLength(1);
+  // `availableToSell` is the gate's own arithmetic, not a second derivation.
+  expect(after.availableToSell).toBe(
+    after.reserveFloor > after.promisedTotal ? after.reserveFloor - after.promisedTotal : 0n,
+  );
+});
+
+test('74 — the stored ledger fee self-corrects from #BadFee, so delivery never reads it (#30 PR-B)', async () => {
+  // The mechanism that lets delivery drop its `await icrc1_fee()`: an ICRC-1 ledger
+  // rejects a wrong fee DEFINITIVELY and reports the expected one, so a stale copy
+  // costs one rejected call, once, and is corrected for every order after it.
+  //
+  // Staged with a deliberately wrong stored fee, because "it happens to be right"
+  // is what a test against a ledger whose fee never moves would otherwise assert.
+  await ensureRates(gw);
+  const WRONG_FEE = 1n;
+  const previous = await gw.asAdmin.set_cycles_ledger_fee(WRONG_FEE);
+  expect(previous).toBe(CYCLES_LEDGER_FEE);
+  expect((await gw.asAnon.reserve_status()).cyclesLedgerFee).toBe(WRONG_FEE);
+
+  const buyerBefore = await userCycles();
+  const reserveBefore = await reserveBalance(gw);
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_badfee', paymentIntent: 'pi_badfee',
+    clientReferenceId: clientReferenceFor(created.order.id), amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+
+  // It DELIVERS. A wrong stored fee is a corrected round trip, not a stuck order.
+  expect(await tickUntilStatus(gw, created.order.id, ['delivered'])).toBe('delivered');
+
+  // ⚠️ **The buyer gets `locked − fee_stored`, and the reserve absorbs the
+  // difference.** The intent's amount was committed before the rejection and is NOT
+  // rebuilt — rebuilding it is the double-pay this path exists to avoid — so the
+  // correction changes only the fee we pass. Here the stored fee was too LOW, which
+  // is the harmless direction: the buyer is paid more than they would have been and
+  // the reserve pays the real fee on top.
+  expect(await userCycles()).toBe(buyerBefore + TIER_LOCKED_CYCLES - WRONG_FEE);
+  expect(reserveBefore - (await reserveBalance(gw))).toBe(
+    TIER_LOCKED_CYCLES - WRONG_FEE + CYCLES_LEDGER_FEE,
+  );
+
+  // THE ASSERTION: the ledger taught the canister its fee, and it persisted.
+  expect((await gw.asAnon.reserve_status()).cyclesLedgerFee).toBe(CYCLES_LEDGER_FEE);
+  expect((await gw.asAdmin.audit_log()).map((e) => e.tag)).toContain('delivery.feeChanged');
+
+  // And the next order pays the corrected fee with no rejection at all — the whole
+  // point of persisting it rather than correcting per order.
+  const second = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
+  const beforeSecond = await userCycles();
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_feefixed', paymentIntent: 'pi_feefixed',
+    clientReferenceId: clientReferenceFor(second.order.id), amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  expect(await tickUntilStatus(gw, second.order.id, ['delivered'])).toBe('delivered');
+  expect(await userCycles()).toBe(beforeSecond + TIER_LOCKED_CYCLES - CYCLES_LEDGER_FEE);
+});
+
+test('75 — a buyer can heal their OWN stuck delivery, and only their own (#30 PR-B)', async () => {
+  // `process_order` was admin-only. It is now admin **or** the order's owner, because
+  // it already did exactly the right thing for a stuck delivery — replay the stored
+  // intent, `#Duplicate` recovers the block — and making the buyer wait for a sweep
+  // interval to get that was a latency choice, not a safety one.
+  //
+  // ⚠️ It does NOT replace the sweep, and nothing here should be read as saying so:
+  // the sweep is the guarantee (we took the money, so we deliver whether or not the
+  // buyer ever comes back), this is the latency fix for the buyer who did come back.
+  await ensureRates(gw);
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
+  const stuck = created.order;
+
+  // Park it in #paid with a real ledger outage, then end the outage without letting
+  // the sweep run — the exact moment a buyer refreshes their page.
+  // ⚠️ Balance read BEFORE the stop: reading after throws, and a throw between
+  // `stopNns` and the `try` skips the `finally` and leaves the ledger stopped for
+  // every scenario after this one (see the README's coupling note).
+  await stopNns(gw, CYCLES_LEDGER_ID);
+  try {
+    expect(await deliverWebhook(gw, checkoutSessionBody({
+      eventId: 'evt_ownerkick', paymentIntent: 'pi_ownerkick',
+      clientReferenceId: clientReferenceFor(stuck.id), amountCents: TIER_USD_CENTS,
+    }))).toMatchObject({ status_code: 200 });
+    await gw.pic.tick(5);
+    expect(await orderStatus(gw, stuck.id)).toBe('paid');
+  } finally {
+    await startNns(gw, CYCLES_LEDGER_ID);
+  }
+
+  // A stranger cannot kick it. ⚠️ `notFound`, not a distinct "not yours": whether an
+  // order id exists is not a stranger's business, and `getOwned` is what answers.
+  expect(expectErr(await gw.asStranger.process_order(stuck.id))).toEqual({ notFound: null });
+  // Nor can the anonymous principal — and it needs no check of its own, because
+  // `create_order` refuses anonymous callers so it owns no order to kick.
+  expect(expectErr(await gw.asAnon.process_order(stuck.id))).toEqual({ notFound: null });
+  expect(await orderStatus(gw, stuck.id)).toBe('paid');
+
+  // The owner can, and it delivers.
+  const kicked = await gw.asUser.process_order(stuck.id);
+  expect('ok' in kicked).toBe(true);
+  expect(await tickUntilStatus(gw, stuck.id, ['delivered'])).toBe('delivered');
+
+  // ⚠️ An owner kick is NOT audited and an admin kick is. A buyer refreshing a page
+  // must not be able to fill a 4,096-entry ring buffer with lines that say nothing,
+  // while an ops action on someone else's order is exactly what the trail is for.
+  const kickLines = (log: { tag: string; detail: string }[]) =>
+    log.filter((e) => e.tag === 'mint.manualKick' && e.detail.includes(stuck.id));
+  expect(kickLines(await gw.asAdmin.audit_log())).toHaveLength(0);
+
+  // And the admin lever still works — the widening is additive, not a handover.
+  // Safe to spam by construction: the order is already delivered, so this is the
+  // idempotent path.
+  expect('ok' in (await gw.asAdmin.process_order(stuck.id))).toBe(true);
+  expect(kickLines(await gw.asAdmin.audit_log()).length).toBeGreaterThan(0);
+  expect(await orderStatus(gw, stuck.id)).toBe('delivered');
+});
+
+test('76 — one escalated order must not freeze the reserve reconcile forever (#30 PR-B)', async () => {
+  // ⚠️ **This is a regression test for a bug that was written, shipped into the
+  // branch, and found by re-derivation rather than by any test.**
+  //
+  // A reserve observation is adopted only across a QUIET window — nothing unsettled
+  // before the balance read, nothing after, no transfer issued in between — because
+  // adopting across an in-flight outflow erases rule 2's decrement while the transfer
+  // still debits. The first version of that predicate counted any journal entry with
+  // an intent and no block as unsettled.
+  //
+  // An escalated order keeps exactly that shape FOREVER: escalation patches the
+  // status and leaves `blockIndex` null, and resolution happens off-chain on the
+  // queue entry. So one escalation made the quiet window unsatisfiable for the life
+  // of the canister — every reconcile skipped, every `refresh_reserve` skipped, and
+  // top-ups silently stopped registering. The rail closing slowly with no lever.
+  //
+  // The fix requires the entry to still be `#paid`, which is sound because an
+  // escalated order has no outstanding callback: escalation is decided either from
+  // `stageOf` at the top of the drive loop or after a response has already arrived,
+  // never with a call in the air.
+  const escalated = (await gw.asAdmin.mint_journal(orderEscalated.id))[0]!;
+  // The shape this scenario depends on, asserted rather than assumed — scenario 35
+  // produced it, and if it ever stops doing so this fails here instead of passing
+  // vacuously.
+  expect(await orderStatus(gw, orderEscalated.id)).toBe('needsReview');
+  expect(escalated.transferIntent).toHaveLength(1);
+  expect(escalated.blockIndex).toHaveLength(0);
+
+  // THE ASSERTION: with that order sitting there, an observation is still adopted.
+  const before = await gw.asAnon.reserve_status();
+  await fundReserve(gw, 3_000_000_000_000n, false);
+  const observed = await gw.asAdmin.refresh_reserve();
+  const after = await gw.asAnon.reserve_status();
+  expect(after.reserveFloor).toBe(observed);
+  expect(after.reserveFloor).toBeGreaterThan(before.reserveFloor);
+  expect(after.reserveObservedAtNs).not.toEqual(before.reserveObservedAtNs);
+  // Its promise is still HELD, which is the other half of the fix being safe: the
+  // order is excluded from the in-flight predicate, not forgiven its obligation.
+  expect(after.promisedTotal).toBeGreaterThanOrEqual(orderEscalated.lockedCycles);
+});
+
+test('77 — an escalated order whose cycles DID arrive can be recorded, not filed as abandoned (#30 PR-B)', async () => {
+  // ⚠️ **The record was the bug.** `needsReview`'s only exit was `abandoned`, so an
+  // operator who checked the ledger and found the transfer HAD landed had no way to
+  // say so: their only lever filed a delivered order as abandoned and audited a
+  // refund that never happened. Money-correct, record-wrong — and the record is what
+  // this codebase trusts to keep illegal states unrepresentable.
+  const target = orderEscalated;
+  expect(await orderStatus(gw, target.id)).toBe('needsReview');
+  const promisedBefore = (await gw.asAnon.reserve_status()).promisedTotal;
+
+  // Not a buyer's decision, and not a guess: admin-only, and the ledger block is
+  // required as the evidence that someone actually looked.
+  await expect(gw.asUser.record_delivered(target.id, 12_345n)).rejects.toThrow(/not a controller/);
+  expect(await orderStatus(gw, target.id)).toBe('needsReview');
+
+  const LEDGER_BLOCK = 424_242n;
+  const recorded = expectOk(await gw.asAdmin.record_delivered(target.id, LEDGER_BLOCK));
+  expect(statusKey(recorded)).toBe('delivered');
+
+  // The block lands in the journal, so the receipt shows the same proof any other
+  // delivered order shows.
+  const journal = (await gw.asAdmin.mint_journal(target.id))[0]!;
+  expect(journal.blockIndex).toEqual([LEDGER_BLOCK]);
+  // And the promise is released — the order is settled, so the reserve is no longer
+  // holding capacity for it.
+  expect((await gw.asAnon.reserve_status()).promisedTotal)
+    .toBe(promisedBefore - target.lockedCycles);
+  expect((await gw.asAdmin.audit_log()).map((e) => e.tag)).toContain('order.recordedDelivered');
+
+  // Idempotent, because an operator re-running a resolution step must not be a
+  // failure — and re-recording cannot move money either way.
+  expect(statusKey(expectOk(await gw.asAdmin.record_delivered(target.id, LEDGER_BLOCK)))).toBe('delivered');
+
+  // ⚠️ And it accepts ONLY an escalated order. A live order delivers on its own, so
+  // letting an operator declare one delivered would be a lever for skipping the
+  // ledger entirely.
+  await ensureRates(gw);
+  const live = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
+  expect(expectErr(await gw.asAdmin.record_delivered(live.order.id, 1n)))
+    .toMatch(/only an under-review order/);
+  expectOk(await cancelOrderWithExpire(gw, live.order.id));
 });

@@ -108,13 +108,6 @@ export interface GateConfig {
   minPurchaseUsdCents: bigint;
 }
 
-export interface OrderStats {
-  openOrders: bigint;
-  expiredOrders: bigint;
-  totalOrders: bigint;
-  paidIntentsIndexed: bigint;
-}
-
 export type CreateOrderError =
   | { anonymous: null }
   | { unknownTier: string }
@@ -250,15 +243,28 @@ export interface BackendService {
   lifecycle_config(): Promise<{ gate: GateConfig }>;
   order_for_payment(paymentRef: string): Promise<Opt<string>>;
   abandon_order(id: string, reason: string): Promise<Result<Order, string>>;
-  order_stats(): Promise<OrderStats>;
-  /// #30 PR-B. ⚠️ Reports `promisedTotal`, NOT the reserve balance — that comes
-  /// from the ledger, and `available` is the caller's subtraction.
+  record_delivered(id: string, blockIndex: bigint): Promise<Result<Order, string>>;
+  set_cycles_ledger_fee(fee: bigint): Promise<bigint>;
+  /// #30 PR-B. ⚠️ `reserveFloor` is a maintained lower BOUND on the ledger balance,
+  /// not the balance — it rises only by observation (`refresh_reserve` or the hourly
+  /// sweep) and falls when the gateway transfers out. `availableToSell` is what the
+  /// gate will actually admit against. The four order counters were `order_stats`.
   reserve_status(): Promise<{
+    reserveFloor: bigint;
     promisedTotal: bigint;
+    availableToSell: bigint;
+    reserveObservedAtNs: Opt<bigint>;
+    /// The fee the NEXT delivery will use. Self-corrects from `#BadFee`, so this is
+    /// how a test observes that correction happening (#30 PR-B).
+    cyclesLedgerFee: bigint;
     tallySaturations: bigint;
     reserveAccount: Account;
     canisterCycles: bigint;
     minCanisterCycles: bigint;
+    openOrders: bigint;
+    expiredOrders: bigint;
+    totalOrders: bigint;
+    paidIntentsIndexed: bigint;
   }>;
   cycles_status(): Promise<{ balance: bigint; floor: bigint }>;
   recount_orders(): Promise<Array<[string, bigint]>>;
@@ -299,6 +305,9 @@ export interface BackendService {
     sweepInFlight: boolean;
   }>;
   refresh_float(): Promise<bigint>;
+  /// ⚠️ Required after funding the reserve: the gate decides against a maintained
+  /// lower bound that only rises by observation, so an unobserved top-up sells nothing.
+  refresh_reserve(): Promise<bigint>;
   reset_burn_window(): Promise<bigint>;
   resolve_error(id: bigint): Promise<Result<ErrorEntry, { notFound: bigint } | { alreadyResolved: bigint }>>;
   set_card_tiers(tiers: Tier[]): Promise<Result<null, unknown>>;

@@ -398,10 +398,29 @@ suite("stageOf (§5.1/§5.2 resume decision)", func() {
     assert Cmc.stageOf(#paid, ?entry, 1_000, window, maxRetries) == #finishDelivery(77);
   });
 
-  test("#paid stops replaying once retries are exhausted", func() {
+  test("⚠️ #paid keeps replaying FOREVER — the retry cap does not apply to delivery", func() {
+    // #30 PR-B deleted the cap on this path, and the inverted assertion is the
+    // record of it: a replay here is provably safe (byte-identical args, the ledger
+    // deduplicates, `#Duplicate` recovers the block), so exhausting a counter turned
+    // a recoverable state into a manual one for no safety gain.
+    //
+    // "Forever" is bounded by TIME rather than by a count, twice over: the dedup
+    // window escalates the intent (the test above), and §5.3's 72 h max-wait gets a
+    // human involved long before. Ten times the old cap still replays.
     let intent = intentAt(1_000);
-    let entry = entryWith(?intent, null, null, maxRetries);
-    assert Cmc.stageOf(#paid, ?entry, 1_000, window, maxRetries) == #escalate(#retriesExhausted);
+    let entry = entryWith(?intent, null, null, maxRetries * 10);
+    assert Cmc.stageOf(#paid, ?entry, 1_000, window, maxRetries) == #replayDelivery(intent);
+  });
+
+  test("the two LEGACY stages keep the cap, because notify is not dedup-bounded", func() {
+    // Not an inconsistency: the cap's justification is "the stages the ledger's dedup
+    // window does not already bound", and `notify_top_up` is exactly that. #36 deletes
+    // both stages; until then their behaviour is unchanged and pinned here so the
+    // delivery-path deletion cannot quietly widen.
+    let entry = entryWith(?intentAt(1_000), null, null, maxRetries);
+    assert Cmc.stageOf(#minting, ?entry, 1_000, window, maxRetries) == #escalate(#retriesExhausted);
+    let atCmc = entryWith(?intentAt(1_000), ?9, null, maxRetries);
+    assert Cmc.stageOf(#icpAtCmc, ?atCmc, 1_000, window, maxRetries) == #escalate(#retriesExhausted);
   });
 
   test("#minting with a fresh intent and no block replays the identical transfer", func() {

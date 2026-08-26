@@ -119,6 +119,11 @@ export const WEBHOOK_SECRET = 'whsec_8fJ3kQ9mN2pX7vR4tL6wY1zB5cD0eH';
 
 export const admin = createIdentity('cyclepay integration admin');
 export const user = createIdentity('cyclepay integration user');
+/// A second authenticated buyer, and the ONLY identity that can tell an
+/// owner-scoped method from an open one: `admin` is a controller (so it takes every
+/// admin branch) and `asAnon` owns nothing (so it is refused by accident rather than
+/// by the ownership check). Added for #30 PR-B's owner-scoped `process_order`.
+export const stranger = createIdentity('cyclepay integration stranger');
 
 export interface Gateway {
   server: PocketIcServer;
@@ -127,6 +132,8 @@ export interface Gateway {
   /// Backend actors per caller role.
   asAdmin: Actor<BackendService>;
   asUser: Actor<BackendService>;
+  /// A second authenticated buyer, for owner-scoped methods (see `stranger`).
+  asStranger: Actor<BackendService>;
   asAnon: Actor<BackendService>;
   /// create_order as the user, submitted-not-awaited — used by the
   /// interruption tests to catch a money path mid-flight.
@@ -193,6 +200,8 @@ export async function setupGateway(): Promise<Gateway> {
   asAdmin.setIdentity(admin);
   const asUser = pic.createActor<BackendService>(backendIdlFactory, backendId);
   asUser.setIdentity(user);
+  const asStranger = pic.createActor<BackendService>(backendIdlFactory, backendId);
+  asStranger.setIdentity(stranger);
   const asAnon = pic.createActor<BackendService>(backendIdlFactory, backendId);
   const deferredUser = pic.createDeferredActor<BackendService>(backendIdlFactory, backendId);
   deferredUser.setIdentity(user);
@@ -204,7 +213,7 @@ export async function setupGateway(): Promise<Gateway> {
 
   return {
     server, pic, backendId,
-    asAdmin, asUser, asAnon, deferredUser,
+    asAdmin, asUser, asStranger, asAnon, deferredUser,
     ledger, cyclesLedger, cmcAsGovernance,
     xrcInstalled: false,
   };
@@ -344,7 +353,22 @@ export async function fundFloat(gw: Gateway, e8s: bigint): Promise<void> {
 /// `icp cycles transfer` from outside, and nothing mints into it.
 ///
 /// Exactly parallel to `fundFloat` for ICP, and deliberately named to match.
-export async function fundReserve(gw: Gateway, cycles: bigint): Promise<void> {
+/// Fund the gateway's reserve, and by default make it SELLABLE.
+///
+/// ⚠️ **The transfer alone is not enough, and this is the trap #30 PR-B introduced
+/// on purpose.** Solvency is decided against `reserveFloor`, a maintained lower bound
+/// that starts at zero and only rises when the canister looks at the ledger. Funding
+/// without observing produces a gateway that refuses every order with
+/// `#reserveShort{available = 0}` against a fully funded account — which shows up
+/// here as *every* order-creating scenario failing at once, not as anything about the
+/// reserve.
+///
+/// Pass `observe: false` to reproduce that state deliberately.
+export async function fundReserve(
+  gw: Gateway,
+  cycles: bigint,
+  observe = true,
+): Promise<void> {
   const result = await gw.cyclesLedger.icrc1_transfer({
     from_subaccount: [],
     to: { owner: gw.backendId, subaccount: [] },
@@ -356,6 +380,7 @@ export async function fundReserve(gw: Gateway, cycles: bigint): Promise<void> {
   if (!('Ok' in result)) {
     throw new Error(`reserve funding transfer failed: ${JSON.stringify(result, bigIntReplacer)}`);
   }
+  if (observe) await gw.asAdmin.refresh_reserve();
 }
 
 export async function reserveBalance(gw: Gateway): Promise<bigint> {

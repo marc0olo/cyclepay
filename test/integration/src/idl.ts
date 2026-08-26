@@ -319,27 +319,36 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Variant({ ok: Order, err: IDL.Text })],
       [],
     ),
+    // #30 PR-B — the counterpart to abandon_order: the operator read the cycles
+    // ledger and the transfer HAD landed, so the block index is the evidence.
+    record_delivered: IDL.Func(
+      [IDL.Text, IDL.Nat],
+      [IDL.Variant({ ok: Order, err: IDL.Text })],
+      [],
+    ),
+    // #30 PR-B — belt-and-braces for the one stored-fee state `#BadFee` cannot
+    // correct (a stored fee at or above an order's locked quantity).
+    set_cycles_ledger_fee: IDL.Func([IDL.Nat], [IDL.Nat], []),
+    // #30 PR-B folded `order_stats`' four counters in here, as #33 planned when it
+    // renamed `retention_status` to that waypoint. One query, one round trip, and the
+    // three solvency figures sit next to the order counts that explain them.
     reserve_status: IDL.Func(
       [],
       [IDL.Record({
+        availableToSell: IDL.Nat,
         canisterCycles: IDL.Nat,
+        cyclesLedgerFee: IDL.Nat,
+        expiredOrders: IDL.Nat,
         minCanisterCycles: IDL.Nat,
+        openOrders: IDL.Nat,
+        paidIntentsIndexed: IDL.Nat,
         promisedTotal: IDL.Nat,
         reserveAccount: Account,
+        reserveFloor: IDL.Nat,
+        reserveObservedAtNs: IDL.Opt(IDL.Int),
         tallySaturations: IDL.Nat,
+        totalOrders: IDL.Nat,
       })],
-      ['query'],
-    ),
-    order_stats: IDL.Func(
-      [],
-      [
-        IDL.Record({
-          expiredOrders: IDL.Nat,
-          openOrders: IDL.Nat,
-          paidIntentsIndexed: IDL.Nat,
-          totalOrders: IDL.Nat,
-        }),
-      ],
       ['query'],
     ),
     cycles_status: IDL.Func(
@@ -416,6 +425,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       ['query'],
     ),
     refresh_float: IDL.Func([], [IDL.Nat], []),
+    refresh_reserve: IDL.Func([], [IDL.Nat], []),
     reset_burn_window: IDL.Func([], [IDL.Nat], []),
     resolve_error: IDL.Func(
       [IDL.Nat],

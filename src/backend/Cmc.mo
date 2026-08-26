@@ -161,15 +161,20 @@ module {
     minted + maxMintShortfallCycles < locked;
   };
 
-  /// Cycles the cycles ledger deducts from a `deposit`. The buyer therefore
-  /// receives this much less than the order's locked quantity, on every order —
-  /// there is one destination and it goes through the ledger (#29).
+  /// **Seed** for the stored cycles-ledger transfer fee (#30 PR-B). The live value
+  /// lives in `Main.cyclesLedgerFee`, because the ledger owns it and can move it.
   ///
-  /// Deliberately **not** grossed up into the quote: minting extra cycles to
-  /// cover a per-order fee would let anyone drain the operator by opening
-  /// orders, so the fee is disclosed to the buyer rather than absorbed. Exposed
-  /// through `quote_previews` for exactly that purpose.
-  public let cyclesLedgerDepositFee : Nat = 100_000_000;
+  /// It is a seed and not a constant: `#BadFee` carries the ledger's expected fee,
+  /// so the first delivery after any change corrects the stored copy and every
+  /// later one uses the corrected value. That self-correction is why delivery no
+  /// longer awaits `icrc1_fee` — see the stored variable's doc for the trade.
+  ///
+  /// ⚠️ This was `cyclesLedgerDepositFee`, documented as disclosed to the buyer
+  /// through `quote_previews`. Both halves stopped being true: #30 PR-A moved
+  /// money-out from `deposit` to `icrc1_transfer` and stopped disclosing the fee in
+  /// the quote (the frontend reads the ledger). It was dead by then — one test
+  /// asserted its ABSENCE from the preview and nothing read it.
+  public let cyclesLedgerDefaultFee : Nat = 100_000_000;
 
   /// The CMC recognizes a top-up by this icrc1 memo: the 8-byte little-endian
   /// encoding of 0x50555054 ("TPUP"). Pinned by test vector.
@@ -349,10 +354,14 @@ module {
     ///
     /// Its own case because the two callers answer it differently and both are
     /// right: the ICP mint path escalates (a protocol-wide ICP fee change is not
-    /// something to paper over), while reserve delivery (#30) re-reads
-    /// `icrc1_fee` and retries, so a risen fee is absorbed by the reserve rather
-    /// than shorting the buyer. Returning one verdict here would force one of
+    /// something to paper over), while reserve delivery (#30) re-sends with the
+    /// reported fee and **persists it**, so a risen fee is absorbed by the reserve
+    /// rather than shorting the buyer. Returning one verdict here would force one of
     /// them to be wrong.
+    ///
+    /// ⚠️ That persistence is what lets delivery stop awaiting `icrc1_fee` at all
+    /// (#30 PR-B): this case IS the fee-refresh mechanism, so a stale stored copy
+    /// costs one rejected call, once, and never a wrong debit.
     #badFee : Nat;
     #escalate : Text;
   };
@@ -692,7 +701,20 @@ module {
             switch (e.transferIntent) {
               case null #beginDelivery;
               case (?intent) {
-                if (e.retries >= maxRetries) return #escalate(#retriesExhausted);
+                // ⚠️ **No retry cap on this path, deliberately (#30 PR-B).** A
+                // replay here is *provably* safe — byte-identical args, the ledger
+                // deduplicates, `#Duplicate` recovers the block — so a cap converted
+                // a recoverable state into a manual one for no safety gain. And the
+                // cap's own justification (see `Recovery.maxMintRetries`: "the stages
+                // the ledger's dedup window does not already bound") never applied
+                // here, because the very next line IS that bound. The two legacy
+                // stages below keep it: `notify_top_up` has no dedup window.
+                //
+                // Retrying is therefore bounded twice over, by time rather than by a
+                // count: the ~24 h dedup window escalates the intent below, and §5.3's
+                // 72 h max-wait gets a human involved for the buyer's sake long before
+                // that. A retry budget added nothing between those two.
+                //
                 // Past the dedup window a replay is no longer protected, so a
                 // blind retry could pay twice. This is #30's ONE ambiguous case
                 // and the only thing that escalates on the delivery path.

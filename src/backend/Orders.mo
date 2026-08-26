@@ -241,6 +241,21 @@ module {
       case (#minting, #needsReview) true; // intent aged past dedup window (§5.1)
       case (#icpAtCmc, #delivered) true; // notify + forward succeeded
       case (#icpAtCmc, #needsReview) true; // forward failed → Type 2 (§4.1)
+      // #30 PR-B — the operator read the ledger and the transfer HAD landed.
+      //
+      // ⚠️ **Added because its absence made the operator record a lie.** Until this
+      // edge existed, `#needsReview`'s only exit was `#abandoned`, so an escalated
+      // order whose cycles the buyer demonstrably has could only be filed as
+      // abandoned — auditing a refund that never happened. Money-correct,
+      // record-wrong, and the record is what this codebase trusts to keep illegal
+      // states unrepresentable.
+      //
+      // Not a routine path: `#needsReview` means the money position is unknown, and
+      // reaching it at all takes a ~24 h cycles-ledger outage. Only `record_delivered`
+      // drives it, admin-only, and it demands the ledger block as evidence — no
+      // automatic route to `#delivered` from an unknown position exists, because that
+      // is the double-delivery this status prevents.
+      case (#needsReview, #delivered) true;
       // `abandon_order` — the operator ends it, having refunded by hand. The
       // #needsReview edge is what the #errorQueue split made possible: an
       // escalated order could not previously be abandoned, because one status
