@@ -2849,9 +2849,15 @@ test('73 — a funded reserve is not a SELLABLE reserve until the gateway looks 
   const TOP_UP = 7_000_000_000_000n; // 7 T — two tier5 orders' worth
 
   const before = await gw.asAnon.reserve_status();
-  // THE BOUND, asserted before anything else: the floor never exceeds the balance.
-  // Everything the gate does rests on this, and it holds at every point in the
-  // suite — not only after a reconcile.
+  // ⚠️ **THE BOUND, and it is the load-bearing line of this scenario** — asserted
+  // before anything else, against whatever every earlier scenario left behind. The
+  // floor must never exceed the real balance, because the gate sells against it.
+  //
+  // **Verified by mutation that this catches the optimistic direction:** crediting the
+  // floor back on a `#delivered` (a REAL debit — breaking rule 2/3's asymmetry, the
+  // "fix" the code comments warn against) makes the floor exceed the balance and fails
+  // here. So the floor's bound property is test-enforced across the suite's whole
+  // accumulated history, not merely argued in `Reserve.mo`.
   expect(before.reserveFloor).toBeLessThanOrEqual(await reserveBalance(gw));
 
   // Fund WITHOUT observing — the state an operator produces by running

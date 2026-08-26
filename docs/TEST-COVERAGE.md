@@ -119,6 +119,18 @@ queue, nothing held. The evidence and the exact figures are in
 - **Refunds, async payment methods, disputes, and anything live-mode.** Groups E, F,
   G, and a separate decision respectively.
 
+### 1b. Mutations that ARE caught — run, not assumed
+
+The rows below this one record gaps. These record the opposite, because "no test catches
+it" is only meaningful next to a list of what does. Each was applied to the tree and the
+suite run:
+
+| Mutation | Caught by |
+|---|---|
+| drop the `#paid` clause from `unsettledDelivery` (the escalation-freeze bug, which shipped into the branch once) | scenarios **73** and **76** — 76 by design, 73 because a frozen reconcile stops adopting a top-up |
+| credit the floor back on `#delivered` — a **real** debit, i.e. breaking rule 2/3's asymmetry in the optimistic direction | scenario **73**'s opening `reserveFloor ≤ reserveBalance`. ⚠️ Worth knowing *which* line: the bound is enforced by one assertion against the suite's whole accumulated history, not by the scenario's own subject |
+| `openEntry` recording a hardcoded status instead of the order's | `test/cmc.test.mo`'s coupling test, added after the bug — and scenario **75**, which found it originally by asserting a set was non-empty |
+
 ### 2. Structural limits in PocketIC — verified, not assumed
 
 | Not covered | Why |
