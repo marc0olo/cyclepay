@@ -602,6 +602,35 @@ service : {
   /// order it funded. Null means the payment was never attributed to an order
   /// here — check the error queue for a Type 1 entry carrying it.
   order_for_payment: (paymentRef: text) -> (opt OrderId) query;
+  /// Every delivery with money-out work outstanding, right now (admin).
+  /// 
+  /// **The immediate answer to "is a delivery failing?", which nothing else gave.**
+  /// The error queue is the worklist and it self-clears correctly — a
+  /// `#deliveryDelayed` alert resolves on delivery *or* escalation — but it does not
+  /// open until the 2 h alert threshold, and a delivery taking a sweep or two is
+  /// normal, so lowering that threshold would file worklist entries for orders that
+  /// deliver themselves. This closes the two-hour blind window without touching the
+  /// queue's meaning.
+  /// 
+  /// **It self-clears by construction**, which is the property that makes it usable
+  /// as a dashboard: an entry leaves this set the moment delivery lands, because
+  /// landing records the block and moves the status. There is no "resolve" step to
+  /// forget, and a successful `process_order` empties it for that order immediately.
+  /// 
+  /// Read `retries` as "how many times this has already failed" — `0` is an order in
+  /// its first attempt, which is not a problem yet.
+  /// 
+  /// ⚠️ **Admin, and O(journal) — those two facts belong together.** It scans every
+  /// order ever created, so a public version would let an unauthenticated caller make
+  /// this canister scan its whole history for free. That is also why none of it went
+  /// into `reserve_status`, which is public and O(1) on purpose.
+  /// 
+  /// ⚠️ The subset with `status = #paid` is **exactly** the reconcile's in-flight
+  /// predicate (`unsettledDelivery`), so this is also how "the reserve reconcile keeps
+  /// skipping" gets diagnosed. `#needsReview` entries are included because an
+  /// operator asking "what is wrong right now" wants them, but they are deliberately
+  /// NOT in the reconcile's predicate — see `unsettledDeliveries`.
+  pending_deliveries: () -> (vec JournalEntry) query;
   /// Rates + params + refresh liveness, public: both rates are market data any
   /// third party can query for themselves, and the fee formula is what users
   /// are charged. Nothing here is secret, and reproducibility is the point.

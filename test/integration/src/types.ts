@@ -268,6 +268,9 @@ export interface BackendService {
   }>;
   cycles_status(): Promise<{ balance: bigint; floor: bigint }>;
   recount_orders(): Promise<Array<[string, bigint]>>;
+  /// Deliveries with work outstanding, right now (#30 PR-B). Self-clearing: an entry
+  /// leaves the set the moment delivery lands. `retries` is how often it has failed.
+  pending_deliveries(): Promise<JournalEntry[]>;
   receipt(id: string): Promise<Opt<{
     order: Order;
     paidUsdCents: Opt<bigint>;

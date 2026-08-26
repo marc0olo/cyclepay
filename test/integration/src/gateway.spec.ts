@@ -2918,6 +2918,24 @@ test('75 — a buyer can heal their OWN stuck delivery, and only their own (#30 
     await startNns(gw, CYCLES_LEDGER_ID);
   }
 
+  // ⚠️ **The admin can SEE it immediately, with no 2 h wait.** The error queue is the
+  // worklist and self-clears correctly, but `#deliveryDelayed` does not open until the
+  // alert threshold — and a delivery taking a sweep or two is normal, so lowering that
+  // threshold would file entries for orders that deliver themselves. This is the
+  // two-hour blind window closed.
+  const pendingBefore = await gw.asAdmin.pending_deliveries();
+  const mine = pendingBefore.find((e) => e.orderId === stuck.id)!;
+  expect(mine).toBeDefined();
+  // It has already failed at least once, which is what distinguishes it from an order
+  // in its first attempt.
+  expect(mine.retries).toBeGreaterThan(0n);
+  expect(mine.blockIndex).toHaveLength(0);
+  // Not public: it scans the whole journal, so an unauthenticated caller could make
+  // the canister walk its entire history for free. That is also why none of it went
+  // into `reserve_status`, which is public and O(1).
+  await expect(gw.asAnon.pending_deliveries()).rejects.toThrow(/anonymous/);
+  await expect(gw.asUser.pending_deliveries()).rejects.toThrow(/not a controller/);
+
   // A stranger cannot kick it. ⚠️ `notFound`, not a distinct "not yours": whether an
   // order id exists is not a stranger's business, and `getOwned` is what answers.
   expect(expectErr(await gw.asStranger.process_order(stuck.id))).toEqual({ notFound: null });
@@ -2930,6 +2948,12 @@ test('75 — a buyer can heal their OWN stuck delivery, and only their own (#30 
   const kicked = await gw.asUser.process_order(stuck.id);
   expect('ok' in kicked).toBe(true);
   expect(await tickUntilStatus(gw, stuck.id, ['delivered'])).toBe('delivered');
+
+  // ⚠️ **And it disappears from `pending_deliveries` by itself.** No resolve step to
+  // forget: delivery records the block and moves the status, which is what removes it
+  // from the set. That is the property that makes this usable as a dashboard rather
+  // than as another queue somebody has to tidy.
+  expect((await gw.asAdmin.pending_deliveries()).map((e) => e.orderId)).not.toContain(stuck.id);
 
   // ⚠️ An owner kick is NOT audited and an admin kick is. A buyer refreshing a page
   // must not be able to fill a 4,096-entry ring buffer with lines that say nothing,

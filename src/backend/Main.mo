@@ -2422,12 +2422,55 @@ persistent actor CyclesGateway {
   /// now a stored value), which is why the two are adjacent today. Reintroduce an
   /// await there and a reconcile can adopt a balance while a transfer it cannot see
   /// is in flight. This comment is the guard.
+  func unsettledDelivery(entry : Types.JournalEntry) : Bool {
+    entry.status == #paid and entry.transferIntent != null and entry.blockIndex == null;
+  };
+
   func unsettledDeliveries() : Nat {
     var n = 0;
     for ((_, entry) in mintJournal.entries()) {
-      if (entry.status == #paid and entry.transferIntent != null and entry.blockIndex == null) n += 1;
+      if (unsettledDelivery(entry)) n += 1;
     };
     n;
+  };
+
+  /// Every delivery with money-out work outstanding, right now (admin).
+  ///
+  /// **The immediate answer to "is a delivery failing?", which nothing else gave.**
+  /// The error queue is the worklist and it self-clears correctly — a
+  /// `#deliveryDelayed` alert resolves on delivery *or* escalation — but it does not
+  /// open until the 2 h alert threshold, and a delivery taking a sweep or two is
+  /// normal, so lowering that threshold would file worklist entries for orders that
+  /// deliver themselves. This closes the two-hour blind window without touching the
+  /// queue's meaning.
+  ///
+  /// **It self-clears by construction**, which is the property that makes it usable
+  /// as a dashboard: an entry leaves this set the moment delivery lands, because
+  /// landing records the block and moves the status. There is no "resolve" step to
+  /// forget, and a successful `process_order` empties it for that order immediately.
+  ///
+  /// Read `retries` as "how many times this has already failed" — `0` is an order in
+  /// its first attempt, which is not a problem yet.
+  ///
+  /// ⚠️ **Admin, and O(journal) — those two facts belong together.** It scans every
+  /// order ever created, so a public version would let an unauthenticated caller make
+  /// this canister scan its whole history for free. That is also why none of it went
+  /// into `reserve_status`, which is public and O(1) on purpose.
+  ///
+  /// ⚠️ The subset with `status = #paid` is **exactly** the reconcile's in-flight
+  /// predicate (`unsettledDelivery`), so this is also how "the reserve reconcile keeps
+  /// skipping" gets diagnosed. `#needsReview` entries are included because an
+  /// operator asking "what is wrong right now" wants them, but they are deliberately
+  /// NOT in the reconcile's predicate — see `unsettledDeliveries`.
+  public shared query ({ caller }) func pending_deliveries() : async [Types.JournalEntry] {
+    requireAdmin(caller);
+    let out = List.empty<Types.JournalEntry>();
+    for ((_, entry) in mintJournal.entries()) {
+      if (entry.blockIndex == null and (unsettledDelivery(entry) or entry.status == #needsReview)) {
+        out.add(entry);
+      };
+    };
+    out.toArray();
   };
 
   /// ⚠️ `quiet` must mean "no outflow could have moved the balance between the read

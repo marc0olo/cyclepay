@@ -357,6 +357,10 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       ['query'],
     ),
     recount_orders: IDL.Func([], [IDL.Vec(IDL.Tuple(IDL.Text, IDL.Nat))], []),
+    // #30 PR-B — every delivery with money-out work outstanding, right now. Admin,
+    // because it scans the whole journal; self-clearing, because an entry leaves the
+    // set the moment delivery records its block.
+    pending_deliveries: IDL.Func([], [IDL.Vec(JournalEntry)], ['query']),
     receipt: IDL.Func(
       [IDL.Text],
       [IDL.Opt(IDL.Record({

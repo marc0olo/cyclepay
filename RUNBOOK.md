@@ -501,27 +501,45 @@ cap is unbounded loss. Start tight.
   | ≥ `alertAfterNs` | `#deliveryDelayed` alert enters the queue; **retries continue** | still waiting; nothing lost |
   | ≥ `maxHoldNs` (72 h) | escalates to a terminal `#stuckMint`, stage per money position | see below |
 
-  **To see every delivery that is currently failing** — the operator's first
-  question, and there is no separate query for it because this queue *is* the
-  worklist:
+  **To see every delivery failing RIGHT NOW**, with no wait for the alert
+  threshold — the operator's first question:
 
   ```bash
-  # everything unresolved, newest first; filter to the two delivery kinds
+  icp canister call backend pending_deliveries '()' -e ic --identity <operator>
+  ```
+
+  Every delivery with money-out work outstanding, from the journal. `retries` is how
+  often it has already failed (`0` = first attempt, not yet a problem). **It
+  self-clears**: an entry leaves the set the moment delivery records its block, so a
+  successful `process_order` empties it for that order immediately and there is no
+  resolve step to forget. Admin-only because it scans the whole journal — a public
+  version would let anyone make the canister walk its entire history for free, which
+  is also why none of it is in the public, O(1) `reserve_status`.
+
+  The queue is the other half of the answer, and the two are not redundant: this is
+  the live view, the queue is the **worklist with obligations attached**.
+
+  ```bash
   icp canister call backend error_queue_unresolved '(null, 50)' -e ic --identity <operator>
   ```
 
-  `#deliveryDelayed` = still retrying, still recoverable, buyer still waiting.
-  `#stuckMint` = terminated, a human has to act, and the entry's `detail` names the
-  money position. `error_queue_depth` is the public gauge for alerting.
+  `#deliveryDelayed` = still retrying, still recoverable, buyer still waiting; it
+  self-resolves on delivery *or* escalation. `#stuckMint` = terminated, a human has
+  to act, and the entry's `detail` names the money position. `error_queue_depth` is
+  the public gauge for alerting.
 
-  ⚠️ **Since #30 PR-B deleted the delivery retry cap, the 2 h alert is the ONLY
-  early signal.** Retry exhaustion used to escalate an order into the queue on its
-  own; it no longer does, deliberately — a replay is provably safe, so a counter
-  converted a recoverable state into a manual one for nothing. What bounds retrying
-  now is time on both ends: the ledger's ~24 h dedup window and this 72 h wait.
-  Under two hours a failing delivery is invisible **by design** (it is normal for a
-  delivery to take a sweep or two), so do not lower `alertAfterNs` to compensate —
-  you would be filing worklist entries for orders that deliver themselves.
+  ⚠️ **`#stuckMint` is a misnomer — nothing mints.** It is filed for a *delivery*
+  that terminated. #30 PR-C renames it to `#deliveryStuck`, alongside the rest of the
+  `mint.*` vocabulary; it is Candid surface, so the rename is a breaking change for
+  anything that parses it.
+
+  ⚠️ **Under two hours the QUEUE is silent by design** — a delivery taking a sweep or
+  two is normal — so use `pending_deliveries` for the live view rather than lowering
+  `alertAfterNs`, which would file worklist entries for orders that deliver
+  themselves. And since #30 PR-B deleted the delivery retry cap, the 2 h alert is the
+  only *queue* signal: retry exhaustion used to escalate an order on its own and no
+  longer does, deliberately. What bounds retrying now is time on both ends — the
+  ledger's ~24 h dedup window and this 72 h wait.
 
   ⚠️ **The timeline covers every in-flight status, not just `paid`.** `minting`
   and `icpAtCmc` can sit still too — a ledger or CMC answering retriably leaves an

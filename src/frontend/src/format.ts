@@ -360,7 +360,7 @@ export function gateReasonMessage(reason: GateReason): string {
       return (
         `The gateway can only deliver ${formatCycles(reason.reserveShort.available)} cycles right now, ` +
         `and this amount asks for ${formatCycles(reason.reserveShort.requested)}. ` +
-        `Nothing was charged — try a smaller amount, or come back later.`
+        `Nothing was charged. Try a smaller amount, or come back later.`
       );
     case "canisterCyclesLow":
       return "Purchases are temporarily unavailable while the gateway is topped up. Nothing was charged; please try again later.";
