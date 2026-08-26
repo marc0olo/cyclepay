@@ -180,8 +180,20 @@ suite("interpretTransfer (§5.1)", func() {
       };
     };
     assert escalates(#Err(#TooOld));
-    assert escalates(#Err(#BadFee({ expected_fee = 10_000 })));
     assert escalates(#Err(#BadBurn({ min_burn_amount = 1 })));
+  });
+
+  test("a fee change is its OWN outcome, not an escalation", func() {
+    // #30 split `#BadFee` out of `#escalate` because the two callers answer it
+    // differently and both are right: the ICP mint path escalates (a
+    // protocol-wide fee change is a protocol event), while reserve delivery
+    // re-reads `icrc1_fee` and retries, so a risen fee is absorbed by the
+    // reserve rather than shorting the buyer. Folding them back together forces
+    // one of the two to be wrong.
+    switch (Cmc.interpretTransfer(#Err(#BadFee({ expected_fee = 200_000_000 })))) {
+      case (#badFee(expected)) assert expected == 200_000_000;
+      case (_) assert false;
+    };
   });
 });
 
@@ -290,8 +302,49 @@ suite("journal", func() {
 });
 
 suite("stageOf (§5.1/§5.2 resume decision)", func() {
-  test("#paid begins a fresh mint", func() {
-    assert Cmc.stageOf(#paid, null, 0, window, maxRetries) == #begin;
+  test("#paid with no journal begins a DELIVERY, not a mint", func() {
+    // Inverted by #30 PR-A. `#paid` used to open the CMC mint chain; it is now
+    // the whole money-out path — one transfer out of the reserve.
+    assert Cmc.stageOf(#paid, null, 0, window, maxRetries) == #beginDelivery;
+  });
+
+  test("#paid with an entry but no intent begins too — the retry state is the JOURNAL", func() {
+    // Delivery has no status of its own (the order stays `#paid` throughout), so
+    // "have we sent yet?" is answered by the journal. An entry without an intent
+    // means nothing was ever frozen, so there is nothing to replay.
+    assert Cmc.stageOf(#paid, ?entryWith(null, null, null, 0), 0, window, maxRetries) == #beginDelivery;
+  });
+
+  test("#paid with a fresh delivery intent REPLAYS the stored args", func() {
+    // ⚠️ The stored ones. Two drivers legitimately reach one order at once (the
+    // webhook's detached kick and the recovery sweep); a rebuilt intent carries
+    // a fresh `created_at_time`, the ledger does not dedup it, and the buyer is
+    // paid twice. Dedup only works on byte-identical args.
+    let intent = intentAt(1_000);
+    let entry = entryWith(?intent, null, null, 0);
+    assert Cmc.stageOf(#paid, ?entry, 1_000 + window - 1, window, maxRetries) == #replayDelivery(intent);
+  });
+
+  test("#paid past the dedup window escalates rather than replaying — the ONE ambiguous case", func() {
+    // Past the window a replay is no longer protected, so a blind retry could
+    // pay twice. This is the only thing on the delivery path that escalates.
+    let intent = intentAt(1_000);
+    let entry = entryWith(?intent, null, null, 0);
+    assert Cmc.stageOf(#paid, ?entry, 1_000 + window, window, maxRetries) == #escalate(#staleIntent);
+  });
+
+  test("#paid with a block recorded finishes the delivery instead of re-sending", func() {
+    // Unreachable today — the block and the `#delivered` transition commit in
+    // one sync block — and handled so a future regression degrades to something
+    // resumable rather than to a paid order whose buyer already holds the cycles.
+    let entry = entryWith(?intentAt(1_000), ?77, null, 0);
+    assert Cmc.stageOf(#paid, ?entry, 1_000, window, maxRetries) == #finishDelivery(77);
+  });
+
+  test("#paid stops replaying once retries are exhausted", func() {
+    let intent = intentAt(1_000);
+    let entry = entryWith(?intent, null, null, maxRetries);
+    assert Cmc.stageOf(#paid, ?entry, 1_000, window, maxRetries) == #escalate(#retriesExhausted);
   });
 
   test("#minting with a fresh intent and no block replays the identical transfer", func() {
@@ -433,14 +486,29 @@ suite("terminationFor — the money position, not the status", func() {
     };
   });
 
-  test("#paid and #awaitingTreasury are the refundable positions", func() {
+  test("#awaitingTreasury is a refundable position", func() {
     let held = Cmc.terminationFor(#awaitingTreasury, null);
     assert held.stage == "treasuryWaitExceeded";
     assert Text.contains(held.detail, #text "nothing minted");
+  });
 
-    let paid = Cmc.terminationFor(#paid, null);
-    assert paid.stage == "mintWaitExceeded";
-    assert Text.contains(paid.detail, #text "nothing minted");
+  test("#paid: whether a refund is the answer depends on the JOURNAL, not the status", func() {
+    // #30 PR-A moved delivery onto `#paid`, so the status alone stopped being a
+    // money position. The dangerous cell is the middle one: telling an operator
+    // to refund a buyer who may already hold their cycles.
+    let never = Cmc.terminationFor(#paid, null);
+    assert never.stage == "deliveryWaitExceeded";
+    assert Text.contains(never.detail, #text "no transfer attempted");
+
+    let unconfirmed = Cmc.terminationFor(#paid, ?entryWith(?intentAt(0), null, null, 0));
+    assert unconfirmed.stage == Cmc.escalateReasonToText(#staleIntent);
+    assert Text.contains(unconfirmed.detail, #text "NEVER rebuild");
+    // It must NOT read as a settled refund case.
+    assert not Text.contains(unconfirmed.detail, #text "no transfer attempted");
+
+    let landed = Cmc.terminationFor(#paid, ?entryWith(?intentAt(0), ?42, null, 0));
+    assert Text.contains(landed.detail, #text "buyer HAS their cycles");
+    assert Text.contains(landed.detail, #text "do NOT re-send");
   });
 
   test("the journal decides, so the same status yields different instructions", func() {
@@ -461,9 +529,15 @@ suite("terminationFor — the money position, not the status", func() {
       (#minting, ?entryWith(null, null, null, 0)),
       (#minting, null),
       (#awaitingTreasury, null),
+      // Every #paid shape #30 PR-A made reachable — the delivery path now lives
+      // here, so a gap in this list is an operator reading "" for a real money
+      // position.
       (#paid, null),
+      (#paid, ?entryWith(null, null, null, 0)),
+      (#paid, ?entryWith(?intentAt(0), null, null, 0)),
+      (#paid, ?entryWith(?intentAt(0), ?1, null, 0)),
     ];
-    let known = ["ambiguousForward", "retriesExhausted", "staleIntent", "missingJournal", "treasuryWaitExceeded", "mintWaitExceeded"];
+    let known = ["ambiguousForward", "retriesExhausted", "staleIntent", "missingJournal", "treasuryWaitExceeded", "mintWaitExceeded", "deliveryWaitExceeded"];
     for ((status, entry) in cases.values()) {
       let t = Cmc.terminationFor(status, entry);
       assert t.detail != "";

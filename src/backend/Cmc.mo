@@ -105,6 +105,27 @@ module {
 
   public type CyclesLedgerService = actor {
     deposit : shared DepositArgs -> async { balance : Nat; block_index : Nat };
+    /// Delivery since #30: the reserve pays the buyer from the canister's OWN
+    /// cycles-ledger account, rather than the canister minting per order and
+    /// depositing from its gas balance.
+    icrc1_transfer : shared TransferArg -> async TransferResult;
+    /// The live transfer fee, read at delivery time. Not a constant here: the
+    /// buyer's delivered amount is `lockedCycles - fee`, so a stale copy would
+    /// either short the buyer or make every transfer answer `#BadFee`.
+    icrc1_fee : shared query () -> async Nat;
+    /// The reserve's authoritative balance. ⚠️ #30 PR-B calls this inside
+    /// `create_order` as the gate's read; nothing else should treat it as a
+    /// cached value.
+    icrc1_balance_of : shared query Types.Account -> async Nat;
+  };
+
+  /// The canister's own cycles-ledger account — the reserve.
+  ///
+  /// Default subaccount, matching #29's rule for a buyer's destination: one
+  /// canonical form, so "the reserve" names exactly one account in the ledger,
+  /// in `reserve_status`, and in whatever an operator types at a terminal.
+  public func reserveAccount(gateway : Principal) : Types.Account {
+    { owner = gateway; subaccount = null };
   };
 
   // ── Constants ────────────────────────────────────────────────────────────
@@ -217,6 +238,67 @@ module {
     };
   };
 
+  /// §5.1 for the reserve (#30 PR-A) — the delivery transfer's frozen args.
+  ///
+  /// ⚠️ **`memo` is the order id, and that is a correctness requirement, not a
+  /// convenience.** The ledger dedups on `(created_at_time, from, to, amount,
+  /// memo)` — *not* on the order. Two `#paid` orders from one buyer for the same
+  /// amount are reachable (the open-order cap counts only `#created`, so
+  /// pay → create → pay produces exactly that), and if both intents are built in
+  /// the same round they share `Time.now()`, destination and amount. Identical
+  /// args means the second transfer is **falsely deduplicated**: order B is
+  /// marked delivered against order A's block and the buyer is shorted a whole
+  /// purchase. The order id makes every intent unique whatever the timing, and
+  /// it makes ledger blocks self-attributing for free.
+  ///
+  /// `amountE8s` carries **cycles** here, not e8s. The name is wrong and is
+  /// deliberately left for #30 PR-C, which renames this family in one pass
+  /// rather than half-renaming it under a money change.
+  public func buildDeliveryIntent(
+    orderId : Types.OrderId,
+    to : Types.Account,
+    cycles : Nat,
+    nowNs : Int,
+  ) : Types.TransferIntent {
+    {
+      createdAtTimeNs = Nat64.fromIntWrap(nowNs);
+      amountE8s = cycles;
+      to;
+      memo = orderId.encodeUtf8();
+    };
+  };
+
+  /// The delivery intent's wire form. The fee is passed **explicitly** so that a
+  /// change shows up as `#BadFee` and can be audited, rather than being absorbed
+  /// silently by passing `null`. It is not part of the dedup key, so re-issuing
+  /// with a corrected fee is still a byte-identical replay as far as the ledger
+  /// is concerned.
+  public func deliveryArgs(intent : Types.TransferIntent, fee : Nat) : TransferArg {
+    {
+      from_subaccount = null;
+      to = intent.to;
+      amount = intent.amountE8s;
+      fee = ?fee;
+      memo = ?intent.memo;
+      created_at_time = ?intent.createdAtTimeNs;
+    };
+  };
+
+  /// What the buyer receives: the locked quantity less the ledger's transfer fee.
+  ///
+  /// Probe-measured (#30): the ledger debits `amount + fee`, so sending
+  /// `lockedCycles - fee` moves the reserve by **exactly `lockedCycles`**. That
+  /// is why #30's promise tally is `Σ lockedCycles` with no separate fee term —
+  /// an earlier draft wrote `Σ (lockedCycles + fee)` and double-counted.
+  ///
+  /// Null when the fee swallows the whole order, which the purchase floor makes
+  /// unreachable ($10 buys ~7 T cycles against a 100 M fee) but which must not
+  /// be an underflow trap on the money path if either number ever moves.
+  public func deliverableCycles(lockedCycles : Nat, fee : Nat) : ?Nat {
+    if (fee >= lockedCycles) return null;
+    ?(lockedCycles - fee);
+  };
+
   /// The intent's wire form. A pure projection — replay maps the *stored*
   /// intent through this, so the replayed call is bit-identical to the first.
   public func transferArgs(intent : Types.TransferIntent) : TransferArg {
@@ -239,6 +321,15 @@ module {
     /// a replayed intent that already executed *returns* its block).
     #blockIndex : Nat;
     #retriable : Text;
+    /// The ledger's fee is not what we passed; it reports the expected one.
+    ///
+    /// Its own case because the two callers answer it differently and both are
+    /// right: the ICP mint path escalates (a protocol-wide ICP fee change is not
+    /// something to paper over), while reserve delivery (#30) re-reads
+    /// `icrc1_fee` and retries, so a risen fee is absorbed by the reserve rather
+    /// than shorting the buyer. Returning one verdict here would force one of
+    /// them to be wrong.
+    #badFee : Nat;
     #escalate : Text;
   };
 
@@ -255,7 +346,7 @@ module {
       case (#Err(#GenericError({ error_code; message }))) #retriable("ledger error " # error_code.toText() # ": " # message);
       // Escalations: replaying the identical args can never succeed.
       case (#Err(#TooOld)) #escalate("intent aged past the ledger dedup window");
-      case (#Err(#BadFee({ expected_fee }))) #escalate("ledger fee changed: expected " # expected_fee.toText() # " e8s");
+      case (#Err(#BadFee({ expected_fee }))) #badFee(expected_fee);
       case (#Err(#BadBurn(_))) #escalate("ledger answered BadBurn to a transfer");
     };
   };
@@ -364,11 +455,29 @@ module {
   public type Stage = {
     /// Nothing to do (terminal, pre-payment, or treasury-held).
     #none;
-    /// `#paid`, no intent yet: derive the amount, write the intent, transfer.
+    /// `#paid`, no intent yet (LEGACY mint path): derive the amount, write the
+    /// intent, transfer ICP. Reached only from the treasury-hold retry now that
+    /// #30 PR-A routes `#paid` to `#beginDelivery`; #36 deletes it.
     #begin;
-    /// `#minting` with a fresh intent and no block: (re)issue the identical
-    /// transfer — first attempt and recovery replay are the same move (§5.1).
+    /// #30 PR-A — no delivery intent yet: read `icrc1_fee`, write the intent,
+    /// transfer cycles from the reserve.
+    ///
+    /// ⚠️ The delivery stages are deliberately **separate constructors** from the
+    /// mint ones rather than a shared stage that branches on status. They address
+    /// **different ledgers**, and a stage that could mean either would put the
+    /// choice of ledger in the caller's hands on a money path — replaying an ICP
+    /// intent against the cycles ledger is exactly the class of bug worth making
+    /// unrepresentable. It also lets #36 delete the mint stages by name.
+    #beginDelivery;
+    /// LEGACY: a fresh ICP intent and no block — (re)issue the identical
+    /// transfer. First attempt and recovery replay are the same move (§5.1).
     #replayTransfer : Types.TransferIntent;
+    /// #30 PR-A — a fresh delivery intent and no block: (re)issue the identical
+    /// cycles transfer, reading the STORED args and never rebuilding them.
+    #replayDelivery : Types.TransferIntent;
+    /// The transfer landed and the `#delivered` transition did not (#30 PR-A).
+    /// Carries the block so the journal and the receipt still name it.
+    #finishDelivery : Nat;
     /// Block known, mint unconfirmed: `notify_top_up` (idempotent on
     /// block_index, §5.2), then forward.
     #notifyCmc : Nat;
@@ -469,6 +578,41 @@ module {
           detail = "held past the max wait: fiat received, nothing minted — refund in the Stripe Dashboard.";
         };
       };
+      // #30 PR-A: `#paid` is where delivery now happens, so its money position
+      // depends on the journal — a paid order with an unconfirmed transfer is
+      // NOT the same position as one that never started.
+      case (#paid) {
+        switch (entry) {
+          case (?e) {
+            switch (e.blockIndex, e.transferIntent) {
+              case (?block, _) {
+                {
+                  stage = escalateReasonToText(#retriesExhausted);
+                  detail = "cycles WERE delivered (ledger block " # block.toText() # ") but the order never moved to delivered — the buyer HAS their cycles. Confirm the block on the cycles ledger, then resolve; do NOT re-send.";
+                };
+              };
+              case (null, ?intent) {
+                {
+                  stage = escalateReasonToText(#staleIntent);
+                  detail = "cycles transfer unconfirmed — establish its fate on the cycles ledger by matching memo " # intent.memo.size().toText() # "-byte order id, created_at_time " # intent.createdAtTimeNs.toText() # " and amount " # intent.amountE8s.toText() # " cycles. Executed -> the buyer has them; mark it resolved. Not executed -> fiat in, nothing delivered; re-deliver by hand or refund. NEVER rebuild the intent: past the dedup window a rebuilt one pays twice.";
+                };
+              };
+              case (null, null) {
+                {
+                  stage = "deliveryWaitExceeded";
+                  detail = "paid but nothing was ever sent past the max wait: fiat received, no transfer attempted — refund in the Stripe Dashboard.";
+                };
+              };
+            };
+          };
+          case null {
+            {
+              stage = "deliveryWaitExceeded";
+              detail = "paid but nothing was ever sent past the max wait: fiat received, no transfer attempted — refund in the Stripe Dashboard.";
+            };
+          };
+        };
+      };
       case (_) {
         {
           stage = "mintWaitExceeded";
@@ -490,7 +634,44 @@ module {
     maxRetries : Nat,
   ) : Stage {
     switch (status) {
-      case (#paid) #begin;
+      // #30 PR-A: delivery is ONE transfer from #paid, so the retry state lives
+      // in the journal rather than in a status of its own. Three cases, and the
+      // middle one is the whole point of persisting an intent before the call:
+      //
+      //   no entry / no intent  → #begin: read the fee, build the intent, send
+      //   intent, no block      → #replayTransfer: re-send the STORED args
+      //   intent + block        → #finishDelivery: the transfer landed, the
+      //                           transition did not (unreachable today — both
+      //                           commit in one sync block — handled so a future
+      //                           regression degrades to something resumable)
+      //
+      // ⚠️ Never rebuild the intent on a retry. Two drivers legitimately reach
+      // one order at once (the webhook's detached kick and the recovery sweep);
+      // a rebuilt intent carries a fresh `created_at_time`, so the ledger does
+      // NOT dedup it and the buyer is paid twice. Dedup is what makes concurrent
+      // delivery safe, and it only works on byte-identical args.
+      case (#paid) {
+        let ?e = entry else return #beginDelivery;
+        switch (e.blockIndex) {
+          case (?block) #finishDelivery(block);
+          case null {
+            switch (e.transferIntent) {
+              case null #beginDelivery;
+              case (?intent) {
+                if (e.retries >= maxRetries) return #escalate(#retriesExhausted);
+                // Past the dedup window a replay is no longer protected, so a
+                // blind retry could pay twice. This is #30's ONE ambiguous case
+                // and the only thing that escalates on the delivery path.
+                if (nowNs - intent.createdAtTimeNs.toNat() >= dedupWindowNs) {
+                  #escalate(#staleIntent);
+                } else {
+                  #replayDelivery(intent);
+                };
+              };
+            };
+          };
+        };
+      };
       case (#minting) {
         let ?e = entry else return #escalate(#missingJournal);
         if (e.retries >= maxRetries) return #escalate(#retriesExhausted);

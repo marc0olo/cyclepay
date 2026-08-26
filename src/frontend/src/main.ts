@@ -5,6 +5,8 @@
 import type { Identity } from "@icp-sdk/core/agent";
 import {
   makeBackend,
+  makeCyclesLedger,
+  type CyclesLedger,
   type PricingStatus,
   makeBackendAt,
   type Backend,
@@ -77,6 +79,17 @@ let liveBackendId: string | null = null;
 /// above: a fixture that only replaced the first actor would be undone by
 /// sign-in.
 let backendFactory: ((who: Identity | null) => Backend) | null = null;
+let cyclesLedgerFactory: (() => CyclesLedger) | null = null;
+
+/// The one place a cycles-ledger actor is built (#30 PR-A).
+///
+/// Separate from `buildBackend` because it is a different canister with a
+/// different trust story: this app only ever READS from the ledger, and it reads
+/// what the ledger alone is authoritative about.
+function buildCyclesLedger(): CyclesLedger {
+  if (cyclesLedgerFactory !== null) return cyclesLedgerFactory();
+  return makeCyclesLedger();
+}
 
 /// The one place a backend actor is built.
 function buildBackend(who: Identity | null): Backend {
@@ -495,7 +508,10 @@ async function loadMarket(): Promise<void> {
   }
   renderAmountBounds();
 
-  await refreshTierQuotes();
+  // Concurrent, and deliberately so: they hit different canisters and neither
+  // reads the other's answer. Sequencing them would add a round trip to the
+  // first paint of the only screen a visitor sees.
+  await Promise.all([refreshTierQuotes(), refreshDepositFee()]);
   renderTiers();
   renderDestinationNote();
   renderSubmitGate();
@@ -508,7 +524,6 @@ async function refreshTierQuotes(): Promise<void> {
   if (tiers.length === 0) return;
   try {
     const preview = await backend.quote_previews(tiers.map((t) => t.usdCents));
-    depositFee = preview.cyclesLedgerDepositFee;
     preview.quotes.forEach((quote, index) => {
       const tier = tiers[index];
       if (tier) tierQuotes.set(tier.id, quote);
@@ -521,6 +536,26 @@ async function refreshTierQuotes(): Promise<void> {
   // so the rate strip is re-rendered from them rather than left at whatever the
   // cached pair implied at load.
   renderRateLine();
+}
+
+/// The ledger's transfer fee, read from the ledger (#30 PR-A).
+///
+/// It used to arrive on `quote_previews`. It does not any more: the backend
+/// would have had to store a copy and correct it on `#BadFee`, because a query
+/// cannot await the ledger — a staleness class in exchange for a number this
+/// app can just ask for.
+///
+/// A failure leaves `depositFee` at 0, which `renderDestinationNote` and
+/// `estimateLine` already treat as "not known yet": the buyer sees the locked
+/// quantity with no fee note rather than a quantity computed from a guessed fee.
+/// Shown-too-high is the safe direction — the alternative is promising cycles
+/// that will not arrive.
+async function refreshDepositFee(): Promise<void> {
+  try {
+    depositFee = await buildCyclesLedger().icrc1_fee();
+  } catch {
+    depositFee = 0n;
+  }
 }
 
 /// The deposit fee, disclosed beside the destination it applies to.
@@ -1484,6 +1519,9 @@ async function init(): Promise<void> {
       useBackend: (factory) => {
         backendFactory = factory;
         backend = buildBackend(identity);
+      },
+      useCyclesLedger: (factory) => {
+        cyclesLedgerFactory = factory;
       },
       signIn: setIdentity,
       openOrder,

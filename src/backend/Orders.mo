@@ -199,7 +199,14 @@ module {
       case (#created, #cancelled) true; // the buyer gave up before paying (#34)
       case (#created, #expired) true; // never paid (§4)
       case (#created, #paid) true; // webhook verified, deduped, amount honored
-      case (#paid, #minting) true; // ICP float sufficient
+      // #30 PR-A: delivery is ONE transfer out of the cycles reserve, so this
+      // is the whole money-out path. ⚠️ It did not exist before — the only route
+      // to `#delivered` was `#icpAtCmc → #delivered`, so without this edge
+      // `tryTransition` returns null and delivery refuses **silently**: the
+      // transfer lands, the buyer has their cycles, and the order sits `#paid`
+      // forever. #36 deletes eight edges here; this PR adds one.
+      case (#paid, #delivered) true;
+      case (#paid, #minting) true; // LEGACY (mint path, deleted by #36): ICP float sufficient
       case (#paid, #awaitingTreasury) true; // float short (§5.3)
       case (#paid, #needsReview) true; // paid but unable to mint past max wait (§5)
       case (#awaitingTreasury, #minting) true; // float refilled

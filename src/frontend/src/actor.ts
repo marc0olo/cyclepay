@@ -3,7 +3,8 @@
 // it, so there is no environment branching and never a runtime root-key
 // fetch (a fetched root key on mainnet is a MITM vector).
 import { safeGetCanisterEnv } from "@icp-sdk/core/agent/canister-env";
-import type { Identity } from "@icp-sdk/core/agent";
+import { Actor, HttpAgent, type Identity } from "@icp-sdk/core/agent";
+import { IDL } from "@icp-sdk/core/candid";
 import { createActor, Rail } from "./bindings/backend";
 
 const canisterEnv = safeGetCanisterEnv();
@@ -38,6 +39,47 @@ export function makeBackendAt(canisterId: string, identity?: Identity) {
   // agentOptions, never a pre-built agent: passing { agent } to a bindgen
   // actor silently downgrades to the anonymous identity.
   return createActor(canisterId, { agentOptions: agentOptions(identity) });
+}
+
+/// The cycles ledger, queried directly by this app (#30 PR-A).
+///
+/// ⚠️ **Why the frontend asks the ledger instead of the backend.** The buyer sees
+/// `lockedCycles - transferFee`, and the fee is the ledger's to change. A canister
+/// *query* cannot `await icrc1_fee`, so disclosing it through `quote_previews`
+/// meant the backend storing a copy and correcting it whenever a transfer came
+/// back `#BadFee` — a stable field plus a correction path plus a whole staleness
+/// class, in exchange for one number the caller can read itself.
+///
+/// The split is the same one `available = balance - promisedTotal` uses: the
+/// canister owns what only it knows, the ledger owns what it owns.
+///
+/// Hand-written IDL rather than generated bindings: two query methods off a
+/// foreign canister do not justify vendoring the ledger's whole `.did`, and a
+/// partial interface makes it obvious that this app is a *reader* here.
+export const cyclesLedgerCanisterId = "um5iw-rqaaa-aaaaq-qaaba-cai";
+
+const cyclesLedgerIdl: IDL.InterfaceFactory = ({ IDL }) => {
+  const Account = IDL.Record({
+    owner: IDL.Principal,
+    subaccount: IDL.Opt(IDL.Vec(IDL.Nat8)),
+  });
+  return IDL.Service({
+    icrc1_fee: IDL.Func([], [IDL.Nat], ["query"]),
+    icrc1_balance_of: IDL.Func([Account], [IDL.Nat], ["query"]),
+  });
+};
+
+export interface CyclesLedger {
+  icrc1_fee(): Promise<bigint>;
+  icrc1_balance_of(account: { owner: unknown; subaccount: [] | [Uint8Array] }): Promise<bigint>;
+}
+
+export function makeCyclesLedger(): CyclesLedger {
+  const agent = HttpAgent.createSync(agentOptions());
+  return Actor.createActor<CyclesLedger>(cyclesLedgerIdl, {
+    agent,
+    canisterId: cyclesLedgerCanisterId,
+  });
 }
 
 export type Backend = ReturnType<typeof makeBackend>;

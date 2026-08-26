@@ -1096,10 +1096,6 @@ persistent actor CyclesGateway {
     /// The rate pair the quotes came from, so a caller can reproduce the
     /// arithmetic without a second call. Null when nothing usable is cached.
     rates : ?Pricing.Rates;
-    /// Deducted by the cycles ledger on delivery, so the buyer receives the
-    /// locked quantity minus this. There is one destination kind (#29), so it
-    /// applies to every order.
-    cyclesLedgerDepositFee : Nat;
   };
 
   /// Batch pre-purchase quote, public.
@@ -1125,6 +1121,14 @@ persistent actor CyclesGateway {
   /// select it with (#35): a query that branches on nothing should not ask the
   /// caller to pick. `Types.Rail` still exists on the order — the type names the
   /// dimension, this query does not need to switch on it.
+  ///
+  /// ⚠️ **It no longer discloses the cycles-ledger fee** (#30 PR-A). A query
+  /// cannot `await icrc1_fee`, so disclosing it here meant storing a copy and
+  /// correcting it on `#BadFee` — a whole staleness class in exchange for one
+  /// number the caller can read itself. The frontend already queries the cycles
+  /// ledger directly for the reserve balance, so it reads `icrc1_fee` in the same
+  /// breath. Same split as `available = balance - promisedTotal`: **the canister
+  /// owns what only it knows; the ledger owns what it owns.**
   public query func quote_previews(amounts : [Nat]) : async QuotePreviews {
     let fee : { feeBps : Nat; feeFixedCents : Nat } = {
       feeBps = pricingConfig.feeBps;
@@ -1146,7 +1150,6 @@ persistent actor CyclesGateway {
     {
       quotes;
       rates = Pricing.lastRates(rateCache);
-      cyclesLedgerDepositFee = Cmc.cyclesLedgerDepositFee;
     };
   };
 
@@ -1477,6 +1480,25 @@ persistent actor CyclesGateway {
   /// position is unknown, so its promise stays held (#30) and a human resolves it
   /// off-chain (inspect ledger/CMC/destination, refund/re-deliver). Only
   /// `abandon_order` ends an order.
+  /// #30 PR-A escalation: a reserve delivery whose fate cannot be established.
+  ///
+  /// Same shape as `escalateStuckMint` and deliberately NOT folded into it — the
+  /// queue kinds differ (`#transferUnresolved` survives #36, `#stuckMint` does
+  /// not) and so does the operator's question. Here it is "did this transfer
+  /// land?", answerable from the cycles ledger by the order id in the memo.
+  func escalateDelivery(order : Types.Order, stage : Text, detail : Text) {
+    ignore tryTransition(order.id, #needsReview);
+    let blockIndex = switch (mintJournal.get(order.id)) {
+      case (?e) e.blockIndex;
+      case null null;
+    };
+    Cmc.patch(mintJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+    clearDelayed(order.id);
+    mintBlockedAudited.remove(order.id);
+    ignore queueMintError(order.rail, #transferUnresolved({ orderId = order.id; blockIndex }), detail);
+    audit("delivery.unresolved", order.id # " [" # stage # "]: " # detail);
+  };
+
   func escalateStuckMint(order : Types.Order, stage : Text, detail : Text) {
     ignore tryTransition(order.id, #needsReview);
     Cmc.patch(mintJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
@@ -1724,11 +1746,115 @@ persistent actor CyclesGateway {
               audit("mint.transferRetriable", orderId # ": " # detail);
               return;
             };
+            case (#badFee(expected)) {
+              // The ICP fee is protocol-wide and fixed; a change is a protocol
+              // event, not something to absorb. Same verdict this had before #30
+              // split the case out — only now the ICP path says so itself
+              // instead of the shared table deciding for both ledgers.
+              escalateStuckMint(order, "transferRejected", "ledger fee changed: expected " # expected.toText() # " e8s");
+              return;
+            };
             case (#escalate(detail)) {
               escalateStuckMint(order, "transferRejected", detail);
               return;
             };
           };
+        };
+        case (#beginDelivery) {
+          // #30 PR-A — delivery is ONE transfer out of the reserve.
+          //
+          // The fee is read live rather than stored: what the buyer receives is
+          // `lockedCycles - fee`, so a stale copy either shorts them or makes
+          // every transfer answer `#BadFee`.
+          let fee = try { await cyclesLedger.icrc1_fee() } catch (e) {
+            auditMintBlockedOnce(orderId, "delivery.feeFetchFailed", orderId # ": " # e.message());
+            return; // stays #paid; the next sweep retries
+          };
+          // Re-read after the await; only an untouched paid order proceeds.
+          let ?fresh = Orders.get(orderStore, orderId) else return;
+          if (fresh.status != #paid) continue drive;
+          let ?amount = Cmc.deliverableCycles(fresh.lockedCycles, fee) else {
+            // Unreachable under the $10 floor (~7 T cycles against a 100 M fee),
+            // and audited rather than silent so that a future move in either
+            // number surfaces as a stuck order with a reason instead of a trap.
+            auditMintBlockedOnce(orderId, "delivery.feeExceedsOrder", orderId # ": fee " # fee.toText() # " >= locked " # fresh.lockedCycles.toText());
+            return;
+          };
+          let destination = switch (fresh.destination) {
+            case (#cyclesLedgerAccount(account)) account;
+          };
+          // §5.1 step 1 — the intent commits BEFORE the transfer await, in a
+          // sync block. From here the args are frozen and every retry replays
+          // them byte-identically; that is what makes two concurrent drivers
+          // (the webhook kick and the recovery sweep) safe.
+          let intent = Cmc.buildDeliveryIntent(orderId, destination, amount, Time.now());
+          ignore Cmc.openEntry(mintJournal, fresh, intent, Time.now());
+          // fall through the loop → #replayDelivery issues the transfer
+        };
+        case (#replayDelivery(intent)) {
+          let fee = try { await cyclesLedger.icrc1_fee() } catch (e) {
+            Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+            audit("delivery.feeFetchFailed", orderId # ": " # e.message());
+            return;
+          };
+          let result = try { await cyclesLedger.icrc1_transfer(Cmc.deliveryArgs(intent, fee)) } catch (e) {
+            Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+            audit("delivery.transferFailed", orderId # ": " # e.message());
+            return;
+          };
+          switch (Cmc.interpretTransfer(result)) {
+            case (#blockIndex(block)) {
+              mintBlockedAudited.remove(orderId);
+              // Block + `#delivered` in ONE sync block, so the pair cannot
+              // disagree. `#Duplicate` lands here too and that is the payoff of
+              // persisting the intent: a replay that already executed returns
+              // the block it executed as.
+              ignore tryTransition(orderId, #delivered);
+              Cmc.patch(mintJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
+              clearDelayed(orderId);
+              audit("delivery.sent", orderId # ": " # intent.amountE8s.toText() # " cycles, ledger block " # block.toText());
+              return;
+            };
+            case (#badFee(expected)) {
+              // The reserve absorbs a risen fee; the buyer is never shorted, so
+              // the intent's AMOUNT is not touched — only the fee we pass.
+              //
+              // ⚠️ The reserve then drops by `lockedCycles + delta` while #30's
+              // tally drops by `lockedCycles`, so `available` drifts down by the
+              // delta. It is fractions of a fee and errs conservative, but the
+              // "exactly invariant under delivery" claim holds only while the fee
+              // is unchanged — do not read this small drift as a bug.
+              Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+              audit("delivery.feeChanged", orderId # ": ledger expects " # expected.toText() # ", reserve absorbs the difference; retrying");
+              return;
+            };
+            case (#retriable(detail)) {
+              // Includes `#InsufficientFunds`, which #30 argues is unreachable:
+              // between the gate and delivery the reserve can only fall because
+              // another order delivered (it held its own promise), or because an
+              // operator withdrew — and there is deliberately no withdrawal path.
+              // A risen fee is the one way in, by fractions of a fee. So check
+              // fee drift before concluding the tally is broken.
+              Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+              audit("delivery.retriable", orderId # ": " # detail);
+              return;
+            };
+            case (#escalate(detail)) {
+              escalateDelivery(order, "transferRejected", detail);
+              return;
+            };
+          };
+        };
+        case (#finishDelivery(block)) {
+          // The transfer landed and the transition did not — unreachable today
+          // (both commit in one sync block), handled so a future regression
+          // degrades to something resumable rather than to a stuck paid order
+          // whose buyer already has their cycles.
+          ignore tryTransition(orderId, #delivered);
+          Cmc.patch(mintJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = null; bumpRetries = false }, Time.now());
+          clearDelayed(orderId);
+          audit("delivery.healed", orderId # ": block " # block.toText() # " was recorded but the order had not moved");
+          return;
         };
         case (#notifyCmc(block)) {
           // Heal the (today unreachable) #minting-with-block combination.

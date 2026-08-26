@@ -305,6 +305,26 @@ icp canister top-up backend --amount "$CYCLES_TOP_UP" >/dev/null 2>&1 ||
   die "could not top up the backend canister with $CYCLES_TOP_UP cycles.
     Needs icp-cli 1.2.0 or newer (\`icp canister top-up --help\`)."
 
+step "cycles reserve"
+# #30 PR-A: delivery is a TRANSFER out of the gateway's own cycles-ledger
+# account, not a mint. So the gateway needs cycles in that account, and it is a
+# different pot from the gas balance topped up above — the comment there spells
+# out the distinction, and this is the other half of it.
+#
+# `icp cycles transfer` is the mainnet procedure too: nothing mints into the
+# reserve, and there is deliberately no `mint_reserve` (#30 rejected it — it
+# would mean keeping ICP, an ICP-ledger dependency and a burn cap for one
+# operator convenience).
+RESERVE_TOP_UP=100t
+if icp cycles transfer "$RESERVE_TOP_UP" "$BACKEND_ID" >/dev/null 2>&1; then
+  echo "reserve:     $RESERVE_TOP_UP cycles in the gateway's own ledger account"
+else
+  printf '  \033[33m!\033[0m could not fund the cycles reserve with %s.\n' "$RESERVE_TOP_UP"
+  printf '    Orders will be created and PAID and then retry delivery forever.\n'
+  printf '    Fund it by hand: icp cycles transfer %s %s\n' "$RESERVE_TOP_UP" "$BACKEND_ID"
+fi
+
+step "admission gate"
 # The #33 bounds: a $10 floor and a $100 ceiling. One pair governs presets AND
 # custom amounts — do not add a custom-amount-specific limit.
 icp canister call backend set_gate_config \

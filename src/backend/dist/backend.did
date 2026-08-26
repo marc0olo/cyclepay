@@ -176,7 +176,6 @@ type Rates =
 type Rail = variant {card;};
 type QuotePreviews = 
  record {
-   cyclesLedgerDepositFee: nat;
    quotes: vec QuotePreview;
    rates: opt Rates;
  };
@@ -280,6 +279,10 @@ type Kind =
                 orderId: OrderId;
                 stage: text;
               };
+   transferUnresolved: record {
+                         blockIndex: opt nat;
+                         orderId: OrderId;
+                       };
    unattributed: record {
                    claimedRef: text;
                    paymentRef: text;
@@ -661,6 +664,14 @@ service : {
   /// select it with (#35): a query that branches on nothing should not ask the
   /// caller to pick. `Types.Rail` still exists on the order — the type names the
   /// dimension, this query does not need to switch on it.
+  /// 
+  /// ⚠️ **It no longer discloses the cycles-ledger fee** (#30 PR-A). A query
+  /// cannot `await icrc1_fee`, so disclosing it here meant storing a copy and
+  /// correcting it on `#BadFee` — a whole staleness class in exchange for one
+  /// number the caller can read itself. The frontend already queries the cycles
+  /// ledger directly for the reserve balance, so it reads `icrc1_fee` in the same
+  /// breath. Same split as `available = balance - promisedTotal`: **the canister
+  /// owns what only it knows; the ledger owns what it owns.**
   quote_previews: (amounts: vec nat) -> (QuotePreviews) query;
   /// Everything the **buyer** needs to verify their own purchase (§2 authz:
   /// `caller == order.owner`).
