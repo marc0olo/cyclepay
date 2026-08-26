@@ -237,9 +237,16 @@ Create an order and open the `stripeSessionUrl` on the returned order — that i
 the payment page. The canister creates a **Checkout Session per order** and sets
 `client_reference_id` through the API (#33), so there is no Payment Link to
 configure and no URL parameter to append. Pay with `4242 4242 4242 4242` and watch
-`get_order` reach `delivered`. `process_order` kicks the mint without waiting for
-the sweep; `mint_journal` and `receipt` then carry the real ICP block index and
-minted quantity.
+`get_order` reach `delivered`. `process_order` kicks the **delivery** without
+waiting for the sweep — callable as the order's own owner as well as admin since
+#30 PR-B — and `pending_deliveries` (admin) shows anything still outstanding
+before the 2 h queue alert would. `mint_journal` and `receipt` then carry the real
+cycles-ledger block index and the delivered quantity.
+
+⚠️ **Fund the reserve AND call `refresh_reserve` before creating an order**, or
+every purchase is refused with `#reserveShort{available = 0}` against a funded
+account: solvency is decided against a lower bound that only rises by observation
+(#30 PR-B). `reserve_status.availableToSell` is the figure to check.
 
 ⚠️ **Two things that look like bugs and are not:**
 

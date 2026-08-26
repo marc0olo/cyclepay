@@ -534,7 +534,8 @@ Status: ☐ todo · ◐ in progress · ☑ done
   `sweepMintable()` over `#paid/#minting/#icpAtCmc` (the §5.2 timer reuses
   it in task 11), webhook kick as a **detached self-message** after
   `http_request_update` dispatch (Stripe's ack never waits on ledger/CMC
-  latency), admin `process_order` (manual kick, safe to spam) +
+  latency), `process_order` (manual kick, safe to spam — admin **or** the order's
+  own owner since #30 PR-B, so a page refresh heals a stuck delivery) +
   `mint_journal` query. 39 new tests (pinned-vector TPUP memo + top-up
   subaccount layout + e8s math computed externally in python; staleness and
   24 h boundaries; full transfer/notify interpretation matrices; journal
