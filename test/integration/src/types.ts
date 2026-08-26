@@ -273,7 +273,7 @@ export interface BackendService {
   receipt(id: string): Promise<Opt<{
     order: Order;
     paidUsdCents: Opt<bigint>;
-    mintBlockIndex: Opt<bigint>;
+    deliveryBlockIndex: Opt<bigint>;
     cyclesMinted: Opt<bigint>;
     verification: {
       netCents: Opt<bigint>;
@@ -297,7 +297,7 @@ export interface BackendService {
   http_request(req: HttpRequest): Promise<HttpResponse>;
   http_request_update(req: HttpRequest): Promise<HttpResponse>;
   list_orders(): Promise<Order[]>;
-  mint_journal(id: string): Promise<Opt<JournalEntry>>;
+  delivery_journal(id: string): Promise<Opt<JournalEntry>>;
   process_order(id: string): Promise<Result<Order, { notFound: null } | { inFlight: null }>>;
   recovery_status(): Promise<{
     intervalNs: bigint;

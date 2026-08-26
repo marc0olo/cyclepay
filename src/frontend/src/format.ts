@@ -24,7 +24,19 @@ export interface StatusInfo {
   tone: "pending" | "active" | "ok" | "warn" | "err";
 }
 
-export const STEPS = ["Awaiting payment", "Paid", "Minting", "Delivered"] as const;
+/// The buyer's progress timeline.
+///
+/// ⚠️ **It read `["Awaiting payment", "Paid", "Minting", "Delivered"]` — four steps
+/// of which only three were reachable, and the phantom one was labelled with a
+/// mechanism that no longer exists.** Since #30 PR-A, money-out is one transfer from
+/// `#paid` to `#delivered`; nothing enters `#minting`, so every buyer saw a bar whose
+/// third segment could never light up, under a word for something the gateway had
+/// stopped doing.
+///
+/// Three steps, all reachable. #36 deletes the two statuses that mapped to the old
+/// step 2; until then they are off the happy path, which is where an unreachable
+/// status belongs.
+export const STEPS = ["Awaiting payment", "Paid", "Delivered"] as const;
 
 export function statusInfo(key: StatusKey): StatusInfo {
   switch (key) {
@@ -44,12 +56,16 @@ export function statusInfo(key: StatusKey): StatusInfo {
       return { label: "Payment received", step: 1, terminal: false, tone: "active" };
     case "awaitingTreasury":
       return { label: "Queued. Waiting on treasury", step: 1, terminal: false, tone: "warn" };
+    // LEGACY and unreachable since #30 PR-A: the treasury pre-gate was the only
+    // entrance to either. Off the happy path (step -1) rather than occupying a
+    // segment of a bar they can never reach, and honest about needing a human if a
+    // regression ever routed an order back here. #36 deletes both statuses.
     case "minting":
-      return { label: "Minting cycles", step: 2, terminal: false, tone: "active" };
+      return { label: "Processing. Contact support if this persists", step: -1, terminal: false, tone: "warn" };
     case "icpAtCmc":
-      return { label: "Minting cycles (ICP at the minting canister)", step: 2, terminal: false, tone: "active" };
+      return { label: "Processing. Contact support if this persists", step: -1, terminal: false, tone: "warn" };
     case "delivered":
-      return { label: "Delivered", step: 3, terminal: true, tone: "ok" };
+      return { label: "Delivered", step: 2, terminal: true, tone: "ok" };
     case "needsReview":
       // NOT terminal: the operator can still end it, and until they do the order
       // holds its promise. Polling continues so the buyer sees that happen.
@@ -155,14 +171,14 @@ export function feeBreakdown(
 
 /// What actually lands. The cycles ledger charges a flat fee to accept a
 /// deposit, so the buyer receives less than the order locks, on every order.
-/// Not grossed up on-chain by design (minting extra to cover a per-order fee
+/// Not grossed up on-chain by design (covering a per-order fee out of the reserve
 /// would be griefable), so it has to be shown here instead.
 ///
-/// `depositFee` comes from `quote_previews` rather than a constant in this file —
+/// `transferFee` comes from `quote_previews` rather than a constant in this file —
 /// it is the ledger's number, not ours.
-export function cyclesCredited(cycles: bigint | null, depositFee: bigint): bigint | null {
+export function cyclesCredited(cycles: bigint | null, transferFee: bigint): bigint | null {
   if (cycles === null) return null;
-  return cycles > depositFee ? cycles - depositFee : 0n;
+  return cycles > transferFee ? cycles - transferFee : 0n;
 }
 
 /// The line under an amount, stating what arrives and that the rate is now
@@ -173,19 +189,19 @@ export function cyclesCredited(cycles: bigint | null, depositFee: bigint): bigin
 /// arrives for a different amount than quoted, the quantity is re-derived at
 /// that same locked rate. Saying "cycles are locked" would be wrong in that one
 /// case; saying the rate is locked is always true.
-export function estimateLine(cycles: bigint | null, depositFee: bigint): string {
+export function estimateLine(cycles: bigint | null, transferFee: bigint): string {
   if (cycles === null) {
     return "No exchange rate available right now. Orders are paused until one is.";
   }
-  const shown = formatCycles(cyclesCredited(cycles, depositFee)!);
+  const shown = formatCycles(cyclesCredited(cycles, transferFee)!);
   // Only spell out the split when the two figures actually *read* differently.
   // `formatCycles` shows three decimals, so on a multi-trillion order the 100 M
-  // deposit fee rounds away entirely, and "3.5 T credited (3.5 T minted, less the
-  // 100 M deposit fee)" reads as a contradiction rather than a disclosure.
+  // transfer fee rounds away entirely, and "3.5 T credited (3.5 T sent, less the
+  // 100 M transfer fee)" reads as a contradiction rather than a disclosure.
   if (shown !== formatCycles(cycles)) {
     return (
       `≈ ${shown} cycles credited ` +
-      `(${formatCycles(cycles)} minted, less the cycles ledger's ${formatCycles(depositFee)} deposit fee)`
+      `(${formatCycles(cycles)} sent, less the cycles ledger's ${formatCycles(transferFee)} transfer fee)`
     );
   }
   // Just the number that lands. The fee is disclosed once, in `#dest-fee-note`
@@ -370,10 +386,10 @@ export function gateReasonMessage(reason: GateReason): string {
 /// The `#quoteChanged` refusal, in the buyer's terms. Leads with "nothing was
 /// charged" because that is the first thing someone wants to know when a payment
 /// flow refuses.
-export function quoteChangedMessage(quoted: bigint, depositFee: bigint): string {
+export function quoteChangedMessage(quoted: bigint, transferFee: bigint): string {
   return (
     `The exchange rate moved while this page was open. Nothing was charged. ` +
-    `This amount now buys ${estimateLine(quoted, depositFee)}. ` +
+    `This amount now buys ${estimateLine(quoted, transferFee)}. ` +
     `Click again to create the order and lock that rate.`
   );
 }

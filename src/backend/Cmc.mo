@@ -586,7 +586,7 @@ module {
         if (e.cyclesMinted != null) {
           return {
             stage = escalateReasonToText(#ambiguousForward);
-            detail = "cycles WERE minted and the forward outcome is unknown — check the destination balance against mint_journal.cyclesMinted BEFORE anything else. Do not re-forward and do not notify the CMC again: the ICP is already consumed. Arrived -> resolve. Not arrived -> the cycles are in this canister's balance; deliver them manually.";
+            detail = "cycles WERE minted and the forward outcome is unknown — check the destination balance against delivery_journal.cyclesMinted BEFORE anything else. Do not re-forward and do not notify the CMC again: the ICP is already consumed. Arrived -> resolve. Not arrived -> the cycles are in this canister's balance; deliver them manually.";
           };
         };
         // The instruction names a block index, so it has to exist. Status
@@ -719,7 +719,7 @@ module {
       // ⚠️ **Correction, because the difference matters if anyone touches the
       // mutex.** Two drivers (the webhook's detached kick and the recovery sweep)
       // do *arrive* at one order concurrently, but they do not both run: the
-      // second bounces off `processMint`'s in-flight set, which is checked and
+      // second bounces off `processDelivery`'s in-flight set, which is checked and
       // added in one synchronous block and released in a `finally`, and every
       // path into delivery goes through it. **That mutex is the first line of
       // defence; replay-dedup is the second.** They are not interchangeable —

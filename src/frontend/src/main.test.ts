@@ -41,8 +41,8 @@ const state = {
     netCents: 455n,
     cycles: TIER_CYCLES,
   } as Quote,
-  depositFee: 100_000_000n,
-  depositFeeError: false,
+  transferFee: 100_000_000n,
+  transferFeeError: false,
   ckMaxUsdCents: 0n,
   /// When set, the next create_order returns #quoteChanged with this quantity.
   quoteChangedTo: undefined as bigint | undefined,
@@ -152,13 +152,13 @@ vi.mock("./actor", () => ({
   backendCanisterId: "aaaaa-aa",
   makeBackend: () => backend,
   // #30 PR-A: the ledger's fee is read from the LEDGER, not disclosed by
-  // `quote_previews`. `state.depositFee` still drives it, so every existing
+  // `quote_previews`. `state.transferFee` still drives it, so every existing
   // assertion about how the fee is displayed keeps its lever — only where the
   // number comes from changed.
   makeCyclesLedger: () => ({
     icrc1_fee: async () => {
-      if (state.depositFeeError) throw new Error("cycles ledger unreachable");
-      return state.depositFee;
+      if (state.transferFeeError) throw new Error("cycles ledger unreachable");
+      return state.transferFee;
     },
     icrc1_balance_of: async () => 0n,
   }),
@@ -247,8 +247,8 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   state.quote = { usdCents: TIER_CENTS, feeCents: 45n, netCents: 455n, cycles: TIER_CYCLES };
-  state.depositFee = 100_000_000n;
-  state.depositFeeError = false;
+  state.transferFee = 100_000_000n;
+  state.transferFeeError = false;
   state.ckMaxUsdCents = 0n;
   state.quoteChangedTo = undefined;
   state.lastMinCycles = undefined;
@@ -323,7 +323,7 @@ describe("the deposit fee is disclosed on every order", () => {
     // direction is to show the locked quantity with no fee note: shown-too-high
     // costs a buyer nothing, while a guessed fee promises cycles that will not
     // arrive.
-    state.depositFeeError = true;
+    state.transferFeeError = true;
     await mount();
     expect(el("dest-fee-note").hidden).toBe(true);
     // And the tile still prices, because the quote came from the backend.
@@ -331,11 +331,13 @@ describe("the deposit fee is disclosed on every order", () => {
   });
 
   test("a fee large enough to move the figure is shown as a split", async () => {
-    state.depositFee = 500_000_000_000n;
+    state.transferFee = 500_000_000_000n;
     await mount();
     const label = tierButton().querySelector(".cycles")!.textContent!;
     expect(label).toContain("3 T cycles credited");
-    expect(label).toContain("3.5 T minted");
+    // "3.5 T sent", not "minted" (#30 PR-C): the gateway transfers from its reserve.
+    expect(label).toContain("3.5 T sent");
+    expect(label).not.toContain("minted");
   });
 });
 
@@ -457,7 +459,7 @@ describe("receipt", () => {
       order: state.order,
       paidUsdCents: TIER_CENTS,
       cyclesMinted: TIER_CYCLES,
-      mintBlockIndex: 42n,
+      deliveryBlockIndex: 42n,
       verification: {
         netCents: 455n,
         usdPerIcpMicros: 4_550_000n,

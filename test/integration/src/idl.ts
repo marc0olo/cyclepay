@@ -362,7 +362,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Text],
       [IDL.Opt(IDL.Record({
         cyclesMinted: IDL.Opt(IDL.Nat),
-        mintBlockIndex: IDL.Opt(IDL.Nat),
+        deliveryBlockIndex: IDL.Opt(IDL.Nat),
         order: Order,
         paidUsdCents: IDL.Opt(IDL.Nat),
         verification: IDL.Record({
@@ -401,7 +401,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     http_request: IDL.Func([HttpRequest], [HttpResponse], ['query']),
     http_request_update: IDL.Func([HttpRequest], [HttpResponse], []),
     list_orders: IDL.Func([], [IDL.Vec(Order)], ['query']),
-    mint_journal: IDL.Func([IDL.Text], [IDL.Opt(JournalEntry)], ['query']),
+    delivery_journal: IDL.Func([IDL.Text], [IDL.Opt(JournalEntry)], ['query']),
     process_order: IDL.Func(
       [IDL.Text],
       [IDL.Variant({ ok: Order, err: ProcessOrderError })],
