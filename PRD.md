@@ -418,7 +418,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
   against the real window, and it sizes task 9's retry budget: 25 retries ×
   1 h > 24 h, so an outage shorter than a day never exhausts the notify
   loop (both claims pinned by tests). `isSweepable` extracts the sweep
-  predicate `sweepMintable` had inline (#paid/#minting/#icpAtCmc/
+  predicate `sweepDeliverable` had inline (#paid/#minting/#icpAtCmc/
   #awaitingTreasury; `#created` waits on the user — expiry stays per-rail,
   seam §11.1.4). **Re-arm across upgrades**: the timer id is a `transient`
   initializer, so EOP re-runs it on install *and* every upgrade — a deploy
@@ -429,7 +429,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
   `recoverySweepInFlight` flag makes a sweep slower than the interval skip
   the next firing rather than pile up (transient = an upgrade mid-sweep
   can't deadlock recovery — the §5.2 `pumping` warning); correctness under
-  concurrency stays with processMint's per-order single-flight. The
+  concurrency stays with processDelivery's per-order single-flight. The
   webhook kick deliberately *bypasses* the sweep flag: an in-flight sweep
   enumerated `pending` before the just-verified order turned `#paid`, so a
   guarded kick could make a paying user wait a full interval. The §5.1
@@ -467,13 +467,13 @@ Status: ☐ todo · ◐ in progress · ☑ done
   transfer fee. A held `#paid` order transitions to `#awaitingTreasury`
   (audited); an already-held order re-holds silently so its max-wait clock
   (`updatedAtNs`) and the ring buffer survive repeated sweeps.
-  **Hold/resume**: `driveMint` intercepts `#awaitingTreasury` before
+  **Hold/resume**: `driveDelivery` intercepts `#awaitingTreasury` before
   `Cmc.stageOf` (which stays untouched) — within the wait bound the order
   retries `#begin`, so the pre-gate is the single decision point and a
   refill or rolled window clears the hold with no second code path; at/past
   `maxHoldNs` it escalates as `#stuckMint{stage = "treasuryWaitExceeded"}`
   (position certain — fiat in, nothing minted — operator refunds in the
-  Stripe Dashboard; ErrorQueue doc widened). `sweepMintable` now includes
+  Stripe Dashboard; ErrorQueue doc widened). `sweepDeliverable` now includes
   `#awaitingTreasury`. **Defaults fail closed**: `burnCapE8s = 0` — every
   mint holds until the operator consciously sizes the bound (the
   empty-tier-list stance: a default cap in ICP would be an invented money
@@ -531,18 +531,18 @@ Status: ☐ todo · ◐ in progress · ☑ done
   `charge.refunded` auto-resolve never touches it). §4.2 `journal` map
   (persistent, never pruned) records intent/block_index/cyclesMinted/
   retries per order. `Main.mo`: per-order transient single-flight set,
-  `sweepMintable()` over `#paid/#minting/#icpAtCmc` (the §5.2 timer reuses
+  `sweepDeliverable()` over `#paid/#minting/#icpAtCmc` (the §5.2 timer reuses
   it in task 11), webhook kick as a **detached self-message** after
   `http_request_update` dispatch (Stripe's ack never waits on ledger/CMC
   latency), `process_order` (manual kick, safe to spam — admin **or** the order's
   own owner since #30 PR-B, so a page refresh heals a stuck delivery) +
-  `mint_journal` query. 39 new tests (pinned-vector TPUP memo + top-up
+  `delivery_journal` query. 39 new tests (pinned-vector TPUP memo + top-up
   subaccount layout + e8s math computed externally in python; staleness and
   24 h boundaries; full transfer/notify interpretation matrices; journal
   patch semantics; 13-case stageOf matrix incl. ambiguity-beats-retries;
   stuckMint never refund-resolved); 334 total green; `mops check`
   lint-clean, `mops build` + `icp build` green; `.did` gains exactly
-  `process_order`/`mint_journal`. Live ledger/CMC behavior (notify
+  `process_order`/`delivery_journal`. Live ledger/CMC behavior (notify
   idempotency shape, PocketIC NNS Wasms) is task 12's go-live bar.
 - **2026-06-10 — Task 8 done.** Stripe webhook ingestion — `rails/Card.mo`
   is complete (§6.1). `Json.mo`: hand-rolled strict JSON tree parser (the

@@ -1447,7 +1447,7 @@ persistent actor CyclesGateway {
   /// §4.2 `journal : Map<OrderId, JournalEntry>` — the money-out record:
   /// transfer intent (written *before* the ledger call, §5.1), block_index,
   /// minted cycles, retries. Financial record — kept for years, never pruned.
-  let mintJournal : Cmc.Journal = Cmc.emptyJournal();
+  let deliveryJournal : Cmc.Journal = Cmc.emptyJournal();
 
   transient let icpLedger = actor (Cmc.icpLedgerId) : Cmc.LedgerService;
   transient let cmc = actor (Cmc.cmcId) : Cmc.CmcService;
@@ -1457,7 +1457,7 @@ persistent actor CyclesGateway {
   /// would both pass the status gates between awaits. Transient — an
   /// upgrade mid-mint clears it and the journal-driven resume (Cmc.stageOf)
   /// picks up where the state actually is.
-  transient let mintsInFlight = Set.empty<Types.OrderId>();
+  transient let deliveriesInFlight = Set.empty<Types.OrderId>();
 
   /// Bounds the retriable-error loop on stages the ledger's 24 h dedup window
   /// doesn't already bound. Defined alongside the sweep cadence in Recovery.mo,
@@ -1468,7 +1468,7 @@ persistent actor CyclesGateway {
   /// order contributes one audit line rather than one per sweep. Transient: the
   /// durable record of a stuck order is its error-queue entry once the max-wait
   /// bound trips, not this.
-  transient let mintBlockedAudited = Set.empty<Types.OrderId>();
+  transient let deliveryBlockedAudited = Set.empty<Types.OrderId>();
 
   /// Orders already alerted as delayed → the error-queue entry id raised for it.
   ///
@@ -1502,7 +1502,7 @@ persistent actor CyclesGateway {
     // Already alerted for this order, so stay silent: re-raising on every sweep
     // would flood the worklist and the audit ring.
     if (delayedAlerts.get(order.id) != null) return;
-    let entryId = queueMintError(
+    let entryId = queueDeliveryError(
       order.rail,
       #deliveryDelayed({ orderId = order.id; stage; sinceNs = order.updatedAtNs }),
       detail,
@@ -1527,9 +1527,9 @@ persistent actor CyclesGateway {
   };
 
   /// Audit a blocked mint at most once per order per session.
-  func auditMintBlockedOnce(orderId : Types.OrderId, tag : Text, detail : Text) {
-    if (mintBlockedAudited.contains(orderId)) return;
-    mintBlockedAudited.add(orderId);
+  func auditDeliveryBlockedOnce(orderId : Types.OrderId, tag : Text, detail : Text) {
+    if (deliveryBlockedAudited.contains(orderId)) return;
+    deliveryBlockedAudited.add(orderId);
     audit(tag, detail);
   };
 
@@ -1651,7 +1651,7 @@ persistent actor CyclesGateway {
 
   /// Queue a mint-path error entry, audit-logging any unresolved eviction
   /// (each is a live money obligation dropped from on-chain state, §4.1).
-  func queueMintError(rail : Types.Rail, kind : ErrorQueue.Kind, detail : Text) : Nat {
+  func queueDeliveryError(rail : Types.Rail, kind : ErrorQueue.Kind, detail : Text) : Nat {
     let result = ErrorQueue.add(errorQueue, errorQueueCapacity, rail, kind, detail, Time.now());
     for (victim in result.evicted.values()) {
       if (victim.resolvedAtNs == null) {
@@ -1711,20 +1711,20 @@ persistent actor CyclesGateway {
   ///     Escalating rather than guessing a fee on a money path is the point.
   func escalateDelivery(order : Types.Order, stage : Text, detail : Text) {
     ignore tryTransition(order.id, #needsReview);
-    let blockIndex = switch (mintJournal.get(order.id)) {
+    let blockIndex = switch (deliveryJournal.get(order.id)) {
       case (?e) e.blockIndex;
       case null null;
     };
-    Cmc.patch(mintJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+    Cmc.patch(deliveryJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
     clearDelayed(order.id);
-    mintBlockedAudited.remove(order.id);
-    ignore queueMintError(order.rail, #transferUnresolved({ orderId = order.id; blockIndex }), detail);
+    deliveryBlockedAudited.remove(order.id);
+    ignore queueDeliveryError(order.rail, #transferUnresolved({ orderId = order.id; blockIndex }), detail);
     audit("delivery.unresolved", order.id # " [" # stage # "]: " # detail);
   };
 
   func escalateStuckMint(order : Types.Order, stage : Text, detail : Text) {
     ignore tryTransition(order.id, #needsReview);
-    Cmc.patch(mintJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+    Cmc.patch(deliveryJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
     // Before queueing the escalation: any open delay alert for this order says
     // "it delivers on the next sweep", which just stopped being true. Leaving it
     // open would put a false promise on the worklist next to the real problem,
@@ -1733,8 +1733,8 @@ persistent actor CyclesGateway {
     // Same reasoning for the once-per-order audit guard: the order is terminal,
     // so nothing will re-audit a mint block for it and keeping the id would only
     // suppress a legitimate line if it were ever re-driven.
-    mintBlockedAudited.remove(order.id);
-    ignore queueMintError(order.rail, #stuckMint({ orderId = order.id; stage }), detail);
+    deliveryBlockedAudited.remove(order.id);
+    ignore queueDeliveryError(order.rail, #stuckMint({ orderId = order.id; stage }), detail);
     audit("delivery.stuck", order.id # " [" # stage # "]: " # detail);
   };
 
@@ -1760,7 +1760,7 @@ persistent actor CyclesGateway {
   /// "replay the identical transfer" (§5.1) isn't a special case, it IS the
   /// transfer path. Retriable failures return with state untouched (plus a
   /// retry bump) for the next sweep; uncertainty escalates.
-  func driveMint(orderId : Types.OrderId) : async* () {
+  func driveDelivery(orderId : Types.OrderId) : async* () {
     label drive loop {
       let ?order = Orders.get(orderStore, orderId) else return;
       // §5.3: a treasury-held order resumes here — Treasury owns the hold
@@ -1810,7 +1810,7 @@ persistent actor CyclesGateway {
                 },
                 switch (order.status) {
                   case (#minting) "paid, ICP transfer not yet confirmed past the alert threshold — check the ICP ledger; it resumes on the next sweep";
-                  case (#icpAtCmc) "paid, ICP is at the CMC but notify_top_up keeps failing past the alert threshold — check CMC health; the block index is in mint_journal and notify is idempotent";
+                  case (#icpAtCmc) "paid, ICP is at the CMC but notify_top_up keeps failing past the alert threshold — check CMC health; the block index is in delivery_journal and notify is idempotent";
                   case (_) "paid but not yet minted past the alert threshold — fix the cause (burn cap / float / CMC) and it delivers on the next sweep";
                 },
               );
@@ -1826,10 +1826,10 @@ persistent actor CyclesGateway {
               // position is what the operator acts on. Deciding this inline off
               // status alone is what produced three rounds of defects — see that
               // function's doc for the specific dangerous cell it closes.
-              let termination = Cmc.terminationFor(order.status, mintJournal.get(orderId));
+              let termination = Cmc.terminationFor(order.status, deliveryJournal.get(orderId));
               escalateStuckMint(order, termination.stage, termination.detail);
               clearDelayed(orderId);
-              mintBlockedAudited.remove(orderId);
+              deliveryBlockedAudited.remove(orderId);
               return;
             };
           };
@@ -1850,15 +1850,15 @@ persistent actor CyclesGateway {
               // §5.3: same decision function as every other terminate, so there
               // is exactly one place that maps a money position to an
               // instruction.
-              let termination = Cmc.terminationFor(order.status, mintJournal.get(orderId));
+              let termination = Cmc.terminationFor(order.status, deliveryJournal.get(orderId));
               escalateStuckMint(order, termination.stage, termination.detail);
               clearDelayed(orderId);
-              mintBlockedAudited.remove(orderId);
+              deliveryBlockedAudited.remove(orderId);
               return;
             };
           };
         };
-        case (_) Cmc.stageOf(order.status, mintJournal.get(orderId), Time.now(), Cmc.ledgerDedupWindowNs, maxMintRetries);
+        case (_) Cmc.stageOf(order.status, deliveryJournal.get(orderId), Time.now(), Cmc.ledgerDedupWindowNs, maxMintRetries);
       };
       switch (stage) {
         case (#none) return;
@@ -1882,7 +1882,7 @@ persistent actor CyclesGateway {
           // is the correct action regardless of why we stopped trying. Naming
           // both means neither reading can mislead.
           let stage = Cmc.escalateReasonToText(reason);
-          let position = Cmc.terminationFor(order.status, mintJournal.get(orderId));
+          let position = Cmc.terminationFor(order.status, deliveryJournal.get(orderId));
           let detail =
             if (position.stage == stage) {
               position.detail;
@@ -1896,11 +1896,11 @@ persistent actor CyclesGateway {
         case (#begin) {
           // §5 rate derivation: fresh CMC ICP/XDR rate, staleness-guarded.
           let rate = try { await cmc.get_icp_xdr_conversion_rate() } catch (e) {
-            auditMintBlockedOnce(orderId, "mint.rateFetchFailed", orderId # ": " # e.message());
+            auditDeliveryBlockedOnce(orderId, "mint.rateFetchFailed", orderId # ": " # e.message());
             return; // stays #paid; the next sweep retries
           };
           let ?permyriad = Cmc.freshCmcRate(rate.data, Time.now(), Cmc.cmcRateMaxAgeNs) else {
-            auditMintBlockedOnce(orderId, "mint.rateStale", orderId);
+            auditDeliveryBlockedOnce(orderId, "mint.rateStale", orderId);
             return;
           };
           // §5.3 pre-gate input: the live float balance (also feeds the
@@ -1908,7 +1908,7 @@ persistent actor CyclesGateway {
           let floatE8s = try {
             await icpLedger.icrc1_balance_of({ owner = selfPrincipal(); subaccount = null });
           } catch (e) {
-            auditMintBlockedOnce(orderId, "mint.balanceFetchFailed", orderId # ": " # e.message());
+            auditDeliveryBlockedOnce(orderId, "mint.balanceFetchFailed", orderId # ": " # e.message());
             return; // status untouched; the next sweep retries
           };
           observeFloat(floatE8s);
@@ -1923,7 +1923,7 @@ persistent actor CyclesGateway {
             // Audited, not silent: the order stays #paid and the next sweep
             // retries, so without a trace this looks like a mint that simply
             // never ran.
-            auditMintBlockedOnce(orderId, "mint.unpriceable", orderId # ": cannot derive e8s for " # fresh.lockedCycles.toText() # " cycles at " # permyriad.toText() # " permyriad");
+            auditDeliveryBlockedOnce(orderId, "mint.unpriceable", orderId # ": cannot derive e8s for " # fresh.lockedCycles.toText() # " cycles at " # permyriad.toText() # " permyriad");
             return;
           };
           // §5.3 pre-gate: burn cap (blast-radius bound, checked first —
@@ -1949,12 +1949,12 @@ persistent actor CyclesGateway {
           let intent = Cmc.buildIntent(selfPrincipal(), e8s, Time.now());
           let ?minting = tryTransition(orderId, #minting) else return;
           Treasury.recordBurn(burnLedger, treasuryConfig.burnWindowNs, e8s, Time.now());
-          ignore Cmc.openEntry(mintJournal, minting, intent, Time.now());
+          ignore Cmc.openEntry(deliveryJournal, minting, intent, Time.now());
           // fall through the loop → #replayTransfer issues the transfer
         };
         case (#replayTransfer(intent)) {
           let result = try { await icpLedger.icrc1_transfer(Cmc.transferArgs(intent)) } catch (e) {
-            Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+            Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
             audit("mint.transferFailed", orderId # ": " # e.message());
             return;
           };
@@ -1964,14 +1964,14 @@ persistent actor CyclesGateway {
             // attempt debited" call for the same move.
             case (#delivered(block) or #deduplicated(block)) {
               // Progress: allow a future block on this order to be audited again.
-              mintBlockedAudited.remove(orderId);
+              deliveryBlockedAudited.remove(orderId);
               // §5.1 step 2 — block_index + #icpAtCmc in one sync block.
               ignore tryTransition(orderId, #icpAtCmc);
-              Cmc.patch(mintJournal, orderId, { status = ?#icpAtCmc; blockIndex = ?block; cyclesMinted = null; bumpRetries = false }, Time.now());
+              Cmc.patch(deliveryJournal, orderId, { status = ?#icpAtCmc; blockIndex = ?block; cyclesMinted = null; bumpRetries = false }, Time.now());
               // fall through → #notifyCmc
             };
             case (#retriable(detail)) {
-              Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+              Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
               audit("mint.transferRetriable", orderId # ": " # detail);
               return;
             };
@@ -2023,7 +2023,7 @@ persistent actor CyclesGateway {
             // silently shorts buyers, is worse than the stall it fixes. A stalled
             // rail is loud and costs nothing; a shorted buyer is quiet and costs
             // them.
-            auditMintBlockedOnce(orderId, "delivery.feeExceedsOrder", orderId # ": fee " # fee.toText() # " >= locked " # order.lockedCycles.toText());
+            auditDeliveryBlockedOnce(orderId, "delivery.feeExceedsOrder", orderId # ": fee " # fee.toText() # " >= locked " # order.lockedCycles.toText());
             return;
           };
           let destination = switch (order.destination) {
@@ -2034,7 +2034,7 @@ persistent actor CyclesGateway {
           // them byte-identically; that is what makes two concurrent drivers
           // (the webhook kick and the recovery sweep) safe.
           let intent = Cmc.buildDeliveryIntent(orderId, destination, amount, Time.now());
-          ignore Cmc.openEntry(mintJournal, order, intent, Time.now());
+          ignore Cmc.openEntry(deliveryJournal, order, intent, Time.now());
           // fall through the loop → #replayDelivery issues the transfer
         };
         case (#replayDelivery(intent)) {
@@ -2093,7 +2093,7 @@ persistent actor CyclesGateway {
             // tells us nothing about whether the ledger acted, and rule 2 exists to
             // be pessimistic about exactly that. A reconcile heals it if the
             // transfer never happened.
-            Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+            Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
             audit("delivery.transferFailed", orderId # ": " # e.message());
             return;
           };
@@ -2109,18 +2109,18 @@ persistent actor CyclesGateway {
             // would under-count every healed replay by a whole order.
             case (#deduplicated(block)) {
               reserveFloor += debited;
-              mintBlockedAudited.remove(orderId);
+              deliveryBlockedAudited.remove(orderId);
               ignore tryTransition(orderId, #delivered);
-              Cmc.patch(mintJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
+              Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
               clearDelayed(orderId);
               audit("delivery.deduplicated", orderId # ": ledger block " # block.toText() # " was already ours; floor credited back " # debited.toText());
               return;
             };
             case (#delivered(block)) {
-              mintBlockedAudited.remove(orderId);
+              deliveryBlockedAudited.remove(orderId);
               // Block + `#delivered` in ONE sync block, so the pair cannot disagree.
               ignore tryTransition(orderId, #delivered);
-              Cmc.patch(mintJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
+              Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
               clearDelayed(orderId);
               audit("delivery.sent", orderId # ": " # intent.amountE8s.toText() # " cycles, ledger block " # block.toText());
               return;
@@ -2167,7 +2167,7 @@ persistent actor CyclesGateway {
               let retried = try {
                 await cyclesLedger.icrc1_transfer(Cmc.deliveryArgs(intent, expected));
               } catch (e) {
-                Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+                Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
                 audit("delivery.transferFailed", orderId # " (after fee correction): " # e.message());
                 return;
               };
@@ -2175,17 +2175,17 @@ persistent actor CyclesGateway {
                 case (#deduplicated(block)) {
                   // An earlier attempt had already landed: this one moved nothing.
                   reserveFloor += reDebited;
-                  mintBlockedAudited.remove(orderId);
+                  deliveryBlockedAudited.remove(orderId);
                   ignore tryTransition(orderId, #delivered);
-                  Cmc.patch(mintJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
+                  Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
                   clearDelayed(orderId);
                   audit("delivery.deduplicated", orderId # ": block " # block.toText() # " after fee correction; floor credited back");
                   return;
                 };
                 case (#delivered(block)) {
-                  mintBlockedAudited.remove(orderId);
+                  deliveryBlockedAudited.remove(orderId);
                   ignore tryTransition(orderId, #delivered);
-                  Cmc.patch(mintJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
+                  Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
                   clearDelayed(orderId);
                   audit("delivery.sent", orderId # ": " # intent.amountE8s.toText() # " cycles at the corrected fee, ledger block " # block.toText());
                   return;
@@ -2195,7 +2195,7 @@ persistent actor CyclesGateway {
                   // again mid-flight the next sweep starts over from the derived
                   // fee — which is still the byte-identical replay, so the
                   // at-most-once guarantee is never traded for convergence.
-                  Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+                  Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
                   audit("delivery.retriable", orderId # ": fee correction to " # expected.toText() # " did not settle; retrying next sweep");
                   return;
                 };
@@ -2213,7 +2213,7 @@ persistent actor CyclesGateway {
               // quantity — and if it does fire, the floor and the ledger disagree.
               // Check `reserve_status.tallySaturations` and the last reconcile before
               // hunting a fee delta.
-              Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+              Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
               audit("delivery.retriable", orderId # ": " # detail);
               return;
             };
@@ -2244,7 +2244,7 @@ persistent actor CyclesGateway {
           // degrades to something resumable rather than to a stuck paid order
           // whose buyer already has their cycles.
           ignore tryTransition(orderId, #delivered);
-          Cmc.patch(mintJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = null; bumpRetries = false }, Time.now());
+          Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = null; bumpRetries = false }, Time.now());
           clearDelayed(orderId);
           audit("delivery.healed", orderId # ": block " # block.toText() # " was recorded but the order had not moved");
           return;
@@ -2255,7 +2255,7 @@ persistent actor CyclesGateway {
           let result = try {
             await cmc.notify_top_up({ block_index = Nat64.fromNat(block); canister_id = selfPrincipal() });
           } catch (e) {
-            Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+            Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
             audit("mint.notifyFailed", orderId # ": " # e.message());
             return;
           };
@@ -2265,7 +2265,7 @@ persistent actor CyclesGateway {
               // die mid-forward, stageOf answers #ambiguousForward and the
               // operator checks the destination — at-most-once delivery,
               // never an auto-double-forward.
-              Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = ?cycles; bumpRetries = false }, Time.now());
+              Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = ?cycles; bumpRetries = false }, Time.now());
               // What the CMC actually minted can fall short of what was locked:
               // the e8s were sized from a CMC rate up to 15 min old, and after an
               // outage the recovery sweep may notify a transfer days later at a
@@ -2290,7 +2290,7 @@ persistent actor CyclesGateway {
               };
             };
             case (#retriable(detail)) {
-              Cmc.patch(mintJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+              Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
               audit("mint.notifyRetriable", orderId # ": " # detail);
               return;
             };
@@ -2302,7 +2302,7 @@ persistent actor CyclesGateway {
           switch (await* forwardCycles(order)) {
             case (#ok) {
               ignore tryTransition(orderId, #delivered);
-              Cmc.patch(mintJournal, orderId, { status = ?#delivered; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+              Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
               clearDelayed(orderId);
               audit("mint.delivered", orderId # ": " # order.lockedCycles.toText() # " cycles");
             };
@@ -2310,10 +2310,10 @@ persistent actor CyclesGateway {
               // §4.1 Type 2: the failed deposit refunded the cycles to the
               // app balance — minted money exists, delivery didn't happen.
               ignore tryTransition(orderId, #needsReview);
-              Cmc.patch(mintJournal, orderId, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+              Cmc.patch(deliveryJournal, orderId, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
               // Same reason as escalateStuckMint: the delay is over, badly.
               clearDelayed(orderId);
-              ignore queueMintError(order.rail, #undeliverable({ orderId; cycles = order.lockedCycles }), detail);
+              ignore queueDeliveryError(order.rail, #undeliverable({ orderId; cycles = order.lockedCycles }), detail);
               audit("mint.undeliverable", orderId # ": " # detail);
             };
           };
@@ -2324,17 +2324,17 @@ persistent actor CyclesGateway {
   };
 
   /// Single-flight wrapper around the driver.
-  func processMint(orderId : Types.OrderId) : async* () {
-    if (mintsInFlight.contains(orderId)) return;
-    mintsInFlight.add(orderId);
-    try { await* driveMint(orderId) } finally { mintsInFlight.remove(orderId) };
+  func processDelivery(orderId : Types.OrderId) : async* () {
+    if (deliveriesInFlight.contains(orderId)) return;
+    deliveriesInFlight.add(orderId);
+    try { await* driveDelivery(orderId) } finally { deliveriesInFlight.remove(orderId) };
   };
 
   /// Sweep every order with money-out work pending (Recovery.isSweepable:
   /// #paid/#minting/#icpAtCmc/#awaitingTreasury — the §5.3 hold retries
   /// until refill or max-wait) through the driver. Kicked after webhook
   /// ingestion; the §5.2 recovery timer sweeps it on a cadence.
-  func sweepMintable() : async* Nat {
+  func sweepDeliverable() : async* Nat {
     // Answer "is there anything to do?" in O(1) before scanning.
     //
     // The scan below is O(total orders), and it ran every tick forever even with
@@ -2348,7 +2348,7 @@ persistent actor CyclesGateway {
       if (Recovery.isSweepable(order.status)) pending.add(id);
     };
     for (id in pending.values()) {
-      await* processMint(id);
+      await* processDelivery(id);
     };
     pending.size();
   };
@@ -2374,7 +2374,7 @@ persistent actor CyclesGateway {
   ///
   /// ⚠️ **Owner-scoped, not public.** `getOwned` is the guard, so a caller can only
   /// kick their OWN order. The DoS question is real but bounded: one order per kick,
-  /// serialised by `mintsInFlight`, on an order they had to pay real money to
+  /// serialised by `deliveriesInFlight`, on an order they had to pay real money to
   /// create — a self-funding attack at the purchase floor. Contrast scenario 20's
   /// property, which is about *unauthenticated* traffic triggering a sweep over
   /// **every** order; that is a different shape and stays refused.
@@ -2402,8 +2402,8 @@ persistent actor CyclesGateway {
       if (Orders.getOwned(orderStore, id, caller) == null) return #err(#notFound);
     };
     if (Orders.get(orderStore, id) == null) return #err(#notFound);
-    if (mintsInFlight.contains(id)) return #err(#inFlight);
-    await* processMint(id);
+    if (deliveriesInFlight.contains(id)) return #err(#inFlight);
+    await* processDelivery(id);
     switch (Orders.get(orderStore, id)) {
       case (?order) #ok(order);
       case null #err(#notFound);
@@ -2505,7 +2505,7 @@ persistent actor CyclesGateway {
 
   func unsettledDeliveries() : Nat {
     var n = 0;
-    for ((_, entry) in mintJournal.entries()) {
+    for ((_, entry) in deliveryJournal.entries()) {
       if (unsettledDelivery(entry)) n += 1;
     };
     n;
@@ -2542,7 +2542,7 @@ persistent actor CyclesGateway {
   public shared query ({ caller }) func pending_deliveries() : async [Types.JournalEntry] {
     requireAdmin(caller);
     let out = List.empty<Types.JournalEntry>();
-    for ((_, entry) in mintJournal.entries()) {
+    for ((_, entry) in deliveryJournal.entries()) {
       if (entry.blockIndex == null and (unsettledDelivery(entry) or entry.status == #needsReview)) {
         out.add(entry);
       };
@@ -2834,7 +2834,7 @@ persistent actor CyclesGateway {
     // the documented procedure is establish-the-fate-first. `#needsReview` is
     // therefore untouched by this guard — escalation implies no outstanding call.
     if (order.status == #paid) {
-      switch (mintJournal.get(id)) {
+      switch (deliveryJournal.get(id)) {
         case (?entry) {
           if (unsettledDelivery(entry)) {
             return #err(
@@ -2850,9 +2850,9 @@ persistent actor CyclesGateway {
     let ?abandoned = tryTransition(id, #abandoned) else {
       return #err("order " # id # " refused the transition to abandoned");
     };
-    Cmc.patch(mintJournal, id, { status = ?#abandoned; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+    Cmc.patch(deliveryJournal, id, { status = ?#abandoned; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
     clearDelayed(id);
-    ignore queueMintError(order.rail, #abandoned({ orderId = id; reason }), "abandoned by operator: " # reason);
+    ignore queueDeliveryError(order.rail, #abandoned({ orderId = id; reason }), "abandoned by operator: " # reason);
     auditAdmin(caller, "order.abandoned", id # ": " # reason);
     #ok(abandoned);
   };
@@ -2895,7 +2895,7 @@ persistent actor CyclesGateway {
     let ?delivered = tryTransition(id, #delivered) else {
       return #err("order " # id # " refused the transition to delivered");
     };
-    Cmc.patch(mintJournal, id, { status = ?#delivered; blockIndex = ?blockIndex; cyclesMinted = null; bumpRetries = false }, Time.now());
+    Cmc.patch(deliveryJournal, id, { status = ?#delivered; blockIndex = ?blockIndex; cyclesMinted = null; bumpRetries = false }, Time.now());
     clearDelayed(id);
     auditAdmin(caller, "order.recordedDelivered", id # ": operator confirmed cycles-ledger block " # blockIndex.toText());
     #ok(delivered);
@@ -2932,11 +2932,11 @@ persistent actor CyclesGateway {
   /// claimed to deliver, never check it. Now they can: recompute the quote from
   /// the two recorded rate inputs, and look up the block index on the ICP ledger.
   ///
-  /// `mint_journal` stays admin-only — it carries retries and raw transfer
+  /// `delivery_journal` stays admin-only — it carries retries and raw transfer
   /// intents, which are operational rather than the buyer's business.
   public shared query ({ caller }) func receipt(id : Types.OrderId) : async ?Receipt {
     let ?order = Orders.getOwned(orderStore, id, caller) else return null;
-    let journal = mintJournal.get(id);
+    let journal = deliveryJournal.get(id);
     ?{
       order;
       paidUsdCents = order.paidUsdCents;
@@ -2957,9 +2957,9 @@ persistent actor CyclesGateway {
 
   /// Money-out journal for one order (admin, §4.2) — intent, block_index,
   /// minted cycles, retries.
-  public shared query ({ caller }) func mint_journal(id : Types.OrderId) : async ?Types.JournalEntry {
+  public shared query ({ caller }) func delivery_journal(id : Types.OrderId) : async ?Types.JournalEntry {
     requireAdmin(caller);
-    mintJournal.get(id);
+    deliveryJournal.get(id);
   };
 
   // ── Recovery timer (task 11, §5.2) ──────────────────────────────────────
@@ -3042,7 +3042,7 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// The timer job. Correctness against concurrent drivers is processMint's
+  /// The timer job. Correctness against concurrent drivers is processDelivery's
   /// per-order single-flight; this flag only stops sweep pile-up. The
   /// webhook kick deliberately bypasses it — a just-paid order must not
   /// wait a full interval because a background sweep (which enumerated
@@ -3072,7 +3072,7 @@ persistent actor CyclesGateway {
         lastCountReconcileAttemptNs := now;
         ignore async { reconcileCounts() };
       };
-      let pending = await* sweepMintable();
+      let pending = await* sweepDeliverable();
       lastRecoverySweep := ?{ atNs = Time.now(); pending };
       // ── Rule 1 (#30 PR-B): the floor learns about top-ups only by looking ──
       //
@@ -3234,7 +3234,7 @@ persistent actor CyclesGateway {
     switch (webhookPaidOrder) {
       case (?orderId) {
         webhookPaidOrder := null;
-        ignore async { await* processMint(orderId) };
+        ignore async { await* processDelivery(orderId) };
       };
       case null {};
     };

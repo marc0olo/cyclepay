@@ -747,7 +747,7 @@ privileges — any controller can do any of this):
 | `set_treasury_config` | burn cap, window, alert-after, max hold, low-float threshold |
 | `error_queue` / `resolve_error` | the operator worklist |
 | `order_for_payment` | reconciliation: Stripe charge → order it funded |
-| `mint_journal` | money-out record for one order |
+| `delivery_journal` | money-out record for one order |
 | `audit_log` | operational trail; gaps in `seq` mean ring-buffer drops |
 | `process_order` | manual delivery kick; safe to spam. **Admin or the order's own owner** (#30 PR-B) |
 | `set_pricing_config` | fee formula, staleness window, delta bound, minimum rate sources |

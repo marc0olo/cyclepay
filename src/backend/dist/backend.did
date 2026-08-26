@@ -543,6 +543,9 @@ service : {
                           balance: nat;
                           floor: nat;
                         }) query;
+  /// Money-out journal for one order (admin, §4.2) — intent, block_index,
+  /// minted cycles, retries.
+  delivery_journal: (id: OrderId) -> (opt JournalEntry) query;
   /// §4.1 retained history, oldest first, **paged**. Admin: entries carry
   /// payment references and claimed-but-bogus URL params.
   /// 
@@ -594,9 +597,6 @@ service : {
   lifecycle_config: () -> (record {gate: Config__2;}) query;
   /// Order history for the caller (§2, fixes the lost-receipt problem).
   list_orders: () -> (vec Order) query;
-  /// Money-out journal for one order (admin, §4.2) — intent, block_index,
-  /// minted cycles, retries.
-  mint_journal: (id: OrderId) -> (opt JournalEntry) query;
   /// Which order did this Stripe `payment_intent` pay for (admin, §4.2)? The
   /// reconciliation lookup: given a charge in the Stripe Dashboard, find the
   /// order it funded. Null means the payment was never attributed to an order
@@ -655,7 +655,7 @@ service : {
   /// 
   /// ⚠️ **Owner-scoped, not public.** `getOwned` is the guard, so a caller can only
   /// kick their OWN order. The DoS question is real but bounded: one order per kick,
-  /// serialised by `mintsInFlight`, on an order they had to pay real money to
+  /// serialised by `deliveriesInFlight`, on an order they had to pay real money to
   /// create — a self-funding attack at the purchase floor. Contrast scenario 20's
   /// property, which is about *unauthenticated* traffic triggering a sweep over
   /// **every** order; that is a different shape and stays refused.
@@ -716,7 +716,7 @@ service : {
   /// claimed to deliver, never check it. Now they can: recompute the quote from
   /// the two recorded rate inputs, and look up the block index on the ICP ledger.
   /// 
-  /// `mint_journal` stays admin-only — it carries retries and raw transfer
+  /// `delivery_journal` stays admin-only — it carries retries and raw transfer
   /// intents, which are operational rather than the buyer's business.
   receipt: (id: OrderId) -> (opt Receipt) query;
   /// Record that an escalated order's cycles **did** reach the buyer (admin, §7).

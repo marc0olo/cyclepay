@@ -394,7 +394,7 @@ test('06 — the money-out path is ONE transfer out of the reserve (#30 PR-A)', 
   expect(reserveBefore - (await reserveBalance(gw))).toBe(TIER_LOCKED_CYCLES);
 
   // §4.2 journal: the ledger block, the delivered quantity, terminal status.
-  const journal = (await gw.asAdmin.mint_journal(orderA.id))[0]!;
+  const journal = (await gw.asAdmin.delivery_journal(orderA.id))[0]!;
   expect(journal.blockIndex.length).toBe(1);
   expect(journal.cyclesMinted).toEqual([TIER_LOCKED_CYCLES - feeNow]);
   expect(statusKey(journal)).toBe('delivered');
@@ -434,8 +434,8 @@ test('07 — the transfer memo is the ORDER id, so two identical orders both del
   expect((await userCycles()) - creditedBefore).toBe((TIER_LOCKED_CYCLES - fee) * 2n);
 
   // Distinct ledger blocks, which is the same fact from the ledger's side.
-  const blockA = (await gw.asAdmin.mint_journal(first.order.id))[0]!.blockIndex[0]!;
-  const blockB = (await gw.asAdmin.mint_journal(second.order.id))[0]!.blockIndex[0]!;
+  const blockA = (await gw.asAdmin.delivery_journal(first.order.id))[0]!.blockIndex[0]!;
+  const blockB = (await gw.asAdmin.delivery_journal(second.order.id))[0]!.blockIndex[0]!;
   expect(blockA).not.toBe(blockB);
 });
 
@@ -595,7 +595,7 @@ test('11 — a cycles-ledger outage strands NOTHING: the order stays payable-out
   expect((await userCycles()) - creditedBefore).toBe(TIER_LOCKED_CYCLES - fee);
   expect(reserveBefore - (await reserveBalance(gw))).toBe(TIER_LOCKED_CYCLES);
   // Exactly one block, so the retry did not pay twice.
-  expect((await gw.asAdmin.mint_journal(orderC.id))[0]!.blockIndex.length).toBe(1);
+  expect((await gw.asAdmin.delivery_journal(orderC.id))[0]!.blockIndex.length).toBe(1);
 });
 
 test('12 — an upgrade concurrent with delivery pays exactly once, and the timer re-arms', async () => {
@@ -644,7 +644,7 @@ test('12 — an upgrade concurrent with delivery pays exactly once, and the time
   const fee = await gw.cyclesLedger.icrc1_fee();
   expect((await userCycles()) - creditedBefore).toBe(TIER_LOCKED_CYCLES - fee);
   expect(reserveBefore - (await reserveBalance(gw))).toBe(TIER_LOCKED_CYCLES);
-  expect((await gw.asAdmin.mint_journal(orderE.id))[0]!.blockIndex.length).toBe(1);
+  expect((await gw.asAdmin.delivery_journal(orderE.id))[0]!.blockIndex.length).toBe(1);
 
   // Liveness observability: the post-upgrade timer completed a sweep.
   const sweepAfter = await gw.asAnon.recovery_status();
@@ -1326,7 +1326,7 @@ test('32 — rates going bad after payment cannot affect an order already #paid'
   // The LOCKED quantity is untouched by a rate move — that is the guarantee.
   expect(settled.lockedCycles).toBe(TIER_LOCKED_CYCLES);
   // What was delivered is that quantity less the ledger fee (#30 PR-A).
-  expect((await gw.asAdmin.mint_journal(order.id))[0]!.cyclesMinted)
+  expect((await gw.asAdmin.delivery_journal(order.id))[0]!.cyclesMinted)
     .toEqual([TIER_LOCKED_CYCLES - CYCLES_LEDGER_FEE]);
 
   // New orders are refused once the cached rate lapses — the fail-closed half.
@@ -2977,7 +2977,7 @@ test('75 — a buyer can heal their OWN stuck delivery, and only their own (#30 
     // belt-and-braces, not the fix, and reading it as the fix would hide the bug.
     await gw.pic.advanceTime(20 * 60 * 1_000);
     await gw.pic.tick(10);
-    const journalled = (await gw.asAdmin.mint_journal(stuck.id))[0];
+    const journalled = (await gw.asAdmin.delivery_journal(stuck.id))[0];
     expect(journalled?.transferIntent).toHaveLength(1);
     expect(journalled?.blockIndex).toHaveLength(0);
   } finally {
@@ -3059,7 +3059,7 @@ test('76 — one escalated order must not freeze the reserve reconcile forever (
   // escalated order has no outstanding callback: escalation is decided either from
   // `stageOf` at the top of the drive loop or after a response has already arrived,
   // never with a call in the air.
-  const escalated = (await gw.asAdmin.mint_journal(orderEscalated.id))[0]!;
+  const escalated = (await gw.asAdmin.delivery_journal(orderEscalated.id))[0]!;
   // The shape this scenario depends on, asserted rather than assumed — scenario 35
   // produced it, and if it ever stops doing so this fails here instead of passing
   // vacuously.
@@ -3101,7 +3101,7 @@ test('77 — an escalated order whose cycles DID arrive can be recorded, not fil
 
   // The block lands in the journal, so the receipt shows the same proof any other
   // delivered order shows.
-  const journal = (await gw.asAdmin.mint_journal(target.id))[0]!;
+  const journal = (await gw.asAdmin.delivery_journal(target.id))[0]!;
   expect(journal.blockIndex).toEqual([LEDGER_BLOCK]);
   // And the promise is released — the order is settled, so the reserve is no longer
   // holding capacity for it.
@@ -3152,7 +3152,7 @@ test('78 — an order whose delivery is unsettled cannot be abandoned into a dou
     // position unknown, and without it this scenario asserts nothing.
     await gw.pic.advanceTime(20 * 60 * 1_000);
     await gw.pic.tick(10);
-    const entry = (await gw.asAdmin.mint_journal(target.id))[0];
+    const entry = (await gw.asAdmin.delivery_journal(target.id))[0];
     expect(entry?.transferIntent).toHaveLength(1);
     expect(entry?.blockIndex).toHaveLength(0);
     expect(await orderStatus(gw, target.id)).toBe('paid');

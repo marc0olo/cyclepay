@@ -240,7 +240,7 @@ configure and no URL parameter to append. Pay with `4242 4242 4242 4242` and wat
 `get_order` reach `delivered`. `process_order` kicks the **delivery** without
 waiting for the sweep — callable as the order's own owner as well as admin since
 #30 PR-B — and `pending_deliveries` (admin) shows anything still outstanding
-before the 2 h queue alert would. `mint_journal` and `receipt` then carry the real
+before the 2 h queue alert would. `delivery_journal` and `receipt` then carry the real
 cycles-ledger block index and the delivered quantity.
 
 ⚠️ **Fund the reserve AND call `refresh_reserve` before creating an order**, or
@@ -424,7 +424,7 @@ icp canister call backend audit_log '()'
 icp canister call backend error_queue_unresolved '(null, 50)'
 icp canister call backend get_order '("<orderId>")'
 icp canister call backend order_for_payment '("pi_...")'
-icp canister call backend mint_journal '("<orderId>")'
+icp canister call backend delivery_journal '("<orderId>")'
 icp canister call backend receipt '("<orderId>")'           # owner identity only
 ```
 
