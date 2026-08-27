@@ -336,25 +336,25 @@ module {
   // ── Resume/replay decision (§5.1, §5.2) ──────────────────────────────────
 
   /// Why a mint can no longer proceed automatically.
+  /// Why the resume decision stopped, when it cannot continue on its own.
   public type EscalateReason = {
-    /// Intent without a block_index aged past the dedup window — the original
-    /// transfer's fate is unknowable; auto-replay risks a double-spend (§5.1).
+    /// The intent is past the ledger's ~24 h dedup window with no recorded block, so
+    /// a replay is no longer protected and its fate is **unknown**. The only case
+    /// where retrying is the unsafe option.
     #staleIntent;
-    /// Retry budget exhausted on a retriable error that never cleared.
-    #retriesExhausted;
-    /// The pre-forward marker is set but the order never reached #delivered —
-    /// the forward may or may not have happened; re-forwarding risks double
-    /// delivery, so the operator checks the destination instead.
-    #ambiguousForward;
-    /// Order status implies money-out state the journal doesn't have.
+    /// The transfer landed and the order never moved — the buyer HAS their cycles.
+    /// Should be unreachable: the block and the transition commit in one synchronous
+    /// block. Handled so a future regression degrades to something an operator can
+    /// resolve rather than to a paid order whose buyer already holds the cycles.
+    #landedNotRecorded;
+    /// The order's status implies a money-out position the journal cannot support.
     #missingJournal;
   };
 
   public func escalateReasonToText(reason : EscalateReason) : Text {
     switch (reason) {
       case (#staleIntent) "staleIntent";
-      case (#retriesExhausted) "retriesExhausted";
-      case (#ambiguousForward) "ambiguousForward";
+      case (#landedNotRecorded) "landedNotRecorded";
       case (#missingJournal) "missingJournal";
     };
   };
@@ -388,23 +388,23 @@ module {
   /// off the status it looks like "notify never completed", and the instruction
   /// "notify manually, the ICP is parked" is then **factually wrong** — the ICP
   /// was consumed, the cycles exist, and they may already be at the destination.
-  /// Following it invites exactly the double delivery `#ambiguousForward` exists
+  /// Following it invites exactly the double delivery `#staleIntent` exists
   /// to prevent.
   public func terminationFor(
     status : Types.OrderStatus,
     entry : ?Types.JournalEntry,
   ) : { stage : Text; detail : Text } {
     switch (status) {
-      // #30 PR-A: `#paid` is where delivery now happens, so its money position
-      // depends on the journal — a paid order with an unconfirmed transfer is
-      // NOT the same position as one that never started.
+      // `#paid`'s money position depends on the JOURNAL, not the status: an order
+      // with an unconfirmed transfer is not in the same position as one that never
+      // started, and the operator's action differs completely.
       case (#paid) {
         switch (entry) {
           case (?e) {
             switch (e.blockIndex, e.transferIntent) {
               case (?block, _) {
                 {
-                  stage = escalateReasonToText(#retriesExhausted);
+                  stage = escalateReasonToText(#landedNotRecorded);
                   detail = "cycles WERE delivered (ledger block " # block.toText() # ") but the order never moved to delivered — the buyer HAS their cycles. Confirm the block on the cycles ledger, then resolve; do NOT re-send.";
                 };
               };
@@ -430,10 +430,14 @@ module {
           };
         };
       };
+      // ⚠️ Only `#paid` reaches this function — it is called from the 72 h bound and
+      // from the escalate route, both of which run on the one in-flight status. Every
+      // other status is either pre-payment or terminal, so there is no money-out
+      // position to report and saying so beats inventing one.
       case (_) {
         {
-          stage = "mintWaitExceeded";
-          detail = "paid but unminted past the max wait: fiat received, nothing minted — refund in the Stripe Dashboard.";
+          stage = "notInFlight";
+          detail = "this order has no delivery in flight, so it has no money-out position — if an escalation names this stage, the drive loop reached it from a status it should not have.";
         };
       };
     };

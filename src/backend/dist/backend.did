@@ -425,7 +425,7 @@ type Account =
 /// 
 /// See design-docs/ONCHAIN_GATEWAY_SPEC.md (spec v2.1) and PRD.md for the
 /// module layout this actor grows into: Orders.mo wiring, rails/, Delivery.mo,
-/// Pricing.mo, Treasury.mo, ErrorQueue.mo, Auth.mo.
+/// Pricing.mo, Delivery.mo, ErrorQueue.mo, Auth.mo.
 service : {
   /// Stop trying to deliver an order (admin, §7) — **the only path to a
   /// terminal non-delivered state.**
@@ -816,7 +816,7 @@ service : {
   /// per-purchase ceiling. Validated atomically — a bad config never partially
   /// applies. Lowering `maxPurchaseUsdCents` below an existing tier does NOT
   /// retroactively invalidate that tier's registration, but the next
-  /// `set_card_tiers` will reject it and the webhook will refuse to mint a
+  /// `set_card_tiers` will reject it and the webhook will refuse to deliver a
   /// payment above the new ceiling.
   /// Declare which Stripe mode this gateway serves (admin).
   /// 

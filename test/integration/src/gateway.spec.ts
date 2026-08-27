@@ -666,28 +666,22 @@ test('15 — operational trail is coherent end-to-end (§4.2)', async () => {
   }
   const tags = audit.map((e) => e.tag);
 
-  // ── The delivery path's TAG CONTRACT (#30 PR-A) ──────────────────────────
+  // ── The delivery path's TAG CONTRACT ─────────────────────────────────────
   //
-  // This asserted four mint-era tags. Three of them can no longer fire at all:
-  // `mint.held` came from the mint pre-gate, `mint.delivered` and
-  // `mint.undeliverable` from the mint-then-forward step. Asserting tags the code
-  // cannot emit is asserting nothing, so the list is now what the delivery path
-  // actually writes.
+  // ⚠️ **The whole vocabulary, deliberately**, because an audit tag is the only trace
+  // of a money-out event that leaves no state change — and RUNBOOK §9 alerts on
+  // specific tag strings, so a rename that misses this line silently breaks an
+  // operator's alerting rather than a test.
   //
-  // ⚠️ **This list is deliberately the whole contract, because #30 PR-C renames
-  // the surviving `mint.*` family and this is what makes that rename falsifiable
-  // instead of grep-and-hope.** If PR-C changes a tag without changing this line,
-  // the suite says so.
-  // ⚠️ Only what has happened BY HERE. `delivery.delayed` (the delay alert) is
-  // asserted in 47, where a delay actually exists — asserting it here failed for
-  // the most ordinary reason in an order-coupled suite: the event had not
-  // happened yet. See the coupling note in this directory's README.
+  // ⚠️ Only what has happened BY HERE. `delivery.delayed` is asserted in 47, where a
+  // delay actually exists; asserting it here failed for the most ordinary reason in an
+  // order-coupled suite — the event had not happened yet. See the README's coupling
+  // note.
   expect(tags).toContain('delivery.sent');
-  // And the three that died with the pipeline stay dead. A regression that routed
-  // an order back into the mint path would show up here first.
-  for (const gone of ['mint.held', 'mint.delivered', 'mint.stuck']) {
-    expect(tags).not.toContain(gone);
-  }
+  // ⚠️ **No `mint.*` tag can be written any more**, because nothing mints — the audit
+  // trail should never again contain a word for a mechanism this gateway does not
+  // have. A regression that reintroduced one would show up here first.
+  expect(tags.filter((t) => t.startsWith('mint.'))).toEqual([]);
 
   // The server-side worklist, which is what an operator actually reads.
   const open = await openErrorEntries(gw);
@@ -2983,7 +2977,7 @@ test('75 — a buyer can heal their OWN stuck delivery, and only their own (#30 
   // must not be able to fill a 4,096-entry ring buffer with lines that say nothing,
   // while an ops action on someone else's order is exactly what the trail is for.
   const kickLines = (log: { tag: string; detail: string }[]) =>
-    log.filter((e) => e.tag === 'mint.manualKick' && e.detail.includes(stuck.id));
+    log.filter((e) => e.tag === 'delivery.manualKick' && e.detail.includes(stuck.id));
   expect(kickLines(await gw.asAdmin.audit_log())).toHaveLength(0);
 
   // And the admin lever still works — the widening is additive, not a handover.

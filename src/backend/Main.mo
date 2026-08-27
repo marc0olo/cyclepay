@@ -2,7 +2,7 @@
 ///
 /// See design-docs/ONCHAIN_GATEWAY_SPEC.md (spec v2.1) and PRD.md for the
 /// module layout this actor grows into: Orders.mo wiring, rails/, Delivery.mo,
-/// Pricing.mo, Treasury.mo, ErrorQueue.mo, Auth.mo.
+/// Pricing.mo, Delivery.mo, ErrorQueue.mo, Auth.mo.
 import Array "mo:core/Array";
 import Cycles "mo:core/Cycles";
 import Error "mo:core/Error";
@@ -175,7 +175,7 @@ persistent actor CyclesGateway {
   var cardTiers : [Tiers.Tier] = [];
 
   /// Pre-creation admission policy (Gate.mo) — open-order cap, own-cycles
-  /// floor, per-purchase ceiling. Unlike the burn cap these default to real
+  /// floor, per-purchase ceiling. These default to real
   /// values: they are safety limits, and a zero default would brick the
   /// canister rather than protect it.
   var gateConfig : Gate.Config = Gate.defaultConfig();
@@ -200,10 +200,10 @@ persistent actor CyclesGateway {
 
   /// Which Stripe world this gateway belongs to, or null for "not declared".
   ///
-  /// A test-mode webhook secret provisioned against a canister holding a real
-  /// ICP float would mint real cycles for payments that never happened — the
-  /// secret is the only thing separating the two, and provisioning the wrong one
-  /// is an ordinary operator slip. Declaring the expectation lets the canister
+  /// A test-mode webhook secret provisioned against a canister holding a funded
+  /// reserve would deliver real cycles for payments that never happened — the secret
+  /// is the only thing separating the two, and provisioning the wrong one is an
+  /// ordinary operator slip. Declaring the expectation lets the canister
   /// refuse the mismatch instead of trusting that nobody pasted the wrong value.
   ///
   /// Null rather than `?true` by default so a fresh local install works against
@@ -595,7 +595,7 @@ persistent actor CyclesGateway {
   ///
   /// ⚠️ **Read this BEFORE committing an order.** Both checks short-circuit
   /// without an outcall, so an unprovisioned gateway that committed the order
-  /// first would mint a permanent `#expired` record for **free**: no cycles are
+  /// first would create a permanent `#expired` record for **free**: no cycles are
   /// spent, so `minCanisterCycles` never bounds the loop, and the record is not
   /// `#created`, so the open-order cap does not either. Unbounded storage growth
   /// at zero attacker cost — and precisely in the state RUNBOOK §1 prescribes
@@ -737,7 +737,7 @@ persistent actor CyclesGateway {
   /// inputs from that same epoch — which is what a buyer recomputes their own
   /// price from, and what a delivered order is auditable against. (It was also
   /// what the webhook repriced a mismatched paid amount from, until #33 made a
-  /// mismatch mint nothing.)
+  /// mismatch deliver nothing.)
   ///
   /// Synchronous and awaitless by design: the rates come from the cache the
   /// refresh timer maintains, never from a call. That is what keeps a
@@ -778,9 +778,9 @@ persistent actor CyclesGateway {
 
   /// Read every admission input, synchronously, immediately before deciding —
   /// no awaits in between, so there is no TOCTOU window between observing and
-  /// admitting. `Cycles.balance()` is this canister's own gas; the float comes
-  /// from the last observation because a query cannot call the ledger (§5.3),
-  /// and the authoritative float check remains the mint-time pre-gate.
+  /// admitting. `Cycles.balance()` is this canister's own **gas**, which is a
+  /// different pot from the reserve it sells — solvency is decided separately, and
+  /// synchronously, against the maintained floor.
   func gateObservation(caller : Principal) : Gate.Observation {
     {
       openOrders = Orders.openOrderCount(orderStore, caller);
@@ -790,7 +790,7 @@ persistent actor CyclesGateway {
 
   /// The §5.3-adjacent admission gate: refuse to *quote* when fulfilment is
   /// already known to be impossible, rather than taking the user's money and
-  /// discovering it at mint time. Audited on refusal — a rail that has quietly
+  /// discovering it at delivery time. Audited on refusal — a rail that has quietly
   /// stopped selling is something the operator must be able to see.
   func admit(caller : Principal, usdCents : Nat) : Result.Result<(), Gate.Reason> {
     switch (Gate.admit(gateConfig, gateObservation(caller), usdCents)) {
@@ -1136,7 +1136,7 @@ persistent actor CyclesGateway {
   /// per-purchase ceiling. Validated atomically — a bad config never partially
   /// applies. Lowering `maxPurchaseUsdCents` below an existing tier does NOT
   /// retroactively invalidate that tier's registration, but the next
-  /// `set_card_tiers` will reject it and the webhook will refuse to mint a
+  /// `set_card_tiers` will reject it and the webhook will refuse to deliver a
   /// payment above the new ceiling.
   /// Declare which Stripe mode this gateway serves (admin).
   ///
@@ -1150,9 +1150,9 @@ persistent actor CyclesGateway {
       caller,
       "stripe.expectLivemodeSet",
       switch (expected) {
-        case (?true) "true — only live-mode payments will mint";
-        case (?false) "false — only test-mode payments will mint";
-        case null "unset — either mode will mint";
+        case (?true) "true — only live-mode payments deliver";
+        case (?false) "false — only test-mode payments deliver";
+        case null "unset — either mode delivers";
       },
     );
   };
@@ -1387,7 +1387,7 @@ persistent actor CyclesGateway {
     AuditLog.events(auditLog);
   };
 
-  // ── CMC mint pipeline (task 9, §5/§5.1) ─────────────────────────────────
+  // ── Delivery from the reserve (§5/§5.1) ─────────────────────────────────
 
   /// #30 PR-B — a maintained **lower bound** on the reserve's ledger balance.
   ///
@@ -1445,7 +1445,7 @@ persistent actor CyclesGateway {
 
   /// §4.2 `journal : Map<OrderId, JournalEntry>` — the money-out record:
   /// transfer intent (written *before* the ledger call, §5.1), block_index,
-  /// minted cycles, retries. Financial record — kept for years, never pruned.
+  /// delivered cycles, retries. Financial record — kept for years, never pruned.
   let deliveryJournal : Delivery.Journal = Delivery.emptyJournal();
 
   transient let cmc = actor (Cmc.cmcId) : Cmc.CmcService;
@@ -1453,7 +1453,7 @@ persistent actor CyclesGateway {
 
   /// Per-order single-flight guard: two concurrent drivers for one order
   /// would both pass the status gates between awaits. Transient — an
-  /// upgrade mid-mint clears it and the journal-driven resume (Delivery.stageOf)
+  /// upgrade mid-delivery clears it and the journal-driven resume (Delivery.stageOf)
   /// picks up where the state actually is.
   transient let deliveriesInFlight = Set.empty<Types.OrderId>();
 
@@ -1480,10 +1480,9 @@ persistent actor CyclesGateway {
   /// ⚠️ **The stage half of this pair is gone (#30 PR-C).** It existed so a stall
   /// that MOVED between stages could close the stale alert and raise one describing
   /// where the order actually is. With one in-flight status there is nowhere to move
-  /// to: `#minting` and `#icpAtCmc` have had no entrance since PR-A, so a `#paid`
-  /// order's stage is always the same string. Keeping the comparison would have kept
-  /// a whole branch, and an audit tag, describing a transition that cannot occur.
-  /// #36 deletes the two legacy stages that made it conceivable.
+  /// to: `#paid` is the one in-flight status, so a stalled order's stage is always the
+  /// same string, and a comparison would be a branch describing a transition that
+  /// cannot occur.
   let delayedAlerts = Map.empty<Types.OrderId, Nat>();
 
   /// Raise the §5 delivery-delayed alert for an order, at most once.
@@ -1519,7 +1518,7 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Audit a blocked mint at most once per order per session.
+  /// Audit a blocked delivery at most once per order per session.
   func auditDeliveryBlockedOnce(orderId : Types.OrderId, tag : Text, detail : Text) {
     if (deliveryBlockedAudited.contains(orderId)) return;
     deliveryBlockedAudited.add(orderId);
@@ -1557,7 +1556,7 @@ persistent actor CyclesGateway {
   ///
   /// §7's trust model is a flat controller allowlist with equal privileges —
   /// "any one can upgrade-then-drain". With several controllers and no caller
-  /// recorded, the trail can say the burn cap was raised but not by whom, which
+  /// recorded, the trail can say a limit was raised but not by whom, which
   /// is the one thing it most needs to say. Every admin mutation goes through
   /// this.
   func auditAdmin(caller : Principal, tag : Text, detail : Text) {
@@ -1574,7 +1573,7 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Queue a mint-path error entry, audit-logging any unresolved eviction
+  /// Queue a delivery-path error entry, audit-logging any unresolved eviction
   /// (each is a live money obligation dropped from on-chain state, §4.1).
   func queueDeliveryError(rail : Types.Rail, kind : ErrorQueue.Kind, detail : Text) : Nat {
     let result = ErrorQueue.add(errorQueue, errorQueueCapacity, rail, kind, detail, Time.now());
@@ -1662,34 +1661,17 @@ persistent actor CyclesGateway {
   func driveDelivery(orderId : Types.OrderId) : async* () {
     label drive loop {
       let ?order = Orders.get(orderStore, orderId) else return;
-      // §5.3: a treasury-held order resumes here — Treasury owns the hold
-      // policy (max-wait), Delivery.stageOf owns the money-out resume logic. A
-      // hold within the wait bound retries #begin: the pre-gate inside it is
-      // the single decision point for cap/float, so a rolled window or a
-      // refill clears the hold with no second code path. updatedAtNs is the
-      // hold start (the hold transition is the last one the order took).
-      // Bound the time an order may sit with money in and nothing minted,
-      // whatever the reason.
+      // ⚠️ **The wait bound applies to `#paid` and only `#paid`**, because that is the
+      // one status with money in and nothing delivered. `updatedAtNs` is the right age
+      // anchor: retries deliberately do not transition, so the clock stays pinned to
+      // the moment the order was paid, and an order that is actually progressing
+      // resets it by moving.
       //
-      // `#begin` has several paths that return without transitioning — the CMC
-      // call failing, its rate being stale, the float read failing, an
-      // underivable e8s amount. Each leaves the order `#paid` and relies on the
-      // next sweep, so a persistent upstream problem parked an order forever:
-      // no bound, no error-queue entry, and the only trace was one audit line
-      // per sweep in a ring buffer that both floods and drops.
-      //
-      // The money position is identical to `treasuryWaitExceeded` — fiat in,
-      // nothing minted, refund in the Stripe Dashboard — so it is bounded by the
-      // same `maxHoldNs` and escalated the same way. Orders that are actually
-      // progressing bump `updatedAtNs` on every transition, so only a genuinely
-      // stuck one trips this.
-      // The alert tier covers **every** in-flight status, not just `#paid`.
-      // `#minting` and `#icpAtCmc` are equally capable of sitting still — a
-      // ledger or CMC that keeps answering retriably leaves the order there —
-      // and a buyer waiting on those is no less stuck than one waiting on the
-      // burn cap. `updatedAtNs` is the right age anchor for all three: retries
-      // do not transition, so it stays pinned at the moment the order entered
-      // its current state.
+      // A delivery has several paths that return without transitioning — the ledger
+      // rejecting retriably, a stored fee the order cannot cover, a call that gets no
+      // reply. Each leaves the order `#paid` for the next sweep, which is correct for a
+      // transient fault and would park an order forever on a persistent one. That is
+      // what this bound exists to stop.
       if (order.status == #paid) {
         switch (Delivery.waitStage(order.updatedAtNs, Time.now(), deliveryConfig)) {
           case (#retry) {};
@@ -1725,7 +1707,7 @@ persistent actor CyclesGateway {
       };
       // ⚠️ One line where a `switch` on status used to be (#36). `#awaitingTreasury`
       // had its own arm — the treasury hold's retry/alert/terminate — and it is gone
-      // with the float it waited on.
+      // with the ICP machinery it belonged to.
       let stage : Delivery.Stage = Delivery.stageOf(order.status, deliveryJournal.get(orderId), Time.now(), Delivery.ledgerDedupWindowNs);
       switch (stage) {
         case (#none) return;
@@ -1733,7 +1715,7 @@ persistent actor CyclesGateway {
           // ⚠️ This is the route that actually fires. The recovery sweep runs
           // every 15 min, so `stageOf` reaches an escalation within minutes of a
           // failure, while the 72 h wait bound is the rare path. Emitting a bare
-          // "mint pipeline stopped: <reason>" here left the operator's *first*
+          // "delivery stopped: <reason>" here left the operator's *first*
           // read of the entry with no instruction, on the high-probability route.
           //
           // Two different questions, so both are answered:
@@ -1743,11 +1725,11 @@ persistent actor CyclesGateway {
           // - the detail comes from `terminationFor` — that is the **money
           //   position**, which is what determines the action.
           //
-          // They can legitimately disagree: retries exhausted in `#minting` with
-          // no block is caused by retry exhaustion but the money is in an
-          // unknown-transfer position, and "establish its fate, never rebuild"
-          // is the correct action regardless of why we stopped trying. Naming
-          // both means neither reading can mislead.
+          // They can legitimately disagree: `stageOf` stops because an intent aged
+          // past the dedup window, while the money position depends on whether a block
+          // was recorded — and "establish its fate, never rebuild" is the correct
+          // action regardless of why we stopped trying. Naming both means neither
+          // reading can mislead.
           let stage = Delivery.escalateReasonToText(reason);
           let position = Delivery.terminationFor(order.status, deliveryJournal.get(orderId));
           let detail =
@@ -1853,8 +1835,8 @@ persistent actor CyclesGateway {
           // transfers landing without us learning it did: our reply callback traps,
           // so the ledger's debit stands while the journal patch rolls back. (A
           // controlled upgrade cannot do this — `stop_canister` drains outstanding
-          // callbacks before the canister reaches `Stopped`, which is why
-          // `#ambiguousForward` was unreachable via the documented procedure.)
+          // callbacks before the canister reaches `Stopped`, so the documented
+          // deploy procedure cannot strand a transfer.)
           // Assuming the debit now makes that case exact instead of optimistic.
           let debited = intent.amountCycles + fee;
           reserveFloor := Reserve.floorAfterOutflow(reserveFloor, debited);
@@ -2032,8 +2014,7 @@ persistent actor CyclesGateway {
   };
 
   /// Sweep every order with money-out work pending (Recovery.isSweepable:
-  /// #paid/#minting/#icpAtCmc/#awaitingTreasury — the §5.3 hold retries
-  /// until refill or max-wait) through the driver. Kicked after webhook
+  /// `#paid` is the only status with money-out work) through the driver. Kicked after webhook
   /// ingestion; the §5.2 recovery timer sweeps it on a cadence.
   func sweepDeliverable() : async* Nat {
     // Answer "is there anything to do?" in O(1) before scanning.
@@ -2091,7 +2072,7 @@ persistent actor CyclesGateway {
   public shared ({ caller }) func process_order(id : Types.OrderId) : async Result.Result<Types.Order, ProcessOrderError> {
     let isAdmin = Auth.checkAdmin(caller, Principal.isController).isOk();
     if (isAdmin) {
-      auditAdmin(caller, "mint.manualKick", id);
+      auditAdmin(caller, "delivery.manualKick", id);
     } else {
       // Not an admin, so this must be the owner's own order. `getOwned` answers
       // "not found" for someone else's, which is also the right answer to give:
@@ -2194,8 +2175,8 @@ persistent actor CyclesGateway {
   ///
   /// ⚠️ **`entry.status` is the JOURNAL's copy of the order's status, and this
   /// predicate is the only thing that reads it.** `Delivery.openEntry` used to hardcode
-  /// `#minting`, which made this match nothing at all and quietly disabled the quiet
-  /// window — see the comment there. If it ever stops recording the order's real
+  /// a hardcoded status, which made this match nothing at all and quietly disabled the
+  /// quiet window — see the comment there. If it ever stops recording the order's real
   /// status, this silently returns 0 again and the reserve floor becomes adoptable
   /// across an in-flight transfer. `test/cmc.test.mo` pins the coupling.
   func unsettledDelivery(entry : Types.JournalEntry) : Bool {
@@ -2608,7 +2589,7 @@ persistent actor CyclesGateway {
     /// proof, checkable by anyone against that ledger by the order id in the
     /// transfer's memo.
     deliveryBlockIndex : ?Nat;
-    /// Cycles the CMC reported minting.
+    /// Cycles delivered to the buyer's account.
     cyclesDelivered : ?Nat;
     /// Recompute the quote from these and it must equal `order.lockedCycles`:
     ///   netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros

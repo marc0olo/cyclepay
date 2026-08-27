@@ -400,7 +400,10 @@ suite("terminationFor — the money position, not the status", func() {
       (#paid, ?entryWith(null, null, null, 0)),
       (#paid, null),
     ];
-    let known = ["ambiguousForward", "retriesExhausted", "staleIntent", "missingJournal", "treasuryWaitExceeded", "mintWaitExceeded", "deliveryWaitExceeded"];
+    // ⚠️ **The whole vocabulary, and it is short on purpose.** Every string here is a
+    // row in RUNBOOK §6's triage table, so a stage this function can emit that the
+    // table does not list is an operator reading an escalation with no instruction.
+    let known = ["staleIntent", "landedNotRecorded", "missingJournal", "deliveryWaitExceeded", "notInFlight"];
     for ((status, entry) in cases.values()) {
       let t = Delivery.terminationFor(status, entry);
       assert t.detail != "";

@@ -44,7 +44,7 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
 
   test("charge.refunded auto-resolve never touches a deliveryStuck entry", func() {
     let store = ErrorQueue.emptyStore();
-    ignore ErrorQueue.add(store, cap, #card, #deliveryStuck({ orderId = "o3"; stage = "ambiguousForward"; blockIndex = null }), "upgrade mid-forward", 100);
+    ignore ErrorQueue.add(store, cap, #card, #deliveryStuck({ orderId = "o3"; stage = "landedNotRecorded"; blockIndex = null }), "the transfer landed and the order never moved", 100);
     ignore addDuplicate(store, "o4", "pi_9", 200);
     let resolved = ErrorQueue.resolveByPaymentRef(store, "pi_9", 300);
     assert resolved.size() == 1;
