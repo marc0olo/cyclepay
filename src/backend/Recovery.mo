@@ -78,4 +78,93 @@ module {
     };
   };
 
+
+  // ── Stranded `#created` capacity (#52) ───────────────────────────────────────
+  //
+  // A `#created` order holds its reserve promise from the moment it exists, and two
+  // things release it: Stripe's `checkout.session.expired`, and the buyer's own
+  // `cancel_order`. If the expiry event never arrives, the promise holds capacity
+  // against a session nobody can ever pay — and nothing sweeps `#created`, because
+  // #33 deleted retention deliberately. These predicates decide when to ask Stripe.
+
+  /// How long past a session's own deadline to wait before asking Stripe about it.
+  ///
+  /// ⚠️ **This margin decides when to ASK, never what is TRUE**, and that is the whole
+  /// difference between it and the deadline-aware `holdsPromise` #52 rejected. There, a
+  /// margin decided the *outcome*: capacity was released on our copy of the deadline, so
+  /// being wrong released cycles a buyer was still owed. Here the release comes from
+  /// Stripe's answer either way, so being wrong costs a delayed release, never a wrong
+  /// one. Do not read the rejected design as having come back through this door.
+  ///
+  /// 30 min = two sweep intervals at the default cadence. Stripe fires the expiry event
+  /// within seconds of `expires_at`, so a healthy gateway is already `#expired` long
+  /// before this fires: the grace makes the outcall count **zero in normal operation**
+  /// and every firing a real missed event rather than noise.
+  public let expiryGraceNs : Nat = 1_800_000_000_000; // 30 min
+
+  /// Cadence for the stranded-`#created` scan, distinct from the delivery sweep's.
+  ///
+  /// The delivery sweep is free when idle because `countOf(#paid)` is usually 0 and the
+  /// O(total orders) scan is skipped. `#created` is usually **non**-zero, so putting this
+  /// on the 15-minute cadence would make that scan run continuously and throw away the
+  /// property the delivery sweep was tuned for. A strand needs a sustained failure, so
+  /// hourly is ample.
+  public let expiryScanIntervalNs : Nat = 3_600_000_000_000; // 1 h
+
+  /// Retrieves per scan pass, resuming on the next pass.
+  ///
+  /// ⚠️ **The stranded population is CORRELATED, which is why a per-order cost argument
+  /// is not enough.** One unprovisioned webhook secret or one frozen canister strands
+  /// every order in that window at once, so "rare" describes incidents, not orders per
+  /// incident. Without a cap one incident turns into N outcalls an hour for as long as it
+  /// lasts. Bounded and resumed, the backlog drains at a known rate instead.
+  public let maxRetrievesPerPass : Nat = 10;
+
+  /// How long to let Stripe keep trying before a completed-but-uncredited session becomes
+  /// a human's problem. **4 days** — Stripe redelivers for ~3 (§4.2), plus margin.
+  ///
+  /// ⚠️ **A heuristic about when to bother a human, NOT a claim about money.** Stripe
+  /// never tells us it has given up, so this cannot be derived. The asymmetry is what
+  /// makes it safe: wrong-late files an obligation a day later than ideal; wrong-early
+  /// manufactures worklist noise in a bounded, evicting queue, which can push real
+  /// obligations out. It fails in the direction that costs patience rather than
+  /// correctness — which is also why tightening it is the wrong instinct.
+  ///
+  /// ⚠️ **And the delay costs nothing on #52's own axis.** Capacity held against an order
+  /// the buyer genuinely paid for is capacity *correctly committed* — the promise is doing
+  /// its job and releases at delivery once the event lands. #52's leak is the `expired`
+  /// case, where capacity is held for a session nobody can ever pay. That is why the two
+  /// branches legitimately have different urgencies: `expired` is bounded by reserve
+  /// pressure, `completePaid` by Stripe's retry horizon and the buyer's patience.
+  public let paidRetryHorizonNs : Nat = 345_600_000_000_000; // 4 days
+
+  /// Is the stranded-`#created` scan due?
+  public func expiryScanDue(lastAttemptNs : Int, nowNs : Int, intervalNs : Nat) : Bool {
+    nowNs - lastAttemptNs >= intervalNs;
+  };
+
+  /// Should this order's session be asked about?
+  ///
+  /// A null `expiresAtNs` answers **false** and that is not an oversight: an order whose
+  /// session-create response was lost has no deadline *and* no session id, so there is
+  /// nothing to trigger on and nothing to query with. `expire_order` is the lever for
+  /// that class, and it is a canister-level fault rather than an operating state.
+  public func expiryCheckDue(
+    status : Types.OrderStatus,
+    expiresAtNs : ?Int,
+    nowNs : Int,
+    graceNs : Nat,
+  ) : Bool {
+    switch (status, expiresAtNs) {
+      case (#created, ?deadline) nowNs - deadline >= graceNs;
+      case _ false;
+    };
+  };
+
+  /// Has Stripe had long enough that a completed-but-uncredited session is now a
+  /// standing obligation rather than an event in flight?
+  public func paidEscalationDue(createdAtNs : Int, nowNs : Int, horizonNs : Nat) : Bool {
+    nowNs - createdAtNs >= horizonNs;
+  };
+
 };

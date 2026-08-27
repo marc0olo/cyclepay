@@ -222,7 +222,12 @@ module {
 
   /// Headers for the expire call. Idempotent by nature — expiring an already
   /// expired session is not an error we need a key to deduplicate.
-  public func expireHeaders(apiKey : Text) : [IC.HttpHeader] {
+  /// Authorization and nothing else — shared by the expire POST and the retrieve GET.
+  ///
+  /// ⚠️ **No idempotency key here, deliberately.** `createHeaders` carries one because
+  /// creating a session twice would charge a buyer twice; expiring or reading one is
+  /// idempotent by nature, and Stripe ignores the header on a GET anyway.
+  public func authHeaders(apiKey : Text) : [IC.HttpHeader] {
     [{ name = "Authorization"; value = "Bearer " # apiKey }];
   };
 
@@ -369,6 +374,97 @@ module {
     text.contains(#text "No such checkout.session")
     or text.contains(#text "in a status of complete")
     or text.contains(#text "in a status of expired");
+  };
+
+
+  /// `GET /v1/checkout/sessions/{id}` — the read the recovery sweep uses to settle a
+  /// `#created` order whose expiry event never arrived (#52).
+  ///
+  /// ⚠️ **The id is Stripe's, never a caller's.** It is stamped into
+  /// `Order.stripeSessionId` from the create response and read back from our own store,
+  /// so nothing attacker-controlled reaches this URL. Said explicitly because a value
+  /// interpolated into a request URL is exactly what a reviewer should check.
+  public func retrieveUrl(sessionId : Text) : Text {
+    createUrl # "/" # sessionId;
+  };
+
+  /// Cap for the retrieve, **larger than `maxResponseBytes`** and not a copy of it.
+  ///
+  /// Two reasons it must be bigger than the create response's cap. A *completed* session
+  /// carries fields a freshly created one does not — `customer_details`, a resolved
+  /// `payment_intent`, `total_details` — and the limit is enforced on the **raw**
+  /// response, so Stripe's ~1–2 KB of response headers count against it before a byte of
+  /// body arrives. `strip` cannot rescue an over-cap response: that check runs first.
+  ///
+  /// ⚠️ **The failure is total, not truncation** — an over-cap response fails the call
+  /// every time — so this is sized with margin rather than measured to the byte. #4's
+  /// fixture capture turns `cap >= 2x measured` into a check instead of an estimate.
+  public let retrieveMaxResponseBytes : Nat64 = 32_768;
+
+  /// What Stripe says about a session, reduced to the only distinction the sweep acts on.
+  public type Status = {
+    /// Still payable. The sweep does nothing: our clock decided when to ask, and Stripe
+    /// says the deadline has not actually passed.
+    #open;
+    /// Complete **and paid**. The buyer's money is in and we never credited it.
+    ///
+    /// Carries the `payment_intent`, because **this is the only place it can be learned**
+    /// — and the compiler proved it. A first draft read the intent off the order; the
+    /// order never reached `#paid`, so nothing ever indexed the payment against it, and
+    /// `paidIntents` is written *by* crediting. The retrieve is the sole source. It is
+    /// what an operator looks up in Stripe and what a filed obligation records, so a
+    /// complete+paid response without one classifies as `#unknown` rather than becoming
+    /// an obligation nobody can reconcile.
+    #completePaid : { paymentIntent : Text };
+    /// Stripe expired it. Nobody can pay this session, so the order's promise is holding
+    /// capacity against a sale that can never happen — the leak #52 exists to close.
+    #expired;
+    /// Anything we do not recognise, including a body we cannot parse. Carries the text
+    /// for the audit line.
+    #unknown : Text;
+  };
+
+  /// Classify a retrieve response.
+  ///
+  /// ⚠️ **`#unknown` is the safe answer and every unrecognised shape lands there.** The
+  /// sweep treats it exactly like `#open` — do nothing, ask again — so a Stripe response
+  /// change makes this feature inert rather than wrong. A classifier that guessed would
+  /// be guessing about whether a buyer has been paid.
+  ///
+  /// ⚠️ **`complete` is split on `payment_status`, and that is not defensive padding.**
+  /// A session can be `complete` with `payment_status = "unpaid"`: the buyer finished
+  /// checkout with a delayed-notification method (SEPA, ACH, boleto), the session closed,
+  /// and the money settles days later. **Our sessions cannot reach it** — `createBody`
+  /// pins `payment_method_types[]=card` and cards settle synchronously — but folding it
+  /// into the paid case would make the sweep file an operator-facing obligation claiming
+  /// a buyer paid when nobody has. So it classifies as `#unknown`: silence, which is
+  /// correct, because `checkout.session.async_payment_succeeded`/`_failed` already own
+  /// that lifecycle if the card pin is ever removed.
+  public func classify(body : Blob) : Status {
+    let ?text = body.decodeUtf8() else return #unknown("response body is not UTF-8");
+    let ?json = Json.parse(text) else return #unknown("response body is not JSON");
+    let ?status = Json.textAt(json, "status") else return #unknown("no status field");
+    switch (status) {
+      case ("open") #open;
+      case ("expired") #expired;
+      case ("complete") {
+        switch (Json.textAt(json, "payment_status")) {
+          case (?"paid") {
+            // The intent is required rather than optional: an obligation that cannot
+            // name the payment is one an operator cannot reconcile, and a complete+paid
+            // session without one would mean Stripe changed shape — which is exactly
+            // what `#unknown` is for.
+            switch (Json.textAt(json, "payment_intent")) {
+              case (?intent) #completePaid({ paymentIntent = intent });
+              case null #unknown("complete and paid with no payment_intent");
+            };
+          };
+          case (?other) #unknown("complete but payment_status=" # other);
+          case null #unknown("complete with no payment_status");
+        };
+      };
+      case (other) #unknown("unrecognised status=" # other);
+    };
   };
 
 };

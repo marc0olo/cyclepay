@@ -763,6 +763,19 @@ module {
         // Link the payment to the order it funded, so a later refund of this
         // intent can tell whether cycles were already delivered.
         deps.paidIntents.add(session.paymentIntent, orderId);
+        // ⚠️ **Close any `#paidNotCredited` obligation for this order (#52).** The
+        // recovery sweep files that when Stripe reports a paid session we never
+        // credited; this is the resend landing, which is the remedy the entry asks for.
+        // Same rule `clearDelayed` follows for delay alerts: **an open worklist entry
+        // must describe a live problem**, and the moment the order is credited this one
+        // does not.
+        //
+        // ⚠️ Its closer is deliberately **the order being credited, not the money
+        // moving** — a `charge.refunded` must not close it, because refunding settles
+        // the money and leaves the order stranded in `#created` with no event left to
+        // release its capacity. That is why the kind withholds its `paymentRef` from
+        // `paymentRefOf`, and why the sweep's do-not-re-file guard is safe.
+        ignore ErrorQueue.resolveCreditedOrder(deps.errorQueue, orderId, nowNs);
         // The one path that creates money-out work.
         { response = Http.text(200, "ok"); paidOrder = ?orderId };
       };
