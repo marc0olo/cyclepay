@@ -6,6 +6,14 @@
     "lib": ["ES2023"],
     "types": ["node"],
     "strict": true,
+    // ⚠️ **On because three dead config objects got through with it off.** Two
+    // `DEV_TREASURY`s and a `WORKING_TREASURY`, each naming a deleted type, each
+    // declared and referenced nowhere — and one of them documented a threshold the
+    // harness therefore never applied. A config a harness declares but never sends is
+    // worse than no config, and this is the cheapest detector for it.
+    "noUnusedLocals": true,
+    // Clean already; on so it stays that way, matching src/frontend/tsconfig.json.
+    "noUnusedParameters": true,
     "skipLibCheck": true,
     "noEmit": true,
     "esModuleInterop": true,

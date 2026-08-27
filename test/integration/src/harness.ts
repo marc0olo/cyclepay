@@ -102,9 +102,6 @@ export const XRC_DECIMALS = 9;
 export const ICP_USD_RATE = 4_550_000_000n; // $4.55, 9 decimals
 export const TIER_USD_CENTS = 500n;
 export const TIER_LOCKED_CYCLES = 3_500_000_000_000n;
-/// ceil(3_500_000_000_000 / 35_000) — exactly 1 ICP, the point of the vector.
-export const ORDER_E8S = 100_000_000n;
-export const ICP_FEE_E8S = 10_000n;
 /// The cycles ledger's fee. Since #30 PR-A it is charged on the **transfer** out
 /// of the reserve rather than on a `deposit` into the buyer's account, so a
 /// delivery still credits exactly `lockedCycles - CYCLES_LEDGER_FEE` — the same
@@ -231,7 +228,7 @@ export async function teardownGateway(gw: Gateway): Promise<void> {
 /// callbacks (try stopping the canister before upgrade)`. That is a platform
 /// constraint, not a Motoko one (`canister-security` skill pitfall 12), and it
 /// applies on mainnet exactly as it does here — so a naive
-/// `upgradeCanister` during an in-flight mint or pull always fails.
+/// `upgradeCanister` during an in-flight delivery always fails.
 ///
 /// `stopCanister` is what resolves it: stopping rejects the outstanding
 /// callbacks, which is precisely the §5.1 ambiguity window we want to test —
@@ -299,8 +296,10 @@ export async function nowSeconds(pic: PocketIc): Promise<bigint> {
 
 /// Freshen the CMC's ICP/XDR rate at the current PocketIC time, the way
 /// governance does after an exchange-rate proposal. The backend refuses to
-/// mint on a rate older than 15 min (Cmc.cmcRateMaxAgeNs), so any test that
-/// advances time past that re-arms the rate through this before minting.
+/// quote on a rate older than 15 min (Cmc.cmcRateMaxAgeNs), so any test that
+/// advances time past that re-arms the rate through this before ordering.
+/// ⚠️ Delivery reads no rate — only order CREATION does, so a stale rate fails a
+/// `create_order`, never a delivery already in flight.
 export async function setCmcRate(
   gw: Gateway,
   permyriad: bigint = XDR_PERMYRIAD_PER_ICP,
@@ -323,25 +322,8 @@ export async function setCmcRate(
   }
 }
 
-/// Fund the backend's ICP float. The `icpToken` feature seeds the anonymous
-/// principal's account with 1B ICP; the suite plays operator and tops the
-/// gateway up from there.
-export async function fundFloat(gw: Gateway, e8s: bigint): Promise<void> {
-  const result = await gw.ledger.icrc1_transfer({
-    from_subaccount: [],
-    to: { owner: gw.backendId, subaccount: [] },
-    amount: e8s,
-    fee: [],
-    memo: [],
-    created_at_time: [],
-  });
-  if (!('Ok' in result)) {
-    throw new Error(`float funding transfer failed: ${JSON.stringify(result, bigIntReplacer)}`);
-  }
-}
-
-/// Put cycles in the gateway's own cycles-ledger account — the reserve it
-/// delivers from since #30 PR-A.
+/// Put cycles in the gateway's own cycles-ledger account — the reserve it delivers
+/// from.
 ///
 /// ⚠️ **Measured, because it looks impossible.** Cycles normally enter a ledger
 /// account only through `deposit` with cycles attached, which an ingress message
@@ -350,9 +332,8 @@ export async function fundFloat(gw: Gateway, e8s: bigint): Promise<void> {
 /// ledger starts the **anonymous principal** with 2^127-1 cycles, and a transfer
 /// from the default sender to any account simply succeeds. That is a PocketIC
 /// fixture, not ledger behaviour: on mainnet the reserve is funded by
-/// `icp cycles transfer` from outside, and nothing mints into it.
+/// `icp cycles transfer` from outside, and nothing creates cycles into it.
 ///
-/// Exactly parallel to `fundFloat` for ICP, and deliberately named to match.
 /// Fund the gateway's reserve, and by default make it SELLABLE.
 ///
 /// ⚠️ **The transfer alone is not enough, and this is the trap #30 PR-B introduced
@@ -387,9 +368,6 @@ export async function reserveBalance(gw: Gateway): Promise<bigint> {
   return await gw.cyclesLedger.icrc1_balance_of({ owner: gw.backendId, subaccount: [] });
 }
 
-export async function floatBalance(gw: Gateway): Promise<bigint> {
-  return await gw.ledger.icrc1_balance_of({ owner: gw.backendId, subaccount: [] });
-}
 
 // ── XRC mock (§3 pricing) ─────────────────────────────────────────────────
 

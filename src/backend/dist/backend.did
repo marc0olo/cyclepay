@@ -16,7 +16,7 @@ type ValidateError =
  };
 type TransferIntent = 
  record {
-   amountE8s: nat;
+   amountCycles: nat;
    createdAtTimeNs: nat64;
    memo: blob;
    to: Account;
@@ -25,15 +25,6 @@ type Tier =
  record {
    id: text;
    usdCents: nat;
- };
-type Status__1 = 
- record {
-   burnedInWindowE8s: nat;
-   config: Config;
-   heldOrders: nat;
-   lastObservedFloat: opt FloatObservation;
-   lowFloat: bool;
-   paidOrders: nat;
  };
 type Status = 
  record {
@@ -77,12 +68,12 @@ type Result_4 =
  };
 type Result_3 = 
  variant {
-   err: IntervalError;
+   err: ConfigError;
    ok;
  };
 type Result_2 = 
  variant {
-   err: OriginError;
+   err: IntervalError;
    ok;
  };
 type Result_11 = 
@@ -97,7 +88,7 @@ type Result_10 =
  };
 type Result_1 = 
  variant {
-   err: ConfigError;
+   err: OriginError;
    ok;
  };
 type Result = 
@@ -126,7 +117,7 @@ type Request =
  };
 type Receipt = 
  record {
-   cyclesMinted: opt nat;
+   cyclesDelivered: opt nat;
    deliveryBlockIndex: opt nat;
    order: Order;
    paidUsdCents: opt nat;
@@ -220,13 +211,10 @@ type OriginError =
 type OrderStatus = 
  variant {
    abandoned;
-   awaitingTreasury;
    cancelled;
    created;
    delivered;
    expired;
-   icpAtCmc;
-   minting;
    needsReview;
    paid;
  };
@@ -259,6 +247,11 @@ type Kind =
                       sinceNs: int;
                       stage: text;
                     };
+   deliveryStuck: record {
+                    blockIndex: opt nat;
+                    orderId: OrderId;
+                    stage: text;
+                  };
    duplicate: record {
                 orderId: OrderId;
                 paymentRef: text;
@@ -271,22 +264,10 @@ type Kind =
       paymentRef: text;
       refundedCents: nat;
     };
-   stuckMint: record {
-                orderId: OrderId;
-                stage: text;
-              };
-   transferUnresolved: record {
-                         blockIndex: opt nat;
-                         orderId: OrderId;
-                       };
    unattributed: record {
                    claimedRef: text;
                    paymentRef: text;
                  };
-   undeliverable: record {
-                    cycles: nat;
-                    orderId: OrderId;
-                  };
    unprocessable: record {
                     eventId: text;
                     field: text;
@@ -296,7 +277,7 @@ type JournalEntry =
  record {
    blockIndex: opt nat;
    createdAtNs: int;
-   cyclesMinted: opt nat;
+   cyclesDelivered: opt nat;
    destination: Destination;
    orderId: OrderId;
    retries: nat;
@@ -307,7 +288,6 @@ type JournalEntry =
 type IntervalError = 
  variant {
    intervalTooLong: record {maxNs: nat;};
-   intervalTooShort: record {minNs: nat;};
    zeroInterval;
  };
 type HttpRequestResult = 
@@ -325,11 +305,6 @@ type HeaderField =
  record {
    text;
    text;
- };
-type FloatObservation = 
- record {
-   atNs: int;
-   e8s: nat;
  };
 type ExpiredBy = 
  variant {
@@ -379,20 +354,26 @@ type CreateOrderError =
  };
 type Config__2 = 
  record {
+   alertAfterNs: int;
+   maxHoldNs: int;
+ };
+type Config__1 = 
+ record {
    maxOpenOrdersPerPrincipal: nat;
    maxPurchaseUsdCents: nat;
    minCanisterCycles: nat;
    minPurchaseUsdCents: nat;
  };
-type Config__1 = 
- record {
-   feeBps: nat;
-   feeFixedCents: nat;
-   maxAgeNs: int;
-   maxRateDeltaBps: nat;
-   minRateSources: nat;
- };
 type ConfigError__2 = 
+ variant {
+   alertNotBeforeMaxHold: record {
+                            alertAfterNs: int;
+                            maxHoldNs: int;
+                          };
+   nonPositiveAlertAfter;
+   nonPositiveMaxHold;
+ };
+type ConfigError__1 = 
  variant {
    floorAboveCeiling: record {
                         maxUsdCents: nat;
@@ -411,7 +392,7 @@ type ConfigError__2 =
    zeroOpenOrderCap;
    zeroPurchaseCeiling;
  };
-type ConfigError__1 = 
+type ConfigError = 
  variant {
    feeBpsTooHigh;
    maxAgeTooLong: record {
@@ -422,23 +403,13 @@ type ConfigError__1 =
    zeroRateDelta;
    zeroRateSources;
  };
-type ConfigError = 
- variant {
-   alertNotBeforeMaxHold: record {
-                            alertAfterNs: int;
-                            maxHoldNs: int;
-                          };
-   nonPositiveAlertAfter;
-   nonPositiveBurnWindow;
-   nonPositiveMaxHold;
- };
 type Config = 
  record {
-   alertAfterNs: int;
-   burnCapE8s: nat;
-   burnWindowNs: int;
-   lowFloatThresholdE8s: nat;
-   maxHoldNs: int;
+   feeBps: nat;
+   feeFixedCents: nat;
+   maxAgeNs: int;
+   maxRateDeltaBps: nat;
+   minRateSources: nat;
  };
 type Amount = 
  variant {
@@ -453,8 +424,8 @@ type Account =
 /// Fully on-chain cycles gateway — composition root.
 /// 
 /// See design-docs/ONCHAIN_GATEWAY_SPEC.md (spec v2.1) and PRD.md for the
-/// module layout this actor grows into: Orders.mo wiring, rails/, Cmc.mo,
-/// Pricing.mo, Treasury.mo, ErrorQueue.mo, Auth.mo.
+/// module layout this actor grows into: Orders.mo wiring, rails/, Delivery.mo,
+/// Pricing.mo, Delivery.mo, ErrorQueue.mo, Auth.mo.
 service : {
   /// Stop trying to deliver an order (admin, §7) — **the only path to a
   /// terminal non-delivered state.**
@@ -478,7 +449,7 @@ service : {
   /// The answer is advisory — it can go stale between this call and
   /// `create_order`, which re-checks. It is not an authorization decision, so
   /// anonymous callers may ask: it reveals only operational state that
-  /// `treasury_status` already publishes. Answered for the *calling* principal,
+  /// `reserve_status` already publishes. Answered for the *calling* principal,
   /// so the open-order cap it reports is the caller's own.
   can_purchase: (usdCents: nat) -> (Result_11) query;
   /// Let a buyer give up on their own unpaid order (owner-scoped).
@@ -526,25 +497,26 @@ service : {
   /// ever protect the buyer. `null` opts out entirely.
   create_order: (amount: Amount, destination: Destination, minCycles:
    opt nat) -> (Result_10);
-  /// §5.2 liveness observability, public (operational transparency, same
-  /// stance as treasury_status): cadence + last completed timer sweep. A
-  /// null or stale `lastSweep` means recovery is not running.
-  /// This canister's OWN cycle balance and the floor the admission gate holds
-  /// it against (public — the same operational-transparency stance as
-  /// `treasury_status`; it is visible via `canister_status` regardless).
+  /// §5.2 liveness observability, public (operational transparency, same stance as
+  /// `reserve_status`): cadence + last completed timer sweep. A null or stale
+  /// `lastSweep` means recovery is not running.
+  /// This canister's OWN cycle balance and the floor the admission gate holds it
+  /// against (public — the same operational-transparency stance as `reserve_status`;
+  /// it is visible via `canister_status` regardless).
   /// 
-  /// Distinct from the ICP float in every way: this is gas. Below the freezing
-  /// threshold the canister stops accepting updates; at zero it is uninstalled
-  /// and the order store, journals, and dedup sets go with it. Monitor it
-  /// separately, and alert well above `minCanisterCycles` — that gate stops
-  /// *sales*, it does not stop the burn. A sudden acceleration here is the
+  /// ⚠️ **Gas, not stock.** This is what the canister spends to run; the cycles it
+  /// sells live in its cycles-ledger account and are reported by `reserve_status`.
+  /// Below the freezing threshold the canister stops accepting updates; at zero it is
+  /// uninstalled and the order store, journals, and dedup sets go with it. Monitor it
+  /// separately, and alert well above `minCanisterCycles` — that gate stops *sales*,
+  /// it does not stop the burn. A sudden acceleration here is the
   /// signature of a cycle-drain attempt.
   cycles_status: () -> (record {
                           balance: nat;
                           floor: nat;
                         }) query;
-  /// Money-out journal for one order (admin, §4.2) — intent, block_index,
-  /// minted cycles, retries.
+  /// Money-out journal for one order (admin, §4.2) — intent, block_index, cycles
+  /// delivered, retries.
   delivery_journal: (id: OrderId) -> (opt JournalEntry) query;
   /// §4.1 retained history, oldest first, **paged**. Admin: entries carry
   /// payment references and claimed-but-bogus URL params.
@@ -587,20 +559,19 @@ service : {
   http_request_update: (req: Request) -> (Response);
   /// Public: the frontend needs the bounds to size its amount input and to say
   /// what it will accept before the buyer types. Same transparency stance as
-  /// `forex_status` and `treasury_status` — these are the rules users are held
+  /// `pricing_status` and `reserve_status` — these are the rules users are held
   /// to, not secrets.
   /// 
-  /// It carried a `retention` half until #33. There is no lifecycle *policy* of
-  /// ours any more: the deadline is the Stripe session's `expires_at`, which
-  /// lives on each order rather than in config, so there is nothing global to
-  /// report.
-  lifecycle_config: () -> (record {gate: Config__2;}) query;
+  /// ⚠️ **One field, and no lifecycle *policy* of ours to add to it.** An order's
+  /// deadline is the Stripe session's `expires_at`, which lives on the order rather
+  /// than in config, so there is nothing global to report.
+  lifecycle_config: () -> (record {gate: Config__1;}) query;
   /// Order history for the caller (§2, fixes the lost-receipt problem).
   list_orders: () -> (vec Order) query;
   /// Which order did this Stripe `payment_intent` pay for (admin, §4.2)? The
   /// reconciliation lookup: given a charge in the Stripe Dashboard, find the
   /// order it funded. Null means the payment was never attributed to an order
-  /// here — check the error queue for a Type 1 entry carrying it.
+  /// here — check the error queue for an obligation carrying it.
   order_for_payment: (paymentRef: text) -> (opt OrderId) query;
   /// Every delivery with money-out work outstanding, right now (admin).
   /// 
@@ -636,7 +607,7 @@ service : {
   /// are charged. Nothing here is secret, and reproducibility is the point.
   pricing_status: () ->
    (record {
-      config: Config__1;
+      config: Config;
       lastAttempt: opt record {
                          atNs: int;
                          detail: text;
@@ -764,10 +735,6 @@ service : {
                      };
       sweepInFlight: bool;
     }) query;
-  /// On-demand float refresh (admin — public would let anyone spend our
-  /// cycles on ledger calls). The mint pre-gate refreshes the observation as
-  /// a side effect; this is the ops lever between mints.
-  refresh_float: () -> (nat);
   /// Force a rate refresh now (admin) — the ops lever after retuning config or
   /// while diagnosing a stale rate, without waiting for the next tick.
   refresh_rates: () -> (opt Rates);
@@ -804,10 +771,9 @@ service : {
   /// frontend; nothing reads it to decide anything, so it cannot be raced into an
   /// over-sale.
   /// 
-  /// The four order counters were `order_stats` (and `retention_status` before that,
-  /// until #33 deleted retention). Folded in here as #30 planned: `openOrders`
-  /// climbing while deliveries do not is the signature of order-creation abuse, and
-  /// its lever is `Gate.maxOpenOrdersPerPrincipal`; `totalOrders` and
+  /// The four order counters live here rather than in a surface of their own:
+  /// `openOrders` climbing while deliveries do not is the signature of order-creation
+  /// abuse, and its lever is `Gate.maxOpenOrdersPerPrincipal`; `totalOrders` and
   /// `paidIntentsIndexed` should grow together, since a divergence means an index and
   /// its records disagree.
   reserve_status: () ->
@@ -826,14 +792,15 @@ service : {
       tallySaturations: nat;
       totalOrders: nat;
     }) query;
-  /// §5.3 manual override: clear the rolling window's consumption after
-  /// confirming the traffic was legitimate (or rotating a leaked secret).
-  /// Returns the e8s of consumption cleared. Held orders resume on the next
-  /// sweep, not here — the pre-gate stays the single decision point.
-  reset_burn_window: () -> (nat);
-  /// Manual resolution (§4.1/§7): refund issued off-chain, or Type 2 cycles
-  /// re-delivered/refunded. (`charge.refunded` resolves Type 1 entries
-  /// automatically; this is the fallback and the only path for Type 2.)
+  /// Manual resolution (§4.1/§7) — the operator marking an obligation settled after
+  /// acting off-chain: a refund issued in the Stripe Dashboard, or a delivery whose
+  /// fate they established on the cycles ledger.
+  /// 
+  /// ⚠️ **This is the only path for everything a refund cannot resolve.** A
+  /// `charge.refunded` auto-resolves the refund-resolvable kinds, so those usually
+  /// close themselves; `#deliveryStuck`, `#refundAfterDelivery` and `#abandoned` carry
+  /// no `paymentRef` and can only be closed here. Resolving an entry never transitions
+  /// the order — see `ErrorQueue`'s header.
   resolve_error: (id: nat) -> (Result_7);
   /// Replace the card presets (§3/§7 — admin, validated atomically: a bad config
   /// never partially applies).
@@ -844,11 +811,17 @@ service : {
   /// nothing — it just shows no tiles. The switch is both Stripe secrets being
   /// provisioned; `railsLive` is where that lives.
   set_card_tiers: (tiers: vec Tier) -> (Result_6);
+  /// Tune the delivery timeline (admin, §7).
+  /// 
+  /// ⚠️ Validated rather than trusted: an alert at or after the terminal bound would
+  /// tell the operator at the moment the decision was already taken, and a
+  /// non-positive bound would escalate every order instantly.
+  set_delivery_config: (config: Config__2) -> (Result_5);
   /// Adjust the admission gate (§7): open-order cap, own-cycles floor,
   /// per-purchase ceiling. Validated atomically — a bad config never partially
   /// applies. Lowering `maxPurchaseUsdCents` below an existing tier does NOT
   /// retroactively invalidate that tier's registration, but the next
-  /// `set_card_tiers` will reject it and the webhook will refuse to mint a
+  /// `set_card_tiers` will reject it and the webhook will refuse to deliver a
   /// payment above the new ceiling.
   /// Declare which Stripe mode this gateway serves (admin).
   /// 
@@ -856,14 +829,14 @@ service : {
   /// deployment. `null` restores "accept either", which only makes sense while
   /// nothing of value is at stake.
   set_expected_livemode: (expected: opt bool) -> ();
-  set_gate_config: (config: Config__2) -> (Result_5);
+  set_gate_config: (config: Config__1) -> (Result_4);
   /// Adjust pricing params (§7): fee formula, staleness window, delta guard.
   /// Validated atomically — a bad config never partially applies.
-  set_pricing_config: (config: Config__1) -> (Result_4);
+  set_pricing_config: (config: Config) -> (Result_3);
   /// Tune the sweep cadence (admin, §7) — re-arms immediately, no redeploy.
   /// Validated against the §5.1 bound: the cadence must stay well inside
   /// the ledger dedup window or replay loses its safety margin.
-  set_recovery_interval: (intervalNs: nat) -> (Result_3);
+  set_recovery_interval: (intervalNs: nat) -> (Result_2);
   /// Provision or rotate the Stripe API key (#33) — admin, mirroring
   /// `set_webhook_secret` in every respect including the provisioning caveat:
   /// the argument transits the TLS-terminating boundary node as plain ingress.
@@ -875,10 +848,7 @@ service : {
   /// fails in front of the operator who typed it instead of breaking every
   /// purchase later. Until a domain is chosen (#40/#23) this is the canister's
   /// own asset origin.
-  set_stripe_origin: (origin: text) -> (Result_2);
-  /// Adjust treasury policy (§5.3/§7): burn cap, window, max hold, alert
-  /// threshold. Validated atomically — a bad config never partially applies.
-  set_treasury_config: (config: Config) -> (Result_1);
+  set_stripe_origin: (origin: text) -> (Result_1);
   /// Provision or rotate the Stripe webhook signing secret (§7). Pass the
   /// full `whsec_...` string from the Stripe dashboard — the whole string,
   /// prefix included, is the HMAC key. NOTE: the argument transits the
@@ -902,11 +872,6 @@ service : {
      context: blob;
      response: HttpRequestResult;
    }) -> (HttpRequestResult) query;
-  /// §5.3 balance alert + soft UI gate, public: the frontend disables tiers
-  /// off `lowFloat`, and cap consumption is operational transparency (the
-  /// thesis), not a secret. The float observation may be stale — `atNs` says
-  /// how stale; `refresh_float` is the admin lever for a fresh read.
-  treasury_status: () -> (Status__1) query;
   /// Provisioning state only — the secret itself is never readable back
   /// out, even by controllers. `generation` confirms a rotation landed.
   webhook_secret_status: () -> (Status) query;

@@ -8,7 +8,6 @@
 /// talks to those canisters with its own Motoko bindings (Cmc.mo).
 import { IDL } from '@icp-sdk/core/candid';
 import type { IDL as IDLNamespace } from '@icp-sdk/core/candid';
-import type { Principal } from '@icp-sdk/core/principal';
 
 export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   const Account = IDL.Record({
@@ -20,13 +19,10 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   const Rail = IDL.Variant({ card: IDL.Null });
   const OrderStatus = IDL.Variant({
     abandoned: IDL.Null,
-    awaitingTreasury: IDL.Null,
     cancelled: IDL.Null,
     created: IDL.Null,
     delivered: IDL.Null,
     expired: IDL.Null,
-    icpAtCmc: IDL.Null,
-    minting: IDL.Null,
     needsReview: IDL.Null,
     paid: IDL.Null,
   });
@@ -108,7 +104,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     unknownTier: IDL.Text,
   });
   const TransferIntent = IDL.Record({
-    amountE8s: IDL.Nat,
+    amountCycles: IDL.Nat,
     createdAtTimeNs: IDL.Nat64,
     memo: IDL.Vec(IDL.Nat8),
     to: Account,
@@ -116,7 +112,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   const JournalEntry = IDL.Record({
     blockIndex: IDL.Opt(IDL.Nat),
     createdAtNs: IDL.Int,
-    cyclesMinted: IDL.Opt(IDL.Nat),
+    cyclesDelivered: IDL.Opt(IDL.Nat),
     destination: Destination,
     orderId: IDL.Text,
     retries: IDL.Nat,
@@ -140,9 +136,10 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       sinceNs: IDL.Int,
       stage: IDL.Text,
     }),
-    stuckMint: IDL.Record({ orderId: IDL.Text, stage: IDL.Text }),
+    // #36 folded `stuckMint` and `transferUnresolved` into one honestly-named kind:
+    // `stage` carries the money position, `blockIndex` the should-be-unreachable landed case.
+    deliveryStuck: IDL.Record({ orderId: IDL.Text, stage: IDL.Text, blockIndex: IDL.Opt(IDL.Nat) }),
     unattributed: IDL.Record({ claimedRef: IDL.Text, paymentRef: IDL.Text }),
-    undeliverable: IDL.Record({ cycles: IDL.Nat, orderId: IDL.Text }),
   });
   const ErrorEntry = IDL.Record({
     createdAtNs: IDL.Int,
@@ -205,30 +202,16 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     zeroRateSources: IDL.Null,
   });
   const RateAttempt = IDL.Record({ atNs: IDL.Int, detail: IDL.Text, ok: IDL.Bool });
-  const TreasuryConfig = IDL.Record({
-    alertAfterNs: IDL.Int,
-    burnCapE8s: IDL.Nat,
-    burnWindowNs: IDL.Int,
-    lowFloatThresholdE8s: IDL.Nat,
+  const DeliveryConfig = IDL.Record({
     maxHoldNs: IDL.Int,
+    alertAfterNs: IDL.Int,
   });
-  const TreasuryConfigError = IDL.Variant({
+  const DeliveryConfigError = IDL.Variant({
     alertNotBeforeMaxHold: IDL.Record({ alertAfterNs: IDL.Int, maxHoldNs: IDL.Int }),
     nonPositiveAlertAfter: IDL.Null,
-    nonPositiveBurnWindow: IDL.Null,
     nonPositiveMaxHold: IDL.Null,
   });
-  const FloatObservation = IDL.Record({ atNs: IDL.Int, e8s: IDL.Nat });
-  const TreasuryStatus = IDL.Record({
-    burnedInWindowE8s: IDL.Nat,
-    config: TreasuryConfig,
-    heldOrders: IDL.Nat,
-    lastObservedFloat: IDL.Opt(FloatObservation),
-    lowFloat: IDL.Bool,
-    paidOrders: IDL.Nat,
-  });
   const IntervalError = IDL.Variant({
-    intervalTooShort: IDL.Record({ minNs: IDL.Nat }),
     intervalTooLong: IDL.Record({ maxNs: IDL.Nat }),
     zeroInterval: IDL.Null,
   });
@@ -254,7 +237,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     status_code: IDL.Nat16,
     upgrade: IDL.Opt(IDL.Bool),
   });
-  const HttpHeader = IDL.Record({ name: IDL.Text, value: IDL.Text });
 
   return IDL.Service({
     audit_log: IDL.Func([], [IDL.Vec(AuditEvent)], ['query']),
@@ -361,7 +343,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     receipt: IDL.Func(
       [IDL.Text],
       [IDL.Opt(IDL.Record({
-        cyclesMinted: IDL.Opt(IDL.Nat),
+        cyclesDelivered: IDL.Opt(IDL.Nat),
         deliveryBlockIndex: IDL.Opt(IDL.Nat),
         order: Order,
         paidUsdCents: IDL.Opt(IDL.Nat),
@@ -425,9 +407,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       ],
       ['query'],
     ),
-    refresh_float: IDL.Func([], [IDL.Nat], []),
     refresh_reserve: IDL.Func([], [IDL.Nat], []),
-    reset_burn_window: IDL.Func([], [IDL.Nat], []),
     resolve_error: IDL.Func(
       [IDL.Nat],
       [IDL.Variant({ ok: ErrorEntry, err: ResolveError })],
@@ -443,9 +423,9 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Variant({ ok: IDL.Null, err: IntervalError })],
       [],
     ),
-    set_treasury_config: IDL.Func(
-      [TreasuryConfig],
-      [IDL.Variant({ ok: IDL.Null, err: TreasuryConfigError })],
+    set_delivery_config: IDL.Func(
+      [DeliveryConfig],
+      [IDL.Variant({ ok: IDL.Null, err: DeliveryConfigError })],
       [],
     ),
     set_stripe_api_key: IDL.Func([IDL.Text], [IDL.Variant({ ok: IDL.Null, err: SecretSetError })], []),
@@ -461,7 +441,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Variant({ ok: IDL.Null, err: SecretSetError })],
       [],
     ),
-    treasury_status: IDL.Func([], [TreasuryStatus], ['query']),
     webhook_secret_status: IDL.Func([], [SecretStatus], ['query']),
   });
 };

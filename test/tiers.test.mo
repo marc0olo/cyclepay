@@ -34,7 +34,7 @@ suite("validate", func() {
 
   test("zero-cent tier is rejected and named", func() {
     // Zero is reported as zero, not as below-floor: it is the distinct "a $0 tier
-    // would mint on nothing" case, and it is checked first.
+    // would deliver on nothing" case, and it is checked first.
     assert Tiers.validate([tier("s", 1_000), tier("free", 0)], floor, ceiling) == #err(#zeroUsdCents("free"));
   });
 

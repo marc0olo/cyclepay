@@ -8,9 +8,9 @@
 /// captured-and-replayed delivery stays valid; inside the window, replay is
 /// the dedup sets' job (Idempotency.mo — `event.id` / `payment_intent`).
 ///
-/// Ingestion invariants (§4.1): dedup gates the mint; every verified dollar
-/// resolves to a `#paid` order or a Type 1 error-queue entry (Type 2 only
-/// exists after minting, §5); `client_reference_id` is claimed, not trusted;
+/// Ingestion invariants (§4.1): dedup gates delivery; every verified dollar
+/// resolves to a `#paid` order or an error-queue obligation (§5);
+/// `client_reference_id` is claimed, not trusted;
 /// the paid amount must EQUAL the quoted one — the session carried our figure,
 /// so a difference is a misconfiguration, not a choice. The whole path is
 /// synchronous — no awaits, so no interleaving between check and write.
@@ -150,9 +150,9 @@ module {
     /// `checkout.session.async_payment_succeeded`, which is parsed into this
     /// same shape (see `parseEvent`).
     paid : Bool;
-    /// Stripe's `livemode`. A test-mode event carries `false`; accepting one on
-    /// a canister funded with a real ICP float would mint real cycles for a
-    /// payment that never happened.
+    /// Stripe's `livemode`. A test-mode event carries `false`; accepting one on a
+    /// canister with a funded reserve would deliver real cycles for a payment that
+    /// never happened.
     livemode : Bool;
   };
 
@@ -169,7 +169,7 @@ module {
 
   /// A refund settles the whole charge only when the cumulative refunded amount
   /// reaches the charge total. A partial refund must never be read as a full one:
-  /// auto-resolving a Type 1 obligation on a $5 courtesy refund of a $500
+  /// auto-resolving an obligation on a $5 courtesy refund of a $500
   /// payment would discard the record of the remaining $495.
   public func isFullRefund(refund : ChargeRefunded) : Bool {
     refund.chargeAmountCents > 0 and refund.amountRefundedCents >= refund.chargeAmountCents;
@@ -237,7 +237,7 @@ module {
     // `async_payment_succeeded` carries the same session object as `completed`
     // and is how a delayed payment method reports that money actually arrived.
     // Without it, a session acked as unpaid would settle later with no trace
-    // anywhere: fiat in, nothing minted, nothing on the worklist.
+    // anywhere: fiat in, nothing delivered, nothing on the worklist.
     if (
       eventType == "checkout.session.completed"
       or eventType == "checkout.session.async_payment_succeeded"
@@ -332,8 +332,9 @@ module {
     /// `payment_intent` → order it paid for. Written when an order is marked
     /// paid; the only way a later `charge.refunded` can tell whether the
     /// refunded payment had already been delivered as cycles. A financial
-    /// record — never pruned, and bounded by real volume (which the burn cap
-    /// bounds), unlike the `#unattributed` spam the dedup sets absorb.
+    /// record — never pruned, and bounded by real volume (every entry corresponds to
+    /// a payment that was delivered out of a funded reserve), unlike the
+    /// `#unattributed` spam the dedup sets absorb.
     paidIntents : Map.Map<Text, Types.OrderId>;
     /// Per-purchase ceiling (`Gate.Config.maxPurchaseUsdCents`) — defence in
     /// depth now that the webhook honours only the quoted amount: an order
@@ -347,11 +348,11 @@ module {
   ///
   /// `paidOrder` is non-null on exactly one path — a verified, deduped,
   /// attributed payment that transitioned an order to `#paid`. Everything else
-  /// (guard rejections, duplicates, Type 1 entries, refunds, unhandled event
-  /// types) leaves it null. The caller uses it to decide whether to kick the
-  /// mint pipeline: an anonymous request that reaches no order must not be able
-  /// to trigger a sweep over every order, which is otherwise an operation that
-  /// is free to invoke and expensive to run.
+  /// (guard rejections, duplicates, queued obligations, refunds, unhandled event
+  /// types) leaves it null. The caller uses it to decide whether to kick delivery:
+  /// an anonymous request that reaches no order must not be able to trigger a sweep
+  /// over every order, which is otherwise an operation that is free to invoke and
+  /// expensive to run.
   public type Outcome = {
     response : Http.Response;
     paidOrder : ?Types.OrderId;
@@ -376,7 +377,7 @@ module {
   /// that moves the total is enabled — the list is next to `Session.createBody`,
   /// and each entry is one Dashboard toggle away. That is a misconfiguration
   /// for the operator to look at, not a choice the buyer made, so a mismatch
-  /// files a Type 1 and mints nothing.
+  /// files a refundable obligation and delivers nothing.
   ///
   /// ⚠️ The collapse is what makes `lockedCycles` immutable after creation, and
   /// #30's accounting is exact rather than conservative because of it. Anything
@@ -384,7 +385,7 @@ module {
   public type Honored = {
     /// The amount matched the quote, so the locked quantity stands verbatim.
     #asQuoted : Nat;
-    /// Stripe reported an amount we never asked for. Type 1: the operator
+    /// Stripe reported an amount we never asked for. Refund-resolvable: the operator
     /// refunds and fixes the session configuration.
     #mismatch : { paidUsdCents : Nat; quotedUsdCents : Nat };
     /// Above the per-purchase ceiling, kept as defence in depth even though the
@@ -408,11 +409,11 @@ module {
     #asQuoted(order.lockedCycles);
   };
 
-  /// Queue a Type 1 entry (§4.1: fiat exists, nothing minted — operator
+  /// Queue a refund-resolvable entry (§4.1: fiat exists, nothing delivered — operator
   /// refunds in the Stripe Dashboard). Always 200: the payment is handled,
   /// just not by delivery; a non-2xx would make Stripe redeliver an event
   /// we have already routed.
-  func queueType1(deps : Deps, kind : ErrorQueue.Kind, detail : Text, nowNs : Int) : Http.Response {
+  func queueRefundable(deps : Deps, kind : ErrorQueue.Kind, detail : Text, nowNs : Int) : Http.Response {
     let result = ErrorQueue.add(deps.errorQueue, deps.errorQueueCapacity, #card, kind, detail, nowNs);
     for (victim in result.evicted.values()) {
       if (victim.resolvedAtNs == null) {
@@ -425,7 +426,7 @@ module {
     Http.text(200, "queued for operator review");
   };
 
-  /// `charge.refunded` (§4.1): auto-resolve every unresolved Type 1 entry
+  /// `charge.refunded` (§4.1): auto-resolve every unresolved refund-resolvable entry
   /// carrying this payment_intent. No matches is fine — operators may
   /// refund payments that never queued.
   func handleRefund(deps : Deps, refund : ChargeRefunded, nowNs : Int) : Outcome {
@@ -508,8 +509,8 @@ module {
               case (#needsReview or #abandoned) {
                 // On the worklist, or already ended by the operator: a refund
                 // here is the *expected* resolution, not a race to investigate.
-                // Saying "the pipeline may still be mid-flight" would send an
-                // operator looking for an in-flight mint that cannot exist.
+                // Saying "the delivery may still be mid-flight" would send an
+                // operator looking for one that cannot exist.
                 audit(deps, nowNs, "stripe.refundOfEscalated", orderId # ": " # refund.paymentIntent # " refunded (" # amounts # ") — the expected resolution for an escalated order; resolve its queue entry once reconciled");
               };
               case (status) {
@@ -534,7 +535,7 @@ module {
   ///   canister sets `client_reference_id`, so this should be unreachable — which
   ///   is exactly why it stays: an unreachable contradiction that fires means a
   ///   bug in attribution or something odd on Stripe's side, and it used to be
-  ///   entirely silent. Never mint (the money is spent), but surface it.
+  ///   entirely silent. Never deliver (the money is spent), but surface it.
   ///
   /// Reads the order id straight from `clientReferenceId` rather than taking a
   /// resolved order, so it stays reachable when the reference is unusable. That is
@@ -568,20 +569,20 @@ module {
       nowNs,
       "stripe.creditedElsewhere",
       "intent " # session.paymentIntent # " names " # namedText
-      # " but was already credited to order " # credited # " — NOT minted again",
+      # " but was already credited to order " # credited # " — nothing delivered a second time",
     );
-    queueType1(
+    queueRefundable(
       deps,
       #duplicate({ orderId = credited; paymentRef = session.paymentIntent }),
       "intent " # session.paymentIntent # " was credited to order " # credited
       # " but its Stripe session names " # namedText
-      # " — the reference and our record disagree, which should not be reachable. Nothing was minted twice. Decide which order the buyer paid for; there is no way to credit the other one, so settle it by refunding in Stripe.",
+      # " — the reference and our record disagree, which should not be reachable. Nothing was delivered twice. Decide which order the buyer paid for; there is no way to credit the other one, so settle it by refunding in Stripe.",
       nowNs,
     );
   };
 
   /// `checkout.session.completed` (§6.1): dedup → attribute (claimed, not
-  /// trusted) → honor the actual paid amount → `#paid`, or Type 1.
+  /// trusted) → honor the actual paid amount → `#paid`, or a refundable obligation.
   func handleCheckout(deps : Deps, session : CheckoutCompleted, nowNs : Int) : Outcome {
     // event.id first: catches Stripe redelivering this exact event.
     if (not Idempotency.recordStripeEvent(deps.dedup, session.eventId, nowNs)) {
@@ -598,7 +599,7 @@ module {
       audit(deps, nowNs, "stripe.unpaidSession", "payment_status not paid for intent " # session.paymentIntent # " — awaiting async settlement");
       return ack(Http.text(200, "ignored: payment not completed"));
     };
-    // A test-mode event on a canister holding a real ICP float would mint real
+    // A test-mode event on a canister with a funded reserve would deliver real
     // cycles for a payment that never happened. The secret is the only thing
     // standing between the two, and provisioning the wrong one is a plausible
     // operator slip, so the event says which world it came from and we check.
@@ -609,7 +610,7 @@ module {
           nowNs,
           "stripe.livemodeMismatch",
           "intent " # session.paymentIntent # ": livemode=" # (if (session.livemode) "true" else "false")
-          # " but this gateway expects " # (if (expected) "true" else "false") # " — NOT minted",
+          # " but this gateway expects " # (if (expected) "true" else "false") # " — nothing delivered",
         );
         // Queue it only when real money is involved: a live payment reaching a
         // test-configured gateway is an obligation. The reverse is a test event
@@ -629,7 +630,7 @@ module {
               );
               paymentRef = session.paymentIntent;
             }),
-            "LIVE payment arrived but this gateway is configured for test mode — money is in the live Stripe account and nothing was minted; fix set_expected_livemode, then RESEND this event from the Stripe Dashboard so the referenced order is credited, or refund",
+            "LIVE payment arrived but this gateway is configured for test mode — money is in the live Stripe account and nothing was delivered; fix set_expected_livemode, then RESEND this event from the Stripe Dashboard so the referenced order is credited, or refund",
             nowNs,
           );
         };
@@ -638,7 +639,7 @@ module {
       case null {
         // Nothing is being refused here — but a gateway taking payments without
         // having declared its Stripe mode has no defence against a test-mode
-        // secret minting real cycles, and the operator should see that in the
+        // secret spending the reserve, and the operator should see that in the
         // trail rather than discover it later. Self-extinguishing: setting the
         // expectation stops the line.
         audit(
@@ -649,7 +650,7 @@ module {
         );
       };
     };
-    // payment_intent second: one mint per payment even across distinct
+    // payment_intent second: one delivery per payment even across distinct
     // event deliveries for the same intent (§4.2).
     if (not Idempotency.recordStripeIntent(deps.dedup, session.paymentIntent, nowNs)) {
       return ack(Http.text(200, "duplicate payment intent"));
@@ -669,13 +670,13 @@ module {
       case (?credited) return ack(alreadyCredited(deps, session, credited, nowNs));
       case null {};
     };
-    // ── Attribution (§4.1: claimed, not trusted). Failures are Type 1
-    // #unattributed: fiat arrived, nothing will be minted.
+    // ── Attribution (§4.1: claimed, not trusted). Failures are refund-resolvable
+    // #unattributed: fiat arrived, nothing will be delivered.
     let claimedRef = ErrorQueue.truncateClaimedRef(
       switch (session.clientReferenceId) { case (?r) r; case (null) "" }
     );
     func unattributed(detail : Text) : Outcome {
-      ack(queueType1(deps, #unattributed({ claimedRef; paymentRef = session.paymentIntent }), detail, nowNs));
+      ack(queueRefundable(deps, #unattributed({ claimedRef; paymentRef = session.paymentIntent }), detail, nowNs));
     };
     let ?ref = session.clientReferenceId else return unattributed("missing client_reference_id");
     let ?(claimedOwnerText, orderId) = Orders.parseClientReferenceId(ref) else {
@@ -716,7 +717,7 @@ module {
         //
         // Filed as `#unattributed` rather than `#duplicate`, because nothing was
         // ever paid — there is no first payment for this to be a second of. Both
-        // are Type 1 and both carry the `paymentRef` a `charge.refunded` resolves,
+        // are refund-resolvable and both carry the `paymentRef` a `charge.refunded` resolves,
         // so the operator's lever is the same: refund in Stripe.
         return unattributed(
           "order " # orderId # " is " # Types.statusToText(order.status)
@@ -728,7 +729,7 @@ module {
         // Stripe dedup is redelivery protection, not double-pay protection).
         // Reaching here means the intent is NOT in paidIntents, so it is new
         // money against an order that has already been paid.
-        return ack(queueType1(
+        return ack(queueRefundable(
           deps,
           #duplicate({ orderId; paymentRef = session.paymentIntent }),
           "second payment for order " # orderId # " (status " # Types.statusToText(status) # ")",
@@ -747,13 +748,13 @@ module {
         return unattributed(
           "paid amount " # paidUsdCents.toText() # " cents is not the " # quotedUsdCents.toText()
           # " cents order " # orderId # " asked Stripe for — a session feature that moves the total is"
-          # " enabled (see Session.createBody); nothing minted, refund and fix the configuration"
+          # " enabled (see Session.createBody); nothing delivered, refund and fix the configuration"
         );
       };
       case (#aboveCeiling({ paidUsdCents; maxUsdCents })) {
         return unattributed(
           "paid amount " # paidUsdCents.toText() # " cents exceeds the per-purchase ceiling of "
-          # maxUsdCents.toText() # " cents for order " # orderId # " — not minted; refund or raise the ceiling"
+          # maxUsdCents.toText() # " cents for order " # orderId # " — nothing delivered; refund or raise the ceiling"
         );
       };
     };

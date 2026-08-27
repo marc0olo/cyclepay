@@ -32,8 +32,9 @@ Checkout Session for that one order** over an HTTPS outcall, setting
 directly on that session's URL; and Stripe POSTs a signed
 `checkout.session.completed` webhook back, which the canister verifies by HMAC
 on-chain, attributes to the order, and **transfers** the cycle quantity locked at
-order creation out of the gateway's own cycles-ledger account. It used to *mint*
-that quantity at the CMC; #30 PR-A replaced minting with selling from a reserve.
+order creation out of the gateway's own cycles-ledger account. **Nothing is created
+on demand**: the gateway sells cycles it already holds, so a delivery either moves
+them or fails and retries.
 
 ## 2. What the canister calls Stripe for, and what it still cannot do
 
@@ -103,16 +104,16 @@ CMC for XDR/ICP (§8). There is no operator-settable rate source to audit.
                        │ 3. parse event (tree parse) → else 400
                        │ 4. dedup on event.id        → else 200 "duplicate event"
                        │ 5. dedup on payment_intent  → else 200 "duplicate payment intent"
-                       │ 6. attribute the reference  → else Type 1 #unattributed
-                       │ 7. ceiling + amount honour  → else Type 1
+                       │ 6. attribute the reference  → else #unattributed (refund)
+                       │ 7. ceiling + amount honour  → else #unattributed (refund)
                        ▼
                     markPaid → #paid, paidIntents[intent] = orderId
                        │
                        │ detached self-message kicks money-out
                        ▼
-   #paid ─ burn cap + float pre-gate ─▶ #minting ─▶ #icpAtCmc ─▶ #delivered
-              └─ no headroom ─▶ #awaitingTreasury ─(refill)─┘
-                                     └─ past max wait ─▶ #needsReview
+   #paid ─ one icrc1_transfer out of the reserve ─▶ #delivered
+              ├─ retriable / no reply ─▶ stays #paid, sweep replays the SAME intent
+              └─ fate unknowable, or 72 h elapsed ─▶ #needsReview
 ```
 
 Money-out is rail-agnostic from `#paid` onward — the code is keyed by
@@ -193,7 +194,7 @@ removes the dominant attribution failure, and removed `attach_payment` with it
 (§12).
 
 The posture does not change: **claimed, not trusted.** Every dollar that arrives
-must still resolve to delivery or Type 1 — never a silent accept —
+must still resolve to delivery or to a refund obligation — never a silent accept —
 because the field arrives in a webhook body and a webhook body is data. It is a
 **pointer, not a credential**, which is what made it safe to expose at all. The order id is 16 bytes of `raw_rand`, so a reference cannot be guessed; and
 forging one gains nothing, because the claimed principal must equal the order's
@@ -208,21 +209,21 @@ empty.
 
 | Check | Failure |
 |---|---|
-| reference present | Type 1 `#unattributed` — "missing client_reference_id" |
-| parses as `<principal>_<orderId>` | Type 1 — "malformed" |
-| order exists | Type 1 — "no order X". Orders are never deleted (§10), so this means the reference never resolved: a forged, mistyped, or stripped URL parameter |
-| claimed principal **matches the stored owner** | Type 1 — "claimed owner does not match" |
-| order's rail is `#card` | Type 1 — "is not a card order" |
-| status is `#created` or `#expired` | Type 1 `#duplicate` otherwise |
-| currency is `usd` | Type 1 — "unexpected currency" |
-| amount within the ceiling | Type 1 — "exceeds the per-purchase ceiling" |
+| reference present | `#unattributed` — "missing client_reference_id" |
+| parses as `<principal>_<orderId>` | `#unattributed` — "malformed" |
+| order exists | `#unattributed` — "no order X". Orders are never deleted (§10), so this means the reference never resolved: a forged, mistyped, or stripped URL parameter |
+| claimed principal **matches the stored owner** | `#unattributed` — "claimed owner does not match" |
+| order's rail is `#card` | `#unattributed` — "is not a card order" |
+| status is `#created` | `#duplicate` otherwise |
+| currency is `usd` | `#unattributed` — "unexpected currency" |
+| amount within the ceiling | `#unattributed` — "exceeds the per-purchase ceiling" |
 
 Note the owner check: the reference *claims* a principal, and it must equal the
 order's actual owner. `Orders.parseClientReferenceId` compares principal text
 rather than calling `Principal.fromText`, because that traps on garbage and a
 trapped webhook is a 5xx that Stripe would retry forever (`Orders.mo`).
 
-Type 1 entries are always answered **HTTP 200**. The payment *is* handled — by
+Refund obligations are always answered **HTTP 200**. The payment *is* handled — by
 the operator's refund queue rather than by delivery — and a non-2xx would make
 Stripe redeliver an event that has already been routed (`Card.mo`).
 
@@ -245,9 +246,9 @@ Both live in `Idempotency.mo` and are pruned after ~7 days on the webhook path
 **Stripe dedup is not double-pay protection.** A user who genuinely pays twice
 produces two distinct `event.id`s *and* two distinct `payment_intent`s — two real
 payments. The second one passes both dedup layers, finds the order already past
-`#created`, and becomes Type 1 `#duplicate`: fiat exists, nothing extra was
-minted, operator refunds. This is the single most important thing to understand
-about the rail, and it is why **dedup gates the mint** rather than gating the
+`#created`, and becomes `#duplicate`: fiat exists, nothing extra was
+delivered, operator refunds. This is the single most important thing to understand
+about the rail, and it is why **dedup gates delivery** rather than gating the
 webhook.
 
 ## 8. Amount honouring — an equality check since #33
@@ -259,15 +260,15 @@ decides one thing:
 
 - `amount_total` **equals** the order's `usdCents` → deliver `lockedCycles`
   verbatim.
-- Anything else → **Type 1, nothing minted**, with both figures in the detail.
-- Above the per-purchase ceiling → Type 1, checked first (see below).
+- Anything else → **a refund obligation, nothing delivered**, with both figures in the detail.
+- Above the per-purchase ceiling → the same, checked first (see below).
 
 **Why this used to be a computation.** A fixed Payment Link could legitimately be
 paid for an amount the order was not created for — the buyer chose the *link*, not
 the order — so a mismatch was repriced from the order's own snapshot and
 delivered. A per-order session carries the amount **we** set, so a mismatch now
 means a Stripe feature that moves the total is enabled. That is an operator
-problem to see, not a buyer's choice to honour, and repricing it would mint
+problem to see, not a buyer's choice to honour, and repricing it would deliver
 against it silently: the audit log would show an ordinary completed purchase.
 
 Two consequences worth naming, because things downstream depend on them:
@@ -359,9 +360,12 @@ that second fee themselves.
 Delivery loses **100 M cycles** to the ledger's deposit fee, on every order. The
 amount tiles show what lands; the note under the destination names the fee once.
 
-⚠️ **Deliberately not grossed up into the price.** Minting extra to cover a
-per-order fee would let anyone drain the operator by opening orders — a griefable
-gas drain. Disclosure is the honest fix.
+⚠️ **Deliberately not grossed up into the price.** Covering the fee by sending
+extra cycles would let anyone drain the operator by opening orders. The cycles
+come out of a **finite reserve** the operator funded, so the drain has a hard
+floor and hits paying buyers as a refused sale — `#reserveShort`. Disclosure is
+the honest fix, and the cheap one: the fee is stated once and nobody's order is
+denied to pay for someone else's griefing.
 
 ### The order is the record; the audit log is the trail
 
@@ -388,16 +392,16 @@ action. It becomes a field when there is real money to reconcile.
 | `#created` | yes | not yet — the promise is held against the reserve |
 | `#cancelled` | **no** — the buyer gave up, and `#cancelled → #paid` is absent from the matrix | no |
 | `#expired` | **no** as of #34 | no |
-| `#paid` → `#minting` → `#icpAtCmc` | already paid | **yes** |
-| `#awaitingTreasury` | already paid | **yes** |
+| `#paid` | already paid | **yes** — one transfer out of the reserve away |
 | `#delivered` | — | settled |
 | `#needsReview` | — | **yes** — outcome unknown, a human checks the ledger |
 | `#abandoned` | — | no — the operator ended it, having refunded by hand |
 
 A payment that arrives for a `#cancelled` or `#expired` order is real money the
-gateway cannot convert. It is filed as a Type 1 `#unattributed` obligation
-carrying the payment intent, and the operator refunds it in Stripe. Until #33
-expires the Stripe session on cancellation, that window is genuinely reachable.
+gateway cannot deliver against. It is filed as an `#unattributed` obligation carrying
+the payment intent, and the operator refunds it in Stripe. Cancellation expires the
+Stripe session first, so the window is narrow — but a payment already in flight can
+still land in it.
 
 ### Afterwards: a receipt the buyer can check
 
@@ -414,26 +418,26 @@ spec §8 — a gateway confirming its own arithmetic proves nothing.
 |---|---|---|
 | amount ≤ `maxPurchaseUsdCents` | `#amountAboveMax` | permanent — the user must change the amount |
 | open `#created` orders < `maxOpenOrdersPerPrincipal` | `#tooManyOpenOrders` | the caller must finish or abandon one |
+| amount ≥ `minPurchaseUsdCents` | `#amountBelowMin` | permanent — the user must change the amount |
 | `Cycles.balance()` ≥ `minCanisterCycles` | `#canisterCyclesLow` | the canister's own gas is low |
-| burn window has headroom | `#burnCapExhausted` | minting is paused for this window |
-| observed float ≥ `lowFloatThresholdE8s` | `#floatLow` | operator must refill |
+| `reserveFloor − promised ≥ lockedCycles` | `#reserveShort` | the reserve cannot cover this order on top of what it already owes. Carries both figures, so a smaller amount may still succeed |
 
 Two things worth being precise about:
 
-- **The two "cycles" are different resources.** `minCanisterCycles` is *this
-  canister's own gas* — if it runs out the canister freezes and then is
-  uninstalled. The ICP float is what buys cycles *for customers*. They have
-  different failure modes and different fixes.
-- **Float gating is opt-in.** `lowFloatThresholdE8s = 0` disables it. Once a
-  threshold is set, a *missing* observation also fails the check — "enforce this"
-  plus "I have never looked" is not a state to sell into. Call `refresh_float`
-  after funding.
-- **The burn cap defaults to 0**, which means the card rail cannot sell anything
-  until the operator sizes it. That is deliberate: cap 0 means "no minting", and
-  quoting into it would only ever produce a hold and then a manual refund.
+- **The two "cycles" are different pots.** `minCanisterCycles` is *this canister's own
+  gas* — if it runs out the canister freezes and is then uninstalled. The **reserve**
+  is what it sells to customers. Different failure modes, different fixes, and
+  confusing them is the most common local-setup mistake.
+- **`#reserveShort` is the only refusal a smaller amount can fix**, which is why it
+  carries both figures. The others are permanent for that request (`#amountAboveMax`,
+  `#amountBelowMin`), about the caller (`#tooManyOpenOrders`), or operational
+  (`#canisterCyclesLow`).
+- ⚠️ **`can_purchase` cannot answer the solvency half.** It is a query, and solvency is
+  decided synchronously inside `create_order` against the maintained reserve floor. A
+  green `can_purchase` with `availableToSell = 0` is the split working, not a bug.
 
-`Treasury.gate` at mint time remains the authoritative money check. The
-admission gate is about refusing *before* the user pays, not about replacing it.
+The gate refuses *before* the user pays. The authoritative check is the one inside
+`create_order`, in the same synchronous block as the hold it takes.
 
 `can_purchase(usdCents)` is a public query that returns the same decision, so the
 frontend can disable the button with a real reason instead of failing at submit.
@@ -468,7 +472,7 @@ its own `expires_at`, but Stripe can still deliver a late `completed` for one
 that was paid just before it, and an event can be resent from the Dashboard years
 later. Because the record is still there, that payment is
 **attributable** — the gateway can say whose it was and which order it names. It
-is therefore **refunded**, not delivered: a Type 1 `#unattributed` obligation is
+is therefore **refunded**, not delivered: an `#unattributed` obligation is
 filed carrying the payment intent, and a `charge.refunded` resolves it.
 
 That is a deliberate narrowing. Until #34 the late payment was honoured at the
@@ -501,7 +505,7 @@ follow.
 ⚠️ **A payment racing a cancellation is refunded, not converted.** `#cancelled →
 #paid` is absent from the transition matrix, and that absence is the guarantee.
 So a payment already in flight when the buyer clicked cancel does **not** deliver:
-it lands as a Type 1 obligation carrying the payment intent, which a Stripe refund
+it lands as a refund obligation carrying the payment intent, which a Stripe refund
 resolves. The buyer's decision wins, and their money is recorded and refundable
 rather than silently kept or converted against it.
 
@@ -514,7 +518,7 @@ stops being possible rather than merely recorded. The audit trail carries
 **Growth is bounded at its source, which is why no sweep was ever needed to bound
 it.** `Gate.maxOpenOrdersPerPrincipal` (default 20) bounds the records a user can
 create for free — abandoned orders are the only ones that cost them nothing — and
-the burn cap bounds legitimate volume. An order is a few hundred bytes, so a
+the reserve bounds legitimate volume — nobody buys more than it holds. An order is a few hundred bytes, so a
 million is a few hundred MB, and a million orders is millions of dollars of
 volume. If store size ever genuinely binds, archival to a separate canister
 preserves the record; deletion does not.
@@ -530,14 +534,14 @@ for **any** refund, and the event carries a *charge*: `amount` is the charge tot
 and `amount_refunded` is the cumulative amount returned. A refund is complete only
 when the second reaches the first (`Card.isFullRefund`).
 
-A partial refund therefore leaves the Type 1 entry **open** and audits
+A partial refund therefore leaves the entry **open** and audits
 `stripe.refundPartial`. Reading it as settled would auto-resolve a $500
 obligation on a $5 courtesy refund, and the unrefunded $495 would exist nowhere
 but the audit ring — which drops. `#refundAfterDelivery` likewise records
 `refundedCents` and `fullRefund`, because a partial refund after delivery is a
 partial loss and reconciliation happens by amount.
 
-⚠️ **A Type 1 payment can now only be refunded** — including the ones where we
+⚠️ **An unattributed payment can now only be refunded** — including the ones where we
 know exactly whose it is. `attach_payment`, which credited the order the buyer
 meant, was deleted in #33 along with the failure it existed for: the canister
 sets `client_reference_id` through the API, so there is no URL parameter for a
@@ -562,7 +566,7 @@ nothing may file a chargeback, which costs more than the refund. The trade is
 accepted because the failure it answered is now unreachable by construction — so
 if you see one, treat it as a bug to find rather than a queue to work.
 
-1. Resolve every unresolved **Type 1** entry carrying that `payment_intent`. This
+1. Resolve every unresolved refund-settleable entry carrying that `payment_intent`. This
    closes the normal loop: duplicate/unattributed payment → operator refunds →
    entry auto-resolves.
 2. If nothing resolved, look the intent up in `paidIntents` (the
@@ -587,9 +591,9 @@ recorded. Only a human closes that one.
 claw back cycles already forwarded to the buyer's account, so no amount of
 on-chain plumbing changes the outcome. Chargeback risk is managed where it can
 be: **Stripe Radar rules and 3DS** on the Stripe side, and the **per-purchase
-ceiling** plus the **burn cap** on ours.
+ceiling** plus the **reserve size** on ours.
 
-Note that the burn cap does *not* bound chargeback losses — the payments are
+Note that the reserve size does *not* bound chargeback losses — the payments are
 real and individually legitimate. Sizing the per-purchase ceiling is the lever
 that limits exposure per fraudulent transaction.
 
@@ -605,27 +609,25 @@ rail-specific summary:
 | Unparseable body | 400 | nothing happened | visible in the Dashboard's delivery log |
 | Unhandled event type | 200 | nothing happened | audited `stripe.unhandledType` — an unsubscribed type arriving is a Dashboard-config surprise worth seeing |
 | Verified but unprocessable (e.g. no `payment_intent`) | **200** | unknown — inspect in Stripe | queued `#unprocessable`; see below |
-| `checkout.session.async_payment_succeeded` | 200 | **fiat in** | mints exactly like `completed` |
+| `checkout.session.async_payment_succeeded` | 200 | **fiat in** | delivers exactly like `completed` |
 | `checkout.session.async_payment_failed` | 200 | nothing happened | audited; the order stays payable |
 | livemode mismatch | 200 | depends which way | audited `stripe.livemodeMismatch`; a *live* payment on a test-configured gateway is queued as an obligation |
 | Redelivered `event.id` / `payment_intent` | 200 | already handled | none |
 | `payment_status ≠ paid` | 200 | no money yet | audited `stripe.unpaidSession`; the request asks for card-only, so check the account for a delayed method enabled at that level |
-| Type 1 `#unattributed` | 200 | **fiat in, nothing minted** | refund in Stripe — the only remedy since #33. Includes an `amount_total` that is not the quoted one, which additionally means a Stripe setting is moving the total (§8) |
-| Type 1 `#duplicate` | 200 | **fiat in ×2, minted ×1** | refund the second charge |
-| Type 2 `#undeliverable` | 200 | **cycles minted, in the app's own balance** | re-deliver or refund |
-| `#stuckMint` | 200 | **uncertain** — see the stage | per-stage rules in RUNBOOK §6 |
+| `#unattributed` | 200 | **fiat in, nothing delivered** | refund in Stripe — the only remedy. Includes an `amount_total` that is not the quoted one, which additionally means a Stripe setting is moving the total (§8) |
+| `#duplicate` | 200 | **fiat in ×2, delivered ×1** | refund the second charge |
+| `#deliveryStuck` | 200 | **uncertain** — see the stage | per-stage rules in RUNBOOK §6 |
 | `#refundAfterDelivery` | 200 | **fiat out, cycles out** — a loss | reconcile; consider restricting the payer |
-| `#deliveryDelayed` | 200 | **fiat in, mint still retrying** — nothing lost | an alert at 2 h, not a failure: clear the cause (float, burn cap) and it **self-resolves on delivery** |
+| `#deliveryDelayed` | 200 | **fiat in, delivery still retrying** — nothing lost | an alert at 2 h, not a failure: clear the cause (usually the cycles ledger) and it **self-resolves on delivery** |
 
-**The buyer is never left waiting indefinitely.** A paid order that cannot
-progress alerts the operator at 2 h while the position is still fully recoverable
-and terminates at 72 h, and this holds for **every** in-flight status — not just
-`#paid`. `#minting` and `#icpAtCmc` are equally capable of sitting still, and a
-retry *count* is not a time bound: bounding the notify stage by retries alone let
-an order sit paid-and-undelivered for as long as the budget lasted, with no alert
-and no escalation.
+**The buyer is never left waiting indefinitely.** A paid order that cannot progress
+alerts the operator at 2 h, while the position is still fully recoverable, and
+terminates at 72 h. ⚠️ **Both bounds are TIME, deliberately, and there is no retry
+budget** — a replay of a journalled delivery intent is provably safe (byte-identical
+args, the ledger deduplicates), so capping attempts would convert a recoverable state
+into a manual one while a *count* bounds nothing an operator can reason about.
 
-The terminal escalation names the stage, and the stage is derived from the **mint
+The terminal escalation names the stage, and the stage is derived from the **delivery
 journal** rather than the order status: the status says where the order stopped,
 the journal says where the money is, and only the money position determines the
 recovery. `RUNBOOK.md` §5 carries the full mapping.
@@ -660,15 +662,15 @@ ticket. The sequence is:
 `checkout.session.async_payment_succeeded` when it settles.
 
 Both parse into the same shape and run the same handler, so a delayed payment
-mints correctly. Handling only `completed` would mean fiat arriving with nothing
-minted and nothing on the worklist. The request pins card-only anyway — this
+delivers correctly. Handling only `completed` would mean fiat arriving with nothing
+delivered and nothing on the worklist. The request pins card-only anyway — this
 handles the case, it does not make it desirable.
 
 ### Test-mode/live-mode confusion
 
 `set_expected_livemode(?Bool)` declares which Stripe world this gateway serves.
-A test-mode signing secret pasted into a canister holding a real ICP float would
-otherwise mint real cycles for payments that never happened, and the secret is the
+A test-mode signing secret pasted into a canister holding a funded reserve would
+otherwise deliver real cycles for payments that never happened, and the secret is the
 only thing separating the two. Unset by default so a sandbox works without
 configuration; the go-live checklist sets it to `?true`.
 
@@ -679,7 +681,7 @@ Stripe **API key** (`rk_…`). Both are stored **plaintext in canister state, by
 design**, through the same `Secret.mo` store.
 
 HMAC is symmetric, so for the signing secret *verify = forge*: anything that can
-check a signature can mint one. Encrypting the stored blob would only move the
+check a signature can forge one. Encrypting the stored blob would only move the
 problem to a key the canister also needs at verify time, so it buys nothing. The
 API key must be sent to Stripe on every session creation, so the same applies.
 
@@ -688,7 +690,7 @@ argument for the key's scope:**
 
 | Leaked | What it enables |
 |---|---|
-| Webhook signing secret | forge "paid" events → mint cycles at operator expense. Bounded by the burn cap, detectable against Stripe's event log, recovered by rotation. |
+| Webhook signing secret | forge "paid" events → deliver cycles at operator expense. **Bounded by the reserve balance and nothing else**, detectable against Stripe's event log, recovered by rotation. |
 | A restricted `rk_` key scoped to write Checkout Sessions | create sessions that pay **us**. Annoying, not a loss. |
 | An unrestricted `sk_` (**do not use one**) | refunds, payouts, customer data — the whole account. This is why the scope, not the storage, is the control that matters. |
 
@@ -699,7 +701,7 @@ What actually protects it:
 | **SEV-SNP confidential subnet** | The deployment target. Confidentiality rests on hardware and attestation, not on cryptography in the canister. |
 | **Checkpoint / state-sync confidentiality** | **Must be verified separately.** Memory encryption does not cover state written to disk and state-synced between nodes. If those are not also confidential, a plaintext secret leaks through that path. |
 | **Provisioning channel** | Known-exposed: the argument to `set_webhook_secret` / `set_stripe_api_key` transits the TLS-terminating boundary node as ordinary ingress. Treat the first set over any untrusted path as burned and rotate. |
-| **ICP burn cap** | The always-on backstop, independent of SEV. Bounds how much a forger can drain per window. |
+| **Reserve size** | The always-on control, independent of SEV. A forger drains at most what the reserve holds, so it is sized to what a leak could cost. |
 
 Interface (`Main.mo`):
 
@@ -713,8 +715,8 @@ Interface (`Main.mo`):
   read-back path, not even for controllers.** `generation` increments per
   successful set, which is how ops confirms a rotation landed.
 
-If the signing secret leaks, an attacker can forge "paid" webhooks and mint
-cycles at operator expense — bounded by the burn cap, detectable by reconciling
+If the signing secret leaks, an attacker can forge "paid" webhooks and drain
+cycles at operator expense — bounded by the reserve balance, detectable by reconciling
 against Stripe's event log (forged payments have no matching `payment_intent`
 there), and recoverable by rotation. Customers and cardholder data are untouched
 either way; with a restricted key, so is the Stripe account. See `RUNBOOK.md` §2
@@ -744,30 +746,34 @@ privileges — any controller can do any of this):
 | `set_gate_config` | open-order cap, own-cycles floor, per-purchase ceiling |
 | `set_pricing_config` | fee formula, staleness window (capped at 1 h), delta bound, minimum rate sources |
 | `refresh_rates` | force a rate tick now instead of waiting for the timer |
-| `set_treasury_config` | burn cap, window, alert-after, max hold, low-float threshold |
+| `set_delivery_config` | the two delivery time bounds: alert-after (2 h) and max hold (72 h) |
 | `error_queue` / `resolve_error` | the operator worklist |
 | `order_for_payment` | reconciliation: Stripe charge → order it funded |
 | `delivery_journal` | money-out record for one order |
 | `audit_log` | operational trail; gaps in `seq` mean ring-buffer drops |
-| `process_order` | manual delivery kick; safe to spam. **Admin or the order's own owner** (#30 PR-B) |
-| `set_pricing_config` | fee formula, staleness window, delta bound, minimum rate sources |
+| `process_order` | manual delivery kick; safe to spam. **Admin or the order's own owner** |
 | `abandon_order` | void an unpaid order, with the reason recorded in the audit trail |
-| `record_delivered` | record that an escalated order's cycles DID reach the buyer, evidenced by the ledger block (#30 PR-B) |
-| `pending_deliveries` | every delivery with work outstanding right now, self-clearing — the live view the 2 h queue alert cannot give (#30 PR-B) |
-| `refresh_reserve` | observe the reserve balance now — required after a top-up, or the gateway sells nothing (#30 PR-B) |
+| `record_delivered` | record that an escalated order's cycles DID reach the buyer, evidenced by the ledger block |
+| `pending_deliveries` | every delivery with work outstanding right now, self-clearing — the live view the 2 h queue alert cannot give |
+| `refresh_reserve` | observe the reserve balance now — **required after a top-up**, or the gateway sells nothing |
 | `recount_orders` | rebuild the O(1) per-status counters from the store |
-| `refresh_float` | refresh the float observation the gate reads |
-| `reset_burn_window` | clear window consumption after verifying traffic |
+| `set_recovery_interval` | sweep cadence; bounded above at a quarter of the ledger's dedup window |
+| `set_expected_livemode` | pin test-vs-live so a mismatched webhook is refused rather than honoured |
+
+⚠️ **This table is the whole admin surface, and there is deliberately no lever that
+moves money.** No method mints, transfers on demand, refunds, or withdraws — funding
+the reserve is `icp cycles transfer` from the operator's own identity, outside the
+canister. `record_delivered` records a *fact about the ledger*, it does not send.
 
 Public queries (transparency is the product thesis): `card_tiers`,
-`pricing_status`, `quote_previews`, `treasury_status`, `recovery_status`,
-`lifecycle_config`, `reserve_status`, `can_purchase`, `cycles_status`,
-`error_queue_depth`, `health`.
+`pricing_status`, `quote_previews`, `recovery_status`, `lifecycle_config`,
+`reserve_status`, `can_purchase`, `cycles_status`, `error_queue_depth`,
+`stripe_origin`, `expected_livemode`, `health`.
 
 **Owner-scoped, not admin-scoped:** `get_order`, `list_orders`, `cancel_order`,
 and `receipt(orderId)` answer only for `caller == order.owner` — not even a
 controller can read someone else's receipt. The receipt returns the paid amount,
-the ICP block index that funded the mint, the cycles minted, and both rate inputs
+the cycles-ledger block the delivery landed in, the cycles delivered, and both rate inputs
 with their XRC quality signal, so a buyer can recompute
 `netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros` from canisters they
 query themselves and confirm they were charged correctly.
@@ -793,9 +799,12 @@ is pinned by the request rather than by a link's configuration.
    key and this secret is what **opens** the rail, so do it last.
 5. Optionally register price tiles with `set_card_tiers` — a buyer can type any
    amount within the gate's bounds without them.
-6. Size the burn cap (`set_treasury_config`) — until then the gate refuses every
-   order.
-7. `refresh_float` after funding, so the gate has an observation.
+6. **Fund the reserve** with `icp cycles transfer <backend-id> --amount <N>t`, then
+   `refresh_reserve` so the gate has an observation. Until it does, every order is
+   refused with `#reserveShort` — the reserve is the stock being sold, and nothing
+   in the canister can create it.
+7. Optionally tune the delivery bounds with `set_delivery_config`; the defaults
+   (2 h alert, 72 h max hold) are the intended production values.
 8. Record the account's **Stripe API version** and treat changing it as a code
    change: webhook payload shapes follow the account default.
 
@@ -837,13 +846,13 @@ retry behaviour on non-2xx.
 top up the backend past the admission gate's own-cycles floor, and give the local CMC
 a current rate (its seeded rate is stamped 2021 and only governance may change it).
 Both are in `docs/SANDBOX-TESTPLAN.md`, which has a verified end-to-end walkthrough —
-a local network *can* run the whole good path, including the real CMC mint and cycles
+a local network *can* run the whole good path, including the real cycles-ledger
 delivery, with local cycles and no mainnet.
 
 Two further caveats:
 
 - `stripe trigger` builds a *synthetic* session with **no
-  `client_reference_id`**, so it lands as Type 1 `#unattributed` — which is
+  `client_reference_id`**, so it lands as `#unattributed` — which is
   itself a useful test. To exercise the happy path, create a real order through
   the app and pay the URL it returns (`order.stripeSessionUrl`) with test card
   `4242 4242 4242 4242`. There is nothing to append: the canister already set the

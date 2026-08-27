@@ -8,27 +8,29 @@ fixtures while doing it.
 **Read §"What this cannot tell you" at the end before treating a green run as
 go-live approval.** It is not one.
 
-## Status: the good path has been run, once
+## Status: the good path has NOT been run on the current money-out path
 
-**2026-08-13, local network, Stripe sandbox — the whole browser flow completed.**
-Two purchases ($5 and $20) went from the UI through a real Stripe test-mode checkout,
-a genuinely signed webhook, the real CMC mint, and on to cycles credited to the
-buyer's cycles-ledger account. Verified from the canister rather than from the UI:
+⚠️ **Read this before treating anything below as evidence.** The browser flow has been
+completed end to end once, on **2026-08-13** — but that run delivered by minting
+through the Cycles Minting Canister against an ICP float, and money-out is now a
+single `icrc1_transfer` out of a reserve the operator funds. The ICP machinery is
+deleted. So the run splits into a half that still counts and a half that does not:
 
-- `mint.delivered` twice; order `ae60aa7d…` minted **14,707,692,335,000** cycles at
-  ICP block **102** with `retries = 0`, destination the buyer's own account
-- `icp cycles balance --of-principal <buyer>` → **18,207,492,307,692** — both
-  deliveries, spendable
-- **error queue empty**: every dollar resolved to delivery, no Type 1 or Type 2
-  obligation left open
-- `heldOrders = 0`, `paidOrders = 0` — nothing stuck mid-pipeline
-- 5.20 ICP burned against the 100 ICP/24 h cap, consistent with the two mints
-- `cancel_order` exercised twice, and one order expired (through the retention sweep, which #33 has since deleted — an order now expires only when Stripe says its session did)
+| Still evidence | No longer evidence |
+|---|---|
+| Real Internet Identity sign-in, the asset canister's `ic_env` cookie, the hosted Stripe Checkout page, a genuinely signed webhook reaching the canister, the frontend's 3 s poll reaching a delivered view, `cancel_order` | **Delivery itself** — every figure below came from a CMC mint against an ICP float. No cycles have been transferred out of a reserve in a manual browser run |
 
-**What that run did NOT cover**, and is still open:
+**What the 2026-08-13 run recorded** (kept because the Stripe-side figures are the
+only real-payload evidence there is, not because the delivery half still holds): two
+purchases, $5 and $20, both credited to the buyer's cycles-ledger account and
+spendable — `icp cycles balance --of-principal <buyer>` → **18,207,492,307,692**;
+error queue empty, so every dollar resolved to a delivery with no obligation left open; nothing stuck mid-pipeline; `cancel_order` exercised twice.
+
+**What is owed before go-live**, over and above the gaps that were already open:
 
 | Gap | Where |
 |---|---|
+| ⚠️ **A fresh good-path run against reserve delivery** — pay, and watch cycles leave the reserve rather than come into existence. `reserve_status` before and after is the check the old run had no equivalent of | the procedure below, which is already written for this path |
 | The CLI handoff — `icp identity link web` was never run, so "the cycles are reachable from the CLI" is still unproven | group H below |
 | Fixture capture — **3 of 8** real payloads are committed (`ab5281c`); the run added none, so five integration tests stay skipped | group I, #4 |
 | Refunds, async payment methods, disputes | groups E, F, G |
@@ -42,7 +44,7 @@ buyer's cycles-ledger account. Verified from the canister rather than from the U
 
 | | PocketIC suite | local `icp network` |
 |---|---|---|
-| ICP ledger / CMC / cycles ledger | ✅ real wasms | ✅ seeded |
+| Cycles ledger + CMC (rate only) | ✅ real wasms | ✅ seeded |
 | XRC | ✅ pinned `xrc_mock` | ✅ the `xrc` canister in `icp.yaml` |
 | Fresh CMC rate | ✅ built in | ✅ via the PocketIC API (below) |
 | Real Stripe events | ✅ `makeLive()` + `stripe listen` | ✅ `stripe listen` at the gateway |
@@ -127,7 +129,7 @@ Then, in the browser at the frontend URL `icp deploy` printed
    `4242 4242 4242 4242`, any future expiry, any CVC. **You have 35 minutes**,
    enforced by Stripe; the button disappears at the deadline.
 5. **Watch the page.** Leave the order tab open. The webhook arrives at the
-   forwarder, the mint runs, and the page reaches **delivered** on its own 3 s poll
+   forwarder, delivery runs, and the page reaches **delivered** on its own 3 s poll
    with the guided tour leading. It should never need a reload.
 
    **If nothing happens**, work these three in order — each has produced a silent
@@ -137,7 +139,7 @@ Then, in the browser at the frontend URL `icp deploy` printed
    |---|---|---|
    | the secret is provisioned | `icp canister call backend webhook_secret_status '()'` | `isSet = false` — every event is dropped unverified, with no audit line and no error-queue entry |
    | the forwarder is up | `pgrep -fl "stripe listen"` | nothing — Stripe delivered to a closed door, and a resend is delivered **once**, so resending before the forwarder is up wastes it |
-   | the CMC rate is fresh | `icp canister call backend audit_log '()' \| grep rates.refresh` | `rates.refreshFailed: cmc rate is stale or zero` — re-arm with `./scripts/local-dev-seed.sh --rate-only`. The order's *price* is locked at creation, but the mint refuses a CMC rate older than 15 minutes |
+   | the CMC rate is fresh | `icp canister call backend audit_log '()' \| grep rates.refresh` | `rates.refreshFailed: cmc rate is stale or zero` — re-arm with `./scripts/local-dev-seed.sh --rate-only`. ⚠️ A stale rate fails at **order creation**, not at delivery: delivery reads no rate at all, so an order already `#paid` delivers regardless |
 
    To replay a payment the canister missed, resend the **`checkout.session.completed`**
    event — not `charge.updated`, `charge.succeeded` or `payment_intent.succeeded`,
@@ -179,12 +181,13 @@ icp deploy
 scripts/local-dev-seed.sh
 ```
 
-`icp deploy` leaves a gateway that is **fail-closed on four axes at once** — no
-tiers, no CMC rate, a zero burn cap and no float — plus a fifth that catches
-everyone: `minCanisterCycles` defaults to 5 T while `icp deploy` creates the
+`icp deploy` leaves a gateway that is **fail-closed on several axes at once** — no
+tiers, no CMC rate, no Stripe secrets and an empty cycles reserve — plus one that
+catches everyone: `minCanisterCycles` defaults to 5 T while `icp deploy` creates the
 canister with less, so the admission gate refuses every purchase with "temporarily
-unavailable while the gateway is topped up". That reads as a treasury problem and
-is really about the canister's own gas. The seed script tops the canister up
+unavailable while the gateway is topped up". That reads as a reserve problem and is
+really about the canister's own **gas** — two different pots, and this is the error
+that teaches the difference. The seed script tops the canister up
 (`icp canister top-up backend --amount 20t`) and leaves the 5 T floor in place, so
 local development exercises the same gate mainnet does.
 
@@ -214,19 +217,20 @@ icp canister top-up backend --amount 20t
 icp canister call backend set_webhook_secret '("whsec_local_test_1234567890")'
 icp canister call backend set_card_tiers \
   '(vec { record { id = "t10"; usdCents = 1_000 : nat } })'
-icp canister call backend set_treasury_config \
-  '(record { burnCapE8s = 10_000_000_000 : nat; burnWindowNs = 86_400_000_000_000 : int;
-             alertAfterNs = 120_000_000_000 : int; maxHoldNs = 259_200_000_000_000 : int;
-             lowFloatThresholdE8s = 0 : nat })'
+icp canister call backend set_delivery_config \
+  '(record { alertAfterNs = 7_200_000_000_000 : int; maxHoldNs = 259_200_000_000_000 : int })'
 icp canister call backend set_expected_livemode '(opt false)'
 
-# Fund the ICP float: the backend's own default account on the ICP ledger.
-BID=$(icp canister status backend --json | jq -r '.id')
-icp canister call ryjl3-tyaaa-aaaaa-aaaba-cai icrc1_transfer \
-  "(record { to = record { owner = principal \"$BID\"; subaccount = null };
-             amount = 500_000_000 : nat; fee = opt (10_000 : nat);
-             memo = null; from_subaccount = null; created_at_time = null })"
-icp canister call backend refresh_float '()'
+# Fund the reserve: the cycles the gateway will SELL, in its own cycles-ledger
+# account. ⚠️ This is not the canister's gas — that is the top-up above. Nothing
+# creates these cycles; you transfer cycles you already have, which is also the
+# mainnet procedure.
+BACKEND_ID=$(icp canister status backend --json | jq -r '.id')
+icp cycles transfer "$BACKEND_ID" --amount 100t
+# Then let the gateway observe what arrived. Until it does, the admission gate has
+# no reason to believe it can deliver and refuses with `#reserveShort`.
+icp canister call backend refresh_reserve '()'
+icp canister call backend reserve_status '()'   # availableToSell > 0
 
 # Give the CMC a current rate (next section), then:
 icp canister call backend refresh_rates '()'
@@ -344,17 +348,30 @@ too.
 ### One command: `npm --prefix test/integration run sandbox`
 
 Boots PocketIC with everything, aligns the clock, bootstraps dev config, goes live,
-prints the webhook URL and a ready-made order, and stays up until Ctrl-C.
+prints the webhook URL, and stays up until Ctrl-C.
 
 ```sh
 stripe login                                  # a SANDBOX account, never live
 STRIPE_WEBHOOK_SECRET="$(stripe listen --print-secret)" \
+STRIPE_API_KEY=rk_...                         \
   npm --prefix test/integration run sandbox
 # then, second terminal:
 stripe listen --forward-to '<the URL it prints>'
 ```
 
-Everything is fake money and real plumbing: real ICP ledger, real CMC mint, real
+⚠️ **`STRIPE_API_KEY` is what makes an order possible, not just a payment.** The rail
+creates a Checkout Session per order, so `create_order` itself calls Stripe — without
+a key the harness boots and says so, and everything except ordering works. Use a
+**restricted** key (`rk_...`) scoped to write Checkout Sessions and nothing else: a
+leaked write-sessions key can only create sessions that pay *us*, while an
+unrestricted `sk_` can issue refunds.
+
+⚠️ **It lowers `minPurchaseUsdCents` to $1**, because its whole numeric vector is the
+$5 at-cost case (500¢ − 45¢ fee = 455¢ = exactly one ICP at $4.55 = 3.5 T cycles) and
+the gate's real floor is $10. That is a dev value like the 2-minute alert, not a
+mainnet one.
+
+Everything is fake money and real plumbing: a real cycles ledger, a real CMC rate, real
 cycles delivery, genuine signed Stripe events over a genuine HTTP gateway.
 
 ### The setup, if you are writing your own spec
@@ -437,7 +454,7 @@ icp canister call backend receipt '("<orderId>")'           # owner identity onl
 | A1 | Valid signature accepted | any real forwarded event | `200`; event appears in `audit_log` |
 | A2 | Tampered body rejected | `stripe listen` + edit the body in a replayed `curl` with the original signature | `400`, nothing in state |
 | A3 | Missing signature header | `curl` the route with no `Stripe-Signature` | `400` |
-| A4 | **Unprovisioned secret → Stripe retries and later succeeds** | deploy fresh, do **not** set the secret, pay; then set the secret and wait for Stripe's retry | first delivery `503`; the retry mints. Proves the retry contract we rely on |
+| A4 | **Unprovisioned secret → Stripe retries and later succeeds** | deploy fresh, do **not** set the secret, pay; then set the secret and wait for Stripe's retry | first delivery `503`; the retry delivers. Proves the retry contract we rely on |
 | A5 | Secret rotation overlap | `set_webhook_secret` with a new value while a delivery is in flight | no lost event; `webhook_secret_status.generation` increments |
 | A6 | Clock drift rejected | skew the host clock >5 min, deliver | `400`. Restore the clock afterwards |
 
@@ -446,11 +463,11 @@ icp canister call backend receipt '("<orderId>")'           # owner identity onl
 | # | Scenario | How | Expect |
 |---|---|---|---|
 | B1 | Happy path | open the order's `stripeSessionUrl`, card `4242 4242 4242 4242` | order → `#paid`; → `#delivered` |
-| B2 | No reference | `stripe trigger checkout.session.completed` | `200`; Type 1 `#unattributed`, `claimedRef` empty |
-| B3 | Forged owner | hand-edit the ref to another principal, same order id | Type 1 — "claimed owner does not match" |
-| B4 | Malformed reference | ref = `garbage` | Type 1 — "malformed" |
-| B5 | Payment for an **expired** order | there is no TTL to shorten since #33 — open the order's session URL, expire that session in the Stripe Dashboard so `checkout.session.expired` arrives, then pay a *previously opened* copy of the page | `200`; order **stays `Expired`**, Type 1 `#unattributed` whose detail says "cannot be paid". **Refund it in Stripe.** Not honoured — #34 made expiry terminal |
-| B6 | Payment for a **cancelled** order | `cancel_order`, then pay a page you opened before cancelling | `200`; order **stays `Cancelled`**, same Type 1 obligation. The buyer's decision wins; the money is refundable, never converted against it (#34). ⚠️ Hard to reach on purpose: cancel expires the session on Stripe *first*, so the payment usually cannot start at all |
+| B2 | No reference | `stripe trigger checkout.session.completed` | `200`; `#unattributed`, `claimedRef` empty |
+| B3 | Forged owner | hand-edit the ref to another principal, same order id | `#unattributed` — "claimed owner does not match" |
+| B4 | Malformed reference | ref = `garbage` | `#unattributed` — "malformed" |
+| B5 | Payment for an **expired** order | there is no TTL to shorten since #33 — open the order's session URL, expire that session in the Stripe Dashboard so `checkout.session.expired` arrives, then pay a *previously opened* copy of the page | `200`; order **stays `Expired`**, `#unattributed` whose detail says "cannot be paid". **Refund it in Stripe.** Not honoured — #34 made expiry terminal |
+| B6 | Payment for a **cancelled** order | `cancel_order`, then pay a page you opened before cancelling | `200`; order **stays `Cancelled`**, the same refundable obligation. The buyer's decision wins; the money is refundable, never converted against it (#34). ⚠️ Hard to reach on purpose: cancel expires the session on Stripe *first*, so the payment usually cannot start at all |
 | B7 | There is no rescue lever | — | `attach_payment` was deleted in #33. For B5 and B6 the only remedy is a refund in Stripe, which auto-resolves the entry |
 
 ## C. Amount honouring
@@ -463,24 +480,24 @@ change, and is why they are listed as *unreachable* rather than dropped. To
 exercise the mismatch branch you have to create a session outside the app (a
 hand-made `POST /v1/checkout/sessions` at a different `unit_amount`, carrying an
 order's `client_reference_id`) — worth doing once, because it is the branch that
-used to mint silently.
+used to deliver silently.
 
 | # | Scenario | How | Expect |
 |---|---|---|---|
 | C1 | Exact quoted amount | pay the order's own session | `lockedCycles` verbatim; `paidUsdCents == pricing.usdCents` |
-| C2 | **Different amount** | not reachable through the app — hand-make a session at another `unit_amount` with the order's reference | `200`; **nothing minted**, order stays `Created`, Type 1 naming both figures. It used to be repriced and delivered |
-| C3 | Below the fee floor | same, at e.g. $0.31 | the same Type 1 as C2 — since #33 "below the floor" is not a separate outcome, it is just a different amount |
-| C4 | Above the per-purchase ceiling | lower `maxPurchaseUsdCents` below an existing order's amount, then pay that order's session | Type 1, **not** minted. This is the ceiling's one reachable case, and it needs no tampering |
-| C5 | Wrong currency | not reachable through the app — the request pins `usd`; hand-make a EUR session | Type 1 — "unexpected currency" |
+| C2 | **Different amount** | not reachable through the app — hand-make a session at another `unit_amount` with the order's reference | `200`; **nothing delivered**, order stays `Created`, a refundable obligation naming both figures |
+| C3 | Below the fee floor | same, at e.g. $0.31 | the same obligation as C2 — since #33 "below the floor" is not a separate outcome, it is just a different amount |
+| C4 | Above the per-purchase ceiling | lower `maxPurchaseUsdCents` below an existing order's amount, then pay that order's session | A refundable obligation, **nothing delivered**. This is the ceiling's one reachable case, and it needs no tampering |
+| C5 | Wrong currency | not reachable through the app — the request pins `usd`; hand-make a EUR session | `#unattributed` — "unexpected currency" |
 
 ## D. Dedup and replay
 
 | # | Scenario | How | Expect |
 |---|---|---|---|
 | D1 | Dashboard resend | Dashboard → the event → "Resend" | `200 duplicate event`; **no** second credit |
-| D2 | Two genuine payments | pay the same link twice (two intents) | second → Type 1 `#duplicate` |
+| D2 | Two genuine payments | pay the same link twice (two intents) | second → `#duplicate` |
 | D3 | Same intent, new event id | resend after >7 days if you can arrange it, else trust D1 | `200 already credited`, `stripe.replayedAfterPruning` |
-| D4 | Credited elsewhere | not reachable through the app since #33 — nothing but the webhook writes an attribution. To force it, deliver a hand-made `completed` for order Y carrying an intent already credited to order X | not minted; `stripe.creditedElsewhere` + a `#duplicate` naming both |
+| D4 | Credited elsewhere | not reachable through the app since #33 — nothing but the webhook writes an attribution. To force it, deliver a hand-made `completed` for order Y carrying an intent already credited to order X | nothing delivered; `stripe.creditedElsewhere` + a `#duplicate` naming both |
 
 ## E. Refunds — the highest-value group
 
@@ -490,7 +507,7 @@ refunds, not crafted events** — the whole point is confirming Stripe's
 
 | # | Scenario | How | Expect |
 |---|---|---|---|
-| E1 | Full refund of an unattributed payment | B2, then refund it fully in the Dashboard | the Type 1 entry **auto-resolves** |
+| E1 | Full refund of an unattributed payment | B2, then refund it fully in the Dashboard | the entry **auto-resolves** |
 | E2 | **Partial refund** | refund e.g. $1 of a $5 charge | entry stays **OPEN**; `stripe.refundPartial`; **no** `refundUnmatched` line |
 | E3 | Partial then completed | refund the remaining $4 | entry now resolves |
 | E4 | Two partials summing to full | $2 then $3 | resolves on the second — Stripe's `amount_refunded` is cumulative |
@@ -507,7 +524,7 @@ that sequence** — a unit test previously encoded a wrong assumption here.
 |---|---|---|---|
 | F1 | Delayed method settles | enable a delayed method (SEPA debit / `customer_balance`) on a test link and pay | first event `200 ignored`, order stays `#created`, `stripe.unpaidSession`; on settlement → `#paid` |
 | F2 | Delayed method fails | trigger `async_payment_failed` | order stays payable; intent not consumed |
-| F3 | Out-of-order arrival | if you can force settlement before `completed` | still mints exactly once |
+| F3 | Out-of-order arrival | if you can force settlement before `completed` | still delivers exactly once |
 
 ## G. Event types and configuration
 
@@ -515,9 +532,9 @@ that sequence** — a unit test previously encoded a wrong assumption here.
 |---|---|---|---|
 | G1 | Unhandled type | subscribe `charge.dispute.created`, trigger it | `200 ignored` + `stripe.unhandledType`. **Never** 4xx |
 | G2 | **No `payment_intent`** | a 100%-off promo code, or a subscription-mode link | `200` + `#unprocessable`; a resend does **not** duplicate it |
-| G3 | Livemode mismatch | point a **test** secret at a canister set to `opt true` | not minted; `stripe.livemodeMismatch`; no obligation queued |
-| G4 | Live-on-test | the reverse | not minted, but an obligation **is** queued, keeping the real reference |
-| G5 | Mode unset | clear it with `set_expected_livemode '(null)'`, pay | mints, plus `stripe.livemodeUnset` on every payment |
+| G3 | Livemode mismatch | point a **test** secret at a canister set to `opt true` | nothing delivered; `stripe.livemodeMismatch`; no obligation queued |
+| G4 | Live-on-test | the reverse | nothing delivered, but an obligation **is** queued, keeping the real reference |
+| G5 | Mode unset | clear it with `set_expected_livemode '(null)'`, pay | delivers, plus `stripe.livemodeUnset` on every payment |
 
 ## H. Frontend — only what a machine cannot do
 
@@ -589,14 +606,19 @@ They answer different questions and neither replaces the other:
 The plan is a **precondition** to `RUNBOOK.md` §1: the go-live checklist assumes
 the rail has already been shown to work.
 
-⚠️ **Configuration is not duplicated, and the values differ on purpose.**
-`scripts/stripe-dev.sh` bootstraps *dev* values — 2-minute alert threshold, float
-gating off, `expected_livemode = false` — so failure modes are reachable inside a
-session. (It set a 10-minute order TTL too, until #33 deleted retention: the
-deadline is Stripe's now, and nothing local shortens it.) **None of them are safe on mainnet.** `RUNBOOK.md` §1
+⚠️ **Configuration is not duplicated, and the two scripts own different halves.**
+`scripts/stripe-dev.sh` sets only the two Stripe-side values: `expected_livemode =
+false`, and the forwarding session's signing secret. `scripts/local-dev-seed.sh` owns
+the money levers, and it sets the **mainnet** delivery timeline (2 h alert, 72 h max
+hold) rather than dev values — so on a local `icp network` the delay path needs two
+hours of patience or a hand-called `set_delivery_config`.
+⚠️ **Only the PocketIC harness shortens it**, to a 2-minute alert (`sandbox.ts`),
+which is why that is the harness to reach for when you want to *see* a delay alert.
+Neither script sets an order TTL: the deadline is the Stripe session's own, and
+nothing local shortens it. `RUNBOOK.md` §1
 is the sole authority for go-live configuration.
 
-Where this plan states an *expected outcome* (a Type 1 entry, a `#unprocessable`,
+Where this plan states an *expected outcome* (a queued obligation, a `#unprocessable`,
 a `stripe.refundPartial`), `RUNBOOK.md` §6 states what to *do* about it. That makes
 the run a useful check on the runbook itself: if a scenario here produces an entry
 whose §6 row is missing, wrong, or unfollowable, the runbook is the thing to fix —
@@ -627,7 +649,8 @@ found.
 6. **No monitoring exists.** Every safety mechanism here is a number someone has
    to go and look at; an alert nobody receives is not an alert. **`RUNBOOK.md` §9
    owns the plan** — metric table with thresholds and severities, and the reason the
-   ICP float has to be *pushed* rather than polled. Wire it before taking money.
+   **reserve balance** has to be *pushed* rather than polled. Wire it before taking
+   money.
 7. **No external security audit** (spec §8 explicitly does not gate v1 on one).
 8. **The deferred tail**, all real and none money-losing: gate-config/tier
    cross-check, `let #ii(owner)` trap, counts-map reconcile, the once-per-order

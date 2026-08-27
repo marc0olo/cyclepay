@@ -35,7 +35,7 @@ icp canister call backend <method> '(<candid args>)' -e ic --identity <operator>
 argument makes `icp canister call` ask *"Do you want to send this message?
 [y/N]"* and read stdin — which hangs any script, cron job, or CI step.
 
-Public queries (`treasury_status`, `pricing_status`, `recovery_status`,
+Public queries (`reserve_status`, `pricing_status`, `recovery_status`,
 `card_tiers`, `lifecycle_config`, `reserve_status`,
 `can_purchase`, `cycles_status`, `error_queue_depth`, `health`) work from any
 identity and are the
@@ -65,13 +65,21 @@ other non-exhaustive match, would ship and trap at runtime — on the webhook pa
 that is a 5xx Stripe retries for ~3 days.
 
 Everything money-touching **fails closed by default** — a freshly deployed
-gateway accepts no orders and mints nothing until each lever below is
+gateway accepts no orders and delivers nothing until each lever below is
 consciously set. Work the list in order:
 
 1. **Deploy + verify** per `RELEASE.md` (module hash gate).
-2. **Fund the ICP float**: send ICP to the backend's default ICRC-1 account
-   (`owner = <backend canister id>`, no subaccount). Confirm with
-   `refresh_float` (returns the observed e8s).
+2. **Fund the cycles reserve, then observe it** (§5): `icp cycles transfer <amount>
+   <backend-principal>`, then `refresh_reserve`. ⚠️ The second half is not optional —
+   solvency is decided against a bound that only rises by observation, so an
+   unobserved top-up sells nothing.
+
+   ⚠️ **How much is a SECURITY decision before it is a working-capital one.** A leaked
+   webhook secret drains at most what the reserve holds (§2), and nothing caps that —
+   so the answer to "how much do we keep in it?" is *risk appetite first, sales
+   velocity second*. Size it to what you are willing to lose between a leak and its
+   detection, and top up on a cadence rather than parking months of stock in the
+   account.
 3. **Provision the webhook secret** (§2 below). Until set, the webhook
    route answers 503 and Stripe retries.
 4. **Register card tiers** (§3 below). Until set, the tier list is empty
@@ -104,7 +112,7 @@ consciously set. Work the list in order:
    ```
 11. **Declare the Stripe mode**:
    `icp canister call backend set_expected_livemode '(opt true)' -e ic --identity <operator>`.
-   Until this is set, a test-mode webhook secret would mint **real** cycles for
+   Until this is set, a test-mode webhook secret would deliver **real** cycles for
    payments that never happened. Verify with `expected_livemode`.
 12. **Create a LIVE restricted API key (`rk_...`) scoped to write Checkout
    Sessions**, and provision it with `set_stripe_api_key`. Your sandbox key cannot
@@ -119,8 +127,8 @@ consciously set. Work the list in order:
    it last; rotating either closes it until both are valid again.
 
    Historically, when `amount_total != usdCents` nothing failed — the order
-   silently delivered a different cycle quantity. Since #33 it mints nothing and
-   files a Type 1, so a wrong amount is visible on the first order rather than as
+   silently delivered a different cycle quantity. It now delivers nothing and
+   files a refund obligation, so a wrong amount is visible on the first order rather than as
    drift. Register any price tiles with `set_card_tiers` (optional — a buyer can
    type an amount without them), then **buy one thing on the deployed site with a
    real card**: nothing short of a live purchase exercises the key, the origin,
@@ -129,14 +137,12 @@ consciously set. Work the list in order:
    means a lost key makes the canister permanently un-upgradeable; there is no
    recovery path (§0 covers the trust model this implies).
 14. **Wire monitoring (§9) before announcing the service**, not after. The whole
-   alerting layer polls public queries and needs no key; the one exception is the
-   scheduled `refresh_float`, without which the float metric is stale exactly when
-   the system is idle.
+   alerting layer polls public queries and needs no key.
 15. **Smoke-check the public surface**: `pricing_status` — both rates must be
    populated and `lastAttempt.ok` true. The rate timer warms itself on install,
    so this should be true within seconds; if it is not, `lastAttempt.detail`
    names the failing guard (§4) and **no order can be created until it clears**
-   (creation answers `rateUnavailable`, by design). Then `treasury_status`,
+   (creation answers `rateUnavailable`, by design). Then `reserve_status`,
    `recovery_status` (sweep timer armed), `cycles_status` (balance above
    `minCanisterCycles`, with room for the 1 B the XRC needs per refresh),
    `card_tiers`, and `can_purchase '(<your smallest tier's cents>)'` — the last
@@ -144,9 +150,12 @@ consciously set. Work the list in order:
 
 ## 2. Webhook secret — provisioning & rotation (§7)
 
-The Stripe signing secret is the **only stored secret**: HMAC is symmetric,
-so verify = forge — anyone holding it can mint cycles at operator expense
-until the burn cap stops them. It is stored **plaintext by design**
+The Stripe signing secret is the **only stored secret**: HMAC is symmetric, so
+verify = forge — anyone holding it can forge "paid" webhooks and drain **the entire
+reserve**, one order at a time, at the operator's expense. ⚠️ **The reserve balance
+is the blast-radius bound, so size it to what you can afford to lose in one
+window** — there is no per-period cap standing behind it. It is stored
+**plaintext by design**
 (`Secret.mo` documents the SEV-SNP posture; §10 below is the checklist).
 
 **Provision / rotate:**
@@ -184,24 +193,33 @@ it once the endpoint is confirmed working.
 
 **Suspected leak — immediate actions** (in this order):
 
-1. ⚠️ **The blast-radius bound changed with #30 PR-A, and this step changed with
-   it.** It used to be "pause minting: `set_treasury_config` with
-   `burnCapE8s = 0`", because the cap bounded how much ICP a forger could burn.
-   Nothing mints now, so the cap bounds nothing — **the bound is the reserve
-   balance**. A forged webhook can drain at most what the reserve holds.
-   There is deliberately no `withdraw_reserve` (#30 rejected it), so the reserve
-   cannot be emptied defensively. What you can do immediately is stop *new* orders
-   while you roll the secret — the rail is live iff both Stripe secrets are
-   provisioned, and rotating the webhook secret (step 2) closes it until the new
-   one is set. Keep the reserve sized to what you are willing to lose in the
-   window between detection and rotation; #30 PR-B's promise tally makes that
-   figure readable.
+1. ⚠️ **Know what you can and cannot do.** A forged webhook drains at most what the
+   reserve holds — that balance **is** the blast radius, and there is no cap or pause
+   lever standing behind it. There is deliberately no `withdraw_reserve`, so the
+   reserve cannot be emptied defensively either.
+
+   What you *can* do immediately is stop **new** orders while you roll the secret: the
+   rail is live only while both Stripe secrets are provisioned, so rotating the webhook
+   secret (step 2) closes it until the new one is set. Forged orders already in flight
+   will deliver.
+
+   The standing control is therefore a sizing decision made **before** an incident:
+   keep the reserve at what you are willing to lose between detection and rotation.
+   `reserve_status.availableToSell` is that figure.
 2. Roll the secret in Stripe + `set_webhook_secret` (steps above).
 3. Reconcile: compare `audit_log` / order store against the Stripe
    Dashboard's event log; forged "payments" have no matching Stripe
    payment_intent. Refund nothing that has no real charge.
-4. `reset_burn_window`, restore the sized cap, and let held legitimate
-   orders resume on the next sweep.
+4. Refund the reserve to its sized level with `icp cycles transfer`, then
+   `refresh_reserve` so the gateway observes it. ⚠️ **There is no "resume held
+   orders" step** — an order refused for `#reserveShort` was never created, so
+   nothing is waiting to be released. Legitimate buyers retry and succeed.
+
+   ⚠️ **The order of steps 2–4 is itself the control, so do not renumber them.**
+   Refunding the reserve before the secret is rolled hands the attacker a freshly
+   funded account and the capability to drain it again — the reserve's usefulness as
+   a bound depends entirely on cycles re-entering the account *after* the forgery
+   capability is dead. Rotate, then reconcile, then refund.
 
 ## 3. Presets, the API key, and the settings that must stay off (§3, §6.1)
 
@@ -263,7 +281,7 @@ frontend renders.
 Note the §3 invariant: a tier's *cycle* quantity is locked per-order at creation
 time from the cached rate pair, so changing tier prices never reprices existing
 orders. And since #33 the paid amount must **equal** the quoted one — an order
-delivers what it locked, or it delivers nothing and files a Type 1.
+delivers what it locked, or it delivers nothing and files a refund obligation.
 
 ### The settings that must stay off
 
@@ -280,17 +298,17 @@ it. Two things remain account-level and are therefore yours to keep off:
 
 | Setting | Must be | If enabled |
 |---|---|---|
-| **Automatic tax** (account default) | **off** | raises `amount_total`; the payment is refused as a mismatch, so nothing is minted — but every order fails until it is turned off |
+| **Automatic tax** (account default) | **off** | raises `amount_total`; the payment is refused as a mismatch, so nothing is delivered — but every order fails until it is turned off |
 | **Adaptive pricing** (Dashboard toggle) | pinned off by the request | currently harmless to `amount_total` for this shape; the request pins it anyway, and it is proof Stripe adds Dashboard-side amount changers over time |
 
 Plus the two already in §1: **USD** (any other currency is refused as
-`#unattributed`, a Type 1 obligation and a manual refund) and **card-only**
+`#unattributed`, a refund obligation) and **card-only**
 (delayed methods are handled, but they make money-in asynchronous).
 
 ⚠️ Since #33 a mismatch is no longer silent. It used to reprice from the order's
 own snapshot and deliver a different quantity, with the audit log showing an
-ordinary completed purchase and no alert anywhere. Now it mints nothing and files
-a Type 1 whose detail names both figures — so an amount-moving setting shows up
+ordinary completed purchase and no alert anywhere. It now delivers nothing and files
+an `#unattributed` whose detail names both figures — so an amount-moving setting shows up
 as a queue entry on the first order, not as a slow drift in what buyers receive.
 
 ⚠️ **Test-mode and live-mode keys are different objects.** Going live means a
@@ -383,9 +401,9 @@ at creation, and since #30 PR-A money-out reads **no rate at all** — it transf
 figure fixed when the order was created. An outage means *no new orders*, never a
 stuck buyer, and there is no longer a rate-move-mid-delivery exposure to bound.
 
-## 5. The cycles reserve — and the treasury machinery that no longer runs
+## 5. The cycles reserve
 
-### Funding the reserve (this is the live part)
+### Funding the reserve
 
 ```bash
 # The reserve IS the gateway's own cycles-ledger account.
@@ -427,7 +445,7 @@ sell anyway. The ledger charges its fee **on top of** the amount,
 so a delivery moves the reserve by exactly `lockedCycles` — which is why #30's
 promise tally has no separate fee term.
 
-⚠️ **Nothing mints into the reserve.** Refills are `icp cycles transfer` from
+⚠️ **Nothing creates cycles here.** Refills are `icp cycles transfer` from
 outside, and there is deliberately no `withdraw_reserve` (#30 rejected it: the app
 is not in production and an over-funded local reserve costs nothing).
 
@@ -436,177 +454,10 @@ is not in production and an over-funded local reserve costs nothing).
 by `minCanisterCycles`). `icp cycles transfer` funds the **reserve** (what it
 sells). An unfunded reserve looks like orders that pay and then never deliver.
 
-### ⚠️ Everything below describes machinery that no longer runs
-
-> #30 PR-A replaced minting with selling from the reserve. The ICP float, the burn
-> cap, the rolling window and the mint pre-gate are **still in the code and still
-> callable, but unreachable**: `#awaitingTreasury` had exactly one entrance and it
-> was that pre-gate. So `burnCapE8s` bounds nothing, `lowFloatThresholdE8s` gates
-> nothing, `refresh_float` observes a balance nothing reads, and `heldOrders` is
-> permanently 0.
->
-> It is described rather than deleted because deleting it is **#36**, and a
-> half-deleted procedure is worse than a marked one. Two consequences that are
-> live right now:
->
-> - **The blast-radius bound for a leaked webhook secret is the reserve balance**,
->   not the burn cap (§2 says so).
-> - **There is no solvency gate yet.** An order can be admitted that the reserve
->   cannot cover; it fails at delivery and retries. #30 PR-B closes that with the
->   promise tally and `#reserveShort`.
-
-**Status (public):** `treasury_status` returns
-`{config; burnedInWindowE8s; lastObservedFloat; lowFloat; heldOrders}`.
-The float observation is as-of `atNs` (it refreshes as a side effect of
-every mint pre-gate); `refresh_float` (admin) forces a fresh ledger read.
-
-**Float refill** is a plain ICP transfer to the backend's default account —
-no method call needed; the next pre-gate or `refresh_float` observes it,
-and held orders resume on the next sweep (≤ 1 sweep interval) or
-immediately via `process_order`.
-
-**Burn cap** — the §7 blast-radius bound. Per rolling window, the gateway
-refuses to *start* mints once the window's started-mint total would exceed
-`burnCapE8s`. Consumption commits before the ledger call and is **never
-refunded on failure** (over-counting pauses early — the fail-safe
-direction), and the cap is checked **before** float sufficiency (a
-leaked-secret drain has a full float).
-
-```bash
-icp canister call backend set_treasury_config \
-  '(record { burnCapE8s = 50_000_000_000; burnWindowNs = 86_400_000_000_000; alertAfterNs = 7_200_000_000_000; maxHoldNs = 259_200_000_000_000; lowFloatThresholdE8s = 20_000_000_000 })' \
-  -e ic --identity <operator>
-```
-
-**Sizing guidance**: the cap is the most ICP a fully-leaked webhook secret
-can drain per window before you notice. Set it to expected legitimate
-volume per window plus modest headroom — a too-small cap merely *delays*
-real orders (they hold, then resume when the window rolls); a too-large
-cap is unbounded loss. Start tight.
-
-**Levers:**
-
-- **Pause all minting**: `set_treasury_config` with `burnCapE8s = 0`
-  (the fail-closed default doubles as the pause switch). Money-in keeps
-  working; everything holds in `awaitingTreasury`.
-- **Manual override / resume after a legitimate burst**:
-  `reset_burn_window` clears the window's consumption (returns the e8s
-  cleared, audited). Held orders resume on the next sweep — the pre-gate
-  stays the single decision point.
-- **Held too long — two stages, and the first one is the useful one.** A paid
-  order that cannot mint yet is *waiting*, not broken, so the timeline separates
-  "tell the operator" from "give up":
-
-  | Age | What happens | Buyer position |
-  |---|---|---|
-  | < `alertAfterNs` (2 h) | silent retries on the sweep | waiting; normal |
-  | ≥ `alertAfterNs` | `#deliveryDelayed` alert enters the queue; **retries continue** | still waiting; nothing lost |
-  | ≥ `maxHoldNs` (72 h) | escalates to a terminal `#stuckMint`, stage per money position | see below |
-
-  **To see every delivery failing RIGHT NOW**, with no wait for the alert
-  threshold — the operator's first question:
-
-  ```bash
-  icp canister call backend pending_deliveries '()' -e ic --identity <operator>
-  ```
-
-  Every delivery with money-out work outstanding, from the journal. `retries` is how
-  often it has already failed (`0` = first attempt, not yet a problem). **It
-  self-clears**: an entry leaves the set the moment delivery records its block, so a
-  successful `process_order` empties it for that order immediately and there is no
-  resolve step to forget. Admin-only because it scans the whole journal — a public
-  version would let anyone make the canister walk its entire history for free, which
-  is also why none of it is in the public, O(1) `reserve_status`.
-
-  The queue is the other half of the answer, and the two are not redundant: this is
-  the live view, the queue is the **worklist with obligations attached**.
-
-  ```bash
-  icp canister call backend error_queue_unresolved '(null, 50)' -e ic --identity <operator>
-  ```
-
-  `#deliveryDelayed` = still retrying, still recoverable, buyer still waiting; it
-  self-resolves on delivery *or* escalation. `#stuckMint` = terminated, a human has
-  to act, and the entry's `detail` names the money position. `error_queue_depth` is
-  the public gauge for alerting.
-
-  ⚠️ **`#stuckMint` is a misnomer — nothing mints.** It is filed for a *delivery*
-  that terminated. **#36 owns its fate**, not #30 PR-C: `#transferUnresolved` exists
-  because #36 deletes this kind with the mint path, so renaming it first would be churn
-  on a doomed type. ⚠️ #36 also has to decide what carries the *certain* position
-  ("fiat in, nothing was ever sent — refund"), which `#transferUnresolved`'s meaning
-  ("did this transfer land?") deliberately does not cover. Until then, read
-  `#stuckMint` as "delivery stuck" and let `stage` tell you which position you have.
-
-  ⚠️ **Under two hours the QUEUE is silent by design** — a delivery taking a sweep or
-  two is normal — so use `pending_deliveries` for the live view rather than lowering
-  `alertAfterNs`, which would file worklist entries for orders that deliver
-  themselves. And since #30 PR-B deleted the delivery retry cap, the 2 h alert is the
-  only *queue* signal: retry exhaustion used to escalate an order on its own and no
-  longer does, deliberately. What bounds retrying now is time on both ends — the
-  ledger's ~24 h dedup window and this 72 h wait.
-
-  ⚠️ **The timeline covers every in-flight status, not just `paid`.** `minting`
-  and `icpAtCmc` can sit still too — a ledger or CMC answering retriably leaves an
-  order there — and the retry count alone is not a time bound. The alert names
-  which stage is stuck. ⚠️ Only **`deliveryDelayed`** is reachable today (`#paid` is
-  the one in-flight status); `transferDelayed` and `notifyDelayed` belong to the
-  legacy mint stages and go with them in #36. It was called `mintDelayed` until
-  #30 PR-C, while reporting a delivery delay.
-
-  **The terminal stage differs by status, because the money position does**, and
-  the position is what determines the action:
-
-  ⚠️ **The stage is derived from the mint journal, not from the status** — the
-  status says where the order stopped, the journal says where the *money* is, and
-  only the money position determines your action (`Cmc.terminationFor`):
-
-  | Stuck in | Journal says | Escalates as | Action |
-  |---|---|---|---|
-  | `paid` | — | `mintWaitExceeded` | fiat in, no ICP moved → **refund** |
-  | `awaitingTreasury` | — | `treasuryWaitExceeded` | fiat in, no ICP moved → **refund** |
-  | `minting` | no `blockIndex` | `staleIntent` | transfer fate unknown → establish it on the ICP ledger first; **never** rebuild the intent |
-  | `minting` | `blockIndex` set | `retriesExhausted` | transfer confirmed → **notify manually** with that block |
-  | `icpAtCmc` | no `cyclesMinted` | `retriesExhausted` | ICP parked at the CMC → **notify manually** with the journaled block |
-  | `icpAtCmc` | **`cyclesMinted` set** | `ambiguousForward` | ⚠️ the ICP is **already consumed** and cycles exist → **check the buyer's cycles-ledger balance**; never re-forward, never re-notify |
-
-  That last row is why this is journal-derived: read off the status alone it looks
-  like "notify never completed", and following that instruction would re-notify an
-  already-spent transfer and risk double delivery.
-
-  ### Per-stage clocks are cumulative
-
-  ⚠️ Each transition resets `updatedAtNs`, so the 72 h bound applies **per state**,
-  not to the whole order. An order that lingers in `paid`, then `minting`, then
-  `icpAtCmc` can therefore take longer than 72 h end to end — worst case on the
-  order of a week and a half.
-
-  This is deliberate: each state is a distinct failure mode with a distinct
-  recovery, and an order that *just* progressed is making progress and should not
-  be terminated on a clock started before its current problem existed. But it means
-  "72 h" is the bound on **being stuck in one place**, not on total time to
-  resolution — and the 2 h alert is what you actually operate against.
-
-  The 2 h alert is the one to act on: it fires while the position is still fully
-  recoverable, and clearing the underlying cause (refill the float, widen the
-  cap, `reset_burn_window`) delivers the order for real. The alert **resolves
-  itself on delivery**. Validation refuses `alertAfterNs >= maxHoldNs` — an alert
-  that fires at or after the give-up point is not an alert.
-
-  Reaching 72 h means the operator had 70 h of warning and the buyer waited three
-  days. Refund in the Stripe Dashboard, then `resolve_error` (§6) — position is
-  *certain* (fiat in, nothing minted). Refunding rather than waiting longer is
-  deliberate: a buyer who has paid and received nothing files a chargeback, which
-  costs more than the refund and counts against the Stripe account.
-
-`lowFloat` (threshold crossed, or armed-but-never-observed) drives the
-frontend's soft gate and an audit-log alert on the crossing. It never
-blocks mints by itself — the hard float check is in the pre-gate.
-
 ## 5a. Admission gate: who is allowed to start an order
 
 Order creation is refused before any quote when fulfilment is already
-impossible. This is separate from, and in addition to, the mint-time pre-gate in
+impossible. This is separate from, and in addition to, the solvency check in
 §5 — the point is to refuse *before* the customer pays Stripe.
 
 ```bash
@@ -621,30 +472,29 @@ icp canister call backend set_gate_config \
 |---|---|---|---|
 | `maxOpenOrdersPerPrincipal` | 20 | Unbounded state growth. Abandoned orders are the only thing a user can create for free, so this is the real bound. Nothing sweeps them away (§5b): a slot frees when Stripe expires the session, or when the buyer cancels. | Raise for legitimate power users. Must be > 0; 0 is rejected as config. |
 | `minCanisterCycles` | 5 T | **This canister's own gas.** Below the freezing threshold it stops accepting updates; at zero it is uninstalled and its state is gone. | Keep well above the freezing threshold (default ~30 days of idle burn) so there is room to notice and top up. `0` disables the check. |
-| `maxPurchaseUsdCents` | 100 000 (\$1 000) | Operator typo in a tier, and the webhook's upward repricing path. | Set just above your largest tier. `set_card_tiers` rejects any tier above it, and the webhook refuses to mint a payment above it. |
+| `maxPurchaseUsdCents` | 100 000 (\$1 000) | Operator typo in a tier, and the webhook's upward repricing path. | Set just above your largest tier. `set_card_tiers` rejects any tier above it, and the webhook refuses to deliver against a payment above it. |
 
-**These three deliberately default to non-zero**, unlike the burn cap and the
-burn cap. That is a money decision that must ship dark; these are safety
-limits where a 0 default would brick the canister rather than protect it. The
-card rail's actual on/off switch remains the tier list.
+**These three deliberately default to non-zero**, unlike the tier list. A limit
+where 0 would brick the canister rather than protect it has to ship armed; the card
+rail's actual on/off switch remains the tier list, which ships empty.
 
 `can_purchase` returns the same decision `create_order` would make, so it is
 both the frontend's button-gating call and the operator's "would a purchase go
 through right now?" check. Two operational gotchas:
 
-- **`floatLow` with no observation.** Once `lowFloatThresholdE8s > 0`, a float
-  that has *never been read* fails the check — "enforce this" plus "I have never
-  looked" is not a state to sell into. Call `refresh_float` after funding. This
-  is why it is step 2 of the go-live checklist.
-- **`burnCapExhausted` is the most likely reason the rail goes quiet.** A cap
-  that fills mid-window silently stops new sales until the window rolls. Watch
-  `treasury_status.burnedInWindowE8s` against `burnCapE8s`, and note that
-  `reset_burn_window` re-opens sales immediately.
+- ⚠️ **`can_purchase` does NOT cover solvency, and cannot.** It is a query, and
+  reading the reserve is what the gate does synchronously inside `create_order`. So a
+  green `can_purchase` alongside `reserve_status.availableToSell = 0` is not a
+  contradiction — it is the split working. Check both.
+- **An unobserved top-up is the most likely reason the rail goes quiet.**
+  `reserveFloor` only rises when the canister looks, so a funded reserve sells
+  nothing until `refresh_reserve` runs (the hourly sweep does it too).
+  `reserve_status.reserveObservedAtNs` is how you tell that from a spent reserve.
 
 ## 5b. Order expiry — Stripe owns it, and there is no lever here
 
 ```bash
-icp canister call backend reserve_status '()' -e ic   # public counters (was order_stats)
+icp canister call backend reserve_status '()' -e ic   # public counters
 ```
 
 **There is no retention config, no TTL and no sweep.** #33 deleted
@@ -689,7 +539,7 @@ than as an alert you can wire. #38 (admin order listing) is what closes it.
 
 ⚠️ **A payment arriving against an expired or cancelled order cannot be
 converted** (#34 deleted `#expired → #paid`). It answers 200, the status does not
-move, and a Type 1 `#unattributed` entry is filed carrying the payment intent.
+move, and an `#unattributed` entry is filed carrying the payment intent.
 **Refund it in Stripe** — since #33 deleted `attach_payment` there is no other
 remedy at all.
 
@@ -740,8 +590,9 @@ labels it in the audit log for exactly that reason.
 ### Growth
 
 Growth is bounded at its source, not by deletion:
-`maxOpenOrdersPerPrincipal` (§5a) bounds what a user can create for free, and
-the burn cap bounds legitimate volume. An order is a few hundred bytes, so a
+`maxOpenOrdersPerPrincipal` (§5a) bounds what a user can create for free, and the
+reserve bounds legitimate volume — nobody can buy more than it holds. An order is a
+few hundred bytes, so a
 million is a few hundred MB — and a million orders is millions of dollars of
 volume. If store size ever genuinely binds, archive to a separate canister;
 deleting a financial record is not the answer.
@@ -793,7 +644,7 @@ gateway's:
 
 ⚠️ **Neither lever closes the queue entry — `resolve_error` is the last step, always.**
 Resolving lives on the entry and never transitions an order, and the reverse holds too:
-moving the order does not resolve the entry. The `#transferUnresolved` entry that
+moving the order does not resolve the entry. The `#deliveryStuck` entry that
 brought you here stays open until you close it, which is deliberate (an obligation
 must not disappear because a status changed) but means a finished order can sit behind
 an open worklist item if you stop after the first command.
@@ -815,7 +666,7 @@ re-driving an unknown money position is the double-delivery this status prevents
 
 ⚠️ **Never treat `NeedsReview` as finished.** It is the status that still owes
 cycles; `Abandoned` and `Delivered` are the ones that do not.
-**Only a *full* `charge.refunded` auto-resolves a Type 1 entry** — Stripe fires
+**Only a *full* `charge.refunded` auto-resolves an entry** — Stripe fires
 the same event for partial refunds, so the canister compares `amount_refunded`
 against the charge's `amount`. A partial refund leaves the entry open and audits
 `stripe.refundPartial`; finish the refund in the Dashboard (or close the entry by
@@ -841,25 +692,39 @@ icp canister call backend resolve_error '(137 : nat)' -e ic --identity <operator
 `error_queue_unresolved` is the worklist; pass the last id returned as
 `afterId` to page forward. Page size is capped at 200.
 
-| Kind / stage | Money position | Action |
-|---|---|---|
-| `#duplicate {orderId; paymentRef}` (Type 1) | Fiat in twice for one order; first payment minted, second did not | Refund `paymentRef` in the Stripe Dashboard (search by payment_intent). The `charge.refunded` webhook auto-resolves the entry; `resolve_error` is the fallback. |
-| `#unattributed {claimedRef; paymentRef}` (Type 1) | Fiat in, and no order that can accept it: a bad/missing `client_reference_id`, an owner/rail/currency mismatch, **a paid amount that is not the one the order asked Stripe for** (#33 — see below), or a payment against a `cancelled` or `expired` order (#34), which is the common producer. The entry's own `detail` says which. | Inspect the session in Stripe by `paymentRef`, then **refund in Stripe** → auto-resolve (or `resolve_error`). Since #33 deleted `attach_payment` this is the only remedy, whatever the order's status (see below). ⚠️ If the detail says the amount is not the quoted one, refunding is not the end of it: the session carried our own figure, so something in the Stripe configuration moved the total — check the forbidden-settings list in `docs/STRIPE.md` before the next order is created, because it will recur. |
-| `#undeliverable {orderId; cycles}` (Type 2) | Cycles minted, the forward *cleanly rejected* — the cycles sit in the backend's own cycle balance. Since #29 there is one destination, so the cause is the **cycles ledger**, not the target: stopped, upgrading, or its call queue full. | Check the cycles ledger is serving (`icrc1_fee` on `um5iw-rqaaa-aaaaq-qaaba-cai` answers). There is no automatic re-forward lever; once it is back, either deliver manually with a cycles-ledger transfer to the buyer's account (the stranded balance reimburses you) or refund the fiat in Stripe. Then `resolve_error`. |
-| `#stuckMint{stage="treasuryWaitExceeded"}` | Certain: fiat in, nothing minted | Refund in the Stripe Dashboard → `resolve_error`. |
-| `#stuckMint{stage="staleIntent"}` | Uncertain: ICP transfer intent aged past the 24 h ledger dedup window with no recorded block — the original transfer's fate is unknowable, auto-replay risks double-spend (§5.1) | Read `delivery_journal(orderId)` for the intent (amount, `created_at_time`, CMC top-up subaccount). Check the ICP ledger for a matching transfer from the backend account. **Executed** → the ICP sits at the CMC under the backend's top-up subaccount; call `notify_top_up` on the CMC with the found block index (anyone may notify; if the CMC refuses an old block, contact DFINITY ops — the ICP is parked, not lost) and reconcile. **Not executed** → fiat in, nothing moved: refund in Stripe. Either way `resolve_error`; never rebuild a fresh intent. |
-| `#stuckMint{stage="retriesExhausted"}` | ICP transferred to the CMC (**block recorded**), `notify_top_up` never succeeded — either the retry budget ran out or the max wait elapsed | Almost certainly a prolonged CMC outage. The block index is in `delivery_journal`; the order is terminal (`process_order` will not retry an escalated order) — notify the CMC manually with the journaled block once the outage clears (notify is idempotent), or contact DFINITY ops. The ICP is parked at the CMC top-up subaccount, not lost. |
-| `#stuckMint{stage="mintWaitExceeded"}` | Certain: fiat in, **no ICP moved** | Refund in the Stripe Dashboard → `resolve_error`. Same position as `treasuryWaitExceeded`; this one means the mint could not even start (stale CMC rate, unpriceable amount, float read failing) rather than being held by the burn cap. |
-| `#stuckMint{stage="transferRejected"}` | **Usually** certain: the ICP ledger refused the transfer, so nothing moved. ⚠️ **One exception** — `#TooOld` routes here too, and that one is *not* certain: the intent aged past the dedup window, so whether the original transfer executed is unknowable. Read the detail before assuming nothing moved | Read the detail for the ledger's reason. `#InsufficientFunds` → refill the float (the order is terminal, so re-drive it by hand or refund). `#BadFee` → the protocol fee changed; that is a code fix, and every order will fail until it lands. Fiat is in and nothing was minted, so refunding is always a valid resolution. |
-| `#stuckMint{stage="notifyRejected"}` | **ICP is gone from the float and the CMC refused to mint** — usually `#Refunded`, meaning the CMC returned the ICP | Read the detail. `#Refunded{block_index}` → the ICP came back to this canister's ledger account; confirm on the ICP ledger, then refund the fiat (net-neutral) or re-drive a fresh order. `#InvalidTransaction`/`#Other` → establish where the ICP is on the ledger **before** refunding, or you may refund fiat *and* lose the ICP. |
-| `#stuckMint{stage="ambiguousForward"}` | Cycles minted; forward may or may not have reached the destination (died between the pre-forward marker and delivery) | Check the buyer's cycles-ledger balance against `delivery_journal.cyclesMinted` less the ledger's 100 M deposit fee. **Arrived** → done, `resolve_error`. **Not arrived** → cycles are in the backend's balance; deliver manually as for Type 2. Never re-forwarded automatically — double delivery is the risk being avoided. ⚠️ **Do not notify the CMC again**: the ICP is already consumed. This stage is also what the 72 h bound produces for an `#icpAtCmc` order that has `cyclesMinted` journaled, precisely so that case is never mistaken for `retriesExhausted`. |
-| `#stuckMint{stage="mintShortfall"}` | Cycles minted, but **fewer than the order locked** — the CMC's rate moved between sizing the ICP transfer and notifying it (up to 15 min normally, longer if a recovery sweep notified a transfer stranded by an outage). The minted cycles are in this canister's balance; nothing was forwarded | Read `delivery_journal(orderId).cyclesMinted` for the real figure. Either forward that amount and tell the buyer, or top up to `lockedCycles` from operator funds — a business call, not a technical one. **Never** just re-run the mint: the ICP is already spent. Deliberately not absorbed automatically, because covering the gap from the canister's own gas is an unbudgeted subsidy that grows with volatility. `resolve_error` once delivered. |
-| `#stuckMint{stage="missingJournal"}` | Order status implies money-out state the journal doesn't have | Invariant breach — should be unreachable. Reconstruct from `audit_log` + ledgers; treat as a bug, file it. |
-| `#duplicate` naming an order the session did **not** reference | An intent already credited to a *different* order. **Nothing was minted twice.** ⚠️ Since #33 this should be unreachable: nothing but the webhook writes an attribution and nothing but the canister sets `client_reference_id`. It is kept because an unreachable contradiction that fires is worth seeing | Treat it as a bug report first. Cross-check `order_for_payment` against the session's `client_reference_id` in the Stripe Dashboard, then settle the buyer by refunding in Stripe — there is no way to credit the other order. The audit tag is `stripe.creditedElsewhere`. |
-| `#unprocessable {eventId; field}` | **Unknown — establish it first.** A verified Stripe event was missing a required field, so the canister could not tell whether money moved | Look the `eventId` up in the Stripe Dashboard. Paid → refund. Not paid → nothing happened; `resolve_error`. Then find the configuration that produced it: with per-order sessions (#33) the canister controls every field it sends, so a missing one points at an account-level API-version change (RUNBOOK §1 pins it) rather than at a link setting, and it will recur until fixed. One event never becomes two entries: a Dashboard resend inside the ~7-day event-dedup window is dropped there, and past it the worklist itself is checked (audited `stripe.unprocessableResend`). Once you `resolve_error` it, a later resend is allowed to file again — so resolve only after you have established the money position. |
-| `#refundAfterDelivery {orderId; paymentRef; cycles; refundedCents; fullRefund}` | **A loss, not a recoverable position**: the fiat was refunded (or charged back) *after* the cycles were credited to the buyer's account. Cycles cannot be clawed back. | There is nothing to recover on-chain. Reconcile in the Stripe Dashboard by `paymentRef` to see whether this was your own refund (a support decision — expected) or a customer-initiated dispute (fraud signal). For repeated disputes, tighten Stripe Radar rules and lower the per-purchase ceiling (§5a); the burn cap does **not** bound this, because each payment is individually legitimate. `resolve_error` once reconciled — nothing auto-resolves it, deliberately: the refund is what created the entry. |
+**Two columns decide everything: the money position, and whether a refund can settle
+it on its own.** The second is `ErrorQueue.refundResolvable` — true only where the
+remedy is exactly "refund the fiat", so the `charge.refunded` webhook can close the
+entry without a human deciding anything.
 
-### A Type 1 payment has exactly one remedy: refund — and it is usually not "unattributable"
+| Kind | Refund settles it? | Money position | Action |
+|---|---|---|---|
+| `#duplicate {orderId; paymentRef}` | ✅ **yes**, automatically | Fiat in twice for one order; the second payment delivered nothing | Refund `paymentRef` in the Stripe Dashboard (search by payment_intent). The `charge.refunded` webhook auto-resolves the entry; `resolve_error` is the fallback. |
+| `#unattributed {claimedRef; paymentRef}` | ✅ **yes**, automatically | Fiat in, and no order that can accept it: a bad or missing `client_reference_id`, an owner/rail/currency mismatch, **a paid amount that is not the one the order asked Stripe for**, or a payment against a `cancelled` or `expired` order — the common producer. The entry's `detail` says which | Inspect the session in Stripe by `paymentRef`, then **refund** → auto-resolve (or `resolve_error`). This is the only remedy, whatever the order's status. ⚠️ If the detail says the amount is not the quoted one, refunding is not the end of it: the session carried our own figure, so something in the Stripe configuration moved the total — check the forbidden-settings list in `docs/STRIPE.md` before the next order, because it will recur. |
+| `#deliveryStuck {orderId; stage; blockIndex}` | ❌ **no** — see the stage table below | **Depends entirely on `stage`.** One of them means the buyer may already hold their cycles, so a blind refund pays twice | Read `stage` first, then follow its row |
+| `#deliveryDelayed {orderId; stage; sinceNs}` | ❌ no — it is not an obligation | Nothing is wrong yet: a delivery is retrying past the 2 h alert threshold and the sweep keeps going | Fix the cause (usually the cycles ledger) and it delivers itself. **Self-resolves** on delivery *or* escalation — the one entry you never close by hand |
+| `#abandoned {orderId; reason}` | ❌ no — the refund already happened | You ended the order, having refunded by hand | `resolve_error` once the refund is reconciled in Stripe |
+| `#refundAfterDelivery {orderId; paymentRef; cycles; refundedCents; fullRefund}` | ❌ **no, and never** | **A loss, not a recoverable position**: the fiat was refunded or charged back *after* the cycles were credited. Cycles cannot be clawed back | Nothing to recover on-chain. Reconcile in the Dashboard by `paymentRef` to see whether this was your own refund (a support decision) or a dispute (a fraud signal). For repeated disputes, tighten Stripe Radar and lower the per-purchase ceiling (§5a). ⚠️ **Nothing auto-resolves it, deliberately: the refund is the event that created it**, so resolving on that event would close the entry with the loss unrecorded |
+| `#unprocessable {eventId; field}` | ❌ no — the position is unknown | A verified Stripe event was missing a required field, so the canister could not tell whether money moved | Look the `eventId` up in the Dashboard. **Paid** → refund. **Not paid** → nothing happened; `resolve_error`. Then find the configuration that produced it: the canister controls every field it sends, so a missing one points at an account-level API-version change (§1 pins it) and will recur until fixed. ⚠️ Resolve only after establishing the money position — once resolved, a later resend is allowed to file again |
+
+### `#deliveryStuck`'s stages — read `stage`, never the kind
+
+**`stage` is the money position.** It is derived from the *journal*, not the status,
+because one status covers several positions. These five are the whole vocabulary
+`Delivery.terminationFor` and the escalate route can emit — pinned by
+`test/delivery.test.mo`, so a stage that reaches you without a row here is a bug in
+the code rather than a gap in this table.
+
+| `stage` | Money position | Action |
+|---|---|---|
+| `staleIntent` | ⚠️ **UNKNOWN.** A transfer was issued, no block was recorded, and the intent is past the ledger's ~24 h dedup window — so a replay is no longer protected and re-sending could pay twice | **Establish its fate on the cycles ledger**, matching the order id in the transfer's **memo**, the `created_at_time` and the amount from `delivery_journal(orderId)`. **Executed** → the buyer has them: `record_delivered '("<orderId>", <blockIndex>)'`, then `resolve_error`. **Not executed** → fiat in, nothing delivered: refund in Stripe, `abandon_order`, then `resolve_error`. ⚠️ **Never rebuild the intent** — past the window a rebuilt one pays twice |
+| `landedNotRecorded` | **Certain, and in the buyer's favour**: the transfer landed (the block is in the entry and the journal) and the order never moved to delivered. **The buyer HAS their cycles** | Confirm the block on the cycles ledger, then `record_delivered '("<orderId>", <blockIndex>)'` → `resolve_error`. ⚠️ **Do NOT re-send.** Should be unreachable — the block and the transition commit in one synchronous block — so if you are reading this, file it as a bug too |
+| `deliveryWaitExceeded` | **Certain**: fiat in, **nothing was ever sent** — no transfer was attempted before the 72 h bound | Refund in the Stripe Dashboard, `abandon_order '("<orderId>", "<reason>")'`, then `resolve_error` |
+| `transferRejected` | The cycles ledger refused the call definitively, so nothing moved | Read the `detail` for the ledger's reason. `#InsufficientFunds` → the reserve is short: top it up and `refresh_reserve`, then re-drive with `process_order`. Fiat is in and nothing was delivered, so refunding is always a valid resolution |
+| `journalInconsistent` | ⚠️ **An invariant breach, not a money position** — the intent's amount exceeds the order's locked quantity, which cannot happen because the amount was derived by subtracting a fee from it | **File it as a bug**: `lockedCycles` has acquired a second writer, which is a larger problem than one order. Establish the transfer's fate on the ledger before re-sending anything |
+| `missingJournal` / `notInFlight` | ⚠️ **Also invariant breaches.** The order's status implies money-out work the journal cannot support, or the drive loop escalated a status that has no delivery in flight | Reconstruct from `audit_log` and the cycles ledger; treat as a bug and file it |
+
+### An unattributed payment has exactly one remedy: refund — and it is usually not "unattributable"
 
 ⚠️ **Read the entry's `detail`, not its kind.** `#unattributed` is one variant
 covering two very different situations, and since #33 the common one is the
@@ -883,7 +748,7 @@ Checkout Sessions API: there is no URL parameter to touch, so the class is gone
 by construction.
 
 What remains is refunding, in the Stripe Dashboard, by `paymentRef`. There is no
-path that turns a Type 1 payment into cycles for that buyer, whether or not we
+path that turns an unattributed payment into cycles for that buyer, whether or not we
 know which order it was for — that is
 the deliberate cost of the deletion, and it matches the decision that this app
 does not model refunds. A refund auto-resolves the entry (a partial one leaves it
@@ -896,8 +761,8 @@ finding, not a routine occurrence to be papered over.
 
 ## 7. Recovery timer & manual kicks (§5.2)
 
-The recurring sweep is the backstop for every detached mint kick that dies:
-it re-drives all orders in `paid`/`minting`/`icpAtCmc`/`awaitingTreasury`.
+The recurring sweep is the backstop for every detached delivery kick that dies:
+it re-drives every order in `paid`, which is the one status with delivery outstanding.
 It re-arms **automatically on every upgrade** (transient initializer — a
 deploy can never leave recovery dead).
 
@@ -927,8 +792,8 @@ icp canister call backend process_order '("<orderId>")' -e ic --identity <operat
   is what you call right after `icp cycles transfer`.
 - `process_order` is the safe-to-spam manual kick for one order
   (per-order single-flight; `#inFlight` just means it's already being
-  driven). Use it to resume a specific held order immediately after a
-  float refill or cap change instead of waiting for the sweep.
+  driven). Use it to retry one order the moment its cause is fixed — the reserve
+  refunded, the cycles ledger back — instead of waiting for the sweep.
   ⚠️ **It is admin *or* the order's own owner** since #30 PR-B, so a buyer's page
   refresh heals their own stuck delivery in seconds rather than at sweep cadence. It
   does **not** make the sweep optional: the sweep is the guarantee (we took the money,
@@ -946,45 +811,41 @@ money.
 These are public queries, so a monitor can poll them anonymously — no controller
 key on a monitoring box:
 
-`health` · `cycles_status` · `treasury_status` · `pricing_status` ·
+`health` · `cycles_status` · `reserve_status` · `pricing_status` ·
 `recovery_status` · `reserve_status` · `error_queue_depth`
 
 `can_purchase` is also callable anonymously and is worth special mention: the
 anonymous principal owns no orders, so `tooManyOpenOrders` can never trip for it.
 That makes **anonymous `can_purchase '(<smallest tier cents>)'` a pure global-health
 probe** — it answers with the reason the rail would refuse a sale, and every reason
-it can give is a global one (`burnCapExhausted`, `floatLow`, `canisterCyclesLow`).
-It is the single best "is the rail actually selling?" check.
+it can give is actionable (`canisterCyclesLow`, `amountAboveMax`,
+`amountBelowMin`, `tooManyOpenOrders`). ⚠️ **It cannot see solvency** — that is
+decided synchronously inside `create_order` — so pair it with
+`reserve_status.availableToSell`.
 
-### ⚠️ The ICP float is the one metric you cannot poll honestly
+### ⚠️ The reserve is the one metric anyone can poll — including you
 
-You are right that it is crucial, and it is also the trickiest.
+The reserve is an account on the cycles ledger, so `icrc1_balance_of` answers for
+free, from any identity, with no cooperation from this canister. That is the
+transparency thesis working: the number an operator monitors is the same number a
+buyer can check.
 
-`treasury_status` is a **query**, and queries cannot make inter-canister calls. So
-it does not read the ledger — it returns `lastObservedFloat`, a *cached*
-observation, refreshed only when something calls the ledger:
+What the canister adds is the part only it knows — **how much of that balance is
+already promised**. `reserve_status` reports `reserveFloor − promisedTotal =
+availableToSell`, and the three figures together separate the causes of a refusal:
 
-- every mint pre-gate (so it is fresh while orders are flowing), or
-- `refresh_float`, an **admin update call**.
+| Reading | Means |
+|---|---|
+| ledger balance high, `reserveFloor` low | a top-up nobody observed → `refresh_reserve` |
+| `reserveFloor` fine, `promisedTotal` high | genuinely committed to live orders → wait or raise the reserve |
+| `availableToSell` 0 with both low | the reserve is spent → fund it |
 
-The consequence: **the float reading goes stale exactly when the system is idle**,
-which is precisely when a drained or mis-funded float would otherwise go unnoticed
-until the next buyer arrives. `lowFloat` is derived from the same cached value, so
-it inherits the staleness — and so does the admission gate, which means a stale-high
-observation can admit orders the float cannot cover.
-
-**So a float monitor must push, not just poll:** run `refresh_float` on a schedule
-(hourly is plenty when idle) and alert on both the returned value *and*
-`lastObservedFloat.atNs` falling behind. Checking `atNs` alone tells you the number
-is old; it does not make it fresh.
-
-⚠️ **This is the one place monitoring needs a privileged key**, and under the flat
-controller model (§0) that key can also upgrade and drain the canister. Options, in
-descending preference: run the scheduled `refresh_float` from a tightly-scoped
-environment and treat that key as production-critical; or accept poll-only
-staleness and compensate by alerting hard on `atNs` age; or keep a small
-synthetic order flowing, which refreshes the observation as a side effect. Do not
-put a controller key on a general-purpose monitoring host.
+⚠️ **`reserveObservedAtNs` is what makes the first row diagnosable**, and
+`recovery_status.lastReserveReconcileAttemptNs` is its pair: an attempt clock newer
+than the success clock means the hourly reconcile is running and *not adopting* —
+either the ledger read is failing or every attempt landed while a delivery was in
+flight. Both under-sell rather than over-sell, so it explains refusals and is never
+a loss.
 
 ### Metric table
 
@@ -995,13 +856,9 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | `pricing_status.lastAttempt.ok` | false on two consecutive ticks | **P1** | §4 — order creation stops once the cache passes `maxAgeNs`. `detail` names the failing guard |
 | `pricing_status.rates.fetchedAtNs` | older than `maxAgeNs` | **P1** | the rail has stopped selling. Timer dead or every tick rejected |
 | `cycles_status.balance` | below 3× `minCanisterCycles` | **P1** | top up. At zero the canister is **uninstalled** and money-bearing state is lost. Note the XRC needs 1 B attached per refresh, so pricing dies before the gate does |
-| `refresh_float` result | below ~2× the largest tier's ICP cost | **P1** | refill (§5). Held orders resume on the next sweep |
-| `lastObservedFloat.atNs` | older than 2× your refresh schedule | **P1** | the float number is not trustworthy — see above |
 | anonymous `can_purchase` | returns `#err` | **P1** | the rail is refusing sales; the reason says which lever |
 | `error_queue_depth.unresolved` | `> 0` | **P2** | §6 triage. Depth climbing past 1,000 means work is accumulating faster than it clears |
-| `treasury_status.paidOrders` | non-transient `> 0` | **P2** | money in, nothing minted — orders are on the clock toward `mintWaitExceeded` |
-| `treasury_status.heldOrders` | non-transient `> 0` | **P2** | burn cap or float; both are §5 levers |
-| `treasury_status.burnedInWindowE8s` | jumps beyond expected volume | **P1** | possible leaked secret → §2 procedure, cap to 0 first |
+| `reserve_status.promisedTotal` | climbing while deliveries do not complete | **P2** | money in, nothing delivered — those orders are on the clock toward the 72 h bound. `pending_deliveries` says which and why |
 | `recovery_status.lastSweep.atNs` | older than 2 intervals | **P2** | the sweep timer is not running; nothing recovers while it is dead |
 | `recovery_status.lastCountReconcile.drift` | non-empty | **P2** | the per-status tallies had diverged from the order store and were repaired. The counts are correct again; the bookkeeping bug that moved them is not fixed. They gate admission, so a drifted count refuses or admits the wrong orders |
 | `recovery_status.lastCountReconcile.atNs` | older than ~48 h while `lastSweep` advances, or materially older than `lastCountReconcileAttemptNs` | **P3** | the daily reconcile is failing. It runs in its own message, so it cannot take the sweep down with it — money-out is unaffected — but the tallies are now **unverified**, not known-good. Written only on success, and the cadence is claimed by the sweep, so a reconcile that traps retries daily rather than every tick. `recount_orders` is the on-demand repair and will show the same failure if it is a real one |
@@ -1046,7 +903,7 @@ claims an alert nobody can wire is worse than a documented gap.
   that keeps the key out of the polling loop.
 - ⚠️ Gaps in `audit_log`'s `seq` mean the 4,096-entry ring dropped events. Read it
   often enough that it doesn't, and remember it is *telemetry*: the order store,
-  mint journal and error queue are the records of money.
+  delivery journal and error queue are the records of money.
 
 ### Off-chain
 
@@ -1065,17 +922,18 @@ something that reaches a human at 03:00, not a page someone visits. A cron job
 polling the public queries and posting to Slack/PagerDuty covers the entire table
 above except the audit tags, and needs no credentials.
 
-A dashboard earns its place afterwards, for the things alerts are bad at: float and
-burn-rate trends, order volume, delivered-vs-open ratios, rate quality over time.
-Everything it needs is a public query, and the frontend already reads
-`treasury_status` for its low-float soft gate — so a read-only operator page is
-straightforward. It is a convenience, not a control.
+A dashboard earns its place afterwards, for the things alerts are bad at: reserve
+drawdown over time, order volume, delivered-vs-open ratios, rate quality. Everything
+it needs is a public query — `reserve_status` and the cycles ledger between them — so
+a read-only operator page is straightforward. It is a convenience, not a control.
 
 ## 9. Confidential-subnet checklist (§7, §11.1)
 
-The webhook secret is plaintext canister state. SEV-SNP is the intended
-confidentiality layer; **the burn cap is the always-on backstop and launch
-does not block on SEV**. Before relying on a confidential subnet for the
+The webhook secret is plaintext canister state, and SEV-SNP is the intended
+confidentiality layer. ⚠️ **There is no cap standing behind it any more**: a forged
+webhook delivers from the reserve, so **the reserve balance is the blast radius** and
+sizing it is the always-on control (§2). Launch does not block on SEV, but that
+trade is now "size the reserve to what a leak could cost", not "the cap bounds it". Before relying on a confidential subnet for the
 secret, verify — in this order, hardest first:
 
 - [ ] **Checkpoint/state-sync confidentiality**: SEV-SNP protects RAM, but
@@ -1097,10 +955,12 @@ secret, verify — in this order, hardest first:
   the module hash after (RELEASE.md gate) and rotate the secret (it
   transited infrastructure during the move).
 
-Until all boxes tick: the secret lives plaintext on a normal subnet, and
-the protections are exactly (a) the burn cap sized tight (§5) and
-(b) accountable node providers. That is the documented, accepted §7
-posture — the loss is bounded, detectable, recoverable.
+Until all boxes tick: the secret lives plaintext on a normal subnet, and the
+protections are exactly (a) **the reserve sized to what a leak could cost** (§2, §5)
+and (b) accountable node providers. That is the documented, accepted §7 posture — the
+loss is bounded by the reserve balance, detectable in the audit log and the order
+store, and recoverable only to the extent that fiat was never taken for the forged
+orders.
 
 Related §11.1 note for future rails: the four Base seams (Owner variant,
 route table, edge-captured ownership, per-rail expiry) are binding on code
@@ -1140,15 +1000,15 @@ release doc doesn't cover:
 - **Stopping drains in-flight calls, it does not drop them.** The canister
   enters `Stopping`, the IC delivers the replies to its outstanding calls,
   and only once every call context is closed does it reach `Stopped`. That
-  is why the stop-first procedure is also the *safe* one: an in-flight mint
+  is why the stop-first procedure is also the *safe* one: an in-flight delivery
   completes before the upgrade happens, so a controlled
   upgrade cannot strand money. Verified by `test/integration` scenarios 12
   and 13.
 
-  Consequence: `ambiguousForward` and `stalePullIntent` are **not** reachable
-  through a controlled upgrade. They cover genuine faults — a callee that
-  never replies, a subnet incident, running out of cycles mid-call — and
-  §8's triage rules still apply when they appear.
+  Consequence: `staleIntent` is **not** reachable through a controlled upgrade —
+  an in-flight transfer settles before the upgrade happens. It covers genuine
+  faults: a ledger that never replies, a subnet incident, running out of cycles
+  mid-call. §6's triage rules apply when it appears.
 
 - **A call that never replies blocks the stop, and therefore the upgrade.**
   If `icp canister stop` hangs, the canister is waiting on an outstanding
@@ -1166,7 +1026,7 @@ release doc doesn't cover:
   ./scripts/local-dev-seed.sh
   ```
 
-  which wipes local orders, the audit log and the mint journal, and takes
+  which wipes local orders, the audit log and the delivery journal, and takes
   seconds. `scripts/e2e-local.sh` detects the trap and does it automatically.
 
   ⚠️ **This is a development lever and has no mainnet counterpart.** `reinstall`
@@ -1174,7 +1034,7 @@ release doc doesn't cover:
   the mops migration chain (issue #32) — which is why no migration file is written
   before the schema settles: every file replays forever on a fresh install.
 
-- In-flight mints resume from the persisted journal via the re-armed timer
+- In-flight deliveries resume from the persisted journal via the re-armed timer
   (§5.1), so an interrupted money movement degrades to a recoverable stage,
   never a double-spend.
 - Persistent state (orders, journals, dedup sets, configs, secret, cap

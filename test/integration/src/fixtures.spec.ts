@@ -79,7 +79,7 @@ describe('recorded Stripe events match what the canister expects', () => {
 
   withFixture('checkout.session.async_payment_succeeded', 'carries the same session shape as completed', (ev) => {
     // The canister parses this into the *same* structure and runs the same handler.
-    // If the shapes diverged, delayed payments would silently stop minting.
+    // If the shapes diverged, delayed payments would silently stop delivering.
     const o = ev.data.object;
     expect(ev.type).toBe('checkout.session.async_payment_succeeded');
     expect(typeof o.payment_intent).toBe('string');

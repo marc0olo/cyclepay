@@ -1,17 +1,11 @@
 import { afterAll, beforeAll, expect, test } from 'vitest';
 import {
-  ICP_FEE_E8S, ORDER_E8S, TIER_LOCKED_CYCLES, TIER_USD_CENTS, WEBHOOK_SECRET,
-  checkoutSessionBody, ensureRates, expectOk, fundFloat, fundReserve, orderStatus, setCmcRate,
+  TIER_LOCKED_CYCLES, TIER_USD_CENTS, WEBHOOK_SECRET,
+  checkoutSessionBody, ensureRates, expectOk, fundReserve, setCmcRate,
   setupGateway, setXrcRate, stripeSignature, teardownGateway, tickUntilStatus, user,
   clientReferenceFor, createOrderWithSession,
   type Gateway,
 } from './harness';
-
-const WORKING_TREASURY = {
-  burnCapE8s: 50_000_000_000n, burnWindowNs: 86_400_000_000_000n,
-  alertAfterNs: 7_200_000_000_000n, maxHoldNs: 259_200_000_000_000n,
-  lowFloatThresholdE8s: 0n,
-};
 
 let gw: Gateway;
 beforeAll(async () => { gw = await setupGateway(); }, 180_000);
@@ -42,7 +36,6 @@ test('55 — the webhook route serves real HTTP end to end, and delivers', async
   await setXrcRate(gw);
   await setCmcRate(gw);
   await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_treasury_config(WORKING_TREASURY));
   expectOk(await gw.asAdmin.set_webhook_secret(WEBHOOK_SECRET));
   // #33: both secrets, or `create_order` cannot produce a payable session.
   expectOk(await gw.asAdmin.set_stripe_api_key('rk_test_live_gateway_spec'));
@@ -55,7 +48,6 @@ test('55 — the webhook route serves real HTTP end to end, and delivers', async
   expectOk(await gw.asAdmin.set_card_tiers([
     { id: 'tier5', usdCents: TIER_USD_CENTS },
   ]));
-  await fundFloat(gw, ORDER_E8S * 2n + ICP_FEE_E8S * 2n);
   // #30 PR-A: delivery transfers OUT of the gateway's own cycles-ledger account,
   // so that account must hold cycles or the order is paid and never delivered.
   // ⚠️ This spec runs its own PocketIC instance, so the main suite's reserve

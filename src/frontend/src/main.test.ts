@@ -110,7 +110,6 @@ const backend = {
       maxPurchaseUsdCents: 10_000n,
     },
   }),
-  treasury_status: async () => ({ lowFloat: false }),
   pricing_status: async () => ({
     rates: {
       usdPerIcpMicros: 4_550_000n,
@@ -458,7 +457,7 @@ describe("receipt", () => {
     state.receipt = {
       order: state.order,
       paidUsdCents: TIER_CENTS,
-      cyclesMinted: TIER_CYCLES,
+      cyclesDelivered: TIER_CYCLES,
       deliveryBlockIndex: 42n,
       verification: {
         netCents: 455n,

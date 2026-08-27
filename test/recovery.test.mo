@@ -2,6 +2,7 @@ import { test; suite } "mo:test";
 import Int "mo:core/Int";
 import Nat "mo:core/Nat";
 import Cmc "../src/backend/Cmc";
+import Delivery "../src/backend/Delivery";
 import Recovery "../src/backend/Recovery";
 import Types "../src/backend/Types";
 
@@ -17,17 +18,6 @@ suite("validateInterval", func() {
     assert Recovery.validateInterval(0, dayNs) == #err(#zeroInterval);
   });
 
-  test("rejects a cadence so fine the retry budget stops spanning the window", func() {
-    // A 1 ns interval is "positive" but useless: maxMintRetries sweeps would
-    // elapse instantly, so the first transient CMC failure would burn the whole
-    // budget and escalate an order that had ~24 h of replay left. The validator
-    // owns BOTH sides of the retries × cadence > window invariant, because a
-    // retuned cadence is exactly how an operator breaks it by accident.
-    let minNs = Int.abs(dayNs) / Recovery.maxMintRetries + 1;
-    assert Recovery.validateInterval(1, dayNs) == #err(#intervalTooShort({ minNs }));
-    assert Recovery.validateInterval(minNs / 2, dayNs) == #err(#intervalTooShort({ minNs }));
-  });
-
   test("a cadence an operator would actually reach for during an incident is legal", func() {
     // The invariant must not make the cadence unadjustable. With a tight retry
     // budget the shortest legal interval would be over 14 min, so nobody could
@@ -37,13 +27,6 @@ suite("validateInterval", func() {
     assert Recovery.validateInterval(300_000_000_000, dayNs) == #ok; // 5 min
   });
 
-  test("boundary: the shortest legal cadence keeps the budget wider than the window", func() {
-    let minNs = Int.abs(dayNs) / Recovery.maxMintRetries + 1;
-    assert Recovery.validateInterval(minNs, dayNs) == #ok;
-    assert Recovery.validateInterval(minNs - 1, dayNs) == #err(#intervalTooShort({ minNs }));
-    // And the accepted boundary really does satisfy the invariant it guards.
-    assert Recovery.maxMintRetries * minNs > Int.abs(dayNs);
-  });
 
   test("boundary: exactly window/4 passes, one ns more fails", func() {
     let maxNs = 21_600_000_000_000; // 6 h, a quarter of the 24 h window
@@ -52,30 +35,25 @@ suite("validateInterval", func() {
   });
 
   test("default cadence is legal against the real ledger window", func() {
-    assert Recovery.validateInterval(Recovery.defaultIntervalNs, Cmc.ledgerDedupWindowNs) == #ok;
-  });
-
-  test("the retry budget outlasts a full day of outage at the default cadence", func() {
-    // THE coupling invariant. Shortening the cadence without raising the retry
-    // budget converts a survivable outage into a stuck order — an outage shorter
-    // than a day must never exhaust the budget, because exhausting it escalates
-    // an order that would have completed.
-    assert Recovery.maxMintRetries * Recovery.defaultIntervalNs > 86_400_000_000_000;
+    assert Recovery.validateInterval(Recovery.defaultIntervalNs, Delivery.ledgerDedupWindowNs) == #ok;
   });
 
   test("the cadence leaves real margin under the §5.1 ledger dedup window", func() {
     // Replay safety needs the cadence well inside the 24 h window, not merely
     // legal at the boundary.
-    assert Recovery.defaultIntervalNs * 4 <= Int.abs(Cmc.ledgerDedupWindowNs);
+    //
+    // ⚠️ **This is the ONLY coupling left between the cadence and the window, and it
+    // is a one-sided bound.** There is no retry-budget invariant to assert on the
+    // other side: nothing breaks when the cadence is fast, so a test asserting a
+    // lower bound would have nothing to check and would pass on any positive value.
+    assert Recovery.defaultIntervalNs * 4 <= Int.abs(Delivery.ledgerDedupWindowNs);
   });
 });
 
 suite("isSweepable", func() {
-  test("exactly the four money-committed states sweep", func() {
+  test("exactly ONE money-committed state sweeps", func() {
+    // Money-out is one transfer out of `#paid`, so exactly one status sweeps.
     assert Recovery.isSweepable(#paid);
-    assert Recovery.isSweepable(#minting);
-    assert Recovery.isSweepable(#icpAtCmc);
-    assert Recovery.isSweepable(#awaitingTreasury);
   });
 
   test("user-pending, expired, and terminal states never sweep", func() {
@@ -89,17 +67,19 @@ suite("isSweepable", func() {
     assert not Recovery.isSweepable(#needsReview);
   });
 
-  test("the matrix is exhaustive: 4 of all 10 states sweep", func() {
+  test("the matrix is exhaustive: 1 of all 7 states sweeps", func() {
+    // ⚠️ **Exactly one of seven, and the sum is the assertion.** Walking all seven
+    // and counting is what catches a status becoming sweepable by accident — a second
+    // sweepable status is a second way an order can owe cycles.
     let all : [Types.OrderStatus] = [
-      #created, #cancelled, #expired, #paid, #minting,
-      #icpAtCmc, #delivered, #awaitingTreasury, #needsReview, #abandoned,
+      #created, #cancelled, #expired, #paid, #delivered, #needsReview, #abandoned,
     ];
     var sweepable = 0;
     for (status in all.values()) {
       if (Recovery.isSweepable(status)) sweepable += 1;
     };
-    assert all.size() == 10;
-    assert sweepable == 4;
+    assert all.size() == 7;
+    assert sweepable == 1;
   });
 
   test("a reconcile is due on a fresh canister, then not again until the interval", func() {

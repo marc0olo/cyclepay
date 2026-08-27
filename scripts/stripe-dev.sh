@@ -9,15 +9,16 @@
 #
 # The two scripts own different levers and this one assumes the other has run:
 #
-#   local-dev-seed.sh  the money levers — tiers, treasury, ICP float, the CMC rate,
+#   local-dev-seed.sh  the money levers — tiers, the cycles reserve, the CMC rate,
 #                      the canister's own cycles
 #   this script        the Stripe levers — expected livemode, the forwarding
 #                      session's signing secret, forwarding
 #
-# It used to set tiers and the treasury config too, which made the ORDER of the two
-# scripts silently decide the outcome: whichever ran last overwrote the other's
-# tiers with a placeholder. It no longer touches either, and it refuses to start if
-# the gateway cannot price.
+# ⚠️ **Neither script touches the other's levers, and that is not tidiness.** When both
+# set tiers, the ORDER of the two silently decided the outcome — whichever ran last
+# overwrote the other's with a placeholder, with nothing to see afterwards. This script
+# refuses to start if the gateway cannot price, which is how it says "run the seed
+# first" instead of quietly half-configuring.
 #
 # `npm --prefix test/integration run sandbox` is the scripted alternative when you do
 # not need the frontend in a browser — it boots its own PocketIC and needs none of
@@ -112,9 +113,9 @@ fi
 echo "priceable:   a \$10 purchase quotes (presets, both rates, and own-cycles are all fine)"
 
 # --- bootstrap the STRIPE-side config ---------------------------------------
-# Tiers, treasury, float, the CMC rate and the canister's own cycles belong to
-# scripts/local-dev-seed.sh and are deliberately not touched here — setting them
-# from both scripts made whichever ran last the winner, silently.
+# Tiers, the cycles reserve, the delivery timeline, the CMC rate and the canister's own
+# gas belong to scripts/local-dev-seed.sh and are deliberately not touched here —
+# setting them from both scripts made whichever ran last the winner, silently.
 if [ "$BOOTSTRAP" -eq 1 ]; then
   echo
   echo "--- bootstrapping Stripe-side config (dev values, never for mainnet) ---"

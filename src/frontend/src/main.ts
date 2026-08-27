@@ -113,7 +113,6 @@ let customQuote: bigint | null = null;
 /// The gate's bounds, read from `lifecycle_config`. Null until the market loads;
 /// the input stays disabled until then rather than guessing a range.
 let amountBounds: { min: bigint; max: bigint } | null = null;
-let lowFloat = false;
 
 /// The order the order/delivered view is showing. Null on every other view.
 let activeOrder: Order | null = null;
@@ -472,13 +471,11 @@ function setIdentity(next: Identity | null): void {
 // --- tiers + gates -------------------------------------------------------
 
 async function loadMarket(): Promise<void> {
-  const [tierList, treasury, pricing] = await Promise.all([
+  const [tierList, pricing] = await Promise.all([
     backend.card_tiers(),
-    backend.treasury_status(),
     backend.pricing_status(),
   ]);
   tiers = tierList;
-  lowFloat = treasury.lowFloat;
   cardFee = { feeBps: pricing.config.feeBps, feeFixedCents: pricing.config.feeFixedCents };
 
   // Both rate inputs are shown, because both are needed to reproduce a quote —
@@ -487,12 +484,12 @@ async function loadMarket(): Promise<void> {
   lastPricing = pricing;
   renderRateLine();
 
-  const gate = el("gate-notice");
-  if (lowFloat) {
-    gate.textContent =
-      "Operator float is low, so new orders may queue until it is refilled. Paid orders always deliver at their locked quantity.";
-  }
-  show("gate-notice", lowFloat);
+  // ⚠️ **No pre-emptive "we might not be able to serve you" banner.** The gateway
+  // either admits an order or refuses it with a reason the buyer can act on
+  // (`#reserveShort` names how much is available, so a smaller amount may work), and
+  // that refusal arrives at the moment it is true. A banner rendered from a
+  // separately-polled figure would be stale by construction.
+  show("gate-notice", false);
 
   // The gate's own bounds, so the custom-amount field can say "between $10 and
   // $100" in the backend's numbers rather than in a second copy of them.
@@ -1182,9 +1179,9 @@ async function renderReceipt(order: Order): Promise<void> {
   el("receipt-paid").textContent = receipt.paidUsdCents === undefined
     ? "not yet"
     : formatUsdCents(receipt.paidUsdCents);
-  el("receipt-delivered").textContent = receipt.cyclesMinted === undefined
+  el("receipt-delivered").textContent = receipt.cyclesDelivered === undefined
     ? "not yet"
-    : formatCycles(receipt.cyclesMinted);
+    : formatCycles(receipt.cyclesDelivered);
   el("receipt-block").textContent = receipt.deliveryBlockIndex === undefined
     ? "not yet"
     : receipt.deliveryBlockIndex.toString();

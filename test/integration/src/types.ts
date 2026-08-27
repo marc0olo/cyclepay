@@ -17,8 +17,8 @@ export interface Account {
 export type Destination = { cyclesLedgerAccount: Account };
 
 export type OrderStatusKey =
-  | 'created' | 'cancelled' | 'expired' | 'paid' | 'minting' | 'icpAtCmc'
-  | 'delivered' | 'awaitingTreasury' | 'needsReview' | 'abandoned';
+  | 'created' | 'cancelled' | 'expired' | 'paid'
+  | 'delivered' | 'needsReview' | 'abandoned';
 
 /// Why an `#expired` order expired. Both producers arrived with #33, and since
 /// it deleted the retention sweep they are the only ones — nothing else in the
@@ -136,7 +136,7 @@ export interface QuotePreviews {
 
 export interface TransferIntent {
   to: Account;
-  amountE8s: bigint;
+  amountCycles: bigint;
   memo: Bytes;
   createdAtTimeNs: bigint;
 }
@@ -147,7 +147,7 @@ export interface JournalEntry {
   destination: Destination;
   transferIntent: Opt<TransferIntent>;
   blockIndex: Opt<bigint>;
-  cyclesMinted: Opt<bigint>;
+  cyclesDelivered: Opt<bigint>;
   retries: bigint;
   createdAtNs: bigint;
   updatedAtNs: bigint;
@@ -156,8 +156,7 @@ export interface JournalEntry {
 export type ErrorKind =
   | { duplicate: { orderId: string; paymentRef: string } }
   | { unattributed: { claimedRef: string; paymentRef: string } }
-  | { undeliverable: { orderId: string; cycles: bigint } }
-  | { stuckMint: { orderId: string; stage: string } }
+  | { deliveryStuck: { orderId: string; stage: string; blockIndex: Opt<bigint> } }
   | { refundAfterDelivery: { orderId: string; paymentRef: string; cycles: bigint; refundedCents: bigint; fullRefund: boolean } }
   | { unprocessable: { eventId: string; field: string } }
   | { deliveryDelayed: { orderId: string; stage: string; sinceNs: bigint } }
@@ -193,22 +192,17 @@ export interface Tier {
 export type Amount = { tier: string } | { custom: bigint };
 
 
-export interface TreasuryConfig {
-  alertAfterNs: bigint;
-  burnCapE8s: bigint;
-  burnWindowNs: bigint;
-  lowFloatThresholdE8s: bigint;
+/// The delivery timeline's two thresholds: alert while the cause is still fixable,
+/// terminate once it plainly is not.
+export interface DeliveryConfig {
   maxHoldNs: bigint;
+  alertAfterNs: bigint;
 }
 
-export interface TreasuryStatus {
-  config: TreasuryConfig;
-  burnedInWindowE8s: bigint;
-  lastObservedFloat: Opt<{ e8s: bigint; atNs: bigint }>;
-  lowFloat: boolean;
-  heldOrders: bigint;
-  paidOrders: bigint;
-}
+export type DeliveryConfigError =
+  | { nonPositiveMaxHold: null }
+  | { nonPositiveAlertAfter: null }
+  | { alertNotBeforeMaxHold: { alertAfterNs: bigint; maxHoldNs: bigint } };
 
 export interface HttpRequest {
   method: string;
@@ -274,7 +268,7 @@ export interface BackendService {
     order: Order;
     paidUsdCents: Opt<bigint>;
     deliveryBlockIndex: Opt<bigint>;
-    cyclesMinted: Opt<bigint>;
+    cyclesDelivered: Opt<bigint>;
     verification: {
       netCents: Opt<bigint>;
       usdPerIcpMicros: bigint;
@@ -306,17 +300,14 @@ export interface BackendService {
     lastSweep: Opt<{ atNs: bigint; pending: bigint }>;
     sweepInFlight: boolean;
   }>;
-  refresh_float(): Promise<bigint>;
   /// ⚠️ Required after funding the reserve: the gate decides against a maintained
   /// lower bound that only rises by observation, so an unobserved top-up sells nothing.
   refresh_reserve(): Promise<bigint>;
-  reset_burn_window(): Promise<bigint>;
   resolve_error(id: bigint): Promise<Result<ErrorEntry, { notFound: bigint } | { alreadyResolved: bigint }>>;
   set_card_tiers(tiers: Tier[]): Promise<Result<null, unknown>>;
   set_recovery_interval(intervalNs: bigint): Promise<Result<null, unknown>>;
-  set_treasury_config(config: TreasuryConfig): Promise<Result<null, unknown>>;
+  set_delivery_config(config: DeliveryConfig): Promise<Result<null, DeliveryConfigError>>;
   set_webhook_secret(secret: string): Promise<Result<null, unknown>>;
-  treasury_status(): Promise<TreasuryStatus>;
   webhook_secret_status(): Promise<{ isSet: boolean; setAtNs: Opt<bigint>; generation: bigint }>;
 }
 

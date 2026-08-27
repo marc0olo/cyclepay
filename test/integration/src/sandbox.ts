@@ -1,7 +1,7 @@
 // A fully local Stripe sandbox: PocketIC in live mode + the real Stripe CLI.
 //
 // No mainnet, no real ICP, no real cycles — and yet the whole money path runs for
-// real: real ICP ledger, real CMC mint, real cycles ledger delivery, driven by
+// real: a real cycles ledger the gateway transfers out of, a real CMC for its rate, driven by
 // genuine signed Stripe events over a genuine HTTP gateway.
 //
 //   npm --prefix test/integration run sandbox
@@ -17,25 +17,13 @@
 //     npm --prefix test/integration run sandbox
 //
 // Ctrl-C to tear down.
-import { Principal } from '@icp-sdk/core/principal';
 import {
-  ICP_FEE_E8S, ORDER_E8S, TIER_USD_CENTS, WEBHOOK_SECRET,
-  ensureRates, expectOk, fundFloat, setCmcRate, setXrcRate, setupGateway, user,
+  TIER_USD_CENTS, WEBHOOK_SECRET,
+  ensureRates, expectOk, setCmcRate, setXrcRate, setupGateway, user,
   clientReferenceFor,
 } from './harness';
 
 const SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? WEBHOOK_SECRET;
-
-/// Dev values, deliberately not mainnet values: a 2-minute alert threshold so the
-/// delay path is reachable in a session, a 10-minute TTL so expiry is, and
-/// `expected_livemode = false` because a sandbox forwarder sends test-mode events.
-const DEV_TREASURY = {
-  burnCapE8s: 100_000_000_000n,
-  burnWindowNs: 86_400_000_000_000n,
-  alertAfterNs: 120_000_000_000n,
-  maxHoldNs: 259_200_000_000_000n,
-  lowFloatThresholdE8s: 0n,
-};
 
 async function main(): Promise<void> {
   console.log('booting PocketIC (real ICP ledger, CMC, cycles ledger + pinned XRC mock)…');
@@ -54,14 +42,38 @@ async function main(): Promise<void> {
   await setXrcRate(gw);
   await setCmcRate(gw);
   await ensureRates(gw);
-
-  expectOk(await gw.asAdmin.set_treasury_config(DEV_TREASURY));
   expectOk(await gw.asAdmin.set_webhook_secret(SECRET));
+
+  // ⚠️ **Lower the floor before registering the tier, or nothing here works.** The
+  // gate's `minPurchaseUsdCents` default is $10 and `TIER_USD_CENTS` is $5, so
+  // `set_card_tiers` refuses with `#belowFloor` and the harness dies before it prints
+  // anything. `gateway.spec.ts` does the same thing for the same reason.
+  //
+  // The $5 figure is not arbitrary and is not worth changing: 500¢ gross − 45¢ fee =
+  // 455¢ net = **exactly one ICP** at $4.55, worth exactly 3.5 T cycles at the seeded
+  // CMC rate. Every number a human checks in this harness comes off that vector, so
+  // the floor moves rather than the amount.
+  const gateDefaults = (await gw.asAnon.lifecycle_config()).gate;
+  expectOk(await gw.asAdmin.set_gate_config({ ...gateDefaults, minPurchaseUsdCents: 100n }));
   expectOk(await gw.asAdmin.set_card_tiers([
     { id: 'tier5', usdCents: TIER_USD_CENTS },
   ]));
   await gw.asAdmin.set_expected_livemode([false]);
-  await fundFloat(gw, ORDER_E8S * 50n + ICP_FEE_E8S * 50n);
+
+  // ⚠️ **A 2-minute alert threshold, deliberately not the mainnet 2 h.** The delay
+  // path is the one thing in this harness a human cannot reach by waiting: at the
+  // default an operator would have to keep the session open for two hours to see a
+  // `#deliveryDelayed` entry appear. The max hold stays at 72 h — an escalation
+  // during a demo would be a false alarm, and 35/47/80 cover that path in CI.
+  //
+  // ⚠️ **A config a harness declares but never sends is worse than no config**: the
+  // comment promising a short threshold becomes the only trace, and the harness quietly
+  // runs on the default. That has happened here twice — check that a config object in
+  // this directory is actually passed to a setter, not merely defined.
+  expectOk(await gw.asAdmin.set_delivery_config({
+    alertAfterNs: 120_000_000_000n,
+    maxHoldNs: 259_200_000_000_000n,
+  }));
 
   const port = await gw.pic.makeLive();
   const backendId = gw.backendId.toText();
@@ -106,23 +118,46 @@ async function main(): Promise<void> {
 
      VITE_II_URL already exists as the override for when a local II works.
 
-  Config in effect (DEV values — never mainnet): burn cap 1000 ICP/day,
-  alert after 2 min, expected livemode = false. There is no order TTL: #33
-  deleted retention, so the deadline is the Stripe session's own ~35 minutes.
+  Config in effect (DEV values — never mainnet): delivery alert after 2 min
+  (mainnet: 2 h), max hold 72 h, expected livemode = false. There is no order
+  TTL of ours — the deadline is the Stripe session's own ~35 minutes.
 `);
 
-  // Create a first order so there is something to pay immediately.
-  // One destination, and the gateway refuses any other (#29): the caller's own
-  // cycles-ledger account, default subaccount.
-  const created = expectOk(
-    await gw.asUser.create_order(
-      { tier: 'tier5' },
-      { cyclesLedgerAccount: { owner: user.getPrincipal(), subaccount: [] } },
-      [],
-    ),
-  );
-  console.log(`  ready-made order      ${created.order.id}`);
-  console.log(`  clientReferenceId     ${clientReferenceFor(created.order.id)}\n`);
+  // ⚠️ **An order cannot be created without the Stripe API key.** Since the rail
+  // creates a Checkout Session per order, `create_order` calls Stripe and fails with
+  // `#sessionUnavailable` when no key is provisioned — so this harness cannot
+  // pre-create an order the way it used to, and used to die here with a raw
+  // `expected #ok, got {"err":{"sessionUnavailable":...}}`.
+  //
+  // The key comes from the environment, never from source and never from a command
+  // line: it must be a **restricted** key (`rk_...`) scoped to write Checkout Sessions
+  // and nothing else. A leaked write-sessions key can only create sessions that pay
+  // *us*; an unrestricted `sk_` can issue refunds, which is materially worse to leak.
+  //
+  //   STRIPE_API_KEY=rk_... npm run sandbox
+  //
+  // Without it the harness still boots and everything except paying works — which is
+  // most of what it is for (the banner, the config, the webhook forwarder target).
+  const apiKey = process.env.STRIPE_API_KEY;
+  if (apiKey && apiKey.length > 0) {
+    expectOk(await gw.asAdmin.set_stripe_api_key(apiKey));
+    const created = expectOk(
+      // One destination, and the gateway refuses any other (#29): the caller's own
+      // cycles-ledger account, default subaccount.
+      await gw.asUser.create_order(
+        { tier: 'tier5' },
+        { cyclesLedgerAccount: { owner: user.getPrincipal(), subaccount: [] } },
+        [],
+      ),
+    );
+    console.log(`  ready-made order      ${created.order.id}`);
+    console.log(`  clientReferenceId     ${clientReferenceFor(created.order.id)}\n`);
+  } else {
+    console.log(`  ⚠️  no STRIPE_API_KEY in the environment, so no order was created.
+      Everything except paying works. To make a payable order:
+        STRIPE_API_KEY=rk_... npm run sandbox
+      Use a RESTRICTED key scoped to write Checkout Sessions and nothing else.\n`);
+  }
 
   // Live mode auto-progresses, so nothing needs ticking. Hold the process open.
   console.log('running — Ctrl-C to tear down\n');

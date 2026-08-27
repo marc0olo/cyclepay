@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Make a local network's gateway actually usable: rate, tiers, treasury, float.
+# Make a local network's gateway actually usable: rate, tiers, delivery timeline,
+# and a funded cycles reserve.
 #
-# A freshly deployed gateway is **fail-closed by design** — no tiers, no burn cap,
-# no float, and (locally) no exchange rate. That is correct for production and
+# A freshly deployed gateway is **fail-closed by design** — no tiers, an empty
+# cycles reserve, and (locally) no exchange rate. That is correct for production and
 # indistinguishable from "broken" when you are trying to click through the app,
 # where it shows as "No amounts are configured yet" and "No exchange rate
 # available yet".
@@ -44,7 +45,6 @@ if [ -n "${1:-}" ] && [ "$1" != "--rate-only" ]; then
 fi
 
 XDR_PERMYRIAD=35000        # 3.5 XDR/ICP, matching the PocketIC suite's vector
-FLOAT_ICP=100              # plenty for local clicking; the gateway holds it as float
 
 ok() { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 step() { printf '\n\033[1m── %s\033[0m\n' "$1"; }
@@ -204,39 +204,18 @@ icp canister call backend set_card_tiers \
   >/dev/null || die "set_card_tiers failed"
 ok "3 presets (\$10 / \$20 / \$50); any amount from \$10 to \$100 is orderable"
 
-# ── treasury ─────────────────────────────────────────────────────────────────
-step "treasury"
-# burnCapE8s defaults to 0, which holds every mint. That is the §5.3 pause lever
-# and the right production default; locally it just looks like nothing works.
-icp canister call backend set_treasury_config \
-  '(record { burnCapE8s = 10_000_000_000 : nat;
-             burnWindowNs = 86_400_000_000_000 : int;
-             lowFloatThresholdE8s = 0 : nat;
-             maxHoldNs = 259_200_000_000_000 : int;
+# ── delivery timeline ────────────────────────────────────────────────────────
+step "delivery timeline"
+# The gateway ships with a 2 h alert and a 72 h terminate bound, which is what you
+# want locally too — an order that cannot deliver should end up on the worklist
+# rather than retrying in silence. Set explicitly so the seed states the numbers a
+# reader will see in `error_queue_unresolved`.
+icp canister call backend set_delivery_config \
+  '(record { maxHoldNs = 259_200_000_000_000 : int;
              alertAfterNs = 7_200_000_000_000 : int })' \
-  >/dev/null || die "set_treasury_config failed"
-ok "burn cap 100 ICP / 24 h, 2 h alert, 72 h max hold"
+  >/dev/null || die "set_delivery_config failed"
+ok "2 h alert, 72 h max hold"
 
-BACKEND_ID="$(icp canister status backend --json | jq -r '.id')"
-icp token transfer "$FLOAT_ICP" "$BACKEND_ID" >/dev/null 2>&1 ||
-  die "could not fund the float. Check: icp token balance"
-icp canister call backend refresh_float '()' >/dev/null 2>&1 || true
-# Ask the GATEWAY what float it now sees, rather than trusting the transfer's exit
-# code. The same weak-check shape as the three already fixed above: a zero exit
-# says the ledger accepted a transfer, not that this canister holds the ICP, and
-# `refresh_float` is the step in between — which this script deliberately ignores
-# the exit code of, because it needs admin rights it may not have.
-OBSERVED_E8S="$(icp canister call backend treasury_status '()' 2>/dev/null |
-  grep -oE 'e8s = [0-9_]+' | tr -d '_' | grep -oE '[0-9]+$' | head -1 || echo 0)"
-EXPECTED_E8S=$((FLOAT_ICP * 100000000))
-if [ "${OBSERVED_E8S:-0}" -lt "$EXPECTED_E8S" ]; then
-  die "the gateway does not see the float: it reports ${OBSERVED_E8S:-0} e8s, expected at least $EXPECTED_E8S.
-    \`icp token transfer\` succeeded, so either the transfer went somewhere else or
-    refresh_float was refused (it is admin-only). Check:
-      icp canister call backend treasury_status '()'
-      icp canister call backend refresh_float '()'"
-fi
-ok "float funded and observed: $((OBSERVED_E8S / 100000000)) ICP"
 
 # ── the admission gate ───────────────────────────────────────────────────────
 # ── Stripe API key + return origin (#33) ─────────────────────────────────────
@@ -289,8 +268,8 @@ step "admission gate"
 # The one that is genuinely confusing: `minCanisterCycles` defaults to 5 T, and
 # `icp deploy` creates the canister with less. So a freshly deployed local gateway
 # refuses EVERY purchase with "temporarily unavailable while the gateway is
-# topped up" — which reads as a treasury problem and is actually about the
-# canister's own gas.
+# topped up" — which reads as a problem with what it sells and is actually about
+# the canister's own gas.
 #
 # Fix the CONDITION, not the gate: top the canister up, which is exactly what you
 # would do on mainnet. `icp canister top-up` (icp-cli 1.2.0) does this; it is not
@@ -306,15 +285,22 @@ icp canister top-up backend --amount "$CYCLES_TOP_UP" >/dev/null 2>&1 ||
     Needs icp-cli 1.2.0 or newer (\`icp canister top-up --help\`)."
 
 step "cycles reserve"
-# #30 PR-A: delivery is a TRANSFER out of the gateway's own cycles-ledger
-# account, not a mint. So the gateway needs cycles in that account, and it is a
-# different pot from the gas balance topped up above — the comment there spells
-# out the distinction, and this is the other half of it.
+# Delivery is a TRANSFER out of the gateway's own cycles-ledger account. So the
+# gateway needs cycles in that account, and it is a different pot from the gas balance
+# topped up above — the comment there spells out the distinction, and this is the
+# other half of it.
 #
-# `icp cycles transfer` is the mainnet procedure too: nothing mints into the
-# reserve, and there is deliberately no `mint_reserve` (#30 rejected it — it
-# would mean keeping ICP, an ICP-ledger dependency and a burn cap for one
-# operator convenience).
+# `icp cycles transfer` is the mainnet procedure too: nothing creates cycles here, and
+# there is deliberately no `mint_reserve` — it would mean holding ICP and an
+# ICP-ledger dependency for one operator convenience.
+#
+# ⚠️ **Read the id here, where it is used.** Reading it in an earlier section that a
+# later change deletes leaves this line on an unbound variable, which `set -u` turns
+# into a hard stop three quarters of the way through the seed — after rates and tiers
+# are already configured. That has happened; nothing catches it but running the seed.
+BACKEND_ID="$(icp canister status backend --json | jq -r '.id')"
+[ -n "$BACKEND_ID" ] && [ "$BACKEND_ID" != "null" ] ||
+  die "could not read the backend canister id — is the network up and the canister deployed?"
 RESERVE_TOP_UP=100t
 if icp cycles transfer "$RESERVE_TOP_UP" "$BACKEND_ID" >/dev/null 2>&1; then
   # ⚠️ **A funded reserve is not a SELLABLE reserve until the gateway looks.** #30

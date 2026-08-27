@@ -17,7 +17,7 @@ import Util "../src/backend/Util";
 // Task 8 — webhook ingestion (§6.1 complete), end to end over crafted
 // *signed* payloads: verify → dedup → claimed-not-trusted attribution →
 // honor the actual paid amount → #paid, with every failure landing in the
-// §4.1 Type 1 error queue. Signatures are minted with signedPayloadMac,
+// §4.1 error queue. Signatures are produced with signedPayloadMac,
 // which card.test.mo pins against externally computed vectors — so these
 // tests exercise ingestion, not the MAC's self-consistency.
 
@@ -31,8 +31,8 @@ let goodRef = "aaaaa-aa_" # orderId;
 
 // The shared §3 vector, chosen so the at-cost property is visible: 500¢ gross,
 // fee ⌈500·290/10⁴⌉+30 = 45¢, net 455¢. At $4.55/ICP that net buys exactly one
-// ICP, which mints 35_000 × 10⁸ = 3.5 T cycles. Money in, exactly that much ICP
-// out — if those two ever disagree, the formula is wrong.
+// ICP, worth 35_000 × 10⁸ = 3.5 T cycles at the protocol rate. Money in, exactly
+// that much value out — if those two ever disagree, the formula is wrong.
 let pricing : Types.Pricing = {
   usdCents = 500;
   usdPerIcpMicros = 4_550_000; // $4.55 per ICP
@@ -329,21 +329,21 @@ suite("a resent webhook is never a second payment", func() {
     let resp = deliver(replayed, paidBody("evt_1", "pi_1", ?goodRef, 500));
     assert resp.status_code == 200;
     assert bodyText(resp) == "already credited";
-    // No obligation invented, and nothing minted twice.
+    // No obligation invented, and nothing delivered twice.
     assert ErrorQueue.unresolved(replayed.errorQueue).size() == 0;
     assert AuditLog.events(replayed.auditLog).find(
       func(e) = e.tag == "stripe.replayedAfterPruning"
     ) != null;
   });
 
-  test("an intent credited to ANOTHER order never mints again, and says so", func() {
+  test("an intent credited to ANOTHER order never delivers again, and says so", func() {
     // The asymmetry this closes: the check used to live inside the
     // already-handled-order arm, so if the resolved order was still #created it
     // never ran. Sequence: an operator attaches pi_1 to order Y (wrong order),
     // then >7 days later resends the session naming order X, still #created.
-    // Both dedup sets are pruned, attribution succeeds, and the old code minted
-    // a SECOND time for one payment and overwrote the pi->order link, so a later
-    // refund would reconcile against the wrong order.
+    // Both dedup sets are pruned, attribution succeeds, and without this check the
+    // payment is credited a SECOND time and the pi->order link is overwritten, so a
+    // later refund reconciles against the wrong order.
     let deps = freshDeps();
     withOrder(deps, #card);
     // Simulate the wrong-order attach: the intent is credited to some other id.
@@ -351,7 +351,7 @@ suite("a resent webhook is never a second payment", func() {
 
     let resp = deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500));
     assert resp.status_code == 200;
-    // NOT minted: the money is already spent on another order.
+    // Nothing delivered: the money is already spent on another order.
     assert statusOf(deps) == #created;
     // The contradiction is recorded — previously this was completely silent.
     assert AuditLog.events(deps.auditLog).find(
@@ -389,7 +389,7 @@ suite("charge.refunded: partial vs full", func() {
     assert not Card.isFullRefund({ eventId = "e"; paymentIntent = "p"; amountRefundedCents = 0; chargeAmountCents = 0 });
   });
 
-  test("a PARTIAL refund leaves the Type 1 obligation open", func() {
+  test("a PARTIAL refund leaves the obligation open", func() {
     // The expensive bug this prevents: Stripe fires charge.refunded on ANY
     // refund, so a small courtesy refund would otherwise auto-resolve the whole
     // entry and the unrefunded remainder would have no record anywhere except
@@ -418,7 +418,7 @@ suite("charge.refunded: partial vs full", func() {
     // The real money-out path, and asserted rather than ignored — a skipped
     // state is not a legal transition, and swallowing that would leave the order
     // in #paid and silently test the wrong branch.
-    for (to in ([#minting, #icpAtCmc, #delivered] : [Types.OrderStatus]).values()) {
+    for (to in ([#delivered] : [Types.OrderStatus]).values()) {
       switch (Orders.applyTransition(deps.orders, orderId, to, nowNs)) {
         case (#ok(_)) {};
         case (#err(_)) Runtime.trap("could not drive the order to #delivered");
@@ -448,10 +448,10 @@ suite("handleWebhook: livemode gate", func() {
     { freshDeps() with expectLivemode = expected };
   };
 
-  test("a test-mode payment never mints on a gateway declared live", func() {
+  test("a test-mode payment never delivers on a gateway declared live", func() {
     // The scenario: an operator pastes a test-mode signing secret into a canister
-    // funded with a real ICP float. Without this check, test events mint real
-    // cycles for payments that never happened.
+    // with a funded reserve. Without this check, test events spend real cycles on
+    // payments that never happened.
     let deps = depsExpecting(?true);
     withOrder(deps, #card);
     let body = typedCheckoutBody(
@@ -466,7 +466,7 @@ suite("handleWebhook: livemode gate", func() {
 
   test("a LIVE payment on a test-declared gateway is an obligation, not a shrug", func() {
     // The reverse mistake: real money arrived somewhere configured for test. It
-    // must not mint, but it must land on the worklist — the money is real.
+    // must not deliver, but it must land on the worklist — the money is real.
     let deps = depsExpecting(?false);
     withOrder(deps, #card);
     let body = typedCheckoutBody(
@@ -525,7 +525,7 @@ suite("handleWebhook: livemode gate", func() {
 
   test("an unset expectation is audited on every honoured payment", func() {
     // A gateway taking payments without a declared mode has no defence against a
-    // test-mode secret minting real cycles. The nudge stops once it is declared.
+    // test-mode secret spending the reserve. The nudge stops once it is declared.
     let deps = depsExpecting(null);
     withOrder(deps, #card);
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
@@ -539,7 +539,7 @@ suite("handleWebhook: livemode gate", func() {
     assert AuditLog.events(declared.auditLog).find(func(e) = e.tag == "stripe.livemodeUnset") == null;
   });
 
-  test("matching modes mint normally, and an unset expectation accepts either", func() {
+  test("matching modes deliver normally, and an unset expectation accepts either", func() {
     let live = depsExpecting(?true);
     withOrder(live, #card);
     assert deliver(live, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
@@ -592,7 +592,7 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
     assert ErrorQueue.size(deps.errorQueue) == 0;
   });
 
-  test("genuine second payment (fresh event + intent) is Type 1 #duplicate", func() {
+  test("genuine second payment (fresh event + intent) is a #duplicate obligation", func() {
     let deps = freshDeps();
     withOrder(deps, #card);
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
@@ -605,7 +605,7 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
     assert statusOf(deps) == #paid; // first payment's delivery is untouched
   });
 
-  test("a payment for an unpayable order is a Type 1 obligation, never a trap", func() {
+  test("a payment for an unpayable order is a refundable obligation, never a trap", func() {
     // ⚠️ THE REGRESSION THIS PINS is a reachable `Runtime.trap` on the money-in
     // path. `markPaid`'s error arm traps, on the documented grounds that the
     // status guard above it already checked the status. #34 deleted
@@ -643,12 +643,12 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
     };
   });
 
-  test("an unsettled async payment mints when Stripe reports it succeeded", func() {
+  test("an unsettled async payment delivers when Stripe reports it succeeded", func() {
     // The real sequence for a delayed payment method. `completed` arrives with
     // payment_status != paid and money has NOT moved; settlement is reported
     // later as `checkout.session.async_payment_succeeded`, carrying the same
     // session object. Handling only `completed` would mean fiat arriving with
-    // nothing minted and nothing on the worklist.
+    // nothing delivered and nothing on the worklist.
     let deps = freshDeps();
     withOrder(deps, #card);
     let resp = deliver(deps, checkoutBody("evt_1", "pi_1", ?goodRef, 500, "usd", "unpaid"));
@@ -677,7 +677,7 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
   });
 });
 
-suite("handleWebhook: attribution failures are Type 1 #unattributed (§4.1)", func() {
+suite("handleWebhook: attribution failures are #unattributed (§4.1)", func() {
   func expectUnattributed(deps : Card.Deps, body : Blob, claimedRef : Text, paymentRef : Text) {
     let resp = deliver(deps, body);
     assert resp.status_code == 200;
@@ -730,12 +730,9 @@ suite("handleWebhook: attribution failures are Type 1 #unattributed (§4.1)", fu
 });
 
 suite("handleWebhook: the paid amount must EQUAL the quote (§3/§6.1)", func() {
-  // Inverted by #33. This suite used to assert that a different amount was
-  // REPRICED from the order's own snapshot and minted — correct while a fixed
-  // Payment Link could be paid for an amount the order was not created for.
-  // A per-order session carries our own figure, so a difference now means a
-  // Stripe feature that moves the total is enabled, which is an operator
-  // problem, not a buyer's choice.
+  // A per-order session carries our own figure, so a difference means a Stripe
+  // feature that moves the total is enabled — an operator problem, not a buyer's
+  // choice. The list of such features is next to `Session.createBody`.
 
   test("the quoted amount delivers exactly what was locked at creation", func() {
     let deps = freshDeps();
@@ -751,10 +748,9 @@ suite("handleWebhook: the paid amount must EQUAL the quote (§3/§6.1)", func() 
     };
   });
 
-  test("a different amount mints NOTHING and files a Type 1", func() {
-    // 1000¢ against the 500¢ order — the exact input that used to mint
-    // 7_238_461_538_461 cycles. It must now leave the order payable and the
-    // money queued for a refund.
+  test("a different amount delivers NOTHING and files an obligation", func() {
+    // 1000¢ against the 500¢ order. It must leave the order payable and the money
+    // queued for a refund — never deliver a quantity nobody quoted.
     let deps = freshDeps();
     withOrder(deps, #card);
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 1_000)).status_code == 200;
@@ -798,7 +794,7 @@ suite("handleWebhook: the paid amount must EQUAL the quote (§3/§6.1)", func() 
 });
 
 suite("handleWebhook: charge.refunded auto-resolve (§4.1)", func() {
-  test("refund resolves every unresolved Type 1 entry for its intent", func() {
+  test("refund resolves every unresolved refund-resolvable entry for its intent", func() {
     let deps = freshDeps();
     // two unattributed payments under the same intent... impossible (intent
     // dedup), so: one unattributed payment, refunded.
@@ -843,7 +839,7 @@ suite("handleWebhook: charge.refunded auto-resolve (§4.1)", func() {
     withOrder(deps, #card);
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
     // Drive the order to its terminal delivered state the way money-out does.
-    for (to in ([#minting, #icpAtCmc, #delivered] : [Types.OrderStatus]).values()) {
+    for (to in ([#delivered] : [Types.OrderStatus]).values()) {
       switch (Orders.applyTransition(deps.orders, orderId, to, nowNs)) {
         case (#ok(_)) {};
         case (#err(_)) Runtime.trap("could not drive the order to #delivered");
@@ -899,7 +895,7 @@ suite("handleWebhook: the purchase ceiling", func() {
     assert open[0].detail.contains(#text "no order");
   });
 
-  test("a payment above the ceiling is not minted — Type 1 instead", func() {
+  test("a payment above the ceiling delivers nothing — an obligation instead", func() {
     let deps = { freshDeps() with maxPurchaseUsdCents = 1_000 };
     withOrder(deps, #card);
     // Defence in depth since #33: the amount check alone would already refuse
@@ -918,7 +914,7 @@ suite("handleWebhook: the purchase ceiling", func() {
     // no longer reach the ceiling — this is the only path left to it, and it
     // needs no tampering at all. The order quotes 500¢ and is paid 500¢; the
     // ceiling moved to 100¢ underneath it. Without this branch the equality
-    // check would pass and the order would mint above a limit the operator has
+    // check would pass and the order would deliver above a limit the operator has
     // since set. (Delete this test and `#aboveCeiling` becomes dead code.)
     let deps = { freshDeps() with maxPurchaseUsdCents = 100 };
     withOrder(deps, #card);
@@ -956,7 +952,7 @@ suite("handleWebhook: the purchase ceiling", func() {
 
 suite("handleWebhook: only a real payment creates money-out work", func() {
   // The webhook route is unauthenticated by necessity, so whatever it triggers
-  // is free for anyone to invoke. `paidOrder` is what the caller gates the mint
+  // is free for anyone to invoke. `paidOrder` is what the caller gates the delivery
   // kick on, and it must be null on every path except an actual #paid.
   test("a verified payment reports the order it paid", func() {
     let deps = freshDeps();

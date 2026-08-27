@@ -8,7 +8,10 @@
 .mops
 .migrations-*/
 
-# build artifacts (commit .icp/data/ when it appears — it holds canister ID mappings)
+# ⚠️ **`.icp/cache/` ONLY — never broaden this to `.icp/`.** `.icp/data/` holds the
+# canister ID mappings and MUST be committed: it is the record of which canister id is
+# which environment, and for a deployed gateway that record is not reconstructible from
+# the repo. `.icp/cache/` is rebuildable build output (`icp deploy` refills it).
 .icp/cache/
 # reproducible-build output (scripts/reproducible-build.sh) — hashes are
 # published in release notes, binaries are rebuildable from the tag

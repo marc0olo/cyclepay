@@ -159,7 +159,6 @@ export function installFixtures(host: FixtureHost): void {
       { id: "t20", usdCents: 2_000n },
       { id: "t50", usdCents: 5_000n },
     ],
-    treasury_status: async () => ({ lowFloat: false }),
     // The gate's bounds, which the custom-amount field renders its range from.
     // Without this the field stays disabled on "Loading amounts…" — which a
     // screenshot caught and no assertion would have.
@@ -206,7 +205,7 @@ export function installFixtures(host: FixtureHost): void {
         : {
             order,
             paidUsdCents: USD_CENTS,
-            cyclesMinted: LOCKED_CYCLES,
+            cyclesDelivered: LOCKED_CYCLES,
             deliveryBlockIndex: 4_812n,
             verification: {
               netCents: NET_CENTS,

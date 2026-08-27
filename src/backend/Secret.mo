@@ -1,6 +1,5 @@
 /// A stored Stripe secret (§7). **Two stores use this module**: the webhook
-/// signing secret and, since #33, the Checkout Sessions API key. It said "the
-/// system's only stored secret" until then.
+/// signing secret and the Checkout Sessions API key.
 ///
 /// Both share the posture below. They also share the rail's on/off switch:
 /// `railsLive` is "both provisioned", because neither state can complete a
@@ -8,7 +7,7 @@
 /// buyer can pay and we cannot credit them.
 ///
 /// Stored **plaintext in canister state, by design** (no vetKeys). HMAC is
-/// symmetric, so "verify" = "forge": whoever reads this blob can mint
+/// symmetric, so "verify" = "forge": whoever reads this blob can forge
 /// "paid" webhooks. The documented posture (§7) is:
 ///
 /// - **Confidentiality layer: SEV-SNP**, i.e. hardware + attestation, not
@@ -17,16 +16,35 @@
 ///   alone does not cover state at rest; verify this hardest, §7).
 /// - **Provisioning exposure:** the set/rotate call's argument transits the
 ///   TLS-terminating boundary node as a plain ingress message.
-/// - **Blast-radius backstop (always on):** a leaked secret only lets an
-///   attacker mint cycles at operator expense; the per-period ICP burn cap
-///   (§5.3, task 10) bounds the drain, off-chain reconciliation detects it,
+/// - **Blast-radius backstop (always on):** a forged "paid" event makes the
+///   gateway deliver, so a leaked webhook secret costs the operator cycles. The
+///   drain is bounded by the **reserve balance** — the cycles the operator
+///   funded the delivery account with — off-chain reconciliation detects it,
 ///   and rotation recovers. Launch must not block on SEV availability.
-///   ⚠️ Per #36 the bound becomes the **reserve balance** rather than the burn
-///   cap, once settlement stops minting per order.
+///
+/// ⚠️ **The reserve is a stock, not a rate.** That makes it a better bound than
+/// a per-period cap in two ways worth stating, because the instinct is to read
+/// "no rate limit" as weaker. A cap resets, so a patient attacker drains it
+/// again every period and the operator's total loss is unbounded over time; the
+/// reserve, once empty, refuses further deliveries with `#reserveShort` and
+/// cannot be drained again until a human refunds it. And the drain is *visible*
+/// in a value the gateway already maintains and reports: the reserve floor is a
+/// lower bound that only moves down when this gateway itself issues a transfer,
+/// so cycles leaving faster than orders arrive is exactly the discrepancy
+/// `reserve_status` exposes. Neither property is a reason to leak the secret;
+/// both are reasons the launch decision does not need SEV to be sound.
+///
+/// ⚠️ **And the one way a stock is worse, stated because an argument that only lists
+/// its own advantages is advocacy.** A cap spreads a loss across periods and so
+/// bounds how fast it can happen; a stock can go in a single burst between the leak
+/// and its rotation. The design accepts that and controls it by *sizing* — keep in
+/// the account what you are willing to lose in one go (RUNBOOK §1) — and by the step
+/// ordering in §2, which refunds the reserve only after the secret is dead. Both are
+/// procedure rather than mechanism, which is exactly why they are written down.
 ///
 /// The two secrets differ in what a leak buys an attacker, which is worth
 /// knowing when choosing key scopes: the webhook secret lets them forge "paid"
-/// events, so it mints at operator expense. A restricted `rk_` API key scoped to
+/// events, so it spends the reserve. A restricted `rk_` API key scoped to
 /// *write Checkout Sessions* only lets them create sessions that pay **us** —
 /// which is why the scope matters and why an unrestricted `sk_`, able to refund,
 /// would be a materially worse thing to leak.

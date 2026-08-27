@@ -49,10 +49,9 @@ export function routeHash(route: Route): string {
   }
 }
 
-/// The four steps the whole flow is sold as (distinct from format.ts's STEPS,
-/// which is the ORDER pipeline: created, paid, delivered — three since #30 PR-C
-/// dropped the unreachable `minting` segment), and which of them a given view has
-/// already completed.
+/// The four steps the whole flow is sold as (distinct from format.ts's STEPS, which is
+/// the ORDER pipeline — created, paid, delivered, three of them), and which of them a
+/// given view has already completed.
 ///
 /// The strip persists across buy, order and delivered so the visitor can always
 /// see how far along they are and how much is left. Issue #21's headline promises

@@ -1,8 +1,8 @@
 /// Fully on-chain cycles gateway — composition root.
 ///
 /// See design-docs/ONCHAIN_GATEWAY_SPEC.md (spec v2.1) and PRD.md for the
-/// module layout this actor grows into: Orders.mo wiring, rails/, Cmc.mo,
-/// Pricing.mo, Treasury.mo, ErrorQueue.mo, Auth.mo.
+/// module layout this actor grows into: Orders.mo wiring, rails/, Delivery.mo,
+/// Pricing.mo, Delivery.mo, ErrorQueue.mo, Auth.mo.
 import Array "mo:core/Array";
 import Cycles "mo:core/Cycles";
 import Error "mo:core/Error";
@@ -10,7 +10,6 @@ import Int "mo:core/Int";
 import List "mo:core/List";
 import Map "mo:core/Map";
 import Nat "mo:core/Nat";
-import Nat64 "mo:core/Nat64";
 import Principal "mo:core/Principal";
 import Result "mo:core/Result";
 import Runtime "mo:core/Runtime";
@@ -25,6 +24,7 @@ import IC "mo:ic/Types";
 import AuditLog "AuditLog";
 import Auth "Auth";
 import Cmc "Cmc";
+import Delivery "Delivery";
 import ErrorQueue "ErrorQueue";
 import Pricing "Pricing";
 import Xrc "Xrc";
@@ -38,7 +38,6 @@ import Card "rails/Card";
 import Session "rails/Session";
 import Secret "Secret";
 import Tiers "Tiers";
-import Treasury "Treasury";
 import Types "Types";
 
 persistent actor CyclesGateway {
@@ -176,7 +175,7 @@ persistent actor CyclesGateway {
   var cardTiers : [Tiers.Tier] = [];
 
   /// Pre-creation admission policy (Gate.mo) — open-order cap, own-cycles
-  /// floor, per-purchase ceiling. Unlike the burn cap these default to real
+  /// floor, per-purchase ceiling. These default to real
   /// values: they are safety limits, and a zero default would brick the
   /// canister rather than protect it.
   var gateConfig : Gate.Config = Gate.defaultConfig();
@@ -201,10 +200,10 @@ persistent actor CyclesGateway {
 
   /// Which Stripe world this gateway belongs to, or null for "not declared".
   ///
-  /// A test-mode webhook secret provisioned against a canister holding a real
-  /// ICP float would mint real cycles for payments that never happened — the
-  /// secret is the only thing separating the two, and provisioning the wrong one
-  /// is an ordinary operator slip. Declaring the expectation lets the canister
+  /// A test-mode webhook secret provisioned against a canister holding a funded
+  /// reserve would deliver real cycles for payments that never happened — the secret
+  /// is the only thing separating the two, and provisioning the wrong one is an
+  /// ordinary operator slip. Declaring the expectation lets the canister
   /// refuse the mismatch instead of trusting that nobody pasted the wrong value.
   ///
   /// Null rather than `?true` by default so a fresh local install works against
@@ -596,7 +595,7 @@ persistent actor CyclesGateway {
   ///
   /// ⚠️ **Read this BEFORE committing an order.** Both checks short-circuit
   /// without an outcall, so an unprovisioned gateway that committed the order
-  /// first would mint a permanent `#expired` record for **free**: no cycles are
+  /// first would create a permanent `#expired` record for **free**: no cycles are
   /// spent, so `minCanisterCycles` never bounds the loop, and the record is not
   /// `#created`, so the open-order cap does not either. Unbounded storage growth
   /// at zero attacker cost — and precisely in the state RUNBOOK §1 prescribes
@@ -738,7 +737,7 @@ persistent actor CyclesGateway {
   /// inputs from that same epoch — which is what a buyer recomputes their own
   /// price from, and what a delivered order is auditable against. (It was also
   /// what the webhook repriced a mismatched paid amount from, until #33 made a
-  /// mismatch mint nothing.)
+  /// mismatch deliver nothing.)
   ///
   /// Synchronous and awaitless by design: the rates come from the cache the
   /// refresh timer maintains, never from a call. That is what keeps a
@@ -779,9 +778,9 @@ persistent actor CyclesGateway {
 
   /// Read every admission input, synchronously, immediately before deciding —
   /// no awaits in between, so there is no TOCTOU window between observing and
-  /// admitting. `Cycles.balance()` is this canister's own gas; the float comes
-  /// from the last observation because a query cannot call the ledger (§5.3),
-  /// and the authoritative float check remains the mint-time pre-gate.
+  /// admitting. `Cycles.balance()` is this canister's own **gas**, which is a
+  /// different pot from the reserve it sells — solvency is decided separately, and
+  /// synchronously, against the maintained floor.
   func gateObservation(caller : Principal) : Gate.Observation {
     {
       openOrders = Orders.openOrderCount(orderStore, caller);
@@ -791,7 +790,7 @@ persistent actor CyclesGateway {
 
   /// The §5.3-adjacent admission gate: refuse to *quote* when fulfilment is
   /// already known to be impossible, rather than taking the user's money and
-  /// discovering it at mint time. Audited on refusal — a rail that has quietly
+  /// discovering it at delivery time. Audited on refusal — a rail that has quietly
   /// stopped selling is something the operator must be able to see.
   func admit(caller : Principal, usdCents : Nat) : Result.Result<(), Gate.Reason> {
     switch (Gate.admit(gateConfig, gateObservation(caller), usdCents)) {
@@ -1137,7 +1136,7 @@ persistent actor CyclesGateway {
   /// per-purchase ceiling. Validated atomically — a bad config never partially
   /// applies. Lowering `maxPurchaseUsdCents` below an existing tier does NOT
   /// retroactively invalidate that tier's registration, but the next
-  /// `set_card_tiers` will reject it and the webhook will refuse to mint a
+  /// `set_card_tiers` will reject it and the webhook will refuse to deliver a
   /// payment above the new ceiling.
   /// Declare which Stripe mode this gateway serves (admin).
   ///
@@ -1151,9 +1150,9 @@ persistent actor CyclesGateway {
       caller,
       "stripe.expectLivemodeSet",
       switch (expected) {
-        case (?true) "true — only live-mode payments will mint";
-        case (?false) "false — only test-mode payments will mint";
-        case null "unset — either mode will mint";
+        case (?true) "true — only live-mode payments deliver";
+        case (?false) "false — only test-mode payments deliver";
+        case null "unset — either mode delivers";
       },
     );
   };
@@ -1181,13 +1180,12 @@ persistent actor CyclesGateway {
 
   /// Public: the frontend needs the bounds to size its amount input and to say
   /// what it will accept before the buyer types. Same transparency stance as
-  /// `forex_status` and `treasury_status` — these are the rules users are held
+  /// `pricing_status` and `reserve_status` — these are the rules users are held
   /// to, not secrets.
   ///
-  /// It carried a `retention` half until #33. There is no lifecycle *policy* of
-  /// ours any more: the deadline is the Stripe session's `expires_at`, which
-  /// lives on each order rather than in config, so there is nothing global to
-  /// report.
+  /// ⚠️ **One field, and no lifecycle *policy* of ours to add to it.** An order's
+  /// deadline is the Stripe session's `expires_at`, which lives on the order rather
+  /// than in config, so there is nothing global to report.
   public query func lifecycle_config() : async { gate : Gate.Config } {
     { gate = gateConfig };
   };
@@ -1199,7 +1197,7 @@ persistent actor CyclesGateway {
   /// The answer is advisory — it can go stale between this call and
   /// `create_order`, which re-checks. It is not an authorization decision, so
   /// anonymous callers may ask: it reveals only operational state that
-  /// `treasury_status` already publishes. Answered for the *calling* principal,
+  /// `reserve_status` already publishes. Answered for the *calling* principal,
   /// so the open-order cap it reports is the caller's own.
   public shared query ({ caller }) func can_purchase(usdCents : Nat) : async Result.Result<(), Gate.Reason> {
     Gate.admit(gateConfig, gateObservation(caller), usdCents);
@@ -1297,8 +1295,9 @@ persistent actor CyclesGateway {
   /// webhook path (~7 days, Idempotency.mo).
   let dedup : Idempotency.Store = Idempotency.emptyStore();
 
-  /// §4.1 bounded error queue: Type 1 (fiat-only, operator refunds in the
-  /// Stripe Dashboard) + Type 2 (stranded cycles, task 9).
+  /// §4.1 bounded error queue: every dollar that arrives resolves to a delivery or to
+  /// an obligation here, and `ErrorQueue.refundResolvable` says which of the two
+  /// remedies an entry takes — a Stripe refund, or a human establishing the position.
   let errorQueue : ErrorQueue.Store = ErrorQueue.emptyStore();
 
   /// §4.2 bounded audit-log ring buffer — operational trail, not a
@@ -1368,9 +1367,15 @@ persistent actor CyclesGateway {
     ErrorQueue.unresolvedPage(errorQueue, afterId, limit);
   };
 
-  /// Manual resolution (§4.1/§7): refund issued off-chain, or Type 2 cycles
-  /// re-delivered/refunded. (`charge.refunded` resolves Type 1 entries
-  /// automatically; this is the fallback and the only path for Type 2.)
+  /// Manual resolution (§4.1/§7) — the operator marking an obligation settled after
+  /// acting off-chain: a refund issued in the Stripe Dashboard, or a delivery whose
+  /// fate they established on the cycles ledger.
+  ///
+  /// ⚠️ **This is the only path for everything a refund cannot resolve.** A
+  /// `charge.refunded` auto-resolves the refund-resolvable kinds, so those usually
+  /// close themselves; `#deliveryStuck`, `#refundAfterDelivery` and `#abandoned` carry
+  /// no `paymentRef` and can only be closed here. Resolving an entry never transitions
+  /// the order — see `ErrorQueue`'s header.
   public shared ({ caller }) func resolve_error(id : Nat) : async Result.Result<ErrorQueue.Entry, ErrorQueue.ResolveError> {
     requireAdmin(caller);
     let resolved = ErrorQueue.resolve(errorQueue, id, Time.now());
@@ -1388,7 +1393,7 @@ persistent actor CyclesGateway {
     AuditLog.events(auditLog);
   };
 
-  // ── CMC mint pipeline (task 9, §5/§5.1) ─────────────────────────────────
+  // ── Delivery from the reserve (§5/§5.1) ─────────────────────────────────
 
   /// #30 PR-B — a maintained **lower bound** on the reserve's ledger balance.
   ///
@@ -1442,29 +1447,23 @@ persistent actor CyclesGateway {
   ///
   /// An increase is the harmless direction: the reserve absorbs `delta` and the
   /// buyer gets exactly what was quoted (see the `#badFee` arm).
-  var cyclesLedgerFee : Nat = Cmc.cyclesLedgerDefaultFee;
+  var cyclesLedgerFee : Nat = Delivery.cyclesLedgerDefaultFee;
 
   /// §4.2 `journal : Map<OrderId, JournalEntry>` — the money-out record:
   /// transfer intent (written *before* the ledger call, §5.1), block_index,
-  /// minted cycles, retries. Financial record — kept for years, never pruned.
-  let deliveryJournal : Cmc.Journal = Cmc.emptyJournal();
+  /// delivered cycles, retries. Financial record — kept for years, never pruned.
+  let deliveryJournal : Delivery.Journal = Delivery.emptyJournal();
 
-  transient let icpLedger = actor (Cmc.icpLedgerId) : Cmc.LedgerService;
   transient let cmc = actor (Cmc.cmcId) : Cmc.CmcService;
-  transient let cyclesLedger = actor (Cmc.cyclesLedgerId) : Cmc.CyclesLedgerService;
+  transient let cyclesLedger = actor (Delivery.cyclesLedgerId) : Delivery.CyclesLedgerService;
 
   /// Per-order single-flight guard: two concurrent drivers for one order
   /// would both pass the status gates between awaits. Transient — an
-  /// upgrade mid-mint clears it and the journal-driven resume (Cmc.stageOf)
+  /// upgrade mid-delivery clears it and the journal-driven resume (Delivery.stageOf)
   /// picks up where the state actually is.
   transient let deliveriesInFlight = Set.empty<Types.OrderId>();
 
-  /// Bounds the retriable-error loop on stages the ledger's 24 h dedup window
-  /// doesn't already bound. Defined alongside the sweep cadence in Recovery.mo,
-  /// because the two are only correct in combination.
-  transient let maxMintRetries : Nat = Recovery.maxMintRetries;
-
-  /// Orders already audited for a blocked `#begin` this session, so a stuck
+  /// Orders already audited for a blocked delivery this session, so a stuck
   /// order contributes one audit line rather than one per sweep. Transient: the
   /// durable record of a stuck order is its error-queue entry once the max-wait
   /// bound trips, not this.
@@ -1480,17 +1479,13 @@ persistent actor CyclesGateway {
   /// open obligation on the worklist describing a problem that no longer exists.
   /// order id → (error-queue entry id, the stage that alert described).
   ///
-  /// The stage is kept so a *changed* stall can refresh the entry. An order that
-  /// alerts while `#paid` and later stalls in `#icpAtCmc` is a different problem with
-  /// a different recovery, and leaving the first wording in place would have the
-  /// operator chasing a cause that has moved on.
-  /// ⚠️ **The stage half of this pair is gone (#30 PR-C).** It existed so a stall
-  /// that MOVED between stages could close the stale alert and raise one describing
-  /// where the order actually is. With one in-flight status there is nowhere to move
-  /// to: `#minting` and `#icpAtCmc` have had no entrance since PR-A, so a `#paid`
-  /// order's stage is always the same string. Keeping the comparison would have kept
-  /// a whole branch, and an audit tag, describing a transition that cannot occur.
-  /// #36 deletes the two legacy stages that made it conceivable.
+  /// ⚠️ **No stage is stored alongside the entry id, and that follows from having one
+  /// in-flight status.** A stage was worth keeping only so a stall that MOVED between
+  /// stages could close the stale alert and raise one naming where the order actually
+  /// is. With `#paid` the sole status a delivery can sit in, there is nowhere to move
+  /// to: `#paid` is the one in-flight status, so a stalled order's stage is always the
+  /// same string, and a comparison would be a branch describing a transition that
+  /// cannot occur.
   let delayedAlerts = Map.empty<Types.OrderId, Nat>();
 
   /// Raise the §5 delivery-delayed alert for an order, at most once.
@@ -1526,7 +1521,7 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Audit a blocked mint at most once per order per session.
+  /// Audit a blocked delivery at most once per order per session.
   func auditDeliveryBlockedOnce(orderId : Types.OrderId, tag : Text, detail : Text) {
     if (deliveryBlockedAudited.contains(orderId)) return;
     deliveryBlockedAudited.add(orderId);
@@ -1535,93 +1530,25 @@ persistent actor CyclesGateway {
 
   func selfPrincipal() : Principal = Principal.fromActor(CyclesGateway);
 
-  // ── Treasury + burn cap (task 10, §5.3) ─────────────────────────────────
+  // ── Delivery timeline config (§5.3) ─────────────────────────────────────
 
-  /// §5.3 treasury policy. burnCapE8s defaults to 0 — every mint holds in
-  /// #awaitingTreasury until the operator consciously sizes the primary
-  /// blast-radius bound (same no-invented-numbers stance as the empty tier
-  /// list; a default cap in ICP would be a money decision invented here).
-  var treasuryConfig : Treasury.Config = Treasury.defaultConfig();
+  /// The two thresholds the delivery timeline reads: alert at 2 h, terminate at 72 h.
+  var deliveryConfig : Delivery.Config = Delivery.defaultConfig();
 
-  /// §5.3 rolling-window burn accounting. Persistent — an upgrade must not
-  /// reset the blast-radius bound mid-window.
-  let burnLedger : Treasury.Ledger = Treasury.emptyLedger();
-
-  /// Last float balance the mint pre-gate (or an admin refresh) observed.
-  /// The balance-alert query reads this; queries can't call the ledger.
-  var lastFloatObservation : ?Treasury.FloatObservation = null;
-
-  /// Record a float observation, audit-alerting on the *crossing* into low
-  /// (not every low observation — a sweep over held orders would spam the
-  /// ring buffer out of its useful history).
-  func observeFloat(e8s : Nat) {
-    let wasLow = switch (lastFloatObservation) {
-      case (?previous) Treasury.isLowFloat(treasuryConfig, previous.e8s);
-      case null false;
-    };
-    lastFloatObservation := ?{ e8s; atNs = Time.now() };
-    if (Treasury.isLowFloat(treasuryConfig, e8s) and not wasLow) {
-      audit("treasury.lowFloat", "float " # e8s.toText() # " e8s below threshold " # treasuryConfig.lowFloatThresholdE8s.toText());
-    };
-  };
-
-  /// Adjust treasury policy (§5.3/§7): burn cap, window, max hold, alert
-  /// threshold. Validated atomically — a bad config never partially applies.
-  public shared ({ caller }) func set_treasury_config(config : Treasury.Config) : async Result.Result<(), Treasury.ConfigError> {
+  /// Tune the delivery timeline (admin, §7).
+  ///
+  /// ⚠️ Validated rather than trusted: an alert at or after the terminal bound would
+  /// tell the operator at the moment the decision was already taken, and a
+  /// non-positive bound would escalate every order instantly.
+  public shared ({ caller }) func set_delivery_config(config : Delivery.Config) : async Result.Result<(), Delivery.ConfigError> {
     requireAdmin(caller);
-    switch (Treasury.validateConfig(config)) {
-      case (#ok) {
-        treasuryConfig := config;
-        auditAdmin(caller, "treasury.configSet", "burnCap=" # config.burnCapE8s.toText()
-          # " e8s/window, lowFloatThreshold=" # config.lowFloatThresholdE8s.toText()
-          # ", maxHold=" # config.maxHoldNs.toText() # "ns");
-        #ok;
-      };
-      case (#err(e)) #err(e);
+    switch (Delivery.validateConfig(config)) {
+      case (#err(e)) return #err(e);
+      case (#ok) {};
     };
-  };
-
-  /// §5.3 manual override: clear the rolling window's consumption after
-  /// confirming the traffic was legitimate (or rotating a leaked secret).
-  /// Returns the e8s of consumption cleared. Held orders resume on the next
-  /// sweep, not here — the pre-gate stays the single decision point.
-  public shared ({ caller }) func reset_burn_window() : async Nat {
-    requireAdmin(caller);
-    let cleared = Treasury.burnedInWindow(burnLedger, treasuryConfig.burnWindowNs, Time.now());
-    Treasury.reset(burnLedger);
-    auditAdmin(caller, "treasury.burnWindowReset", cleared.toText() # " e8s of window consumption cleared");
-    cleared;
-  };
-
-  /// On-demand float refresh (admin — public would let anyone spend our
-  /// cycles on ledger calls). The mint pre-gate refreshes the observation as
-  /// a side effect; this is the ops lever between mints.
-  public shared ({ caller }) func refresh_float() : async Nat {
-    requireAdmin(caller);
-    let e8s = await icpLedger.icrc1_balance_of({ owner = selfPrincipal(); subaccount = null });
-    observeFloat(e8s);
-    e8s;
-  };
-
-  /// §5.3 balance alert + soft UI gate, public: the frontend disables tiers
-  /// off `lowFloat`, and cap consumption is operational transparency (the
-  /// thesis), not a secret. The float observation may be stale — `atNs` says
-  /// how stale; `refresh_float` is the admin lever for a fresh read.
-  public query func treasury_status() : async Treasury.Status {
-    {
-      config = treasuryConfig;
-      burnedInWindowE8s = Treasury.burnedInWindow(burnLedger, treasuryConfig.burnWindowNs, Time.now());
-      lastObservedFloat = lastFloatObservation;
-      lowFloat = Treasury.lowFloatSignal(treasuryConfig, lastFloatObservation);
-      // O(1) off the maintained tally — this query is public and
-      // unauthenticated, so it must not scan the order store.
-      heldOrders = Orders.countOf(orderStore, #awaitingTreasury);
-      // Money in, not yet minted. A non-transient value here means the mint is
-      // blocked upstream (a stale CMC rate, a CMC outage) and orders are on the
-      // clock toward `mintWaitExceeded` — visible without reading the audit log,
-      // which is a ring buffer that drops.
-      paidOrders = Orders.countOf(orderStore, #paid);
-    };
+    deliveryConfig := config;
+    auditAdmin(caller, "delivery.configSet", "alert after " # config.alertAfterNs.toText() # " ns, terminate after " # config.maxHoldNs.toText() # " ns");
+    #ok;
   };
 
   func audit(tag : Text, detail : Text) {
@@ -1632,7 +1559,7 @@ persistent actor CyclesGateway {
   ///
   /// §7's trust model is a flat controller allowlist with equal privileges —
   /// "any one can upgrade-then-drain". With several controllers and no caller
-  /// recorded, the trail can say the burn cap was raised but not by whom, which
+  /// recorded, the trail can say a limit was raised but not by whom, which
   /// is the one thing it most needs to say. Every admin mutation goes through
   /// this.
   func auditAdmin(caller : Principal, tag : Text, detail : Text) {
@@ -1649,7 +1576,7 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Queue a mint-path error entry, audit-logging any unresolved eviction
+  /// Queue a delivery-path error entry, audit-logging any unresolved eviction
   /// (each is a live money obligation dropped from on-chain state, §4.1).
   func queueDeliveryError(rail : Types.Rail, kind : ErrorQueue.Kind, detail : Text) : Nat {
     let result = ErrorQueue.add(errorQueue, errorQueueCapacity, rail, kind, detail, Time.now());
@@ -1661,17 +1588,16 @@ persistent actor CyclesGateway {
     result.entry.id;
   };
 
-  /// §5.1 escalation: the mint stopped where the money position is
-  /// uncertain. The order goes `#needsReview` — **not** `#abandoned`: the money
-  /// position is unknown, so its promise stays held (#30) and a human resolves it
-  /// off-chain (inspect ledger/CMC/destination, refund/re-deliver). Only
-  /// `abandon_order` ends an order.
-  /// #30 PR-A escalation: a reserve delivery whose fate cannot be established.
+  /// **The one escalation.** A delivery stopped where it cannot continue
+  /// automatically, so the order goes `#needsReview` — **not** `#abandoned`: the
+  /// money position may be unknown, its promise stays held (#30 PR-B), and a human
+  /// resolves it off-chain. Only `abandon_order` and `record_delivered` end an order.
   ///
-  /// Same shape as `escalateStuckMint` and deliberately NOT folded into it — the
-  /// queue kinds differ (`#transferUnresolved` survives #36, `#stuckMint` does
-  /// not) and so does the operator's question. Here it is "did this transfer
-  /// land?", answerable from the cycles ledger by the order id in the memo.
+  /// ⚠️ **One escalation function, and resist splitting it again.** Two of them once
+  /// filed two queue kinds for the same question; they differed only in which audit tag
+  /// they emitted and whether they read `blockIndex`, and both left the order in the
+  /// same state. A second escalation path is a second answer to "where is the money",
+  /// which is the one question that must have exactly one.
   ///
   /// ── EVERY route to `#needsReview` on the delivery path, because the count is
   /// ── claimed elsewhere and a census beats a claim ─────────────────────────────
@@ -1679,11 +1605,11 @@ persistent actor CyclesGateway {
   /// **Unknown money position** — "we can no longer ask safely", the only kind that
   /// needs a human to establish anything:
   ///
-  ///  1. `#staleIntent` from `Cmc.stageOf`: the intent is past the ledger's ~24 h
+  ///  1. `#staleIntent` from `Delivery.stageOf`: the intent is past the ledger's ~24 h
   ///     dedup window, so a replay is no longer protected. Reaching it means a
   ///     ~day-long ledger outage with an hourly sweep and buyer kicks hammering it
   ///     throughout — **expected never**, and documented as such rather than as a
-  ///     routine branch. (Via `escalateStuckMint`, the `#escalate` stage route.)
+  ///     routine branch. Covered by scenario 80.
   ///  2. The ledger's `#escalate` responses — `#TooOld`, `#BadBurn` — arriving here.
   ///     ⚠️ Not a second cause: `#TooOld` **is** case 1 told to us by the ledger
   ///     instead of derived from our own clock, and `#BadBurn` is meaningless for a
@@ -1696,7 +1622,7 @@ persistent actor CyclesGateway {
   ///     too long *whatever* the reason, including one where **nothing was ever
   ///     sent** — position certain, instruction "refund in the Stripe Dashboard".
   ///     So `#needsReview` is genuinely reachable with the position known, and
-  ///     `Cmc.terminationFor` is what distinguishes the cases. Read the reduction's
+  ///     `Delivery.terminationFor` is what distinguishes the cases. Read the reduction's
   ///     claim as scoped to the *unknown-position* triggers, which is what "we can
   ///     no longer ask safely" means; the RUNBOOK's triage is organised by position
   ///     for exactly this reason.
@@ -1715,47 +1641,21 @@ persistent actor CyclesGateway {
       case (?e) e.blockIndex;
       case null null;
     };
-    Cmc.patch(deliveryJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+    Delivery.patch(deliveryJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesDelivered = null; bumpRetries = false }, Time.now());
+    // Any open delay alert for this order says "it delivers on the next sweep", which
+    // just stopped being true. Leaving it open would put a false promise on the
+    // worklist next to the real problem, and leak its `delayedAlerts` entry forever.
     clearDelayed(order.id);
+    // Same for the once-per-order audit guard: nothing will re-audit a blocked
+    // delivery for an escalated order, and keeping the id would only suppress a
+    // legitimate line if it were ever re-driven.
     deliveryBlockedAudited.remove(order.id);
-    ignore queueDeliveryError(order.rail, #transferUnresolved({ orderId = order.id; blockIndex }), detail);
-    audit("delivery.unresolved", order.id # " [" # stage # "]: " # detail);
-  };
-
-  func escalateStuckMint(order : Types.Order, stage : Text, detail : Text) {
-    ignore tryTransition(order.id, #needsReview);
-    Cmc.patch(deliveryJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
-    // Before queueing the escalation: any open delay alert for this order says
-    // "it delivers on the next sweep", which just stopped being true. Leaving it
-    // open would put a false promise on the worklist next to the real problem,
-    // and leak its `delayedAlerts` entry forever.
-    clearDelayed(order.id);
-    // Same reasoning for the once-per-order audit guard: the order is terminal,
-    // so nothing will re-audit a mint block for it and keeping the id would only
-    // suppress a legitimate line if it were ever re-driven.
-    deliveryBlockedAudited.remove(order.id);
-    ignore queueDeliveryError(order.rail, #stuckMint({ orderId = order.id; stage }), detail);
+    ignore queueDeliveryError(order.rail, #deliveryStuck({ orderId = order.id; stage; blockIndex }), detail);
     audit("delivery.stuck", order.id # " [" # stage # "]: " # detail);
   };
 
-  /// §5 forward half of mint-to-self-then-forward. The cycles ride the call
-  /// from the app balance; a rejected/failed call refunds them to the app
-  /// balance — exactly the Type 2 posture (§4.1).
-  func forwardCycles(order : Types.Order) : async* { #ok; #failed : Text } {
-    try {
-      switch (order.destination) {
-        case (#cyclesLedgerAccount(account)) {
-          ignore await (with cycles = order.lockedCycles) cyclesLedger.deposit({ to = account; memo = null });
-        };
-      };
-      #ok;
-    } catch (e) {
-      #failed(e.message());
-    };
-  };
-
   /// Drive one order as far toward `#delivered` as the world allows (§5).
-  /// Each loop pass asks Cmc.stageOf for the next move off status + journal,
+  /// Each loop pass asks Delivery.stageOf for the next move off status + journal,
   /// so the first attempt and every recovery resume run the same code —
   /// "replay the identical transfer" (§5.1) isn't a special case, it IS the
   /// transfer path. Retriable failures return with state untouched (plus a
@@ -1763,110 +1663,61 @@ persistent actor CyclesGateway {
   func driveDelivery(orderId : Types.OrderId) : async* () {
     label drive loop {
       let ?order = Orders.get(orderStore, orderId) else return;
-      // §5.3: a treasury-held order resumes here — Treasury owns the hold
-      // policy (max-wait), Cmc.stageOf owns the money-out resume logic. A
-      // hold within the wait bound retries #begin: the pre-gate inside it is
-      // the single decision point for cap/float, so a rolled window or a
-      // refill clears the hold with no second code path. updatedAtNs is the
-      // hold start (the hold transition is the last one the order took).
-      // Bound the time an order may sit with money in and nothing minted,
-      // whatever the reason.
+      // ⚠️ **The wait bound applies to `#paid` and only `#paid`**, because that is the
+      // one status with money in and nothing delivered. `updatedAtNs` is the right age
+      // anchor: retries deliberately do not transition, so the clock stays pinned to
+      // the moment the order was paid, and an order that is actually progressing
+      // resets it by moving.
       //
-      // `#begin` has several paths that return without transitioning — the CMC
-      // call failing, its rate being stale, the float read failing, an
-      // underivable e8s amount. Each leaves the order `#paid` and relies on the
-      // next sweep, so a persistent upstream problem parked an order forever:
-      // no bound, no error-queue entry, and the only trace was one audit line
-      // per sweep in a ring buffer that both floods and drops.
-      //
-      // The money position is identical to `treasuryWaitExceeded` — fiat in,
-      // nothing minted, refund in the Stripe Dashboard — so it is bounded by the
-      // same `maxHoldNs` and escalated the same way. Orders that are actually
-      // progressing bump `updatedAtNs` on every transition, so only a genuinely
-      // stuck one trips this.
-      // The alert tier covers **every** in-flight status, not just `#paid`.
-      // `#minting` and `#icpAtCmc` are equally capable of sitting still — a
-      // ledger or CMC that keeps answering retriably leaves the order there —
-      // and a buyer waiting on those is no less stuck than one waiting on the
-      // burn cap. `updatedAtNs` is the right age anchor for all three: retries
-      // do not transition, so it stays pinned at the moment the order entered
-      // its current state.
-      switch (order.status) {
-        case (#paid or #minting or #icpAtCmc) {
-          switch (Treasury.waitStage(order.updatedAtNs, Time.now(), treasuryConfig)) {
-            case (#retry) {};
-            case (#alert) {
-              // Tell someone while the cause is still fixable, and keep retrying:
-              // most incidents end here with the order delivering.
-              alertDelayed(
-                order,
-                switch (order.status) {
-                  case (#minting) "transferDelayed"; // LEGACY, dies with #36
-                  case (#icpAtCmc) "notifyDelayed"; // LEGACY, dies with #36
-                  // ⚠️ The reachable one, and it was called `mintDelayed` while
-                  // reporting a DELIVERY delay (#30 PR-C). `#paid` is the only status
-                  // that reaches this today.
-                  case (_) "deliveryDelayed";
-                },
-                switch (order.status) {
-                  case (#minting) "paid, ICP transfer not yet confirmed past the alert threshold — check the ICP ledger; it resumes on the next sweep";
-                  case (#icpAtCmc) "paid, ICP is at the CMC but notify_top_up keeps failing past the alert threshold — check CMC health; the block index is in delivery_journal and notify is idempotent";
-                  case (_) "paid but not yet minted past the alert threshold — fix the cause (burn cap / float / CMC) and it delivers on the next sweep";
-                },
-              );
-            };
-            case (#terminate) {
-              // §5.3 max-wait bound. By now the cause is not transient, and a
-              // buyer left waiting files a chargeback — which costs more than a
-              // refund. Terminating so the operator refunds is the protective act.
-              //
-              // The escalation comes from `Cmc.terminationFor`, which reads the
-              // **journal** and not just the status: the status says where the
-              // order stopped, the journal says where the money is, and the money
-              // position is what the operator acts on. Deciding this inline off
-              // status alone is what produced three rounds of defects — see that
-              // function's doc for the specific dangerous cell it closes.
-              let termination = Cmc.terminationFor(order.status, deliveryJournal.get(orderId));
-              escalateStuckMint(order, termination.stage, termination.detail);
-              clearDelayed(orderId);
-              deliveryBlockedAudited.remove(orderId);
-              return;
-            };
+      // A delivery has several paths that return without transitioning — the ledger
+      // rejecting retriably, a stored fee the order cannot cover, a call that gets no
+      // reply. Each leaves the order `#paid` for the next sweep, which is correct for a
+      // transient fault and would park an order forever on a persistent one. That is
+      // what this bound exists to stop.
+      if (order.status == #paid) {
+        switch (Delivery.waitStage(order.updatedAtNs, Time.now(), deliveryConfig)) {
+          case (#retry) {};
+          case (#alert) {
+            // Tell someone while the cause is still fixable, and keep retrying: most
+            // incidents end here with the order delivering.
+            //
+            // ⚠️ One in-flight status means one stage and one sentence — no switch on
+            // status here. If a second status can ever sit still, this becomes a switch
+            // again, and the alert wording has to name which one.
+            alertDelayed(
+              order,
+              "deliveryDelayed",
+              "paid but not yet delivered past the alert threshold — fix the cause and it delivers on the next sweep",
+            );
+          };
+          case (#terminate) {
+            // §5.3 max-wait bound. By now the cause is not transient, and a buyer left
+            // waiting files a chargeback — which costs more than a refund. Terminating
+            // so the operator refunds is the protective act.
+            //
+            // The escalation's stage comes from `Delivery.terminationFor`, which reads the
+            // **journal** and not just the status: the status says where the order
+            // stopped, the journal says where the money is, and the money position is
+            // what the operator acts on.
+            let termination = Delivery.terminationFor(order.status, deliveryJournal.get(orderId));
+            escalateDelivery(order, termination.stage, termination.detail);
+            clearDelayed(orderId);
+            deliveryBlockedAudited.remove(orderId);
+            return;
           };
         };
-        case (_) {};
       };
-      let stage : Cmc.Stage = switch (order.status) {
-        case (#awaitingTreasury) {
-          switch (Treasury.waitStage(order.updatedAtNs, Time.now(), treasuryConfig)) {
-            case (#retry) #begin;
-            case (#alert) {
-              // A hold clears the moment the window rolls or the float is
-              // refilled, so keep retrying — but say something now.
-              alertDelayed(order, "treasuryDelayed", "held past the alert threshold — refill the float or raise the burn cap and it delivers on the next sweep");
-              #begin;
-            };
-            case (#terminate) {
-              // §5.3: same decision function as every other terminate, so there
-              // is exactly one place that maps a money position to an
-              // instruction.
-              let termination = Cmc.terminationFor(order.status, deliveryJournal.get(orderId));
-              escalateStuckMint(order, termination.stage, termination.detail);
-              clearDelayed(orderId);
-              deliveryBlockedAudited.remove(orderId);
-              return;
-            };
-          };
-        };
-        case (_) Cmc.stageOf(order.status, deliveryJournal.get(orderId), Time.now(), Cmc.ledgerDedupWindowNs, maxMintRetries);
-      };
+      // The whole next-move decision is one pure call: status + journal in, stage out.
+      // Keep it that way — every arm of `stageOf` is unit-pinned, and a `switch` here
+      // would be a second, untested copy of the same decision.
+      let stage : Delivery.Stage = Delivery.stageOf(order.status, deliveryJournal.get(orderId), Time.now(), Delivery.ledgerDedupWindowNs);
       switch (stage) {
         case (#none) return;
         case (#escalate(reason)) {
           // ⚠️ This is the route that actually fires. The recovery sweep runs
           // every 15 min, so `stageOf` reaches an escalation within minutes of a
           // failure, while the 72 h wait bound is the rare path. Emitting a bare
-          // "mint pipeline stopped: <reason>" here left the operator's *first*
+          // "delivery stopped: <reason>" here left the operator's *first*
           // read of the entry with no instruction, on the high-probability route.
           //
           // Two different questions, so both are answered:
@@ -1876,13 +1727,13 @@ persistent actor CyclesGateway {
           // - the detail comes from `terminationFor` — that is the **money
           //   position**, which is what determines the action.
           //
-          // They can legitimately disagree: retries exhausted in `#minting` with
-          // no block is caused by retry exhaustion but the money is in an
-          // unknown-transfer position, and "establish its fate, never rebuild"
-          // is the correct action regardless of why we stopped trying. Naming
-          // both means neither reading can mislead.
-          let stage = Cmc.escalateReasonToText(reason);
-          let position = Cmc.terminationFor(order.status, deliveryJournal.get(orderId));
+          // They can legitimately disagree: `stageOf` stops because an intent aged
+          // past the dedup window, while the money position depends on whether a block
+          // was recorded — and "establish its fate, never rebuild" is the correct
+          // action regardless of why we stopped trying. Naming both means neither
+          // reading can mislead.
+          let stage = Delivery.escalateReasonToText(reason);
+          let position = Delivery.terminationFor(order.status, deliveryJournal.get(orderId));
           let detail =
             if (position.stage == stage) {
               position.detail;
@@ -1890,104 +1741,8 @@ persistent actor CyclesGateway {
               "stopped because: " # stage # ". Money position is " # position.stage
               # " — " # position.detail;
             };
-          escalateStuckMint(order, stage, detail);
+          escalateDelivery(order, stage, detail);
           return;
-        };
-        case (#begin) {
-          // §5 rate derivation: fresh CMC ICP/XDR rate, staleness-guarded.
-          let rate = try { await cmc.get_icp_xdr_conversion_rate() } catch (e) {
-            auditDeliveryBlockedOnce(orderId, "mint.rateFetchFailed", orderId # ": " # e.message());
-            return; // stays #paid; the next sweep retries
-          };
-          let ?permyriad = Cmc.freshCmcRate(rate.data, Time.now(), Cmc.cmcRateMaxAgeNs) else {
-            auditDeliveryBlockedOnce(orderId, "mint.rateStale", orderId);
-            return;
-          };
-          // §5.3 pre-gate input: the live float balance (also feeds the
-          // balance-alert observation).
-          let floatE8s = try {
-            await icpLedger.icrc1_balance_of({ owner = selfPrincipal(); subaccount = null });
-          } catch (e) {
-            auditDeliveryBlockedOnce(orderId, "mint.balanceFetchFailed", orderId # ": " # e.message());
-            return; // status untouched; the next sweep retries
-          };
-          observeFloat(floatE8s);
-          // Re-read after the awaits; only an untouched mintable order
-          // proceeds (#awaitingTreasury arrives here via the hold retry).
-          let ?fresh = Orders.get(orderStore, orderId) else return;
-          switch (fresh.status) {
-            case (#paid or #awaitingTreasury) {};
-            case (_) continue drive;
-          };
-          let ?e8s = Cmc.icpE8sForCycles(fresh.lockedCycles, permyriad) else {
-            // Audited, not silent: the order stays #paid and the next sweep
-            // retries, so without a trace this looks like a mint that simply
-            // never ran.
-            auditDeliveryBlockedOnce(orderId, "mint.unpriceable", orderId # ": cannot derive e8s for " # fresh.lockedCycles.toText() # " cycles at " # permyriad.toText() # " permyriad");
-            return;
-          };
-          // §5.3 pre-gate: burn cap (blast-radius bound, checked first —
-          // it must hold mints even when the float could fund them), then
-          // float sufficiency. A held order stays put on re-hold (no
-          // transition, no re-audit — the hold start must keep its max-wait
-          // clock and the ring buffer its history).
-          switch (Treasury.gate(burnLedger, treasuryConfig, floatE8s, e8s, Cmc.icpTransferFeeE8s, Time.now())) {
-            case (#hold(reason)) {
-              if (fresh.status == #paid) {
-                ignore tryTransition(orderId, #awaitingTreasury);
-                audit("mint.held", orderId # ": " # Treasury.holdReasonToText(reason));
-              };
-              return;
-            };
-            case (#proceed) {};
-          };
-          // §5.1 step 1 — intent + #minting + burn-cap consumption commit
-          // in ONE sync block, before the transfer await. From here the
-          // transfer args are frozen; replay is always bit-identical. The
-          // cap entry is never refunded on failure — over-counting pauses
-          // mints early, the fail-safe direction for a blast-radius bound.
-          let intent = Cmc.buildIntent(selfPrincipal(), e8s, Time.now());
-          let ?minting = tryTransition(orderId, #minting) else return;
-          Treasury.recordBurn(burnLedger, treasuryConfig.burnWindowNs, e8s, Time.now());
-          ignore Cmc.openEntry(deliveryJournal, minting, intent, Time.now());
-          // fall through the loop → #replayTransfer issues the transfer
-        };
-        case (#replayTransfer(intent)) {
-          let result = try { await icpLedger.icrc1_transfer(Cmc.transferArgs(intent)) } catch (e) {
-            Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
-            audit("mint.transferFailed", orderId # ": " # e.message());
-            return;
-          };
-          switch (Cmc.interpretTransfer(result)) {
-            // LEGACY (ICP mint path): both outcomes are identical here — there is
-            // no floor to maintain on the ICP side, so "we debited" and "an earlier
-            // attempt debited" call for the same move.
-            case (#delivered(block) or #deduplicated(block)) {
-              // Progress: allow a future block on this order to be audited again.
-              deliveryBlockedAudited.remove(orderId);
-              // §5.1 step 2 — block_index + #icpAtCmc in one sync block.
-              ignore tryTransition(orderId, #icpAtCmc);
-              Cmc.patch(deliveryJournal, orderId, { status = ?#icpAtCmc; blockIndex = ?block; cyclesMinted = null; bumpRetries = false }, Time.now());
-              // fall through → #notifyCmc
-            };
-            case (#retriable(detail)) {
-              Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
-              audit("mint.transferRetriable", orderId # ": " # detail);
-              return;
-            };
-            case (#badFee(expected)) {
-              // The ICP fee is protocol-wide and fixed; a change is a protocol
-              // event, not something to absorb. Same verdict this had before #30
-              // split the case out — only now the ICP path says so itself
-              // instead of the shared table deciding for both ledgers.
-              escalateStuckMint(order, "transferRejected", "ledger fee changed: expected " # expected.toText() # " e8s");
-              return;
-            };
-            case (#escalate(detail)) {
-              escalateStuckMint(order, "transferRejected", detail);
-              return;
-            };
-          };
         };
         case (#beginDelivery) {
           // #30 PR-A — delivery is ONE transfer out of the reserve.
@@ -2004,7 +1759,7 @@ persistent actor CyclesGateway {
           // relies on an intent never being visible without its transfer having been
           // issued in the same message. Its doc spells that out.
           let fee = cyclesLedgerFee;
-          let ?amount = Cmc.deliverableCycles(order.lockedCycles, fee) else {
+          let ?amount = Delivery.deliverableCycles(order.lockedCycles, fee) else {
             // Unreachable under the $10 floor (~7 T cycles against a 100 M fee),
             // and audited rather than silent so that a future move in either
             // number surfaces as a stuck order with a reason instead of a trap.
@@ -2033,8 +1788,8 @@ persistent actor CyclesGateway {
           // sync block. From here the args are frozen and every retry replays
           // them byte-identically; that is what makes two concurrent drivers
           // (the webhook kick and the recovery sweep) safe.
-          let intent = Cmc.buildDeliveryIntent(orderId, destination, amount, Time.now());
-          ignore Cmc.openEntry(deliveryJournal, order, intent, Time.now());
+          let intent = Delivery.buildDeliveryIntent(orderId, destination, amount, Time.now());
+          ignore Delivery.openEntry(deliveryJournal, order, intent, Time.now());
           // fall through the loop → #replayDelivery issues the transfer
         };
         case (#replayDelivery(intent)) {
@@ -2064,12 +1819,12 @@ persistent actor CyclesGateway {
           // needs a fee change inside the 24 h dedup window, which nothing here
           // can arrange. Same class as #33's transform/consensus gap: the comment
           // is the guard, so do not re-read the fee on this path.
-          let fee : Nat = if (order.lockedCycles >= intent.amountE8s) {
-            order.lockedCycles - intent.amountE8s : Nat;
+          let fee : Nat = if (order.lockedCycles >= intent.amountCycles) {
+            order.lockedCycles - intent.amountCycles : Nat;
           } else {
             // Unreachable: the amount was derived by subtracting a fee from this
             // very quantity. Escalating beats guessing a fee on a money path.
-            escalateDelivery(order, "journalInconsistent", "delivery intent amount " # intent.amountE8s.toText() # " exceeds the order's locked " # order.lockedCycles.toText() # " — the fee cannot be recovered; establish the transfer's fate on the cycles ledger before re-sending");
+            escalateDelivery(order, "journalInconsistent", "delivery intent amount " # intent.amountCycles.toText() # " exceeds the order's locked " # order.lockedCycles.toText() # " — the fee cannot be recovered; establish the transfer's fate on the cycles ledger before re-sending");
             return;
           };
           // ── Rule 2 (#30 PR-B): the floor drops when the transfer is ISSUED ──
@@ -2082,22 +1837,22 @@ persistent actor CyclesGateway {
           // transfers landing without us learning it did: our reply callback traps,
           // so the ledger's debit stands while the journal patch rolls back. (A
           // controlled upgrade cannot do this — `stop_canister` drains outstanding
-          // callbacks before the canister reaches `Stopped`, which is why
-          // `#ambiguousForward` was unreachable via the documented procedure.)
+          // callbacks before the canister reaches `Stopped`, so the documented
+          // deploy procedure cannot strand a transfer.)
           // Assuming the debit now makes that case exact instead of optimistic.
-          let debited = intent.amountE8s + fee;
+          let debited = intent.amountCycles + fee;
           reserveFloor := Reserve.floorAfterOutflow(reserveFloor, debited);
           outflowsIssued += 1;
-          let result = try { await cyclesLedger.icrc1_transfer(Cmc.deliveryArgs(intent, fee)) } catch (e) {
+          let result = try { await cyclesLedger.icrc1_transfer(Delivery.deliveryArgs(intent, fee)) } catch (e) {
             // ⚠️ The floor is NOT credited back. A call that failed without a reply
             // tells us nothing about whether the ledger acted, and rule 2 exists to
             // be pessimistic about exactly that. A reconcile heals it if the
             // transfer never happened.
-            Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+            Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, Time.now());
             audit("delivery.transferFailed", orderId # ": " # e.message());
             return;
           };
-          switch (Cmc.interpretTransfer(result)) {
+          switch (Delivery.interpretTransfer(result)) {
             // ⚠️ **`#deduplicated` credits the floor back; `#delivered` does not.**
             // Rule 2 decremented the floor when this call was issued. A fresh block
             // means this call really debited, so the decrement stands. A duplicate
@@ -2111,7 +1866,7 @@ persistent actor CyclesGateway {
               reserveFloor += debited;
               deliveryBlockedAudited.remove(orderId);
               ignore tryTransition(orderId, #delivered);
-              Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
+              Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
               clearDelayed(orderId);
               audit("delivery.deduplicated", orderId # ": ledger block " # block.toText() # " was already ours; floor credited back " # debited.toText());
               return;
@@ -2120,9 +1875,9 @@ persistent actor CyclesGateway {
               deliveryBlockedAudited.remove(orderId);
               // Block + `#delivered` in ONE sync block, so the pair cannot disagree.
               ignore tryTransition(orderId, #delivered);
-              Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
+              Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
               clearDelayed(orderId);
-              audit("delivery.sent", orderId # ": " # intent.amountE8s.toText() # " cycles, ledger block " # block.toText());
+              audit("delivery.sent", orderId # ": " # intent.amountCycles.toText() # " cycles, ledger block " # block.toText());
               return;
             };
             case (#badFee(expected)) {
@@ -2161,23 +1916,23 @@ persistent actor CyclesGateway {
               // ⚠️ If the re-issue then fails without a reply, the LARGER decrement
               // stands — correctly pessimistic.
               reserveFloor += debited;
-              let reDebited = intent.amountE8s + expected;
+              let reDebited = intent.amountCycles + expected;
               reserveFloor := Reserve.floorAfterOutflow(reserveFloor, reDebited);
               outflowsIssued += 1;
               let retried = try {
-                await cyclesLedger.icrc1_transfer(Cmc.deliveryArgs(intent, expected));
+                await cyclesLedger.icrc1_transfer(Delivery.deliveryArgs(intent, expected));
               } catch (e) {
-                Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+                Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, Time.now());
                 audit("delivery.transferFailed", orderId # " (after fee correction): " # e.message());
                 return;
               };
-              switch (Cmc.interpretTransfer(retried)) {
+              switch (Delivery.interpretTransfer(retried)) {
                 case (#deduplicated(block)) {
                   // An earlier attempt had already landed: this one moved nothing.
                   reserveFloor += reDebited;
                   deliveryBlockedAudited.remove(orderId);
                   ignore tryTransition(orderId, #delivered);
-                  Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
+                  Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
                   clearDelayed(orderId);
                   audit("delivery.deduplicated", orderId # ": block " # block.toText() # " after fee correction; floor credited back");
                   return;
@@ -2185,9 +1940,9 @@ persistent actor CyclesGateway {
                 case (#delivered(block)) {
                   deliveryBlockedAudited.remove(orderId);
                   ignore tryTransition(orderId, #delivered);
-                  Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
+                  Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
                   clearDelayed(orderId);
-                  audit("delivery.sent", orderId # ": " # intent.amountE8s.toText() # " cycles at the corrected fee, ledger block " # block.toText());
+                  audit("delivery.sent", orderId # ": " # intent.amountCycles.toText() # " cycles at the corrected fee, ledger block " # block.toText());
                   return;
                 };
                 case (_) {
@@ -2195,7 +1950,7 @@ persistent actor CyclesGateway {
                   // again mid-flight the next sweep starts over from the derived
                   // fee — which is still the byte-identical replay, so the
                   // at-most-once guarantee is never traded for convergence.
-                  Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+                  Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, Time.now());
                   audit("delivery.retriable", orderId # ": fee correction to " # expected.toText() # " did not settle; retrying next sweep");
                   return;
                 };
@@ -2213,7 +1968,7 @@ persistent actor CyclesGateway {
               // quantity — and if it does fire, the floor and the ledger disagree.
               // Check `reserve_status.tallySaturations` and the last reconcile before
               // hunting a fee delta.
-              Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+              Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, Time.now());
               audit("delivery.retriable", orderId # ": " # detail);
               return;
             };
@@ -2244,79 +1999,9 @@ persistent actor CyclesGateway {
           // degrades to something resumable rather than to a stuck paid order
           // whose buyer already has their cycles.
           ignore tryTransition(orderId, #delivered);
-          Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = null; bumpRetries = false }, Time.now());
+          Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = null; bumpRetries = false }, Time.now());
           clearDelayed(orderId);
           audit("delivery.healed", orderId # ": block " # block.toText() # " was recorded but the order had not moved");
-          return;
-        };
-        case (#notifyCmc(block)) {
-          // Heal the (today unreachable) #minting-with-block combination.
-          if (order.status == #minting) { ignore tryTransition(orderId, #icpAtCmc) };
-          let result = try {
-            await cmc.notify_top_up({ block_index = Nat64.fromNat(block); canister_id = selfPrincipal() });
-          } catch (e) {
-            Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
-            audit("mint.notifyFailed", orderId # ": " # e.message());
-            return;
-          };
-          switch (Cmc.interpretNotify(result)) {
-            case (#minted(cycles)) {
-              // Pre-forward marker: commits before the forward await. If we
-              // die mid-forward, stageOf answers #ambiguousForward and the
-              // operator checks the destination — at-most-once delivery,
-              // never an auto-double-forward.
-              Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = ?cycles; bumpRetries = false }, Time.now());
-              // What the CMC actually minted can fall short of what was locked:
-              // the e8s were sized from a CMC rate up to 15 min old, and after an
-              // outage the recovery sweep may notify a transfer days later at a
-              // materially worse rate. Forwarding lockedCycles regardless would
-              // quietly cover the gap out of this canister's own gas — an
-              // unbudgeted, invisible subsidy that grows with rate volatility,
-              // and eventually a trap when gas cannot cover it.
-              //
-              // Deliver what was actually bought and escalate, rather than
-              // silently over- or under-delivering. The operator decides whether
-              // to top the buyer up; the position is fully recoverable and the
-              // cycles are real.
-              if (Cmc.isMaterialShortfall(cycles, order.lockedCycles)) {
-                escalateStuckMint(
-                  order,
-                  "mintShortfall",
-                  "CMC minted " # cycles.toText() # " cycles but the order locked "
-                  # order.lockedCycles.toText()
-                  # " — the conversion rate moved between quoting and notifying. The minted cycles are in this canister's balance; deliver them (or top up to the locked quantity from operator funds) and resolve.",
-                );
-                return;
-              };
-            };
-            case (#retriable(detail)) {
-              Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
-              audit("mint.notifyRetriable", orderId # ": " # detail);
-              return;
-            };
-            case (#escalate(detail)) {
-              escalateStuckMint(order, "notifyRejected", detail);
-              return;
-            };
-          };
-          switch (await* forwardCycles(order)) {
-            case (#ok) {
-              ignore tryTransition(orderId, #delivered);
-              Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
-              clearDelayed(orderId);
-              audit("mint.delivered", orderId # ": " # order.lockedCycles.toText() # " cycles");
-            };
-            case (#failed(detail)) {
-              // §4.1 Type 2: the failed deposit refunded the cycles to the
-              // app balance — minted money exists, delivery didn't happen.
-              ignore tryTransition(orderId, #needsReview);
-              Cmc.patch(deliveryJournal, orderId, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
-              // Same reason as escalateStuckMint: the delay is over, badly.
-              clearDelayed(orderId);
-              ignore queueDeliveryError(order.rail, #undeliverable({ orderId; cycles = order.lockedCycles }), detail);
-              audit("mint.undeliverable", orderId # ": " # detail);
-            };
-          };
           return;
         };
       };
@@ -2331,8 +2016,7 @@ persistent actor CyclesGateway {
   };
 
   /// Sweep every order with money-out work pending (Recovery.isSweepable:
-  /// #paid/#minting/#icpAtCmc/#awaitingTreasury — the §5.3 hold retries
-  /// until refill or max-wait) through the driver. Kicked after webhook
+  /// `#paid` is the only status with money-out work) through the driver. Kicked after webhook
   /// ingestion; the §5.2 recovery timer sweeps it on a cadence.
   func sweepDeliverable() : async* Nat {
     // Answer "is there anything to do?" in O(1) before scanning.
@@ -2353,13 +2037,11 @@ persistent actor CyclesGateway {
     pending.size();
   };
 
-  /// Orders with money-out work pending, from the maintained tallies. Must stay
-  /// in step with `Recovery.isSweepable` — the unit tests pin that.
+  /// Orders with money-out work pending, from the maintained tally. Must stay in step
+  /// with `Recovery.isSweepable` — the unit tests pin that, and after #36 both are one
+  /// status.
   func sweepableCount() : Nat {
-    Orders.countOf(orderStore, #paid)
-    + Orders.countOf(orderStore, #minting)
-    + Orders.countOf(orderStore, #icpAtCmc)
-    + Orders.countOf(orderStore, #awaitingTreasury);
+    Orders.countOf(orderStore, #paid);
   };
 
   public type ProcessOrderError = { #notFound; #inFlight };
@@ -2392,7 +2074,7 @@ persistent actor CyclesGateway {
   public shared ({ caller }) func process_order(id : Types.OrderId) : async Result.Result<Types.Order, ProcessOrderError> {
     let isAdmin = Auth.checkAdmin(caller, Principal.isController).isOk();
     if (isAdmin) {
-      auditAdmin(caller, "mint.manualKick", id);
+      auditAdmin(caller, "delivery.manualKick", id);
     } else {
       // Not an admin, so this must be the owner's own order. `getOwned` answers
       // "not found" for someone else's, which is also the right answer to give:
@@ -2494,9 +2176,9 @@ persistent actor CyclesGateway {
   /// so a lever for it would be a lever for the bug.
   ///
   /// ⚠️ **`entry.status` is the JOURNAL's copy of the order's status, and this
-  /// predicate is the only thing that reads it.** `Cmc.openEntry` used to hardcode
-  /// `#minting`, which made this match nothing at all and quietly disabled the quiet
-  /// window — see the comment there. If it ever stops recording the order's real
+  /// predicate is the only thing that reads it.** `Delivery.openEntry` used to hardcode
+  /// a hardcoded status, which made this match nothing at all and quietly disabled the
+  /// quiet window — see the comment there. If it ever stops recording the order's real
   /// status, this silently returns 0 again and the reserve floor becomes adoptable
   /// across an in-flight transfer. `test/cmc.test.mo` pins the coupling.
   func unsettledDelivery(entry : Types.JournalEntry) : Bool {
@@ -2584,7 +2266,7 @@ persistent actor CyclesGateway {
   func observeReserve() : async* Nat {
     let unsettledBefore = unsettledDeliveries();
     let issuedBefore = outflowsIssued;
-    let observed = await cyclesLedger.icrc1_balance_of(Cmc.reserveAccount(selfPrincipal()));
+    let observed = await cyclesLedger.icrc1_balance_of(Delivery.reserveAccount(selfPrincipal()));
     let quiet = unsettledBefore == 0 and unsettledDeliveries() == 0 and outflowsIssued == issuedBefore;
     reconcileReserve(observed, quiet);
     observed;
@@ -2627,10 +2309,9 @@ persistent actor CyclesGateway {
   /// frontend; nothing reads it to decide anything, so it cannot be raced into an
   /// over-sale.
   ///
-  /// The four order counters were `order_stats` (and `retention_status` before that,
-  /// until #33 deleted retention). Folded in here as #30 planned: `openOrders`
-  /// climbing while deliveries do not is the signature of order-creation abuse, and
-  /// its lever is `Gate.maxOpenOrdersPerPrincipal`; `totalOrders` and
+  /// The four order counters live here rather than in a surface of their own:
+  /// `openOrders` climbing while deliveries do not is the signature of order-creation
+  /// abuse, and its lever is `Gate.maxOpenOrdersPerPrincipal`; `totalOrders` and
   /// `paidIntentsIndexed` should grow together, since a divergence means an index and
   /// its records disagree.
   public query func reserve_status() : async {
@@ -2663,7 +2344,7 @@ persistent actor CyclesGateway {
       /// order's locked quantity stalls delivery loudly and the answer is a redeploy;
       /// at that fee the rail cannot sell anyway.
       cyclesLedgerFee;
-      // O(1), same reasoning as treasury_status.
+      // O(1): maintained counters, not a scan of the order store.
       openOrders = Orders.countOf(orderStore, #created);
       expiredOrders = Orders.countOf(orderStore, #expired);
       totalOrders = orderStore.orders.size();
@@ -2677,7 +2358,7 @@ persistent actor CyclesGateway {
       tallySaturations = orderStore.tallySaturations;
       // Named so an operator (or the frontend) can point a ledger query at the
       // right account without reconstructing it.
-      reserveAccount = Cmc.reserveAccount(selfPrincipal());
+      reserveAccount = Delivery.reserveAccount(selfPrincipal());
       // The gas half, which is a different pot from the reserve: what the canister
       // spends to run, gated by `minCanisterCycles`.
       canisterCycles = Cycles.balance();
@@ -2688,7 +2369,7 @@ persistent actor CyclesGateway {
   /// Which order did this Stripe `payment_intent` pay for (admin, §4.2)? The
   /// reconciliation lookup: given a charge in the Stripe Dashboard, find the
   /// order it funded. Null means the payment was never attributed to an order
-  /// here — check the error queue for a Type 1 entry carrying it.
+  /// here — check the error queue for an obligation carrying it.
   public shared query ({ caller }) func order_for_payment(paymentRef : Text) : async ?Types.OrderId {
     requireAdmin(caller);
     paidIntents.get(paymentRef);
@@ -2804,9 +2485,9 @@ persistent actor CyclesGateway {
       // `#errorQueue`: an escalated order could not previously be abandoned,
       // because one status meant both "promise held" and "promise released" and
       // the transition was to itself (#34).
-      case (#paid or #awaitingTreasury or #needsReview) {};
+      case (#paid or #needsReview) {};
       case (status) {
-        return #err("order " # id # " is " # Types.statusToText(status) # "; only a paid, held or under-review order can be abandoned");
+        return #err("order " # id # " is " # Types.statusToText(status) # "; only a paid or under-review order can be abandoned");
       };
     };
     // ── ⚠️ A PAID order with an unsettled delivery cannot be abandoned ────────
@@ -2850,7 +2531,7 @@ persistent actor CyclesGateway {
     let ?abandoned = tryTransition(id, #abandoned) else {
       return #err("order " # id # " refused the transition to abandoned");
     };
-    Cmc.patch(deliveryJournal, id, { status = ?#abandoned; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+    Delivery.patch(deliveryJournal, id, { status = ?#abandoned; blockIndex = null; cyclesDelivered = null; bumpRetries = false }, Time.now());
     clearDelayed(id);
     ignore queueDeliveryError(order.rail, #abandoned({ orderId = id; reason }), "abandoned by operator: " # reason);
     auditAdmin(caller, "order.abandoned", id # ": " # reason);
@@ -2895,7 +2576,7 @@ persistent actor CyclesGateway {
     let ?delivered = tryTransition(id, #delivered) else {
       return #err("order " # id # " refused the transition to delivered");
     };
-    Cmc.patch(deliveryJournal, id, { status = ?#delivered; blockIndex = ?blockIndex; cyclesMinted = null; bumpRetries = false }, Time.now());
+    Delivery.patch(deliveryJournal, id, { status = ?#delivered; blockIndex = ?blockIndex; cyclesDelivered = null; bumpRetries = false }, Time.now());
     clearDelayed(id);
     auditAdmin(caller, "order.recordedDelivered", id # ": operator confirmed cycles-ledger block " # blockIndex.toText());
     #ok(delivered);
@@ -2906,21 +2587,11 @@ persistent actor CyclesGateway {
     /// What the buyer actually paid, if they have.
     paidUsdCents : ?Nat;
     /// The **cycles-ledger** block the delivery transfer landed in — the on-chain
-    /// proof, checkable by anyone against that ledger.
-    ///
-    /// ⚠️ It was `deliveryBlockIndex`, documented as "the ICP ledger block that funded
-    /// the mint". Both halves were false after #30 PR-A: the block is on the cycles
-    /// ledger, and nothing is minted. Renamed in PR-C where `cyclesMinted` was
-    /// **not**, and the difference is the test this PR applies: a name may be renamed
-    /// when it describes a mechanism, or when only the live path reads it. This field
-    /// is a receipt-only projection of the journal's neutral `blockIndex`, and no
-    /// legacy triage prose references it by name — RUNBOOK's `staleIntent`,
-    /// `retriesExhausted` and `ambiguousForward` rows all say "the journaled block".
-    /// `cyclesMinted` failed that test: three RUNBOOK rows name it directly, on rows
-    /// where the cycles were minted and demonstrably **not** delivered.
+    /// proof, checkable by anyone against that ledger by the order id in the
+    /// transfer's memo.
     deliveryBlockIndex : ?Nat;
-    /// Cycles the CMC reported minting.
-    cyclesMinted : ?Nat;
+    /// Cycles delivered to the buyer's account.
+    cyclesDelivered : ?Nat;
     /// Recompute the quote from these and it must equal `order.lockedCycles`:
     ///   netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros
     /// where netCents = usdCents − (⌈usdCents·feeBps/10⁴⌉ + feeFixedCents).
@@ -2952,7 +2623,7 @@ persistent actor CyclesGateway {
       order;
       paidUsdCents = order.paidUsdCents;
       deliveryBlockIndex = switch (journal) { case (?entry) entry.blockIndex; case null null };
-      cyclesMinted = switch (journal) { case (?entry) entry.cyclesMinted; case null null };
+      cyclesDelivered = switch (journal) { case (?entry) entry.cyclesDelivered; case null null };
       verification = {
         netCents = Pricing.netCents(order.pricing, switch (order.paidUsdCents) {
           case (?paid) paid;
@@ -2966,8 +2637,8 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Money-out journal for one order (admin, §4.2) — intent, block_index,
-  /// minted cycles, retries.
+  /// Money-out journal for one order (admin, §4.2) — intent, block_index, cycles
+  /// delivered, retries.
   public shared query ({ caller }) func delivery_journal(id : Types.OrderId) : async ?Types.JournalEntry {
     requireAdmin(caller);
     deliveryJournal.get(id);
@@ -3070,8 +2741,7 @@ persistent actor CyclesGateway {
       // order store, so at enough orders it could hit the instruction limit — and
       // inline that trap would take the entire sweep down with it, leaving
       // money-out dead while the reconcile stayed due and trapped again on every
-      // tick. A bookkeeping *check* must not be able to stop
-      // orders from minting.
+      // tick. A bookkeeping *check* must not be able to stop orders from delivering.
       //
       // Claiming the cadence here, in the sweep's own message, is what bounds the
       // damage: this write commits whatever the detached message does, so a
@@ -3118,7 +2788,7 @@ persistent actor CyclesGateway {
   /// the ledger dedup window or replay loses its safety margin.
   public shared ({ caller }) func set_recovery_interval(intervalNs : Nat) : async Result.Result<(), Recovery.IntervalError> {
     requireAdmin(caller);
-    switch (Recovery.validateInterval(intervalNs, Cmc.ledgerDedupWindowNs)) {
+    switch (Recovery.validateInterval(intervalNs, Delivery.ledgerDedupWindowNs)) {
       case (#err(e)) #err(e);
       case (#ok) {
         recoverySweepIntervalNs := intervalNs;
@@ -3130,18 +2800,19 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// §5.2 liveness observability, public (operational transparency, same
-  /// stance as treasury_status): cadence + last completed timer sweep. A
-  /// null or stale `lastSweep` means recovery is not running.
-  /// This canister's OWN cycle balance and the floor the admission gate holds
-  /// it against (public — the same operational-transparency stance as
-  /// `treasury_status`; it is visible via `canister_status` regardless).
+  /// §5.2 liveness observability, public (operational transparency, same stance as
+  /// `reserve_status`): cadence + last completed timer sweep. A null or stale
+  /// `lastSweep` means recovery is not running.
+  /// This canister's OWN cycle balance and the floor the admission gate holds it
+  /// against (public — the same operational-transparency stance as `reserve_status`;
+  /// it is visible via `canister_status` regardless).
   ///
-  /// Distinct from the ICP float in every way: this is gas. Below the freezing
-  /// threshold the canister stops accepting updates; at zero it is uninstalled
-  /// and the order store, journals, and dedup sets go with it. Monitor it
-  /// separately, and alert well above `minCanisterCycles` — that gate stops
-  /// *sales*, it does not stop the burn. A sudden acceleration here is the
+  /// ⚠️ **Gas, not stock.** This is what the canister spends to run; the cycles it
+  /// sells live in its cycles-ledger account and are reported by `reserve_status`.
+  /// Below the freezing threshold the canister stops accepting updates; at zero it is
+  /// uninstalled and the order store, journals, and dedup sets go with it. Monitor it
+  /// separately, and alert well above `minCanisterCycles` — that gate stops *sales*,
+  /// it does not stop the burn. A sudden acceleration here is the
   /// signature of a cycle-drain attempt.
   public query func cycles_status() : async { balance : Nat; floor : Nat } {
     { balance = Cycles.balance(); floor = gateConfig.minCanisterCycles };
@@ -3263,7 +2934,7 @@ persistent actor CyclesGateway {
   /// no stale duplicate to cancel.
   ///
   /// Declared last in the actor body: the initializer evaluates during actor
-  /// init and `recoverySweep` reaches the order store and the mint journal,
+  /// init and `recoverySweep` reaches the order store and the delivery journal,
   /// both of which must already be initialized (M0016 otherwise).
   transient var recoveryTimerId : Timer.TimerId =
     Timer.recurringTimer<system>(#nanoseconds(recoverySweepIntervalNs), recoverySweep);

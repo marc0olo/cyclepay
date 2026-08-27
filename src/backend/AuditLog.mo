@@ -2,7 +2,7 @@
 ///
 /// **Facts about money live on the objects, not here.** Where an order got to,
 /// what the buyer actually paid, why it expired, when its rates were read: all of
-/// that is on `Types.Order` (#34). The journal holds the mint position and the
+/// that is on `Types.Order` (#34). The journal holds the delivery position and the
 /// error queue holds the open obligations. This is the *operational trail* —
 /// balance alerts (§5.3), dedup drops, error-queue evictions — and the place to
 /// look for "what happened around then", never for "what happened to this order".
@@ -27,7 +27,7 @@ module {
   public type Event = {
     seq : Nat;
     atNs : Int;
-    /// Short greppable category, e.g. "treasury.lowFloat", "errorQueue.evicted".
+    /// Short greppable category, e.g. "delivery.sent", "errorQueue.evicted".
     tag : Text;
     detail : Text;
   };

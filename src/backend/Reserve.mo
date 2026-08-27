@@ -31,13 +31,13 @@ module {
   /// Is this order's promise still held?
   ///
   /// ⚠️ Expressed as "**not terminal**" rather than as a list of the statuses that
-  /// hold, and that is not a stylistic choice. The membership list changes during
-  /// the #30/#36 staging window: `#minting`, `#icpAtCmc` and `#awaitingTreasury`
-  /// survive in-tree until #36, they are **not terminal**, so under this rule they
-  /// are counted — correctly. Under an enumerated list they would be omitted, and
-  /// any transition into one would **silently release the promise while the order
-  /// is still live**. Nothing should enter them after #30 PR-A; the rule makes
-  /// that a belt-and-braces question rather than a correctness one.
+  /// hold, and that is not a stylistic choice. The two lists fail in opposite
+  /// directions when a status is added. An enumerated hold-list omits the newcomer,
+  /// so the promise is **silently released while the order is still live** and the
+  /// reserve is oversold. The terminal-list phrasing counts the newcomer, which at
+  /// worst holds cycles longer than needed — a conservative error, and a visible one
+  /// in `availableToSell`. Fail toward over-reserving; the alternative pays out
+  /// cycles twice.
   ///
   /// The terminal set is also the smaller and more stable list, and getting it
   /// wrong fails in the safe direction: an over-counted promise refuses a sale, an
@@ -156,20 +156,24 @@ module {
   //     **one** such outflow: the delivery transfer. The two ways the account's owner
   //     could otherwise move it — `icrc2_approve` (creating an allowance for someone
   //     else to `icrc2_transfer_from`) and the ledger's `withdraw` — are **not
-  //     declared in `Cmc.CyclesLedgerService`**, so this canister cannot call them.
+  //     declared in `Delivery.CyclesLedgerService`**, so this canister cannot call them.
   //     Not "we do not plan to": the compiler will not let it.
   //   - it can only **increase** when someone tops the account up, which we cannot
   //     observe without asking — and which is always positive.
   //
   // ⚠️ **ONE outflow, and the enforcement is the actor type — not this comment.**
-  // `Cmc.CyclesLedgerService` declares exactly three methods, and that declaration is
-  // what makes the asymmetry above a property rather than a promise:
+  // `Delivery.CyclesLedgerService` declares exactly **two** methods, and that declaration
+  // is what makes the asymmetry above a property rather than a promise:
   //
   //     `icrc1_transfer`     — **the outflow.** One logical transfer per order.
   //     `icrc1_balance_of`   — a read; the reconcile's, never the gate's.
-  //     `deposit`            — LEGACY, and **not an outflow**: it moves this
-  //                            canister's *gas* balance, not the ledger account.
-  //                            #36 deletes it.
+  //
+  // ⚠️ **The declaration list IS the enforcement.** `CyclesLedgerService` declares
+  // these two methods and nothing else, so no third way to move cycles exists to be
+  // called — an outflow that is not declared cannot be written by accident. Re-run
+  // this census whenever that interface gains a method; `scripts/test-all.sh` greps
+  // the backend for approve/transfer_from/withdraw declarations so an addition has to
+  // be deliberate.
   //
   // ⚠️ **A grep finds `icrc1_transfer` at TWO call sites, and that is still one
   // outflow.** They are the attempt and its `#BadFee` re-issue, of the *same* intent,
@@ -182,8 +186,8 @@ module {
   //
   // The premise's only failure mode is someone widening that actor type, so
   // `scripts/test-all.sh` greps it: adding `icrc2_approve` or `withdraw` there fails
-  // the gate with a pointer to this section. #36 touches this surface next (it
-  // deletes `deposit`), so the same check is on its checklist.
+  // the gate with a pointer to this section — and that check needed no change for
+  // #36's deletion, because it matches *declarations*, not call sites.
   //
   // So every unobserved change is in our favour, and a floor maintained from our
   // own outflows is never optimistic. Deciding against it can refuse a sale the
