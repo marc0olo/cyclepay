@@ -564,7 +564,7 @@ cap is unbounded loss. Start tight.
 
   ⚠️ **The stage is derived from the mint journal, not from the status** — the
   status says where the order stopped, the journal says where the *money* is, and
-  only the money position determines your action (`Cmc.terminationFor`):
+  only the money position determines your action (`Delivery.terminationFor`):
 
   | Stuck in | Journal says | Escalates as | Action |
   |---|---|---|---|

@@ -1,7 +1,7 @@
 /// Fully on-chain cycles gateway — composition root.
 ///
 /// See design-docs/ONCHAIN_GATEWAY_SPEC.md (spec v2.1) and PRD.md for the
-/// module layout this actor grows into: Orders.mo wiring, rails/, Cmc.mo,
+/// module layout this actor grows into: Orders.mo wiring, rails/, Delivery.mo,
 /// Pricing.mo, Treasury.mo, ErrorQueue.mo, Auth.mo.
 import Array "mo:core/Array";
 import Cycles "mo:core/Cycles";
@@ -1441,19 +1441,19 @@ persistent actor CyclesGateway {
   ///
   /// An increase is the harmless direction: the reserve absorbs `delta` and the
   /// buyer gets exactly what was quoted (see the `#badFee` arm).
-  var cyclesLedgerFee : Nat = Cmc.cyclesLedgerDefaultFee;
+  var cyclesLedgerFee : Nat = Delivery.cyclesLedgerDefaultFee;
 
   /// §4.2 `journal : Map<OrderId, JournalEntry>` — the money-out record:
   /// transfer intent (written *before* the ledger call, §5.1), block_index,
   /// minted cycles, retries. Financial record — kept for years, never pruned.
-  let deliveryJournal : Cmc.Journal = Cmc.emptyJournal();
+  let deliveryJournal : Delivery.Journal = Delivery.emptyJournal();
 
   transient let cmc = actor (Cmc.cmcId) : Cmc.CmcService;
-  transient let cyclesLedger = actor (Cmc.cyclesLedgerId) : Cmc.CyclesLedgerService;
+  transient let cyclesLedger = actor (Delivery.cyclesLedgerId) : Delivery.CyclesLedgerService;
 
   /// Per-order single-flight guard: two concurrent drivers for one order
   /// would both pass the status gates between awaits. Transient — an
-  /// upgrade mid-mint clears it and the journal-driven resume (Cmc.stageOf)
+  /// upgrade mid-mint clears it and the journal-driven resume (Delivery.stageOf)
   /// picks up where the state actually is.
   transient let deliveriesInFlight = Set.empty<Types.OrderId>();
 
@@ -1604,7 +1604,7 @@ persistent actor CyclesGateway {
   /// **Unknown money position** — "we can no longer ask safely", the only kind that
   /// needs a human to establish anything:
   ///
-  ///  1. `#staleIntent` from `Cmc.stageOf`: the intent is past the ledger's ~24 h
+  ///  1. `#staleIntent` from `Delivery.stageOf`: the intent is past the ledger's ~24 h
   ///     dedup window, so a replay is no longer protected. Reaching it means a
   ///     ~day-long ledger outage with an hourly sweep and buyer kicks hammering it
   ///     throughout — **expected never**, and documented as such rather than as a
@@ -1621,7 +1621,7 @@ persistent actor CyclesGateway {
   ///     too long *whatever* the reason, including one where **nothing was ever
   ///     sent** — position certain, instruction "refund in the Stripe Dashboard".
   ///     So `#needsReview` is genuinely reachable with the position known, and
-  ///     `Cmc.terminationFor` is what distinguishes the cases. Read the reduction's
+  ///     `Delivery.terminationFor` is what distinguishes the cases. Read the reduction's
   ///     claim as scoped to the *unknown-position* triggers, which is what "we can
   ///     no longer ask safely" means; the RUNBOOK's triage is organised by position
   ///     for exactly this reason.
@@ -1640,7 +1640,7 @@ persistent actor CyclesGateway {
       case (?e) e.blockIndex;
       case null null;
     };
-    Cmc.patch(deliveryJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+    Delivery.patch(deliveryJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesDelivered = null; bumpRetries = false }, Time.now());
     // Any open delay alert for this order says "it delivers on the next sweep", which
     // just stopped being true. Leaving it open would put a false promise on the
     // worklist next to the real problem, and leak its `delayedAlerts` entry forever.
@@ -1654,7 +1654,7 @@ persistent actor CyclesGateway {
   };
 
   /// Drive one order as far toward `#delivered` as the world allows (§5).
-  /// Each loop pass asks Cmc.stageOf for the next move off status + journal,
+  /// Each loop pass asks Delivery.stageOf for the next move off status + journal,
   /// so the first attempt and every recovery resume run the same code —
   /// "replay the identical transfer" (§5.1) isn't a special case, it IS the
   /// transfer path. Retriable failures return with state untouched (plus a
@@ -1663,7 +1663,7 @@ persistent actor CyclesGateway {
     label drive loop {
       let ?order = Orders.get(orderStore, orderId) else return;
       // §5.3: a treasury-held order resumes here — Treasury owns the hold
-      // policy (max-wait), Cmc.stageOf owns the money-out resume logic. A
+      // policy (max-wait), Delivery.stageOf owns the money-out resume logic. A
       // hold within the wait bound retries #begin: the pre-gate inside it is
       // the single decision point for cap/float, so a rolled window or a
       // refill clears the hold with no second code path. updatedAtNs is the
@@ -1711,11 +1711,11 @@ persistent actor CyclesGateway {
             // waiting files a chargeback — which costs more than a refund. Terminating
             // so the operator refunds is the protective act.
             //
-            // The escalation's stage comes from `Cmc.terminationFor`, which reads the
+            // The escalation's stage comes from `Delivery.terminationFor`, which reads the
             // **journal** and not just the status: the status says where the order
             // stopped, the journal says where the money is, and the money position is
             // what the operator acts on.
-            let termination = Cmc.terminationFor(order.status, deliveryJournal.get(orderId));
+            let termination = Delivery.terminationFor(order.status, deliveryJournal.get(orderId));
             escalateDelivery(order, termination.stage, termination.detail);
             clearDelayed(orderId);
             deliveryBlockedAudited.remove(orderId);
@@ -1726,7 +1726,7 @@ persistent actor CyclesGateway {
       // ⚠️ One line where a `switch` on status used to be (#36). `#awaitingTreasury`
       // had its own arm — the treasury hold's retry/alert/terminate — and it is gone
       // with the float it waited on.
-      let stage : Cmc.Stage = Cmc.stageOf(order.status, deliveryJournal.get(orderId), Time.now(), Cmc.ledgerDedupWindowNs);
+      let stage : Delivery.Stage = Delivery.stageOf(order.status, deliveryJournal.get(orderId), Time.now(), Delivery.ledgerDedupWindowNs);
       switch (stage) {
         case (#none) return;
         case (#escalate(reason)) {
@@ -1748,8 +1748,8 @@ persistent actor CyclesGateway {
           // unknown-transfer position, and "establish its fate, never rebuild"
           // is the correct action regardless of why we stopped trying. Naming
           // both means neither reading can mislead.
-          let stage = Cmc.escalateReasonToText(reason);
-          let position = Cmc.terminationFor(order.status, deliveryJournal.get(orderId));
+          let stage = Delivery.escalateReasonToText(reason);
+          let position = Delivery.terminationFor(order.status, deliveryJournal.get(orderId));
           let detail =
             if (position.stage == stage) {
               position.detail;
@@ -1775,7 +1775,7 @@ persistent actor CyclesGateway {
           // relies on an intent never being visible without its transfer having been
           // issued in the same message. Its doc spells that out.
           let fee = cyclesLedgerFee;
-          let ?amount = Cmc.deliverableCycles(order.lockedCycles, fee) else {
+          let ?amount = Delivery.deliverableCycles(order.lockedCycles, fee) else {
             // Unreachable under the $10 floor (~7 T cycles against a 100 M fee),
             // and audited rather than silent so that a future move in either
             // number surfaces as a stuck order with a reason instead of a trap.
@@ -1804,8 +1804,8 @@ persistent actor CyclesGateway {
           // sync block. From here the args are frozen and every retry replays
           // them byte-identically; that is what makes two concurrent drivers
           // (the webhook kick and the recovery sweep) safe.
-          let intent = Cmc.buildDeliveryIntent(orderId, destination, amount, Time.now());
-          ignore Cmc.openEntry(deliveryJournal, order, intent, Time.now());
+          let intent = Delivery.buildDeliveryIntent(orderId, destination, amount, Time.now());
+          ignore Delivery.openEntry(deliveryJournal, order, intent, Time.now());
           // fall through the loop → #replayDelivery issues the transfer
         };
         case (#replayDelivery(intent)) {
@@ -1835,12 +1835,12 @@ persistent actor CyclesGateway {
           // needs a fee change inside the 24 h dedup window, which nothing here
           // can arrange. Same class as #33's transform/consensus gap: the comment
           // is the guard, so do not re-read the fee on this path.
-          let fee : Nat = if (order.lockedCycles >= intent.amountE8s) {
-            order.lockedCycles - intent.amountE8s : Nat;
+          let fee : Nat = if (order.lockedCycles >= intent.amountCycles) {
+            order.lockedCycles - intent.amountCycles : Nat;
           } else {
             // Unreachable: the amount was derived by subtracting a fee from this
             // very quantity. Escalating beats guessing a fee on a money path.
-            escalateDelivery(order, "journalInconsistent", "delivery intent amount " # intent.amountE8s.toText() # " exceeds the order's locked " # order.lockedCycles.toText() # " — the fee cannot be recovered; establish the transfer's fate on the cycles ledger before re-sending");
+            escalateDelivery(order, "journalInconsistent", "delivery intent amount " # intent.amountCycles.toText() # " exceeds the order's locked " # order.lockedCycles.toText() # " — the fee cannot be recovered; establish the transfer's fate on the cycles ledger before re-sending");
             return;
           };
           // ── Rule 2 (#30 PR-B): the floor drops when the transfer is ISSUED ──
@@ -1856,19 +1856,19 @@ persistent actor CyclesGateway {
           // callbacks before the canister reaches `Stopped`, which is why
           // `#ambiguousForward` was unreachable via the documented procedure.)
           // Assuming the debit now makes that case exact instead of optimistic.
-          let debited = intent.amountE8s + fee;
+          let debited = intent.amountCycles + fee;
           reserveFloor := Reserve.floorAfterOutflow(reserveFloor, debited);
           outflowsIssued += 1;
-          let result = try { await cyclesLedger.icrc1_transfer(Cmc.deliveryArgs(intent, fee)) } catch (e) {
+          let result = try { await cyclesLedger.icrc1_transfer(Delivery.deliveryArgs(intent, fee)) } catch (e) {
             // ⚠️ The floor is NOT credited back. A call that failed without a reply
             // tells us nothing about whether the ledger acted, and rule 2 exists to
             // be pessimistic about exactly that. A reconcile heals it if the
             // transfer never happened.
-            Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+            Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, Time.now());
             audit("delivery.transferFailed", orderId # ": " # e.message());
             return;
           };
-          switch (Cmc.interpretTransfer(result)) {
+          switch (Delivery.interpretTransfer(result)) {
             // ⚠️ **`#deduplicated` credits the floor back; `#delivered` does not.**
             // Rule 2 decremented the floor when this call was issued. A fresh block
             // means this call really debited, so the decrement stands. A duplicate
@@ -1882,7 +1882,7 @@ persistent actor CyclesGateway {
               reserveFloor += debited;
               deliveryBlockedAudited.remove(orderId);
               ignore tryTransition(orderId, #delivered);
-              Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
+              Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
               clearDelayed(orderId);
               audit("delivery.deduplicated", orderId # ": ledger block " # block.toText() # " was already ours; floor credited back " # debited.toText());
               return;
@@ -1891,9 +1891,9 @@ persistent actor CyclesGateway {
               deliveryBlockedAudited.remove(orderId);
               // Block + `#delivered` in ONE sync block, so the pair cannot disagree.
               ignore tryTransition(orderId, #delivered);
-              Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
+              Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
               clearDelayed(orderId);
-              audit("delivery.sent", orderId # ": " # intent.amountE8s.toText() # " cycles, ledger block " # block.toText());
+              audit("delivery.sent", orderId # ": " # intent.amountCycles.toText() # " cycles, ledger block " # block.toText());
               return;
             };
             case (#badFee(expected)) {
@@ -1932,23 +1932,23 @@ persistent actor CyclesGateway {
               // ⚠️ If the re-issue then fails without a reply, the LARGER decrement
               // stands — correctly pessimistic.
               reserveFloor += debited;
-              let reDebited = intent.amountE8s + expected;
+              let reDebited = intent.amountCycles + expected;
               reserveFloor := Reserve.floorAfterOutflow(reserveFloor, reDebited);
               outflowsIssued += 1;
               let retried = try {
-                await cyclesLedger.icrc1_transfer(Cmc.deliveryArgs(intent, expected));
+                await cyclesLedger.icrc1_transfer(Delivery.deliveryArgs(intent, expected));
               } catch (e) {
-                Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+                Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, Time.now());
                 audit("delivery.transferFailed", orderId # " (after fee correction): " # e.message());
                 return;
               };
-              switch (Cmc.interpretTransfer(retried)) {
+              switch (Delivery.interpretTransfer(retried)) {
                 case (#deduplicated(block)) {
                   // An earlier attempt had already landed: this one moved nothing.
                   reserveFloor += reDebited;
                   deliveryBlockedAudited.remove(orderId);
                   ignore tryTransition(orderId, #delivered);
-                  Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
+                  Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
                   clearDelayed(orderId);
                   audit("delivery.deduplicated", orderId # ": block " # block.toText() # " after fee correction; floor credited back");
                   return;
@@ -1956,9 +1956,9 @@ persistent actor CyclesGateway {
                 case (#delivered(block)) {
                   deliveryBlockedAudited.remove(orderId);
                   ignore tryTransition(orderId, #delivered);
-                  Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = ?intent.amountE8s; bumpRetries = false }, Time.now());
+                  Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
                   clearDelayed(orderId);
-                  audit("delivery.sent", orderId # ": " # intent.amountE8s.toText() # " cycles at the corrected fee, ledger block " # block.toText());
+                  audit("delivery.sent", orderId # ": " # intent.amountCycles.toText() # " cycles at the corrected fee, ledger block " # block.toText());
                   return;
                 };
                 case (_) {
@@ -1966,7 +1966,7 @@ persistent actor CyclesGateway {
                   // again mid-flight the next sweep starts over from the derived
                   // fee — which is still the byte-identical replay, so the
                   // at-most-once guarantee is never traded for convergence.
-                  Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+                  Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, Time.now());
                   audit("delivery.retriable", orderId # ": fee correction to " # expected.toText() # " did not settle; retrying next sweep");
                   return;
                 };
@@ -1984,7 +1984,7 @@ persistent actor CyclesGateway {
               // quantity — and if it does fire, the floor and the ledger disagree.
               // Check `reserve_status.tallySaturations` and the last reconcile before
               // hunting a fee delta.
-              Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
+              Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, Time.now());
               audit("delivery.retriable", orderId # ": " # detail);
               return;
             };
@@ -2015,7 +2015,7 @@ persistent actor CyclesGateway {
           // degrades to something resumable rather than to a stuck paid order
           // whose buyer already has their cycles.
           ignore tryTransition(orderId, #delivered);
-          Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesMinted = null; bumpRetries = false }, Time.now());
+          Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = null; bumpRetries = false }, Time.now());
           clearDelayed(orderId);
           audit("delivery.healed", orderId # ": block " # block.toText() # " was recorded but the order had not moved");
           return;
@@ -2193,7 +2193,7 @@ persistent actor CyclesGateway {
   /// so a lever for it would be a lever for the bug.
   ///
   /// ⚠️ **`entry.status` is the JOURNAL's copy of the order's status, and this
-  /// predicate is the only thing that reads it.** `Cmc.openEntry` used to hardcode
+  /// predicate is the only thing that reads it.** `Delivery.openEntry` used to hardcode
   /// `#minting`, which made this match nothing at all and quietly disabled the quiet
   /// window — see the comment there. If it ever stops recording the order's real
   /// status, this silently returns 0 again and the reserve floor becomes adoptable
@@ -2283,7 +2283,7 @@ persistent actor CyclesGateway {
   func observeReserve() : async* Nat {
     let unsettledBefore = unsettledDeliveries();
     let issuedBefore = outflowsIssued;
-    let observed = await cyclesLedger.icrc1_balance_of(Cmc.reserveAccount(selfPrincipal()));
+    let observed = await cyclesLedger.icrc1_balance_of(Delivery.reserveAccount(selfPrincipal()));
     let quiet = unsettledBefore == 0 and unsettledDeliveries() == 0 and outflowsIssued == issuedBefore;
     reconcileReserve(observed, quiet);
     observed;
@@ -2376,7 +2376,7 @@ persistent actor CyclesGateway {
       tallySaturations = orderStore.tallySaturations;
       // Named so an operator (or the frontend) can point a ledger query at the
       // right account without reconstructing it.
-      reserveAccount = Cmc.reserveAccount(selfPrincipal());
+      reserveAccount = Delivery.reserveAccount(selfPrincipal());
       // The gas half, which is a different pot from the reserve: what the canister
       // spends to run, gated by `minCanisterCycles`.
       canisterCycles = Cycles.balance();
@@ -2549,7 +2549,7 @@ persistent actor CyclesGateway {
     let ?abandoned = tryTransition(id, #abandoned) else {
       return #err("order " # id # " refused the transition to abandoned");
     };
-    Cmc.patch(deliveryJournal, id, { status = ?#abandoned; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+    Delivery.patch(deliveryJournal, id, { status = ?#abandoned; blockIndex = null; cyclesDelivered = null; bumpRetries = false }, Time.now());
     clearDelayed(id);
     ignore queueDeliveryError(order.rail, #abandoned({ orderId = id; reason }), "abandoned by operator: " # reason);
     auditAdmin(caller, "order.abandoned", id # ": " # reason);
@@ -2594,7 +2594,7 @@ persistent actor CyclesGateway {
     let ?delivered = tryTransition(id, #delivered) else {
       return #err("order " # id # " refused the transition to delivered");
     };
-    Cmc.patch(deliveryJournal, id, { status = ?#delivered; blockIndex = ?blockIndex; cyclesMinted = null; bumpRetries = false }, Time.now());
+    Delivery.patch(deliveryJournal, id, { status = ?#delivered; blockIndex = ?blockIndex; cyclesDelivered = null; bumpRetries = false }, Time.now());
     clearDelayed(id);
     auditAdmin(caller, "order.recordedDelivered", id # ": operator confirmed cycles-ledger block " # blockIndex.toText());
     #ok(delivered);
@@ -2605,21 +2605,11 @@ persistent actor CyclesGateway {
     /// What the buyer actually paid, if they have.
     paidUsdCents : ?Nat;
     /// The **cycles-ledger** block the delivery transfer landed in — the on-chain
-    /// proof, checkable by anyone against that ledger.
-    ///
-    /// ⚠️ It was `deliveryBlockIndex`, documented as "the ICP ledger block that funded
-    /// the mint". Both halves were false after #30 PR-A: the block is on the cycles
-    /// ledger, and nothing is minted. Renamed in PR-C where `cyclesMinted` was
-    /// **not**, and the difference is the test this PR applies: a name may be renamed
-    /// when it describes a mechanism, or when only the live path reads it. This field
-    /// is a receipt-only projection of the journal's neutral `blockIndex`, and no
-    /// legacy triage prose references it by name — RUNBOOK's `staleIntent`,
-    /// `retriesExhausted` and `ambiguousForward` rows all say "the journaled block".
-    /// `cyclesMinted` failed that test: three RUNBOOK rows name it directly, on rows
-    /// where the cycles were minted and demonstrably **not** delivered.
+    /// proof, checkable by anyone against that ledger by the order id in the
+    /// transfer's memo.
     deliveryBlockIndex : ?Nat;
     /// Cycles the CMC reported minting.
-    cyclesMinted : ?Nat;
+    cyclesDelivered : ?Nat;
     /// Recompute the quote from these and it must equal `order.lockedCycles`:
     ///   netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros
     /// where netCents = usdCents − (⌈usdCents·feeBps/10⁴⌉ + feeFixedCents).
@@ -2651,7 +2641,7 @@ persistent actor CyclesGateway {
       order;
       paidUsdCents = order.paidUsdCents;
       deliveryBlockIndex = switch (journal) { case (?entry) entry.blockIndex; case null null };
-      cyclesMinted = switch (journal) { case (?entry) entry.cyclesMinted; case null null };
+      cyclesDelivered = switch (journal) { case (?entry) entry.cyclesDelivered; case null null };
       verification = {
         netCents = Pricing.netCents(order.pricing, switch (order.paidUsdCents) {
           case (?paid) paid;
@@ -2817,7 +2807,7 @@ persistent actor CyclesGateway {
   /// the ledger dedup window or replay loses its safety margin.
   public shared ({ caller }) func set_recovery_interval(intervalNs : Nat) : async Result.Result<(), Recovery.IntervalError> {
     requireAdmin(caller);
-    switch (Recovery.validateInterval(intervalNs, Cmc.ledgerDedupWindowNs)) {
+    switch (Recovery.validateInterval(intervalNs, Delivery.ledgerDedupWindowNs)) {
       case (#err(e)) #err(e);
       case (#ok) {
         recoverySweepIntervalNs := intervalNs;

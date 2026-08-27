@@ -39,7 +39,7 @@ module {
     /// position rather than on the reason it stopped.
     ///
     /// ⚠️ **`stage` IS the money position, and it is what the operator acts on.**
-    /// `Cmc.terminationFor` derives it from the **journal**, not the status, because
+    /// `Delivery.terminationFor` derives it from the **journal**, not the status, because
     /// one status covers several positions:
     ///
     ///   - `staleIntent` — a transfer was issued, no block was recorded, and the

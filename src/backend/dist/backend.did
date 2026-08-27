@@ -16,7 +16,7 @@ type ValidateError =
  };
 type TransferIntent = 
  record {
-   amountE8s: nat;
+   amountCycles: nat;
    createdAtTimeNs: nat64;
    memo: blob;
    to: Account;
@@ -117,7 +117,7 @@ type Request =
  };
 type Receipt = 
  record {
-   cyclesMinted: opt nat;
+   cyclesDelivered: opt nat;
    deliveryBlockIndex: opt nat;
    order: Order;
    paidUsdCents: opt nat;
@@ -281,7 +281,7 @@ type JournalEntry =
  record {
    blockIndex: opt nat;
    createdAtNs: int;
-   cyclesMinted: opt nat;
+   cyclesDelivered: opt nat;
    destination: Destination;
    orderId: OrderId;
    retries: nat;
@@ -428,7 +428,7 @@ type Account =
 /// Fully on-chain cycles gateway — composition root.
 /// 
 /// See design-docs/ONCHAIN_GATEWAY_SPEC.md (spec v2.1) and PRD.md for the
-/// module layout this actor grows into: Orders.mo wiring, rails/, Cmc.mo,
+/// module layout this actor grows into: Orders.mo wiring, rails/, Delivery.mo,
 /// Pricing.mo, Treasury.mo, ErrorQueue.mo, Auth.mo.
 service : {
   /// Stop trying to deliver an order (admin, §7) — **the only path to a

@@ -156,13 +156,13 @@ module {
   //     **one** such outflow: the delivery transfer. The two ways the account's owner
   //     could otherwise move it — `icrc2_approve` (creating an allowance for someone
   //     else to `icrc2_transfer_from`) and the ledger's `withdraw` — are **not
-  //     declared in `Cmc.CyclesLedgerService`**, so this canister cannot call them.
+  //     declared in `Delivery.CyclesLedgerService`**, so this canister cannot call them.
   //     Not "we do not plan to": the compiler will not let it.
   //   - it can only **increase** when someone tops the account up, which we cannot
   //     observe without asking — and which is always positive.
   //
   // ⚠️ **ONE outflow, and the enforcement is the actor type — not this comment.**
-  // `Cmc.CyclesLedgerService` declares exactly **two** methods, and that declaration
+  // `Delivery.CyclesLedgerService` declares exactly **two** methods, and that declaration
   // is what makes the asymmetry above a property rather than a promise:
   //
   //     `icrc1_transfer`     — **the outflow.** One logical transfer per order.

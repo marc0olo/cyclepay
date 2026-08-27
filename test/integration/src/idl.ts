@@ -105,7 +105,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     unknownTier: IDL.Text,
   });
   const TransferIntent = IDL.Record({
-    amountE8s: IDL.Nat,
+    amountCycles: IDL.Nat,
     createdAtTimeNs: IDL.Nat64,
     memo: IDL.Vec(IDL.Nat8),
     to: Account,
@@ -113,7 +113,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   const JournalEntry = IDL.Record({
     blockIndex: IDL.Opt(IDL.Nat),
     createdAtNs: IDL.Int,
-    cyclesMinted: IDL.Opt(IDL.Nat),
+    cyclesDelivered: IDL.Opt(IDL.Nat),
     destination: Destination,
     orderId: IDL.Text,
     retries: IDL.Nat,
@@ -346,7 +346,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     receipt: IDL.Func(
       [IDL.Text],
       [IDL.Opt(IDL.Record({
-        cyclesMinted: IDL.Opt(IDL.Nat),
+        cyclesDelivered: IDL.Opt(IDL.Nat),
         deliveryBlockIndex: IDL.Opt(IDL.Nat),
         order: Order,
         paidUsdCents: IDL.Opt(IDL.Nat),

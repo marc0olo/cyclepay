@@ -2,6 +2,7 @@ import { test; suite } "mo:test";
 import Int "mo:core/Int";
 import Nat "mo:core/Nat";
 import Cmc "../src/backend/Cmc";
+import Delivery "../src/backend/Delivery";
 import Recovery "../src/backend/Recovery";
 import Types "../src/backend/Types";
 
@@ -34,7 +35,7 @@ suite("validateInterval", func() {
   });
 
   test("default cadence is legal against the real ledger window", func() {
-    assert Recovery.validateInterval(Recovery.defaultIntervalNs, Cmc.ledgerDedupWindowNs) == #ok;
+    assert Recovery.validateInterval(Recovery.defaultIntervalNs, Delivery.ledgerDedupWindowNs) == #ok;
   });
 
   test("the retry budget outlasts a full day of outage at the default cadence", func() {
@@ -51,7 +52,7 @@ suite("validateInterval", func() {
   test("the cadence leaves real margin under the §5.1 ledger dedup window", func() {
     // Replay safety needs the cadence well inside the 24 h window, not merely
     // legal at the boundary.
-    assert Recovery.defaultIntervalNs * 4 <= Int.abs(Cmc.ledgerDedupWindowNs);
+    assert Recovery.defaultIntervalNs * 4 <= Int.abs(Delivery.ledgerDedupWindowNs);
   });
 });
 

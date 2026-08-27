@@ -255,7 +255,7 @@ module {
   /// ledger dedups on `created_at_time` within its ~24h window.
   public type TransferIntent = {
     createdAtTimeNs : Nat64;
-    amountE8s : Nat;
+    amountCycles : Nat;
     to : Account;
     memo : Blob;
   };
@@ -268,7 +268,7 @@ module {
     destination : Destination;
     transferIntent : ?TransferIntent;
     blockIndex : ?Nat;
-    cyclesMinted : ?Nat;
+    cyclesDelivered : ?Nat;
     retries : Nat;
     createdAtNs : Int;
     updatedAtNs : Int;

@@ -136,7 +136,7 @@ export interface QuotePreviews {
 
 export interface TransferIntent {
   to: Account;
-  amountE8s: bigint;
+  amountCycles: bigint;
   memo: Bytes;
   createdAtTimeNs: bigint;
 }
@@ -147,7 +147,7 @@ export interface JournalEntry {
   destination: Destination;
   transferIntent: Opt<TransferIntent>;
   blockIndex: Opt<bigint>;
-  cyclesMinted: Opt<bigint>;
+  cyclesDelivered: Opt<bigint>;
   retries: bigint;
   createdAtNs: bigint;
   updatedAtNs: bigint;
@@ -269,7 +269,7 @@ export interface BackendService {
     order: Order;
     paidUsdCents: Opt<bigint>;
     deliveryBlockIndex: Opt<bigint>;
-    cyclesMinted: Opt<bigint>;
+    cyclesDelivered: Opt<bigint>;
     verification: {
       netCents: Opt<bigint>;
       usdPerIcpMicros: bigint;

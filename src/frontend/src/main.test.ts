@@ -457,7 +457,7 @@ describe("receipt", () => {
     state.receipt = {
       order: state.order,
       paidUsdCents: TIER_CENTS,
-      cyclesMinted: TIER_CYCLES,
+      cyclesDelivered: TIER_CYCLES,
       deliveryBlockIndex: 42n,
       verification: {
         netCents: 455n,

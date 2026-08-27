@@ -382,7 +382,7 @@ test('06 — the money-out path is ONE transfer out of the reserve (#30 PR-A)', 
   // §4.2 journal: the ledger block, the delivered quantity, terminal status.
   const journal = (await gw.asAdmin.delivery_journal(orderA.id))[0]!;
   expect(journal.blockIndex.length).toBe(1);
-  expect(journal.cyclesMinted).toEqual([TIER_LOCKED_CYCLES - feeNow]);
+  expect(journal.cyclesDelivered).toEqual([TIER_LOCKED_CYCLES - feeNow]);
   expect(statusKey(journal)).toBe('delivered');
 
   // ⚠️ Delivery moves cycles out of the reserve and nothing else: the gateway holds
@@ -642,7 +642,7 @@ test('12 — an upgrade concurrent with delivery pays exactly once, and the time
 // ── 13 and 14 were deleted by #30 PR-A, and the reasons differ ──────────────
 //
 // **13 (upgrade mid-forward)** exercised the pre-forward window: the mint set
-// `cyclesMinted` before a SEPARATE forward await, so an interruption between them
+// `cyclesDelivered` before a SEPARATE forward await, so an interruption between them
 // left the forward's fate unknown (`#ambiguousForward`). Delivery is now one
 // call — mint-then-forward does not exist — so there is no window to catch. Its
 // surviving property, "delivered exactly once across an upgrade", is asserted in
@@ -688,14 +688,6 @@ test('15 — operational trail is coherent end-to-end (§4.2)', async () => {
   for (const gone of ['mint.held', 'mint.delivered', 'mint.undeliverable']) {
     expect(tags).not.toContain(gone);
   }
-
-  // ⚠️ **`mint.delayed` → `delivery.delayed`, done in #30 PR-C**, along with
-  // `mint.stuck` → `delivery.stuck`. The rest of the `mint.*` family is legacy-only
-  // and dies with the pipeline in #36, so renaming it there would be churn on code
-  // being deleted. ⚠️ `amountCycles` moved to #36 as well: one `TransferIntent` type
-  // serves both the ICP transfer (where `amountE8s` is accurate) and the cycles
-  // delivery, so renaming it before the ICP path dies trades one false name for
-  // another.
 
   // The server-side worklist, which is what an operator actually reads.
   const open = await openErrorEntries(gw);
@@ -874,7 +866,7 @@ test('19 — a buyer can verify their own purchase from the receipt', async () =
   // deposited (the deposit fee came off separately); since #30 PR-A the transfer
   // IS the delivery, so the fee is inside this figure. A receipt that reported
   // the locked quantity here would overstate what arrived.
-  expect(receipt.cyclesMinted).toEqual([TIER_LOCKED_CYCLES - CYCLES_LEDGER_FEE]);
+  expect(receipt.cyclesDelivered).toEqual([TIER_LOCKED_CYCLES - CYCLES_LEDGER_FEE]);
 
   // THE POINT: recompute the price from the two recorded rate inputs and it must
   // equal what was locked. Both are queryable from the XRC and the CMC, so this
@@ -1312,7 +1304,7 @@ test('32 — rates going bad after payment cannot affect an order already #paid'
   // The LOCKED quantity is untouched by a rate move — that is the guarantee.
   expect(settled.lockedCycles).toBe(TIER_LOCKED_CYCLES);
   // What was delivered is that quantity less the ledger fee (#30 PR-A).
-  expect((await gw.asAdmin.delivery_journal(order.id))[0]!.cyclesMinted)
+  expect((await gw.asAdmin.delivery_journal(order.id))[0]!.cyclesDelivered)
     .toEqual([TIER_LOCKED_CYCLES - CYCLES_LEDGER_FEE]);
 
   // New orders are refused once the cached rate lapses — the fail-closed half.

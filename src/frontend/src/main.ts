@@ -1179,9 +1179,9 @@ async function renderReceipt(order: Order): Promise<void> {
   el("receipt-paid").textContent = receipt.paidUsdCents === undefined
     ? "not yet"
     : formatUsdCents(receipt.paidUsdCents);
-  el("receipt-delivered").textContent = receipt.cyclesMinted === undefined
+  el("receipt-delivered").textContent = receipt.cyclesDelivered === undefined
     ? "not yet"
-    : formatCycles(receipt.cyclesMinted);
+    : formatCycles(receipt.cyclesDelivered);
   el("receipt-block").textContent = receipt.deliveryBlockIndex === undefined
     ? "not yet"
     : receipt.deliveryBlockIndex.toString();
