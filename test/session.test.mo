@@ -282,3 +282,69 @@ suite("classifying an outcall failure", func() {
     assert Session.classifyFailure("something nobody has seen") == #other;
   });
 });
+
+suite("retrieve: url, cap, and the classifier (#52)", func() {
+  test("the retrieve url is the create url plus the session id", func() {
+    assert Session.retrieveUrl("cs_test_abc") == "https://api.stripe.com/v1/checkout/sessions/cs_test_abc";
+  });
+
+  test("the retrieve cap is LARGER than the create cap, deliberately", func() {
+    // A completed session carries `customer_details`, a resolved `payment_intent` and
+    // `total_details` that a freshly created one does not, and the cap covers Stripe's
+    // response headers too because it is enforced on the raw response. Copying the
+    // create cap here is the mistake this pins.
+    assert Session.retrieveMaxResponseBytes > Session.maxResponseBytes;
+  });
+
+  test("the three statuses the sweep acts on", func() {
+    assert Session.classify(Text.encodeUtf8("{\"status\":\"open\"}")) == #open;
+    assert Session.classify(Text.encodeUtf8("{\"status\":\"expired\"}")) == #expired;
+    // The intent comes back with it, because this is the ONLY place we can learn it:
+    // the order never reached `#paid`, so nothing indexed the payment. An obligation
+    // that cannot name the payment is one an operator cannot reconcile.
+    switch (Session.classify(Text.encodeUtf8("{\"status\":\"complete\",\"payment_status\":\"paid\",\"payment_intent\":\"pi_42\"}"))) {
+      case (#completePaid({ paymentIntent })) assert paymentIntent == "pi_42";
+      case (_) assert false;
+    };
+  });
+
+  test("complete and paid but with NO payment_intent is #unknown, not a nameless claim", func() {
+    switch (Session.classify(Text.encodeUtf8("{\"status\":\"complete\",\"payment_status\":\"paid\"}"))) {
+      case (#unknown(detail)) assert Text.contains(detail, #text "payment_intent");
+      case (_) assert false;
+    };
+  });
+
+  test("⚠️ complete-but-UNPAID is never read as paid", func() {
+    // A delayed-notification method (SEPA, ACH, boleto) closes the session before the
+    // money settles. Our sessions pin `payment_method_types[]=card` so this is
+    // unreachable — but folding it into the paid case would make the sweep file an
+    // operator-facing obligation claiming a buyer paid when nobody has. Silence is
+    // correct: `async_payment_succeeded`/`_failed` own that lifecycle.
+    switch (Session.classify(Text.encodeUtf8("{\"status\":\"complete\",\"payment_status\":\"unpaid\"}"))) {
+      case (#unknown(detail)) assert Text.contains(detail, #text "unpaid");
+      case (_) assert false;
+    };
+    switch (Session.classify(Text.encodeUtf8("{\"status\":\"complete\"}"))) {
+      case (#unknown(_)) {};
+      case (_) assert false;
+    };
+  });
+
+  test("every unrecognised shape falls to #unknown rather than a guess", func() {
+    // Fail-safe is the whole property: the sweep treats #unknown exactly like #open, so
+    // a Stripe response change makes this feature inert instead of wrong. A classifier
+    // that guessed would be guessing about whether a buyer has been paid.
+    for (body in ([
+      "{\"status\":\"tomorrow\"}", // a status nobody has seen
+      "{\"payment_status\":\"paid\"}", // no status at all
+      "not json",
+      "{}",
+    ] : [Text]).values()) {
+      switch (Session.classify(Text.encodeUtf8(body))) {
+        case (#unknown(detail)) assert detail.size() > 0; // carries something auditable
+        case (_) assert false;
+      };
+    };
+  });
+});

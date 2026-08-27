@@ -131,6 +131,14 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     }),
     abandoned: IDL.Record({ orderId: IDL.Text, reason: IDL.Text }),
     unprocessable: IDL.Record({ eventId: IDL.Text, field: IDL.Text }),
+    // #52: the buyer paid and we never credited them. Carries the intent id for the
+    // operator, which `paymentRefOf` deliberately withholds so a refund cannot
+    // auto-close the entry — refunding settles the money and leaves the order stranded.
+    paidNotCredited: IDL.Record({
+      orderId: IDL.Text,
+      paymentRef: IDL.Text,
+      sessionId: IDL.Text,
+    }),
     deliveryDelayed: IDL.Record({
       orderId: IDL.Text,
       sinceNs: IDL.Int,
@@ -249,6 +257,11 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     set_expected_livemode: IDL.Func([IDL.Opt(IDL.Bool)], [], []),
     expected_livemode: IDL.Func([], [IDL.Opt(IDL.Bool)], ['query']),
     cancel_order: IDL.Func(
+      [IDL.Text],
+      [IDL.Variant({ ok: Order, err: IDL.Text })],
+      [],
+    ),
+    expire_order: IDL.Func(
       [IDL.Text],
       [IDL.Variant({ ok: Order, err: IDL.Text })],
       [],
