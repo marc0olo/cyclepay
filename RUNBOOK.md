@@ -114,8 +114,11 @@ consciously set. Work the list in order:
    `icp canister call backend set_expected_livemode '(opt true)' -e ic --identity <operator>`.
    Until this is set, a test-mode webhook secret would deliver **real** cycles for
    payments that never happened. Verify with `expected_livemode`.
-12. **Create a LIVE restricted API key (`rk_...`) scoped to write Checkout
-   Sessions**, and provision it with `set_stripe_api_key`. Your sandbox key cannot
+12. **Create a LIVE restricted API key (`rk_...`) with Checkout Sessions = Write**
+   (Write is the level that also grants read, and the recovery sweep needs the read to
+   settle a stranded order — §6's `#paidNotCredited` row and §9's
+   `stripe.retrieveUnauthorized` row), everything else None, and provision it with
+   `set_stripe_api_key`. Your sandbox key cannot
    be reused. There are no Payment Links, Products or Prices to create: the
    session carries inline `price_data`, and `amount_total == usdCents` holds
    because of what the session does NOT enable — the eight settings are listed in

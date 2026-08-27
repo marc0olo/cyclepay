@@ -39,10 +39,12 @@ them or fails and retries.
 ## 2. What the canister calls Stripe for, and what it still cannot do
 
 The rail was **inbound-only** until #33: no API key anywhere, Stripe talked to us
-and never the reverse. It now makes exactly **one** kind of outbound call —
-create a Checkout Session for an order, and expire one when the buyer cancels —
-over an HTTPS outcall, using a **restricted** key (`rk_...`) scoped to write
-Checkout Sessions and nothing else.
+and never the reverse. It now makes outbound calls, and **all three are Checkout
+Sessions calls**: create one for an order, expire one when the buyer cancels, and
+retrieve one when the recovery sweep needs to settle an order whose expiry event never
+arrived (#52). Over HTTPS outcalls, using a **restricted** key (`rk_...`) with
+**Checkout Sessions = Write** — the level that also grants the read the retrieve needs —
+and every other permission None.
 
 That scope is the whole of the change. Everything the inbound-only design bought
 still holds, because the key cannot do anything else:
