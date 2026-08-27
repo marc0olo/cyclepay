@@ -122,7 +122,12 @@ module {
   /// only when something reads it. Nothing counts these — `countOf` returns 0
   /// and `reconcile` leaves them alone. #30 adds `#needsReview` if its promise
   /// tally needs the count.
-  let trackedStatuses : [Types.OrderStatus] = [#created, #expired, #paid, #minting, #icpAtCmc, #awaitingTreasury];
+  /// ⚠️ **Four now, not six (#36).** The O(1) counters exist for the admission gate and
+  /// the sweep, so they cover the non-terminal statuses — which after the mint
+  /// pipeline's deletion are `#created`, `#expired`, `#paid` and `#needsReview`.
+  /// `#expired` is tracked despite being terminal because the gate's open-order cap
+  /// and the operator's abuse signal both read it.
+  let trackedStatuses : [Types.OrderStatus] = [#created, #expired, #paid, #needsReview];
 
   func isTracked(status : Types.OrderStatus) : Bool {
     for (tracked in trackedStatuses.values()) {
@@ -232,15 +237,7 @@ module {
       // transfer lands, the buyer has their cycles, and the order sits `#paid`
       // forever. #36 deletes eight edges here; this PR adds one.
       case (#paid, #delivered) true;
-      case (#paid, #minting) true; // LEGACY (mint path, deleted by #36): ICP float sufficient
-      case (#paid, #awaitingTreasury) true; // float short (§5.3)
       case (#paid, #needsReview) true; // paid but unable to mint past max wait (§5)
-      case (#awaitingTreasury, #minting) true; // float refilled
-      case (#awaitingTreasury, #needsReview) true; // max-wait exceeded (§5.3)
-      case (#minting, #icpAtCmc) true; // block_index recorded (§5)
-      case (#minting, #needsReview) true; // intent aged past dedup window (§5.1)
-      case (#icpAtCmc, #delivered) true; // notify + forward succeeded
-      case (#icpAtCmc, #needsReview) true; // forward failed → Type 2 (§4.1)
       // #30 PR-B — the operator read the ledger and the transfer HAD landed.
       //
       // ⚠️ **Added because its absence made the operator record a lie.** Until this
@@ -261,7 +258,6 @@ module {
       // escalated order could not previously be abandoned, because one status
       // meant both "promise held" and "promise released".
       case (#paid, #abandoned) true;
-      case (#awaitingTreasury, #abandoned) true;
       case (#needsReview, #abandoned) true;
       case _ false;
     };

@@ -418,7 +418,7 @@ suite("charge.refunded: partial vs full", func() {
     // The real money-out path, and asserted rather than ignored — a skipped
     // state is not a legal transition, and swallowing that would leave the order
     // in #paid and silently test the wrong branch.
-    for (to in ([#minting, #icpAtCmc, #delivered] : [Types.OrderStatus]).values()) {
+    for (to in ([#delivered] : [Types.OrderStatus]).values()) {
       switch (Orders.applyTransition(deps.orders, orderId, to, nowNs)) {
         case (#ok(_)) {};
         case (#err(_)) Runtime.trap("could not drive the order to #delivered");
@@ -843,7 +843,7 @@ suite("handleWebhook: charge.refunded auto-resolve (§4.1)", func() {
     withOrder(deps, #card);
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
     // Drive the order to its terminal delivered state the way money-out does.
-    for (to in ([#minting, #icpAtCmc, #delivered] : [Types.OrderStatus]).values()) {
+    for (to in ([#delivered] : [Types.OrderStatus]).values()) {
       switch (Orders.applyTransition(deps.orders, orderId, to, nowNs)) {
         case (#ok(_)) {};
         case (#err(_)) Runtime.trap("could not drive the order to #delivered");

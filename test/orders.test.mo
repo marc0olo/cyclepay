@@ -20,10 +20,7 @@ let allStatuses : [Types.OrderStatus] = [
   #cancelled,
   #expired,
   #paid,
-  #minting,
-  #icpAtCmc,
   #delivered,
-  #awaitingTreasury,
   #needsReview,
   #abandoned,
 ];
@@ -40,18 +37,9 @@ let legalTransitions : [(Types.OrderStatus, Types.OrderStatus)] = [
   // `#delivered`, so without this edge the transfer lands and the order sits
   // `#paid` forever with the buyer already holding their cycles.
   (#paid, #delivered),
-  (#paid, #minting),
-  (#paid, #awaitingTreasury),
   (#paid, #needsReview),
-  (#awaitingTreasury, #minting),
-  (#awaitingTreasury, #needsReview),
-  (#minting, #icpAtCmc),
-  (#minting, #needsReview),
-  (#icpAtCmc, #delivered),
-  (#icpAtCmc, #needsReview),
   // abandon_order: the operator ends it, having refunded by hand.
   (#paid, #abandoned),
-  (#awaitingTreasury, #abandoned),
   (#needsReview, #abandoned),
   // #30 PR-B — `record_delivered`: the operator checked the cycles ledger and the
   // transfer HAD landed. Its absence forced them to file a delivered order as
@@ -236,14 +224,14 @@ suite("legal-transition matrix (exhaustive, 8×8)", func() {
     };
   };
 
-  test("exactly 17 legal transitions exist", func() {
+  test("exactly 8 legal transitions exist", func() {
     var count = 0;
     for (from in allStatuses.values()) {
       for (to in allStatuses.values()) {
         if (Orders.isLegalTransition(from, to)) count += 1;
       };
     };
-    assert count == 17;
+    assert count == 8;
   });
 
   test("the terminal statuses have no outgoing edge at all", func() {
@@ -340,10 +328,12 @@ suite("store: create", func() {
 });
 
 suite("store: applyTransition", func() {
-  test("happy path Created -> Paid -> Minting -> IcpAtCMC -> Delivered", func() {
+  test("happy path Created -> Paid -> Delivered", func() {
+    // ⚠️ Three states, not five (#36). It read `Created → Paid → Minting → IcpAtCMC
+    // → Delivered`, which was the ICP mint pipeline; money-out is one transfer now.
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    drive(store, "ord-1", [#paid, #minting, #icpAtCmc, #delivered]);
+    drive(store, "ord-1", [#paid, #delivered]);
     switch (Orders.get(store, "ord-1")) {
       case (?order) assert order.status == #delivered;
       case null assert false;
@@ -367,13 +357,13 @@ suite("store: applyTransition", func() {
   test("treasury path Paid -> AwaitingTreasury -> Minting", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    drive(store, "ord-1", [#paid, #awaitingTreasury, #minting]);
+    drive(store, "ord-1", [#paid, #delivered]);
   });
 
   test("illegal transition leaves stored order unchanged", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    switch (Orders.applyTransition(store, "ord-1", #minting, 200)) {
+    switch (Orders.applyTransition(store, "ord-1", #delivered, 200)) {
       case (#err(#illegalTransition(_))) {};
       case _ assert false;
     };
@@ -655,17 +645,15 @@ suite("status counts — the O(1) query inputs", func() {
     assert Orders.countOf(store, #created) == 0;
     // #paid is untracked, so nothing else moved.
     assert Orders.countOf(store, #expired) == 0;
-    assert Orders.countOf(store, #awaitingTreasury) == 0;
   });
 
-  test("the awaitingTreasury hold is tracked in both directions", func() {
+  test("a paid order is tracked in both directions", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
     ignore Orders.markPaid(store, "ord-1", 500, 200);
-    ignore Orders.applyTransition(store, "ord-1", #awaitingTreasury, 300);
-    assert Orders.countOf(store, #awaitingTreasury) == 1;
-    ignore Orders.applyTransition(store, "ord-1", #minting, 400);
-    assert Orders.countOf(store, #awaitingTreasury) == 0;
+    assert Orders.countOf(store, #paid) == 1;
+    ignore Orders.applyTransition(store, "ord-1", #delivered, 400);
+    assert Orders.countOf(store, #paid) == 0;
   });
 
   test("a refused transition leaves the counts alone", func() {
@@ -696,16 +684,17 @@ suite("status counts — the O(1) query inputs", func() {
   test("recount lands an order in exactly one bucket after a transition chain", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    // A real chain rather than a contrived one: paid, then held short of float.
-    // (It used to be created → expired → paid, which #34 made illegal.)
+    // A real chain rather than a contrived one: paid, then escalated. (It used to be
+    // created → expired → paid, which #34 made illegal, and then paid → held short of
+    // float, which #36 deleted with the float.)
     ignore Orders.applyTransition(store, "ord-1", #paid, 200);
-    ignore Orders.applyTransition(store, "ord-1", #awaitingTreasury, 300);
+    ignore Orders.applyTransition(store, "ord-1", #needsReview, 300);
     ignore Orders.recount(store);
     // One order, one bucket: the statuses it passed through must be vacated.
     assert Orders.countOf(store, #created) == 0;
     assert Orders.countOf(store, #expired) == 0;
     assert Orders.countOf(store, #paid) == 0;
-    assert Orders.countOf(store, #awaitingTreasury) == 1;
+    assert Orders.countOf(store, #needsReview) == 1;
   });
 
   test("reconcile reports no drift while the incremental counts are correct", func() {
@@ -719,17 +708,19 @@ suite("status counts — the O(1) query inputs", func() {
     ignore newOrder(store, "ord-2", alice);
     ignore newOrder(store, "ord-3", bob);
     ignore Orders.applyTransition(store, "ord-1", #paid, 200);
-    ignore Orders.applyTransition(store, "ord-1", #minting, 300);
+    ignore Orders.applyTransition(store, "ord-1", #delivered, 300);
     ignore Orders.applyTransition(store, "ord-2", #expired, 300);
     ignore Orders.applyTransition(store, "ord-3", #paid, 300);
-    ignore Orders.applyTransition(store, "ord-3", #awaitingTreasury, 400);
 
     let result = Orders.reconcile(store);
     assert result.drift.size() == 0;
-    // And the tallies it reports are the ones the queries serve.
+    // And the tallies it reports are the ones the queries serve. ⚠️ Four keys now,
+    // not six (#36): the mint statuses are deleted, so `ord-1` (paid → delivered)
+    // lands in no tracked bucket at all — `#delivered` is terminal and untracked.
     for ((status, n) in result.counts.values()) {
       assert n == (switch (status) {
-        case ("Minting" or "AwaitingTreasury" or "Expired") 1;
+        case ("Expired") 1; // ord-2
+        case ("Paid") 1; // ord-3
         case (_) 0;
       });
     };
@@ -762,7 +753,7 @@ suite("status counts — the O(1) query inputs", func() {
     ignore newOrder(store, "ord-1", alice);
     // #delivered and the terminal #34 statuses are untracked by design (terminal or worklist-
     // owned); the rest are tracked but empty here.
-    for (status in ([#paid, #minting, #icpAtCmc, #delivered, #cancelled, #needsReview, #abandoned] : [Types.OrderStatus]).values()) {
+    for (status in ([#paid, #delivered, #cancelled, #needsReview, #abandoned] : [Types.OrderStatus]).values()) {
       assert Orders.countOf(store, status) == 0;
     };
   });

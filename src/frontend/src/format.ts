@@ -8,9 +8,6 @@ export type StatusKey =
   | "cancelled"
   | "expired"
   | "paid"
-  | "minting"
-  | "icpAtCmc"
-  | "awaitingTreasury"
   | "delivered"
   | "needsReview"
   | "abandoned";
@@ -54,16 +51,6 @@ export function statusInfo(key: StatusKey): StatusInfo {
       return { label: "Expired. This order can no longer be paid", step: -1, terminal: true, tone: "warn" };
     case "paid":
       return { label: "Payment received", step: 1, terminal: false, tone: "active" };
-    case "awaitingTreasury":
-      return { label: "Queued. Waiting on treasury", step: 1, terminal: false, tone: "warn" };
-    // LEGACY and unreachable since #30 PR-A: the treasury pre-gate was the only
-    // entrance to either. Off the happy path (step -1) rather than occupying a
-    // segment of a bar they can never reach, and honest about needing a human if a
-    // regression ever routed an order back here. #36 deletes both statuses.
-    case "minting":
-      return { label: "Processing. Contact support if this persists", step: -1, terminal: false, tone: "warn" };
-    case "icpAtCmc":
-      return { label: "Processing. Contact support if this persists", step: -1, terminal: false, tone: "warn" };
     case "delivered":
       return { label: "Delivered", step: 2, terminal: true, tone: "ok" };
     case "needsReview":

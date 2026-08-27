@@ -220,13 +220,10 @@ type OriginError =
 type OrderStatus = 
  variant {
    abandoned;
-   awaitingTreasury;
    cancelled;
    created;
    delivered;
    expired;
-   icpAtCmc;
-   minting;
    needsReview;
    paid;
  };
@@ -304,7 +301,6 @@ type JournalEntry =
 type IntervalError = 
  variant {
    intervalTooLong: record {maxNs: nat;};
-   intervalTooShort: record {minNs: nat;};
    zeroInterval;
  };
 type HttpRequestResult = 

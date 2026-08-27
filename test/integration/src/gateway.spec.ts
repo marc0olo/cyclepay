@@ -974,8 +974,12 @@ test('21 — status counters are O(1) and reconcile against a full recount', asy
 
   expect(asMap.get('Created')).toBe(before.openOrders);
   expect(asMap.get('Expired')).toBe(before.expiredOrders);
-  expect(asMap.get('AwaitingTreasury'))
-    .toBe((await gw.asAnon.treasury_status()).heldOrders);
+  // ⚠️ **Four tracked statuses now, and `AwaitingTreasury` is not one (#36).** It was
+  // cross-checked against `treasury_status().heldOrders`; the status is deleted, so
+  // the rebuild has no such key and that read is meaningless. `Paid` is the tally the
+  // sweep actually depends on, so it takes its place.
+  expect(asMap.get('AwaitingTreasury')).toBeUndefined();
+  expect(asMap.has('Paid')).toBe(true);
 
   // Recount is admin-only: it is the expensive O(n) path.
   await expect(gw.asUser.recount_orders()).rejects.toThrow(/not a controller/);
@@ -3189,70 +3193,19 @@ test('78 — an order whose delivery is unsettled cannot be abandoned into a dou
   await ensureRates(gw);
 });
 
-test('79 — the mint pipeline was never entered, asserted before #36 deletes it', async () => {
-  // ⚠️ **DELETE THIS SCENARIO WITH THE STATES IT ASSERTS ABOUT (#36).** It cannot
-  // compile against a status set that lacks its subjects, and its heir is the
-  // deletion itself: once `#minting`, `#icpAtCmc` and `#awaitingTreasury` do not
-  // exist, "no order is in them" stops being a claim anybody can make — which is a
-  // stronger guarantee than this test, not a weaker one. Unreachability becomes
-  // unrepresentability, which is the upgrade this codebase reaches for everywhere
-  // else (the transition matrix, the ledger's actor type) and the reason the
-  // scenario-map row for this one records its own disposal.
-  //
-  // ⚠️ **This scenario exists to be deleted, and that is the point.** PR-A left the
-  // ICP mint pipeline in-tree and unreachable: `#minting`, `#icpAtCmc` and
-  // `#awaitingTreasury` lost their only entrance when the treasury pre-gate stopped
-  // being on the payment path. #36 deletes the states — but the claim that nothing
-  // ever entered them during the PR-A → PR-C window is only checkable *while they
-  // still exist*, so it is checked here, in the last commit before they go.
-  //
-  // PR-B leaned on this: its promise tally treats "not terminal" as holding, which
-  // covers all three as belt-and-braces rather than as a live case. If any order had
-  // sat in one, that belt-and-braces would have been load-bearing and nobody would
-  // have known.
-  const counts = new Map(await gw.asAdmin.recount_orders());
-
-  // ⚠️ `recount` zeroes every tracked status and then counts, so these keys are
-  // PRESENT with a zero — which is what makes this an assertion about a tracked,
-  // empty state rather than about a string missing from a list. The keys are
-  // `Types.statusToText`'s spellings, not the Candid variant tags.
-  for (const dead of ['Minting', 'IcpAtCMC', 'AwaitingTreasury']) {
-    expect(counts.has(dead), `${dead} should still be tracked`).toBe(true);
-    expect(counts.get(dead), `${dead} must never have been entered`).toBe(0n);
-  }
-
-  // ⚠️ Not a sum-to-total check: only the six non-terminal statuses are *tracked*
-  // (`Orders.trackedStatuses`), because the O(1) counters exist for the admission
-  // gate and nothing gates on a terminal count. So the cross-check is between the
-  // two tallies that are maintained incrementally and the same figures rebuilt from
-  // the store — which is the drift check, run here against every order the suite has
-  // accumulated rather than on the daily cadence.
-  const status = await gw.asAnon.reserve_status();
-  expect(counts.get('Created')).toBe(status.openOrders);
-  expect(counts.get('Expired')).toBe(status.expiredOrders);
-  // And the suite really did create dozens, so a zero cannot pass this vacuously.
-  expect(status.totalOrders).toBeGreaterThan(20n);
-
-  // ⚠️ **Honest about what this does and does not prove.** It is an END-STATE check
-  // over every order the suite created, not a transition log — an order that entered
-  // a mint state and left it would not show here. What makes it sound as a
-  // "never entered" claim is structural, not statistical: the only entrance was the
-  // treasury pre-gate, and it is not on the payment path. This count is the
-  // falsifiable half of that argument, and `test/orders.test.mo` is the other half —
-  // it pins the matrix at 17 transitions, so the edges into these states still exist
-  // and this check is not passing because they quietly disappeared.
-  //
-  // Same shape as the lesson on #12: when the interleaving cannot be staged, pin the
-  // predicate's inputs. Here the input is "the entrance is gone", and the check is
-  // "nothing is inside".
-  //
-  // ⚠️ **Falsifiability, measured rather than asserted.** Routing `#beginDelivery`
-  // into `#minting` — the one legal entrance, from `#paid` — fails the suite loudly:
-  // scenarios 06, 07, 08, 10, 11 and 12 break, because delivery stops working. Every
-  // *other* insertion point tried was refused by the transition matrix itself
-  // (`#needsReview → #minting` and `#delivered → #minting` are not edges), which is
-  // the structural reason these states are unreachable and the reason this scenario
-  // is a belt on top of a brace rather than the only guard. What it adds is a single
-  // place that makes the claim checkable at all — the money-path scenarios fail for
-  // their own reasons and would not tell you "an order sat in a dead state".
-});
+// -- 79 was deleted by #36, exactly as it was written to be --------------------
+//
+// It asserted `Minting`, `IcpAtCMC` and `AwaitingTreasury` were tracked and **zero**
+// across every order the suite accumulated — the claim that nothing entered the mint
+// pipeline during the PR-A → PR-C window, checkable only while the states existed.
+//
+// ⚠️ **Its heir is this deletion.** `Types.OrderStatus` has seven cases now, so "no
+// order is in a mint state" is not a claim anybody can make or fail to make:
+// unreachability became **unrepresentability**, which is the upgrade this codebase
+// reaches for everywhere else (the transition matrix, the cycles ledger's actor type)
+// and strictly stronger than the test that preceded it.
+//
+// For the record, since it is the only place the measurement survives: routing
+// `#beginDelivery` into `#minting` — the one legal entrance — failed scenarios 06,
+// 07, 08, 10, 11 and 12, and every other insertion point was refused by the
+// transition matrix itself.

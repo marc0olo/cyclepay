@@ -520,34 +520,13 @@ module {
   public type Stage = {
     /// Nothing to do (terminal, pre-payment, or treasury-held).
     #none;
-    /// `#paid`, no intent yet (LEGACY mint path): derive the amount, write the
-    /// intent, transfer ICP. Reached only from the treasury-hold retry now that
-    /// #30 PR-A routes `#paid` to `#beginDelivery`; #36 deletes it.
-    #begin;
-    /// #30 PR-A — no delivery intent yet: write the intent and transfer cycles from
-    /// the reserve. ⚠️ It used to say "read `icrc1_fee`" first; #30 PR-B removed that
-    /// await, so this stage is now synchronous through to the transfer issue — which
-    /// `Main.unsettledDeliveries` depends on.
-    ///
-    /// ⚠️ The delivery stages are deliberately **separate constructors** from the
-    /// mint ones rather than a shared stage that branches on status. They address
-    /// **different ledgers**, and a stage that could mean either would put the
-    /// choice of ledger in the caller's hands on a money path — replaying an ICP
-    /// intent against the cycles ledger is exactly the class of bug worth making
-    /// unrepresentable. It also lets #36 delete the mint stages by name.
     #beginDelivery;
-    /// LEGACY: a fresh ICP intent and no block — (re)issue the identical
-    /// transfer. First attempt and recovery replay are the same move (§5.1).
-    #replayTransfer : Types.TransferIntent;
     /// #30 PR-A — a fresh delivery intent and no block: (re)issue the identical
     /// cycles transfer, reading the STORED args and never rebuilding them.
     #replayDelivery : Types.TransferIntent;
     /// The transfer landed and the `#delivered` transition did not (#30 PR-A).
     /// Carries the block so the journal and the receipt still name it.
     #finishDelivery : Nat;
-    /// Block known, mint unconfirmed: `notify_top_up` (idempotent on
-    /// block_index, §5.2), then forward.
-    #notifyCmc : Nat;
     #escalate : EscalateReason;
   };
 
@@ -573,78 +552,6 @@ module {
     entry : ?Types.JournalEntry,
   ) : { stage : Text; detail : Text } {
     switch (status) {
-      case (#icpAtCmc) {
-        let ?e = entry else {
-          return {
-            stage = escalateReasonToText(#missingJournal);
-            detail = "order is #icpAtCmc with no money-out journal — invariant breach, should be unreachable. Reconstruct from audit_log and the ICP ledger before moving any money.";
-          };
-        };
-        // Pre-forward marker set: the mint happened and the forward's fate is
-        // unknown. Never re-forward automatically, and never tell anyone the ICP
-        // is recoverable — it is already spent.
-        if (e.cyclesMinted != null) {
-          return {
-            stage = escalateReasonToText(#ambiguousForward);
-            detail = "cycles WERE minted and the forward outcome is unknown — check the destination balance against delivery_journal.cyclesMinted BEFORE anything else. Do not re-forward and do not notify the CMC again: the ICP is already consumed. Arrived -> resolve. Not arrived -> the cycles are in this canister's balance; deliver them manually.";
-          };
-        };
-        // The instruction names a block index, so it has to exist. Status
-        // #icpAtCmc means one was recorded; if the journal disagrees, say so
-        // rather than emitting an instruction nobody can follow.
-        let ?block = e.blockIndex else {
-          return {
-            stage = escalateReasonToText(#missingJournal);
-            detail = "order is #icpAtCmc but the journal has no block index — invariant breach. The ICP left the float, so find the transfer on the ICP ledger before moving any money.";
-          };
-        };
-        {
-          stage = escalateReasonToText(#retriesExhausted);
-          detail = "ICP reached the CMC (block " # block.toText() # ") but notify_top_up did not succeed — notify manually with that block; notify is idempotent. The ICP is parked at the CMC top-up subaccount, not lost.";
-        };
-      };
-      case (#minting) {
-        let ?e = entry else {
-          return {
-            stage = escalateReasonToText(#missingJournal);
-            detail = "order is #minting with no money-out journal — invariant breach, should be unreachable. Reconstruct from audit_log and the ICP ledger before moving any money.";
-          };
-        };
-        switch (e.blockIndex) {
-          // Transfer confirmed, only the notify outstanding — same position as
-          // #icpAtCmc without cycles, so the same instruction.
-          case (?block) {
-            {
-              stage = escalateReasonToText(#retriesExhausted);
-              detail = "the ICP transfer IS confirmed (block " # block.toText() # ") but notify_top_up did not complete — notify manually with that block. The ICP is parked at the CMC, not lost.";
-            };
-          };
-          // No block: whether the transfer executed is unknown. The recovery
-          // instruction is only followable if the intent is there to match on.
-          case null {
-            switch (e.transferIntent) {
-              case null {
-                {
-                  stage = escalateReasonToText(#missingJournal);
-                  detail = "order is #minting with neither a block index nor a transfer intent — invariant breach. Nothing can be matched on the ledger; reconstruct from audit_log before moving any money.";
-                };
-              };
-              case (?intent) {
-                {
-                  stage = escalateReasonToText(#staleIntent);
-                  detail = "ICP transfer unconfirmed — establish its fate on the ICP ledger by matching created_at_time " # intent.createdAtTimeNs.toText() # " and amount " # intent.amountE8s.toText() # " e8s. Executed -> the ICP is at the CMC, notify with the found block. Not executed -> fiat in, nothing moved, refund. NEVER rebuild the intent.";
-                };
-              };
-            };
-          };
-        };
-      };
-      case (#awaitingTreasury) {
-        {
-          stage = "treasuryWaitExceeded";
-          detail = "held past the max wait: fiat received, nothing minted — refund in the Stripe Dashboard.";
-        };
-      };
       // #30 PR-A: `#paid` is where delivery now happens, so its money position
       // depends on the journal — a paid order with an unconfirmed transfer is
       // NOT the same position as one that never started.
@@ -689,16 +596,21 @@ module {
     };
   };
 
-  /// Decide the next move. Pure — the §5.1/§5.2 resume semantics in one
-  /// testable place. `maxRetries` bounds the retriable-error loop on stages
-  /// the 24 h window doesn't already bound (notify can otherwise retry
-  /// forever).
+  /// Decide the next move. Pure — the §5.1/§5.2 resume semantics in one testable
+  /// place.
+  ///
+  /// ⚠️ **No retry budget parameter (#36).** It took a `maxRetries` and bounded "the
+  /// stages the 24 h dedup window doesn't already bound — notify can otherwise retry
+  /// forever". #30 PR-B deleted the cap on the delivery path (a replay there is
+  /// provably safe, and the dedup window *is* that bound), and this issue deletes
+  /// `notify_top_up`, which was the only remaining justification. What bounds retrying
+  /// now is time on both ends: the dedup window escalates a stale intent, and §5.3's
+  /// 72 h max-wait gets a human involved.
   public func stageOf(
     status : Types.OrderStatus,
     entry : ?Types.JournalEntry,
     nowNs : Int,
     dedupWindowNs : Int,
-    maxRetries : Nat,
   ) : Stage {
     switch (status) {
       // #30 PR-A: delivery is ONE transfer from #paid, so the retry state lives
@@ -762,36 +674,7 @@ module {
           };
         };
       };
-      case (#minting) {
-        let ?e = entry else return #escalate(#missingJournal);
-        if (e.retries >= maxRetries) return #escalate(#retriesExhausted);
-        switch (e.blockIndex) {
-          // Block recorded but the #icpAtCmc transition didn't commit —
-          // unreachable today (both happen in one sync block), handled so a
-          // future regression degrades to a resumable state.
-          case (?block) #notifyCmc(block);
-          case null {
-            let ?intent = e.transferIntent else return #escalate(#missingJournal);
-            if (nowNs - intent.createdAtTimeNs.toNat() >= dedupWindowNs) {
-              #escalate(#staleIntent);
-            } else {
-              #replayTransfer(intent);
-            };
-          };
-        };
-      };
-      case (#icpAtCmc) {
-        let ?e = entry else return #escalate(#missingJournal);
-        // cyclesMinted is the pre-forward marker: set *before* the forward
-        // await, so its presence here (status never reached #delivered)
-        // means the forward's fate is unknown. At-most-once delivery —
-        // never auto-re-forward.
-        if (e.cyclesMinted != null) return #escalate(#ambiguousForward);
-        if (e.retries >= maxRetries) return #escalate(#retriesExhausted);
-        let ?block = e.blockIndex else return #escalate(#missingJournal);
-        #notifyCmc(block);
-      };
-      case (#created or #cancelled or #expired or #awaitingTreasury or #delivered or #needsReview or #abandoned) #none;
+      case (#created or #cancelled or #expired or #delivered or #needsReview or #abandoned) #none;
     };
   };
 

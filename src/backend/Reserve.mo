@@ -162,14 +162,17 @@ module {
   //     observe without asking — and which is always positive.
   //
   // ⚠️ **ONE outflow, and the enforcement is the actor type — not this comment.**
-  // `Cmc.CyclesLedgerService` declares exactly three methods, and that declaration is
-  // what makes the asymmetry above a property rather than a promise:
+  // `Cmc.CyclesLedgerService` declares exactly **two** methods, and that declaration
+  // is what makes the asymmetry above a property rather than a promise:
   //
   //     `icrc1_transfer`     — **the outflow.** One logical transfer per order.
   //     `icrc1_balance_of`   — a read; the reconcile's, never the gate's.
-  //     `deposit`            — LEGACY, and **not an outflow**: it moves this
-  //                            canister's *gas* balance, not the ledger account.
-  //                            #36 deletes it.
+  //
+  // ⚠️ **Census re-run 2026-08-27 (#36), and the confusing entry is gone.** There was
+  // a third method, `deposit`, which was **not** an outflow: it moved this canister's
+  // own *gas* balance and credited the buyer, never touching the ledger account. It
+  // died with the mint pipeline, so nobody has to be told again that three calls are
+  // not three outflows.
   //
   // ⚠️ **A grep finds `icrc1_transfer` at TWO call sites, and that is still one
   // outflow.** They are the attempt and its `#BadFee` re-issue, of the *same* intent,
@@ -182,8 +185,8 @@ module {
   //
   // The premise's only failure mode is someone widening that actor type, so
   // `scripts/test-all.sh` greps it: adding `icrc2_approve` or `withdraw` there fails
-  // the gate with a pointer to this section. #36 touches this surface next (it
-  // deletes `deposit`), so the same check is on its checklist.
+  // the gate with a pointer to this section — and that check needed no change for
+  // #36's deletion, because it matches *declarations*, not call sites.
   //
   // So every unobserved change is in our favour, and a floor maintained from our
   // own outflows is never optimistic. Deciding against it can refuse a sale the

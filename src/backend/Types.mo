@@ -103,9 +103,12 @@ module {
   /// §4 statuses. Each says exactly one thing, and the promise state (#30) is a
   /// function of the status alone — which is why `#errorQueue` was split.
   ///
-  /// `#minting`, `#icpAtCmc` and `#awaitingTreasury` are the ICP mint pipeline
-  /// and are live until #36 retires it. The final set is the seven below without
-  /// them.
+  /// **Seven, and this is the decided end state (#36).** `#minting`, `#icpAtCmc` and
+  /// `#awaitingTreasury` were the ICP mint pipeline; they lost their only entrance in
+  /// #30 PR-A and are deleted here. Scenario 79 asserted no order ever entered one
+  /// while they still existed — that check goes with them, because unreachability
+  /// becomes **unrepresentability**, which is the stronger guarantee and the one this
+  /// codebase reaches for everywhere else.
   public type OrderStatus = {
     #created;
     /// The buyer gave up before paying. Terminal, and `#cancelled → #paid` is
@@ -113,10 +116,7 @@ module {
     #cancelled;
     #expired;
     #paid;
-    #minting;
-    #icpAtCmc;
     #delivered;
-    #awaitingTreasury;
     /// A money position whose outcome is not known — typically a transfer past
     /// the ledger's ~24 h dedup window. A human checks the ledger. The order's
     /// **promise is still held** (#30).
@@ -132,10 +132,7 @@ module {
       case (#cancelled) "Cancelled";
       case (#expired) "Expired";
       case (#paid) "Paid";
-      case (#minting) "Minting";
-      case (#icpAtCmc) "IcpAtCMC";
       case (#delivered) "Delivered";
-      case (#awaitingTreasury) "AwaitingTreasury";
       case (#needsReview) "NeedsReview";
       case (#abandoned) "Abandoned";
     };

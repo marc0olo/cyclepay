@@ -10,7 +10,6 @@ import Int "mo:core/Int";
 import List "mo:core/List";
 import Map "mo:core/Map";
 import Nat "mo:core/Nat";
-import Nat64 "mo:core/Nat64";
 import Principal "mo:core/Principal";
 import Result "mo:core/Result";
 import Runtime "mo:core/Runtime";
@@ -1474,12 +1473,7 @@ persistent actor CyclesGateway {
   /// picks up where the state actually is.
   transient let deliveriesInFlight = Set.empty<Types.OrderId>();
 
-  /// Bounds the retriable-error loop on stages the ledger's 24 h dedup window
-  /// doesn't already bound. Defined alongside the sweep cadence in Recovery.mo,
-  /// because the two are only correct in combination.
-  transient let maxMintRetries : Nat = Recovery.maxMintRetries;
-
-  /// Orders already audited for a blocked `#begin` this session, so a stuck
+  /// Orders already audited for a blocked delivery this session, so a stuck
   /// order contributes one audit line rather than one per sweep. Transient: the
   /// durable record of a stuck order is its error-queue entry once the max-wait
   /// bound trips, not this.
@@ -1630,7 +1624,9 @@ persistent actor CyclesGateway {
       lowFloat = Treasury.lowFloatSignal(treasuryConfig, lastFloatObservation);
       // O(1) off the maintained tally — this query is public and
       // unauthenticated, so it must not scan the order store.
-      heldOrders = Orders.countOf(orderStore, #awaitingTreasury);
+      // ⚠️ Always 0 (#36): `#awaitingTreasury` is deleted, so nothing is held. The
+      // field stays until the whole float surface goes, one commit from now.
+      heldOrders = 0;
       // Money in, not yet minted. A non-transient value here means the mint is
       // blocked upstream (a stale CMC rate, a CMC outage) and orders are on the
       // clock toward `mintWaitExceeded` — visible without reading the audit log,
@@ -1743,22 +1739,6 @@ persistent actor CyclesGateway {
     audit("delivery.stuck", order.id # " [" # stage # "]: " # detail);
   };
 
-  /// §5 forward half of mint-to-self-then-forward. The cycles ride the call
-  /// from the app balance; a rejected/failed call refunds them to the app
-  /// balance — exactly the Type 2 posture (§4.1).
-  func forwardCycles(order : Types.Order) : async* { #ok; #failed : Text } {
-    try {
-      switch (order.destination) {
-        case (#cyclesLedgerAccount(account)) {
-          ignore await (with cycles = order.lockedCycles) cyclesLedger.deposit({ to = account; memo = null });
-        };
-      };
-      #ok;
-    } catch (e) {
-      #failed(e.message());
-    };
-  };
-
   /// Drive one order as far toward `#delivered` as the world allows (§5).
   /// Each loop pass asks Cmc.stageOf for the next move off status + journal,
   /// so the first attempt and every recovery resume run the same code —
@@ -1796,75 +1776,43 @@ persistent actor CyclesGateway {
       // burn cap. `updatedAtNs` is the right age anchor for all three: retries
       // do not transition, so it stays pinned at the moment the order entered
       // its current state.
-      switch (order.status) {
-        case (#paid or #minting or #icpAtCmc) {
-          switch (Delivery.waitStage(order.updatedAtNs, Time.now(), deliveryWaitConfig())) {
-            case (#retry) {};
-            case (#alert) {
-              // Tell someone while the cause is still fixable, and keep retrying:
-              // most incidents end here with the order delivering.
-              alertDelayed(
-                order,
-                switch (order.status) {
-                  case (#minting) "transferDelayed"; // LEGACY, dies with #36
-                  case (#icpAtCmc) "notifyDelayed"; // LEGACY, dies with #36
-                  // ⚠️ The reachable one, and it was called `mintDelayed` while
-                  // reporting a DELIVERY delay (#30 PR-C). `#paid` is the only status
-                  // that reaches this today.
-                  case (_) "deliveryDelayed";
-                },
-                switch (order.status) {
-                  case (#minting) "paid, ICP transfer not yet confirmed past the alert threshold — check the ICP ledger; it resumes on the next sweep";
-                  case (#icpAtCmc) "paid, ICP is at the CMC but notify_top_up keeps failing past the alert threshold — check CMC health; the block index is in delivery_journal and notify is idempotent";
-                  case (_) "paid but not yet minted past the alert threshold — fix the cause (burn cap / float / CMC) and it delivers on the next sweep";
-                },
-              );
-            };
-            case (#terminate) {
-              // §5.3 max-wait bound. By now the cause is not transient, and a
-              // buyer left waiting files a chargeback — which costs more than a
-              // refund. Terminating so the operator refunds is the protective act.
-              //
-              // The escalation comes from `Cmc.terminationFor`, which reads the
-              // **journal** and not just the status: the status says where the
-              // order stopped, the journal says where the money is, and the money
-              // position is what the operator acts on. Deciding this inline off
-              // status alone is what produced three rounds of defects — see that
-              // function's doc for the specific dangerous cell it closes.
-              let termination = Cmc.terminationFor(order.status, deliveryJournal.get(orderId));
-              escalateDelivery(order, termination.stage, termination.detail);
-              clearDelayed(orderId);
-              deliveryBlockedAudited.remove(orderId);
-              return;
-            };
+      if (order.status == #paid) {
+        switch (Delivery.waitStage(order.updatedAtNs, Time.now(), deliveryWaitConfig())) {
+          case (#retry) {};
+          case (#alert) {
+            // Tell someone while the cause is still fixable, and keep retrying: most
+            // incidents end here with the order delivering.
+            //
+            // ⚠️ This used to switch on the status for both the stage string and the
+            // wording, because `#minting` and `#icpAtCmc` could sit still too (#36
+            // deleted them). One in-flight status means one stage and one sentence.
+            alertDelayed(
+              order,
+              "deliveryDelayed",
+              "paid but not yet delivered past the alert threshold — fix the cause and it delivers on the next sweep",
+            );
+          };
+          case (#terminate) {
+            // §5.3 max-wait bound. By now the cause is not transient, and a buyer left
+            // waiting files a chargeback — which costs more than a refund. Terminating
+            // so the operator refunds is the protective act.
+            //
+            // The escalation's stage comes from `Cmc.terminationFor`, which reads the
+            // **journal** and not just the status: the status says where the order
+            // stopped, the journal says where the money is, and the money position is
+            // what the operator acts on.
+            let termination = Cmc.terminationFor(order.status, deliveryJournal.get(orderId));
+            escalateDelivery(order, termination.stage, termination.detail);
+            clearDelayed(orderId);
+            deliveryBlockedAudited.remove(orderId);
+            return;
           };
         };
-        case (_) {};
       };
-      let stage : Cmc.Stage = switch (order.status) {
-        case (#awaitingTreasury) {
-          switch (Delivery.waitStage(order.updatedAtNs, Time.now(), deliveryWaitConfig())) {
-            case (#retry) #begin;
-            case (#alert) {
-              // A hold clears the moment the window rolls or the float is
-              // refilled, so keep retrying — but say something now.
-              alertDelayed(order, "treasuryDelayed", "held past the alert threshold — refill the float or raise the burn cap and it delivers on the next sweep");
-              #begin;
-            };
-            case (#terminate) {
-              // §5.3: same decision function as every other terminate, so there
-              // is exactly one place that maps a money position to an
-              // instruction.
-              let termination = Cmc.terminationFor(order.status, deliveryJournal.get(orderId));
-              escalateDelivery(order, termination.stage, termination.detail);
-              clearDelayed(orderId);
-              deliveryBlockedAudited.remove(orderId);
-              return;
-            };
-          };
-        };
-        case (_) Cmc.stageOf(order.status, deliveryJournal.get(orderId), Time.now(), Cmc.ledgerDedupWindowNs, maxMintRetries);
-      };
+      // ⚠️ One line where a `switch` on status used to be (#36). `#awaitingTreasury`
+      // had its own arm — the treasury hold's retry/alert/terminate — and it is gone
+      // with the float it waited on.
+      let stage : Cmc.Stage = Cmc.stageOf(order.status, deliveryJournal.get(orderId), Time.now(), Cmc.ledgerDedupWindowNs);
       switch (stage) {
         case (#none) return;
         case (#escalate(reason)) {
@@ -1897,102 +1845,6 @@ persistent actor CyclesGateway {
             };
           escalateDelivery(order, stage, detail);
           return;
-        };
-        case (#begin) {
-          // §5 rate derivation: fresh CMC ICP/XDR rate, staleness-guarded.
-          let rate = try { await cmc.get_icp_xdr_conversion_rate() } catch (e) {
-            auditDeliveryBlockedOnce(orderId, "mint.rateFetchFailed", orderId # ": " # e.message());
-            return; // stays #paid; the next sweep retries
-          };
-          let ?permyriad = Cmc.freshCmcRate(rate.data, Time.now(), Cmc.cmcRateMaxAgeNs) else {
-            auditDeliveryBlockedOnce(orderId, "mint.rateStale", orderId);
-            return;
-          };
-          // §5.3 pre-gate input: the live float balance (also feeds the
-          // balance-alert observation).
-          let floatE8s = try {
-            await icpLedger.icrc1_balance_of({ owner = selfPrincipal(); subaccount = null });
-          } catch (e) {
-            auditDeliveryBlockedOnce(orderId, "mint.balanceFetchFailed", orderId # ": " # e.message());
-            return; // status untouched; the next sweep retries
-          };
-          observeFloat(floatE8s);
-          // Re-read after the awaits; only an untouched mintable order
-          // proceeds (#awaitingTreasury arrives here via the hold retry).
-          let ?fresh = Orders.get(orderStore, orderId) else return;
-          switch (fresh.status) {
-            case (#paid or #awaitingTreasury) {};
-            case (_) continue drive;
-          };
-          let ?e8s = Cmc.icpE8sForCycles(fresh.lockedCycles, permyriad) else {
-            // Audited, not silent: the order stays #paid and the next sweep
-            // retries, so without a trace this looks like a mint that simply
-            // never ran.
-            auditDeliveryBlockedOnce(orderId, "mint.unpriceable", orderId # ": cannot derive e8s for " # fresh.lockedCycles.toText() # " cycles at " # permyriad.toText() # " permyriad");
-            return;
-          };
-          // §5.3 pre-gate: burn cap (blast-radius bound, checked first —
-          // it must hold mints even when the float could fund them), then
-          // float sufficiency. A held order stays put on re-hold (no
-          // transition, no re-audit — the hold start must keep its max-wait
-          // clock and the ring buffer its history).
-          switch (Treasury.gate(burnLedger, treasuryConfig, floatE8s, e8s, Cmc.icpTransferFeeE8s, Time.now())) {
-            case (#hold(reason)) {
-              if (fresh.status == #paid) {
-                ignore tryTransition(orderId, #awaitingTreasury);
-                audit("mint.held", orderId # ": " # Treasury.holdReasonToText(reason));
-              };
-              return;
-            };
-            case (#proceed) {};
-          };
-          // §5.1 step 1 — intent + #minting + burn-cap consumption commit
-          // in ONE sync block, before the transfer await. From here the
-          // transfer args are frozen; replay is always bit-identical. The
-          // cap entry is never refunded on failure — over-counting pauses
-          // mints early, the fail-safe direction for a blast-radius bound.
-          let intent = Cmc.buildIntent(selfPrincipal(), e8s, Time.now());
-          let ?minting = tryTransition(orderId, #minting) else return;
-          Treasury.recordBurn(burnLedger, treasuryConfig.burnWindowNs, e8s, Time.now());
-          ignore Cmc.openEntry(deliveryJournal, minting, intent, Time.now());
-          // fall through the loop → #replayTransfer issues the transfer
-        };
-        case (#replayTransfer(intent)) {
-          let result = try { await icpLedger.icrc1_transfer(Cmc.transferArgs(intent)) } catch (e) {
-            Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
-            audit("mint.transferFailed", orderId # ": " # e.message());
-            return;
-          };
-          switch (Cmc.interpretTransfer(result)) {
-            // LEGACY (ICP mint path): both outcomes are identical here — there is
-            // no floor to maintain on the ICP side, so "we debited" and "an earlier
-            // attempt debited" call for the same move.
-            case (#delivered(block) or #deduplicated(block)) {
-              // Progress: allow a future block on this order to be audited again.
-              deliveryBlockedAudited.remove(orderId);
-              // §5.1 step 2 — block_index + #icpAtCmc in one sync block.
-              ignore tryTransition(orderId, #icpAtCmc);
-              Cmc.patch(deliveryJournal, orderId, { status = ?#icpAtCmc; blockIndex = ?block; cyclesMinted = null; bumpRetries = false }, Time.now());
-              // fall through → #notifyCmc
-            };
-            case (#retriable(detail)) {
-              Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
-              audit("mint.transferRetriable", orderId # ": " # detail);
-              return;
-            };
-            case (#badFee(expected)) {
-              // The ICP fee is protocol-wide and fixed; a change is a protocol
-              // event, not something to absorb. Same verdict this had before #30
-              // split the case out — only now the ICP path says so itself
-              // instead of the shared table deciding for both ledgers.
-              escalateDelivery(order, "transferRejected", "ledger fee changed: expected " # expected.toText() # " e8s");
-              return;
-            };
-            case (#escalate(detail)) {
-              escalateDelivery(order, "transferRejected", detail);
-              return;
-            };
-          };
         };
         case (#beginDelivery) {
           // #30 PR-A — delivery is ONE transfer out of the reserve.
@@ -2254,76 +2106,6 @@ persistent actor CyclesGateway {
           audit("delivery.healed", orderId # ": block " # block.toText() # " was recorded but the order had not moved");
           return;
         };
-        case (#notifyCmc(block)) {
-          // Heal the (today unreachable) #minting-with-block combination.
-          if (order.status == #minting) { ignore tryTransition(orderId, #icpAtCmc) };
-          let result = try {
-            await cmc.notify_top_up({ block_index = Nat64.fromNat(block); canister_id = selfPrincipal() });
-          } catch (e) {
-            Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
-            audit("mint.notifyFailed", orderId # ": " # e.message());
-            return;
-          };
-          switch (Cmc.interpretNotify(result)) {
-            case (#minted(cycles)) {
-              // Pre-forward marker: commits before the forward await. If we
-              // die mid-forward, stageOf answers #ambiguousForward and the
-              // operator checks the destination — at-most-once delivery,
-              // never an auto-double-forward.
-              Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = ?cycles; bumpRetries = false }, Time.now());
-              // What the CMC actually minted can fall short of what was locked:
-              // the e8s were sized from a CMC rate up to 15 min old, and after an
-              // outage the recovery sweep may notify a transfer days later at a
-              // materially worse rate. Forwarding lockedCycles regardless would
-              // quietly cover the gap out of this canister's own gas — an
-              // unbudgeted, invisible subsidy that grows with rate volatility,
-              // and eventually a trap when gas cannot cover it.
-              //
-              // Deliver what was actually bought and escalate, rather than
-              // silently over- or under-delivering. The operator decides whether
-              // to top the buyer up; the position is fully recoverable and the
-              // cycles are real.
-              if (Cmc.isMaterialShortfall(cycles, order.lockedCycles)) {
-                escalateDelivery(
-                  order,
-                  "mintShortfall",
-                  "CMC minted " # cycles.toText() # " cycles but the order locked "
-                  # order.lockedCycles.toText()
-                  # " — the conversion rate moved between quoting and notifying. The minted cycles are in this canister's balance; deliver them (or top up to the locked quantity from operator funds) and resolve.",
-                );
-                return;
-              };
-            };
-            case (#retriable(detail)) {
-              Cmc.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesMinted = null; bumpRetries = true }, Time.now());
-              audit("mint.notifyRetriable", orderId # ": " # detail);
-              return;
-            };
-            case (#escalate(detail)) {
-              escalateDelivery(order, "notifyRejected", detail);
-              return;
-            };
-          };
-          switch (await* forwardCycles(order)) {
-            case (#ok) {
-              ignore tryTransition(orderId, #delivered);
-              Cmc.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
-              clearDelayed(orderId);
-              audit("mint.delivered", orderId # ": " # order.lockedCycles.toText() # " cycles");
-            };
-            case (#failed(detail)) {
-              // §4.1 Type 2: the failed deposit refunded the cycles to the
-              // app balance — minted money exists, delivery didn't happen.
-              ignore tryTransition(orderId, #needsReview);
-              Cmc.patch(deliveryJournal, orderId, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
-              // Same reason as escalateStuckMint: the delay is over, badly.
-              clearDelayed(orderId);
-              ignore queueDeliveryError(order.rail, #undeliverable({ orderId; cycles = order.lockedCycles }), detail);
-              audit("mint.undeliverable", orderId # ": " # detail);
-            };
-          };
-          return;
-        };
       };
     };
   };
@@ -2358,13 +2140,11 @@ persistent actor CyclesGateway {
     pending.size();
   };
 
-  /// Orders with money-out work pending, from the maintained tallies. Must stay
-  /// in step with `Recovery.isSweepable` — the unit tests pin that.
+  /// Orders with money-out work pending, from the maintained tally. Must stay in step
+  /// with `Recovery.isSweepable` — the unit tests pin that, and after #36 both are one
+  /// status.
   func sweepableCount() : Nat {
-    Orders.countOf(orderStore, #paid)
-    + Orders.countOf(orderStore, #minting)
-    + Orders.countOf(orderStore, #icpAtCmc)
-    + Orders.countOf(orderStore, #awaitingTreasury);
+    Orders.countOf(orderStore, #paid);
   };
 
   public type ProcessOrderError = { #notFound; #inFlight };
@@ -2809,9 +2589,9 @@ persistent actor CyclesGateway {
       // `#errorQueue`: an escalated order could not previously be abandoned,
       // because one status meant both "promise held" and "promise released" and
       // the transition was to itself (#34).
-      case (#paid or #awaitingTreasury or #needsReview) {};
+      case (#paid or #needsReview) {};
       case (status) {
-        return #err("order " # id # " is " # Types.statusToText(status) # "; only a paid, held or under-review order can be abandoned");
+        return #err("order " # id # " is " # Types.statusToText(status) # "; only a paid or under-review order can be abandoned");
       };
     };
     // ── ⚠️ A PAID order with an unsettled delivery cannot be abandoned ────────

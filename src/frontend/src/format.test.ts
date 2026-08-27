@@ -28,9 +28,6 @@ describe("statusInfo", () => {
     "cancelled",
     "expired",
     "paid",
-    "minting",
-    "icpAtCmc",
-    "awaitingTreasury",
     "delivered",
     "needsReview",
     "abandoned",
@@ -75,14 +72,11 @@ describe("statusInfo", () => {
     const happy: StatusKey[] = ["created", "paid", "delivered"];
     expect(happy.map((k) => statusInfo(k).step)).toEqual([0, 1, 2]);
     expect(STEPS).toHaveLength(3);
-    // The unreachable legacy statuses are OFF the happy path, not occupying a
-    // segment of it. #36 deletes them; until then this is what stops them being
-    // rendered as progress.
-    expect(statusInfo("minting").step).toBe(-1);
-    expect(statusInfo("icpAtCmc").step).toBe(-1);
-    // `awaitingTreasury` is also unreachable, and also legacy — but it is a *hold*
-    // on a paid order rather than a mid-flight phase, so step 1 still describes it.
-    expect(statusInfo("awaitingTreasury").step).toBe(1);
+    // ⚠️ **The three legacy statuses are gone from the type (#36)**, so the
+    // "unreachable but off the happy path" assertions they needed went with them —
+    // and the union being exhaustive is now what makes a bar of the wrong length a
+    // compile error rather than a test failure. Unrepresentability beats a check.
+    expect(ALL).toHaveLength(7);
   });
 });
 

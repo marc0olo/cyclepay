@@ -17,8 +17,8 @@ export interface Account {
 export type Destination = { cyclesLedgerAccount: Account };
 
 export type OrderStatusKey =
-  | 'created' | 'cancelled' | 'expired' | 'paid' | 'minting' | 'icpAtCmc'
-  | 'delivered' | 'awaitingTreasury' | 'needsReview' | 'abandoned';
+  | 'created' | 'cancelled' | 'expired' | 'paid'
+  | 'delivered' | 'needsReview' | 'abandoned';
 
 /// Why an `#expired` order expired. Both producers arrived with #33, and since
 /// it deleted the retention sweep they are the only ones — nothing else in the

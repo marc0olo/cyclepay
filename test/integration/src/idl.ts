@@ -20,13 +20,10 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   const Rail = IDL.Variant({ card: IDL.Null });
   const OrderStatus = IDL.Variant({
     abandoned: IDL.Null,
-    awaitingTreasury: IDL.Null,
     cancelled: IDL.Null,
     created: IDL.Null,
     delivered: IDL.Null,
     expired: IDL.Null,
-    icpAtCmc: IDL.Null,
-    minting: IDL.Null,
     needsReview: IDL.Null,
     paid: IDL.Null,
   });
