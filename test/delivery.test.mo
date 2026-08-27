@@ -9,7 +9,7 @@ import Cmc "../src/backend/Cmc";
 import Delivery "../src/backend/Delivery";
 import Types "../src/backend/Types";
 
-// Unit suite for the §5/§5.1 mint-pipeline pure half: e8s derivation off the
+// Unit suite for the §5/§5.1 money-out pure half: derivation off the
 // CMC rate (staleness-guarded), deterministic intent construction (write-
 // intent-before-call), ledger/CMC result interpretation, journal patching,
 // and the stageOf resume/replay decision.
@@ -37,8 +37,7 @@ func entryWith(
 ) : Types.JournalEntry {
   {
     orderId = "aabbccddeeff00112233445566778899";
-    // ⚠️ `#paid` since #36: the mint statuses are deleted, and `#paid` is where a
-    // journal entry is opened on the one money-out path.
+    // ⚠️ `#paid` is the one status a journal entry is ever opened under.
     status = #paid;
     destination = #cyclesLedgerAccount({ owner = Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai"); subaccount = null });
     transferIntent = intent;
@@ -142,13 +141,12 @@ suite("interpretTransfer (§5.1)", func() {
     assert escalates(#Err(#BadBurn({ min_burn_amount = 1 })));
   });
 
-  test("a fee change is its OWN outcome, not an escalation", func() {
-    // #30 split `#BadFee` out of `#escalate` because the two callers answer it
-    // differently and both are right: the ICP mint path escalates (a
-    // protocol-wide fee change is a protocol event), while reserve delivery
-    // re-reads `icrc1_fee` and retries, so a risen fee is absorbed by the
-    // reserve rather than shorting the buyer. Folding them back together forces
-    // one of the two to be wrong.
+  test("a fee change is its OWN outcome, neither retriable nor an escalation", func() {
+    // `#BadFee` is separate from `#escalate` because it is **self-correcting**: the
+    // ledger reports the fee it wants, delivery re-sends with that fee and persists
+    // it, so a risen fee is absorbed by the reserve rather than shorting the buyer.
+    // Folding it into `#escalate` would hand a human a problem the code can fix; into
+    // `#retriable` would loop forever re-sending the fee the ledger just refused.
     switch (Delivery.interpretTransfer(#Err(#BadFee({ expected_fee = 200_000_000 })))) {
       case (#badFee(expected)) assert expected == 200_000_000;
       case (_) assert false;
@@ -190,22 +188,19 @@ suite("journal", func() {
     };
   };
 
-  test("⚠️ openEntry records the ORDER's status, not a hardcoded #minting", func() {
-    // This assertion is inverted from what it was, and the inversion IS the bug fix.
-    // `openEntry` wrote `status = #minting` unconditionally — a leftover from when
-    // money-out meant the ICP mint path — and nothing read the field back, so the lie
-    // was free. The legacy caller transitions the order to `#minting` before opening
-    // the entry, so the two agreed there by coincidence.
+  test("⚠️ openEntry records the ORDER's status, never a literal", func() {
+    // ⚠️ **This is a coupling guard, and the coupling is invisible from either end.**
+    // `Main.unsettledDeliveries` reads this field back and tests it for `#paid` to
+    // decide whether a reserve observation may be adopted. A literal here that
+    // disagrees with the order makes that predicate match NOTHING: the quiet window is
+    // then always satisfied, and a reconcile can overwrite the reserve floor while a
+    // transfer it cannot see is still in flight — the exact failure the quiet window
+    // exists to prevent, caused by a literal in a different file.
     //
-    // ⚠️ **Then #30 PR-B started reading it.** `Main.unsettledDeliveries` tests this
-    // field for `#paid` to decide whether a reserve observation may be adopted, so a
-    // hardcoded `#minting` made the predicate match NOTHING: the quiet window was
-    // always satisfied, and a reconcile could overwrite the floor while a transfer it
-    // could not see was still in flight. That is the exact failure the quiet window
-    // exists to prevent, reintroduced by a stale literal in a different file.
-    //
-    // So this test is the coupling's guard: the fixture order is `#paid`, which is
-    // what a delivery entry must record.
+    // Nothing else catches it. The type is the same either way, and the integration
+    // scenario written to cover the window passed *vacuously* because the predicate
+    // it relied on matched nothing. So: assert the entry's status equals the ORDER's,
+    // not a constant that happens to be right today.
     let journal = Delivery.emptyJournal();
     let intent = intentAt(42);
     let entry = Delivery.openEntry(journal, order(), intent, 100);
@@ -250,9 +245,8 @@ suite("journal", func() {
 });
 
 suite("stageOf (§5.1/§5.2 resume decision)", func() {
-  test("#paid with no journal begins a DELIVERY, not a mint", func() {
-    // Inverted by #30 PR-A. `#paid` used to open the CMC mint chain; it is now
-    // the whole money-out path — one transfer out of the reserve.
+  test("#paid with no journal begins a delivery", func() {
+    // `#paid` is the whole money-out path — one transfer out of the reserve.
     assert Delivery.stageOf(#paid, null, 0, window) == #beginDelivery;
   });
 
@@ -369,13 +363,10 @@ suite("terminationFor — the money position, not the status", func() {
   });
 
   test("⚠️ a missing journal is a KNOWN position for #paid, and that is the point", func() {
-    // ⚠️ **This replaced a test asserting the opposite (#36).** It read "a missing
-    // journal is never silently treated as a known position" and walked `#minting`
-    // and `#icpAtCmc`, where an absent journal really was an invariant breach — the
-    // order could not have reached those states without one.
-    //
-    // `#paid` is different, and the difference is load-bearing: an order can sit
-    // `#paid` with nothing ever sent, which is the **certain** position. Reporting
+    // ⚠️ **Load-bearing, and the opposite of what the name suggests.** An order can
+    // sit `#paid` with nothing ever sent — that is the **certain** position, not a
+    // broken invariant, because `#paid` is reached by the webhook and delivery is
+    // attempted afterwards. Reporting
     // `missingJournal` there would tell an operator to establish a fate that is
     // already known, instead of "fiat in, nothing moved, refund".
     let t = Delivery.terminationFor(#paid, null);
@@ -391,8 +382,9 @@ suite("terminationFor — the money position, not the status", func() {
   });
 
   test("every stage it can produce is non-empty and recognisable to the runbook", func() {
-    // ⚠️ **The mint positions are gone (#36)**, so the vocabulary this test walks is
-    // the delivery one. `#paid` covers all four shapes a journal can have.
+    // ⚠️ **The whole vocabulary, and `#paid` covers all four shapes a journal can
+    // have.** Every string this can emit is a row in RUNBOOK §6's triage table, so a
+    // new stage with no row leaves an operator holding a word and no procedure.
     let cases : [(Types.OrderStatus, ?Types.JournalEntry)] = [
       (#paid, ?entryWith(?intentAt(0), ?1, ?1, 0)),
       (#paid, ?entryWith(?intentAt(0), ?1, null, 0)),

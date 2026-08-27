@@ -13,9 +13,10 @@ import Pricing "../src/backend/Pricing";
 //
 //   500¢ gross − (⌈500·290/10⁴⌉ + 30)¢ fee = 455¢ net
 //   at $4.55 per ICP, 455¢ buys exactly 1 ICP
-//   1 ICP mints 35_000 · 10⁸ = 3.5 T cycles
+//   1 ICP is worth 35_000 · 10⁸ = 3.5 T cycles at the protocol rate
 //
-// So the dollars received buy exactly the ICP needed to mint what was quoted.
+// So the dollars received equal the protocol XDR value of the cycles quoted. ICP is
+// the unit both rate feeds are denominated in and it cancels; the gateway holds none.
 // If those two ever disagree, the formula is wrong.
 let USD_PER_ICP_MICROS : Nat = 4_550_000;
 let XDR_PERMYRIAD : Nat = 35_000;
@@ -67,7 +68,7 @@ suite("cycle derivation (§3)", func() {
   });
 
   test("the quoted cycles cost exactly the ICP the dollars bought", func() {
-    // This is the at-cost invariant, stated as arithmetic. One e8s mints
+    // This is the at-cost invariant, stated as arithmetic. One e8s is worth
     // `xdrPermyriadPerIcp` cycles, so the e8s needed for the quote is
     // cycles/P — and that must equal the e8s the net dollars buy at the ICP
     // price used to quote them.
@@ -93,7 +94,7 @@ suite("cycle derivation (§3)", func() {
     assert dearer == base / 2;
   });
 
-  test("a richer CMC rate mints more cycles per ICP", func() {
+  test("a richer CMC rate is more cycles per ICP", func() {
     let ?base = Pricing.cyclesForCents(NET_CENTS, XDR_PERMYRIAD, USD_PER_ICP_MICROS) else return assert false;
     let ?richer = Pricing.cyclesForCents(NET_CENTS, XDR_PERMYRIAD * 2, USD_PER_ICP_MICROS) else return assert false;
     assert richer == base * 2;

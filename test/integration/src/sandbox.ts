@@ -1,7 +1,7 @@
 // A fully local Stripe sandbox: PocketIC in live mode + the real Stripe CLI.
 //
 // No mainnet, no real ICP, no real cycles — and yet the whole money path runs for
-// real: real ICP ledger, real CMC mint, real cycles ledger delivery, driven by
+// real: a real cycles ledger the gateway transfers out of, a real CMC for its rate, driven by
 // genuine signed Stripe events over a genuine HTTP gateway.
 //
 //   npm --prefix test/integration run sandbox
@@ -106,9 +106,9 @@ async function main(): Promise<void> {
 
      VITE_II_URL already exists as the override for when a local II works.
 
-  Config in effect (DEV values — never mainnet): burn cap 1000 ICP/day,
-  alert after 2 min, expected livemode = false. There is no order TTL: #33
-  deleted retention, so the deadline is the Stripe session's own ~35 minutes.
+  Config in effect (DEV values — never mainnet): delivery alert after 2 min
+  (mainnet: 2 h), max hold 72 h, expected livemode = false. There is no order
+  TTL of ours — the deadline is the Stripe session's own ~35 minutes.
 `);
 
   // Create a first order so there is something to pay immediately.

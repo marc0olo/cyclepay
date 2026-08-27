@@ -209,8 +209,10 @@ it once the endpoint is confirmed working.
 3. Reconcile: compare `audit_log` / order store against the Stripe
    Dashboard's event log; forged "payments" have no matching Stripe
    payment_intent. Refund nothing that has no real charge.
-4. `reset_burn_window`, restore the sized cap, and let held legitimate
-   orders resume on the next sweep.
+4. Refund the reserve to its sized level with `icp cycles transfer`, then
+   `refresh_reserve` so the gateway observes it. ⚠️ **There is no "resume held
+   orders" step** — an order refused for `#reserveShort` was never created, so
+   nothing is waiting to be released. Legitimate buyers retry and succeed.
 
 ## 3. Presets, the API key, and the settings that must stay off (§3, §6.1)
 
@@ -996,10 +998,10 @@ release doc doesn't cover:
   upgrade cannot strand money. Verified by `test/integration` scenarios 12
   and 13.
 
-  Consequence: `ambiguousForward` and `stalePullIntent` are **not** reachable
-  through a controlled upgrade. They cover genuine faults — a callee that
-  never replies, a subnet incident, running out of cycles mid-call — and
-  §8's triage rules still apply when they appear.
+  Consequence: `staleIntent` is **not** reachable through a controlled upgrade —
+  an in-flight transfer settles before the upgrade happens. It covers genuine
+  faults: a ledger that never replies, a subnet incident, running out of cycles
+  mid-call. §6's triage rules apply when it appears.
 
 - **A call that never replies blocks the stop, and therefore the upgrade.**
   If `icp canister stop` hangs, the canister is waiting on an outstanding

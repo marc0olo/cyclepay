@@ -52,8 +52,7 @@ suite("validateInterval", func() {
 
 suite("isSweepable", func() {
   test("exactly ONE money-committed state sweeps", func() {
-    // ⚠️ Four before #36. Money-out is one transfer from `#paid`, and the three
-    // mint-pipeline states that also swept are deleted.
+    // Money-out is one transfer out of `#paid`, so exactly one status sweeps.
     assert Recovery.isSweepable(#paid);
   });
 
@@ -69,10 +68,9 @@ suite("isSweepable", func() {
   });
 
   test("the matrix is exhaustive: 1 of all 7 states sweeps", func() {
-    // ⚠️ **One, and it used to be four (#36).** Money-out is one transfer from
-    // `#paid`; the three mint-pipeline statuses that also swept are deleted. A
-    // seven-status list that still summed to four would be the tell that a deleted
-    // state came back.
+    // ⚠️ **Exactly one of seven, and the sum is the assertion.** Walking all seven
+    // and counting is what catches a status becoming sweepable by accident — a second
+    // sweepable status is a second way an order can owe cycles.
     let all : [Types.OrderStatus] = [
       #created, #cancelled, #expired, #paid, #delivered, #needsReview, #abandoned,
     ];

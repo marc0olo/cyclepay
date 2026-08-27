@@ -527,14 +527,13 @@ suite("markPaid (§6.1 amount honoring)", func() {
   });
 
   test("markPaid refuses an order that is no longer payable", func() {
-    // Was "late payment: expired -> paid is honored (§4)". #34 deleted that edge,
-    // so `markPaid` is now the second line of defence behind
-    // `Card.handleWebhook`'s status guard: the guard files a Type 1 obligation,
-    // and this refuses rather than moving the status if the guard is ever wrong.
+    // `markPaid` is the second line of defence behind `Card.handleWebhook`'s status
+    // guard: the guard files a Type 1 obligation, and this refuses rather than moving
+    // the status if the guard is ever wrong.
     //
-    // ⚠️ `Card.mo` TRAPS on this error, deliberately, so that a mismatch between
-    // the guard and the matrix cannot silently mint. Which is exactly why the
-    // guard must never let one of these through — see the webhook suite.
+    // ⚠️ `Card.mo` TRAPS on this error, deliberately, so a mismatch between the guard
+    // and the matrix cannot silently deliver. Which is exactly why the guard must
+    // never let one of these through — see the webhook suite.
     for (unpayable in ([#cancelled, #expired] : [Types.OrderStatus]).values()) {
       let store = Orders.emptyStore();
       ignore newOrder(store, "ord-1", alice);
@@ -706,9 +705,11 @@ suite("status counts — the O(1) query inputs", func() {
 
     let result = Orders.reconcile(store);
     assert result.drift.size() == 0;
-    // And the tallies it reports are the ones the queries serve. ⚠️ Four keys now,
-    // not six (#36): the mint statuses are deleted, so `ord-1` (paid → delivered)
-    // lands in no tracked bucket at all — `#delivered` is terminal and untracked.
+    // And the tallies it reports are the ones the queries serve. ⚠️ **Four keys, and
+    // a delivered order lands in none of them**: `#delivered` is terminal and
+    // untracked, so `ord-1` (paid → delivered) is counted nowhere. That is correct —
+    // the counters exist for the gate and the sweep, and neither asks about
+    // deliveries that finished.
     for ((status, n) in result.counts.values()) {
       assert n == (switch (status) {
         case ("Expired") 1; // ord-2

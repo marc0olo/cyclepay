@@ -231,7 +231,7 @@ export async function teardownGateway(gw: Gateway): Promise<void> {
 /// callbacks (try stopping the canister before upgrade)`. That is a platform
 /// constraint, not a Motoko one (`canister-security` skill pitfall 12), and it
 /// applies on mainnet exactly as it does here — so a naive
-/// `upgradeCanister` during an in-flight mint or pull always fails.
+/// `upgradeCanister` during an in-flight delivery always fails.
 ///
 /// `stopCanister` is what resolves it: stopping rejects the outstanding
 /// callbacks, which is precisely the §5.1 ambiguity window we want to test —
@@ -299,8 +299,10 @@ export async function nowSeconds(pic: PocketIc): Promise<bigint> {
 
 /// Freshen the CMC's ICP/XDR rate at the current PocketIC time, the way
 /// governance does after an exchange-rate proposal. The backend refuses to
-/// mint on a rate older than 15 min (Cmc.cmcRateMaxAgeNs), so any test that
-/// advances time past that re-arms the rate through this before minting.
+/// quote on a rate older than 15 min (Cmc.cmcRateMaxAgeNs), so any test that
+/// advances time past that re-arms the rate through this before ordering.
+/// ⚠️ Delivery reads no rate — only order CREATION does, so a stale rate fails a
+/// `create_order`, never a delivery already in flight.
 export async function setCmcRate(
   gw: Gateway,
   permyriad: bigint = XDR_PERMYRIAD_PER_ICP,
@@ -323,12 +325,8 @@ export async function setCmcRate(
   }
 }
 
-/// Fund the backend's ICP float. The `icpToken` feature seeds the anonymous
-/// principal's account with 1B ICP; the suite plays operator and tops the
-/// gateway up from there.
-
-/// Put cycles in the gateway's own cycles-ledger account — the reserve it
-/// delivers from since #30 PR-A.
+/// Put cycles in the gateway's own cycles-ledger account — the reserve it delivers
+/// from.
 ///
 /// ⚠️ **Measured, because it looks impossible.** Cycles normally enter a ledger
 /// account only through `deposit` with cycles attached, which an ingress message
@@ -337,7 +335,7 @@ export async function setCmcRate(
 /// ledger starts the **anonymous principal** with 2^127-1 cycles, and a transfer
 /// from the default sender to any account simply succeeds. That is a PocketIC
 /// fixture, not ledger behaviour: on mainnet the reserve is funded by
-/// `icp cycles transfer` from outside, and nothing mints into it.
+/// `icp cycles transfer` from outside, and nothing creates cycles into it.
 ///
 /// Fund the gateway's reserve, and by default make it SELLABLE.
 ///
