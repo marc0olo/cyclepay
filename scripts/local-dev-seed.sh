@@ -379,9 +379,10 @@ cat <<NOTES
       client_reference_id on it through the API, so nothing has to be
       configured in the Dashboard.
 
-        1. A restricted API key (rk_...) scoped to write Checkout Sessions and
-           nothing else. Put it in scripts/.local-dev.env (gitignored, sourced
-           by this script) rather than on a command line, then re-run.
+        1. A restricted API key (rk_...) with Checkout Sessions = Write (which
+           includes the read the recovery sweep needs) and everything else None.
+           Put it in scripts/.local-dev.env (gitignored, sourced by this script)
+           rather than on a command line, then re-run.
         2. A signed webhook to deliver: scripts/stripe-dev.sh starts the
            forwarder and provisions the signing secret from that session.
 

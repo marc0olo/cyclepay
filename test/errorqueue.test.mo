@@ -1,9 +1,10 @@
 import { test; suite } "mo:test";
 import Nat "mo:core/Nat";
+import Text "mo:core/Text";
 import ErrorQueue "../src/backend/ErrorQueue";
 
-// Unit suite for the §4.1 bounded error queue: exactly two types, bounded
-// eviction (resolved-first), manual resolve, and charge.refunded auto-resolve
+// Unit suite for the §4.1 bounded error queue: which kinds a refund can settle,
+// bounded eviction (resolved-first), manual resolve, and charge.refunded auto-resolve
 // by payment_intent.
 
 let cap = 3; // small capacity so bounds are easy to exercise
@@ -50,6 +51,29 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
     // null for it *on purpose* — the refund is what created the entry, so matching on
     // it would close the loss the instant it was recorded. Asserting against the
     // payload instead would demand exactly the bug the accessor exists to prevent.
+    // ⚠️ **The tripwire, because `all.size() == N` cannot catch a new variant.** The
+    // array below is hand-written, so adding a case to `ErrorQueue.Kind` leaves the
+    // count assertion passing while the test silently covers 8 of 9 kinds. This switch
+    // is **exhaustive**, so under `-Werror` the compiler refuses this file until a new
+    // kind is named here — which lands the maintainer on the exact line where the list
+    // and its count live.
+    //
+    // Found the hard way: #52 added `#paidNotCredited`, both `refundResolvable` and
+    // `paymentRefOf` were forced to handle it by their own exhaustive switches, and
+    // **this test kept passing at "all seven"**. A test whose name promises
+    // exhaustiveness its body cannot deliver is the defect this repo keeps deleting.
+    func named(k : ErrorQueue.Kind) : Text {
+      switch k {
+        case (#duplicate(_)) "duplicate";
+        case (#unattributed(_)) "unattributed";
+        case (#deliveryStuck(_)) "deliveryStuck";
+        case (#refundAfterDelivery(_)) "refundAfterDelivery";
+        case (#deliveryDelayed(_)) "deliveryDelayed";
+        case (#abandoned(_)) "abandoned";
+        case (#unprocessable(_)) "unprocessable";
+        case (#paidNotCredited(_)) "paidNotCredited";
+      };
+    };
     let all : [ErrorQueue.Kind] = [
       #duplicate({ orderId = "o1"; paymentRef = "pi_1" }),
       #unattributed({ claimedRef = "x"; paymentRef = "pi_2" }),
@@ -58,11 +82,18 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
       #deliveryDelayed({ orderId = "o5"; stage = "staleIntent"; sinceNs = 0 }),
       #abandoned({ orderId = "o6"; reason = "operator" }),
       #unprocessable({ eventId = "evt_1"; field = "amount_total" }),
+      #paidNotCredited({ orderId = "o7"; paymentRef = "pi_7"; sessionId = "cs_7" }),
     ];
-    assert all.size() == 7;
+    assert all.size() == 8;
+    var seen = "";
     for (kind in all.values()) {
       let carriesRef = ErrorQueue.paymentRefOf(kind) != null;
       assert ErrorQueue.refundResolvable(kind) == carriesRef;
+      // Names every element through the exhaustive switch, so the tripwire is load
+      // bearing rather than dead code, and a duplicated array entry shows up here.
+      let name = named(kind);
+      assert not Text.contains(seen, #text ("[" # name # "]"));
+      seen #= "[" # name # "]";
     };
   });
 

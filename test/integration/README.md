@@ -123,6 +123,25 @@ Practical rules that follow:
   clock changes the world for every scenario after it, which is why several carry
   an explicit `ensureRates` / `setCmcRate` re-arm at their end rather than their
   start.
+- ⚠️ **And since #52, advancing the clock past ~65 minutes has a SECOND side
+  effect: it provokes background HTTPS outcalls.** Every order this suite creates
+  gets a 35-minute deadline (`now + 2100`, Stripe's real minimum), so once the
+  clock passes that deadline plus the sweep's 30-minute grace, every lingering
+  `#created` order becomes due for a session **retrieve**. The recovery sweep is
+  therefore a *second, background producer* of parked outcalls, alongside
+  `create_order` and `cancel_order`.
+
+  This is why `awaitPendingOutcall` filters instead of returning the first parked
+  call: it answers any sweep retrieve it meets with `{"status":"open"}` — a no-op
+  for the sweep — and keeps looking for the one the scenario asked for. It used to
+  return `pending[0]`, which was correct only while there was exactly one
+  producer. `afterEach` drains as a backstop, and **a drain count above one there
+  is a signal**: it means a scenario provoked more background retrieves than
+  anyone expected, which is worth understanding rather than absorbing.
+
+  The failure this prevents looks exactly like the cascades above — a scenario
+  asserting on a request it did not make — so it would cost the next person a
+  four-minute run per surprise to attribute correctly.
 - **Read ledger balances BEFORE `stopNns`, and put the stop inside `try`/`finally`.**
   A balance query against a stopped canister throws, and a throw between the stop
   and the `try` skips the `finally` — leaving the ledger stopped for the whole

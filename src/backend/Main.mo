@@ -50,9 +50,13 @@ persistent actor CyclesGateway {
   /// §7 secret two: the Stripe **API key** that creates Checkout Sessions (#33).
   ///
   /// Same store, same posture, same never-readable-back guarantee. Use a
-  /// **restricted key** (`rk_...`) scoped to *write Checkout Sessions* and
-  /// nothing else: a leaked write-sessions key can create sessions that pay us,
-  /// which is materially different from one that can also issue refunds. Stripe's
+  /// **restricted key** (`rk_...`) with *Checkout Sessions = Write* and everything else
+  /// None: a leaked key at that scope can create sessions that pay us and read sessions
+  /// back, which is materially different from one that can also issue refunds.
+  /// ⚠️ **Write rather than Read, because both are needed** — the rail creates sessions
+  /// and the recovery sweep retrieves one to settle a stranded order (#52). Stripe's
+  /// permissions are escalating per resource, so Write is the single level that covers
+  /// both. Stripe's
   /// IP/ASN access policies are not usable here — a subnet's replicas have many
   /// changing addresses.
   let stripeApiKey : Secret.Store = Secret.emptyStore();
@@ -689,7 +693,7 @@ persistent actor CyclesGateway {
         // path. An empty body still needs to be `?` rather than null so the POST
         // is well formed.
         body = ?("" : Blob);
-        headers = Session.expireHeaders(keyText);
+        headers = Session.authHeaders(keyText);
         transform = ?{ function = transform_stripe_response; context = "" };
         is_replicated = null;
       });
@@ -700,6 +704,42 @@ persistent actor CyclesGateway {
     if (response.status == 200) return #ok;
     if (Session.isNotOpen(response.status, response.body)) return #notOpen;
     #failed("Stripe answered " # response.status.toText());
+  };
+
+  /// `GET /v1/checkout/sessions/{id}` — the read that settles a stranded `#created`
+  /// order (#52).
+  ///
+  /// ⚠️ **`#unauthorized` is its own answer, not folded into `#failed`.** A restricted
+  /// key without read on Checkout Sessions 401s on every retrieve, which makes this
+  /// whole feature inert *quietly* — the arm audits, the sweep moves on, and the only
+  /// symptom is capacity that stays stranded. "Stripe refused the read" and "Stripe is
+  /// unreachable" are different operator actions, so they get different audit tags and
+  /// different RUNBOOK rows.
+  func retrieveStripeSession(sessionId : Text) : async* {
+    #ok : Session.Status;
+    #unauthorized;
+    #failed : Text;
+  } {
+    let ?apiKey = Secret.get(stripeApiKey) else return #failed("the Stripe API key is not provisioned");
+    let ?keyText = apiKey.decodeUtf8() else return #failed("the stored API key is not valid UTF-8");
+    let response = try {
+      await Call.httpRequest({
+        url = Session.retrieveUrl(sessionId);
+        method = #get;
+        // Larger than the create cap on purpose — see `Session.retrieveMaxResponseBytes`.
+        max_response_bytes = ?Session.retrieveMaxResponseBytes;
+        body = null;
+        headers = Session.authHeaders(keyText);
+        transform = ?{ function = transform_stripe_response; context = "" };
+        is_replicated = null;
+      });
+    } catch (e) {
+      let kind = Session.classifyFailure(e.message());
+      return #failed(Session.failureAdvice(kind) # " [" # e.message() # "]");
+    };
+    if (response.status == 401 or response.status == 403) return #unauthorized;
+    if (response.status != 200) return #failed("Stripe answered " # response.status.toText());
+    #ok(Session.classify(response.body));
   };
 
   public type SessionError = {
@@ -1462,6 +1502,13 @@ persistent actor CyclesGateway {
   /// upgrade mid-delivery clears it and the journal-driven resume (Delivery.stageOf)
   /// picks up where the state actually is.
   transient let deliveriesInFlight = Set.empty<Types.OrderId>();
+  /// Single-flight for the stranded-`#created` retrieve (#52), and the scan's cadence.
+  ///
+  /// **Transient, both of them, deliberately.** A single-flight guard that survived an
+  /// upgrade would block the order it was holding forever, and a cadence stamp is worth
+  /// re-earning after a deploy. Neither is money state.
+  transient let expiryChecksInFlight = Set.empty<Types.OrderId>();
+  transient var lastExpiryScanAtNs : Int = 0;
 
   /// Orders already audited for a blocked delivery this session, so a stuck
   /// order contributes one audit line rather than one per sweep. Transient: the
@@ -2395,6 +2442,76 @@ persistent actor CyclesGateway {
   /// No error-queue entry: nothing is owed. The record and the audit line are the
   /// trail, and queueing an obligation for an order where no money moved is
   /// exactly the orphan state the queue must not accumulate.
+  /// **Admin: expire one `#created` order, releasing its reserve capacity** (#52).
+  ///
+  /// The lever for the class the sweep **structurally cannot see**: an order whose
+  /// session-create response was lost carries neither `expiresAtNs` (nothing to trigger
+  /// on) nor `stripeSessionId` (nothing to query with), and Stripe's session list cannot
+  /// be filtered by `client_reference_id`, so it cannot be looked up either. That state
+  /// needs a human anyway — reaching it means a trap in the create continuation or a
+  /// frozen canister, not an operating condition.
+  ///
+  /// ⚠️ **Expire-first, exactly as `cancel_order` does, and for exactly that reason.**
+  /// Nothing is ever half-expired: if the session is still live on Stripe, the order does
+  /// not move. A successful expire is what makes "expired" mean *provably unpayable*
+  /// rather than assumed, because Stripe guarantees a session ends in exactly one of
+  /// completed/expired.
+  ///
+  /// ⚠️ **`#notOpen` changes nothing, and that is not timidity.** It means the session
+  /// completed or already expired, and those demand opposite actions — expiring an order
+  /// whose buyer just paid would strand a real payment. Let the webhook (or the sweep)
+  /// settle it on Stripe's answer.
+  public shared ({ caller }) func expire_order(id : Types.OrderId) : async Result.Result<Types.Order, Text> {
+    requireAdmin(caller);
+    let ?order = Orders.get(orderStore, id) else return #err("no order " # id);
+    switch (order.status) {
+      case (#created) {};
+      case (#expired) return #ok(order); // idempotent
+      case (status) {
+        return #err(
+          "order " # id # " is " # Types.statusToText(status)
+          # "; only a #created order can be expired. A paid order delivers or escalates; use abandon_order for a paid one you have refunded"
+        );
+      };
+    };
+    switch (order.stripeSessionId) {
+      case (?sessionId) {
+        switch (await* expireStripeSession(sessionId)) {
+          case (#ok) {};
+          case (#notOpen) {
+            audit("order.expireRaced", id # ": session " # sessionId # " is no longer open");
+            return #err(
+              "order " # id # "'s session is already settled or expired — the webhook or the recovery sweep will resolve it on Stripe's answer, which is the only authority on which of the two happened"
+            );
+          };
+          case (#failed(detail)) {
+            audit("order.expireFailed", id # ": " # detail);
+            return #err("could not expire the Stripe session for order " # id # ": " # detail);
+          };
+        };
+      };
+      case null {
+        // The residue class this method exists for. No session id means no URL ever left
+        // the canister, so the order is provably unpayable with no outcall needed.
+        audit("order.expiredSessionless", id # " had no session; expired without an outcall");
+      };
+    };
+    // Through the machinery, never a status write: a second tab may have cancelled this
+    // order while the outcall was in flight, and the matrix no-ops `#cancelled → #expired`
+    // for free — which is what keeps the buyer's own decision, and its `expiredBy`
+    // provenance, from being overwritten.
+    switch (Orders.expireWithCause(orderStore, id, #sessionExpired, Time.now())) {
+      case (#ok(updated)) {
+        auditAdmin(caller, "order.expiredByAdmin", id # ": reserve capacity released");
+        #ok(updated);
+      };
+      case (#err(_)) {
+        let ?fresh = Orders.get(orderStore, id) else return #err("no order " # id);
+        #err("order " # id # " moved to " # Types.statusToText(fresh.status) # " while the Stripe call was in flight; nothing was changed");
+      };
+    };
+  };
+
   public shared ({ caller }) func cancel_order(id : Types.OrderId) : async Result.Result<Types.Order, Text> {
     let ?order = Orders.getOwned(orderStore, id, caller) else return #err("no order " # id);
     switch (order.status) {
@@ -2657,6 +2774,43 @@ persistent actor CyclesGateway {
   /// forever (the `pumping`-style deadlock §5.2 warns about); an upgrade
   /// resets it and the timer below re-arms.
   transient var recoverySweepInFlight = false;
+  /// Re-entry guard for the detached stranded-`#created` pass (#52).
+  ///
+  /// ⚠️ **The per-pass cap bounds ONE pass, not overlapping ones.** The cadence gate is
+  /// claimed before the pass is detached, so a pass that outlives its hour — a slow or
+  /// unresponsive Stripe, with up to `maxRetrievesPerPass` sequential outcalls — would
+  /// otherwise let the next tick start a second pass against the same orders and stack
+  /// outcalls. That is a production concern, not only a test one.
+  transient var expiryScanInFlight = false;
+  /// Where the last stranded-`#created` pass stopped, so the next one resumes rather than
+  /// restarting.
+  ///
+  /// ⚠️ **The cap alone STARVES.** Taking the first `maxRetrievesPerPass` due orders in
+  /// store order means a due order that stays due — Stripe answering `open` because of
+  /// clock skew, or a retrieve that keeps failing — is asked again every pass while
+  /// orders behind it are never reached at all. The bound has to come with a resume or it
+  /// is a bound on *which* orders get looked at, not on how many.
+  ///
+  /// Measured, not theorised: the integration suite carries dozens of lingering
+  /// `#created` orders, and two scenarios failed with "the sweep never retrieved
+  /// session …" because their order sat behind ten permanently-due neighbours.
+  ///
+  /// ⚠️ **An id, not an index — and this was known before and lost.** The deleted
+  /// retention sweep paged the store with exactly this shape and said why, verbatim:
+  /// *"An **id**, not an index: an index into a snapshot is meaningless across ticks,
+  /// because an insert shifts every later position."* It had `maxRetentionScanPerSweep`
+  /// **and** `Orders.idsFrom(store, cursor, limit)`; #33 PR-C deleted the module, the
+  /// cursor and the primitive together, so this issue rebuilt a bounded scan and
+  /// reintroduced the starvation the old one had already solved.
+  ///
+  /// The lesson belongs with the deletion discipline rather than here: **a disposal
+  /// record has to carry the invariants the deleted code satisfied**, not only where its
+  /// behaviour went, or the next thing of that shape pays for them again.
+  ///
+  /// This pages the **due set** rather than the store, because "due" is not a
+  /// store-order property — collecting it costs one scan and no outcalls, and the cap
+  /// applies to the expensive half.
+  transient var expiryScanCursor : Text = "";
 
   /// Last *completed* timer sweep — recovery liveness for ops (the §5.2
   /// timer is the backstop for every detached webhook kick that dies, so
@@ -2733,6 +2887,138 @@ persistent actor CyclesGateway {
   /// ⚠️ This is the **§5.2 recovery** timer and it stays. A retention sweep ran
   /// ahead of it until #33; only that went. The two were never the same job —
   /// this one backstops a money-out message that died, which no webhook reports.
+  /// Ask Stripe about `#created` orders whose expiry event never arrived (#52).
+  ///
+  /// ⚠️ **Bounded per pass and resumed on the next one.** The stranded population is
+  /// **correlated** — one unprovisioned webhook secret or one frozen canister strands
+  /// every order in that window at once — so "rare" describes incidents, not orders per
+  /// incident. Uncapped, one incident becomes N outcalls an hour for as long as it lasts.
+  ///
+  /// ⚠️ **Same scan exposure as `reconcileCounts`:** a whole-store read, so at enough
+  /// orders it meets the instruction limit. That is why it is detached into its own
+  /// message by the caller, and why #37's status index is the real fix. The
+  /// `countOf(#created)` gate below is a maintained tally, so an idle pass is free.
+  func sweepStrandedCreated() : async* Nat {
+    if (expiryScanInFlight) return 0;
+    if (Orders.countOf(orderStore, #created) == 0) return 0;
+    expiryScanInFlight := true;
+    try { await* runStrandedPass() } finally { expiryScanInFlight := false };
+  };
+
+  func runStrandedPass() : async* Nat {
+    let now = Time.now();
+    // Collect every due order first. This costs a store scan and **no outcalls**, so it is
+    // the cheap half; the cap applies to the expensive half below.
+    let all = List.empty<Types.OrderId>();
+    for ((id, order) in orderStore.orders.entries()) {
+      if (
+        Recovery.expiryCheckDue(order.status, order.expiresAtNs, now, Recovery.expiryGraceNs)
+        and not expiryChecksInFlight.contains(id)
+      ) { all.add(id) };
+    };
+    let ids = all.toArray();
+    if (ids.size() == 0) return 0;
+
+    // Resume after the cursor, wrapping — so a permanently-due order cannot monopolise
+    // the pass. Ids are opaque, so "after" is just lexicographic order over a stable set;
+    // all that is required is that the starting point advances.
+    var start = 0;
+    label find for (i in ids.keys()) {
+      if (ids[i] > expiryScanCursor) { start := i; break find };
+    };
+
+    var asked = 0;
+    label ask for (offset in Nat.range(0, ids.size())) {
+      if (asked >= Recovery.maxRetrievesPerPass) break ask;
+      let id = ids[(start + offset) % ids.size()];
+      expiryScanCursor := id;
+      expiryChecksInFlight.add(id);
+      try { await* checkSessionExpiry(id) } finally { expiryChecksInFlight.remove(id) };
+      asked += 1;
+    };
+    asked;
+  };
+
+  /// One order: ask Stripe, then act on Stripe's answer and nothing else.
+  func checkSessionExpiry(orderId : Types.OrderId) : async* () {
+    let ?order = Orders.get(orderStore, orderId) else return;
+    let ?sessionId = order.stripeSessionId else return;
+    let answer = await* retrieveStripeSession(sessionId);
+
+    // ⚠️ **Re-read the order. The await above is a window and the order can move
+    // through it** — `cancel_order` from the buyer, a late `checkout.session.expired`,
+    // even a late `completed` followed by a delivery. Acting on the copy read before the
+    // await is the bug `create_order` warns about in the same shape.
+    let ?fresh = Orders.get(orderStore, orderId) else return;
+
+    switch (answer) {
+      case (#unauthorized) {
+        audit(
+          "stripe.retrieveUnauthorized",
+          "order " # orderId # ": Stripe refused the session read — the restricted key needs WRITE on Checkout Sessions (which includes read). Stranded capacity cannot be released until it does",
+        );
+      };
+      case (#failed(detail)) {
+        audit("stripe.retrieveFailed", "order " # orderId # ": " # detail);
+      };
+      case (#ok(#open) or #ok(#unknown(_))) {
+        // Nothing. Our clock decided when to ask; Stripe decides what is true, and it
+        // has not said the session is finished. `#unknown` lands here on purpose: an
+        // answer we cannot read must make this feature inert, never wrong.
+        switch (answer) {
+          case (#ok(#unknown(detail))) audit("stripe.retrieveUnreadable", "order " # orderId # ": " # detail);
+          case (_) {};
+        };
+      };
+      case (#ok(#expired)) {
+        // **The leak this issue exists to close.** Stripe says nobody can ever pay this
+        // session, so the promise is holding capacity against a sale that cannot happen.
+        //
+        // Through `expireWithCause`, never a status write: the matrix no-ops
+        // `#cancelled → #expired` for free, which is what keeps a buyer's own
+        // cancellation from being overwritten with a system expiry — and with it the
+        // `expiredBy` provenance that says which of the two happened.
+        switch (Orders.expireWithCause(orderStore, orderId, #sessionExpired, Time.now())) {
+          case (#ok(_)) audit("stripe.strandedExpired", orderId # ": Stripe confirmed the session expired; reserve capacity released");
+          case (#err(_)) {}; // moved under us — cancelled, paid, already expired. Correct to do nothing.
+        };
+      };
+      case (#ok(#completePaid({ paymentIntent }))) {
+        // The buyer paid and we never credited it: we missed the `completed` event.
+        //
+        // ⚠️ **This is NOT the leak, and the difference decides the urgency.** Capacity
+        // held against an order the buyer genuinely paid for is capacity *correctly
+        // committed* — the promise is doing its job and releases at delivery once the
+        // event lands. So there is nothing to release here and nothing to hurry.
+        //
+        // Stripe redelivers for ~3 days (§4.2), so before the horizon the event is still
+        // coming and the real credit path will handle it. Filing an obligation then would
+        // put a self-resolving item in a bounded, evicting queue — noise that can push
+        // real obligations out. The audit line is the support signal: a buyer who paid
+        // sees their own page render expired from `expiresAtNs` and calls the same hour,
+        // and this is how an operator confirms Stripe says the session completed.
+        if (not Recovery.paidEscalationDue(fresh.createdAtNs, Time.now(), Recovery.paidRetryHorizonNs)) {
+          audit("stripe.paidAwaitingEvent", orderId # ": Stripe says this session was paid; waiting for the completed event Stripe is still retrying");
+          return;
+        };
+        // Past the horizon: nobody is going to credit this on its own.
+        //
+        // ⚠️ **Do not re-file.** The entry cannot be closed while the problem exists —
+        // its closer is the order being credited, not the money moving — so suppressing a
+        // duplicate cannot hide anything. **This guard is only safe because of that
+        // coupling: do not move the closer onto money state without deleting this guard**,
+        // or it silently becomes a hider.
+        if (ErrorQueue.hasUnresolvedPaidNotCredited(errorQueue, orderId)) return;
+        ignore queueDeliveryError(
+          fresh.rail,
+          #paidNotCredited({ orderId; paymentRef = paymentIntent; sessionId }),
+          "Stripe says session " # sessionId # " was paid and this order was never credited, past the point where Stripe would still be retrying. **Resend the event from the Stripe Dashboard first, always** — that credits the order through the normal path and closes this entry. Refunding instead settles the money and leaves the order stranded in Created with no event left to release it.",
+        );
+        audit("stripe.paidNotCredited", orderId # ": paid and uncredited past Stripe's retry horizon; obligation filed");
+      };
+    };
+  };
+
   func recoverySweep() : async () {
     if (recoverySweepInFlight) return;
     recoverySweepInFlight := true;
@@ -2755,6 +3041,20 @@ persistent actor CyclesGateway {
       };
       let pending = await* sweepDeliverable();
       lastRecoverySweep := ?{ atNs = Time.now(); pending };
+      // ── Stranded `#created` capacity (#52) ──────────────────────────────────
+      //
+      // **Detached, like the count reconcile and for the same reason**: it reads the
+      // whole order store AND makes outcalls, so it has two ways to fail that the
+      // delivery sweep must survive. Money-out is the thing with cycles outstanding; a
+      // release check must never be able to stop it.
+      //
+      // The cadence is claimed here, in the sweep's own message, so a detached pass that
+      // traps retries hourly rather than every tick.
+      let now3 = Time.now();
+      if (Recovery.expiryScanDue(lastExpiryScanAtNs, now3, Recovery.expiryScanIntervalNs)) {
+        lastExpiryScanAtNs := now3;
+        ignore async { ignore await* sweepStrandedCreated() };
+      };
       // ── Rule 1 (#30 PR-B): the floor learns about top-ups only by looking ──
       //
       // ⚠️ **After the sweep, and INLINE — both deliberate, and for opposite

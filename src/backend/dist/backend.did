@@ -256,6 +256,12 @@ type Kind =
                 orderId: OrderId;
                 paymentRef: text;
               };
+   paidNotCredited:
+    record {
+      orderId: OrderId;
+      paymentRef: text;
+      sessionId: text;
+    };
    refundAfterDelivery:
     record {
       cycles: nat;
@@ -452,26 +458,6 @@ service : {
   /// `reserve_status` already publishes. Answered for the *calling* principal,
   /// so the open-order cap it reports is the caller's own.
   can_purchase: (usdCents: nat) -> (Result_11) query;
-  /// Let a buyer give up on their own unpaid order (owner-scoped).
-  /// 
-  /// `Gate.maxOpenOrdersPerPrincipal` counts `#created` orders, and its refusal
-  /// tells the user to pay or abandon one — advice they could not follow without
-  /// this: `abandon_order` is admin-only and only accepts *paid* orders. A buyer
-  /// who opened the cap's worth of checkouts and completed none would be locked
-  /// out until their sessions expired.
-  /// 
-  /// ⚠️ This paragraph said the order is marked `#expired` and that a payment
-  /// arriving afterwards is **still honoured**, because `#expired` was payable.
-  /// Both halves stopped being true and the text did not follow: #34 gave the
-  /// buyer's own decision the distinct `#cancelled` state, and deleted
-  /// `#expired → #paid` along with it. Nothing is stranded, but the reason is
-  /// now the opposite one — the session is expired on Stripe BEFORE the order
-  /// moves, so an in-flight payment either wins that race and the order is not
-  /// cancelled at all, or it cannot start. See the ordering note in the body.
-  /// 
-  /// No error-queue entry: nothing is owed. The record and the audit line are the
-  /// trail, and queueing an obligation for an order where no money moved is
-  /// exactly the orphan state the queue must not accumulate.
   cancel_order: (id: OrderId) -> (Result_8);
   /// Public — the frontend renders the amount tiles from this. There is no link
   /// to render: the canister creates a session per order (#33).
@@ -543,6 +529,46 @@ service : {
   /// the dollars that still need an answer.
   error_queue_unresolved: (afterId: opt nat, limit: nat) -> (Page) query;
   expected_livemode: () -> (opt bool) query;
+  /// Let a buyer give up on their own unpaid order (owner-scoped).
+  /// 
+  /// `Gate.maxOpenOrdersPerPrincipal` counts `#created` orders, and its refusal
+  /// tells the user to pay or abandon one — advice they could not follow without
+  /// this: `abandon_order` is admin-only and only accepts *paid* orders. A buyer
+  /// who opened the cap's worth of checkouts and completed none would be locked
+  /// out until their sessions expired.
+  /// 
+  /// ⚠️ This paragraph said the order is marked `#expired` and that a payment
+  /// arriving afterwards is **still honoured**, because `#expired` was payable.
+  /// Both halves stopped being true and the text did not follow: #34 gave the
+  /// buyer's own decision the distinct `#cancelled` state, and deleted
+  /// `#expired → #paid` along with it. Nothing is stranded, but the reason is
+  /// now the opposite one — the session is expired on Stripe BEFORE the order
+  /// moves, so an in-flight payment either wins that race and the order is not
+  /// cancelled at all, or it cannot start. See the ordering note in the body.
+  /// 
+  /// No error-queue entry: nothing is owed. The record and the audit line are the
+  /// trail, and queueing an obligation for an order where no money moved is
+  /// exactly the orphan state the queue must not accumulate.
+  /// **Admin: expire one `#created` order, releasing its reserve capacity** (#52).
+  /// 
+  /// The lever for the class the sweep **structurally cannot see**: an order whose
+  /// session-create response was lost carries neither `expiresAtNs` (nothing to trigger
+  /// on) nor `stripeSessionId` (nothing to query with), and Stripe's session list cannot
+  /// be filtered by `client_reference_id`, so it cannot be looked up either. That state
+  /// needs a human anyway — reaching it means a trap in the create continuation or a
+  /// frozen canister, not an operating condition.
+  /// 
+  /// ⚠️ **Expire-first, exactly as `cancel_order` does, and for exactly that reason.**
+  /// Nothing is ever half-expired: if the session is still live on Stripe, the order does
+  /// not move. A successful expire is what makes "expired" mean *provably unpayable*
+  /// rather than assumed, because Stripe guarantees a session ends in exactly one of
+  /// completed/expired.
+  /// 
+  /// ⚠️ **`#notOpen` changes nothing, and that is not timidity.** It means the session
+  /// completed or already expired, and those demand opposite actions — expiring an order
+  /// whose buyer just paid would strand a real payment. Let the webhook (or the sweep)
+  /// settle it on Stripe's answer.
+  expire_order: (id: OrderId) -> (Result_8);
   /// §2 query authz: `caller == order.owner`, null otherwise — existence is
   /// not revealed to non-owners. Anonymous callers own nothing by
   /// construction (create_order rejects them), so they always get null.

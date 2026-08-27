@@ -39,10 +39,12 @@ them or fails and retries.
 ## 2. What the canister calls Stripe for, and what it still cannot do
 
 The rail was **inbound-only** until #33: no API key anywhere, Stripe talked to us
-and never the reverse. It now makes exactly **one** kind of outbound call —
-create a Checkout Session for an order, and expire one when the buyer cancels —
-over an HTTPS outcall, using a **restricted** key (`rk_...`) scoped to write
-Checkout Sessions and nothing else.
+and never the reverse. It now makes outbound calls, and **all three are Checkout
+Sessions calls**: create one for an order, expire one when the buyer cancels, and
+retrieve one when the recovery sweep needs to settle an order whose expiry event never
+arrived (#52). Over HTTPS outcalls, using a **restricted** key (`rk_...`) with
+**Checkout Sessions = Write** — the level that also grants the read the retrieve needs —
+and every other permission None.
 
 That scope is the whole of the change. Everything the inbound-only design bought
 still holds, because the key cannot do anything else:
@@ -691,7 +693,7 @@ argument for the key's scope:**
 | Leaked | What it enables |
 |---|---|
 | Webhook signing secret | forge "paid" events → deliver cycles at operator expense. **Bounded by the reserve balance and nothing else**, detectable against Stripe's event log, recovered by rotation. |
-| A restricted `rk_` key scoped to write Checkout Sessions | create sessions that pay **us**. Annoying, not a loss. |
+| A restricted `rk_` key with Checkout Sessions = Write | create sessions that pay **us**, and read sessions. Annoying, not a loss. |
 | An unrestricted `sk_` (**do not use one**) | refunds, payouts, customer data — the whole account. This is why the scope, not the storage, is the control that matters. |
 
 What actually protects it:
@@ -784,9 +786,13 @@ query themselves and confirm they were charged correctly.
 Prices, no Payment Links. The session carries inline `price_data`, so the amount
 is pinned by the request rather than by a link's configuration.
 
-1. Create a **restricted API key** (`rk_...`) scoped to write Checkout Sessions
-   and nothing else, and provision it with `set_stripe_api_key`. Not an `sk_`:
-   §13 covers why the scope matters more than the storage.
+1. Create a **restricted API key** (`rk_...`) with **Checkout Sessions = Write** and
+   every other permission None, and provision it with `set_stripe_api_key`. Not an
+   `sk_`: §13 covers why the scope matters more than the storage.
+   ⚠️ **Write, not Read** — Stripe's permissions are per-resource and escalating, so
+   Write covers both the session the rail creates and the session the recovery sweep
+   retrieves to settle a stranded order (#52). A read-only key cannot create sessions;
+   a key without the read leaves stranded capacity unreleasable.
 2. `set_stripe_origin` — where Stripe returns the buyer, and the origin the
    session's `success_url`/`cancel_url` are built from.
 3. Create a webhook endpoint pointing at

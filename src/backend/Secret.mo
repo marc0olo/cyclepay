@@ -45,7 +45,8 @@
 /// The two secrets differ in what a leak buys an attacker, which is worth
 /// knowing when choosing key scopes: the webhook secret lets them forge "paid"
 /// events, so it spends the reserve. A restricted `rk_` API key scoped to
-/// *write Checkout Sessions* only lets them create sessions that pay **us** —
+/// *Checkout Sessions = Write* only lets them create sessions that pay **us** (and read
+/// sessions back, which Write includes and the recovery sweep needs) —
 /// which is why the scope matters and why an unrestricted `sk_`, able to refund,
 /// would be a materially worse thing to leak.
 ///

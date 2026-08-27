@@ -159,6 +159,7 @@ export type ErrorKind =
   | { deliveryStuck: { orderId: string; stage: string; blockIndex: Opt<bigint> } }
   | { refundAfterDelivery: { orderId: string; paymentRef: string; cycles: bigint; refundedCents: bigint; fullRefund: boolean } }
   | { unprocessable: { eventId: string; field: string } }
+  | { paidNotCredited: { orderId: string; paymentRef: string; sessionId: string } }
   | { deliveryDelayed: { orderId: string; stage: string; sinceNs: bigint } }
   | { abandoned: { orderId: string; reason: string } };
 
@@ -228,6 +229,7 @@ export interface BackendService {
   stripe_origin(): Promise<[] | [string]>;
   quote_previews(amounts: bigint[]): Promise<QuotePreviews>;
   cancel_order(id: string): Promise<Result<Order, string>>;
+  expire_order(id: string): Promise<Result<Order, string>>;
   set_expected_livemode(expected: [] | [boolean]): Promise<void>;
   expected_livemode(): Promise<[] | [boolean]>;
   can_purchase(usdCents: bigint): Promise<Result<null, GateReason>>;

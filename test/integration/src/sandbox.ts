@@ -130,8 +130,8 @@ async function main(): Promise<void> {
   // `expected #ok, got {"err":{"sessionUnavailable":...}}`.
   //
   // The key comes from the environment, never from source and never from a command
-  // line: it must be a **restricted** key (`rk_...`) scoped to write Checkout Sessions
-  // and nothing else. A leaked write-sessions key can only create sessions that pay
+  // line: it must be a **restricted** key (`rk_...`) with Checkout Sessions = Write
+  // (which also grants the read the recovery sweep needs) and everything else None. A leaked write-sessions key can only create sessions that pay
   // *us*; an unrestricted `sk_` can issue refunds, which is materially worse to leak.
   //
   //   STRIPE_API_KEY=rk_... npm run sandbox
@@ -156,7 +156,7 @@ async function main(): Promise<void> {
     console.log(`  ⚠️  no STRIPE_API_KEY in the environment, so no order was created.
       Everything except paying works. To make a payable order:
         STRIPE_API_KEY=rk_... npm run sandbox
-      Use a RESTRICTED key scoped to write Checkout Sessions and nothing else.\n`);
+      Use a RESTRICTED key with Checkout Sessions = Write, everything else None.\n`);
   }
 
   // Live mode auto-progresses, so nothing needs ticking. Hold the process open.

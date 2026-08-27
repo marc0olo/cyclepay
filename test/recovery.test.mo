@@ -113,3 +113,56 @@ suite("isSweepable", func() {
     assert Recovery.reconcileDue(attempted, attempted + day, day);
   });
 });
+
+suite("stranded #created capacity (#52)", func() {
+  test("only #created with a deadline past the grace is asked about", func() {
+    let deadline = 1_000_000_000_000_000;
+    let grace = Recovery.expiryGraceNs;
+    // Inside the grace: not yet. One ns past it: yes. Both sides pinned, because a
+    // one-sided bound passes with the comparison inverted.
+    assert not Recovery.expiryCheckDue(#created, ?deadline, deadline + grace - 1, grace);
+    assert Recovery.expiryCheckDue(#created, ?deadline, deadline + grace, grace);
+  });
+
+  test("a null deadline is never asked about, and that is the residue class", func() {
+    // An order whose session-create response was lost has no deadline AND no session
+    // id, so there is nothing to trigger on and nothing to query with. `expire_order`
+    // is the lever for it; reaching that state means a canister-level fault.
+    assert not Recovery.expiryCheckDue(#created, null, 9_999_999_999_999_999, Recovery.expiryGraceNs);
+  });
+
+  test("no other status is ever asked about", func() {
+    let past = 9_999_999_999_999_999;
+    for (status in ([#cancelled, #expired, #paid, #delivered, #needsReview, #abandoned] : [Types.OrderStatus]).values()) {
+      assert not Recovery.expiryCheckDue(status, ?0, past, Recovery.expiryGraceNs);
+    };
+  });
+
+  test("the paid escalation waits out Stripe's retry horizon", func() {
+    let created = 5_000_000_000_000_000;
+    let horizon = Recovery.paidRetryHorizonNs;
+    assert not Recovery.paidEscalationDue(created, created + horizon - 1, horizon);
+    assert Recovery.paidEscalationDue(created, created + horizon, horizon);
+  });
+
+  test("the horizon outlasts Stripe's ~3 days of redelivery", func() {
+    // The whole justification for waiting is that an event is still coming. If the
+    // horizon were shorter than Stripe's retry window we would escalate payments that
+    // credit themselves — worklist noise in a bounded, evicting queue.
+    let threeDaysNs = 3 * 24 * 3_600 * 1_000_000_000;
+    assert Recovery.paidRetryHorizonNs > threeDaysNs;
+  });
+
+  test("the scan is slower than the sweep, and the grace outlasts one sweep", func() {
+    // Hourly rather than per-sweep: `countOf(#created)` is usually non-zero, so putting
+    // this on the 15-minute cadence would make the O(n) scan run continuously.
+    assert Recovery.expiryScanIntervalNs > Recovery.defaultIntervalNs;
+    assert Recovery.expiryGraceNs > Recovery.defaultIntervalNs;
+    assert Recovery.maxRetrievesPerPass > 0;
+  });
+
+  test("the scan's cadence gate behaves like the reconcile's", func() {
+    assert not Recovery.expiryScanDue(100, 100, Recovery.expiryScanIntervalNs);
+    assert Recovery.expiryScanDue(100, 100 + Recovery.expiryScanIntervalNs, Recovery.expiryScanIntervalNs);
+  });
+});

@@ -135,6 +135,11 @@ export interface Gateway {
   /// create_order as the user, submitted-not-awaited — used by the
   /// interruption tests to catch a money path mid-flight.
   deferredUser: DeferredActor<BackendService>;
+  /// Admin identity, deferred — needed by any admin method that makes an outcall, so the
+  /// outcall can be answered while the call is still in flight. `expire_order` (#52) is
+  /// the first; without it the ingress polls for 100 rounds and reports
+  /// `BadIngressMessage` rather than "your outcall was never answered".
+  deferredAdmin: DeferredActor<BackendService>;
   ledger: Actor<Icrc1Service>;
   cyclesLedger: Actor<Icrc1Service>;
   cmcAsGovernance: Actor<CmcService>;
@@ -202,6 +207,8 @@ export async function setupGateway(): Promise<Gateway> {
   const asAnon = pic.createActor<BackendService>(backendIdlFactory, backendId);
   const deferredUser = pic.createDeferredActor<BackendService>(backendIdlFactory, backendId);
   deferredUser.setIdentity(user);
+  const deferredAdmin = pic.createDeferredActor<BackendService>(backendIdlFactory, backendId);
+  deferredAdmin.setIdentity(admin);
 
   const ledger = pic.createActor<Icrc1Service>(icrc1IdlFactory, ICP_LEDGER_ID);
   const cyclesLedger = pic.createActor<Icrc1Service>(icrc1IdlFactory, CYCLES_LEDGER_ID);
@@ -210,7 +217,7 @@ export async function setupGateway(): Promise<Gateway> {
 
   return {
     server, pic, backendId,
-    asAdmin, asUser, asStranger, asAnon, deferredUser,
+    asAdmin, asUser, asStranger, asAnon, deferredUser, deferredAdmin,
     ledger, cyclesLedger, cmcAsGovernance,
     xrcInstalled: false,
   };
@@ -646,17 +653,68 @@ export function decodeBody(response: { body: Uint8Array | number[] }): string {
 // whether the size cap is big enough for a real Stripe response. Both are first
 // observable in a manual run.
 
-/// Wait for the canister to park an outcall, ticking to let it get there.
+/// Is this parked outcall the recovery sweep's session retrieve (#52), rather than
+/// something a scenario asked for?
 ///
-/// Returns the pending request so a test can assert on the URL, headers and body
-/// the canister actually built.
+/// The retrieve is the only **GET** the canister makes: creating a session is a POST to
+/// the collection, expiring one is a POST to `/{id}/expire`.
+export function isSweepRetrieve(outcall: PendingHttpsOutcall): boolean {
+  return String(outcall.httpMethod).toUpperCase() === 'GET'
+    && outcall.url.includes('/v1/checkout/sessions/');
+}
+
+/// Answer a sweep retrieve with "the session is still open", which is a **no-op** for the
+/// sweep: it means Stripe says the deadline has not really passed, so nothing is released
+/// and nothing is filed.
+export async function answerSweepRetrieveOpen(gw: Gateway, outcall: PendingHttpsOutcall): Promise<void> {
+  await answerOutcall(gw, outcall, 200, JSON.stringify({ id: 'cs_sweep', object: 'checkout.session', status: 'open' }));
+}
+
+/// Wait for the canister to park an outcall a SCENARIO asked for, ticking to let it get
+/// there, and answering any sweep retrieve it meets on the way.
+///
+/// Returns the pending request so a test can assert on the URL, headers and body the
+/// canister actually built.
+///
+/// ⚠️ **This used to return `pending[0]`, and #52 made that wrong.** The implicit
+/// contract was "there is only one outcall in flight" — true while `create_order` and
+/// `cancel_order` were the only producers. The recovery sweep is now a second, *background*
+/// producer: any scenario that advances the clock past a lingering `#created` order's
+/// deadline plus the grace makes it retrieve that order's session. Taking the first parked
+/// call then hands a scenario the sweep's GET and it asserts against the wrong request.
+///
+/// ⚠️ **Strays are answered here rather than left for `afterEach`.** A parked outcall is
+/// an in-flight message; leaving it parked mid-scenario lets later ticks stack on it, and
+/// the resulting failure looks like the order-coupling class this README warns about
+/// instead of what it is. `afterEach` stays as the backstop, and a stray count above one
+/// there is a signal, not noise.
 export async function awaitPendingOutcall(gw: Gateway, rounds = 40): Promise<PendingHttpsOutcall> {
   for (let i = 0; i < rounds; i += 1) {
     const pending = await gw.pic.getPendingHttpsOutcalls();
-    if (pending.length > 0) return pending[0]!;
+    for (const outcall of pending) {
+      if (!isSweepRetrieve(outcall)) return outcall;
+      await answerSweepRetrieveOpen(gw, outcall);
+    }
     await gw.pic.tick();
   }
-  throw new Error('no HTTPS outcall was made');
+  throw new Error('no HTTPS outcall was made (sweep retrieves are answered and skipped)');
+}
+
+/// Answer every parked sweep retrieve, and report how many there were.
+///
+/// The `afterEach` backstop: it keeps a scenario's strays out of the next scenario, and
+/// its count is the signal for "this scenario provoked more background retrieves than
+/// anyone expected".
+export async function drainSweepRetrieves(gw: Gateway): Promise<number> {
+  const pending = await gw.pic.getPendingHttpsOutcalls();
+  let drained = 0;
+  for (const outcall of pending) {
+    if (isSweepRetrieve(outcall)) {
+      await answerSweepRetrieveOpen(gw, outcall);
+      drained += 1;
+    }
+  }
+  return drained;
 }
 
 /// Like `awaitPendingOutcall`, but tolerates there being none.
@@ -672,7 +730,132 @@ export async function maybePendingOutcall(
 ): Promise<PendingHttpsOutcall | undefined> {
   for (let i = 0; i < rounds; i += 1) {
     const pending = await gw.pic.getPendingHttpsOutcalls();
-    if (pending.length > 0) return pending[0]!;
+    for (const outcall of pending) {
+      // Same filter as `awaitPendingOutcall`: a sweep retrieve is not the thing the
+      // caller is unsure about, and returning it would be worse than returning nothing.
+      if (!isSweepRetrieve(outcall)) return outcall;
+      await answerSweepRetrieveOpen(gw, outcall);
+    }
+    await gw.pic.tick();
+  }
+  return undefined;
+}
+
+/// Wait for the sweep's session retrieve specifically (#52) — the mirror of
+/// `awaitPendingOutcall`, which skips exactly this one.
+export async function awaitSweepRetrieve(gw: Gateway, rounds = 40): Promise<PendingHttpsOutcall> {
+  for (let i = 0; i < rounds; i += 1) {
+    const pending = await gw.pic.getPendingHttpsOutcalls();
+    for (const outcall of pending) {
+      if (isSweepRetrieve(outcall)) return outcall;
+    }
+    await gw.pic.tick();
+  }
+  throw new Error('the recovery sweep did not retrieve a session');
+}
+
+/// Like `awaitSweepRetrieve`, but tolerates there being none — for asserting that the
+/// grace suppressed the ask entirely.
+export async function maybeSweepRetrieve(
+  gw: Gateway,
+  rounds = 12,
+): Promise<PendingHttpsOutcall | undefined> {
+  for (let i = 0; i < rounds; i += 1) {
+    const pending = await gw.pic.getPendingHttpsOutcalls();
+    for (const outcall of pending) {
+      if (isSweepRetrieve(outcall)) return outcall;
+    }
+    await gw.pic.tick();
+  }
+  return undefined;
+}
+
+/// Answer the sweep's retrieve **for one specific session**, answering every other
+/// order's retrieve with a no-op "open" along the way.
+///
+/// ⚠️ **Necessary because the scan is not about one order.** This suite accumulates
+/// lingering `#created` orders, so once the clock is past their deadlines the scan has
+/// several due at once and works through them sequentially — up to
+/// `Recovery.maxRetrievesPerPass`. A scenario that answered the first parked retrieve
+/// would be answering for whichever order the scan reached first, which is usually a
+/// neighbour's. That is the order-coupling this README warns about, in outcall form.
+export async function settleSweepRetrieveFor(
+  gw: Gateway,
+  sessionId: string,
+  status: number,
+  body: string,
+  rounds = 60,
+): Promise<void> {
+  for (let i = 0; i < rounds; i += 1) {
+    const pending = await gw.pic.getPendingHttpsOutcalls();
+    for (const outcall of pending) {
+      if (!isSweepRetrieve(outcall)) continue;
+      if (outcall.url.includes(sessionId)) {
+        await answerOutcall(gw, outcall, status, body);
+        await gw.pic.tick(5);
+        return;
+      }
+      await answerSweepRetrieveOpen(gw, outcall);
+    }
+    await gw.pic.tick();
+  }
+  throw new Error(`the sweep never retrieved session ${sessionId}`);
+}
+
+/// Park (without answering) the sweep's retrieve for one specific session, draining
+/// neighbours' retrieves so the scan reaches it.
+export async function awaitSweepRetrieveFor(
+  gw: Gateway,
+  sessionId: string,
+  rounds = 60,
+): Promise<PendingHttpsOutcall> {
+  for (let i = 0; i < rounds; i += 1) {
+    const pending = await gw.pic.getPendingHttpsOutcalls();
+    for (const outcall of pending) {
+      if (!isSweepRetrieve(outcall)) continue;
+      if (outcall.url.includes(sessionId)) return outcall;
+      await answerSweepRetrieveOpen(gw, outcall);
+    }
+    await gw.pic.tick();
+  }
+  throw new Error(`the sweep never retrieved session ${sessionId}`);
+}
+
+/// Wait for an outcall that is NOT a sweep retrieve, **leaving any retrieve parked**.
+///
+/// The difference from `awaitPendingOutcall` matters exactly once: when a scenario is
+/// deliberately holding a retrieve in flight and needs another outcall answered
+/// underneath it. Draining there would invalidate the handle it is holding, and pic-js
+/// reports that as `InvalidCanisterHttpRequestId` — which reads like a pic-js fault
+/// rather than "something answered your outcall for you".
+export async function awaitNonRetrieveOutcall(gw: Gateway, rounds = 40): Promise<PendingHttpsOutcall> {
+  for (let i = 0; i < rounds; i += 1) {
+    for (const outcall of await gw.pic.getPendingHttpsOutcalls()) {
+      if (!isSweepRetrieve(outcall)) return outcall;
+    }
+    await gw.pic.tick();
+  }
+  throw new Error('no non-retrieve outcall was made');
+}
+
+/// Is the sweep asking about THIS session? Drains other orders' retrieves while looking,
+/// and answers `undefined` if this one is never asked about.
+///
+/// ⚠️ **The targeted form is the only honest one for a negative assertion.** "No retrieve
+/// happened at all" is not a property any scenario can claim once its own file has
+/// accumulated `#created` orders — a neighbour past its deadline makes the untargeted
+/// check fail for a reason the scenario is not about.
+export async function maybeSweepRetrieveFor(
+  gw: Gateway,
+  sessionId: string,
+  rounds = 20,
+): Promise<PendingHttpsOutcall | undefined> {
+  for (let i = 0; i < rounds; i += 1) {
+    for (const outcall of await gw.pic.getPendingHttpsOutcalls()) {
+      if (!isSweepRetrieve(outcall)) continue;
+      if (outcall.url.includes(sessionId)) return outcall;
+      await answerSweepRetrieveOpen(gw, outcall);
+    }
     await gw.pic.tick();
   }
   return undefined;
@@ -786,8 +969,21 @@ export async function createOrderWithSession(
   const outcall = await awaitPendingOutcall(gw);
   const expiresAtSeconds =
     opts.expiresAtSeconds ?? Number(await nowSeconds(gw.pic)) + 2_100;
+  // ⚠️ **A UNIQUE session id per order, derived from the order it belongs to.**
+  //
+  // `sessionCreatedBody` defaults to `cs_test_a1b2`, so before this every order in the
+  // suite shared one session id. That was invisible while nothing looked a session up by
+  // id — and #52's sweep does: its retrieve URL carries the id, so a scenario answering
+  // "expired" for its own order was settling whichever neighbour the scan reached first,
+  // while its own order sat `#created`. Three scenarios failed that way before the cause
+  // was found.
+  //
+  // Derived rather than counted, so a session id in a failure message names the order it
+  // belongs to instead of an anonymous sequence number. `client_reference_id` is
+  // `<principal>_<orderId>` and the canister has just put it in the request body.
+  const reference = outcallBody(outcall).match(/client_reference_id=[^&]*_([0-9a-f]{8})/);
   const body = sessionCreatedBody({
-    id: opts.sessionId,
+    id: opts.sessionId ?? (reference ? `cs_test_${reference[1]}` : undefined),
     expiresAtSeconds,
     livemode: opts.livemode,
   });

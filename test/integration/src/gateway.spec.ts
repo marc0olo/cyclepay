@@ -13,7 +13,8 @@ import {
   bigIntReplacer, partialRefundBody, stopNns, startNns,
   CYCLES_LEDGER_ID, clientReferenceFor, createOrderWithSession, cancelOrderWithExpire,
   awaitPendingOutcall, answerOutcall, outcallHeader, outcallBody, sessionExpiredBody,
-  sessionCreatedBody, maybePendingOutcall,
+  sessionCreatedBody, maybePendingOutcall, drainSweepRetrieves, isSweepRetrieve,
+  answerSweepRetrieveOpen,
   Gateway, setupGateway, teardownGateway, upgradeBackendMidFlight,
   setCmcRate, fundReserve, reserveBalance,
   checkoutSessionBody, chargeRefundedBody, deliverWebhook, stripeSignature,
@@ -55,6 +56,13 @@ const USER_ACCOUNT: Destination = {
 /// than asserted: a scenario that fails with the ledger stopped would otherwise get a
 /// confusing secondary error on top of its real one.
 afterEach(async () => {
+  // ⚠️ **Backstop for the sweep's background retrieves (#52), before the floor check.**
+  // `awaitPendingOutcall` answers strays as it meets them, so this should normally find
+  // none; it exists so a scenario that never calls that helper cannot leave a parked
+  // outcall for the next one to trip over. A parked outcall is an in-flight message, and
+  // one leaking across a scenario boundary would look exactly like the order-coupling
+  // failures the README warns about.
+  try { await drainSweepRetrieves(gw) } catch (_e) { /* teardown has begun */ }
   try {
     const floor = (await gw.asAnon.reserve_status()).reserveFloor;
     expect(floor, 'reserveFloor exceeded the real reserve balance').toBeLessThanOrEqual(
@@ -93,11 +101,9 @@ beforeAll(async () => {
   gw = await setupGateway();
   await setCmcRate(gw);
   await fundReserve(gw, RESERVE_CYCLES);
-  // The admission gate (Gate.mo) refuses to quote when the burn window has no
-  // headroom, and the fail-closed default cap is 0 — so orders cannot be
-  // created at all until the operator sizes the cap. Every scenario below that
-  // creates an order needs this; the ones that exercise a stalled delivery drop
-  // the cap back to 0 *after* creating, which is the documented pause lever.
+  // ⚠️ The gate refuses to quote against an **unobserved** reserve, and a funded reserve
+  // is not a sellable one until `fundReserve` makes the gateway look (scenario 73 is the
+  // guard on that). Every scenario below that creates an order needs both calls above.
 });
 
 
@@ -3236,3 +3242,50 @@ test('80 — an issued intent escalates at the DEDUP window, not at the 72 h max
 // `#beginDelivery` into `#minting` — the one legal entrance — failed scenarios 06,
 // 07, 08, 10, 11 and 12, and every other insertion point was refused by the
 // transition matrix itself.
+
+test('87 — the stranded scan RESUMES: a crowd of due orders does not starve the tail', async () => {
+  // ⚠️ **This scenario stays in the shared instance on purpose, and is the only #52 one
+  // that does.** The other six moved to `stranded.spec.ts` for determinism; this one
+  // needs the opposite — a *crowd*. By here the suite has left dozens of orders
+  // `#created` forever, which is the population the resume cursor exists for and cannot
+  // be built cheaply by a scenario.
+  //
+  // The bug it guards: the scan takes at most `maxRetrievesPerPass` due orders, and a
+  // due order that stays due — answered `open`, or a retrieve that keeps failing — is
+  // asked again on every pass while orders behind it are never reached at all. A bound
+  // without a resume bounds *which* orders get looked at, not how many. That is not
+  // hypothetical: two scenarios failed with "the sweep never retrieved session …"
+  // because their order sat behind ten permanently-due neighbours, and the deleted
+  // retention sweep had already solved it with a keyed cursor before #33 removed the
+  // module and the reasoning together.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+
+  // Past every lingering order's deadline plus the grace, so the whole crowd is due.
+  await gw.pic.advanceTime(90 * 60 * 1_000);
+  await gw.pic.tick(5);
+
+  // Answer every retrieve with `open` — a no-op, so nothing leaves the due set and the
+  // crowd stays exactly as crowded. Then collect which sessions were asked about across
+  // several passes.
+  const asked = new Set<string>();
+  for (let pass = 0; pass < 4; pass += 1) {
+    await gw.pic.advanceTime(65 * 60 * 1_000); // clear the hourly cadence gate
+    for (let round = 0; round < 30; round += 1) {
+      for (const outcall of await gw.pic.getPendingHttpsOutcalls()) {
+        if (!isSweepRetrieve(outcall)) continue;
+        asked.add(outcall.url.slice(outcall.url.lastIndexOf('/') + 1));
+        await answerSweepRetrieveOpen(gw, outcall);
+      }
+      await gw.pic.tick();
+    }
+  }
+
+  // THE assertion: more distinct sessions were asked about than one pass can hold. With
+  // no resume this is exactly `maxRetrievesPerPass` forever — the same head of the list,
+  // pass after pass — so a cursor that does not advance fails here.
+  expect(asked.size, 'the scan asked about the same orders every pass — the cursor is not advancing').toBeGreaterThan(10);
+
+  await setCmcRate(gw);
+  await ensureRates(gw);
+});

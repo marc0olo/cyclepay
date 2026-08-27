@@ -73,8 +73,9 @@ This is **the** procedure. Everything below it in this file is either a group of
 scenarios to work through or a by-hand reference for one of these steps.
 
 What you have to supply: a **Stripe sandbox account** with the Stripe CLI logged in
-to it, and a **restricted API key** (`rk_...`) scoped to **write Checkout Sessions**
-and nothing else. No Payment Links, no Products, no Prices — the canister creates a
+to it, and a **restricted API key** (`rk_...`) with **Checkout Sessions = Write**
+and everything else None. Write is the level that also grants read, which the recovery
+sweep needs in order to retrieve a session (#52). No Payment Links, no Products, no Prices — the canister creates a
 session per order through the API (#33). Nothing else, and no mainnet.
 
 **How to create the key, and the go-live ordering, is RUNBOOK §3.**
@@ -362,9 +363,9 @@ stripe listen --forward-to '<the URL it prints>'
 ⚠️ **`STRIPE_API_KEY` is what makes an order possible, not just a payment.** The rail
 creates a Checkout Session per order, so `create_order` itself calls Stripe — without
 a key the harness boots and says so, and everything except ordering works. Use a
-**restricted** key (`rk_...`) scoped to write Checkout Sessions and nothing else: a
-leaked write-sessions key can only create sessions that pay *us*, while an
-unrestricted `sk_` can issue refunds.
+**restricted** key (`rk_...`) with **Checkout Sessions = Write** (which includes the
+read the sweep needs) and everything else None: a leaked key at that scope can only
+create sessions that pay *us*, while an unrestricted `sk_` can issue refunds.
 
 ⚠️ **It lowers `minPurchaseUsdCents` to $1**, because its whole numeric vector is the
 $5 at-cost case (500¢ − 45¢ fee = 455¢ = exactly one ICP at $4.55 = 3.5 T cycles) and
