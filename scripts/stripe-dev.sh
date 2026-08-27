@@ -154,7 +154,8 @@ icp canister call backend set_webhook_secret "(\"${WHSEC}\")" >/dev/null
 KEY_SET="$(icp canister call backend stripe_api_key_status '()' 2>/dev/null | grep -c 'isSet = true' || true)"
 if [ "$KEY_SET" = "0" ]; then
   printf '\n\033[33m! no Stripe API key is provisioned, so create_order cannot make a session.\033[0m\n'
-  printf '  Create a RESTRICTED key (rk_...) scoped to write Checkout Sessions and nothing else, then:\n'
+  printf '  Create a RESTRICTED key (rk_...) with Checkout Sessions = Write (Write also\n'
+  printf '  grants the read the recovery sweep needs) and everything else None, then:\n'
   printf '    icp canister call backend set_stripe_api_key '"'"'("rk_...")'"'"'\n'
   printf '  Or re-run the seed with it in the environment:\n'
   printf '    STRIPE_API_KEY=rk_... ./scripts/local-dev-seed.sh\n\n'

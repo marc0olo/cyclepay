@@ -231,7 +231,11 @@ rather than a click path through three screens.
 ### Provisioning, in order
 
 ```bash
-# 1. The API key. RESTRICTED (rk_), scoped to write Checkout Sessions, nothing else.
+# 1. The API key. RESTRICTED (rk_). Permission: Checkout Sessions = WRITE, everything
+#    else None. Write is the level that also grants read, and the recovery sweep needs
+#    the read: it retrieves a session to settle an order whose expiry event never
+#    arrived (#52). A key without it 401s on every retrieve and stranded capacity is
+#    never released — watch for `stripe.retrieveUnauthorized` (§9).
 icp canister call backend set_stripe_api_key '("rk_...")' -e ic --identity <operator>
 
 # 2. Where Stripe returns the buyer. Validated: https, no query, no fragment.
@@ -563,14 +567,26 @@ for the call's duration and a margin therefore caps how many outcalls can be in
 flight. There is nothing to measure. What decides the number is
 **`max_response_bytes`**, currently **16,384** (`Session.maxResponseBytes`):
 
-| Replication | Cost per call at 16 KB |
-|---|---|
-| n = 13 (application subnets, and the local network) | **≈ 220 M cycles** (~$0.0003) |
-| n = 7 (the confidential subnet, our target — #2) | **≈ 118 M cycles** |
+| Call | `max_response_bytes` | n = 13 (application subnets, and the local network) | n = 7 (the confidential subnet, our target — #2) |
+|---|---|---|---|
+| create a session (`create_order`) | 16,384 | **≈ 220 M cycles** (~$0.0003) | **≈ 118 M cycles** |
+| expire a session (`cancel_order`, `expire_order`) | 16,384 | ≈ 220 M | ≈ 118 M |
+| **retrieve a session** (the #52 sweep) | **32,768** | **≈ 390 M cycles** | **≈ 207 M cycles** |
 
 Work with the 13-node figure: it is the conservative one, and the local network
 prices on it, so local runs *overstate* production cost. At 20 T gas with a 5 T
 floor that is ≈68,000 creations before the rail closes.
+
+⚠️ **The retrieve's cap is deliberately double the others', so its call costs
+roughly double.** A *completed* session carries `customer_details`, a resolved
+`payment_intent` and `total_details` that a freshly created one does not, and an
+over-cap response fails the call outright rather than truncating. Two consequences
+worth knowing before tuning it down: the sweep only retrieves for orders that are
+**already stranded**, so in normal operation this line is zero calls per day; and
+the stranded population is **correlated** — one unprovisioned webhook secret
+strands every order in its window at once — which is why the sweep caps retrieves
+per pass (`Recovery.maxRetrievesPerPass`) and resumes rather than draining a
+backlog in one go.
 
 ⚠️ **The cap counts response HEADERS, not just the body, and it is checked
 twice** — once on the raw response, once on the transform's Candid-encoded
@@ -705,6 +721,7 @@ entry without a human deciding anything.
 | `#deliveryDelayed {orderId; stage; sinceNs}` | ❌ no — it is not an obligation | Nothing is wrong yet: a delivery is retrying past the 2 h alert threshold and the sweep keeps going | Fix the cause (usually the cycles ledger) and it delivers itself. **Self-resolves** on delivery *or* escalation — the one entry you never close by hand |
 | `#abandoned {orderId; reason}` | ❌ no — the refund already happened | You ended the order, having refunded by hand | `resolve_error` once the refund is reconciled in Stripe |
 | `#refundAfterDelivery {orderId; paymentRef; cycles; refundedCents; fullRefund}` | ❌ **no, and never** | **A loss, not a recoverable position**: the fiat was refunded or charged back *after* the cycles were credited. Cycles cannot be clawed back | Nothing to recover on-chain. Reconcile in the Dashboard by `paymentRef` to see whether this was your own refund (a support decision) or a dispute (a fraud signal). For repeated disputes, tighten Stripe Radar and lower the per-purchase ceiling (§5a). ⚠️ **Nothing auto-resolves it, deliberately: the refund is the event that created it**, so resolving on that event would close the entry with the loss unrecorded |
+| `#paidNotCredited {orderId; paymentRef; sessionId}` | ❌ **no — and a refund alone makes it worse** | **The buyer paid and this gateway never credited them.** Found by the recovery sweep asking Stripe about a `#created` order past its deadline, once Stripe has had longer than its ~3-day redelivery window to hand us the `completed` event it owed. The order is still `Created`, so it still holds reserve capacity — correctly, because the cycles are genuinely owed | ⚠️ **RESEND FIRST, ALWAYS.** Find the event in the Stripe Dashboard (search by `paymentRef`) and resend `checkout.session.completed`. That credits the order through the normal path, delivers the cycles, and **closes this entry automatically**. <br><br>⚠️ **Refunding instead does not settle it, and leaves no way out.** The refund returns the money and leaves the order in `Created` holding capacity, and a *complete* session never fires `checkout.session.expired`, so nothing is left that can release it — `expire_order` correctly refuses (Stripe reports the session not-open), and `abandon_order` cannot act on `Created`. If you have already refunded: resend anyway to move the order to `Paid`, then `abandon_order`. **The buyer keeps cycles they were refunded for** — that is the cost of refunding first, and it is why the order of operations is the whole procedure. <br><br>The entry does **not** auto-resolve on `charge.refunded`, deliberately: refunding settles the money and leaves the order broken, so auto-closing would delete the only worklist item pointing at the stranded capacity |
 | `#unprocessable {eventId; field}` | ❌ no — the position is unknown | A verified Stripe event was missing a required field, so the canister could not tell whether money moved | Look the `eventId` up in the Dashboard. **Paid** → refund. **Not paid** → nothing happened; `resolve_error`. Then find the configuration that produced it: the canister controls every field it sends, so a missing one points at an account-level API-version change (§1 pins it) and will recur until fixed. ⚠️ Resolve only after establishing the money position — once resolved, a later resend is allowed to file again |
 
 ### `#deliveryStuck`'s stages — read `stage`, never the kind
@@ -866,6 +883,11 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | `reserve_status.availableToSell` | 0, or far below `reserveFloor` − `promisedTotal` as you expect it | **P2** | the gateway is refusing sales. Three causes and the same query separates them: the reserve is genuinely spent (`reserveFloor` low), it is committed to live orders (`promisedTotal` high), or **the floor has not observed a top-up** (`reserveObservedAtNs` old). The last is the common one and the lever is `refresh_reserve` |
 | `reserve_status.reserveObservedAtNs` | materially older than `recovery_status.lastReserveReconcileAttemptNs` | **P3** | the hourly reserve reconcile is attempting and not adopting: either the ledger read is failing (`reserve.observeFailed` in the audit log) or every attempt lands while a delivery is in flight (`reserve.reconcileSkipped`). Under-sells rather than over-sells, so it explains refusals; it is not a loss |
 | `delivery.feeChanged` in the audit log | on **every** delivery rather than once | **P3** | the stored cycles-ledger fee is stale, so every order pays one rejected call before its transfer lands. Self-correcting by design — the first `#BadFee` persists the ledger's value — so a *repeating* tag means the correction is not sticking (an upgrade reverting the stored value, or the ledger's fee moving repeatedly). ⚠️ **This is the ONLY detector for a stored fee that will not stick**, since nothing but the ledger writes that value and the persistence itself is untested (`docs/TEST-COVERAGE.md`). Each occurrence costs one rejected call, never a wrong debit — the buyer still gets the quoted amount and the reserve absorbs the real fee. If it repeats, redeploy rather than looking for a lever; there is none, deliberately |
+| `stripe.retrieveUnauthorized` in the audit log | any occurrence | **P1** | ⚠️ **The restricted key cannot read Checkout Sessions, so stranded capacity can never be released automatically.** The recovery sweep's retrieve is 401/403ing. Fix the key's permission (Checkout Sessions = **Write**, which is the level that also grants read — §3) and rotate it in; nothing else recovers, and the failure is otherwise silent because the sweep audits and moves on. Until it is fixed, `expire_order` is the manual release |
+| `stripe.retrieveFailed` in the audit log | repeatedly for the same order | **P3** | Stripe is unreachable or answering non-200 for the session read. Distinct from the row above on purpose: **"Stripe refused the read" and "Stripe is down" are different actions.** Transient failures retry hourly and need nothing; a persistent one means the outcall path is broken, so check `pricing_status` (the same egress) before suspecting the key |
+| `stripe.paidAwaitingEvent` in the audit log | any occurrence | **P2** | a buyer paid and Stripe has not delivered `checkout.session.completed`. **Not yet an obligation** — Stripe redelivers for ~3 days and the entry is deliberately withheld until then — but it IS the support signal: the buyer's own page renders expired from `expiresAtNs`, so expect a contact the same hour. If it is one order, resend the event from the Dashboard now rather than waiting. If it is many, the webhook endpoint is broken: check the secret and the subscribed event list (§3) |
+| `stripe.paidNotCredited` in the audit log | any occurrence | **P1** | a buyer paid, Stripe has given up redelivering, and the obligation is now filed in the error queue. Follow the `#paidNotCredited` row in §6 — **resend first, always** |
+| `stripe.retrieveUnreadable` in the audit log | any occurrence | **P3** | Stripe answered the session read in a shape the classifier does not recognise, so the sweep did nothing (fail-safe). Capacity stays held until it is understood. Most likely an API-version change; §1 pins the version, so this points at an account-level change |
 | `reserve.unexplainedShortfall` in the audit log | any occurrence | **P1** | the ledger holds LESS than the floor's lower bound, which the design says is impossible — no allowance exists and `withdraw` is unused. Treat as a bookkeeping breach: stop selling (`set_gate_config` with a high `minPurchaseUsdCents`, or pause), reconcile the journal against the ledger, and find the outflow before funding anything |
 | an order still `created` past its own `expiresAtNs` | any | **P2** | a `checkout.session.expired` was missed. Nothing sweeps it (§5b, deliberately — a sweep would hide a held reserve): resend the event from the Stripe Dashboard. ⚠️ **You cannot query this today** — see the gap below |
 | `pricing_status.xrcCanisterId` | anything other than `uf6dk-hyaaa-aaaaq-qaaaq-cai` | **P1** | **on mainnet this must be the real Exchange Rate Canister.** The id is resolved from a `PUBLIC_CANISTER_ID:xrc` canister environment variable so a local network can point at a mock; a mainnet canister reporting any other id is pricing real sales off something that is not the market. Only a controller can inject it, so this reads as either a misconfigured deploy or a compromised controller. Cap the burn to 0 (§2) before investigating. **`null` is not a pass** — it means no refresh has reached the XRC call at all (expected for seconds after an install or upgrade, since the value is transient). Do **not** wait on `lastAttempt` becoming non-null: that field is persistent, so it survives the upgrade and is already set while this one is still null. Re-read until `lastAttempt.atNs` post-dates the deploy. A *failing* refresh never shows null here — the id is recorded when the call is constructed, so a rejected call reads as a non-null id plus `lastAttempt.ok = false` |

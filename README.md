@@ -91,7 +91,8 @@ queries the CMC and compares what it actually stored rather than trusting the `O
 reply, because PocketIC returning 200 only means the message was delivered.
 
 To click all the way through payment you need a **restricted Stripe API key**
-(`rk_...`) scoped to **write Checkout Sessions** and nothing else. There are no
+(`rk_...`) with **Checkout Sessions = Write** — the level that also grants the read the
+recovery sweep needs — and everything else None. There are no
 Payment Links to create: the canister builds a Checkout Session per order through
 the API and sets `client_reference_id` on it, so nothing is configured in the
 Stripe Dashboard (#33).
