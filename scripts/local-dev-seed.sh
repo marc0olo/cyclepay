@@ -329,8 +329,18 @@ fi
 step "admission gate"
 # The #33 bounds: a $10 floor and a $100 ceiling. One pair governs presets AND
 # custom amounts — do not add a custom-amount-specific limit.
+#
+# ⚠️ **One open order per principal, the shipped value — not a dev convenience.** It used
+# to be 3 here, which meant local runs never exercised the product decision: a buyer who
+# wants another order cancels the one they have. Testing that loop matters more than the
+# convenience of holding three orders open, and a tester who wants the old behaviour can
+# call `set_gate_config` themselves.
+#
+# It is only safe because `Orders.openOrderCount` stops counting an order past its own
+# deadline: at a cap of 1 without that, one missed expiry webhook locks a buyer out
+# permanently rather than for the session's 35 minutes.
 icp canister call backend set_gate_config \
-  '(record { maxOpenOrdersPerPrincipal = 3 : nat;
+  '(record { maxOpenOrdersPerPrincipal = 1 : nat;
              maxPurchaseUsdCents = 10_000 : nat;
              minPurchaseUsdCents = 1_000 : nat;
              minCanisterCycles = 5_000_000_000_000 : nat })' \

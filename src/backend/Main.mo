@@ -823,7 +823,7 @@ persistent actor CyclesGateway {
   /// synchronously, against the maintained floor.
   func gateObservation(caller : Principal) : Gate.Observation {
     {
-      openOrders = Orders.openOrderCount(orderStore, caller);
+      openOrders = Orders.openOrderCount(orderStore, caller, Time.now());
       canisterCycles = Cycles.balance();
     };
   };
