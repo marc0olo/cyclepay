@@ -20,7 +20,7 @@
 import { Principal } from '@icp-sdk/core/principal';
 import {
   ICP_FEE_E8S, ORDER_E8S, TIER_USD_CENTS, WEBHOOK_SECRET,
-  ensureRates, expectOk, fundFloat, setCmcRate, setXrcRate, setupGateway, user,
+  ensureRates, expectOk, setCmcRate, setXrcRate, setupGateway, user,
   clientReferenceFor,
 } from './harness';
 
@@ -54,14 +54,11 @@ async function main(): Promise<void> {
   await setXrcRate(gw);
   await setCmcRate(gw);
   await ensureRates(gw);
-
-  expectOk(await gw.asAdmin.set_treasury_config(DEV_TREASURY));
   expectOk(await gw.asAdmin.set_webhook_secret(SECRET));
   expectOk(await gw.asAdmin.set_card_tiers([
     { id: 'tier5', usdCents: TIER_USD_CENTS },
   ]));
   await gw.asAdmin.set_expected_livemode([false]);
-  await fundFloat(gw, ORDER_E8S * 50n + ICP_FEE_E8S * 50n);
 
   const port = await gw.pic.makeLive();
   const backendId = gw.backendId.toText();

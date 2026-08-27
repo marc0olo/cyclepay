@@ -20,7 +20,12 @@ import Types "../src/backend/Types";
 let window = Cmc.ledgerDedupWindowNs;
 
 func intentAt(nowNs : Int) : Types.TransferIntent {
-  Cmc.buildIntent(Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai"), 123_456, nowNs);
+  Cmc.buildDeliveryIntent(
+    "aabbccddeeff00112233445566778899",
+    { owner = Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai"); subaccount = null },
+    123_456,
+    nowNs,
+  );
 };
 
 func entryWith(
@@ -45,9 +50,6 @@ func entryWith(
 };
 
 suite("constants pinned to the CMC scheme", func() {
-  test("TPUP memo = little-endian 0x50555054, zero-padded to 8 bytes", func() {
-    assert Cmc.topUpMemo == Blob.fromArray([0x54, 0x50, 0x55, 0x50, 0, 0, 0, 0]);
-  });
 
   test("ledger dedup window is 24h, CMC rate guard 15min (ns)", func() {
     assert Cmc.ledgerDedupWindowNs == 86_400_000_000_000;
@@ -55,51 +57,7 @@ suite("constants pinned to the CMC scheme", func() {
   });
 });
 
-suite("topUpSubaccount (§5: length-prefixed principal, zero-padded to 32)", func() {
-  test("pinned vector: ICP ledger principal (10-byte body)", func() {
-    let sub = Cmc.topUpSubaccount(Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"));
-    assert sub == Blob.fromArray([
-      10, 0, 0, 0, 0, 0, 0, 0, 2, 1, 1,
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    ]);
-  });
 
-  test("pinned vector: rrkah-fqaaa-aaaaa-aaaaq-cai", func() {
-    let sub = Cmc.topUpSubaccount(Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai"));
-    assert sub == Blob.fromArray([
-      10, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1,
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    ]);
-  });
-
-  test("pinned vector: short principal (anonymous, 1-byte body)", func() {
-    let sub = Cmc.topUpSubaccount(Principal.fromText("2vxsx-fae"));
-    assert sub == Blob.fromArray([
-      1, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    ]);
-  });
-});
-
-suite("icpE8sForCycles (§5: one e8s mints xdr_permyriad_per_icp cycles)", func() {
-  test("externally computed vectors, exact and ceiling", func() {
-    // 3.5T cycles at 3.5 XDR/ICP = exactly 1 ICP
-    assert Cmc.icpE8sForCycles(3_500_000_000_000, 35_000) == ?100_000_000;
-    assert Cmc.icpE8sForCycles(1, 35_000) == ?1; // rounds up, never zero
-    assert Cmc.icpE8sForCycles(35_001, 35_000) == ?2; // just past one e8s
-    assert Cmc.icpE8sForCycles(70_000, 35_000) == ?2; // exact, no over-round
-    assert Cmc.icpE8sForCycles(13_370_000_000_000, 41_234) == ?324_246_981;
-    assert Cmc.icpE8sForCycles(999_999_999_999, 100_000) == ?10_000_000;
-  });
-
-  test("zero rate is a refusal, not a trap", func() {
-    assert Cmc.icpE8sForCycles(1_000_000, 0) == null;
-  });
-
-  test("zero cycles needs zero e8s", func() {
-    assert Cmc.icpE8sForCycles(0, 35_000) == ?0;
-  });
-});
 
 suite("freshCmcRate (§5 staleness guard)", func() {
   let rate : Cmc.IcpXdrConversionRate = {
@@ -126,33 +84,6 @@ suite("freshCmcRate (§5 staleness guard)", func() {
   });
 });
 
-suite("buildIntent + transferArgs (§5.1 determinism)", func() {
-  test("intent fields: CMC owner, gateway top-up subaccount, TPUP memo", func() {
-    let gateway = Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai");
-    let intent = Cmc.buildIntent(gateway, 123_456, 42_000_000_000);
-    assert intent.createdAtTimeNs == 42_000_000_000;
-    assert intent.amountE8s == 123_456;
-    assert intent.to.owner == Principal.fromText(Cmc.cmcId);
-    assert intent.to.subaccount == ?Cmc.topUpSubaccount(gateway);
-    assert intent.memo == Cmc.topUpMemo;
-  });
-
-  test("identical inputs build identical intents (replay = bit-identical)", func() {
-    assert intentAt(42) == intentAt(42);
-  });
-
-  test("transferArgs is a pure projection of the stored intent", func() {
-    let intent = intentAt(42_000_000_000);
-    let args = Cmc.transferArgs(intent);
-    assert args.from_subaccount == null;
-    assert args.to == intent.to;
-    assert args.amount == intent.amountE8s;
-    assert args.fee == ?Cmc.icpTransferFeeE8s;
-    assert args.memo == ?intent.memo;
-    assert args.created_at_time == ?intent.createdAtTimeNs;
-    assert Cmc.transferArgs(intent) == args; // deterministic
-  });
-});
 
 suite("delivery: the fee is RECOVERABLE from the intent (#30 PR-A)", func() {
   // ⚠️ This is what replaced an unverified claim about the cycles ledger's dedup
@@ -255,34 +186,6 @@ suite("interpretTransfer (§5.1)", func() {
   });
 });
 
-suite("interpretNotify (§5)", func() {
-  test("Ok carries the minted cycles", func() {
-    assert Cmc.interpretNotify(#Ok(5_000_000_000)) == #minted(5_000_000_000);
-  });
-
-  test("Processing and Other are retriable (notify is idempotent, §5.2)", func() {
-    func retriable(r : Cmc.NotifyTopUpResult) : Bool {
-      switch (Cmc.interpretNotify(r)) {
-        case (#retriable(_)) true;
-        case (_) false;
-      };
-    };
-    assert retriable(#Err(#Processing));
-    assert retriable(#Err(#Other({ error_code = 1; error_message = "x" })));
-  });
-
-  test("Refunded and rejections escalate", func() {
-    func escalates(r : Cmc.NotifyTopUpResult) : Bool {
-      switch (Cmc.interpretNotify(r)) {
-        case (#escalate(_)) true;
-        case (_) false;
-      };
-    };
-    assert escalates(#Err(#Refunded({ reason = "memo"; block_index = null })));
-    assert escalates(#Err(#InvalidTransaction("bad block")));
-    assert escalates(#Err(#TransactionTooOld(1)));
-  });
-});
 
 suite("journal", func() {
   func order() : Types.Order {
@@ -538,35 +441,3 @@ suite("terminationFor — the money position, not the status", func() {
   });
 });
 
-suite("isMaterialShortfall", func() {
-  let locked = 3_500_000_000_000;
-
-  test("minting at or above the locked quantity is never a shortfall", func() {
-    assert not Cmc.isMaterialShortfall(locked, locked);
-    // icpE8sForCycles rounds UP, so overshoot is the normal case.
-    assert not Cmc.isMaterialShortfall(locked + 1_000, locked);
-  });
-
-  test("a quantisation-scale gap is absorbed, not escalated", func() {
-    // The CMC rate is quantised per e8s, so tiny gaps are expected. Putting a
-    // human on single cycles would be absurd.
-    assert not Cmc.isMaterialShortfall(locked - 1, locked);
-    assert not Cmc.isMaterialShortfall(locked - Cmc.maxMintShortfallCycles, locked);
-  });
-
-  test("boundary: exactly one cycle past the tolerance escalates", func() {
-    assert not Cmc.isMaterialShortfall(locked - Cmc.maxMintShortfallCycles, locked);
-    assert Cmc.isMaterialShortfall(locked - Cmc.maxMintShortfallCycles - 1, locked);
-  });
-
-  test("a real rate move is caught", func() {
-    // 10% short is a genuine market move across an outage, not rounding.
-    assert Cmc.isMaterialShortfall(locked * 90 / 100, locked);
-  });
-
-  test("the tolerance is far above quantisation and far below anything worth eating", func() {
-    // ~0.001 XDR. Sanity-check the magnitude so a careless edit is visible.
-    assert Cmc.maxMintShortfallCycles == 1_000_000_000;
-    assert Cmc.maxMintShortfallCycles * 1_000 < locked;
-  });
-});

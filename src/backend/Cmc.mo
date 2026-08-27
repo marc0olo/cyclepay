@@ -36,8 +36,6 @@ module {
 
   // ── Well-known principals (identical on PocketIC's NNS subnet, §9) ──────
 
-  /// ICP ledger.
-  public let icpLedgerId : Text = "ryjl3-tyaaa-aaaaa-aaaba-cai";
   /// Cycles minting canister.
   public let cmcId : Text = "rkp4c-7iaaa-aaaaa-aaaca-cai";
   /// Cycles ledger (forward target for `#cyclesLedgerAccount` destinations).
@@ -67,23 +65,9 @@ module {
 
   public type TransferResult = { #Ok : Nat; #Err : TransferError };
 
-  public type LedgerService = actor {
-    icrc1_transfer : shared TransferArg -> async TransferResult;
-    icrc1_balance_of : shared query Types.Account -> async Nat;
-  };
 
-  public type NotifyTopUpArg = { block_index : Nat64; canister_id : Principal };
 
-  public type NotifyError = {
-    #Refunded : { reason : Text; block_index : ?Nat64 };
-    #InvalidTransaction : Text;
-    #Other : { error_code : Nat64; error_message : Text };
-    #Processing;
-    #TransactionTooOld : Nat64;
-  };
 
-  /// `#Ok` carries the cycles minted to `canister_id`'s balance.
-  public type NotifyTopUpResult = { #Ok : Nat; #Err : NotifyError };
 
   public type IcpXdrConversionRate = {
     timestamp_seconds : Nat64;
@@ -96,12 +80,14 @@ module {
     certificate : Blob;
   };
 
+  /// ⚠️ **The rate query only.** The CMC is read for `xdr_permyriad_per_icp`, which is
+  /// stored on every order so a buyer can recompute their own price from public
+  /// canisters. Nothing is minted here and nothing may be: declaring a second method
+  /// would give this canister a way to spend ICP it does not hold.
   public type CmcService = actor {
-    notify_top_up : shared NotifyTopUpArg -> async NotifyTopUpResult;
     get_icp_xdr_conversion_rate : shared query () -> async IcpXdrConversionRateResponse;
   };
 
-  public type DepositArgs = { to : Types.Account; memo : ?Blob };
 
   /// ⚠️ **THIS TYPE IS THE RESERVE FLOOR'S ENFORCEMENT MECHANISM.** `Reserve.mo`'s
   /// floor is sound only because the reserve balance cannot fall except when we
@@ -115,10 +101,6 @@ module {
   /// Adding one here without reading `Reserve.mo`'s floor section turns a bound into
   /// a guess, silently and in the optimistic direction.
   public type CyclesLedgerService = actor {
-    /// LEGACY (#36 deletes it). ⚠️ **Not an outflow of the reserve**: it attaches
-    /// cycles from this canister's own *gas* balance and credits the buyer. It moves
-    /// the gas pot, never the ledger account, which is why the floor ignores it.
-    deposit : shared DepositArgs -> async { balance : Nat; block_index : Nat };
     /// **The one outflow.** Delivery pays the buyer from the canister's own
     /// cycles-ledger account. Two syntactic call sites — the attempt and its
     /// `#BadFee` re-issue — are ONE logical transfer of one intent, and at most one
@@ -145,36 +127,8 @@ module {
 
   // ── Constants ────────────────────────────────────────────────────────────
 
-  /// ICP ledger transfer fee (e8s). Fixed protocol-wide; a change would
-  /// surface as `#BadFee` → escalation, never a silent wrong transfer.
-  public let icpTransferFeeE8s : Nat = 10_000;
 
-  /// How far the CMC's mint may fall short of the locked quantity before the
-  /// order is escalated instead of delivered.
-  ///
-  /// `icpE8sForCycles` rounds **up**, so the ICP sent normally mints slightly
-  /// *more* than the locked quantity. A shortfall therefore means the CMC's rate
-  /// moved unfavourably between sizing the transfer and notifying it — up to
-  /// 15 min under the staleness guard, or arbitrarily long when a recovery sweep
-  /// notifies a transfer stranded by an outage.
-  ///
-  /// A gap of a few cycles is still tolerated because the rate is quantised per
-  /// e8s and putting a human on single cycles is absurd. A *material* gap is a
-  /// real rate move, and covering it silently would subsidise the buyer out of
-  /// this canister's gas without limit — invisible, unbudgeted, and eventually a
-  /// trap when the balance cannot cover it. 1 G cycles is ~0.001 XDR: far above
-  /// quantisation, far below anything worth absorbing.
-  public let maxMintShortfallCycles : Nat = 1_000_000_000;
 
-  /// Did the CMC mint materially less than the order locked?
-  ///
-  /// Pure so the boundary is pinned by test rather than by reading the call site:
-  /// the consequence of getting it wrong in either direction is silent — too
-  /// strict escalates healthy orders, too loose subsidises buyers from this
-  /// canister's gas.
-  public func isMaterialShortfall(minted : Nat, locked : Nat) : Bool {
-    minted + maxMintShortfallCycles < locked;
-  };
 
   /// **Seed** for the stored cycles-ledger transfer fee (#30 PR-B). The live value
   /// lives in `Main.cyclesLedgerFee`, because the ledger owns it and can move it.
@@ -191,9 +145,6 @@ module {
   /// asserted its ABSENCE from the preview and nothing read it.
   public let cyclesLedgerDefaultFee : Nat = 100_000_000;
 
-  /// The CMC recognizes a top-up by this icrc1 memo: the 8-byte little-endian
-  /// encoding of 0x50555054 ("TPUP"). Pinned by test vector.
-  public let topUpMemo : Blob = "\54\50\55\50\00\00\00\00";
 
   /// The ICP ledger deduplicates on `created_at_time` for ~24 h (§5.1).
   /// At/after this age an intent without a block_index must escalate, never
@@ -206,31 +157,7 @@ module {
 
   // ── Pure derivations ─────────────────────────────────────────────────────
 
-  /// The CMC subaccount that credits `canister` on `notify_top_up`:
-  /// 32 bytes = length-prefixed principal, zero-padded. Pinned by test vector.
-  public func topUpSubaccount(canister : Principal) : Blob {
-    let raw = canister.toBlob().toArray();
-    let sub = Array.tabulate<Nat8>(
-      32,
-      func(i) {
-        if (i == 0) { Nat8.fromNat(raw.size()) } else if (i <= raw.size()) {
-          raw[i - 1];
-        } else { 0 };
-      },
-    );
-    Blob.fromArray(sub);
-  };
 
-  /// ICP e8s that mint (at least) `cycles` at the CMC rate. 1 ICP =
-  /// `xdr_permyriad_per_icp`·10⁻⁴ XDR and 1 XDR = 10¹² cycles, so one e8s
-  /// mints exactly `xdr_permyriad_per_icp` cycles — rounding *up* means the
-  /// mint covers the locked quantity; the dust overshoot stays in the app
-  /// balance (operator side, §3 "operator absorbs drift"). Null on a zero
-  /// rate (a broken CMC answer must fail the mint, not trap the sweep).
-  public func icpE8sForCycles(cycles : Nat, xdrPermyriadPerIcp : Nat) : ?Nat {
-    if (xdrPermyriadPerIcp == 0) return null;
-    ?((cycles + xdrPermyriadPerIcp - 1) / xdrPermyriadPerIcp);
-  };
 
   /// §5 staleness guard: the rate iff younger than `maxAgeNs` (age ≥ window =
   /// stale, the Forex/Idempotency convention) and positive. The CMC clock is
@@ -243,20 +170,6 @@ module {
     ?permyriad;
   };
 
-  /// §5.1 step 1 — the deterministic transfer args persisted *before* the
-  /// ledger call. Everything the ledger dedups on is fixed here; replaying
-  /// this intent can never move money twice.
-  public func buildIntent(gateway : Principal, amountE8s : Nat, nowNs : Int) : Types.TransferIntent {
-    {
-      createdAtTimeNs = Nat64.fromIntWrap(nowNs);
-      amountE8s;
-      to = {
-        owner = Principal.fromText(cmcId);
-        subaccount = ?topUpSubaccount(gateway);
-      };
-      memo = topUpMemo;
-    };
-  };
 
   /// §5.1 for the reserve (#30 PR-A) — the delivery transfer's frozen args.
   ///
@@ -332,18 +245,6 @@ module {
     ?(lockedCycles - fee);
   };
 
-  /// The intent's wire form. A pure projection — replay maps the *stored*
-  /// intent through this, so the replayed call is bit-identical to the first.
-  public func transferArgs(intent : Types.TransferIntent) : TransferArg {
-    {
-      from_subaccount = null;
-      to = intent.to;
-      amount = intent.amountE8s;
-      fee = ?icpTransferFeeE8s;
-      memo = ?intent.memo;
-      created_at_time = ?intent.createdAtTimeNs;
-    };
-  };
 
   // ── Result interpretation ────────────────────────────────────────────────
 
@@ -399,26 +300,7 @@ module {
     };
   };
 
-  public type NotifyOutcome = {
-    /// Cycles credited to the app canister's balance.
-    #minted : Nat;
-    #retriable : Text;
-    #escalate : Text;
-  };
 
-  public func interpretNotify(result : NotifyTopUpResult) : NotifyOutcome {
-    switch (result) {
-      case (#Ok(cycles)) #minted(cycles);
-      case (#Err(#Processing)) #retriable("CMC still processing this block");
-      case (#Err(#Other({ error_code; error_message }))) #retriable("CMC error " # error_code.toText() # ": " # error_message);
-      // Refunded = the CMC sent the ICP back (minus fee) and minted nothing;
-      // the order cannot complete automatically. InvalidTransaction /
-      // TransactionTooOld = the CMC rejects this block outright.
-      case (#Err(#Refunded({ reason; block_index = _ }))) #escalate("CMC refunded: " # reason);
-      case (#Err(#InvalidTransaction(reason))) #escalate("CMC rejected block: " # reason);
-      case (#Err(#TransactionTooOld(_))) #escalate("CMC: transaction too old");
-    };
-  };
 
   // ── Journal (§4.2 `journal : Map<OrderId, JournalEntry>`) ───────────────
 

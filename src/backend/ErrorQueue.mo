@@ -30,7 +30,7 @@ module {
     /// Type 1 — the payment could not be attributed to an order that can accept
     /// it: `client_reference_id` resolved to no order (claimed, not trusted — it
     /// is an attacker-editable URL param), or it resolved to an order that is
-    /// `#cancelled` or `#expired` and so is no longer payable.
+    /// `#cancelled` or `#expired`, neither of which is payable.
     #unattributed : { claimedRef : Text; paymentRef : Text };
     /// Type 2 — minted, but forward failed (e.g. target canister deleted).
     #undeliverable : { orderId : Types.OrderId; cycles : Nat };
@@ -39,33 +39,34 @@ module {
     /// position rather than on the reason it stopped.
     ///
     /// ⚠️ **`stage` IS the money position, and it is what the operator acts on.**
-    /// `Cmc.terminationFor` derives it from the **journal** rather than the status,
-    /// because one status covers several positions:
+    /// `Cmc.terminationFor` derives it from the **journal**, not the status, because
+    /// one status covers several positions:
     ///
-    ///   - `staleIntent` — a transfer was issued and no block was recorded, and the
+    ///   - `staleIntent` — a transfer was issued, no block was recorded, and the
     ///     intent is past the ledger's ~24 h dedup window. **Unknown**: the question
     ///     is *"did this transfer land?"*, answerable on the cycles ledger by the
     ///     order id in the transfer's memo. Never "should we refund?" — refunding a
     ///     buyer who already holds the cycles pays twice.
-    ///   - `deliveryWaitExceeded` — §5.3's 72 h bound on an order where **nothing was
+    ///   - `deliveryWaitExceeded` — the 72 h bound on an order where **nothing was
     ///     ever sent**. **Certain**: fiat in, nothing moved, refund in the Stripe
     ///     Dashboard.
     ///   - `transferRejected` / `journalInconsistent` — the ledger refused this call
     ///     definitively, or the intent contradicts the order. Establish the fate
     ///     before re-sending.
     ///
-    /// `blockIndex` is present only in the should-be-unreachable case where the
-    /// transfer is known to have landed and the order never moved; a `null` one is
-    /// the ordinary case.
+    /// ⚠️ **`stage` is a stringly-typed discriminator, and it must stay advisory.**
+    /// It is safe only because the **journal is the authority** — `terminationFor`
+    /// reads it to *produce* this string, and the operator's triage table is the only
+    /// consumer. **Never branch a money decision on comparing it.** If code ever needs
+    /// to distinguish the positions, it should ask the journal the same way
+    /// `terminationFor` does, or the string should become a variant first.
     ///
-    /// ⚠️ **This replaced `#stuckMint` and `#transferUnresolved`, which were one
-    /// question wearing two names (#36).** `#stuckMint` was a misnomer the moment
-    /// #30 PR-A stopped minting; `#transferUnresolved` existed *because* #36 was
-    /// going to delete `#stuckMint`, and its narrower meaning ("did it land?") could
-    /// not carry the certain position, which would have left "fiat in, nothing sent"
-    /// with no kind at all. Folding cost nothing: both were `isType1 = false` and
-    /// `paymentRefOf = null`, so only the payloads differed, and the union of them is
-    /// what an operator needs. One kind, `stage` for the position.
+    /// ⚠️ **One kind, not two.** Splitting "did it land?" from "nothing was sent" into
+    /// separate kinds puts one operator question behind two names, and leaves whichever
+    /// kind is narrower unable to carry the other position. `blockIndex` is present
+    /// only in the should-be-unreachable case where the transfer is known to have
+    /// landed and the order never moved — it arrives with the entry so the operator
+    /// does not have to fetch the journal to start looking.
     #deliveryStuck : { orderId : Types.OrderId; stage : Text; blockIndex : ?Nat };
     /// Neither Type 1 nor Type 2 — the money moved *both* ways. A
     /// `charge.refunded` arrived for a payment that had already been delivered
@@ -94,11 +95,10 @@ module {
     /// in its pre-mint state and keeps being swept, so fixing the *cause*
     /// delivers it with no further intervention.
     ///
-    /// This exists because the alternative was worse: those causes used to
-    /// terminate the order after a max wait and tell the operator to refund —
-    /// giving up on a purchase that was always going to succeed. Delivery is the
-    /// product; a refund is what happens when we cannot identify a buyer, not
-    /// when we are merely busy.
+    /// ⚠️ **An alert, deliberately, and not a termination.** Terminating on these
+    /// causes would give up on a purchase that is going to succeed once the cause is
+    /// fixed. Delivery is the product; a refund is what happens when we cannot
+    /// identify a buyer, not when we are merely busy.
     ///
     /// Raised once per order. Resolve it when the cause is fixed, or convert it
     /// to `#abandoned` if you decide to stop.

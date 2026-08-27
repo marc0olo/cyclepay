@@ -38,7 +38,6 @@ import Card "rails/Card";
 import Session "rails/Session";
 import Secret "Secret";
 import Tiers "Tiers";
-import Treasury "Treasury";
 import Types "Types";
 
 persistent actor CyclesGateway {
@@ -71,20 +70,6 @@ persistent actor CyclesGateway {
   /// migration rather than a config tweak: existing buyers get new principals and
   /// cannot see their old orders. Choose it once (#40/#23).
   var stripeOrigin : ?Text = null;
-
-  /// The delivery timeline's two thresholds, read from the treasury config until the
-  /// deletion commit trims that record (#36).
-  ///
-  /// ⚠️ **This is a projection, not a copy.** `Delivery.waitStage` owns the bound now
-  /// — see its doc for why it survived `Treasury.mo`'s Delete list — and the two
-  /// fields it needs are still carried on the public `set_treasury_config` record
-  /// alongside three that are dead config (`Treasury.gate` lost its only entrance in
-  /// #30 PR-A). Trimming the Candid record is the deletion's job; moving the bound is
-  /// this commit's, and keeping them separate is what makes "no behaviour changed"
-  /// checkable.
-  func deliveryWaitConfig() : Delivery.Config {
-    { maxHoldNs = treasuryConfig.maxHoldNs; alertAfterNs = treasuryConfig.alertAfterNs };
-  };
 
   /// §7 admin authz: caller ∈ controllers (flat allowlist, equal
   /// privileges — see Auth.mo). Traps rather than returning an error so an
@@ -1463,7 +1448,6 @@ persistent actor CyclesGateway {
   /// minted cycles, retries. Financial record — kept for years, never pruned.
   let deliveryJournal : Cmc.Journal = Cmc.emptyJournal();
 
-  transient let icpLedger = actor (Cmc.icpLedgerId) : Cmc.LedgerService;
   transient let cmc = actor (Cmc.cmcId) : Cmc.CmcService;
   transient let cyclesLedger = actor (Cmc.cyclesLedgerId) : Cmc.CyclesLedgerService;
 
@@ -1544,95 +1528,25 @@ persistent actor CyclesGateway {
 
   func selfPrincipal() : Principal = Principal.fromActor(CyclesGateway);
 
-  // ── Treasury + burn cap (task 10, §5.3) ─────────────────────────────────
+  // ── Delivery timeline config (§5.3) ─────────────────────────────────────
 
-  /// §5.3 treasury policy. burnCapE8s defaults to 0 — every mint holds in
-  /// #awaitingTreasury until the operator consciously sizes the primary
-  /// blast-radius bound (same no-invented-numbers stance as the empty tier
-  /// list; a default cap in ICP would be a money decision invented here).
-  var treasuryConfig : Treasury.Config = Treasury.defaultConfig();
+  /// The two thresholds the delivery timeline reads: alert at 2 h, terminate at 72 h.
+  var deliveryConfig : Delivery.Config = Delivery.defaultConfig();
 
-  /// §5.3 rolling-window burn accounting. Persistent — an upgrade must not
-  /// reset the blast-radius bound mid-window.
-  let burnLedger : Treasury.Ledger = Treasury.emptyLedger();
-
-  /// Last float balance the mint pre-gate (or an admin refresh) observed.
-  /// The balance-alert query reads this; queries can't call the ledger.
-  var lastFloatObservation : ?Treasury.FloatObservation = null;
-
-  /// Record a float observation, audit-alerting on the *crossing* into low
-  /// (not every low observation — a sweep over held orders would spam the
-  /// ring buffer out of its useful history).
-  func observeFloat(e8s : Nat) {
-    let wasLow = switch (lastFloatObservation) {
-      case (?previous) Treasury.isLowFloat(treasuryConfig, previous.e8s);
-      case null false;
-    };
-    lastFloatObservation := ?{ e8s; atNs = Time.now() };
-    if (Treasury.isLowFloat(treasuryConfig, e8s) and not wasLow) {
-      audit("treasury.lowFloat", "float " # e8s.toText() # " e8s below threshold " # treasuryConfig.lowFloatThresholdE8s.toText());
-    };
-  };
-
-  /// Adjust treasury policy (§5.3/§7): burn cap, window, max hold, alert
-  /// threshold. Validated atomically — a bad config never partially applies.
-  public shared ({ caller }) func set_treasury_config(config : Treasury.Config) : async Result.Result<(), Treasury.ConfigError> {
+  /// Tune the delivery timeline (admin, §7).
+  ///
+  /// ⚠️ Validated rather than trusted: an alert at or after the terminal bound would
+  /// tell the operator at the moment the decision was already taken, and a
+  /// non-positive bound would escalate every order instantly.
+  public shared ({ caller }) func set_delivery_config(config : Delivery.Config) : async Result.Result<(), Delivery.ConfigError> {
     requireAdmin(caller);
-    switch (Treasury.validateConfig(config)) {
-      case (#ok) {
-        treasuryConfig := config;
-        auditAdmin(caller, "treasury.configSet", "burnCap=" # config.burnCapE8s.toText()
-          # " e8s/window, lowFloatThreshold=" # config.lowFloatThresholdE8s.toText()
-          # ", maxHold=" # config.maxHoldNs.toText() # "ns");
-        #ok;
-      };
-      case (#err(e)) #err(e);
+    switch (Delivery.validateConfig(config)) {
+      case (#err(e)) return #err(e);
+      case (#ok) {};
     };
-  };
-
-  /// §5.3 manual override: clear the rolling window's consumption after
-  /// confirming the traffic was legitimate (or rotating a leaked secret).
-  /// Returns the e8s of consumption cleared. Held orders resume on the next
-  /// sweep, not here — the pre-gate stays the single decision point.
-  public shared ({ caller }) func reset_burn_window() : async Nat {
-    requireAdmin(caller);
-    let cleared = Treasury.burnedInWindow(burnLedger, treasuryConfig.burnWindowNs, Time.now());
-    Treasury.reset(burnLedger);
-    auditAdmin(caller, "treasury.burnWindowReset", cleared.toText() # " e8s of window consumption cleared");
-    cleared;
-  };
-
-  /// On-demand float refresh (admin — public would let anyone spend our
-  /// cycles on ledger calls). The mint pre-gate refreshes the observation as
-  /// a side effect; this is the ops lever between mints.
-  public shared ({ caller }) func refresh_float() : async Nat {
-    requireAdmin(caller);
-    let e8s = await icpLedger.icrc1_balance_of({ owner = selfPrincipal(); subaccount = null });
-    observeFloat(e8s);
-    e8s;
-  };
-
-  /// §5.3 balance alert + soft UI gate, public: the frontend disables tiers
-  /// off `lowFloat`, and cap consumption is operational transparency (the
-  /// thesis), not a secret. The float observation may be stale — `atNs` says
-  /// how stale; `refresh_float` is the admin lever for a fresh read.
-  public query func treasury_status() : async Treasury.Status {
-    {
-      config = treasuryConfig;
-      burnedInWindowE8s = Treasury.burnedInWindow(burnLedger, treasuryConfig.burnWindowNs, Time.now());
-      lastObservedFloat = lastFloatObservation;
-      lowFloat = Treasury.lowFloatSignal(treasuryConfig, lastFloatObservation);
-      // O(1) off the maintained tally — this query is public and
-      // unauthenticated, so it must not scan the order store.
-      // ⚠️ Always 0 (#36): `#awaitingTreasury` is deleted, so nothing is held. The
-      // field stays until the whole float surface goes, one commit from now.
-      heldOrders = 0;
-      // Money in, not yet minted. A non-transient value here means the mint is
-      // blocked upstream (a stale CMC rate, a CMC outage) and orders are on the
-      // clock toward `mintWaitExceeded` — visible without reading the audit log,
-      // which is a ring buffer that drops.
-      paidOrders = Orders.countOf(orderStore, #paid);
-    };
+    deliveryConfig := config;
+    auditAdmin(caller, "delivery.configSet", "alert after " # config.alertAfterNs.toText() # " ns, terminate after " # config.maxHoldNs.toText() # " ns");
+    #ok;
   };
 
   func audit(tag : Text, detail : Text) {
@@ -1777,7 +1691,7 @@ persistent actor CyclesGateway {
       // do not transition, so it stays pinned at the moment the order entered
       // its current state.
       if (order.status == #paid) {
-        switch (Delivery.waitStage(order.updatedAtNs, Time.now(), deliveryWaitConfig())) {
+        switch (Delivery.waitStage(order.updatedAtNs, Time.now(), deliveryConfig)) {
           case (#retry) {};
           case (#alert) {
             // Tell someone while the cause is still fixable, and keep retrying: most

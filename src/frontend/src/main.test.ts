@@ -110,7 +110,6 @@ const backend = {
       maxPurchaseUsdCents: 10_000n,
     },
   }),
-  treasury_status: async () => ({ lowFloat: false }),
   pricing_status: async () => ({
     rates: {
       usdPerIcpMicros: 4_550_000n,

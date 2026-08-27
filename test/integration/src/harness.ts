@@ -326,19 +326,6 @@ export async function setCmcRate(
 /// Fund the backend's ICP float. The `icpToken` feature seeds the anonymous
 /// principal's account with 1B ICP; the suite plays operator and tops the
 /// gateway up from there.
-export async function fundFloat(gw: Gateway, e8s: bigint): Promise<void> {
-  const result = await gw.ledger.icrc1_transfer({
-    from_subaccount: [],
-    to: { owner: gw.backendId, subaccount: [] },
-    amount: e8s,
-    fee: [],
-    memo: [],
-    created_at_time: [],
-  });
-  if (!('Ok' in result)) {
-    throw new Error(`float funding transfer failed: ${JSON.stringify(result, bigIntReplacer)}`);
-  }
-}
 
 /// Put cycles in the gateway's own cycles-ledger account — the reserve it
 /// delivers from since #30 PR-A.
@@ -352,7 +339,6 @@ export async function fundFloat(gw: Gateway, e8s: bigint): Promise<void> {
 /// fixture, not ledger behaviour: on mainnet the reserve is funded by
 /// `icp cycles transfer` from outside, and nothing mints into it.
 ///
-/// Exactly parallel to `fundFloat` for ICP, and deliberately named to match.
 /// Fund the gateway's reserve, and by default make it SELLABLE.
 ///
 /// ⚠️ **The transfer alone is not enough, and this is the trap #30 PR-B introduced
@@ -387,9 +373,6 @@ export async function reserveBalance(gw: Gateway): Promise<bigint> {
   return await gw.cyclesLedger.icrc1_balance_of({ owner: gw.backendId, subaccount: [] });
 }
 
-export async function floatBalance(gw: Gateway): Promise<bigint> {
-  return await gw.ledger.icrc1_balance_of({ owner: gw.backendId, subaccount: [] });
-}
 
 // ── XRC mock (§3 pricing) ─────────────────────────────────────────────────
 

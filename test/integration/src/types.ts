@@ -193,22 +193,17 @@ export interface Tier {
 export type Amount = { tier: string } | { custom: bigint };
 
 
-export interface TreasuryConfig {
-  alertAfterNs: bigint;
-  burnCapE8s: bigint;
-  burnWindowNs: bigint;
-  lowFloatThresholdE8s: bigint;
+/// The delivery timeline's two thresholds: alert while the cause is still fixable,
+/// terminate once it plainly is not.
+export interface DeliveryConfig {
   maxHoldNs: bigint;
+  alertAfterNs: bigint;
 }
 
-export interface TreasuryStatus {
-  config: TreasuryConfig;
-  burnedInWindowE8s: bigint;
-  lastObservedFloat: Opt<{ e8s: bigint; atNs: bigint }>;
-  lowFloat: boolean;
-  heldOrders: bigint;
-  paidOrders: bigint;
-}
+export type DeliveryConfigError =
+  | { nonPositiveMaxHold: null }
+  | { nonPositiveAlertAfter: null }
+  | { alertNotBeforeMaxHold: { alertAfterNs: bigint; maxHoldNs: bigint } };
 
 export interface HttpRequest {
   method: string;
@@ -306,17 +301,14 @@ export interface BackendService {
     lastSweep: Opt<{ atNs: bigint; pending: bigint }>;
     sweepInFlight: boolean;
   }>;
-  refresh_float(): Promise<bigint>;
   /// ⚠️ Required after funding the reserve: the gate decides against a maintained
   /// lower bound that only rises by observation, so an unobserved top-up sells nothing.
   refresh_reserve(): Promise<bigint>;
-  reset_burn_window(): Promise<bigint>;
   resolve_error(id: bigint): Promise<Result<ErrorEntry, { notFound: bigint } | { alreadyResolved: bigint }>>;
   set_card_tiers(tiers: Tier[]): Promise<Result<null, unknown>>;
   set_recovery_interval(intervalNs: bigint): Promise<Result<null, unknown>>;
-  set_treasury_config(config: TreasuryConfig): Promise<Result<null, unknown>>;
+  set_delivery_config(config: DeliveryConfig): Promise<Result<null, DeliveryConfigError>>;
   set_webhook_secret(secret: string): Promise<Result<null, unknown>>;
-  treasury_status(): Promise<TreasuryStatus>;
   webhook_secret_status(): Promise<{ isSet: boolean; setAtNs: Opt<bigint>; generation: bigint }>;
 }
 

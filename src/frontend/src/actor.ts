@@ -93,7 +93,6 @@ export type Destination = Parameters<Backend["create_order"]>[1];
 /// is a typecheck failure here rather than a silent divergence.
 export type Amount = Parameters<Backend["create_order"]>[0];
 export type CreateOrderResult = Awaited<ReturnType<Backend["create_order"]>>;
-export type TreasuryStatus = Awaited<ReturnType<Backend["treasury_status"]>>;
 export type PricingStatus = Awaited<ReturnType<Backend["pricing_status"]>>;
 // Payload-less Candid variants surface as string enums; re-exported so callers
 // name the rail instead of hand-building a variant record.

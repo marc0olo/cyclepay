@@ -26,15 +26,6 @@ type Tier =
    id: text;
    usdCents: nat;
  };
-type Status__1 = 
- record {
-   burnedInWindowE8s: nat;
-   config: Config;
-   heldOrders: nat;
-   lastObservedFloat: opt FloatObservation;
-   lowFloat: bool;
-   paidOrders: nat;
- };
 type Status = 
  record {
    generation: nat;
@@ -77,12 +68,12 @@ type Result_4 =
  };
 type Result_3 = 
  variant {
-   err: IntervalError;
+   err: ConfigError;
    ok;
  };
 type Result_2 = 
  variant {
-   err: OriginError;
+   err: IntervalError;
    ok;
  };
 type Result_11 = 
@@ -97,7 +88,7 @@ type Result_10 =
  };
 type Result_1 = 
  variant {
-   err: ConfigError;
+   err: OriginError;
    ok;
  };
 type Result = 
@@ -319,11 +310,6 @@ type HeaderField =
    text;
    text;
  };
-type FloatObservation = 
- record {
-   atNs: int;
-   e8s: nat;
- };
 type ExpiredBy = 
  variant {
    sessionExpired;
@@ -372,20 +358,26 @@ type CreateOrderError =
  };
 type Config__2 = 
  record {
+   alertAfterNs: int;
+   maxHoldNs: int;
+ };
+type Config__1 = 
+ record {
    maxOpenOrdersPerPrincipal: nat;
    maxPurchaseUsdCents: nat;
    minCanisterCycles: nat;
    minPurchaseUsdCents: nat;
  };
-type Config__1 = 
- record {
-   feeBps: nat;
-   feeFixedCents: nat;
-   maxAgeNs: int;
-   maxRateDeltaBps: nat;
-   minRateSources: nat;
- };
 type ConfigError__2 = 
+ variant {
+   alertNotBeforeMaxHold: record {
+                            alertAfterNs: int;
+                            maxHoldNs: int;
+                          };
+   nonPositiveAlertAfter;
+   nonPositiveMaxHold;
+ };
+type ConfigError__1 = 
  variant {
    floorAboveCeiling: record {
                         maxUsdCents: nat;
@@ -404,7 +396,7 @@ type ConfigError__2 =
    zeroOpenOrderCap;
    zeroPurchaseCeiling;
  };
-type ConfigError__1 = 
+type ConfigError = 
  variant {
    feeBpsTooHigh;
    maxAgeTooLong: record {
@@ -415,23 +407,13 @@ type ConfigError__1 =
    zeroRateDelta;
    zeroRateSources;
  };
-type ConfigError = 
- variant {
-   alertNotBeforeMaxHold: record {
-                            alertAfterNs: int;
-                            maxHoldNs: int;
-                          };
-   nonPositiveAlertAfter;
-   nonPositiveBurnWindow;
-   nonPositiveMaxHold;
- };
 type Config = 
  record {
-   alertAfterNs: int;
-   burnCapE8s: nat;
-   burnWindowNs: int;
-   lowFloatThresholdE8s: nat;
-   maxHoldNs: int;
+   feeBps: nat;
+   feeFixedCents: nat;
+   maxAgeNs: int;
+   maxRateDeltaBps: nat;
+   minRateSources: nat;
  };
 type Amount = 
  variant {
@@ -587,7 +569,7 @@ service : {
   /// ours any more: the deadline is the Stripe session's `expires_at`, which
   /// lives on each order rather than in config, so there is nothing global to
   /// report.
-  lifecycle_config: () -> (record {gate: Config__2;}) query;
+  lifecycle_config: () -> (record {gate: Config__1;}) query;
   /// Order history for the caller (§2, fixes the lost-receipt problem).
   list_orders: () -> (vec Order) query;
   /// Which order did this Stripe `payment_intent` pay for (admin, §4.2)? The
@@ -629,7 +611,7 @@ service : {
   /// are charged. Nothing here is secret, and reproducibility is the point.
   pricing_status: () ->
    (record {
-      config: Config__1;
+      config: Config;
       lastAttempt: opt record {
                          atNs: int;
                          detail: text;
@@ -757,10 +739,6 @@ service : {
                      };
       sweepInFlight: bool;
     }) query;
-  /// On-demand float refresh (admin — public would let anyone spend our
-  /// cycles on ledger calls). The mint pre-gate refreshes the observation as
-  /// a side effect; this is the ops lever between mints.
-  refresh_float: () -> (nat);
   /// Force a rate refresh now (admin) — the ops lever after retuning config or
   /// while diagnosing a stale rate, without waiting for the next tick.
   refresh_rates: () -> (opt Rates);
@@ -819,11 +797,6 @@ service : {
       tallySaturations: nat;
       totalOrders: nat;
     }) query;
-  /// §5.3 manual override: clear the rolling window's consumption after
-  /// confirming the traffic was legitimate (or rotating a leaked secret).
-  /// Returns the e8s of consumption cleared. Held orders resume on the next
-  /// sweep, not here — the pre-gate stays the single decision point.
-  reset_burn_window: () -> (nat);
   /// Manual resolution (§4.1/§7): refund issued off-chain, or Type 2 cycles
   /// re-delivered/refunded. (`charge.refunded` resolves Type 1 entries
   /// automatically; this is the fallback and the only path for Type 2.)
@@ -837,6 +810,12 @@ service : {
   /// nothing — it just shows no tiles. The switch is both Stripe secrets being
   /// provisioned; `railsLive` is where that lives.
   set_card_tiers: (tiers: vec Tier) -> (Result_6);
+  /// Tune the delivery timeline (admin, §7).
+  /// 
+  /// ⚠️ Validated rather than trusted: an alert at or after the terminal bound would
+  /// tell the operator at the moment the decision was already taken, and a
+  /// non-positive bound would escalate every order instantly.
+  set_delivery_config: (config: Config__2) -> (Result_5);
   /// Adjust the admission gate (§7): open-order cap, own-cycles floor,
   /// per-purchase ceiling. Validated atomically — a bad config never partially
   /// applies. Lowering `maxPurchaseUsdCents` below an existing tier does NOT
@@ -849,14 +828,14 @@ service : {
   /// deployment. `null` restores "accept either", which only makes sense while
   /// nothing of value is at stake.
   set_expected_livemode: (expected: opt bool) -> ();
-  set_gate_config: (config: Config__2) -> (Result_5);
+  set_gate_config: (config: Config__1) -> (Result_4);
   /// Adjust pricing params (§7): fee formula, staleness window, delta guard.
   /// Validated atomically — a bad config never partially applies.
-  set_pricing_config: (config: Config__1) -> (Result_4);
+  set_pricing_config: (config: Config) -> (Result_3);
   /// Tune the sweep cadence (admin, §7) — re-arms immediately, no redeploy.
   /// Validated against the §5.1 bound: the cadence must stay well inside
   /// the ledger dedup window or replay loses its safety margin.
-  set_recovery_interval: (intervalNs: nat) -> (Result_3);
+  set_recovery_interval: (intervalNs: nat) -> (Result_2);
   /// Provision or rotate the Stripe API key (#33) — admin, mirroring
   /// `set_webhook_secret` in every respect including the provisioning caveat:
   /// the argument transits the TLS-terminating boundary node as plain ingress.
@@ -868,10 +847,7 @@ service : {
   /// fails in front of the operator who typed it instead of breaking every
   /// purchase later. Until a domain is chosen (#40/#23) this is the canister's
   /// own asset origin.
-  set_stripe_origin: (origin: text) -> (Result_2);
-  /// Adjust treasury policy (§5.3/§7): burn cap, window, max hold, alert
-  /// threshold. Validated atomically — a bad config never partially applies.
-  set_treasury_config: (config: Config) -> (Result_1);
+  set_stripe_origin: (origin: text) -> (Result_1);
   /// Provision or rotate the Stripe webhook signing secret (§7). Pass the
   /// full `whsec_...` string from the Stripe dashboard — the whole string,
   /// prefix included, is the HMAC key. NOTE: the argument transits the
@@ -895,11 +871,6 @@ service : {
      context: blob;
      response: HttpRequestResult;
    }) -> (HttpRequestResult) query;
-  /// §5.3 balance alert + soft UI gate, public: the frontend disables tiers
-  /// off `lowFloat`, and cap consumption is operational transparency (the
-  /// thesis), not a secret. The float observation may be stale — `atNs` says
-  /// how stale; `refresh_float` is the admin lever for a fresh read.
-  treasury_status: () -> (Status__1) query;
   /// Provisioning state only — the secret itself is never readable back
   /// out, even by controllers. `generation` confirms a rotation landed.
   webhook_secret_status: () -> (Status) query;

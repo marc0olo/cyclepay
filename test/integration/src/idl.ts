@@ -204,30 +204,16 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     zeroRateSources: IDL.Null,
   });
   const RateAttempt = IDL.Record({ atNs: IDL.Int, detail: IDL.Text, ok: IDL.Bool });
-  const TreasuryConfig = IDL.Record({
-    alertAfterNs: IDL.Int,
-    burnCapE8s: IDL.Nat,
-    burnWindowNs: IDL.Int,
-    lowFloatThresholdE8s: IDL.Nat,
+  const DeliveryConfig = IDL.Record({
     maxHoldNs: IDL.Int,
+    alertAfterNs: IDL.Int,
   });
-  const TreasuryConfigError = IDL.Variant({
+  const DeliveryConfigError = IDL.Variant({
     alertNotBeforeMaxHold: IDL.Record({ alertAfterNs: IDL.Int, maxHoldNs: IDL.Int }),
     nonPositiveAlertAfter: IDL.Null,
-    nonPositiveBurnWindow: IDL.Null,
     nonPositiveMaxHold: IDL.Null,
   });
-  const FloatObservation = IDL.Record({ atNs: IDL.Int, e8s: IDL.Nat });
-  const TreasuryStatus = IDL.Record({
-    burnedInWindowE8s: IDL.Nat,
-    config: TreasuryConfig,
-    heldOrders: IDL.Nat,
-    lastObservedFloat: IDL.Opt(FloatObservation),
-    lowFloat: IDL.Bool,
-    paidOrders: IDL.Nat,
-  });
   const IntervalError = IDL.Variant({
-    intervalTooShort: IDL.Record({ minNs: IDL.Nat }),
     intervalTooLong: IDL.Record({ maxNs: IDL.Nat }),
     zeroInterval: IDL.Null,
   });
@@ -424,9 +410,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       ],
       ['query'],
     ),
-    refresh_float: IDL.Func([], [IDL.Nat], []),
     refresh_reserve: IDL.Func([], [IDL.Nat], []),
-    reset_burn_window: IDL.Func([], [IDL.Nat], []),
     resolve_error: IDL.Func(
       [IDL.Nat],
       [IDL.Variant({ ok: ErrorEntry, err: ResolveError })],
@@ -442,9 +426,9 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Variant({ ok: IDL.Null, err: IntervalError })],
       [],
     ),
-    set_treasury_config: IDL.Func(
-      [TreasuryConfig],
-      [IDL.Variant({ ok: IDL.Null, err: TreasuryConfigError })],
+    set_delivery_config: IDL.Func(
+      [DeliveryConfig],
+      [IDL.Variant({ ok: IDL.Null, err: DeliveryConfigError })],
       [],
     ),
     set_stripe_api_key: IDL.Func([IDL.Text], [IDL.Variant({ ok: IDL.Null, err: SecretSetError })], []),
@@ -460,7 +444,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Variant({ ok: IDL.Null, err: SecretSetError })],
       [],
     ),
-    treasury_status: IDL.Func([], [TreasuryStatus], ['query']),
     webhook_secret_status: IDL.Func([], [SecretStatus], ['query']),
   });
 };

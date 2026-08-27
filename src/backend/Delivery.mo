@@ -1,38 +1,22 @@
-/// Delivery's own timeline: how long an order may sit with money in and nothing
-/// delivered before an operator is told, and before it is given up on.
+/// Delivery's timeline: how long an order may sit with money in and nothing
+/// delivered before an operator is told, and before the sale is given up on.
 ///
-/// ⚠️ **This moved out of `Treasury.mo`, and the move is a safety fix rather than
-/// tidying (#36).** That module is deleted with the ICP machinery, and its Delete
-/// list said "`Treasury.mo` (249 lines) — burn ledger, burn cap, float observation,
-/// `isLowFloat`, `lowFloatSignal`, `Treasury.gate`, **`waitStage`**". Every item on
-/// that list is dead except the last one: `waitStage` drives the timeline for
-/// **`#paid`** — the live delivery path — and #30 PR-B made it load-bearing three
-/// ways:
+/// ⚠️ **This bound is load-bearing for money safety, not just for tidiness.** Three
+/// things rest on it:
 ///
-///   - it is one of the two *reachable* routes to `#needsReview`, and the only one
-///     that fires with a **certain** money position ("fiat in, nothing was ever
-///     sent — refund");
-///   - it is why `abandon_order`'s unsettled-delivery guard is "a wait, not a
-///     block": an order that guard refuses reaches a human by this bound;
-///   - deleting it would turn "a wedged delivery reaches a human in 72 h" into "a
-///     wedged delivery retries forever, holding its reserve promise, on nobody's
-///     worklist" — the silent-leak shape that #33's retention deletion was argued
-///     against, reintroduced from the other end.
+///   - it is one of the two routes to `#needsReview`, and the only one that fires
+///     with a **certain** money position ("fiat in, nothing was ever sent — refund");
+///   - it is why `abandon_order` can refuse an order with an unsettled delivery and
+///     still be a *wait* rather than a block — the refused order reaches a human here;
+///   - without it, a wedged delivery retries forever while holding its reserve
+///     promise, on nobody's worklist. That is a silent reserve leak, and it is the
+///     failure this module exists to prevent.
 ///
-/// So it moves before anything is deleted, alone, and with no behaviour change: the
-/// two thresholds, the three outcomes and the escalation's instruction are identical
-/// on both sides of the move. A deletion commit that also relocates a bound is the
-/// shape that hides a behaviour change.
+import Result "mo:core/Result";
+
 module {
 
-  /// The two thresholds, split out of `Treasury.Config`.
-  ///
-  /// ⚠️ Deliberately **not** yet the Candid type. `set_treasury_config` still carries
-  /// all five fields, three of which (`burnCapE8s`, `burnWindowNs`,
-  /// `lowFloatThresholdE8s`) are already dead config — `Treasury.gate` lost its only
-  /// entrance in #30 PR-A. Trimming the public record is the deletion commit's job;
-  /// doing it here would force `Treasury.mo`'s burn half to be deleted in the same
-  /// change, which is exactly the merge this ordering avoids.
+  /// The two thresholds. This is the Candid type `set_delivery_config` takes.
   public type Config = {
     /// How long an order may sit with money in and nothing delivered before it is
     /// **terminated** and the operator refunds.
@@ -47,6 +31,31 @@ module {
     /// `maxHoldNs`: the alert fires while the cause is still fixable, so the
     /// operator gets a chance to fix it and the sale completes.
     alertAfterNs : Int;
+  };
+
+  public func defaultConfig() : Config {
+    {
+      maxHoldNs = 259_200_000_000_000; // 72 h — terminate, operator refunds
+      alertAfterNs = 7_200_000_000_000; // 2 h — tell someone while it is fixable
+    };
+  };
+
+  public type ConfigError = {
+    /// A zero/negative max hold would escalate every order instantly.
+    #nonPositiveMaxHold;
+    #nonPositiveAlertAfter;
+    /// An alert at or after the terminal bound would never be actionable: the
+    /// operator would be told at the moment the decision was already taken.
+    #alertNotBeforeMaxHold : { alertAfterNs : Int; maxHoldNs : Int };
+  };
+
+  public func validateConfig(config : Config) : Result.Result<(), ConfigError> {
+    if (config.maxHoldNs <= 0) return #err(#nonPositiveMaxHold);
+    if (config.alertAfterNs <= 0) return #err(#nonPositiveAlertAfter);
+    if (config.alertAfterNs >= config.maxHoldNs) {
+      return #err(#alertNotBeforeMaxHold({ alertAfterNs = config.alertAfterNs; maxHoldNs = config.maxHoldNs }));
+    };
+    #ok;
   };
 
   /// The timeline for an order with money in and nothing delivered.
