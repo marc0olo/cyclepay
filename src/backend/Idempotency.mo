@@ -4,7 +4,7 @@
 /// the *same* payment seen again (Stripe at-least-once redelivery,
 /// block replay) and must be silently acked — never delivered, never queued.
 /// A genuine second payment carries a fresh `event.id`/`payment_intent`,
-/// passes dedup, and is the rail's business to queue as Type 1.
+/// passes dedup, and is the rail's business to queue as a refundable obligation.
 ///
 /// Retention (§4.2): Stripe keys are timestamped at first sight and pruned
 /// after ~7 days (Stripe redelivers ≤3 days); crypto `block_index` dedup is

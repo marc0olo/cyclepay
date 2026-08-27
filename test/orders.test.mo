@@ -342,7 +342,7 @@ suite("store: applyTransition", func() {
     // Replaces "Created -> Expired -> Paid". #34 deleted `#expired → #paid`, so
     // there is no late-payment path left to drive: an order that stopped being
     // payable stays that way, and `Card.handleWebhook` files a payment against
-    // one as a Type 1 obligation instead.
+    // one as a refundable obligation instead.
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
     drive(store, "ord-1", [#cancelled]);
@@ -528,7 +528,7 @@ suite("markPaid (§6.1 amount honoring)", func() {
 
   test("markPaid refuses an order that is no longer payable", func() {
     // `markPaid` is the second line of defence behind `Card.handleWebhook`'s status
-    // guard: the guard files a Type 1 obligation, and this refuses rather than moving
+    // guard: the guard files a refundable obligation, and this refuses rather than moving
     // the status if the guard is ever wrong.
     //
     // ⚠️ `Card.mo` TRAPS on this error, deliberately, so a mismatch between the guard

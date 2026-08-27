@@ -105,7 +105,8 @@ module {
     ///
     /// `set_card_tiers` already refuses a tier above the ceiling; without the
     /// inverse check, lowering the ceiling leaves that tier **sellable but
-    /// unpayable**: the buyer completes checkout and the webhook files a Type 1,
+    /// unpayable**: the buyer completes checkout and the webhook files a refundable
+    /// obligation,
     /// because the honoured amount exceeds the ceiling. Since #33 deleted
     /// `attach_payment` there is no rescue at all — the only remedy is a refund,
     /// so the money is taken and given back for a config change made earlier.

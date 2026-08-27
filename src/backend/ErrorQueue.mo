@@ -1,4 +1,4 @@
-/// Bounded error queue — exactly two types (§4.1).
+/// Bounded error queue (§4.1).
 ///
 /// Every dollar that arrives resolves to delivery, or to an obligation on this
 /// worklist. There is no third outcome and no silent one.
@@ -20,8 +20,11 @@
 ///     could not be parsed (`#unprocessable`). A refund cannot resolve these: either
 ///     the position is unknown, or money moved both ways, or nothing is owed yet.
 ///
-/// Resolution lives on the queue entry, not the order: `#errorQueue` is a
-/// terminal order status (§4), and resolving here never transitions an order.
+/// ⚠️ **Resolution lives on the queue entry, never on the order.** Resolving here does
+/// not transition anything: an order's status says where the *order* got to, and a
+/// queue entry says what the *operator* still owes. One order can outlive several
+/// entries, and an entry can name no order at all (`#unattributed`). The two exits
+/// that do move an order are `abandon_order` and `record_delivered`, both explicit.
 import Map "mo:core/Map";
 import Int "mo:core/Int";
 import List "mo:core/List";
@@ -33,19 +36,30 @@ import Types "Types";
 
 module {
 
-  /// §4.1 — the payloads make the two types structural: Type 1 always carries
-  /// the Stripe `payment_intent` (`paymentRef`) that a refund resolves;
-  /// Type 2 always carries the stranded cycle quantity.
+  /// §4.1 — **`refundResolvable` and `paymentRefOf` are one property seen from two
+  /// sides**, and `test/errorqueue.test.mo` pins their agreement across all seven
+  /// kinds: a refund can settle an entry exactly when `paymentRefOf` gives
+  /// `resolveByPaymentRef` something to match on.
+  ///
+  /// ⚠️ **That is the accessor, not the payload.** `#refundAfterDelivery` carries a
+  /// `paymentRef` field and `paymentRefOf` returns null for it deliberately — the
+  /// refund is what created the entry, so matching on it would close the recorded loss
+  /// the instant it was recorded.
+  ///
+  /// ⚠️ **No kind carries a stranded cycle quantity, because cycles cannot strand.**
+  /// `#refundAfterDelivery.cycles` is the opposite case — cycles that *were*
+  /// delivered, recorded as an operator loss.
   public type Kind = {
-    /// Type 1 — genuine 2nd/distinct payment for an already-handled order.
+    /// Refund-resolvable — a genuine 2nd/distinct payment for an already-handled
+    /// order.
     #duplicate : { orderId : Types.OrderId; paymentRef : Text };
-    /// Type 1 — the payment could not be attributed to an order that can accept
+    /// Refund-resolvable — the payment could not be attributed to an order that can accept
     /// it: `client_reference_id` resolved to no order (claimed, not trusted — it
     /// is an attacker-editable URL param), or it resolved to an order that is
     /// `#cancelled` or `#expired`, neither of which is payable.
     #unattributed : { claimedRef : Text; paymentRef : Text };
-    /// **A delivery stopped somewhere it cannot continue automatically.** Neither
-    /// Type 1 nor Type 2: the fiat is in, and what happens next depends on the money
+    /// **A delivery stopped somewhere it cannot continue automatically.** Not
+    /// refund-resolvable: the fiat is in, and what happens next depends on the money
     /// position rather than on the reason it stopped.
     ///
     /// ⚠️ **`stage` IS the money position, and it is what the operator acts on.**
@@ -78,7 +92,7 @@ module {
     /// landed and the order never moved — it arrives with the entry so the operator
     /// does not have to fetch the journal to start looking.
     #deliveryStuck : { orderId : Types.OrderId; stage : Text; blockIndex : ?Nat };
-    /// Neither Type 1 nor Type 2 — the money moved *both* ways. A
+    /// Not refund-resolvable — the money moved *both* ways. A
     /// `charge.refunded` arrived for a payment that had already been delivered
     /// as cycles, so the fiat went back to the payer and the cycles are
     /// irreversibly gone to an arbitrary destination. **Not automatically
@@ -146,10 +160,10 @@ module {
       case (#duplicate(_) or #unattributed(_)) true;
       case (#deliveryStuck(_) or #refundAfterDelivery(_)) false;
       case (#deliveryDelayed(_) or #abandoned(_) or #unprocessable(_)) false;
-      // NOT Type 1. Type 1 means "fiat in, nothing delivered" — a *settled*
-      // position the operator refunds. Here whether the cycles moved is unknown, so
-      // calling it Type 1 would tell them to refund a buyer who may already hold
-      // their cycles.
+      // NOT refund-resolvable. That answer means "fiat in, nothing delivered" — a
+      // *settled* position the operator refunds. Here whether the cycles moved is
+      // unknown, so answering true would tell them to refund a buyer who may already
+      // hold their cycles.
           };
   };
 
@@ -165,7 +179,7 @@ module {
     Text.fromIter(claimedRef.chars().take(maxClaimedRefBytes)) # "…(truncated)";
   };
 
-  /// The payment reference a `charge.refunded` resolves — Type 1 only.
+  /// The payment reference a `charge.refunded` resolves — refund-resolvable kinds only.
   /// (`#deliveryStuck` carries no paymentRef: the order store doesn't retain the
   /// payment_intent, and a refund alone doesn't settle an uncertain delivery.)
   public func paymentRefOf(kind : Kind) : ?Text {
@@ -214,7 +228,7 @@ module {
     ///
     /// An unresolved entry is a live money obligation: a dollar arrived and has
     /// not yet been dealt with. Dropping one breaks the §4.1 invariant that
-    /// every verified dollar resolves to delivery, Type 1, or Type 2 — and it
+    /// every verified dollar resolves to a delivery or to an entry here — and it
     /// breaks it silently, because the only trace would be an audit line in a
     /// ring buffer that itself drops.
     ///
@@ -327,9 +341,10 @@ module {
     };
   };
 
-  /// `charge.refunded` auto-resolve (§4.1): marks every unresolved Type 1
-  /// entry carrying this `payment_intent` resolved; returns them. Type 2 entries
-  /// never match (no paymentRef) — delivered cycles are not a refund's business.
+  /// `charge.refunded` auto-resolve (§4.1): marks every unresolved refund-resolvable
+  /// entry carrying this `payment_intent` resolved; returns them. The other kinds never
+  /// match, because they carry no paymentRef — which is the structural half of
+  /// `refundResolvable` doing the work.
   /// Empty result = refund for something not in the queue (fine: operators may
   /// refund proactively).
   /// Unresolved entries carrying this `payment_intent`, without touching them.

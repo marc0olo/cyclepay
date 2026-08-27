@@ -157,7 +157,7 @@ suite("reasonToText", func() {
 suite("the ceiling cannot be lowered under a live tier", func() {
   // `set_card_tiers` already refuses a tier above the ceiling. Without the inverse
   // check, lowering the ceiling left that tier SELLABLE BUT UNPAYABLE: the buyer
-  // completes checkout and the webhook files a Type 1 instead of delivering. There is
+  // completes checkout and the webhook files a refundable obligation instead. There is
   // no rescue path: the buyer's money is taken and given back over a config change
   // made earlier, which is why the guard is worth more than the error message it
   // produces.

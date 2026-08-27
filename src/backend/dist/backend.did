@@ -571,7 +571,7 @@ service : {
   /// Which order did this Stripe `payment_intent` pay for (admin, §4.2)? The
   /// reconciliation lookup: given a charge in the Stripe Dashboard, find the
   /// order it funded. Null means the payment was never attributed to an order
-  /// here — check the error queue for a Type 1 entry carrying it.
+  /// here — check the error queue for an obligation carrying it.
   order_for_payment: (paymentRef: text) -> (opt OrderId) query;
   /// Every delivery with money-out work outstanding, right now (admin).
   /// 
@@ -771,10 +771,9 @@ service : {
   /// frontend; nothing reads it to decide anything, so it cannot be raced into an
   /// over-sale.
   /// 
-  /// The four order counters were `order_stats` (and `retention_status` before that,
-  /// until #33 deleted retention). Folded in here as #30 planned: `openOrders`
-  /// climbing while deliveries do not is the signature of order-creation abuse, and
-  /// its lever is `Gate.maxOpenOrdersPerPrincipal`; `totalOrders` and
+  /// The four order counters live here rather than in a surface of their own:
+  /// `openOrders` climbing while deliveries do not is the signature of order-creation
+  /// abuse, and its lever is `Gate.maxOpenOrdersPerPrincipal`; `totalOrders` and
   /// `paidIntentsIndexed` should grow together, since a divergence means an index and
   /// its records disagree.
   reserve_status: () ->
@@ -793,9 +792,15 @@ service : {
       tallySaturations: nat;
       totalOrders: nat;
     }) query;
-  /// Manual resolution (§4.1/§7): refund issued off-chain, or Type 2 cycles
-  /// re-delivered/refunded. (`charge.refunded` resolves Type 1 entries
-  /// automatically; this is the fallback and the only path for Type 2.)
+  /// Manual resolution (§4.1/§7) — the operator marking an obligation settled after
+  /// acting off-chain: a refund issued in the Stripe Dashboard, or a delivery whose
+  /// fate they established on the cycles ledger.
+  /// 
+  /// ⚠️ **This is the only path for everything a refund cannot resolve.** A
+  /// `charge.refunded` auto-resolves the refund-resolvable kinds, so those usually
+  /// close themselves; `#deliveryStuck`, `#refundAfterDelivery` and `#abandoned` carry
+  /// no `paymentRef` and can only be closed here. Resolving an entry never transitions
+  /// the order — see `ErrorQueue`'s header.
   resolve_error: (id: nat) -> (Result_7);
   /// Replace the card presets (§3/§7 — admin, validated atomically: a bad config
   /// never partially applies).

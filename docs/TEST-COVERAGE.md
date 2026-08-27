@@ -58,7 +58,7 @@ for the scenario map by id — ids are stable, counts are not.
 |---|---|---|
 | Signature verification (rotation overlap, both-direction window, constant-time compare) | unit + PocketIC | externally pinned vectors |
 | Attribution (claimed-not-trusted, owner mismatch, malformed, expired, cancelled) | unit + PocketIC | |
-| Amount honouring (exact → delivers; any other amount → Type 1, delivering nothing; ceiling; currency) | unit + PocketIC | the mismatch branch is mutation-checked: disabling the equality check fails the suite |
+| Amount honouring (exact → delivers; any other amount → a refundable obligation, delivering nothing; ceiling; currency) | unit + PocketIC | the mismatch branch is mutation-checked: disabling the equality check fails the suite |
 | Dedup / replay (event id, payment intent, post-prune resend, credited-elsewhere) | unit + PocketIC | |
 | Refunds (full, partial, cumulative partials, after delivery, of an escalated order) | unit + PocketIC | |
 | Async payment methods (settle, fail, out-of-order) | unit + PocketIC | |

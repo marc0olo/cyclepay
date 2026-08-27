@@ -117,11 +117,28 @@ module {
   /// Statuses whose live counts are maintained. Keyed by `statusToText` so the
   /// map is a shared type and the key set is self-documenting.
   ///
-  /// ⚠️ **A status earns an O(1) tally only when something reads it.** These four
-  /// are what the admission gate and the sweep need; `#cancelled`, `#delivered` and
-  /// `#abandoned` are absent because nothing counts them — `countOf` returns 0 and
-  /// `reconcile` leaves them alone. `#expired` is tracked despite being terminal
-  /// because the gate's open-order cap and the operator's abuse signal both read it.
+  /// ⚠️ **A status earns an O(1) tally only when something reads it — and here is the
+  /// reader for each, because a justification naming readers that do not exist is how
+  /// this list drifts.**
+  ///
+  ///   - `#paid` → `Main.sweepableCount`, which short-circuits the whole recovery
+  ///     sweep when it is 0. The only tally on a money path.
+  ///   - `#created`, `#expired` → `reserve_status`'s `openOrders` / `expiredOrders`.
+  ///     An **operator metric**, not a decision: `openOrders` climbing while
+  ///     deliveries do not is the order-creation abuse signal.
+  ///   - `#needsReview` → nothing reads it directly, and it stays tracked on purpose:
+  ///     being in `trackedStatuses` is what puts escalated orders under `reconcile`'s
+  ///     drift detection. An order whose money position a human is establishing is the
+  ///     last one whose bookkeeping should go unchecked.
+  ///
+  /// ⚠️ **The admission gate reads none of these.** Its open-order cap is per
+  /// principal, so it calls `openOrderCount`, which iterates that caller's own order
+  /// ids — a global tally cannot answer a per-principal question. Do not "optimise"
+  /// the gate onto `countOf`; it would silently change the cap's meaning from
+  /// per-buyer to system-wide.
+  ///
+  /// `#cancelled`, `#delivered` and `#abandoned` are absent because nothing counts
+  /// them — `countOf` returns 0 and `reconcile` leaves them alone.
   let trackedStatuses : [Types.OrderStatus] = [#created, #expired, #paid, #needsReview];
 
   func isTracked(status : Types.OrderStatus) : Bool {
@@ -401,7 +418,7 @@ module {
   /// second tab, whose sessionless branch fires because no session id exists yet.
   /// Storing the URL anyway would hand the buyer a **payable link for an order
   /// they were told was cancelled**. Money-safe (the matrix rejects
-  /// `#cancelled → #paid`, so a payment lands as a Type 1 and is refunded) but it
+  /// `#cancelled → #paid`, so a payment lands as a refundable obligation) but it
   /// recreates the exact "told cancelled, tab still charges" wart that making
   /// cancellation atomic exists to eliminate.
   ///

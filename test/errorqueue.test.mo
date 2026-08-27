@@ -37,6 +37,35 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
     assert ErrorQueue.paymentRefOf(#deliveryStuck({ orderId = "o3"; stage = "staleIntent"; blockIndex = null })) == null;
   });
 
+  test("⚠️ refundResolvable and paymentRefOf agree on EVERY kind", func() {
+    // The structural claim in `ErrorQueue`'s header: `refundResolvable` and
+    // `paymentRefOf` are the same property seen from two sides. The tests above
+    // spot-check three kinds; this walks all seven, because the failure it guards
+    // against is a *new* kind added with a paymentRef and left out of
+    // `refundResolvable` — which would make `resolveByPaymentRef` find an entry it must
+    // not close, silently marking a live obligation settled.
+    //
+    // ⚠️ **The agreement is with the ACCESSOR, not with the payload.**
+    // `#refundAfterDelivery` carries a `paymentRef` field and `paymentRefOf` returns
+    // null for it *on purpose* — the refund is what created the entry, so matching on
+    // it would close the loss the instant it was recorded. Asserting against the
+    // payload instead would demand exactly the bug the accessor exists to prevent.
+    let all : [ErrorQueue.Kind] = [
+      #duplicate({ orderId = "o1"; paymentRef = "pi_1" }),
+      #unattributed({ claimedRef = "x"; paymentRef = "pi_2" }),
+      #deliveryStuck({ orderId = "o3"; stage = "staleIntent"; blockIndex = null }),
+      #refundAfterDelivery({ orderId = "o4"; paymentRef = "pi_4"; cycles = 1; refundedCents = 1; fullRefund = true }),
+      #deliveryDelayed({ orderId = "o5"; stage = "staleIntent"; sinceNs = 0 }),
+      #abandoned({ orderId = "o6"; reason = "operator" }),
+      #unprocessable({ eventId = "evt_1"; field = "amount_total" }),
+    ];
+    assert all.size() == 7;
+    for (kind in all.values()) {
+      let carriesRef = ErrorQueue.paymentRefOf(kind) != null;
+      assert ErrorQueue.refundResolvable(kind) == carriesRef;
+    };
+  });
+
   test("an escalated delivery is never settled by a refund arriving", func() {
     assert not ErrorQueue.refundResolvable(#deliveryStuck({ orderId = "o3"; stage = "staleIntent"; blockIndex = null }));
     assert ErrorQueue.paymentRefOf(#deliveryStuck({ orderId = "o3"; stage = "staleIntent"; blockIndex = null })) == null;
@@ -175,7 +204,7 @@ suite("resolve (manual, operator)", func() {
 });
 
 suite("charge.refunded auto-resolve (§4.1)", func() {
-  test("resolves all unresolved Type 1 entries with that payment_intent", func() {
+  test("resolves all unresolved refund-resolvable entries with that payment_intent", func() {
     let store = ErrorQueue.emptyStore();
     ignore addDuplicate(store, "o1", "pi_target", 100);
     ignore addUnattributed(store, "bogus", "pi_target", 200);
@@ -200,7 +229,7 @@ suite("charge.refunded auto-resolve (§4.1)", func() {
     };
   });
 
-  test("Type 2 entries never match a refund, unknown refs return empty", func() {
+  test("kinds carrying no paymentRef never match a refund, unknown refs return empty", func() {
     let store = ErrorQueue.emptyStore();
     ignore addStuck(store, "o1", 100);
     assert ErrorQueue.resolveByPaymentRef(store, "pi_anything", 900) == [];

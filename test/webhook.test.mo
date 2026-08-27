@@ -17,7 +17,7 @@ import Util "../src/backend/Util";
 // Task 8 — webhook ingestion (§6.1 complete), end to end over crafted
 // *signed* payloads: verify → dedup → claimed-not-trusted attribution →
 // honor the actual paid amount → #paid, with every failure landing in the
-// §4.1 Type 1 error queue. Signatures are produced with signedPayloadMac,
+// §4.1 error queue. Signatures are produced with signedPayloadMac,
 // which card.test.mo pins against externally computed vectors — so these
 // tests exercise ingestion, not the MAC's self-consistency.
 
@@ -389,7 +389,7 @@ suite("charge.refunded: partial vs full", func() {
     assert not Card.isFullRefund({ eventId = "e"; paymentIntent = "p"; amountRefundedCents = 0; chargeAmountCents = 0 });
   });
 
-  test("a PARTIAL refund leaves the Type 1 obligation open", func() {
+  test("a PARTIAL refund leaves the obligation open", func() {
     // The expensive bug this prevents: Stripe fires charge.refunded on ANY
     // refund, so a small courtesy refund would otherwise auto-resolve the whole
     // entry and the unrefunded remainder would have no record anywhere except
@@ -592,7 +592,7 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
     assert ErrorQueue.size(deps.errorQueue) == 0;
   });
 
-  test("genuine second payment (fresh event + intent) is Type 1 #duplicate", func() {
+  test("genuine second payment (fresh event + intent) is a #duplicate obligation", func() {
     let deps = freshDeps();
     withOrder(deps, #card);
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
@@ -605,7 +605,7 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
     assert statusOf(deps) == #paid; // first payment's delivery is untouched
   });
 
-  test("a payment for an unpayable order is a Type 1 obligation, never a trap", func() {
+  test("a payment for an unpayable order is a refundable obligation, never a trap", func() {
     // ⚠️ THE REGRESSION THIS PINS is a reachable `Runtime.trap` on the money-in
     // path. `markPaid`'s error arm traps, on the documented grounds that the
     // status guard above it already checked the status. #34 deleted
@@ -677,7 +677,7 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
   });
 });
 
-suite("handleWebhook: attribution failures are Type 1 #unattributed (§4.1)", func() {
+suite("handleWebhook: attribution failures are #unattributed (§4.1)", func() {
   func expectUnattributed(deps : Card.Deps, body : Blob, claimedRef : Text, paymentRef : Text) {
     let resp = deliver(deps, body);
     assert resp.status_code == 200;
@@ -748,7 +748,7 @@ suite("handleWebhook: the paid amount must EQUAL the quote (§3/§6.1)", func() 
     };
   });
 
-  test("a different amount delivers NOTHING and files a Type 1", func() {
+  test("a different amount delivers NOTHING and files an obligation", func() {
     // 1000¢ against the 500¢ order. It must leave the order payable and the money
     // queued for a refund — never deliver a quantity nobody quoted.
     let deps = freshDeps();
@@ -794,7 +794,7 @@ suite("handleWebhook: the paid amount must EQUAL the quote (§3/§6.1)", func() 
 });
 
 suite("handleWebhook: charge.refunded auto-resolve (§4.1)", func() {
-  test("refund resolves every unresolved Type 1 entry for its intent", func() {
+  test("refund resolves every unresolved refund-resolvable entry for its intent", func() {
     let deps = freshDeps();
     // two unattributed payments under the same intent... impossible (intent
     // dedup), so: one unattributed payment, refunded.
@@ -895,7 +895,7 @@ suite("handleWebhook: the purchase ceiling", func() {
     assert open[0].detail.contains(#text "no order");
   });
 
-  test("a payment above the ceiling delivers nothing — Type 1 instead", func() {
+  test("a payment above the ceiling delivers nothing — an obligation instead", func() {
     let deps = { freshDeps() with maxPurchaseUsdCents = 1_000 };
     withOrder(deps, #card);
     // Defence in depth since #33: the amount check alone would already refuse

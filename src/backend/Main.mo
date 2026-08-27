@@ -1295,8 +1295,9 @@ persistent actor CyclesGateway {
   /// webhook path (~7 days, Idempotency.mo).
   let dedup : Idempotency.Store = Idempotency.emptyStore();
 
-  /// §4.1 bounded error queue: Type 1 (fiat-only, operator refunds in the
-  /// Stripe Dashboard) + Type 2 (stranded cycles, task 9).
+  /// §4.1 bounded error queue: every dollar that arrives resolves to a delivery or to
+  /// an obligation here, and `ErrorQueue.refundResolvable` says which of the two
+  /// remedies an entry takes — a Stripe refund, or a human establishing the position.
   let errorQueue : ErrorQueue.Store = ErrorQueue.emptyStore();
 
   /// §4.2 bounded audit-log ring buffer — operational trail, not a
@@ -1366,9 +1367,15 @@ persistent actor CyclesGateway {
     ErrorQueue.unresolvedPage(errorQueue, afterId, limit);
   };
 
-  /// Manual resolution (§4.1/§7): refund issued off-chain, or Type 2 cycles
-  /// re-delivered/refunded. (`charge.refunded` resolves Type 1 entries
-  /// automatically; this is the fallback and the only path for Type 2.)
+  /// Manual resolution (§4.1/§7) — the operator marking an obligation settled after
+  /// acting off-chain: a refund issued in the Stripe Dashboard, or a delivery whose
+  /// fate they established on the cycles ledger.
+  ///
+  /// ⚠️ **This is the only path for everything a refund cannot resolve.** A
+  /// `charge.refunded` auto-resolves the refund-resolvable kinds, so those usually
+  /// close themselves; `#deliveryStuck`, `#refundAfterDelivery` and `#abandoned` carry
+  /// no `paymentRef` and can only be closed here. Resolving an entry never transitions
+  /// the order — see `ErrorQueue`'s header.
   public shared ({ caller }) func resolve_error(id : Nat) : async Result.Result<ErrorQueue.Entry, ErrorQueue.ResolveError> {
     requireAdmin(caller);
     let resolved = ErrorQueue.resolve(errorQueue, id, Time.now());
@@ -2302,10 +2309,9 @@ persistent actor CyclesGateway {
   /// frontend; nothing reads it to decide anything, so it cannot be raced into an
   /// over-sale.
   ///
-  /// The four order counters were `order_stats` (and `retention_status` before that,
-  /// until #33 deleted retention). Folded in here as #30 planned: `openOrders`
-  /// climbing while deliveries do not is the signature of order-creation abuse, and
-  /// its lever is `Gate.maxOpenOrdersPerPrincipal`; `totalOrders` and
+  /// The four order counters live here rather than in a surface of their own:
+  /// `openOrders` climbing while deliveries do not is the signature of order-creation
+  /// abuse, and its lever is `Gate.maxOpenOrdersPerPrincipal`; `totalOrders` and
   /// `paidIntentsIndexed` should grow together, since a divergence means an index and
   /// its records disagree.
   public query func reserve_status() : async {
@@ -2363,7 +2369,7 @@ persistent actor CyclesGateway {
   /// Which order did this Stripe `payment_intent` pay for (admin, §4.2)? The
   /// reconciliation lookup: given a charge in the Stripe Dashboard, find the
   /// order it funded. Null means the payment was never attributed to an order
-  /// here — check the error queue for a Type 1 entry carrying it.
+  /// here — check the error queue for an obligation carrying it.
   public shared query ({ caller }) func order_for_payment(paymentRef : Text) : async ?Types.OrderId {
     requireAdmin(caller);
     paidIntents.get(paymentRef);

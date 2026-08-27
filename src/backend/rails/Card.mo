@@ -9,8 +9,8 @@
 /// the dedup sets' job (Idempotency.mo — `event.id` / `payment_intent`).
 ///
 /// Ingestion invariants (§4.1): dedup gates delivery; every verified dollar
-/// resolves to a `#paid` order or a Type 1 error-queue entry (Type 2 only exists
-/// once cycles have moved, §5); `client_reference_id` is claimed, not trusted;
+/// resolves to a `#paid` order or an error-queue obligation (§5);
+/// `client_reference_id` is claimed, not trusted;
 /// the paid amount must EQUAL the quoted one — the session carried our figure,
 /// so a difference is a misconfiguration, not a choice. The whole path is
 /// synchronous — no awaits, so no interleaving between check and write.
@@ -169,7 +169,7 @@ module {
 
   /// A refund settles the whole charge only when the cumulative refunded amount
   /// reaches the charge total. A partial refund must never be read as a full one:
-  /// auto-resolving a Type 1 obligation on a $5 courtesy refund of a $500
+  /// auto-resolving an obligation on a $5 courtesy refund of a $500
   /// payment would discard the record of the remaining $495.
   public func isFullRefund(refund : ChargeRefunded) : Bool {
     refund.chargeAmountCents > 0 and refund.amountRefundedCents >= refund.chargeAmountCents;
@@ -348,7 +348,7 @@ module {
   ///
   /// `paidOrder` is non-null on exactly one path — a verified, deduped,
   /// attributed payment that transitioned an order to `#paid`. Everything else
-  /// (guard rejections, duplicates, Type 1 entries, refunds, unhandled event
+  /// (guard rejections, duplicates, queued obligations, refunds, unhandled event
   /// types) leaves it null. The caller uses it to decide whether to kick delivery:
   /// an anonymous request that reaches no order must not be able to trigger a sweep
   /// over every order, which is otherwise an operation that is free to invoke and
@@ -377,7 +377,7 @@ module {
   /// that moves the total is enabled — the list is next to `Session.createBody`,
   /// and each entry is one Dashboard toggle away. That is a misconfiguration
   /// for the operator to look at, not a choice the buyer made, so a mismatch
-  /// files a Type 1 and delivers nothing.
+  /// files a refundable obligation and delivers nothing.
   ///
   /// ⚠️ The collapse is what makes `lockedCycles` immutable after creation, and
   /// #30's accounting is exact rather than conservative because of it. Anything
@@ -385,7 +385,7 @@ module {
   public type Honored = {
     /// The amount matched the quote, so the locked quantity stands verbatim.
     #asQuoted : Nat;
-    /// Stripe reported an amount we never asked for. Type 1: the operator
+    /// Stripe reported an amount we never asked for. Refund-resolvable: the operator
     /// refunds and fixes the session configuration.
     #mismatch : { paidUsdCents : Nat; quotedUsdCents : Nat };
     /// Above the per-purchase ceiling, kept as defence in depth even though the
@@ -409,11 +409,11 @@ module {
     #asQuoted(order.lockedCycles);
   };
 
-  /// Queue a Type 1 entry (§4.1: fiat exists, nothing delivered — operator
+  /// Queue a refund-resolvable entry (§4.1: fiat exists, nothing delivered — operator
   /// refunds in the Stripe Dashboard). Always 200: the payment is handled,
   /// just not by delivery; a non-2xx would make Stripe redeliver an event
   /// we have already routed.
-  func queueType1(deps : Deps, kind : ErrorQueue.Kind, detail : Text, nowNs : Int) : Http.Response {
+  func queueRefundable(deps : Deps, kind : ErrorQueue.Kind, detail : Text, nowNs : Int) : Http.Response {
     let result = ErrorQueue.add(deps.errorQueue, deps.errorQueueCapacity, #card, kind, detail, nowNs);
     for (victim in result.evicted.values()) {
       if (victim.resolvedAtNs == null) {
@@ -426,7 +426,7 @@ module {
     Http.text(200, "queued for operator review");
   };
 
-  /// `charge.refunded` (§4.1): auto-resolve every unresolved Type 1 entry
+  /// `charge.refunded` (§4.1): auto-resolve every unresolved refund-resolvable entry
   /// carrying this payment_intent. No matches is fine — operators may
   /// refund payments that never queued.
   func handleRefund(deps : Deps, refund : ChargeRefunded, nowNs : Int) : Outcome {
@@ -571,7 +571,7 @@ module {
       "intent " # session.paymentIntent # " names " # namedText
       # " but was already credited to order " # credited # " — nothing delivered a second time",
     );
-    queueType1(
+    queueRefundable(
       deps,
       #duplicate({ orderId = credited; paymentRef = session.paymentIntent }),
       "intent " # session.paymentIntent # " was credited to order " # credited
@@ -582,7 +582,7 @@ module {
   };
 
   /// `checkout.session.completed` (§6.1): dedup → attribute (claimed, not
-  /// trusted) → honor the actual paid amount → `#paid`, or Type 1.
+  /// trusted) → honor the actual paid amount → `#paid`, or a refundable obligation.
   func handleCheckout(deps : Deps, session : CheckoutCompleted, nowNs : Int) : Outcome {
     // event.id first: catches Stripe redelivering this exact event.
     if (not Idempotency.recordStripeEvent(deps.dedup, session.eventId, nowNs)) {
@@ -670,13 +670,13 @@ module {
       case (?credited) return ack(alreadyCredited(deps, session, credited, nowNs));
       case null {};
     };
-    // ── Attribution (§4.1: claimed, not trusted). Failures are Type 1
+    // ── Attribution (§4.1: claimed, not trusted). Failures are refund-resolvable
     // #unattributed: fiat arrived, nothing will be delivered.
     let claimedRef = ErrorQueue.truncateClaimedRef(
       switch (session.clientReferenceId) { case (?r) r; case (null) "" }
     );
     func unattributed(detail : Text) : Outcome {
-      ack(queueType1(deps, #unattributed({ claimedRef; paymentRef = session.paymentIntent }), detail, nowNs));
+      ack(queueRefundable(deps, #unattributed({ claimedRef; paymentRef = session.paymentIntent }), detail, nowNs));
     };
     let ?ref = session.clientReferenceId else return unattributed("missing client_reference_id");
     let ?(claimedOwnerText, orderId) = Orders.parseClientReferenceId(ref) else {
@@ -717,7 +717,7 @@ module {
         //
         // Filed as `#unattributed` rather than `#duplicate`, because nothing was
         // ever paid — there is no first payment for this to be a second of. Both
-        // are Type 1 and both carry the `paymentRef` a `charge.refunded` resolves,
+        // are refund-resolvable and both carry the `paymentRef` a `charge.refunded` resolves,
         // so the operator's lever is the same: refund in Stripe.
         return unattributed(
           "order " # orderId # " is " # Types.statusToText(order.status)
@@ -729,7 +729,7 @@ module {
         // Stripe dedup is redelivery protection, not double-pay protection).
         // Reaching here means the intent is NOT in paidIntents, so it is new
         // money against an order that has already been paid.
-        return ack(queueType1(
+        return ack(queueRefundable(
           deps,
           #duplicate({ orderId; paymentRef = session.paymentIntent }),
           "second payment for order " # orderId # " (status " # Types.statusToText(status) # ")",

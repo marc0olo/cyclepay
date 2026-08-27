@@ -4,7 +4,7 @@
 /// accumulates the way a live gateway's would (orders, dedup sets, burn-cap
 /// consumption, audit trail), and several scenarios deliberately build on
 /// earlier ones. Coverage demanded by §9: happy path, duplicate/replay,
-/// delivery replay and escalation, error queue Type 1/Type 2,
+/// delivery replay and escalation, the error queue,
 /// forex fail-closed, upgrade-mid-flight, postupgrade timer re-arm.
 import { afterAll, afterEach, beforeAll, expect, test } from 'vitest';
 import {
@@ -449,7 +449,7 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   expect((await allErrorEntries(gw)).length).toBe(errorsBefore);
 
   // Genuine double-pay: a *new* payment intent against the handled order →
-  // Type 1 #duplicate, acked 200 (the money is handled — by the operator).
+  // #duplicate, acked 200 (the money is handled — by the operator).
   const doublePay = await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_a3', paymentIntent: 'pi_a_double', clientReferenceId: refA,
     amountCents: TIER_USD_CENTS,
@@ -461,7 +461,7 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   expect(dupEntry).toBeDefined();
   expect(dupEntry.resolvedAtNs).toEqual([]);
 
-  // charge.refunded auto-resolves the Type 1 entry by payment_intent.
+  // charge.refunded auto-resolves the entry by payment_intent.
   const refund = await deliverWebhook(gw, chargeRefundedBody('evt_a4', 'pi_a_double'));
   expect(refund.status_code).toBe(200);
   const resolved = (await allErrorEntries(gw)).find((e) => e.id === dupEntry.id) as ErrorEntry;
@@ -471,7 +471,7 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   expect(await reserveBalance(gw)).toBe(reserveBefore);
 });
 
-test('09 — Type 1 unattributed: claimed-not-trusted reference resolution (§6.1)', async () => {
+test('09 — unattributed: claimed-not-trusted reference resolution (§6.1)', async () => {
   // Valid-shaped client_reference_id pointing at a nonexistent order.
   const bogusRef = `${user.getPrincipal().toText()}_00000000000000000000000000000000`;
   const response = await deliverWebhook(gw, checkoutSessionBody({
@@ -762,7 +762,7 @@ test('17 — admission gate: the per-purchase ceiling bounds tiers and amounts',
   // used to say the opposite — it described the old behaviour as a convenience
   // ("pause a tier without rewriting the tier list"). It was a footgun dressed as a
   // feature: order creation stopped, but a buyer already on the Stripe page could
-  // still pay, and the webhook would then file a Type 1 rather than deliver. Since
+  // still pay, and the webhook would then file an obligation rather than deliver. Since
   // there is no rescue lever either, so the buyer is refunded.
   //
   // ⚠️ **The pause lever is NOT the tier list.** This comment said it was, and
@@ -1532,7 +1532,7 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   await ensureRates(gw);
 });
 
-test('39 — a payment against a CANCELLED order is a Type 1, never a trap', async () => {
+test('39 — a payment against a CANCELLED order is refunded, never a trap', async () => {
   // What survives of scenarios 36–39, which #33 deleted with `attach_payment`.
   //
   // Those four covered the operator's manual rescue: the lost-webhook recovery,
@@ -1777,7 +1777,7 @@ test('43 — a partial refund never settles a full obligation', async () => {
   await setCmcRate(gw);
   await ensureRates(gw);
 
-  // An unattributable payment: fiat in, nothing delivered, Type 1 open.
+  // An unattributable payment: fiat in, nothing delivered, an obligation open.
   expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_partial_in',
     paymentIntent: 'pi_partial',
@@ -2077,7 +2077,7 @@ test('49 — an out-of-order async settlement still delivers exactly once', asyn
 test('56 — the purchase ceiling cannot be lowered under a live tier', async () => {
   // `set_card_tiers` already refuses a tier priced above the ceiling. Without the
   // inverse check, lowering the ceiling left the tier SELLABLE BUT UNPAYABLE: a
-  // buyer completes checkout and the webhook files a Type 1 instead of delivering.
+  // buyer completes checkout and the webhook files an obligation instead of delivering.
   // Since #33 deleted `attach_payment` the only remedy is a refund, so the buyer
   // pays and is repaid over a config change made earlier — exactly the kind of
   // link nobody makes under pressure.

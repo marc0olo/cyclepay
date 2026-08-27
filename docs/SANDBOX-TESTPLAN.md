@@ -24,8 +24,7 @@ deleted. So the run splits into a half that still counts and a half that does no
 only real-payload evidence there is, not because the delivery half still holds): two
 purchases, $5 and $20, both credited to the buyer's cycles-ledger account and
 spendable — `icp cycles balance --of-principal <buyer>` → **18,207,492,307,692**;
-error queue empty, so every dollar resolved to a delivery with no Type 1 or Type 2
-obligation left open; nothing stuck mid-pipeline; `cancel_order` exercised twice.
+error queue empty, so every dollar resolved to a delivery with no obligation left open; nothing stuck mid-pipeline; `cancel_order` exercised twice.
 
 **What is owed before go-live**, over and above the gaps that were already open:
 
@@ -464,11 +463,11 @@ icp canister call backend receipt '("<orderId>")'           # owner identity onl
 | # | Scenario | How | Expect |
 |---|---|---|---|
 | B1 | Happy path | open the order's `stripeSessionUrl`, card `4242 4242 4242 4242` | order → `#paid`; → `#delivered` |
-| B2 | No reference | `stripe trigger checkout.session.completed` | `200`; Type 1 `#unattributed`, `claimedRef` empty |
-| B3 | Forged owner | hand-edit the ref to another principal, same order id | Type 1 — "claimed owner does not match" |
-| B4 | Malformed reference | ref = `garbage` | Type 1 — "malformed" |
-| B5 | Payment for an **expired** order | there is no TTL to shorten since #33 — open the order's session URL, expire that session in the Stripe Dashboard so `checkout.session.expired` arrives, then pay a *previously opened* copy of the page | `200`; order **stays `Expired`**, Type 1 `#unattributed` whose detail says "cannot be paid". **Refund it in Stripe.** Not honoured — #34 made expiry terminal |
-| B6 | Payment for a **cancelled** order | `cancel_order`, then pay a page you opened before cancelling | `200`; order **stays `Cancelled`**, same Type 1 obligation. The buyer's decision wins; the money is refundable, never converted against it (#34). ⚠️ Hard to reach on purpose: cancel expires the session on Stripe *first*, so the payment usually cannot start at all |
+| B2 | No reference | `stripe trigger checkout.session.completed` | `200`; `#unattributed`, `claimedRef` empty |
+| B3 | Forged owner | hand-edit the ref to another principal, same order id | `#unattributed` — "claimed owner does not match" |
+| B4 | Malformed reference | ref = `garbage` | `#unattributed` — "malformed" |
+| B5 | Payment for an **expired** order | there is no TTL to shorten since #33 — open the order's session URL, expire that session in the Stripe Dashboard so `checkout.session.expired` arrives, then pay a *previously opened* copy of the page | `200`; order **stays `Expired`**, `#unattributed` whose detail says "cannot be paid". **Refund it in Stripe.** Not honoured — #34 made expiry terminal |
+| B6 | Payment for a **cancelled** order | `cancel_order`, then pay a page you opened before cancelling | `200`; order **stays `Cancelled`**, the same refundable obligation. The buyer's decision wins; the money is refundable, never converted against it (#34). ⚠️ Hard to reach on purpose: cancel expires the session on Stripe *first*, so the payment usually cannot start at all |
 | B7 | There is no rescue lever | — | `attach_payment` was deleted in #33. For B5 and B6 the only remedy is a refund in Stripe, which auto-resolves the entry |
 
 ## C. Amount honouring
@@ -486,17 +485,17 @@ used to deliver silently.
 | # | Scenario | How | Expect |
 |---|---|---|---|
 | C1 | Exact quoted amount | pay the order's own session | `lockedCycles` verbatim; `paidUsdCents == pricing.usdCents` |
-| C2 | **Different amount** | not reachable through the app — hand-make a session at another `unit_amount` with the order's reference | `200`; **nothing delivered**, order stays `Created`, Type 1 naming both figures |
-| C3 | Below the fee floor | same, at e.g. $0.31 | the same Type 1 as C2 — since #33 "below the floor" is not a separate outcome, it is just a different amount |
-| C4 | Above the per-purchase ceiling | lower `maxPurchaseUsdCents` below an existing order's amount, then pay that order's session | Type 1, **nothing delivered**. This is the ceiling's one reachable case, and it needs no tampering |
-| C5 | Wrong currency | not reachable through the app — the request pins `usd`; hand-make a EUR session | Type 1 — "unexpected currency" |
+| C2 | **Different amount** | not reachable through the app — hand-make a session at another `unit_amount` with the order's reference | `200`; **nothing delivered**, order stays `Created`, a refundable obligation naming both figures |
+| C3 | Below the fee floor | same, at e.g. $0.31 | the same obligation as C2 — since #33 "below the floor" is not a separate outcome, it is just a different amount |
+| C4 | Above the per-purchase ceiling | lower `maxPurchaseUsdCents` below an existing order's amount, then pay that order's session | A refundable obligation, **nothing delivered**. This is the ceiling's one reachable case, and it needs no tampering |
+| C5 | Wrong currency | not reachable through the app — the request pins `usd`; hand-make a EUR session | `#unattributed` — "unexpected currency" |
 
 ## D. Dedup and replay
 
 | # | Scenario | How | Expect |
 |---|---|---|---|
 | D1 | Dashboard resend | Dashboard → the event → "Resend" | `200 duplicate event`; **no** second credit |
-| D2 | Two genuine payments | pay the same link twice (two intents) | second → Type 1 `#duplicate` |
+| D2 | Two genuine payments | pay the same link twice (two intents) | second → `#duplicate` |
 | D3 | Same intent, new event id | resend after >7 days if you can arrange it, else trust D1 | `200 already credited`, `stripe.replayedAfterPruning` |
 | D4 | Credited elsewhere | not reachable through the app since #33 — nothing but the webhook writes an attribution. To force it, deliver a hand-made `completed` for order Y carrying an intent already credited to order X | nothing delivered; `stripe.creditedElsewhere` + a `#duplicate` naming both |
 
@@ -508,7 +507,7 @@ refunds, not crafted events** — the whole point is confirming Stripe's
 
 | # | Scenario | How | Expect |
 |---|---|---|---|
-| E1 | Full refund of an unattributed payment | B2, then refund it fully in the Dashboard | the Type 1 entry **auto-resolves** |
+| E1 | Full refund of an unattributed payment | B2, then refund it fully in the Dashboard | the entry **auto-resolves** |
 | E2 | **Partial refund** | refund e.g. $1 of a $5 charge | entry stays **OPEN**; `stripe.refundPartial`; **no** `refundUnmatched` line |
 | E3 | Partial then completed | refund the remaining $4 | entry now resolves |
 | E4 | Two partials summing to full | $2 then $3 | resolves on the second — Stripe's `amount_refunded` is cumulative |
@@ -619,7 +618,7 @@ Neither script sets an order TTL: the deadline is the Stripe session's own, and
 nothing local shortens it. `RUNBOOK.md` §1
 is the sole authority for go-live configuration.
 
-Where this plan states an *expected outcome* (a Type 1 entry, a `#unprocessable`,
+Where this plan states an *expected outcome* (a queued obligation, a `#unprocessable`,
 a `stripe.refundPartial`), `RUNBOOK.md` §6 states what to *do* about it. That makes
 the run a useful check on the runbook itself: if a scenario here produces an entry
 whose §6 row is missing, wrong, or unfollowable, the runbook is the thing to fix —
