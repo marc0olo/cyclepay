@@ -494,7 +494,7 @@ through right now?" check. Two operational gotchas:
 ## 5b. Order expiry — Stripe owns it, and there is no lever here
 
 ```bash
-icp canister call backend reserve_status '()' -e ic   # public counters (was order_stats)
+icp canister call backend reserve_status '()' -e ic   # public counters
 ```
 
 **There is no retention config, no TTL and no sweep.** #33 deleted
