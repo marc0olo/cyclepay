@@ -8,7 +8,6 @@
 /// talks to those canisters with its own Motoko bindings (Cmc.mo).
 import { IDL } from '@icp-sdk/core/candid';
 import type { IDL as IDLNamespace } from '@icp-sdk/core/candid';
-import type { Principal } from '@icp-sdk/core/principal';
 
 export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   const Account = IDL.Record({
@@ -238,7 +237,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     status_code: IDL.Nat16,
     upgrade: IDL.Opt(IDL.Bool),
   });
-  const HttpHeader = IDL.Record({ name: IDL.Text, value: IDL.Text });
 
   return IDL.Service({
     audit_log: IDL.Func([], [IDL.Vec(AuditEvent)], ['query']),

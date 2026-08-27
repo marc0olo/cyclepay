@@ -8,9 +8,9 @@
 /// forex fail-closed, upgrade-mid-flight, postupgrade timer re-arm.
 import { afterAll, afterEach, beforeAll, expect, test } from 'vitest';
 import {
-  CYCLES_LEDGER_FEE, ICP_FEE_E8S, ICP_USD_RATE, ORDER_E8S,
+  CYCLES_LEDGER_FEE, ICP_USD_RATE,
   TIER_LOCKED_CYCLES, TIER_USD_CENTS, WEBHOOK_SECRET, XDR_PERMYRIAD_PER_ICP, admin, user,
-  bigIntReplacer, partialRefundBody, stopNns, startNns, CMC_ID, ICP_LEDGER_ID,
+  bigIntReplacer, partialRefundBody, stopNns, startNns,
   CYCLES_LEDGER_ID, clientReferenceFor, createOrderWithSession, cancelOrderWithExpire,
   awaitPendingOutcall, answerOutcall, outcallHeader, outcallBody, sessionExpiredBody,
   sessionCreatedBody, maybePendingOutcall,
@@ -78,7 +78,6 @@ let orderA: Order; let refA: string; // the happy path order
 let orderB: Order; let refB: string; // cycles-ledger delivery
 let orderC: Order; let refC: string; // a delivery through a ledger outage
 let orderE: Order; let refE: string; // upgrade-mid-transfer replay
-let orderF: Order; let refF: string; // max-wait escalation
 /// The escalated order scenario 35 leaves in `needsReview` with a transfer intent
 /// and no block. 76 uses it as the freeze case the reserve reconcile has to survive,
 /// and 77 resolves it — so it is suite-global rather than local to 35.
@@ -173,8 +172,8 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
 
   // But every exact assertion in this suite rests on the §3 vector: 500¢ gross
   // − 45¢ fee = 455¢ net = **exactly one ICP** at $4.55, which is worth exactly
-  // 3.5 T cycles. That is what makes `TIER_LOCKED_CYCLES` and `ORDER_E8S` exact
-  // rather than approximate, across dozens of assertions. A $10 floor would
+  // 3.5 T cycles. That is what makes `TIER_LOCKED_CYCLES` exact rather than
+  // approximate, across dozens of assertions. A $10 floor would
   // refuse it, and re-deriving the vector at $10 would trade exactness for
   // matching a default — so the floor is lowered HERE and the shipped value is
   // asserted above and exercised in scenario 71.

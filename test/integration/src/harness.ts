@@ -102,9 +102,6 @@ export const XRC_DECIMALS = 9;
 export const ICP_USD_RATE = 4_550_000_000n; // $4.55, 9 decimals
 export const TIER_USD_CENTS = 500n;
 export const TIER_LOCKED_CYCLES = 3_500_000_000_000n;
-/// ceil(3_500_000_000_000 / 35_000) — exactly 1 ICP, the point of the vector.
-export const ORDER_E8S = 100_000_000n;
-export const ICP_FEE_E8S = 10_000n;
 /// The cycles ledger's fee. Since #30 PR-A it is charged on the **transfer** out
 /// of the reserve rather than on a `deposit` into the buyer's account, so a
 /// delivery still credits exactly `lockedCycles - CYCLES_LEDGER_FEE` — the same

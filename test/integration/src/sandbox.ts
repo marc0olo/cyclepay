@@ -17,9 +17,8 @@
 //     npm --prefix test/integration run sandbox
 //
 // Ctrl-C to tear down.
-import { Principal } from '@icp-sdk/core/principal';
 import {
-  ICP_FEE_E8S, ORDER_E8S, TIER_USD_CENTS, WEBHOOK_SECRET,
+  TIER_USD_CENTS, WEBHOOK_SECRET,
   ensureRates, expectOk, setCmcRate, setXrcRate, setupGateway, user,
   clientReferenceFor,
 } from './harness';

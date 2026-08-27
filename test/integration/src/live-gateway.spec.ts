@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from 'vitest';
 import {
-  ICP_FEE_E8S, ORDER_E8S, TIER_LOCKED_CYCLES, TIER_USD_CENTS, WEBHOOK_SECRET,
-  checkoutSessionBody, ensureRates, expectOk, fundReserve, orderStatus, setCmcRate,
+  TIER_LOCKED_CYCLES, TIER_USD_CENTS, WEBHOOK_SECRET,
+  checkoutSessionBody, ensureRates, expectOk, fundReserve, setCmcRate,
   setupGateway, setXrcRate, stripeSignature, teardownGateway, tickUntilStatus, user,
   clientReferenceFor, createOrderWithSession,
   type Gateway,
