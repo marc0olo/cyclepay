@@ -76,7 +76,7 @@ async function userCycles(): Promise<bigint> {
 // replay and re-attack earlier ones).
 let orderA: Order; let refA: string; // happy path via AwaitingTreasury resume
 let orderB: Order; let refB: string; // cycles-ledger delivery
-let orderC: Order; let refC: string; // Type 2 undeliverable
+let orderC: Order; let refC: string; // a delivery through a ledger outage
 let orderE: Order; let refE: string; // upgrade-mid-transfer replay
 let orderF: Order; let refF: string; // treasury max-wait escalation
 /// The escalated order scenario 35 leaves in `needsReview` with a transfer intent
@@ -558,7 +558,7 @@ test('11 — a cycles-ledger outage strands NOTHING: the order stays payable-out
     expect(await orderStatus(gw, orderC.id)).toBe('paid');
     // No queue entry: an outage is not an obligation.
     expect((await allErrorEntries(gw)).some(
-      (e) => 'undeliverable' in e.kind && e.kind.undeliverable.orderId === orderC.id,
+      (e) => 'deliveryStuck' in e.kind && e.kind.deliveryStuck.orderId === orderC.id,
     )).toBe(false);
     // ⚠️ Do NOT read the ledger here. It is stopped, so a balance query is
     // rejected — the first version of this scenario asserted the balances inside
@@ -685,19 +685,19 @@ test('15 — operational trail is coherent end-to-end (§4.2)', async () => {
   expect(tags).toContain('delivery.sent');
   // And the three that died with the pipeline stay dead. A regression that routed
   // an order back into the mint path would show up here first.
-  for (const gone of ['mint.held', 'mint.delivered', 'mint.undeliverable']) {
+  for (const gone of ['mint.held', 'mint.delivered', 'mint.stuck']) {
     expect(tags).not.toContain(gone);
   }
 
   // The server-side worklist, which is what an operator actually reads.
   const open = await openErrorEntries(gw);
-  // ⚠️ `undeliverable` is gone from this list, and that is the headline of #30
-  // PR-A: it was Type 2 — cycles MINTED into the canister's own balance and
-  // stranded there by a failed forward, with a queue entry telling an operator to
-  // re-deliver by hand. Nothing is minted now, so a failed delivery strands
-  // nothing and leaves no obligation. What is left open here is only what is
-  // genuinely owed.
-  expect(open.map((e) => Object.keys(e.kind)[0])).not.toContain('undeliverable');
+  // ⚠️ **Only fiat can be stranded, never cycles**, and this list is where that shows.
+  // A failed delivery leaves the cycles in the reserve and the order retrying, so it
+  // files no obligation at all. Everything open here is money we took and have not
+  // delivered against — which is what makes `error_queue_depth` a real alarm rather
+  // than a gauge that always reads non-zero.
+  const kinds = open.map((e) => Object.keys(e.kind)[0]);
+  expect(kinds).not.toContain('deliveryStuck');
   // Depth agrees with the paged content — the number ops monitors.
   expect((await gw.asAnon.error_queue_depth()).unresolved).toBe(BigInt(open.length));
 

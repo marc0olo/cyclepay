@@ -268,10 +268,6 @@ type Kind =
                    claimedRef: text;
                    paymentRef: text;
                  };
-   undeliverable: record {
-                    cycles: nat;
-                    orderId: OrderId;
-                  };
    unprocessable: record {
                     eventId: text;
                     field: text;

@@ -534,7 +534,7 @@ cap is unbounded loss. Start tight.
   the moment nothing minted — and `#transferUnresolved`, which existed only because
   #36 was going to delete the other, folded into **`#deliveryStuck`**. They were one
   operator question wearing two names, and folding cost nothing: both were
-  `isType1 = false` with no `paymentRef`, so only the payloads differed.
+  `refundResolvable = false` with no `paymentRef`, so only the payloads differed.
   **Read `stage`, never the kind:**
 
   | `stage` | Position | Do |

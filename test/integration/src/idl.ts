@@ -141,7 +141,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     // `stage` carries the money position, `blockIndex` the should-be-unreachable landed case.
     deliveryStuck: IDL.Record({ orderId: IDL.Text, stage: IDL.Text, blockIndex: IDL.Opt(IDL.Nat) }),
     unattributed: IDL.Record({ claimedRef: IDL.Text, paymentRef: IDL.Text }),
-    undeliverable: IDL.Record({ cycles: IDL.Nat, orderId: IDL.Text }),
   });
   const ErrorEntry = IDL.Record({
     createdAtNs: IDL.Int,

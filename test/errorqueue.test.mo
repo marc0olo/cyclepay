@@ -16,25 +16,29 @@ func addUnattributed(store : ErrorQueue.Store, claimedRef : Text, paymentRef : T
   ErrorQueue.add(store, cap, #card, #unattributed({ claimedRef; paymentRef }), "no such order", nowNs);
 };
 
-func addUndeliverable(store : ErrorQueue.Store, orderId : Text, cycles : Nat, nowNs : Int) : ErrorQueue.AddResult {
-  ErrorQueue.add(store, cap, #card, #undeliverable({ orderId; cycles }), "target deleted", nowNs);
+/// An obligation a refund cannot settle — the counterpart to the two above, and what
+/// the eviction and resolution tests need in order to be about anything.
+func addStuck(store : ErrorQueue.Store, orderId : Text, nowNs : Int) : ErrorQueue.AddResult {
+  ErrorQueue.add(store, cap, #card, #deliveryStuck({ orderId; stage = "staleIntent"; blockIndex = null }), "transfer unconfirmed", nowNs);
 };
 
-suite("kinds: exactly two types (§4.1)", func() {
-  test("duplicate and unattributed are Type 1, undeliverable is Type 2", func() {
-    assert ErrorQueue.isType1(#duplicate({ orderId = "o1"; paymentRef = "pi_1" }));
-    assert ErrorQueue.isType1(#unattributed({ claimedRef = "x"; paymentRef = "pi_2" }));
-    assert not ErrorQueue.isType1(#undeliverable({ orderId = "o2"; cycles = 9 }));
+suite("kinds: what a refund can settle, and what it cannot", func() {
+  test("a refund settles exactly the fiat-only obligations", func() {
+    assert ErrorQueue.refundResolvable(#duplicate({ orderId = "o1"; paymentRef = "pi_1" }));
+    assert ErrorQueue.refundResolvable(#unattributed({ claimedRef = "x"; paymentRef = "pi_2" }));
   });
 
-  test("Type 1 carries a paymentRef, Type 2 does not", func() {
+  test("only a refund-settleable obligation carries the payment it is about", func() {
+    // The pairing is the point: `resolveByPaymentRef` can only find an entry that
+    // names its payment, so carrying a ref and being refund-settleable are the same
+    // property seen from two sides.
     assert ErrorQueue.paymentRefOf(#duplicate({ orderId = "o1"; paymentRef = "pi_1" })) == ?"pi_1";
     assert ErrorQueue.paymentRefOf(#unattributed({ claimedRef = "x"; paymentRef = "pi_2" })) == ?"pi_2";
-    assert ErrorQueue.paymentRefOf(#undeliverable({ orderId = "o2"; cycles = 9 })) == null;
+    assert ErrorQueue.paymentRefOf(#deliveryStuck({ orderId = "o3"; stage = "staleIntent"; blockIndex = null })) == null;
   });
 
-  test("deliveryStuck (the one escalation) is neither Type 1 nor refund-resolvable", func() {
-    assert not ErrorQueue.isType1(#deliveryStuck({ orderId = "o3"; stage = "staleIntent"; blockIndex = null }));
+  test("an escalated delivery is never settled by a refund arriving", func() {
+    assert not ErrorQueue.refundResolvable(#deliveryStuck({ orderId = "o3"; stage = "staleIntent"; blockIndex = null }));
     assert ErrorQueue.paymentRefOf(#deliveryStuck({ orderId = "o3"; stage = "staleIntent"; blockIndex = null })) == null;
   });
 
@@ -52,7 +56,7 @@ suite("add", func() {
   test("entries get monotonic ids and start unresolved", func() {
     let store = ErrorQueue.emptyStore();
     let a = addDuplicate(store, "o1", "pi_1", 100);
-    let b = addUndeliverable(store, "o2", 1_000, 200);
+    let b = addStuck(store, "o2", 200);
     assert a.entry.id == 0;
     assert b.entry.id == 1;
     assert a.entry.resolvedAtNs == null;
@@ -143,7 +147,7 @@ suite("bounded eviction", func() {
 suite("resolve (manual, operator)", func() {
   test("resolve stamps the entry and keeps it retained", func() {
     let store = ErrorQueue.emptyStore();
-    ignore addUndeliverable(store, "o1", 1_000, 100);
+    ignore addStuck(store, "o1", 100);
     switch (ErrorQueue.resolve(store, 0, 500)) {
       case (#ok(entry)) {
         assert entry.resolvedAtNs == ?500;
@@ -198,7 +202,7 @@ suite("charge.refunded auto-resolve (§4.1)", func() {
 
   test("Type 2 entries never match a refund, unknown refs return empty", func() {
     let store = ErrorQueue.emptyStore();
-    ignore addUndeliverable(store, "o1", 1_000, 100);
+    ignore addStuck(store, "o1", 100);
     assert ErrorQueue.resolveByPaymentRef(store, "pi_anything", 900) == [];
     assert ErrorQueue.unresolved(store).size() == 1;
   });

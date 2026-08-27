@@ -1,12 +1,24 @@
 /// Bounded error queue — exactly two types (§4.1).
 ///
-/// Every dollar that arrives must resolve to delivery, Type 1, or Type 2.
-/// Type 1 (`#duplicate` | `#unattributed`): fiat exists, nothing was minted
-/// (dedup gates the mint). Resolution is the operator refunding in the Stripe
-/// Dashboard; the `charge.refunded` webhook auto-resolves via
-/// `resolveByPaymentRef`. Type 2 (`#undeliverable`): cycles were minted but
-/// delivery failed — they sit in the app canister's own balance until the
-/// operator refunds or re-delivers.
+/// Every dollar that arrives resolves to delivery, or to an obligation on this
+/// worklist. There is no third outcome and no silent one.
+///
+/// ⚠️ **Only fiat can be stranded, never cycles.** Delivery is one transfer out of a
+/// reserve the gateway already holds, so a failed delivery leaves the cycles exactly
+/// where they were and the order retries. That is what makes the taxonomy one-sided:
+/// every obligation here is *money we took and have not delivered against*, and the
+/// remedy is always either finishing the delivery or refunding in Stripe.
+///
+/// Two shapes, and `refundResolvable` is the predicate that separates them:
+///
+///   - **Fiat with no order to credit** (`#duplicate`, `#unattributed`) — the remedy
+///     is a Stripe refund, and the `charge.refunded` webhook auto-resolves the entry
+///     through `resolveByPaymentRef`. Nothing on-chain is owed.
+///   - **Everything else** — a delivery a human must look at (`#deliveryStuck`), a
+///     refund that arrived after delivery (`#refundAfterDelivery`), an alert
+///     (`#deliveryDelayed`), an operator's decision (`#abandoned`), or an event that
+///     could not be parsed (`#unprocessable`). A refund cannot resolve these: either
+///     the position is unknown, or money moved both ways, or nothing is owed yet.
 ///
 /// Resolution lives on the queue entry, not the order: `#errorQueue` is a
 /// terminal order status (§4), and resolving here never transitions an order.
@@ -32,8 +44,6 @@ module {
     /// is an attacker-editable URL param), or it resolved to an order that is
     /// `#cancelled` or `#expired`, neither of which is payable.
     #unattributed : { claimedRef : Text; paymentRef : Text };
-    /// Type 2 — minted, but forward failed (e.g. target canister deleted).
-    #undeliverable : { orderId : Types.OrderId; cycles : Nat };
     /// **A delivery stopped somewhere it cannot continue automatically.** Neither
     /// Type 1 nor Type 2: the fiat is in, and what happens next depends on the money
     /// position rather than on the reason it stopped.
@@ -125,10 +135,17 @@ module {
     #unprocessable : { eventId : Text; field : Text };
   };
 
-  public func isType1(kind : Kind) : Bool {
+  /// Can a `charge.refunded` for the same payment settle this on its own?
+  ///
+  /// ⚠️ **True only where the remedy is exactly "refund the fiat".** Anything else
+  /// needs a decision a webhook cannot make: `#deliveryStuck` may be an unknown money
+  /// position (refunding blind pays a buyer who already holds their cycles),
+  /// `#refundAfterDelivery` is money that moved both ways, and `#deliveryDelayed` is
+  /// not an obligation at all.
+  public func refundResolvable(kind : Kind) : Bool {
     switch (kind) {
       case (#duplicate(_) or #unattributed(_)) true;
-      case (#undeliverable(_) or #deliveryStuck(_) or #refundAfterDelivery(_)) false;
+      case (#deliveryStuck(_) or #refundAfterDelivery(_)) false;
       case (#deliveryDelayed(_) or #abandoned(_) or #unprocessable(_)) false;
       // NOT Type 1. Type 1 means "fiat in, nothing minted" — a settled position
       // the operator refunds. Here whether the cycles moved is unknown, so
@@ -160,7 +177,7 @@ module {
       // from `resolveByPaymentRef`: the refund is what created the entry, so
       // auto-resolving on it would close the loss the instant it was recorded.
       // Only a human closes this one.
-      case (#undeliverable(_) or #deliveryStuck(_) or #refundAfterDelivery(_)) null;
+      case (#deliveryStuck(_) or #refundAfterDelivery(_)) null;
       // None of these is settled by a refund landing: a delay wants its cause
       // fixed, an abandonment was already a conscious decision, and an
       // unprocessable event has no established money position to settle.
