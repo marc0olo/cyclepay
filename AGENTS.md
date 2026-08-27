@@ -6,7 +6,7 @@
 > wherever they disagree. Read it before starting any work on the Card rail.
 >
 > Settlement is moving to a cycles reserve, payment to per-order Stripe Checkout
-> Sessions, and the ICP mint path is being removed. Several
+> Sessions, and the ICP mint path has been removed. Several
 > statements below are true today and are scheduled to stop being true; each issue
 > updates the ones its own change invalidates.
 
@@ -57,8 +57,9 @@ recorded reasoning — don't "fix" them without reading the rationale:
   state"). The Stripe webhook signing secret *is* stored plaintext, by design.
   HMAC is symmetric, so a canister that can verify can forge — encryption only
   moves the problem to a key the canister also needs. See `src/backend/Secret.mo`
-  and `docs/STRIPE.md` §7. Confidentiality comes from the SEV-SNP subnet; the
-  ICP burn cap bounds the blast radius either way.
+  and `docs/STRIPE.md` §7. Confidentiality comes from the SEV-SNP subnet, and the
+  **reserve balance is the blast radius** — a forged webhook delivers from it, and
+  nothing caps that, so the reserve is sized to what a leak could cost.
 - **`writing-motoko` architecture pattern** (`lib/`, `mixins/`). This backend uses flat
   modules with explicit dependency records (`Card.Deps`) instead of mixins, so
   the whole ingestion path unit-tests without an IC environment. Equivalent
@@ -70,9 +71,9 @@ recorded reasoning — don't "fix" them without reading the rationale:
 icp network start -d && icp deploy && scripts/local-dev-seed.sh
 ```
 
-The seed step is **not optional**. A fresh deploy is fail-closed on five axes at
-once (no tiers, no CMC rate, zero burn cap, no float, and a canister funded below
-the `minCanisterCycles` floor), which presents as a broken app rather than a safe
+The seed step is **not optional**. A fresh deploy is fail-closed on four axes at once
+(no tiers, no CMC rate, an empty and unobserved cycles reserve, and a canister funded
+below the `minCanisterCycles` floor), which presents as a broken app rather than a safe
 one. `scripts/local-dev-seed.sh --rate-only` after every
 deploy and every ~15 minutes: the CMC rate expires, and `icp deploy` wipes the XRC
 mock's install-time response. Full detail in README.md.
@@ -139,7 +140,7 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
 - **Any fact about money lives on a permanent record.** The audit log is a
   4,096-entry ring buffer and drops its oldest entries, so it is telemetry only.
   If a new behaviour produces a fact someone could need in six months — what was
-  paid, what was minted, which block funded it — put it on the order or the
+  paid, what was delivered, which block carried it — put it on the order or the
   journal, not only in an audit tag.
 
 ## Issue tracker

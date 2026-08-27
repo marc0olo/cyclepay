@@ -4,7 +4,7 @@
 > `docs/TEST-COVERAGE.md`. This file documents the PocketIC suite specifically.
 
 End-to-end scenarios against PocketIC instances running the **real**
-canisters: the ICP ledger, the cycles minting canister, and the cycles ledger
+canisters: the cycles ledger, and the cycles minting canister for its rate query
 are deployed at their mainnet IDs by PocketIC's `icpFeatures` (the same Wasms
 mainnet runs, kept in sync with the instance topology by the server), and the
 
@@ -131,41 +131,41 @@ the authoritative list. If you change what a scenario asserts, change its row.
 | 03 | empty cache + a failing XRC → `#rateUnavailable`; every rate guard rejects in isolation | pricing fail-closed |
 | 04 | XRC + CMC through the real derivation; §3 pricing vector; order authz | happy path (pricing half) |
 | 05 | signature/window/404/405/413 guards on the live route table | duplicate/replay (guards) |
-| 06 | default burn cap 0 holds the mint | AwaitingTreasury |
-| 07 | cap sized → resume → real ledger transfer → CMC mint → forward | happy path |
-| 08 | event-id dedup, intent dedup, Type 1 `#duplicate`, refund auto-resolve | duplicate/replay, Type 1 |
-| 09 | claimed-not-trusted attribution → Type 1 `#unattributed` | Type 1 |
+| 06 | the money-out path is ONE transfer out of the reserve, exact in both directions | delivery arithmetic |
+| 07 | the transfer memo is the ORDER id, so two identical orders both deliver | happy path |
+| 08 | event-id dedup, intent dedup, `#duplicate`, refund auto-resolve | duplicate/replay |
+| 09 | claimed-not-trusted attribution → `#unattributed` | refund obligations |
 | 10 | delivery to a real cycles-ledger account | happy path (2nd forward arm) |
 | 11 | a cycles-ledger outage strands **nothing**: the order stays `#paid`, no obligation is filed, and the sweep replays the same intent and delivers | reserve delivery under outage |
 | 12 | an upgrade concurrent with delivery pays **exactly once**, and the timer re-arms | upgrade-mid-flight, §5.1 replay, postupgrade re-arm |
-| 15 | audit-log seq monotonicity, the delivery path's **tag contract**, and error-queue accounting with no `undeliverable` left to file | — |
+| 15 | audit-log seq monotonicity, the delivery path's **tag contract**, and error-queue accounting: a failed delivery files **nothing**, because only fiat can be stranded | — |
 | 16 | admission gate: no burn-cap headroom refuses the quote; `can_purchase` agrees; restoring headroom re-opens the rail | pre-creation gate |
 | 17 | per-purchase ceiling bounds both tier registration and the amount | pre-creation gate |
-| 18 | expiry: only `checkout.session.expired` moves an order there — time alone never does — it survives a simulated year undeleted, and a late payment files a Type 1 obligation instead of delivering (#33, #34) | Stripe owns the deadline |
+| 18 | expiry: only `checkout.session.expired` moves an order there — time alone never does — it survives a simulated year undeleted, and a late payment files a refund obligation instead of delivering (#33, #34) | Stripe owns the deadline |
 | 19 | owner-only `receipt`; recomputes `net × P × 10¹² / U == lockedCycles` from it | price verifiability |
 
 ### Added with the pricing-transparency work
 
 | # | Scenario | Coverage |
 |---|----------|----------|
-| 39 | a payment against a **cancelled** order files a Type 1 and never traps — the surviving half of scenarios 36–39, which #33 deleted with `attach_payment` | the guard that keeps `markPaid`'s trap unreachable |
+| 39 | a payment against a **cancelled** order files a refund obligation and never traps — the surviving half of scenarios 36–39, which #33 deleted with `attach_payment` | the guard that keeps `markPaid`'s trap unreachable |
 | 40 | `quote_previews` fee split, §3 vector, deposit fee, and an order locking exactly the previewed figure | quote/lock agreement |
 | 41 | a +40% ICP move → `#quoteChanged` naming the new figure, nothing created; the new figure is accepted; a favourable move never refuses; `null` opts out | server-side quote pinning |
-| 42 | owner-only `cancel_order` produces `#cancelled` and frees a slot, is idempotent, refuses a paid order, and a payment racing the cancel is **refunded, not converted** — one Type 1 obligation carrying the intent (#34) | buyer never locked out, buyer's decision wins |
+| 42 | owner-only `cancel_order` produces `#cancelled` and frees a slot, is idempotent, refuses a paid order, and a payment racing the cancel is **refunded, not converted** — one obligation carrying the intent (#34) | buyer never locked out, buyer's decision wins |
 
 ### Added from the code review
 
 | # | Scenario | Coverage |
 |---|----------|----------|
-| 43 | a partial `charge.refunded` leaves the Type 1 obligation **open**; completing it settles | refund amount fidelity |
+| 43 | a partial `charge.refunded` leaves the refund obligation obligation **open**; completing it settles | refund amount fidelity |
 | 44 | a verified-but-unprocessable event is acked 200 and queued once; unverifiable input still 400s | endpoint-disable avoidance |
-| 45 | `checkout.session.async_payment_succeeded` mints a payment that `completed` reported unpaid | delayed payment methods |
-| 46 | a test-mode event cannot mint on a gateway declared live; a live one still does | livemode gate |
+| 45 | `checkout.session.async_payment_succeeded` delivers a payment that `completed` reported unpaid | delayed payment methods |
+| 46 | a test-mode event cannot deliver on a gateway declared live; a live one still does | livemode gate |
 | 47 | a `#deliveryDelayed` alert is resolved when the order **escalates**, not only when it delivers, and its audit tag exists | no orphan worklist entries |
 
 ### Changed by #30 PR-A (the reserve settlement swap)
 
-Delivery stopped minting and started transferring out of the reserve, so every
+Delivery transfers out of the reserve rather than creating cycles, so every
 scenario whose *mechanism* was the mint pipeline changed or went. **Five were
 deleted** — 13, 14, 48, and 51–54 collapsed into that set — and each names its
 heir where the deletion happened in `gateway.spec.ts`, so what it proved is not
@@ -183,7 +183,7 @@ lost:
 Rewritten rather than deleted: **06** (the reserve arithmetic, exact in both
 directions), **07** (the `memo = orderId` collision property), **11**, **12**,
 **20**, **33**, **34**, **35**, **47**.
-| 49 | `async_payment_succeeded` arriving **before** `completed` still mints once; the later event raises no obligation | out-of-order events |
+| 49 | `async_payment_succeeded` arriving **before** `completed` still delivers once; the later event raises no obligation | out-of-order events |
 | 56 | the per-purchase ceiling cannot be lowered under a live tier | config safety |
 | 57 | an already-credited intent is caught **before** attribution, not after | double-credit protection |
 | 58 | the sweep reconciles the status tallies on its own cadence and reports no drift | tally integrity |
@@ -216,7 +216,7 @@ before landing.)
 | 76 | one escalated order must not freeze the reserve reconcile forever (#30 PR-B) | regression test for a shipped bug |
 | 77 | an escalated order whose cycles **did** arrive is recorded as delivered rather than filed as abandoned (#30 PR-B) | `#needsReview → #delivered` |
 | 78 | an order whose delivery is unsettled cannot be abandoned into a double payout (#30 PR-B) | the guard a reviewer found; scenarios 34 and 47 were codifying the hole |
-| **79** | the mint pipeline was never entered, asserted **before #36 deletes it** | ⚠️ **Delete this with the states.** Its heir is the deletion: unreachability becomes unrepresentability. Measured falsifiability — routing `#beginDelivery` into `#minting` fails 06/07/08/10/11/12; every other insertion point is refused by the transition matrix itself |
+| ~~79~~ | **deleted with the states it asserted about (#36).** It checked that no order had ever entered `#minting`/`#icpAtCmc`/`#awaitingTreasury` — a claim that stopped being makeable when `OrderStatus` lost those cases | heir: **the deletion itself**. Unreachability became unrepresentability, which is stronger than any test. The measurement it carried: routing `#beginDelivery` into `#minting` failed 06/07/08/10/11/12, and every other insertion point was refused by the transition matrix |
 
 ⚠️ **76 and 77 both consume the order scenario 35 escalates**, through the
 suite-global `orderEscalated`, because reproducing that state costs another 72 h of
@@ -251,15 +251,17 @@ deploys, and PocketIC accepts any impersonated sender — the same mechanism
 `setCmcRate` already used to impersonate governance. So:
 
 ```ts
-await stopNns(gw, CMC_ID);      // calls into it are now rejected
-await startNns(gw, CMC_ID);     // service restored
+await stopNns(gw, CYCLES_LEDGER_ID);   // calls into it are now rejected
+await startNns(gw, CYCLES_LEDGER_ID);  // service restored
 ```
 
-`tickUntilStatus(gw, id, ['minting'])` is the companion trick: it returns with the
-intent journaled and the ledger call in flight, so stopping the **CMC** at that
-point lets the transfer succeed and the notify fail — which is the only way to park
-an order at `#icpAtCmc`. Together these make almost every money-out failure path
-reachable end to end (scenarios 51–54).
+⚠️ **Read the balance BEFORE the stop.** Reading it after throws, and a throw between
+`stopNns` and the `try` skips the `finally` — which leaves the ledger stopped for every
+scenario after this one. That is how one mistake became nine failures elsewhere.
+
+Stopping the cycles ledger is what makes the delivery failure paths reachable end to
+end: an order parks at `#paid` with a journalled intent and no block, which is the
+shape every unknown-position scenario needs (11, 35, 47, 75, 76, 78).
 
 **What genuinely remains out of reach:**
 
