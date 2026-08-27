@@ -34,6 +34,14 @@
 /// `reserve_status` exposes. Neither property is a reason to leak the secret;
 /// both are reasons the launch decision does not need SEV to be sound.
 ///
+/// ⚠️ **And the one way a stock is worse, stated because an argument that only lists
+/// its own advantages is advocacy.** A cap spreads a loss across periods and so
+/// bounds how fast it can happen; a stock can go in a single burst between the leak
+/// and its rotation. The design accepts that and controls it by *sizing* — keep in
+/// the account what you are willing to lose in one go (RUNBOOK §1) — and by the step
+/// ordering in §2, which refunds the reserve only after the secret is dead. Both are
+/// procedure rather than mechanism, which is exactly why they are written down.
+///
 /// The two secrets differ in what a leak buys an attacker, which is worth
 /// knowing when choosing key scopes: the webhook secret lets them forge "paid"
 /// events, so it spends the reserve. A restricted `rk_` API key scoped to

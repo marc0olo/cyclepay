@@ -607,11 +607,16 @@ They answer different questions and neither replaces the other:
 The plan is a **precondition** to `RUNBOOK.md` §1: the go-live checklist assumes
 the rail has already been shown to work.
 
-⚠️ **Configuration is not duplicated, and the values differ on purpose.**
-`scripts/stripe-dev.sh` bootstraps *dev* values — 2-minute alert threshold, float
-gating off, `expected_livemode = false` — so failure modes are reachable inside a
-session. (It set a 10-minute order TTL too, until #33 deleted retention: the
-deadline is Stripe's now, and nothing local shortens it.) **None of them are safe on mainnet.** `RUNBOOK.md` §1
+⚠️ **Configuration is not duplicated, and the two scripts own different halves.**
+`scripts/stripe-dev.sh` sets only the two Stripe-side values: `expected_livemode =
+false`, and the forwarding session's signing secret. `scripts/local-dev-seed.sh` owns
+the money levers, and it sets the **mainnet** delivery timeline (2 h alert, 72 h max
+hold) rather than dev values — so on a local `icp network` the delay path needs two
+hours of patience or a hand-called `set_delivery_config`.
+⚠️ **Only the PocketIC harness shortens it**, to a 2-minute alert (`sandbox.ts`),
+which is why that is the harness to reach for when you want to *see* a delay alert.
+Neither script sets an order TTL: the deadline is the Stripe session's own, and
+nothing local shortens it. `RUNBOOK.md` §1
 is the sole authority for go-live configuration.
 
 Where this plan states an *expected outcome* (a Type 1 entry, a `#unprocessable`,

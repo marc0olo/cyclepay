@@ -67,9 +67,10 @@ async function main(): Promise<void> {
   // `#deliveryDelayed` entry appear. The max hold stays at 72 h — an escalation
   // during a demo would be a false alarm, and 35/47/80 cover that path in CI.
   //
-  // This used to be a `DEV_TREASURY` object that nothing applied, so the sandbox
-  // silently ran on the 2 h default and the comment promising otherwise was the only
-  // trace. A config the harness declares but never sends is worse than no config.
+  // ⚠️ **A config a harness declares but never sends is worse than no config**: the
+  // comment promising a short threshold becomes the only trace, and the harness quietly
+  // runs on the default. That has happened here twice — check that a config object in
+  // this directory is actually passed to a setter, not merely defined.
   expectOk(await gw.asAdmin.set_delivery_config({
     alertAfterNs: 120_000_000_000n,
     maxHoldNs: 259_200_000_000_000n,

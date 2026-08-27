@@ -78,7 +78,7 @@ let orderA: Order; let refA: string; // the happy path order
 let orderB: Order; let refB: string; // cycles-ledger delivery
 let orderC: Order; let refC: string; // a delivery through a ledger outage
 let orderE: Order; let refE: string; // upgrade-mid-transfer replay
-let orderF: Order; let refF: string; // treasury max-wait escalation
+let orderF: Order; let refF: string; // max-wait escalation
 /// The escalated order scenario 35 leaves in `needsReview` with a transfer intent
 /// and no block. 76 uses it as the freeze case the reserve reconcile has to survive,
 /// and 77 resolves it — so it is suite-global rather than local to 35.
@@ -1309,7 +1309,7 @@ test('32 — rates going bad after payment cannot affect an order already #paid'
   await ensureRates(gw);
 });
 
-test('33 — an UNDELIVERABLE order alerts and waits, then delivers when the cause clears', async () => {
+test('33 — an UNDELIVERED order alerts and waits, then delivers when the cause clears', async () => {
   await ensureRates(gw);
 
   const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
@@ -1373,9 +1373,9 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
   // Not abandonable before money is involved — nothing to decide about.
   expectErr(await gw.asAdmin.abandon_order(doomed.id, 'too early'));
 
-  // Park it in `#paid` with a real outage. The burn-cap pause that used to hold
-  // an order undelivered was a stale rate or a zero burn cap; neither exists, and
-  // `#paid` is the state that matters here anyway: money in, nothing delivered.
+  // Park it in `#paid` with a real outage — a stopped cycles ledger is the only way to
+  // hold an order undelivered, since delivery reads no rate and asks no other canister.
+  // `#paid` is the state that matters here: money in, nothing delivered.
   await stopNns(gw, CYCLES_LEDGER_ID);
   try {
     expect(await deliverWebhook(gw, checkoutSessionBody({
@@ -1458,8 +1458,8 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   // shape they depend on rather than assuming it.
   orderEscalated = doomed;
 
-  // Parked with a real cycles-ledger outage (#30 PR-A): the burn-cap pause that
-  // used to hold an order undelivered before the ledger outage did.
+  // Parked with a real cycles-ledger outage — the one injectable cause of an
+  // undelivered order.
   // ⚠️ Balance first, THEN stop. Reading it after the stop throws, and a throw
   // between `stopNns` and the `try` skips the `finally` — which leaves the ledger
   // stopped for every scenario after this one. That is how one mistake here

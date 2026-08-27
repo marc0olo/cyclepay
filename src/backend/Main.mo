@@ -1586,12 +1586,11 @@ persistent actor CyclesGateway {
   /// money position may be unknown, its promise stays held (#30 PR-B), and a human
   /// resolves it off-chain. Only `abandon_order` and `record_delivered` end an order.
   ///
-  /// ⚠️ **This was two functions filing two queue kinds for one question (#36).**
-  /// `escalateStuckMint` filed `#stuckMint`; `escalateDelivery` filed
-  /// `#transferUnresolved`, which existed *because* #36 was going to delete the
-  /// other. Folding the kinds folded these: they differed only in which audit tag
+  /// ⚠️ **One escalation function, and resist splitting it again.** Two of them once
+  /// filed two queue kinds for the same question; they differed only in which audit tag
   /// they emitted and whether they read `blockIndex`, and both left the order in the
-  /// same state. Two names for one thing is what this issue exists to remove.
+  /// same state. A second escalation path is a second answer to "where is the money",
+  /// which is the one question that must have exactly one.
   ///
   /// ── EVERY route to `#needsReview` on the delivery path, because the count is
   /// ── claimed elsewhere and a census beats a claim ─────────────────────────────
@@ -1603,7 +1602,7 @@ persistent actor CyclesGateway {
   ///     dedup window, so a replay is no longer protected. Reaching it means a
   ///     ~day-long ledger outage with an hourly sweep and buyer kicks hammering it
   ///     throughout — **expected never**, and documented as such rather than as a
-  ///     routine branch. (Via `escalateStuckMint`, the `#escalate` stage route.)
+  ///     routine branch. Covered by scenario 80.
   ///  2. The ledger's `#escalate` responses — `#TooOld`, `#BadBurn` — arriving here.
   ///     ⚠️ Not a second cause: `#TooOld` **is** case 1 told to us by the ledger
   ///     instead of derived from our own clock, and `#BadBurn` is meaningless for a

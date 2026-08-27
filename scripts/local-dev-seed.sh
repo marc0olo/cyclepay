@@ -294,10 +294,10 @@ step "cycles reserve"
 # there is deliberately no `mint_reserve` — it would mean holding ICP and an
 # ICP-ledger dependency for one operator convenience.
 #
-# ⚠️ **Read the id here, where it is used.** It used to be set in the treasury block
-# above; deleting that block left this line reading an unbound variable, which `set -u`
-# turned into a hard stop three quarters of the way through the seed. Nothing catches
-# that but running it.
+# ⚠️ **Read the id here, where it is used.** Reading it in an earlier section that a
+# later change deletes leaves this line on an unbound variable, which `set -u` turns
+# into a hard stop three quarters of the way through the seed — after rates and tiers
+# are already configured. That has happened; nothing catches it but running the seed.
 BACKEND_ID="$(icp canister status backend --json | jq -r '.id')"
 [ -n "$BACKEND_ID" ] && [ "$BACKEND_ID" != "null" ] ||
   die "could not read the backend canister id — is the network up and the canister deployed?"

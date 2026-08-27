@@ -78,7 +78,8 @@ consciously set. Work the list in order:
    webhook secret drains at most what the reserve holds (§2), and nothing caps that —
    so the answer to "how much do we keep in it?" is *risk appetite first, sales
    velocity second*. Size it to what you are willing to lose between a leak and its
-   detection, and top up on a cadence rather than keeping months of float on hand.
+   detection, and top up on a cadence rather than parking months of stock in the
+   account.
 3. **Provision the webhook secret** (§2 below). Until set, the webhook
    route answers 503 and Stripe retries.
 4. **Register card tiers** (§3 below). Until set, the tier list is empty
@@ -213,6 +214,12 @@ it once the endpoint is confirmed working.
    `refresh_reserve` so the gateway observes it. ⚠️ **There is no "resume held
    orders" step** — an order refused for `#reserveShort` was never created, so
    nothing is waiting to be released. Legitimate buyers retry and succeed.
+
+   ⚠️ **The order of steps 2–4 is itself the control, so do not renumber them.**
+   Refunding the reserve before the secret is rolled hands the attacker a freshly
+   funded account and the capability to drain it again — the reserve's usefulness as
+   a bound depends entirely on cycles re-entering the account *after* the forgery
+   capability is dead. Rotate, then reconcile, then refund.
 
 ## 3. Presets, the API key, and the settings that must stay off (§3, §6.1)
 
@@ -785,8 +792,8 @@ icp canister call backend process_order '("<orderId>")' -e ic --identity <operat
   is what you call right after `icp cycles transfer`.
 - `process_order` is the safe-to-spam manual kick for one order
   (per-order single-flight; `#inFlight` just means it's already being
-  driven). Use it to resume a specific held order immediately after a
-  float refill or cap change instead of waiting for the sweep.
+  driven). Use it to retry one order the moment its cause is fixed — the reserve
+  refunded, the cycles ledger back — instead of waiting for the sweep.
   ⚠️ **It is admin *or* the order's own owner** since #30 PR-B, so a buyer's page
   refresh heals their own stuck delivery in seconds rather than at sweep cadence. It
   does **not** make the sweep optional: the sweep is the guarantee (we took the money,

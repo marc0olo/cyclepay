@@ -21,7 +21,7 @@ mainnet runs, kept in sync with the instance topology by the server), and the
 - **NNS governance** — the CMC's ICP/XDR conversion rate is set by calling
   `set_icp_xdr_conversion_rate` with the governance canister principal as
   sender (PocketIC permits arbitrary senders).
-- **Time** — staleness windows, the recovery timer, and the treasury
+- **Time** — staleness windows, the recovery timer, and the delivery
   max-wait are driven with PocketIC time control; mid-flight interruption
   tests step rounds one tick at a time and upgrade the canister inside the
   §5.1 ambiguity windows.

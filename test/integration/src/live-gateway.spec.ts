@@ -7,12 +7,6 @@ import {
   type Gateway,
 } from './harness';
 
-const WORKING_TREASURY = {
-  burnCapE8s: 50_000_000_000n, burnWindowNs: 86_400_000_000_000n,
-  alertAfterNs: 7_200_000_000_000n, maxHoldNs: 259_200_000_000_000n,
-  lowFloatThresholdE8s: 0n,
-};
-
 let gw: Gateway;
 beforeAll(async () => { gw = await setupGateway(); }, 180_000);
 afterAll(async () => { await teardownGateway(gw); });

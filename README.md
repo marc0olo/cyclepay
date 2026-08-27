@@ -39,7 +39,7 @@ Key documents:
 | `docs/STRIPE.md` | **Start here.** The Card rail end to end, written from the code: ingress, session creation, signature verification, attribution, dedup, pricing, the order lifecycle, refunds, the two secrets, and the local Stripe-sandbox loop |
 | `docs/TEST-COVERAGE.md` | What is tested, how, and what is not — one place to answer "is X covered?" |
 | `docs/SANDBOX-TESTPLAN.md` | The manual Stripe-sandbox verification pass required before go-live, and an explicit statement of what a green run does not prove |
-| `RUNBOOK.md` | Operations, authoritative for procedure: go-live checklist, secret rotation, rate diagnosis, treasury levers, error-queue triage, monitoring plan |
+| `RUNBOOK.md` | Operations, authoritative for procedure: go-live checklist, secret rotation, rate diagnosis, reserve funding and sizing, error-queue triage, monitoring plan |
 | `RELEASE.md` | Reproducible build and module-hash verification procedure |
 | `AGENTS.md` | Agent instructions: ICP skills setup, conventions, the verification gate |
 
@@ -77,7 +77,7 @@ five axes at once, and the result looks like a broken app rather than a safe one
 |---|---|
 | "No amounts are configured yet" | No presets are registered. Since #33 that is **not** a paused rail — a custom amount still works; run the seed to register the tiles |
 | "No exchange rate available yet" | Pricing needs the CMC rate, which only NNS governance can set |
-| "temporarily unavailable while the gateway is topped up" | `minCanisterCycles` defaults to 5 T and `icp deploy` creates the canister with less, so the gate refuses every purchase. This one is about the canister's own **gas**, not the treasury; the seed script fixes it with `icp canister top-up backend --amount 20t`, which is what you would do on mainnet, rather than by lowering the floor |
+| "temporarily unavailable while the gateway is topped up" | `minCanisterCycles` defaults to 5 T and `icp deploy` creates the canister with less, so the gate refuses every purchase. This one is about the canister's own **gas**, not the cycles it sells; the seed script fixes it with `icp canister top-up backend --amount 20t`, which is what you would do on mainnet, rather than by lowering the floor |
 | Orders are paid but never delivered | The **cycles reserve** is empty — delivery transfers from the gateway's own cycles-ledger account, so it needs funding with `icp cycles transfer`. The seed does this; without it an order pays and then retries delivery forever |
 
 `scripts/local-dev-seed.sh` sets all five and verifies a $5 purchase is admitted
@@ -132,9 +132,9 @@ scripts/stripe-dev.sh                     # asserts the gateway can price, then 
 ```
 
 The two scripts own different levers and the order matters: `local-dev-seed.sh` owns
-the money (tiers, treasury, float, the CMC rate, the canister's own cycles) and
-`stripe-dev.sh` owns Stripe (expected livemode, the forwarding session's signing
-secret, forwarding). Run the seed first.
+the money (tiers, the cycles reserve, the delivery timeline, the CMC rate, the
+canister's own gas) and `stripe-dev.sh` owns Stripe (expected livemode, the forwarding
+session's signing secret, forwarding). Run the seed first.
 
 **For the full buy → pay → deliver → link the CLI → see the cycles walkthrough,
 including the local Internet Identity step and how to prove the cycles arrived, see
@@ -244,8 +244,8 @@ See `docs/TEST-COVERAGE.md` for what each suite covers and what is not covered.
 There are three suites:
 
 **1. Motoko unit tests** (`test/*.test.mo`) — one suite per module, pure-logic
-(state machine, idempotency, HMAC/Stripe signatures, HTTP routing, pricing,
-treasury caps, …):
+(state machine, idempotency, HMAC/Stripe signatures, HTTP routing, pricing, the
+admission gate, the delivery decision, the reserve floor, …):
 
 ```sh
 mops test

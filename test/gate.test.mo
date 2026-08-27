@@ -4,7 +4,7 @@ import Text "mo:core/Text";
 
 // Unit suite for the pre-creation admission gate. Every case is pure
 // arithmetic over an Observation, so the whole admission policy is pinned here
-// without an IC environment — the same seam style as Treasury/Recovery.
+// without an IC environment — the same seam style as Delivery/Recovery.
 
 /// An observation that admits: room on every axis.
 let healthy : Gate.Observation = {

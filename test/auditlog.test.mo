@@ -7,7 +7,7 @@ import AuditLog "../src/backend/AuditLog";
 suite("audit log ring buffer", func() {
   test("append returns the event and retains oldest -> newest", func() {
     let log = AuditLog.emptyLog();
-    let a = AuditLog.append(log, 10, 100, "treasury.lowFloat", "below threshold");
+    let a = AuditLog.append(log, 10, 100, "delivery.sent", "3.5 T to the buyer");
     let b = AuditLog.append(log, 10, 200, "dedup.drop", "evt_1 redelivered");
     assert a.seq == 0;
     assert b.seq == 1;
