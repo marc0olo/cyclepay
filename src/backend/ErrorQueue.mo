@@ -34,32 +34,39 @@ module {
     #unattributed : { claimedRef : Text; paymentRef : Text };
     /// Type 2 — minted, but forward failed (e.g. target canister deleted).
     #undeliverable : { orderId : Types.OrderId; cycles : Nat };
-    /// §5.1/§5.3/§6.2 escalation — a money pipeline stopped where it cannot
-    /// continue automatically (stale mint intent whose transfer fate is
-    /// unknowable, a CMC rejection/refund, an ambiguous forward, a treasury
-    /// hold past its max wait — there the position is certain: fiat in,
-    /// nothing minted — or a pull intent aged past the ledger dedup
-    /// window). Neither Type 1 nor Type 2: the operator inspects the
-    /// ledger/CMC/destination, then refunds or re-delivers manually.
-    /// `stage` = Cmc.EscalateReason text, "treasuryWaitExceeded", or
-    /// "stalePullIntent".
-    #stuckMint : { orderId : Types.OrderId; stage : Text };
-    /// #30 PR-A — a reserve delivery whose outcome cannot be established
-    /// automatically. Neither Type 1 nor Type 2: the fiat is in and whether the
-    /// cycles left the reserve is **unknown**, which is precisely why it cannot
-    /// be retried. The operator's question is *"did this transfer land?"*,
-    /// answerable from the cycles ledger by the order id in the transfer's memo
-    /// — not *"should we refund?"*.
+    /// **A delivery stopped somewhere it cannot continue automatically.** Neither
+    /// Type 1 nor Type 2: the fiat is in, and what happens next depends on the money
+    /// position rather than on the reason it stopped.
+    ///
+    /// ⚠️ **`stage` IS the money position, and it is what the operator acts on.**
+    /// `Cmc.terminationFor` derives it from the **journal** rather than the status,
+    /// because one status covers several positions:
+    ///
+    ///   - `staleIntent` — a transfer was issued and no block was recorded, and the
+    ///     intent is past the ledger's ~24 h dedup window. **Unknown**: the question
+    ///     is *"did this transfer land?"*, answerable on the cycles ledger by the
+    ///     order id in the transfer's memo. Never "should we refund?" — refunding a
+    ///     buyer who already holds the cycles pays twice.
+    ///   - `deliveryWaitExceeded` — §5.3's 72 h bound on an order where **nothing was
+    ///     ever sent**. **Certain**: fiat in, nothing moved, refund in the Stripe
+    ///     Dashboard.
+    ///   - `transferRejected` / `journalInconsistent` — the ledger refused this call
+    ///     definitively, or the intent contradicts the order. Establish the fate
+    ///     before re-sending.
     ///
     /// `blockIndex` is present only in the should-be-unreachable case where the
-    /// transfer is known to have landed and the order never moved; a `null` one
-    /// is the ordinary ambiguous case.
+    /// transfer is known to have landed and the order never moved; a `null` one is
+    /// the ordinary case.
     ///
-    /// ⚠️ Its own kind rather than `#stuckMint` because #36 deletes that one with
-    /// the mint path, and nothing else names a successor — every "resolve the
-    /// queue entry" sentence in #30 would otherwise refer to a type that stops
-    /// existing.
-    #transferUnresolved : { orderId : Types.OrderId; blockIndex : ?Nat };
+    /// ⚠️ **This replaced `#stuckMint` and `#transferUnresolved`, which were one
+    /// question wearing two names (#36).** `#stuckMint` was a misnomer the moment
+    /// #30 PR-A stopped minting; `#transferUnresolved` existed *because* #36 was
+    /// going to delete `#stuckMint`, and its narrower meaning ("did it land?") could
+    /// not carry the certain position, which would have left "fiat in, nothing sent"
+    /// with no kind at all. Folding cost nothing: both were `isType1 = false` and
+    /// `paymentRefOf = null`, so only the payloads differed, and the union of them is
+    /// what an operator needs. One kind, `stage` for the position.
+    #deliveryStuck : { orderId : Types.OrderId; stage : Text; blockIndex : ?Nat };
     /// Neither Type 1 nor Type 2 — the money moved *both* ways. A
     /// `charge.refunded` arrived for a payment that had already been delivered
     /// as cycles, so the fiat went back to the payer and the cycles are
@@ -121,14 +128,13 @@ module {
   public func isType1(kind : Kind) : Bool {
     switch (kind) {
       case (#duplicate(_) or #unattributed(_)) true;
-      case (#undeliverable(_) or #stuckMint(_) or #refundAfterDelivery(_)) false;
+      case (#undeliverable(_) or #deliveryStuck(_) or #refundAfterDelivery(_)) false;
       case (#deliveryDelayed(_) or #abandoned(_) or #unprocessable(_)) false;
       // NOT Type 1. Type 1 means "fiat in, nothing minted" — a settled position
       // the operator refunds. Here whether the cycles moved is unknown, so
       // calling it Type 1 would tell them to refund a buyer who may already hold
       // their cycles.
-      case (#transferUnresolved(_)) false;
-    };
+          };
   };
 
   /// Bound on attacker-supplied text stored in an entry. `claimedRef` comes
@@ -144,7 +150,7 @@ module {
   };
 
   /// The payment reference a `charge.refunded` resolves — Type 1 only.
-  /// (`#stuckMint` carries no paymentRef: the order store doesn't retain the
+  /// (`#deliveryStuck` carries no paymentRef: the order store doesn't retain the
   /// payment_intent, and a refund alone doesn't settle an uncertain mint.)
   public func paymentRefOf(kind : Kind) : ?Text {
     switch (kind) {
@@ -154,17 +160,16 @@ module {
       // from `resolveByPaymentRef`: the refund is what created the entry, so
       // auto-resolving on it would close the loss the instant it was recorded.
       // Only a human closes this one.
-      case (#undeliverable(_) or #stuckMint(_) or #refundAfterDelivery(_)) null;
+      case (#undeliverable(_) or #deliveryStuck(_) or #refundAfterDelivery(_)) null;
       // None of these is settled by a refund landing: a delay wants its cause
       // fixed, an abandonment was already a conscious decision, and an
       // unprocessable event has no established money position to settle.
       case (#deliveryDelayed(_) or #abandoned(_) or #unprocessable(_)) null;
-      // Same reasoning as #stuckMint, and sharper: a refund arriving does not
+      // Same reasoning as #deliveryStuck, and sharper: a refund arriving does not
       // tell us whether the cycles left the reserve, which is the only open
       // question. Auto-resolving on it would close an entry whose answer nobody
       // has looked up.
-      case (#transferUnresolved(_)) null;
-    };
+          };
   };
 
   public type Entry = {

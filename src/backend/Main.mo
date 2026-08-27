@@ -25,6 +25,7 @@ import IC "mo:ic/Types";
 import AuditLog "AuditLog";
 import Auth "Auth";
 import Cmc "Cmc";
+import Delivery "Delivery";
 import ErrorQueue "ErrorQueue";
 import Pricing "Pricing";
 import Xrc "Xrc";
@@ -71,6 +72,20 @@ persistent actor CyclesGateway {
   /// migration rather than a config tweak: existing buyers get new principals and
   /// cannot see their old orders. Choose it once (#40/#23).
   var stripeOrigin : ?Text = null;
+
+  /// The delivery timeline's two thresholds, read from the treasury config until the
+  /// deletion commit trims that record (#36).
+  ///
+  /// ⚠️ **This is a projection, not a copy.** `Delivery.waitStage` owns the bound now
+  /// — see its doc for why it survived `Treasury.mo`'s Delete list — and the two
+  /// fields it needs are still carried on the public `set_treasury_config` record
+  /// alongside three that are dead config (`Treasury.gate` lost its only entrance in
+  /// #30 PR-A). Trimming the Candid record is the deletion's job; moving the bound is
+  /// this commit's, and keeping them separate is what makes "no behaviour changed"
+  /// checkable.
+  func deliveryWaitConfig() : Delivery.Config {
+    { maxHoldNs = treasuryConfig.maxHoldNs; alertAfterNs = treasuryConfig.alertAfterNs };
+  };
 
   /// §7 admin authz: caller ∈ controllers (flat allowlist, equal
   /// privileges — see Auth.mo). Traps rather than returning an error so an
@@ -1661,17 +1676,17 @@ persistent actor CyclesGateway {
     result.entry.id;
   };
 
-  /// §5.1 escalation: the mint stopped where the money position is
-  /// uncertain. The order goes `#needsReview` — **not** `#abandoned`: the money
-  /// position is unknown, so its promise stays held (#30) and a human resolves it
-  /// off-chain (inspect ledger/CMC/destination, refund/re-deliver). Only
-  /// `abandon_order` ends an order.
-  /// #30 PR-A escalation: a reserve delivery whose fate cannot be established.
+  /// **The one escalation.** A delivery stopped where it cannot continue
+  /// automatically, so the order goes `#needsReview` — **not** `#abandoned`: the
+  /// money position may be unknown, its promise stays held (#30 PR-B), and a human
+  /// resolves it off-chain. Only `abandon_order` and `record_delivered` end an order.
   ///
-  /// Same shape as `escalateStuckMint` and deliberately NOT folded into it — the
-  /// queue kinds differ (`#transferUnresolved` survives #36, `#stuckMint` does
-  /// not) and so does the operator's question. Here it is "did this transfer
-  /// land?", answerable from the cycles ledger by the order id in the memo.
+  /// ⚠️ **This was two functions filing two queue kinds for one question (#36).**
+  /// `escalateStuckMint` filed `#stuckMint`; `escalateDelivery` filed
+  /// `#transferUnresolved`, which existed *because* #36 was going to delete the
+  /// other. Folding the kinds folded these: they differed only in which audit tag
+  /// they emitted and whether they read `blockIndex`, and both left the order in the
+  /// same state. Two names for one thing is what this issue exists to remove.
   ///
   /// ── EVERY route to `#needsReview` on the delivery path, because the count is
   /// ── claimed elsewhere and a census beats a claim ─────────────────────────────
@@ -1716,25 +1731,15 @@ persistent actor CyclesGateway {
       case null null;
     };
     Cmc.patch(deliveryJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
+    // Any open delay alert for this order says "it delivers on the next sweep", which
+    // just stopped being true. Leaving it open would put a false promise on the
+    // worklist next to the real problem, and leak its `delayedAlerts` entry forever.
     clearDelayed(order.id);
+    // Same for the once-per-order audit guard: nothing will re-audit a blocked
+    // delivery for an escalated order, and keeping the id would only suppress a
+    // legitimate line if it were ever re-driven.
     deliveryBlockedAudited.remove(order.id);
-    ignore queueDeliveryError(order.rail, #transferUnresolved({ orderId = order.id; blockIndex }), detail);
-    audit("delivery.unresolved", order.id # " [" # stage # "]: " # detail);
-  };
-
-  func escalateStuckMint(order : Types.Order, stage : Text, detail : Text) {
-    ignore tryTransition(order.id, #needsReview);
-    Cmc.patch(deliveryJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesMinted = null; bumpRetries = false }, Time.now());
-    // Before queueing the escalation: any open delay alert for this order says
-    // "it delivers on the next sweep", which just stopped being true. Leaving it
-    // open would put a false promise on the worklist next to the real problem,
-    // and leak its `delayedAlerts` entry forever.
-    clearDelayed(order.id);
-    // Same reasoning for the once-per-order audit guard: the order is terminal,
-    // so nothing will re-audit a mint block for it and keeping the id would only
-    // suppress a legitimate line if it were ever re-driven.
-    deliveryBlockedAudited.remove(order.id);
-    ignore queueDeliveryError(order.rail, #stuckMint({ orderId = order.id; stage }), detail);
+    ignore queueDeliveryError(order.rail, #deliveryStuck({ orderId = order.id; stage; blockIndex }), detail);
     audit("delivery.stuck", order.id # " [" # stage # "]: " # detail);
   };
 
@@ -1793,7 +1798,7 @@ persistent actor CyclesGateway {
       // its current state.
       switch (order.status) {
         case (#paid or #minting or #icpAtCmc) {
-          switch (Treasury.waitStage(order.updatedAtNs, Time.now(), treasuryConfig)) {
+          switch (Delivery.waitStage(order.updatedAtNs, Time.now(), deliveryWaitConfig())) {
             case (#retry) {};
             case (#alert) {
               // Tell someone while the cause is still fixable, and keep retrying:
@@ -1827,7 +1832,7 @@ persistent actor CyclesGateway {
               // status alone is what produced three rounds of defects — see that
               // function's doc for the specific dangerous cell it closes.
               let termination = Cmc.terminationFor(order.status, deliveryJournal.get(orderId));
-              escalateStuckMint(order, termination.stage, termination.detail);
+              escalateDelivery(order, termination.stage, termination.detail);
               clearDelayed(orderId);
               deliveryBlockedAudited.remove(orderId);
               return;
@@ -1838,7 +1843,7 @@ persistent actor CyclesGateway {
       };
       let stage : Cmc.Stage = switch (order.status) {
         case (#awaitingTreasury) {
-          switch (Treasury.waitStage(order.updatedAtNs, Time.now(), treasuryConfig)) {
+          switch (Delivery.waitStage(order.updatedAtNs, Time.now(), deliveryWaitConfig())) {
             case (#retry) #begin;
             case (#alert) {
               // A hold clears the moment the window rolls or the float is
@@ -1851,7 +1856,7 @@ persistent actor CyclesGateway {
               // is exactly one place that maps a money position to an
               // instruction.
               let termination = Cmc.terminationFor(order.status, deliveryJournal.get(orderId));
-              escalateStuckMint(order, termination.stage, termination.detail);
+              escalateDelivery(order, termination.stage, termination.detail);
               clearDelayed(orderId);
               deliveryBlockedAudited.remove(orderId);
               return;
@@ -1890,7 +1895,7 @@ persistent actor CyclesGateway {
               "stopped because: " # stage # ". Money position is " # position.stage
               # " — " # position.detail;
             };
-          escalateStuckMint(order, stage, detail);
+          escalateDelivery(order, stage, detail);
           return;
         };
         case (#begin) {
@@ -1980,11 +1985,11 @@ persistent actor CyclesGateway {
               // event, not something to absorb. Same verdict this had before #30
               // split the case out — only now the ICP path says so itself
               // instead of the shared table deciding for both ledgers.
-              escalateStuckMint(order, "transferRejected", "ledger fee changed: expected " # expected.toText() # " e8s");
+              escalateDelivery(order, "transferRejected", "ledger fee changed: expected " # expected.toText() # " e8s");
               return;
             };
             case (#escalate(detail)) {
-              escalateStuckMint(order, "transferRejected", detail);
+              escalateDelivery(order, "transferRejected", detail);
               return;
             };
           };
@@ -2279,7 +2284,7 @@ persistent actor CyclesGateway {
               // to top the buyer up; the position is fully recoverable and the
               // cycles are real.
               if (Cmc.isMaterialShortfall(cycles, order.lockedCycles)) {
-                escalateStuckMint(
+                escalateDelivery(
                   order,
                   "mintShortfall",
                   "CMC minted " # cycles.toText() # " cycles but the order locked "
@@ -2295,7 +2300,7 @@ persistent actor CyclesGateway {
               return;
             };
             case (#escalate(detail)) {
-              escalateStuckMint(order, "notifyRejected", detail);
+              escalateDelivery(order, "notifyRejected", detail);
               return;
             };
           };

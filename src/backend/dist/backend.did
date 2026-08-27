@@ -259,6 +259,11 @@ type Kind =
                       sinceNs: int;
                       stage: text;
                     };
+   deliveryStuck: record {
+                    blockIndex: opt nat;
+                    orderId: OrderId;
+                    stage: text;
+                  };
    duplicate: record {
                 orderId: OrderId;
                 paymentRef: text;
@@ -271,14 +276,6 @@ type Kind =
       paymentRef: text;
       refundedCents: nat;
     };
-   stuckMint: record {
-                orderId: OrderId;
-                stage: text;
-              };
-   transferUnresolved: record {
-                         blockIndex: opt nat;
-                         orderId: OrderId;
-                       };
    unattributed: record {
                    claimedRef: text;
                    paymentRef: text;

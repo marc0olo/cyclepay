@@ -613,7 +613,7 @@ rail-specific summary:
 | Type 1 `#unattributed` | 200 | **fiat in, nothing minted** | refund in Stripe — the only remedy since #33. Includes an `amount_total` that is not the quoted one, which additionally means a Stripe setting is moving the total (§8) |
 | Type 1 `#duplicate` | 200 | **fiat in ×2, minted ×1** | refund the second charge |
 | Type 2 `#undeliverable` | 200 | **cycles minted, in the app's own balance** | re-deliver or refund |
-| `#stuckMint` | 200 | **uncertain** — see the stage | per-stage rules in RUNBOOK §6 |
+| `#deliveryStuck` | 200 | **uncertain** — see the stage | per-stage rules in RUNBOOK §6 |
 | `#refundAfterDelivery` | 200 | **fiat out, cycles out** — a loss | reconcile; consider restricting the payer |
 | `#deliveryDelayed` | 200 | **fiat in, mint still retrying** — nothing lost | an alert at 2 h, not a failure: clear the cause (float, burn cap) and it **self-resolves on delivery** |
 

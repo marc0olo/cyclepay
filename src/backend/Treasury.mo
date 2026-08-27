@@ -196,22 +196,12 @@ module {
     #proceed;
   };
 
-  /// The §5.3 timeline for an order with money in and nothing delivered.
-  ///
-  /// Three outcomes, not two: quiet retry while it is probably transient, then
-  /// an alert while it is still fixable, then termination once it plainly is not.
-  /// Splitting these is what lets the alert be early *without* making the
-  /// give-up early too.
-  public func waitStage(
-    heldSinceNs : Int,
-    nowNs : Int,
-    config : Config,
-  ) : { #retry; #alert; #terminate } {
-    let waited = nowNs - heldSinceNs;
-    if (waited >= config.maxHoldNs) return #terminate;
-    if (waited >= config.alertAfterNs) return #alert;
-    #retry;
-  };
+  /// ⚠️ **`waitStage` moved to `Delivery.mo` (#36).** It was the one item on this
+  /// module's Delete list that is not dead: it drives the 2 h alert / 72 h terminate
+  /// timeline for `#paid`, the live delivery path, and #30 PR-B made that bound
+  /// load-bearing for the `#needsReview` route census and for `abandon_order`'s
+  /// unsettled-delivery guard. Everything left in this module is ICP machinery with
+  /// no entrance since PR-A.
 
   /// Float observation cache shape — queries can't call the ledger, so the
   /// balance-alert query reads the last value the mint path (or an admin

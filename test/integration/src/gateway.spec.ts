@@ -1517,7 +1517,7 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   }
 
   const entry = (await openErrorEntries(gw)).find(
-    (e) => 'stuckMint' in e.kind && e.kind.stuckMint.orderId === doomed.id,
+    (e) => 'deliveryStuck' in e.kind && e.kind.deliveryStuck.orderId === doomed.id,
   ) as ErrorEntry;
   expect(entry).toBeDefined();
   // ⚠️ The money position must say NOTHING WAS DELIVERED, because the action it
@@ -1552,7 +1552,7 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   expect(await orderStatus(gw, settled.order.id)).toBe('delivered');
   expect((await openErrorEntries(gw)).filter(
     (e) => ('deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === settled.order.id)
-      || ('stuckMint' in e.kind && e.kind.stuckMint.orderId === settled.order.id),
+      || ('deliveryStuck' in e.kind && e.kind.deliveryStuck.orderId === settled.order.id),
   )).toHaveLength(0);
   // ⚠️ This scenario advanced the clock by ~170 h in total, which stales BOTH
   // rates. `ensureRates` alone is not enough — the CMC rate needs governance to
@@ -2024,7 +2024,7 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes(doomed.id),
   );
   expect(openForOrder).toHaveLength(1);
-  expect(openForOrder[0]!.kind).toMatchObject({ stuckMint: { orderId: doomed.id } });
+  expect(openForOrder[0]!.kind).toMatchObject({ deliveryStuck: { orderId: doomed.id } });
   // ⚠️ ~80 h of clock advance stales both rates; see the README.
   await setCmcRate(gw);
   await ensureRates(gw);
