@@ -349,15 +349,28 @@ too.
 ### One command: `npm --prefix test/integration run sandbox`
 
 Boots PocketIC with everything, aligns the clock, bootstraps dev config, goes live,
-prints the webhook URL and a ready-made order, and stays up until Ctrl-C.
+prints the webhook URL, and stays up until Ctrl-C.
 
 ```sh
 stripe login                                  # a SANDBOX account, never live
 STRIPE_WEBHOOK_SECRET="$(stripe listen --print-secret)" \
+STRIPE_API_KEY=rk_...                         \
   npm --prefix test/integration run sandbox
 # then, second terminal:
 stripe listen --forward-to '<the URL it prints>'
 ```
+
+⚠️ **`STRIPE_API_KEY` is what makes an order possible, not just a payment.** The rail
+creates a Checkout Session per order, so `create_order` itself calls Stripe — without
+a key the harness boots and says so, and everything except ordering works. Use a
+**restricted** key (`rk_...`) scoped to write Checkout Sessions and nothing else: a
+leaked write-sessions key can only create sessions that pay *us*, while an
+unrestricted `sk_` can issue refunds.
+
+⚠️ **It lowers `minPurchaseUsdCents` to $1**, because its whole numeric vector is the
+$5 at-cost case (500¢ − 45¢ fee = 455¢ = exactly one ICP at $4.55 = 3.5 T cycles) and
+the gate's real floor is $10. That is a dev value like the 2-minute alert, not a
+mainnet one.
 
 Everything is fake money and real plumbing: a real cycles ledger, a real CMC rate, real
 cycles delivery, genuine signed Stripe events over a genuine HTTP gateway.

@@ -44,6 +44,18 @@ async function main(): Promise<void> {
   await setCmcRate(gw);
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_webhook_secret(SECRET));
+
+  // ⚠️ **Lower the floor before registering the tier, or nothing here works.** The
+  // gate's `minPurchaseUsdCents` default is $10 and `TIER_USD_CENTS` is $5, so
+  // `set_card_tiers` refuses with `#belowFloor` and the harness dies before it prints
+  // anything. `gateway.spec.ts` does the same thing for the same reason.
+  //
+  // The $5 figure is not arbitrary and is not worth changing: 500¢ gross − 45¢ fee =
+  // 455¢ net = **exactly one ICP** at $4.55, worth exactly 3.5 T cycles at the seeded
+  // CMC rate. Every number a human checks in this harness comes off that vector, so
+  // the floor moves rather than the amount.
+  const gateDefaults = (await gw.asAnon.lifecycle_config()).gate;
+  expectOk(await gw.asAdmin.set_gate_config({ ...gateDefaults, minPurchaseUsdCents: 100n }));
   expectOk(await gw.asAdmin.set_card_tiers([
     { id: 'tier5', usdCents: TIER_USD_CENTS },
   ]));
@@ -111,18 +123,41 @@ async function main(): Promise<void> {
   TTL of ours — the deadline is the Stripe session's own ~35 minutes.
 `);
 
-  // Create a first order so there is something to pay immediately.
-  // One destination, and the gateway refuses any other (#29): the caller's own
-  // cycles-ledger account, default subaccount.
-  const created = expectOk(
-    await gw.asUser.create_order(
-      { tier: 'tier5' },
-      { cyclesLedgerAccount: { owner: user.getPrincipal(), subaccount: [] } },
-      [],
-    ),
-  );
-  console.log(`  ready-made order      ${created.order.id}`);
-  console.log(`  clientReferenceId     ${clientReferenceFor(created.order.id)}\n`);
+  // ⚠️ **An order cannot be created without the Stripe API key.** Since the rail
+  // creates a Checkout Session per order, `create_order` calls Stripe and fails with
+  // `#sessionUnavailable` when no key is provisioned — so this harness cannot
+  // pre-create an order the way it used to, and used to die here with a raw
+  // `expected #ok, got {"err":{"sessionUnavailable":...}}`.
+  //
+  // The key comes from the environment, never from source and never from a command
+  // line: it must be a **restricted** key (`rk_...`) scoped to write Checkout Sessions
+  // and nothing else. A leaked write-sessions key can only create sessions that pay
+  // *us*; an unrestricted `sk_` can issue refunds, which is materially worse to leak.
+  //
+  //   STRIPE_API_KEY=rk_... npm run sandbox
+  //
+  // Without it the harness still boots and everything except paying works — which is
+  // most of what it is for (the banner, the config, the webhook forwarder target).
+  const apiKey = process.env.STRIPE_API_KEY;
+  if (apiKey && apiKey.length > 0) {
+    expectOk(await gw.asAdmin.set_stripe_api_key(apiKey));
+    const created = expectOk(
+      // One destination, and the gateway refuses any other (#29): the caller's own
+      // cycles-ledger account, default subaccount.
+      await gw.asUser.create_order(
+        { tier: 'tier5' },
+        { cyclesLedgerAccount: { owner: user.getPrincipal(), subaccount: [] } },
+        [],
+      ),
+    );
+    console.log(`  ready-made order      ${created.order.id}`);
+    console.log(`  clientReferenceId     ${clientReferenceFor(created.order.id)}\n`);
+  } else {
+    console.log(`  ⚠️  no STRIPE_API_KEY in the environment, so no order was created.
+      Everything except paying works. To make a payable order:
+        STRIPE_API_KEY=rk_... npm run sandbox
+      Use a RESTRICTED key scoped to write Checkout Sessions and nothing else.\n`);
+  }
 
   // Live mode auto-progresses, so nothing needs ticking. Hold the process open.
   console.log('running — Ctrl-C to tear down\n');
