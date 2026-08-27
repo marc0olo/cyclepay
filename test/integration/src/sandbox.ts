@@ -26,17 +26,6 @@ import {
 
 const SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? WEBHOOK_SECRET;
 
-/// Dev values, deliberately not mainnet values: a 2-minute alert threshold so the
-/// delay path is reachable in a session, a 10-minute TTL so expiry is, and
-/// `expected_livemode = false` because a sandbox forwarder sends test-mode events.
-const DEV_TREASURY = {
-  burnCapE8s: 100_000_000_000n,
-  burnWindowNs: 86_400_000_000_000n,
-  alertAfterNs: 120_000_000_000n,
-  maxHoldNs: 259_200_000_000_000n,
-  lowFloatThresholdE8s: 0n,
-};
-
 async function main(): Promise<void> {
   console.log('booting PocketIC (real ICP ledger, CMC, cycles ledger + pinned XRC mock)…');
   const gw = await setupGateway();
@@ -59,6 +48,20 @@ async function main(): Promise<void> {
     { id: 'tier5', usdCents: TIER_USD_CENTS },
   ]));
   await gw.asAdmin.set_expected_livemode([false]);
+
+  // ⚠️ **A 2-minute alert threshold, deliberately not the mainnet 2 h.** The delay
+  // path is the one thing in this harness a human cannot reach by waiting: at the
+  // default an operator would have to keep the session open for two hours to see a
+  // `#deliveryDelayed` entry appear. The max hold stays at 72 h — an escalation
+  // during a demo would be a false alarm, and 35/47/80 cover that path in CI.
+  //
+  // This used to be a `DEV_TREASURY` object that nothing applied, so the sandbox
+  // silently ran on the 2 h default and the comment promising otherwise was the only
+  // trace. A config the harness declares but never sends is worse than no config.
+  expectOk(await gw.asAdmin.set_delivery_config({
+    alertAfterNs: 120_000_000_000n,
+    maxHoldNs: 259_200_000_000_000n,
+  }));
 
   const port = await gw.pic.makeLive();
   const backendId = gw.backendId.toText();

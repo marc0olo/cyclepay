@@ -3141,6 +3141,85 @@ test('78 — an order whose delivery is unsettled cannot be abandoned into a dou
   await ensureRates(gw);
 });
 
+test('80 — an issued intent escalates at the DEDUP window, not at the 72 h max hold', async () => {
+  // ⚠️ **Two time bounds terminate a stuck delivery, and which one fires is not a
+  // detail — it decides the operator's instruction.** Nothing covered this until now:
+  // 35 and 47 both advance ~80 h in a single jump, so no sweep lands between 24 h and
+  // 72 h and the max-hold bound is the only one they can reach. In production the sweep
+  // runs every 15 min, so for an order whose intent WAS issued the 24 h bound always
+  // wins, and the escalation those scenarios exercise is the one that fires least.
+  //
+  // The division of labour, stated because the sweep reads bottom-up and this is easy
+  // to get backwards:
+  //
+  //   - an intent WAS issued  → `stageOf` escalates `staleIntent` at ~24 h. Past the
+  //     dedup window a replay is no longer protected, so retrying could pay twice.
+  //     The instruction is *establish its fate from the ledger*, never re-send.
+  //   - an intent was NEVER issued (reserve short, stored fee above the order) →
+  //     nothing ages, so `stageOf` keeps answering `#beginDelivery` and only the 72 h
+  //     max hold stops it. Nothing was sent, so there is nothing to establish.
+  //
+  // This asserts the first, and asserts it at 25 h — comfortably inside the 72 h bound,
+  // so a pass cannot be the max-hold path in disguise.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+
+  const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
+  const stale = created.order;
+  const reserveBefore = await reserveBalance(gw);
+
+  await stopNns(gw, CYCLES_LEDGER_ID);
+  try {
+    expect(await deliverWebhook(gw, checkoutSessionBody({
+      eventId: 'evt_stale', paymentIntent: 'pi_stale', clientReferenceId: clientReferenceFor(stale.id),
+      amountCents: TIER_USD_CENTS,
+    }))).toMatchObject({ status_code: 200 });
+    await gw.pic.tick(10);
+    expect(await orderStatus(gw, stale.id)).toBe('paid');
+
+    // The intent must exist for this scenario to mean anything: `staleIntent` is
+    // reachable only through a journalled intent with no block. Without this the test
+    // would still go `needsReview` — via `missingJournal` — and assert nothing about
+    // the window.
+    const issued = (await gw.asAdmin.delivery_journal(stale.id))[0]!;
+    expect(issued.transferIntent).toHaveLength(1);
+    expect(issued.blockIndex).toHaveLength(0);
+
+    // 25 h: past the ~24 h dedup window, less than a third of the way to the 72 h max
+    // hold. A sweep here is what production would do; 35 and 47 skip over it.
+    await gw.pic.advanceTime(25 * 3_600 * 1_000);
+    await gw.pic.tick(5);
+    expect(await tickUntilStatus(gw, stale.id, ['needsReview'])).toBe('needsReview');
+
+    // The stage IS the cause, and the runbook's triage table is keyed by it. A pass
+    // here that read `deliveryWaitExceeded` would mean the max-hold bound fired 47 h
+    // early; one that read `missingJournal` would mean the intent never got written.
+    const filed = (await openErrorEntries(gw)).find(
+      (e) => 'deliveryStuck' in e.kind && e.kind.deliveryStuck.orderId === stale.id,
+    );
+    expect(filed).toBeDefined();
+    expect((filed!.kind as { deliveryStuck: { stage: string } }).deliveryStuck.stage).toBe('staleIntent');
+    // No block recorded, so the money position is genuinely unknown — the entry must
+    // not claim otherwise.
+    expect((filed!.kind as { deliveryStuck: { blockIndex: [] | [bigint] } }).deliveryStuck.blockIndex)
+      .toHaveLength(0);
+  } finally {
+    await startNns(gw, CYCLES_LEDGER_ID);
+  }
+
+  // ⚠️ **And it must NOT be re-driven.** `#needsReview` is not sweepable precisely
+  // because the position is unknown; a sweep that re-issued this intent is the double
+  // payment the whole escalation exists to avoid. The reserve is the witness.
+  await gw.pic.advanceTime(30 * 60 * 1_000);
+  await gw.pic.tick(10);
+  expect(await orderStatus(gw, stale.id)).toBe('needsReview');
+  expect(await reserveBalance(gw)).toBe(reserveBefore);
+
+  // ~25 h of clock advance stales both rates; see the README.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+});
+
 // -- 79 was deleted by #36, exactly as it was written to be --------------------
 //
 // It asserted `Minting`, `IcpAtCMC` and `AwaitingTreasury` were tracked and **zero**
