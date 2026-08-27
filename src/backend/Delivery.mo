@@ -112,15 +112,15 @@ module {
   /// later one uses the corrected value. That self-correction is why delivery no
   /// longer awaits `icrc1_fee` — see the stored variable's doc for the trade.
   ///
-  /// ⚠️ This was `cyclesLedgerDepositFee`, documented as disclosed to the buyer
-  /// through `quote_previews`. Both halves stopped being true: #30 PR-A moved
-  /// money-out from `deposit` to `icrc1_transfer` and stopped disclosing the fee in
-  /// the quote (the frontend reads the ledger). It was dead by then — one test
-  /// asserted its ABSENCE from the preview and nothing read it.
+  /// ⚠️ **Not disclosed through `quote_previews`.** The fee applies to the transfer
+  /// the gateway makes, so it is the operator's cost, not a line in the buyer's
+  /// quote; the frontend reads the ledger for what a buyer's own transfer would
+  /// cost. Do not add it to the preview — `docs/STRIPE.md` explains why absorbing
+  /// it rather than grossing it up is the safe direction.
   public let cyclesLedgerDefaultFee : Nat = 100_000_000;
 
 
-  /// The ICP ledger deduplicates on `created_at_time` for ~24 h (§5.1).
+  /// The cycles ledger deduplicates on `created_at_time` for ~24 h (§5.1).
   /// At/after this age an intent without a block_index must escalate, never
   /// replay. (86_400 s in ns; module-level lets must be static — no arithmetic.)
   public let ledgerDedupWindowNs : Int = 86_400_000_000_000;
@@ -229,16 +229,14 @@ module {
     #retriable : Text;
     /// The ledger's fee is not what we passed; it reports the expected one.
     ///
-    /// Its own case because the two callers answer it differently and both are
-    /// right: the ICP mint path escalates (a protocol-wide ICP fee change is not
-    /// something to paper over), while reserve delivery (#30) re-sends with the
-    /// reported fee and **persists it**, so a risen fee is absorbed by the reserve
-    /// rather than shorting the buyer. Returning one verdict here would force one of
-    /// them to be wrong.
+    /// Its own case, and neither retriable nor an escalation: delivery re-sends
+    /// with the reported fee and **persists it**, so a risen fee is absorbed by the
+    /// reserve rather than shorting the buyer.
     ///
-    /// ⚠️ That persistence is what lets delivery stop awaiting `icrc1_fee` at all
-    /// (#30 PR-B): this case IS the fee-refresh mechanism, so a stale stored copy
-    /// costs one rejected call, once, and never a wrong debit.
+    /// ⚠️ **This case IS the fee-refresh mechanism**, which is what lets delivery
+    /// never await `icrc1_fee`: a stale stored copy costs one rejected call, once,
+    /// and never a wrong debit. `#BadFee` is definitive — the ledger tells us the
+    /// number it wants — so the correction cannot loop.
     #badFee : Nat;
     #escalate : Text;
   };
@@ -248,10 +246,10 @@ module {
       case (#Ok(block)) #delivered(block);
       case (#Err(#Duplicate({ duplicate_of }))) #deduplicated(duplicate_of);
       // Retriable: the ledger did NOT record a transfer, and the identical
-      // intent can succeed later (float refilled, ledger back up, ledger
+      // intent can succeed later (reserve refunded, ledger back up, ledger
       // clock caught up to created_at_time).
       case (#Err(#TemporarilyUnavailable)) #retriable("ledger temporarily unavailable");
-      case (#Err(#InsufficientFunds({ balance }))) #retriable("insufficient float: balance " # balance.toText() # " e8s");
+      case (#Err(#InsufficientFunds({ balance }))) #retriable("reserve short: balance " # balance.toText() # " cycles");
       case (#Err(#CreatedInFuture(_))) #retriable("created_at_time ahead of ledger clock");
       case (#Err(#GenericError({ error_code; message }))) #retriable("ledger error " # error_code.toText() # ": " # message);
       // Escalations: replaying the identical args can never succeed.
@@ -271,28 +269,19 @@ module {
     Map.empty<Types.OrderId, Types.JournalEntry>();
   };
 
-  /// §5.1 step 1: persist the intent. Written in the same synchronous block
-  /// as the `#paid → #minting` transition, *before* the transfer await.
+  /// §5.1 step 1: persist the intent. Written in the same synchronous block as the
+  /// status transition, *before* the transfer await — so a trap between the two is
+  /// impossible and there is no window where money moved with no record of it.
   public func openEntry(journal : Journal, order : Types.Order, intent : Types.TransferIntent, nowNs : Int) : Types.JournalEntry {
     let entry : Types.JournalEntry = {
       orderId = order.id;
-      // ⚠️ **The ORDER's status, not a hardcoded one — and this was a real bug.**
-      // It read `#minting` unconditionally, a leftover from when money-out meant the
-      // ICP mint path. Harmless while nothing read the field back: the legacy caller
-      // transitions the order to `#minting` before opening the entry, so the two
-      // agreed there by accident, and every other consumer takes the order's status
-      // as a parameter.
-      //
-      // Then #30 PR-B started reading it. `unsettledDeliveries` — the predicate that
-      // decides whether a reserve observation may be adopted — tests for `#paid`, so
-      // the hardcode made it match **nothing**: the quiet window was always
-      // satisfied, and a reconcile could overwrite the floor while a transfer it
-      // could not see was in flight. Exactly the class of bug the quiet window
-      // exists to prevent, reintroduced by a stale literal three files away.
-      //
-      // Found by a test written for something else entirely (`pending_deliveries`
-      // listing an outstanding delivery), which is the only reason it did not ship:
-      // the scenario that was supposed to cover it passed *vacuously*.
+      // ⚠️ **The ORDER's status, never a literal.** `unsettledDeliveries` — the
+      // predicate deciding whether a reserve observation may be adopted — reads this
+      // field back and tests it for `#paid`. A literal here that disagrees with the
+      // order makes that predicate match nothing, the quiet window is then always
+      // satisfied, and a reconcile can overwrite the reserve floor while a transfer
+      // it cannot see is in flight. A hardcoded status is not a tidiness question here; it
+      // is a silent solvency bug three files away.
       status = order.status;
       destination = order.destination;
       transferIntent = ?intent;
@@ -335,7 +324,6 @@ module {
 
   // ── Resume/replay decision (§5.1, §5.2) ──────────────────────────────────
 
-  /// Why a mint can no longer proceed automatically.
   /// Why the resume decision stopped, when it cannot continue on its own.
   public type EscalateReason = {
     /// The intent is past the ledger's ~24 h dedup window with no recorded block, so
@@ -361,14 +349,15 @@ module {
 
   /// The driver's next move for one order, derived from status + journal.
   public type Stage = {
-    /// Nothing to do (terminal, pre-payment, or treasury-held).
+    /// Nothing to do — the order is terminal or not yet paid.
     #none;
     #beginDelivery;
-    /// #30 PR-A — a fresh delivery intent and no block: (re)issue the identical
-    /// cycles transfer, reading the STORED args and never rebuilding them.
+    /// A fresh delivery intent and no block: (re)issue the identical cycles
+    /// transfer, reading the STORED args and **never rebuilding them** — a rebuilt
+    /// `created_at_time` defeats the ledger's dedup and pays the buyer twice.
     #replayDelivery : Types.TransferIntent;
-    /// The transfer landed and the `#delivered` transition did not (#30 PR-A).
-    /// Carries the block so the journal and the receipt still name it.
+    /// The transfer landed and the `#delivered` transition did not. Carries the
+    /// block so the journal and the receipt still name it.
     #finishDelivery : Nat;
     #escalate : EscalateReason;
   };
@@ -383,13 +372,13 @@ module {
   /// decision lives here as one pure function with every arm pinned by unit test
   /// — the composition is what kept going wrong, not the pieces.
   ///
-  /// The dangerous cell, and the reason this exists: an `#icpAtCmc` order whose
-  /// notify already succeeded (`cyclesDelivered` journaled) died mid-forward. Read
-  /// off the status it looks like "notify never completed", and the instruction
-  /// "notify manually, the ICP is parked" is then **factually wrong** — the ICP
-  /// was consumed, the cycles exist, and they may already be at the destination.
-  /// Following it invites exactly the double delivery `#staleIntent` exists
-  /// to prevent.
+  /// The dangerous cell, and the reason this exists: a `#paid` order whose transfer
+  /// already landed (`blockIndex` journaled) and whose `#delivered` transition never
+  /// ran. Read off the status alone it looks like "never delivered", and the
+  /// instruction that follows — deliver it — is **factually wrong**: the buyer
+  /// already has their cycles. Following it pays twice. That cell is why
+  /// `#landedNotRecorded` is its own reason with its own instruction (record, do not
+  /// send), and why the journal outranks the status here.
   public func terminationFor(
     status : Types.OrderStatus,
     entry : ?Types.JournalEntry,
@@ -446,13 +435,11 @@ module {
   /// Decide the next move. Pure — the §5.1/§5.2 resume semantics in one testable
   /// place.
   ///
-  /// ⚠️ **No retry budget parameter (#36).** It took a `maxRetries` and bounded "the
-  /// stages the 24 h dedup window doesn't already bound — notify can otherwise retry
-  /// forever". #30 PR-B deleted the cap on the delivery path (a replay there is
-  /// provably safe, and the dedup window *is* that bound), and this issue deletes
-  /// `notify_top_up`, which was the only remaining justification. What bounds retrying
-  /// now is time on both ends: the dedup window escalates a stale intent, and §5.3's
-  /// 72 h max-wait gets a human involved.
+  /// ⚠️ **No retry-budget parameter, and do not add one.** Retrying is bounded by
+  /// *time* on both ends: the ~24 h dedup window escalates a stale intent, and §5.3's
+  /// 72 h max-wait gets a human involved. A count-based budget adds nothing between
+  /// those two, and it fails in the wrong direction — exhausting it escalates an
+  /// order that a further replay would have completed.
   public func stageOf(
     status : Types.OrderStatus,
     entry : ?Types.JournalEntry,
@@ -494,23 +481,19 @@ module {
             switch (e.transferIntent) {
               case null #beginDelivery;
               case (?intent) {
-                // ⚠️ **No retry cap on this path, deliberately (#30 PR-B).** A
-                // replay here is *provably* safe — byte-identical args, the ledger
-                // deduplicates, `#Duplicate` recovers the block — so a cap converted
-                // a recoverable state into a manual one for no safety gain. And the
-                // cap's own justification (see `Recovery.maxMintRetries`: "the stages
-                // the ledger's dedup window does not already bound") never applied
-                // here, because the very next line IS that bound. The two legacy
-                // stages below keep it: `notify_top_up` has no dedup window.
+                // ⚠️ **No retry cap here, deliberately.** A replay is *provably* safe
+                // — byte-identical args, the ledger deduplicates, `#Duplicate` recovers
+                // the block — so a cap would convert a recoverable state into a manual
+                // one for no safety gain.
                 //
-                // Retrying is therefore bounded twice over, by time rather than by a
-                // count: the ~24 h dedup window escalates the intent below, and §5.3's
-                // 72 h max-wait gets a human involved for the buyer's sake long before
-                // that. A retry budget added nothing between those two.
+                // Retrying is bounded twice over, by time rather than by a count: the
+                // ~24 h dedup window escalates the intent on the very next line, and
+                // §5.3's 72 h max-wait gets a human involved for the buyer's sake long
+                // before that.
                 //
-                // Past the dedup window a replay is no longer protected, so a
-                // blind retry could pay twice. This is #30's ONE ambiguous case
-                // and the only thing that escalates on the delivery path.
+                // Past the dedup window a replay is no longer protected, so a blind
+                // retry could pay twice. **This is the one ambiguous case in money-out**
+                // and the only thing that escalates on this path.
                 if (nowNs - intent.createdAtTimeNs.toNat() >= dedupWindowNs) {
                   #escalate(#staleIntent);
                 } else {

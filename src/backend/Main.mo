@@ -1180,13 +1180,12 @@ persistent actor CyclesGateway {
 
   /// Public: the frontend needs the bounds to size its amount input and to say
   /// what it will accept before the buyer types. Same transparency stance as
-  /// `forex_status` and `treasury_status` — these are the rules users are held
+  /// `pricing_status` and `reserve_status` — these are the rules users are held
   /// to, not secrets.
   ///
-  /// It carried a `retention` half until #33. There is no lifecycle *policy* of
-  /// ours any more: the deadline is the Stripe session's `expires_at`, which
-  /// lives on each order rather than in config, so there is nothing global to
-  /// report.
+  /// ⚠️ **One field, and no lifecycle *policy* of ours to add to it.** An order's
+  /// deadline is the Stripe session's `expires_at`, which lives on the order rather
+  /// than in config, so there is nothing global to report.
   public query func lifecycle_config() : async { gate : Gate.Config } {
     { gate = gateConfig };
   };
@@ -1198,7 +1197,7 @@ persistent actor CyclesGateway {
   /// The answer is advisory — it can go stale between this call and
   /// `create_order`, which re-checks. It is not an authorization decision, so
   /// anonymous callers may ask: it reveals only operational state that
-  /// `treasury_status` already publishes. Answered for the *calling* principal,
+  /// `reserve_status` already publishes. Answered for the *calling* principal,
   /// so the open-order cap it reports is the caller's own.
   public shared query ({ caller }) func can_purchase(usdCents : Nat) : async Result.Result<(), Gate.Reason> {
     Gate.admit(gateConfig, gateObservation(caller), usdCents);
@@ -1473,13 +1472,10 @@ persistent actor CyclesGateway {
   /// open obligation on the worklist describing a problem that no longer exists.
   /// order id → (error-queue entry id, the stage that alert described).
   ///
-  /// The stage is kept so a *changed* stall can refresh the entry. An order that
-  /// alerts while `#paid` and later stalls in `#icpAtCmc` is a different problem with
-  /// a different recovery, and leaving the first wording in place would have the
-  /// operator chasing a cause that has moved on.
-  /// ⚠️ **The stage half of this pair is gone (#30 PR-C).** It existed so a stall
-  /// that MOVED between stages could close the stale alert and raise one describing
-  /// where the order actually is. With one in-flight status there is nowhere to move
+  /// ⚠️ **No stage is stored alongside the entry id, and that follows from having one
+  /// in-flight status.** A stage was worth keeping only so a stall that MOVED between
+  /// stages could close the stale alert and raise one naming where the order actually
+  /// is. With `#paid` the sole status a delivery can sit in, there is nowhere to move
   /// to: `#paid` is the one in-flight status, so a stalled order's stage is always the
   /// same string, and a comparison would be a branch describing a transition that
   /// cannot occur.
@@ -1679,9 +1675,9 @@ persistent actor CyclesGateway {
             // Tell someone while the cause is still fixable, and keep retrying: most
             // incidents end here with the order delivering.
             //
-            // ⚠️ This used to switch on the status for both the stage string and the
-            // wording, because `#minting` and `#icpAtCmc` could sit still too (#36
-            // deleted them). One in-flight status means one stage and one sentence.
+            // ⚠️ One in-flight status means one stage and one sentence — no switch on
+            // status here. If a second status can ever sit still, this becomes a switch
+            // again, and the alert wording has to name which one.
             alertDelayed(
               order,
               "deliveryDelayed",
@@ -1705,9 +1701,9 @@ persistent actor CyclesGateway {
           };
         };
       };
-      // ⚠️ One line where a `switch` on status used to be (#36). `#awaitingTreasury`
-      // had its own arm — the treasury hold's retry/alert/terminate — and it is gone
-      // with the ICP machinery it belonged to.
+      // The whole next-move decision is one pure call: status + journal in, stage out.
+      // Keep it that way — every arm of `stageOf` is unit-pinned, and a `switch` here
+      // would be a second, untested copy of the same decision.
       let stage : Delivery.Stage = Delivery.stageOf(order.status, deliveryJournal.get(orderId), Time.now(), Delivery.ledgerDedupWindowNs);
       switch (stage) {
         case (#none) return;
@@ -2343,7 +2339,7 @@ persistent actor CyclesGateway {
       /// order's locked quantity stalls delivery loudly and the answer is a redeploy;
       /// at that fee the rail cannot sell anyway.
       cyclesLedgerFee;
-      // O(1), same reasoning as treasury_status.
+      // O(1): maintained counters, not a scan of the order store.
       openOrders = Orders.countOf(orderStore, #created);
       expiredOrders = Orders.countOf(orderStore, #expired);
       totalOrders = orderStore.orders.size();
@@ -2636,8 +2632,8 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Money-out journal for one order (admin, §4.2) — intent, block_index,
-  /// minted cycles, retries.
+  /// Money-out journal for one order (admin, §4.2) — intent, block_index, cycles
+  /// delivered, retries.
   public shared query ({ caller }) func delivery_journal(id : Types.OrderId) : async ?Types.JournalEntry {
     requireAdmin(caller);
     deliveryJournal.get(id);
@@ -2740,8 +2736,7 @@ persistent actor CyclesGateway {
       // order store, so at enough orders it could hit the instruction limit — and
       // inline that trap would take the entire sweep down with it, leaving
       // money-out dead while the reconcile stayed due and trapped again on every
-      // tick. A bookkeeping *check* must not be able to stop
-      // orders from minting.
+      // tick. A bookkeeping *check* must not be able to stop orders from delivering.
       //
       // Claiming the cadence here, in the sweep's own message, is what bounds the
       // damage: this write commits whatever the detached message does, so a
@@ -2800,18 +2795,19 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// §5.2 liveness observability, public (operational transparency, same
-  /// stance as treasury_status): cadence + last completed timer sweep. A
-  /// null or stale `lastSweep` means recovery is not running.
-  /// This canister's OWN cycle balance and the floor the admission gate holds
-  /// it against (public — the same operational-transparency stance as
-  /// `treasury_status`; it is visible via `canister_status` regardless).
+  /// §5.2 liveness observability, public (operational transparency, same stance as
+  /// `reserve_status`): cadence + last completed timer sweep. A null or stale
+  /// `lastSweep` means recovery is not running.
+  /// This canister's OWN cycle balance and the floor the admission gate holds it
+  /// against (public — the same operational-transparency stance as `reserve_status`;
+  /// it is visible via `canister_status` regardless).
   ///
-  /// Distinct from the ICP float in every way: this is gas. Below the freezing
-  /// threshold the canister stops accepting updates; at zero it is uninstalled
-  /// and the order store, journals, and dedup sets go with it. Monitor it
-  /// separately, and alert well above `minCanisterCycles` — that gate stops
-  /// *sales*, it does not stop the burn. A sudden acceleration here is the
+  /// ⚠️ **Gas, not stock.** This is what the canister spends to run; the cycles it
+  /// sells live in its cycles-ledger account and are reported by `reserve_status`.
+  /// Below the freezing threshold the canister stops accepting updates; at zero it is
+  /// uninstalled and the order store, journals, and dedup sets go with it. Monitor it
+  /// separately, and alert well above `minCanisterCycles` — that gate stops *sales*,
+  /// it does not stop the burn. A sudden acceleration here is the
   /// signature of a cycle-drain attempt.
   public query func cycles_status() : async { balance : Nat; floor : Nat } {
     { balance = Cycles.balance(); floor = gateConfig.minCanisterCycles };
@@ -2933,7 +2929,7 @@ persistent actor CyclesGateway {
   /// no stale duplicate to cancel.
   ///
   /// Declared last in the actor body: the initializer evaluates during actor
-  /// init and `recoverySweep` reaches the order store and the mint journal,
+  /// init and `recoverySweep` reaches the order store and the delivery journal,
   /// both of which must already be initialized (M0016 otherwise).
   transient var recoveryTimerId : Timer.TimerId =
     Timer.recurringTimer<system>(#nanoseconds(recoverySweepIntervalNs), recoverySweep);

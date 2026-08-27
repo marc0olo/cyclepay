@@ -1,6 +1,6 @@
 /// Order store + the §4 state machine.
 ///
-/// The state machine owns *transitions only*. Expiry policy, float checks,
+/// The state machine owns *transitions only*. Expiry policy, solvency checks,
 /// dedup, and delivery are the callers' business (per-rail money-in, §5
 /// money-out) — they ask for a transition and this module answers whether it
 /// is legal. Seam §11.1.3: `create` takes the owner as a parameter and never
@@ -117,16 +117,11 @@ module {
   /// Statuses whose live counts are maintained. Keyed by `statusToText` so the
   /// map is a shared type and the key set is self-documenting.
   ///
-  /// `#cancelled`, `#needsReview` and `#abandoned` are deliberately absent, as
-  /// `#delivered` and the old `#errorQueue` were: a status earns an O(1) tally
-  /// only when something reads it. Nothing counts these — `countOf` returns 0
-  /// and `reconcile` leaves them alone. #30 adds `#needsReview` if its promise
-  /// tally needs the count.
-  /// ⚠️ **Four now, not six (#36).** The O(1) counters exist for the admission gate and
-  /// the sweep, so they cover the non-terminal statuses — which after the mint
-  /// pipeline's deletion are `#created`, `#expired`, `#paid` and `#needsReview`.
-  /// `#expired` is tracked despite being terminal because the gate's open-order cap
-  /// and the operator's abuse signal both read it.
+  /// ⚠️ **A status earns an O(1) tally only when something reads it.** These four
+  /// are what the admission gate and the sweep need; `#cancelled`, `#delivered` and
+  /// `#abandoned` are absent because nothing counts them — `countOf` returns 0 and
+  /// `reconcile` leaves them alone. `#expired` is tracked despite being terminal
+  /// because the gate's open-order cap and the operator's abuse signal both read it.
   let trackedStatuses : [Types.OrderStatus] = [#created, #expired, #paid, #needsReview];
 
   func isTracked(status : Types.OrderStatus) : Bool {
@@ -230,15 +225,14 @@ module {
       case (#created, #cancelled) true; // the buyer gave up before paying (#34)
       case (#created, #expired) true; // never paid (§4)
       case (#created, #paid) true; // webhook verified, deduped, amount honored
-      // #30 PR-A: delivery is ONE transfer out of the cycles reserve, so this
-      // is the whole money-out path. ⚠️ It did not exist before — the only route
-      // to `#delivered` was `#icpAtCmc → #delivered`, so without this edge
-      // `tryTransition` returns null and delivery refuses **silently**: the
-      // transfer lands, the buyer has their cycles, and the order sits `#paid`
-      // forever. #36 deletes eight edges here; this PR adds one.
+      // Delivery is ONE transfer out of the cycles reserve, so this single edge is
+      // the whole money-out path. ⚠️ **Deleting it fails silently in the worst
+      // direction:** `tryTransition` returns null *after* the transfer has landed, so
+      // the buyer holds their cycles and the order sits `#paid` forever, looking
+      // undelivered to every sweep that comes past.
       case (#paid, #delivered) true;
-      case (#paid, #needsReview) true; // paid but unable to mint past max wait (§5)
-      // #30 PR-B — the operator read the ledger and the transfer HAD landed.
+      case (#paid, #needsReview) true; // paid, undelivered past max wait (§5)
+      // The operator read the ledger and the transfer HAD landed.
       //
       // ⚠️ **Added because its absence made the operator record a lie.** Until this
       // edge existed, `#needsReview`'s only exit was `#abandoned`, so an escalated
@@ -264,7 +258,7 @@ module {
   };
 
   /// Pure transition: legal → updated copy, illegal → error. Callers decide
-  /// *when* to ask (expiry timers, float checks); this decides *whether*.
+  /// *when* to ask (expiry timers, solvency checks); this decides *whether*.
   public func transition(
     order : Types.Order,
     to : Types.OrderStatus,
@@ -514,12 +508,12 @@ module {
   /// ⚠️ `Card.handleWebhook` guards the status before reaching here and `-Werror`
   /// does not check that guard against the matrix. It **traps** on this error
   /// rather than swallowing it, so a guard that drifts open is a 5xx Stripe
-  /// retries for ~3 days rather than a silent mint. (It was two callers until
-  /// #33 deleted `attach_payment`; one is not a reason to relax the trap.)
+  /// retries for ~3 days rather than a silent delivery. One caller is not a reason
+  /// to relax the trap.
   ///
-  /// **`lockedCycles` is not written here.** Since #33 the webhook honours only
-  /// the quoted amount, so the quantity locked at creation is the quantity
-  /// delivered — immutable for the order's whole life, which is what makes #30's
+  /// **`lockedCycles` is not written here.** The webhook honours only the quoted
+  /// amount, so the quantity locked at creation is the quantity delivered —
+  /// immutable for the order's whole life, which is what makes the outstanding-promise
   /// tally exact rather than conservative. `paidUsdCents` records what arrived,
   /// and it can only equal `pricing.usdCents`; it is stored because "what Stripe
   /// said" and "what we asked for" being the same is worth being able to check.

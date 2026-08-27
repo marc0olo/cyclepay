@@ -192,7 +192,7 @@ mops migration file to avoid it — the app holds no data anyone needs, and ever
 migration replays forever on a fresh install. The chain is a go-live
 prerequisite; see issue #32.
 
-Reinstalling wipes local orders, the audit log and the mint journal. That is
+Reinstalling wipes local orders, the audit log and the delivery journal. That is
 expected: re-seed, and restart a manual run from the top.
 
 ⚠️ **It also wipes the Stripe webhook secret, and `local-dev-seed.sh` does not

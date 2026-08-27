@@ -64,11 +64,10 @@ describe("statusInfo", () => {
       expect(s).toBeGreaterThanOrEqual(-1);
       expect(s).toBeLessThan(STEPS.length);
     }
-    // ⚠️ **The happy path is THREE steps, and `minting` is not one of them** (#30
-    // PR-C). Money-out is one transfer from `paid` to `delivered`, so the timeline
-    // that used to read [created, paid, minting, delivered] → [0,1,2,3] had a fourth
-    // segment no buyer could ever reach, labelled with a mechanism the gateway had
-    // stopped performing.
+    // ⚠️ **The happy path is THREE steps, and this pins the count.** Money-out is one
+    // transfer from `paid` to `delivered`, so a fourth segment would be one no buyer
+    // could ever reach — which reads to them as a stuck purchase, not as a shorter
+    // bar. If this fails because a step was added, check that a status maps to it.
     const happy: StatusKey[] = ["created", "paid", "delivered"];
     expect(happy.map((k) => statusInfo(k).step)).toEqual([0, 1, 2]);
     expect(STEPS).toHaveLength(3);

@@ -9,7 +9,7 @@
 #
 # The two scripts own different levers and this one assumes the other has run:
 #
-#   local-dev-seed.sh  the money levers — tiers, treasury, ICP float, the CMC rate,
+#   local-dev-seed.sh  the money levers — tiers, the cycles reserve, the CMC rate,
 #                      the canister's own cycles
 #   this script        the Stripe levers — expected livemode, the forwarding
 #                      session's signing secret, forwarding

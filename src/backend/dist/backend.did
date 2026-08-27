@@ -449,7 +449,7 @@ service : {
   /// The answer is advisory — it can go stale between this call and
   /// `create_order`, which re-checks. It is not an authorization decision, so
   /// anonymous callers may ask: it reveals only operational state that
-  /// `treasury_status` already publishes. Answered for the *calling* principal,
+  /// `reserve_status` already publishes. Answered for the *calling* principal,
   /// so the open-order cap it reports is the caller's own.
   can_purchase: (usdCents: nat) -> (Result_11) query;
   /// Let a buyer give up on their own unpaid order (owner-scoped).
@@ -497,25 +497,26 @@ service : {
   /// ever protect the buyer. `null` opts out entirely.
   create_order: (amount: Amount, destination: Destination, minCycles:
    opt nat) -> (Result_10);
-  /// §5.2 liveness observability, public (operational transparency, same
-  /// stance as treasury_status): cadence + last completed timer sweep. A
-  /// null or stale `lastSweep` means recovery is not running.
-  /// This canister's OWN cycle balance and the floor the admission gate holds
-  /// it against (public — the same operational-transparency stance as
-  /// `treasury_status`; it is visible via `canister_status` regardless).
+  /// §5.2 liveness observability, public (operational transparency, same stance as
+  /// `reserve_status`): cadence + last completed timer sweep. A null or stale
+  /// `lastSweep` means recovery is not running.
+  /// This canister's OWN cycle balance and the floor the admission gate holds it
+  /// against (public — the same operational-transparency stance as `reserve_status`;
+  /// it is visible via `canister_status` regardless).
   /// 
-  /// Distinct from the ICP float in every way: this is gas. Below the freezing
-  /// threshold the canister stops accepting updates; at zero it is uninstalled
-  /// and the order store, journals, and dedup sets go with it. Monitor it
-  /// separately, and alert well above `minCanisterCycles` — that gate stops
-  /// *sales*, it does not stop the burn. A sudden acceleration here is the
+  /// ⚠️ **Gas, not stock.** This is what the canister spends to run; the cycles it
+  /// sells live in its cycles-ledger account and are reported by `reserve_status`.
+  /// Below the freezing threshold the canister stops accepting updates; at zero it is
+  /// uninstalled and the order store, journals, and dedup sets go with it. Monitor it
+  /// separately, and alert well above `minCanisterCycles` — that gate stops *sales*,
+  /// it does not stop the burn. A sudden acceleration here is the
   /// signature of a cycle-drain attempt.
   cycles_status: () -> (record {
                           balance: nat;
                           floor: nat;
                         }) query;
-  /// Money-out journal for one order (admin, §4.2) — intent, block_index,
-  /// minted cycles, retries.
+  /// Money-out journal for one order (admin, §4.2) — intent, block_index, cycles
+  /// delivered, retries.
   delivery_journal: (id: OrderId) -> (opt JournalEntry) query;
   /// §4.1 retained history, oldest first, **paged**. Admin: entries carry
   /// payment references and claimed-but-bogus URL params.
@@ -558,13 +559,12 @@ service : {
   http_request_update: (req: Request) -> (Response);
   /// Public: the frontend needs the bounds to size its amount input and to say
   /// what it will accept before the buyer types. Same transparency stance as
-  /// `forex_status` and `treasury_status` — these are the rules users are held
+  /// `pricing_status` and `reserve_status` — these are the rules users are held
   /// to, not secrets.
   /// 
-  /// It carried a `retention` half until #33. There is no lifecycle *policy* of
-  /// ours any more: the deadline is the Stripe session's `expires_at`, which
-  /// lives on each order rather than in config, so there is nothing global to
-  /// report.
+  /// ⚠️ **One field, and no lifecycle *policy* of ours to add to it.** An order's
+  /// deadline is the Stripe session's `expires_at`, which lives on the order rather
+  /// than in config, so there is nothing global to report.
   lifecycle_config: () -> (record {gate: Config__1;}) query;
   /// Order history for the caller (§2, fixes the lost-receipt problem).
   list_orders: () -> (vec Order) query;

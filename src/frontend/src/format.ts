@@ -23,15 +23,13 @@ export interface StatusInfo {
 
 /// The buyer's progress timeline.
 ///
-/// ⚠️ **It read `["Awaiting payment", "Paid", "Minting", "Delivered"]` — four steps
-/// of which only three were reachable, and the phantom one was labelled with a
-/// mechanism that no longer exists.** Since #30 PR-A, money-out is one transfer from
-/// `#paid` to `#delivered`; nothing enters `#minting`, so every buyer saw a bar whose
-/// third segment could never light up, under a word for something the gateway had
-/// stopped doing.
+/// ⚠️ **Three steps, and every one of them reachable — that is the invariant.** Money
+/// out is a single transfer from `#paid` to `#delivered`, so there is no intermediate
+/// state for a buyer to sit in and no segment that can never light up. A timeline with
+/// a segment nothing enters is worse than a shorter one: the buyer reads the gap as
+/// their purchase being stuck.
 ///
-/// Three steps, all reachable. #36 deletes the two statuses that mapped to the old
-/// step 2; until then they are off the happy path, which is where an unreachable
+/// Before adding a step, check a status actually maps to it. Off the happy path is where an unreachable
 /// status belongs.
 export const STEPS = ["Awaiting payment", "Paid", "Delivered"] as const;
 

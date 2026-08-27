@@ -360,9 +360,12 @@ that second fee themselves.
 Delivery loses **100 M cycles** to the ledger's deposit fee, on every order. The
 amount tiles show what lands; the note under the destination names the fee once.
 
-⚠️ **Deliberately not grossed up into the price.** Minting extra to cover a
-per-order fee would let anyone drain the operator by opening orders — a griefable
-gas drain. Disclosure is the honest fix.
+⚠️ **Deliberately not grossed up into the price.** Covering the fee by sending
+extra cycles would let anyone drain the operator by opening orders. The cycles
+come out of a **finite reserve** the operator funded, so the drain has a hard
+floor and hits paying buyers as a refused sale — `#reserveShort`. Disclosure is
+the honest fix, and the cheap one: the fee is stated once and nobody's order is
+denied to pay for someone else's griefing.
 
 ### The order is the record; the audit log is the trail
 
@@ -743,25 +746,29 @@ privileges — any controller can do any of this):
 | `set_gate_config` | open-order cap, own-cycles floor, per-purchase ceiling |
 | `set_pricing_config` | fee formula, staleness window (capped at 1 h), delta bound, minimum rate sources |
 | `refresh_rates` | force a rate tick now instead of waiting for the timer |
-| `set_treasury_config` | burn cap, window, alert-after, max hold, low-float threshold |
+| `set_delivery_config` | the two delivery time bounds: alert-after (2 h) and max hold (72 h) |
 | `error_queue` / `resolve_error` | the operator worklist |
 | `order_for_payment` | reconciliation: Stripe charge → order it funded |
 | `delivery_journal` | money-out record for one order |
 | `audit_log` | operational trail; gaps in `seq` mean ring-buffer drops |
-| `process_order` | manual delivery kick; safe to spam. **Admin or the order's own owner** (#30 PR-B) |
-| `set_pricing_config` | fee formula, staleness window, delta bound, minimum rate sources |
+| `process_order` | manual delivery kick; safe to spam. **Admin or the order's own owner** |
 | `abandon_order` | void an unpaid order, with the reason recorded in the audit trail |
-| `record_delivered` | record that an escalated order's cycles DID reach the buyer, evidenced by the ledger block (#30 PR-B) |
-| `pending_deliveries` | every delivery with work outstanding right now, self-clearing — the live view the 2 h queue alert cannot give (#30 PR-B) |
-| `refresh_reserve` | observe the reserve balance now — required after a top-up, or the gateway sells nothing (#30 PR-B) |
+| `record_delivered` | record that an escalated order's cycles DID reach the buyer, evidenced by the ledger block |
+| `pending_deliveries` | every delivery with work outstanding right now, self-clearing — the live view the 2 h queue alert cannot give |
+| `refresh_reserve` | observe the reserve balance now — **required after a top-up**, or the gateway sells nothing |
 | `recount_orders` | rebuild the O(1) per-status counters from the store |
-| `refresh_float` | refresh the float observation the gate reads |
-| `reset_burn_window` | clear window consumption after verifying traffic |
+| `set_recovery_interval` | sweep cadence; bounded above at a quarter of the ledger's dedup window |
+| `set_expected_livemode` | pin test-vs-live so a mismatched webhook is refused rather than honoured |
+
+⚠️ **This table is the whole admin surface, and there is deliberately no lever that
+moves money.** No method mints, transfers on demand, refunds, or withdraws — funding
+the reserve is `icp cycles transfer` from the operator's own identity, outside the
+canister. `record_delivered` records a *fact about the ledger*, it does not send.
 
 Public queries (transparency is the product thesis): `card_tiers`,
-`pricing_status`, `quote_previews`, `treasury_status`, `recovery_status`,
-`lifecycle_config`, `reserve_status`, `can_purchase`, `cycles_status`,
-`error_queue_depth`, `health`.
+`pricing_status`, `quote_previews`, `recovery_status`, `lifecycle_config`,
+`reserve_status`, `can_purchase`, `cycles_status`, `error_queue_depth`,
+`stripe_origin`, `expected_livemode`, `health`.
 
 **Owner-scoped, not admin-scoped:** `get_order`, `list_orders`, `cancel_order`,
 and `receipt(orderId)` answer only for `caller == order.owner` — not even a
@@ -792,9 +799,12 @@ is pinned by the request rather than by a link's configuration.
    key and this secret is what **opens** the rail, so do it last.
 5. Optionally register price tiles with `set_card_tiers` — a buyer can type any
    amount within the gate's bounds without them.
-6. Size the burn cap (`set_treasury_config`) — until then the gate refuses every
-   order.
-7. `refresh_float` after funding, so the gate has an observation.
+6. **Fund the reserve** with `icp cycles transfer <backend-id> --amount <N>t`, then
+   `refresh_reserve` so the gate has an observation. Until it does, every order is
+   refused with `#reserveShort` — the reserve is the stock being sold, and nothing
+   in the canister can create it.
+7. Optionally tune the delivery bounds with `set_delivery_config`; the defaults
+   (2 h alert, 72 h max hold) are the intended production values.
 8. Record the account's **Stripe API version** and treat changing it as a code
    change: webhook payload shapes follow the account default.
 

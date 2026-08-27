@@ -18,10 +18,11 @@ let config = Gate.defaultConfig();
 let amount : Nat = 2_000;
 
 suite("defaults", func() {
-  test("safety limits ship non-zero, unlike the money levers", func() {
-    // The burn cap defaults to 0 so no money moves until
-    // an operator sizes them. These three are safety limits: a 0 default would
-    // refuse every order rather than protect anything.
+  test("safety limits ship non-zero", func() {
+    // These three are safety limits, not money decisions: a 0 default would refuse
+    // every order rather than protect anything, which is fail-closed in the wrong
+    // direction. The one value that does gate money — cycles available to sell — has
+    // no default at all, because it is whatever the operator funded the reserve with.
     assert config.maxOpenOrdersPerPrincipal > 0;
     assert config.minCanisterCycles > 0;
     assert config.maxPurchaseUsdCents > 0;
@@ -92,10 +93,7 @@ suite("admit", func() {
   });
 
   test("solvency is NOT decided here, and the split is the point", func() {
-    // The burn-cap and float tests that lived here went with the mint path (#30
-    // PR-A): both bounded ICP spend and delivery spends no ICP.
-    //
-    // Their replacement is `Gate.solvent`, deliberately a SEPARATE function.
+    // Solvency lives in `Gate.solvent`, deliberately a SEPARATE function.
     // Reading the reserve means awaiting the cycles ledger, and `admit` is
     // synchronous precisely so there is no window between observing and deciding.
     // Folding solvency in would force every caller to supply a balance —
@@ -159,10 +157,10 @@ suite("reasonToText", func() {
 suite("the ceiling cannot be lowered under a live tier", func() {
   // `set_card_tiers` already refuses a tier above the ceiling. Without the inverse
   // check, lowering the ceiling left that tier SELLABLE BUT UNPAYABLE: the buyer
-  // completes checkout and the webhook files a Type 1 instead of minting. Since
-  // #33 deleted `attach_payment` there is no rescue at all — the buyer's money is
-  // taken and given back over a config change made earlier, which is why the
-  // guard is worth more than the error message it produces.
+  // completes checkout and the webhook files a Type 1 instead of delivering. There is
+  // no rescue path: the buyer's money is taken and given back over a config change
+  // made earlier, which is why the guard is worth more than the error message it
+  // produces.
   // The #33 presets: $10 / $20 / $50. The old $5 entry is below the new floor,
   // so it would be refused by `#tierBelowFloor` before the ceiling check ran and
   // every assertion here would be about the wrong bound.

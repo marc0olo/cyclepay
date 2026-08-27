@@ -33,9 +33,8 @@ let legalTransitions : [(Types.OrderStatus, Types.OrderStatus)] = [
   (#created, #expired),
   (#created, #paid),
   // #30 PR-A: the whole money-out path is now one transfer from the reserve.
-  // ⚠️ It did NOT exist before — `#icpAtCmc → #delivered` was the only route to
-  // `#delivered`, so without this edge the transfer lands and the order sits
-  // `#paid` forever with the buyer already holding their cycles.
+  // ⚠️ **Deleting this edge fails in the worst direction**: the transfer lands and
+  // the order sits `#paid` forever, with the buyer already holding their cycles.
   (#paid, #delivered),
   (#paid, #needsReview),
   // abandon_order: the operator ends it, having refunded by hand.
@@ -329,8 +328,7 @@ suite("store: create", func() {
 
 suite("store: applyTransition", func() {
   test("happy path Created -> Paid -> Delivered", func() {
-    // ⚠️ Three states, not five (#36). It read `Created → Paid → Minting → IcpAtCMC
-    // → Delivered`, which was the ICP mint pipeline; money-out is one transfer now.
+    // Three states, and that is the whole happy path: money-out is one transfer.
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
     drive(store, "ord-1", [#paid, #delivered]);
@@ -352,12 +350,6 @@ suite("store: applyTransition", func() {
       case (#err(#illegalTransition({ from = #cancelled; to = #paid }))) {};
       case (_) assert false;
     };
-  });
-
-  test("treasury path Paid -> AwaitingTreasury -> Minting", func() {
-    let store = Orders.emptyStore();
-    ignore newOrder(store, "ord-1", alice);
-    drive(store, "ord-1", [#paid, #delivered]);
   });
 
   test("illegal transition leaves stored order unchanged", func() {

@@ -31,13 +31,13 @@ module {
   /// Is this order's promise still held?
   ///
   /// ⚠️ Expressed as "**not terminal**" rather than as a list of the statuses that
-  /// hold, and that is not a stylistic choice. The membership list changes during
-  /// the #30/#36 staging window: `#minting`, `#icpAtCmc` and `#awaitingTreasury`
-  /// survive in-tree until #36, they are **not terminal**, so under this rule they
-  /// are counted — correctly. Under an enumerated list they would be omitted, and
-  /// any transition into one would **silently release the promise while the order
-  /// is still live**. Nothing should enter them after #30 PR-A; the rule makes
-  /// that a belt-and-braces question rather than a correctness one.
+  /// hold, and that is not a stylistic choice. The two lists fail in opposite
+  /// directions when a status is added. An enumerated hold-list omits the newcomer,
+  /// so the promise is **silently released while the order is still live** and the
+  /// reserve is oversold. The terminal-list phrasing counts the newcomer, which at
+  /// worst holds cycles longer than needed — a conservative error, and a visible one
+  /// in `availableToSell`. Fail toward over-reserving; the alternative pays out
+  /// cycles twice.
   ///
   /// The terminal set is also the smaller and more stable list, and getting it
   /// wrong fails in the safe direction: an over-counted promise refuses a sale, an
@@ -168,11 +168,12 @@ module {
   //     `icrc1_transfer`     — **the outflow.** One logical transfer per order.
   //     `icrc1_balance_of`   — a read; the reconcile's, never the gate's.
   //
-  // ⚠️ **Census re-run 2026-08-27 (#36), and the confusing entry is gone.** There was
-  // a third method, `deposit`, which was **not** an outflow: it moved this canister's
-  // own *gas* balance and credited the buyer, never touching the ledger account. It
-  // died with the mint pipeline, so nobody has to be told again that three calls are
-  // not three outflows.
+  // ⚠️ **The declaration list IS the enforcement.** `CyclesLedgerService` declares
+  // these two methods and nothing else, so no third way to move cycles exists to be
+  // called — an outflow that is not declared cannot be written by accident. Re-run
+  // this census whenever that interface gains a method; `scripts/test-all.sh` greps
+  // the backend for approve/transfer_from/withdraw declarations so an addition has to
+  // be deliberate.
   //
   // ⚠️ **A grep finds `icrc1_transfer` at TWO call sites, and that is still one
   // outflow.** They are the attempt and its `#BadFee` re-issue, of the *same* intent,

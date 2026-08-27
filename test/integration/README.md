@@ -62,6 +62,22 @@ and x86_64 Linux are fine. The IC replica's memory tracker hard-asserts
 kernels (notably Apple-Silicon Docker/sandbox guests); the server crashes at
 instance creation. Run it on the host or in CI instead.
 
+## Mutation-checking a scenario: use `npm test`, never bare `vitest`
+
+⚠️ **`npx vitest run` does not rebuild the backend.** The wasm PocketIC installs is
+built by the `pretest` hook (`npm run build:backend`), which fires for `npm test` and
+not for a direct `vitest` invocation. Mutate a `.mo` file, run `npx vitest run`, and
+the suite loads the **previous** wasm — so the mutation appears not to break anything
+and you conclude the scenario is vacuous when it is fine, or that a guard is untested
+when it is covered.
+
+`mops check` does not save you: it typechecks and lints, and a lint-clean mutation is
+exactly the kind you want to test. The tell is a suspiciously *complete* pass — every
+scenario green including ones that assert the mutated behaviour directly.
+
+So: `npm test` for anything where the backend changed, and read the first run's
+timing — a mutation run that finishes as fast as a no-op run did not rebuild.
+
 ## CI
 
 `ci/integration.yml` is a ready GitHub Actions job (ubuntu-latest is
@@ -265,17 +281,6 @@ shape every unknown-position scenario needs (11, 35, 47, 75, 76, 78).
 
 **What genuinely remains out of reach:**
 
-- **`#ambiguousForward` end to end.** It needs a callback dropped between the
-  pre-forward marker and delivery, and `stopCanister` *drains* outstanding
-  callbacks rather than dropping them. Unit-pinned in the `Cmc.terminationFor`
-  suite is the honest ceiling.
-- **`stageOf`'s `#escalate` arm.** Reaching `retriesExhausted` through it needs
-  `maxMintRetries` (2,000) sweeps to elapse, which is impractical in a test. The
-  terminate route reaches the same money positions and *is* covered (53), and the
-  decision function is exhaustively unit-pinned — but the `#escalate` arm's own
-  two-line wiring is exercised by nothing. ⚠️ Narrower since #30 PR-B: the
-  **delivery** path has no retry cap at all now, so this is only about the two
-  legacy mint stages, which #36 deletes.
 - **A reserve observation adopted across an in-flight outflow.** The quiet window is
   established across an `await`, so the unsafe interleaving needs a transfer issued
   inside a reconcile's balance-read gap — the same ordering PocketIC will not

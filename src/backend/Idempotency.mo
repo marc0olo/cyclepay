@@ -1,8 +1,8 @@
 /// Per-rail dedup sets with retention/pruning (§4.2).
 ///
-/// Dedup gates the mint (§4.1 invariant): a key that fails `record*` here is
+/// Dedup gates delivery (§4.1 invariant): a key that fails `record*` here is
 /// the *same* payment seen again (Stripe at-least-once redelivery,
-/// block replay) and must be silently acked — never minted, never queued.
+/// block replay) and must be silently acked — never delivered, never queued.
 /// A genuine second payment carries a fresh `event.id`/`payment_intent`,
 /// passes dedup, and is the rail's business to queue as Type 1.
 ///
@@ -24,7 +24,7 @@ module {
   public type Store = {
     /// Stripe `event.id` → first-seen ns. Catches event redelivery.
     stripeEvents : Map.Map<Text, Int>;
-    /// Stripe `payment_intent` → first-seen ns. One mint per payment, even
+    /// Stripe `payment_intent` → first-seen ns. One delivery per payment, even
     /// across distinct event deliveries for the same intent.
     stripeIntents : Map.Map<Text, Int>;
   };

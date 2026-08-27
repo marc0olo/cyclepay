@@ -12,10 +12,10 @@ module {
   /// Default sweep cadence: **15 min**, well inside the §5.1 ceiling `validateInterval`
   /// enforces.
   ///
-  /// ⚠️ It used to be paired with a `maxMintRetries` budget "so an order survives far
-  /// more than a day of consecutive retriable failures". #36 deleted the budget with
-  /// the notify loop that needed it: a delivery replay is provably safe, so what
-  /// bounds retrying is time — the ledger's dedup window and §5.3's 72 h max-wait.
+  /// ⚠️ **There is no retry budget to pair it with.** A delivery replay is provably
+  /// safe, so what bounds retrying is time — the ledger's dedup window and §5.3's 72 h
+  /// max-wait — and this cadence only has to be fast enough to use that window well
+  /// (see `validateInterval`).
   public let defaultIntervalNs : Nat = 900_000_000_000; // 15 min
 
   public type IntervalError = {
@@ -31,11 +31,10 @@ module {
   /// chance on a single transient failure. "Several" is pinned to ≥ 4
   /// sweeps per window (interval ≤ window / 4).
   ///
-  /// ⚠️ **There is no lower bound any more (#36).** It enforced the other side of the
-  /// retry-budget invariant (`maxMintRetries × intervalNs` had to outlast the dedup
-  /// window), and the budget is gone — so a fast cadence is now simply a fast cadence,
-  /// and `#intervalTooShort` went with it. That is a Candid change:
-  /// `set_recovery_interval`'s error type lost a variant.
+  /// ⚠️ **An upper bound only — a fast cadence is simply a fast cadence.** There is
+  /// nothing a too-short interval can break: with no retry budget to exhaust, extra
+  /// sweeps cost gas and find nothing to do. Do not add a lower bound without a
+  /// failure it prevents.
   public func validateInterval(intervalNs : Nat, ledgerDedupWindowNs : Int) : Result.Result<(), IntervalError> {
     let window = Int.abs(ledgerDedupWindowNs);
     let maxNs = window / 4;
@@ -67,9 +66,10 @@ module {
 
   public func isSweepable(status : Types.OrderStatus) : Bool {
     switch (status) {
-      // ⚠️ **One status now (#36).** Money-out is one transfer from `#paid`, so the
-      // sweep drives exactly that. It used to list the three mint-pipeline statuses
-      // too; they had no entrance after #30 PR-A and are deleted.
+      // ⚠️ **Exactly one sweepable status, and that is the design.** Money-out is a
+      // single transfer out of `#paid`, so there is one status the sweep can drive.
+      // Adding a second means a second way an order can owe cycles, which is the
+      // thing this shape exists to prevent.
       case (#paid) true;
       // `#needsReview` is NOT sweepable: its whole meaning is that the money
       // position is unknown and a human must look. Re-driving it automatically

@@ -40,9 +40,9 @@ for the scenario map by id — ids are stable, counts are not.
     log points at the transform.
 - **Failure injection**: the NNS canisters can be *stopped* (`stopNns`,
   impersonating NNS root) to force real outages. Since #30 PR-A the one that
-  matters is the **cycles ledger**, and stopping it is how scenarios 11, 33, 35 and
-  47 hold an order undelivered — it replaced a stale CMC rate and a zero burn cap,
-  neither of which can stall delivery any more.
+  matters is the **cycles ledger**, and stopping it is how scenarios 11, 33, 35, 47
+  and 80 hold an order undelivered. It is the only injectable cause: delivery reads no
+  rate and asks no other canister, so nothing else can stall it.
   ⚠️ Read balances **before** stopping and put the stop in `try`/`finally`: a throw
   in between leaves the ledger stopped for the rest of the run. See the coupling
   note in `test/integration/README.md`.
@@ -58,16 +58,15 @@ for the scenario map by id — ids are stable, counts are not.
 |---|---|---|
 | Signature verification (rotation overlap, both-direction window, constant-time compare) | unit + PocketIC | externally pinned vectors |
 | Attribution (claimed-not-trusted, owner mismatch, malformed, expired, cancelled) | unit + PocketIC | |
-| Amount honouring (exact → delivers; any other amount → Type 1, minting nothing; ceiling; currency) | unit + PocketIC | the mismatch branch is mutation-checked: disabling the equality check fails the suite |
+| Amount honouring (exact → delivers; any other amount → Type 1, delivering nothing; ceiling; currency) | unit + PocketIC | the mismatch branch is mutation-checked: disabling the equality check fails the suite |
 | Dedup / replay (event id, payment intent, post-prune resend, credited-elsewhere) | unit + PocketIC | |
 | Refunds (full, partial, cumulative partials, after delivery, of an escalated order) | unit + PocketIC | |
 | Async payment methods (settle, fail, out-of-order) | unit + PocketIC | |
 | Pricing guards (plausibility, delta, source count, implied XDR/USD, staleness) | unit + PocketIC | every guard rejects in isolation |
-| Money-out: **one transfer** out of the reserve, exactly-once, journal replay | PocketIC | incl. across real upgrades. `transfer → notify → forward` was three steps until #30 PR-A |
+| Money-out: **one transfer** out of the reserve, exactly-once, journal replay | PocketIC | incl. across real upgrades |
 | Outages: the **cycles ledger** down — delivery retries, strands nothing, then delivers | PocketIC | 11, 33, 35, 47 |
-| Outages: ICP ledger down, CMC down, notify stalled, rate moved mid-mint | **gone with the mint path** (#30 PR-A) | the exposures no longer exist; see the deletion table in `test/integration/README.md` |
 | Escalation → the right money position and instruction | unit (all 8 arms) + PocketIC | see the gap below |
-| Delay alerts and terminal bounds per in-flight status | PocketIC | |
+| Delay alerts, and **which** of the two terminal bounds fires | PocketIC | 47 (alert cleared on escalation), 80 (24 h dedup window), 35 (72 h max hold) |
 | Buyer never stuck: cancel, expiry, late payment, quote pinning | PocketIC | |
 | Frontend state machine and reactions | jsdom (`main.test.ts`) | real `index.html` body, stubbed backend |
 | Frontend **rendering**: cascade, layout, reachability, paint | browser (`test/browser`) | screenshot baselines for paint; see below for what is still uncovered |
@@ -102,11 +101,18 @@ injecting DOM state, which is how it shipped broken twice.
 **Both of those were done by hand on 2026-08-13** against a local network and a
 Stripe sandbox, and no mainnet deploy was needed: real Internet Identity login (the
 local II the network deploys), the deployed asset canister's real `ic_env` cookie,
-the real hosted Checkout page, a genuinely signed webhook, the real CMC mint, and
-cycles credited to the buyer's account. Twice. Verified from the canister — two
-`mint.delivered` entries, 18.2 T spendable at the buyer's principal, an empty error
-queue, nothing held. The evidence and the exact figures are in
-`docs/SANDBOX-TESTPLAN.md` → "Status: the good path has been run, once".
+the real hosted Checkout page, a genuinely signed webhook, and cycles credited to the
+buyer's account. Twice, with an empty error queue and nothing held. The figures are in
+`docs/SANDBOX-TESTPLAN.md`.
+
+⚠️ **That run predates the current money-out path, so read it as evidence about the
+browser and Stripe halves only.** It delivered by minting through the CMC against an
+ICP float; money-out is now a single cycles-ledger transfer out of a funded reserve,
+and the ICP machinery is deleted. What the run still evidences — sign-in, the hosted
+Checkout page, a real signed webhook reaching the canister, the frontend's poll to a
+delivered view — is untouched by that change. What it no longer evidences is delivery
+itself. **A fresh manual run is owed before go-live**, and it is the reason
+`docs/SANDBOX-TESTPLAN.md` still carries a procedure rather than only a record.
 
 **Three things that run did not close**, and no suite closes either:
 
@@ -136,12 +142,11 @@ suite run:
 | Not covered | Why |
 |---|---|
 | **the reserve decision pairing a stale balance with a live tally** | ⚠️ **Verified by mutation that nothing caught it — and then the design removed the defect rather than testing it.** With the awaited-balance design still in place, replacing `Reserve.promisedForDecision` (since deleted) by a live-only read left the entire suite green: catching it needed a delivery continuation scheduled inside `create_order`'s balance-read gap, and PocketIC gives no way to force that ordering. The decision is now synchronous against `reserveFloor` — a maintained lower bound moved only by our own outflows — so there are no two values to pair. Scenario 72 stays as a guard on the invariant (`promisedTotal ≤ balance`), and the row stays because it is the record of how the untestable bug was closed: by deleting the pairing, not by covering it |
-| **the reserve floor adopting a balance across an in-flight outflow** | The floor's soundness rests on adoption happening only in a quiet window, and the window is established across an `await` — so reproducing the unsafe interleaving needs a transfer issued inside a reconcile's balance-read gap, which PocketIC cannot schedule on demand. What **is** covered: `test/reserve.test.mo` pins that a non-quiet observation is refused, and scenario 76 covers the failure this produced in practice — one escalated order making the window permanently unsatisfiable, which is the direction that actually shipped into the branch. ⚠️ **And the untestable direction is exactly where a second bug hid**: `Delivery.openEntry` hardcoded `status = #minting`, so the predicate matched nothing and the window was *always* satisfied. Nothing here caught it and scenario 76 passed vacuously — it was found by a test written for `pending_deliveries`, and the guard is now a unit test on the coupling (`test/delivery.test.mo`) plus comments at both ends. Read this row as: the interleaving is untestable, so the predicate's INPUTS have to be pinned instead |
+| **the reserve floor adopting a balance across an in-flight outflow** | The floor's soundness rests on adoption happening only in a quiet window, and the window is established across an `await` — so reproducing the unsafe interleaving needs a transfer issued inside a reconcile's balance-read gap, which PocketIC cannot schedule on demand. What **is** covered: `test/reserve.test.mo` pins that a non-quiet observation is refused, and scenario 76 covers the failure this produced in practice — one escalated order making the window permanently unsatisfiable, which is the direction that actually shipped into the branch. ⚠️ **And the untestable direction is exactly where a second bug hid**: `Delivery.openEntry` wrote a hardcoded status instead of the order's, so the predicate matched nothing and the window was *always* satisfied. Nothing here caught it and scenario 76 passed vacuously — it was found by a test written for `pending_deliveries`, and the guard is now a unit test on the coupling (`test/delivery.test.mo`) plus comments at both ends. Read this row as: the interleaving is untestable, so the predicate's INPUTS have to be pinned instead |
 | **the delivery replay sending the intent's ORIGINAL fee** | ⚠️ **Verified by mutation that nothing catches this.** Re-reading `icrc1_fee()` on the replay path passes every Motoko assertion and the whole PocketIC suite: the unit tests pin the arithmetic (`locked - amount` recovers the fee), and the integration suite runs against a real cycles ledger whose fee has never moved. Catching it needs a fee change *inside* the 24 h dedup window. It matters because if the ledger's dedup key includes the fee, a replay after a fee change is a distinct transaction and the buyer is paid twice — so the code comment is the guard, and this row exists so its absence is not mistaken for coverage |
 | **the stored ledger fee PERSISTING after `#BadFee`** | Staging it needs the stored fee to differ from the ledger's, and since #30 PR-B deleted `set_cycles_ledger_fee` (self-justifying: the only state it fixed was one it could create, and its typo shorted buyers) there is no seam to make them differ — the PocketIC cycles ledger's fee never moves. ⚠️ **Deliberate trade**: shipping an admin money lever to production so a test can stage a state is worse than the gap. The gap is one line (`cyclesLedgerFee := expected`) whose failure is **loud** — the fee does not stick, so `delivery.feeChanged` fires on every delivery instead of once, which RUNBOOK §9 carries as a P3 row. The ledger's report is still unit-pinned (`interpretTransfer(#Err(#BadFee))`), and scenario 74 was deleted with the lever rather than left asserting a mechanism it could no longer reach |
-| `#ambiguousForward` end to end | ⚠️ **Now unreachable rather than untested**: it needed a callback dropped between the pre-forward marker and the forward, and #30 PR-A deleted the two-step (delivery is one call). The row stays until #36 removes the variant, so nobody reads its absence as a coverage gap |
 | a **trapping** daily reconcile | the reconcile is detached into its own message precisely so a trap cannot stop the sweep, but nothing can inject that trap: it would take an order store large enough to exhaust the instruction limit. What *is* covered is that the detached message runs, commits, and is cadence-gated in both directions (scenario 58); the isolation itself rests on the message boundary, not on a test |
-| `stageOf`'s `#escalate` arm wiring | reaching `retriesExhausted` through it needs `maxMintRetries` (2,000) sweeps — and since #30 PR-B deleted the cap on the **delivery** path, it is reachable only from the two legacy mint stages that #36 removes. The *terminate* route reaches the queue the same way and **is** covered — by scenario **35** since #30 PR-A deleted 53, which this row used to cite. ⚠️ The claim is narrower than it was: 35 reaches the `deliveryWaitExceeded` position, not the four mint positions 53 also touched, and those are unreachable rather than untested. The decision function stays exhaustively unit-pinned |
+| `stageOf`'s `#escalate` arm wiring | **No longer a gap — scenario 80 covers it**, and the row stays to record why it was one. It cited a retry budget of 2,000 sweeps as the thing that made the arm impractical to reach; there is no retry budget, and the arm's reachable reason is `staleIntent` at ~24 h, which `advanceTime` reaches in one line. The gap was a stale premise, not a real ceiling. ⚠️ **Two bounds terminate a stuck delivery and 35/47 reach only the rarer one**: both jump ~80 h at once, so no sweep lands in the 24 h–72 h window where the dedup bound fires. 80 sweeps at 25 h and asserts the stage is `staleIntent`, which is what pins the cause the runbook triages by |
 
 ### 3. The deployment layer — covered separately by `scripts/e2e-local.sh`
 

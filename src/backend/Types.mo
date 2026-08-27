@@ -41,7 +41,7 @@ module {
 
   /// Money-in rail. Single-case, and a variant for the same reason `Owner` is
   /// one: it names the dimension, so a second rail is an additive change rather
-  /// than a schema-wide edit. The audit log, the error queue and the mint
+  /// than a schema-wide edit. The audit log, the error queue and the delivery
   /// journal are all keyed by it.
   public type Rail = { #card };
 
@@ -58,7 +58,7 @@ module {
   ///
   /// ⚠️ Depositing straight to a canister's cycle balance is **not** the case to
   /// add. It fails on a deleted or refusing target *after* the cycles have left,
-  /// which is a mint-then-lose class this app no longer has (#29).
+  /// which is a send-then-lose class this app does not have (#29).
   public type Destination = {
     #cyclesLedgerAccount : Account;
   };
@@ -100,15 +100,17 @@ module {
   /// §4 — one Order, one state machine. Transitions live in Orders.mo;
   /// expiry *policy* is per-rail money-in behavior and stays out of the core
   /// (seam §11.1.4).
-  /// §4 statuses. Each says exactly one thing, and the promise state (#30) is a
-  /// function of the status alone — which is why `#errorQueue` was split.
+  /// §4 statuses — **seven, and adding an eighth is a design decision, not a
+  /// detail.** Each says exactly one thing, and the promise state (#30) is a
+  /// function of the status alone, which is what lets `promiseHeld` be total.
   ///
-  /// **Seven, and this is the decided end state (#36).** `#minting`, `#icpAtCmc` and
-  /// `#awaitingTreasury` were the ICP mint pipeline; they lost their only entrance in
-  /// #30 PR-A and are deleted here. Scenario 79 asserted no order ever entered one
-  /// while they still existed — that check goes with them, because unreachability
-  /// becomes **unrepresentability**, which is the stronger guarantee and the one this
-  /// codebase reaches for everywhere else.
+  /// ⚠️ **A state no order can enter should not be representable.** An
+  /// unreachable status has to be carried by every `switch` and asserted
+  /// unreachable by a test, and that test passes whether or not the code is
+  /// right. Deleting the state is the stronger guarantee, and it is the one this
+  /// codebase reaches for everywhere: the money-out surface declares two ledger
+  /// methods so no third one exists to call, and `#cancelled → #paid` is absent
+  /// from the matrix rather than guarded.
   public type OrderStatus = {
     #created;
     /// The buyer gave up before paying. Terminal, and `#cancelled → #paid` is
@@ -141,13 +143,11 @@ module {
   /// §3/§6.1 pricing snapshot captured at order creation, carrying the gross
   /// amount, both rate inputs and the fee formula from one consistent epoch.
   ///
-  /// ⚠️ It existed to let the webhook honour a **different actual paid amount**
-  /// at the locked rate — a fixed Payment Link could legitimately be paid for an
-  /// amount the order was not created for. #33 deleted that: a per-order session
-  /// carries the amount we set, so the webhook requires equality and a mismatch
-  /// mints nothing. The snapshot survives for what it always also did — it is
-  /// the **evidence** a buyer recomputes their own price from (`receipt`), and
-  /// the record that says which rates a delivered order was priced at.
+  /// ⚠️ **The webhook does not reprice from it.** A per-order Checkout Session
+  /// carries the amount we set, so the webhook requires the paid amount to equal
+  /// the quoted one and a mismatch delivers nothing. What the snapshot is *for* is
+  /// evidence: it is what a buyer recomputes their own price from (`receipt`), and
+  /// the record of which rates a delivered order was priced at.
   public type Pricing = {
     /// Gross USD cents the order was quoted for (the tier price).
     usdCents : Nat;
@@ -260,8 +260,8 @@ module {
     memo : Blob;
   };
 
-  /// §4.2 — per-order money-out journal: transfer intent, block_index,
-  /// minted cycles, retries, timestamps, destination.
+  /// §4.2 — per-order money-out journal: transfer intent, block_index, cycles
+  /// delivered, retries, timestamps, destination.
   public type JournalEntry = {
     orderId : OrderId;
     status : OrderStatus;

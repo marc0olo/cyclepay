@@ -32,9 +32,9 @@ module {
     #duplicateTierId : Text;
     #zeroUsdCents : Text;
     /// Above `Gate.Config.maxPurchaseUsdCents`. The ceiling exists to catch an
-    /// operator typo — a tier registered at 100× its intended price would
-    /// otherwise be quoted and minted without complaint, and the burn cap
-    /// would only notice after the money arrived.
+    /// operator typo — a tier registered at 100× its intended price would otherwise
+    /// be quoted and sold without complaint, and the reserve would only notice by
+    /// emptying.
     #aboveCeiling : { id : Text; usdCents : Nat; maxUsdCents : Nat };
     /// Below `Gate.Config.minPurchaseUsdCents`. Registering one would put a tile
     /// on screen that `Gate.admit` then refuses — sellable but unpayable, the
@@ -43,7 +43,7 @@ module {
   };
 
   /// Config-time sanity: ids non-empty and unique (lookup keys), amounts
-  /// non-zero (a $0 tier would mint on nothing) and within the per-purchase
+  /// non-zero (a $0 tier would deliver on nothing) and within the per-purchase
   /// ceiling. O(n²) is fine — tiers are a handful of entries by design.
   public func validate(tiers : [Tier], minUsdCents : Nat, maxUsdCents : Nat) : Result.Result<(), ValidateError> {
     var i = 0;

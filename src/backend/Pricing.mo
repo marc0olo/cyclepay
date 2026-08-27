@@ -4,25 +4,37 @@
 ///
 /// - **`usdPerIcpMicros`** — USD per ICP × 10⁶, from the Exchange Rate Canister.
 /// - **`xdrPermyriadPerIcp`** — XDR per ICP × 10⁴, from the Cycles Minting
-///   Canister. This is the rate the CMC will *actually* honour when converting
-///   ICP to cycles, which is why it is read from the CMC and nowhere else.
+///   Canister. The protocol's own published exchange rate, which is why it is read
+///   from the CMC and nowhere else.
 ///
 /// ```
 /// cycles = netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros
 /// ```
 ///
-/// Derivation: `netCents` buys `netCents × 10⁴ / usdPerIcpMicros` ICP, and one
-/// ICP mints `xdrPermyriadPerIcp × 10⁸` cycles (one e8s mints
-/// `xdrPermyriadPerIcp` cycles; 1 XDR = 10¹² cycles).
+/// Derivation, in units: `netCents` is worth `netCents × 10⁴ / usdPerIcpMicros`
+/// ICP, and one ICP is worth `xdrPermyriadPerIcp × 10⁸` cycles at the protocol
+/// rate (1 XDR = 10¹² cycles, so one e8s is `xdrPermyriadPerIcp` cycles).
 ///
-/// **Why derive rather than price off a USD/XDR rate directly.** At mint time
-/// the ICP needed is `cycles / P′` where `P′` is the CMC rate then. Substituting
-/// the quote above, the ICP needed is `netCents/100/usdPerIcp × (P / P′)` — so
-/// when the CMC rate is unchanged between order and mint, the operator spends
-/// exactly the dollars they received. `P` cancels. Pricing off a market USD/XDR
-/// rate instead breaks even only when that rate happens to equal
-/// `(CMC's XDR/ICP) / (market USD/ICP)`; any gap between the CMC's published
-/// rate and the market-implied one becomes a systematic bias on every order.
+/// ⚠️ **ICP is an intermediate unit here, not a position.** The gateway never
+/// holds ICP, buys ICP, or spends ICP — it hands over cycles it already owns. ICP
+/// appears in the arithmetic only because it is the unit both on-chain rate
+/// sources are denominated in, and it cancels: `(USD/ICP) ÷ (XDR/ICP)` is
+/// USD/XDR. Do not read the formula as a purchase of ICP.
+///
+/// **Why derive rather than price off a market USD/XDR rate.** A cycle is
+/// *defined* in XDR by the protocol, so the price of what we sell is
+/// `cycles/10¹² XDR × USD/XDR`, and the only question is where USD/XDR comes
+/// from. There is no on-chain USD/XDR oracle, and the two rates above are both
+/// on-chain, independently governed, and time-aligned. A market USD/XDR rate
+/// would break even only when it happened to equal
+/// `(CMC's XDR/ICP) / (market USD/ICP)`; any gap between the protocol's published
+/// rate and the market-implied one becomes a systematic bias on every order,
+/// priced against a number the protocol does not use.
+///
+/// The operator's remaining exposure is **inventory**, not per-order: cycles are
+/// sold at today's implied USD/XDR and were funded into the reserve at whatever
+/// USD/XDR held when the operator bought them. How and when the reserve is
+/// refilled is the operator's decision, and deliberately outside this module.
 ///
 /// Both rates are read on the same tick, so they are time-aligned by
 /// construction and no timestamp reconciliation is needed.
@@ -63,9 +75,10 @@ module {
   ///
   /// Two honest limits: this is a cross-check, not independence — correlated
   /// drift in both sources would go unnoticed. And it assumes the CMC's rate is
-  /// the sound one; if the CMC is wrong instead we reject a good XRC price. That
-  /// is the right direction, because the CMC's rate is what we actually mint at,
-  /// so a wrong CMC rate is a larger problem than a refused quote.
+  /// the sound one; if the CMC is wrong instead we reject a good XRC price. That is
+  /// the right direction, because the CMC's rate is the protocol's own valuation of
+  /// a cycle, so a wrong one misprices cycles network-wide — a larger problem than
+  /// one refused quote, and not ours to correct at the till.
   public let minImpliedXdrPerUsdMicros : Nat = 500_000;
   public let maxImpliedXdrPerUsdMicros : Nat = 1_200_000;
 
@@ -229,8 +242,8 @@ module {
   /// The fee argument is the narrowed shape so both a live `Config` and an
   /// order's creation-time snapshot fit. The snapshot caller is `receipt`, which
   /// recomputes what a delivered order was charged from the rates it was priced
-  /// at — it was the webhook's repricing path too, until #33 made a mismatched
-  /// amount mint nothing.
+  /// at. The webhook does not reprice: it requires the paid amount to equal the
+  /// quoted one, so a mismatch delivers nothing.
   public func netCents(fee : { feeBps : Nat; feeFixedCents : Nat }, grossCents : Nat) : ?Nat {
     let total = feeCents(fee, grossCents);
     if (total >= grossCents) return null;

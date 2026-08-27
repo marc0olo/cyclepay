@@ -1,20 +1,24 @@
 /// Pre-creation admission gate — the "check before you take money" pass.
 ///
 /// Order creation is refused when fulfilment is already known to be impossible:
-/// insufficient ICP float, no burn-cap headroom, this canister's own cycle
-/// balance too low to keep running, an amount above the per-purchase ceiling,
-/// or a principal holding too many open orders. `Treasury.gate` remains the
-/// authoritative money check at *mint* time; this gate exists so the refusal
-/// happens before the user pays Stripe rather than after.
+/// too few cycles in the reserve to cover the order, this canister's own cycle
+/// balance too low to keep running, an amount outside the per-purchase bounds,
+/// or a principal holding too many open orders.
+///
+/// ⚠️ **This gate is advisory about money and authoritative about abuse.** The
+/// binding money check happens at delivery, when the transfer either lands or
+/// does not; `solvent` is split out from `admit` precisely because a *query*
+/// cannot await a balance, so `can_purchase` answers from the last observation.
+/// The gate exists so a refusal reaches the buyer before they pay Stripe rather
+/// than after, which is a user-experience guarantee, not a solvency one.
 ///
 /// This is an admission gate, not a capacity *reservation*. A reservation would
-/// need reserved-but-unpaid accounting plus a release path for abandoned
-/// orders, and it still could not guarantee delivery (the operator can withdraw
-/// the float, the CMC rate can move). Nothing is escrowed at creation —
-/// `lockedCycles` is a *price*, not a hold — so an order that lapses releases
-/// nothing. (It pointed at `Retention.mo` until #33 deleted it: an order lapses
-/// when Stripe expires its session, and #30 is what will make the release
-/// non-trivial by giving the promise something to hold.)
+/// need reserved-but-unpaid accounting plus a release path for abandoned orders,
+/// and it still could not guarantee delivery: the operator can move cycles out
+/// of the reserve account by hand, and the CMC rate can move between quote and
+/// delivery. Nothing is escrowed at creation — `lockedCycles` is a *price*, not
+/// a hold — so an order that lapses releases nothing, and an order that lapses
+/// is one whose Stripe session expired.
 ///
 /// Every check here is pure arithmetic over values the caller reads, so the
 /// whole policy unit-tests without an IC environment.
@@ -26,19 +30,24 @@ module {
 
   public type Config = {
     /// Cap on simultaneously-`#created` orders per principal. This is the
-    /// bound that actually stops unbounded state growth: legitimate order
-    /// volume is already bounded by the burn cap, so the only unbounded
-    /// vector is *abandoned* orders, which cost an attacker nothing to create
+    /// bound that actually stops unbounded state growth: paid volume is
+    /// self-limiting, because every delivery spends a reserve someone had to
+    /// fund, so the only unbounded vector is *unpaid* orders — free to create
     /// (`canister-security`: allowing unbounded user-controlled storage).
     /// Not a money decision — an abuse bound. Raise it for legitimate power
     /// users; do not set it to 0, which would block the rail entirely.
     maxOpenOrdersPerPrincipal : Nat;
-    /// Floor on this canister's OWN cycle balance — its gas, not the ICP
-    /// float. Below the freezing threshold the canister stops accepting
-    /// updates; at zero it is uninstalled. This is the "should never happen"
-    /// guard, and it must be well above the freezing threshold so there is
-    /// room to notice and top up. Distinct from `Treasury`'s float checks in
-    /// every way: different resource, different failure, different fix.
+    /// Floor on this canister's OWN cycle balance — its gas, not the cycles it
+    /// sells. Below the freezing threshold the canister stops accepting updates;
+    /// at zero it is uninstalled. This is the "should never happen" guard, and it
+    /// must be well above the freezing threshold so there is room to notice and
+    /// top up.
+    ///
+    /// ⚠️ **Two pots, and confusing them is the classic operational error.** Gas
+    /// lives in the canister's own balance and is spent by running; stock lives in
+    /// the gateway's cycles-ledger account and is spent by delivering. Different
+    /// resource, different failure, different fix — `icp canister status` reads the
+    /// first, `reserve_status` the second.
     minCanisterCycles : Nat;
     /// Per-purchase ceiling on the gross USD amount.
     ///
@@ -50,8 +59,9 @@ module {
     /// ~72 T, a 10× improvement for one config value and no new machinery.
     ///
     /// **One ceiling governs presets AND custom amounts.** Do not add a
-    /// custom-amount-specific limit: two knobs for one rule is how the float gate
-    /// and the reserve gate ended up contradicting each other.
+    /// custom-amount-specific limit. Two knobs for one rule drift apart, and then
+    /// which one binds depends on the path the amount arrived by — an amount a
+    /// preset may be sold at but a custom order may not, or the reverse.
     maxPurchaseUsdCents : Nat;
     /// Floor on the gross USD amount, for the same two cases.
     ///
@@ -66,9 +76,11 @@ module {
     minPurchaseUsdCents : Nat;
   };
 
-  /// Deliberately non-zero, unlike the burn cap — that is a *money* decision and
-  /// must ship dark. These are *safety limits*: a default of 0 would brick the
-  /// canister rather than protect it, which is the wrong direction of fail-closed.
+  /// Deliberately non-zero. These are *safety limits*, not money decisions: a
+  /// default of 0 would brick the canister rather than protect it, which is the
+  /// wrong direction of fail-closed. The one value that does gate money — how many
+  /// cycles are available to sell — has no default at all, because it is whatever
+  /// the operator actually funded the reserve with.
   ///
   /// The card rail's on/off switch is **both Stripe secrets being provisioned**
   /// (#33), not the tier list. An empty tier list now means only "no presets
@@ -225,12 +237,11 @@ module {
         min = config.minCanisterCycles;
       }));
     };
-    // ⚠️ **Solvency is NOT decided here — see `solvent` below.** The burn-cap and
-    // float checks that used to be at this point went with the mint path (#30
-    // PR-A): both bounded ICP spend, and delivery spends no ICP. Their stated
-    // justification had already become false — the burn-cap comment cited
-    // `#awaitingTreasury`, a status with no entrance — so keeping them would have
-    // refused sales to protect a resource nothing consumes.
+    // ⚠️ **Solvency is NOT decided here — see `solvent` below.** Everything above
+    // is arithmetic over values the caller already holds; the money question needs
+    // a ledger read, so it cannot live in a synchronous function. Do not add a
+    // balance check here to save a call: that is what reintroduces the TOCTOU
+    // window this split exists to close.
     #ok;
   };
 

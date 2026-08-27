@@ -38,20 +38,14 @@ suite("validateInterval", func() {
     assert Recovery.validateInterval(Recovery.defaultIntervalNs, Delivery.ledgerDedupWindowNs) == #ok;
   });
 
-  test("the retry budget outlasts a full day of outage at the default cadence", func() {
-    // ⚠️ **The coupling invariant this asserted is gone (#36).** It was
-    // `maxMintRetries × intervalNs > 24 h`: an outage shorter than a day must never
-    // exhaust the retry budget, because exhausting it escalated an order that would
-    // have completed. There is no budget — a delivery replay is provably safe, so
-    // retrying is bounded by time instead. What survives is the *upper* bound below:
-    // the cadence must stay well inside the dedup window so a stuck order gets
-    // several replay attempts while its intent can still deduplicate.
-    assert Recovery.defaultIntervalNs > 0;
-  });
-
   test("the cadence leaves real margin under the §5.1 ledger dedup window", func() {
     // Replay safety needs the cadence well inside the 24 h window, not merely
     // legal at the boundary.
+    //
+    // ⚠️ **This is the ONLY coupling left between the cadence and the window, and it
+    // is a one-sided bound.** There is no retry-budget invariant to assert on the
+    // other side: nothing breaks when the cadence is fast, so a test asserting a
+    // lower bound would have nothing to check and would pass on any positive value.
     assert Recovery.defaultIntervalNs * 4 <= Int.abs(Delivery.ledgerDedupWindowNs);
   });
 });

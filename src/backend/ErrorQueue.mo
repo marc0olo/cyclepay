@@ -99,11 +99,10 @@ module {
       /// Whether that settled the whole charge.
       fullRefund : Bool;
     };
-    /// **An alert, not a failure.** Money is in and delivery has not happened
-    /// yet for a reason that is always operator-fixable: the burn window is
-    /// spent, the ICP float is short, or the CMC is unreachable. The order stays
-    /// in its pre-mint state and keeps being swept, so fixing the *cause*
-    /// delivers it with no further intervention.
+    /// **An alert, not a failure.** Money is in and delivery has not happened yet
+    /// for a reason that is always operator-fixable: the reserve is short, or the
+    /// cycles ledger is unreachable. The order stays `#paid` and keeps being swept,
+    /// so fixing the *cause* delivers it with no further intervention.
     ///
     /// ⚠️ **An alert, deliberately, and not a termination.** Terminating on these
     /// causes would give up on a purchase that is going to succeed once the cause is
@@ -147,8 +146,8 @@ module {
       case (#duplicate(_) or #unattributed(_)) true;
       case (#deliveryStuck(_) or #refundAfterDelivery(_)) false;
       case (#deliveryDelayed(_) or #abandoned(_) or #unprocessable(_)) false;
-      // NOT Type 1. Type 1 means "fiat in, nothing minted" — a settled position
-      // the operator refunds. Here whether the cycles moved is unknown, so
+      // NOT Type 1. Type 1 means "fiat in, nothing delivered" — a *settled*
+      // position the operator refunds. Here whether the cycles moved is unknown, so
       // calling it Type 1 would tell them to refund a buyer who may already hold
       // their cycles.
           };
@@ -168,7 +167,7 @@ module {
 
   /// The payment reference a `charge.refunded` resolves — Type 1 only.
   /// (`#deliveryStuck` carries no paymentRef: the order store doesn't retain the
-  /// payment_intent, and a refund alone doesn't settle an uncertain mint.)
+  /// payment_intent, and a refund alone doesn't settle an uncertain delivery.)
   public func paymentRefOf(kind : Kind) : ?Text {
     switch (kind) {
       case (#duplicate({ paymentRef; orderId = _ })) ?paymentRef;
@@ -329,10 +328,10 @@ module {
   };
 
   /// `charge.refunded` auto-resolve (§4.1): marks every unresolved Type 1
-  /// entry carrying this `payment_intent` resolved; returns them. Type 2
-  /// entries never match (no paymentRef) — minted cycles are not a refund's
-  /// business. Empty result = refund for something not in the queue (fine:
-  /// operators may refund proactively).
+  /// entry carrying this `payment_intent` resolved; returns them. Type 2 entries
+  /// never match (no paymentRef) — delivered cycles are not a refund's business.
+  /// Empty result = refund for something not in the queue (fine: operators may
+  /// refund proactively).
   /// Unresolved entries carrying this `payment_intent`, without touching them.
   /// Used by the partial-refund path, which must report what is still owed
   /// rather than settle it.
