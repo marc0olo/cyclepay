@@ -285,15 +285,22 @@ icp canister top-up backend --amount "$CYCLES_TOP_UP" >/dev/null 2>&1 ||
     Needs icp-cli 1.2.0 or newer (\`icp canister top-up --help\`)."
 
 step "cycles reserve"
-# #30 PR-A: delivery is a TRANSFER out of the gateway's own cycles-ledger
-# account, not a mint. So the gateway needs cycles in that account, and it is a
-# different pot from the gas balance topped up above — the comment there spells
-# out the distinction, and this is the other half of it.
+# Delivery is a TRANSFER out of the gateway's own cycles-ledger account. So the
+# gateway needs cycles in that account, and it is a different pot from the gas balance
+# topped up above — the comment there spells out the distinction, and this is the
+# other half of it.
 #
-# `icp cycles transfer` is the mainnet procedure too: nothing mints into the
-# reserve, and there is deliberately no `mint_reserve` (#30 rejected it — it
-# would mean keeping ICP, an ICP-ledger dependency and a burn cap for one
-# operator convenience).
+# `icp cycles transfer` is the mainnet procedure too: nothing creates cycles here, and
+# there is deliberately no `mint_reserve` — it would mean holding ICP and an
+# ICP-ledger dependency for one operator convenience.
+#
+# ⚠️ **Read the id here, where it is used.** It used to be set in the treasury block
+# above; deleting that block left this line reading an unbound variable, which `set -u`
+# turned into a hard stop three quarters of the way through the seed. Nothing catches
+# that but running it.
+BACKEND_ID="$(icp canister status backend --json | jq -r '.id')"
+[ -n "$BACKEND_ID" ] && [ "$BACKEND_ID" != "null" ] ||
+  die "could not read the backend canister id — is the network up and the canister deployed?"
 RESERVE_TOP_UP=100t
 if icp cycles transfer "$RESERVE_TOP_UP" "$BACKEND_ID" >/dev/null 2>&1; then
   # ⚠️ **A funded reserve is not a SELLABLE reserve until the gateway looks.** #30

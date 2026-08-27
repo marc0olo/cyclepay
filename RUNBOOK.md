@@ -73,6 +73,12 @@ consciously set. Work the list in order:
    <backend-principal>`, then `refresh_reserve`. ⚠️ The second half is not optional —
    solvency is decided against a bound that only rises by observation, so an
    unobserved top-up sells nothing.
+
+   ⚠️ **How much is a SECURITY decision before it is a working-capital one.** A leaked
+   webhook secret drains at most what the reserve holds (§2), and nothing caps that —
+   so the answer to "how much do we keep in it?" is *risk appetite first, sales
+   velocity second*. Size it to what you are willing to lose between a leak and its
+   detection, and top up on a cadence rather than keeping months of float on hand.
 3. **Provision the webhook secret** (§2 below). Until set, the webhook
    route answers 503 and Stripe retries.
 4. **Register card tiers** (§3 below). Until set, the tier list is empty
