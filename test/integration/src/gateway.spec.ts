@@ -3190,6 +3190,15 @@ test('78 — an order whose delivery is unsettled cannot be abandoned into a dou
 });
 
 test('79 — the mint pipeline was never entered, asserted before #36 deletes it', async () => {
+  // ⚠️ **DELETE THIS SCENARIO WITH THE STATES IT ASSERTS ABOUT (#36).** It cannot
+  // compile against a status set that lacks its subjects, and its heir is the
+  // deletion itself: once `#minting`, `#icpAtCmc` and `#awaitingTreasury` do not
+  // exist, "no order is in them" stops being a claim anybody can make — which is a
+  // stronger guarantee than this test, not a weaker one. Unreachability becomes
+  // unrepresentability, which is the upgrade this codebase reaches for everywhere
+  // else (the transition matrix, the ledger's actor type) and the reason the
+  // scenario-map row for this one records its own disposal.
+  //
   // ⚠️ **This scenario exists to be deleted, and that is the point.** PR-A left the
   // ICP mint pipeline in-tree and unreachable: `#minting`, `#icpAtCmc` and
   // `#awaitingTreasury` lost their only entrance when the treasury pre-gate stopped

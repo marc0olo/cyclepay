@@ -215,6 +215,8 @@ before landing.)
 | 75 | a buyer heals their **own** stuck delivery; a stranger and the anonymous principal cannot; the admin lever still works and is the only one audited (#30 PR-B) | owner-scoped `process_order` |
 | 76 | one escalated order must not freeze the reserve reconcile forever (#30 PR-B) | regression test for a shipped bug |
 | 77 | an escalated order whose cycles **did** arrive is recorded as delivered rather than filed as abandoned (#30 PR-B) | `#needsReview → #delivered` |
+| 78 | an order whose delivery is unsettled cannot be abandoned into a double payout (#30 PR-B) | the guard a reviewer found; scenarios 34 and 47 were codifying the hole |
+| **79** | the mint pipeline was never entered, asserted **before #36 deletes it** | ⚠️ **Delete this with the states.** Its heir is the deletion: unreachability becomes unrepresentability. Measured falsifiability — routing `#beginDelivery` into `#minting` fails 06/07/08/10/11/12; every other insertion point is refused by the transition matrix itself |
 
 ⚠️ **76 and 77 both consume the order scenario 35 escalates**, through the
 suite-global `orderEscalated`, because reproducing that state costs another 72 h of
