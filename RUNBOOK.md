@@ -578,7 +578,33 @@ flight. There is nothing to measure. What decides the number is
 
 Work with the 13-node figure: it is the conservative one, and the local network
 prices on it, so local runs *overstate* production cost. At 20 T gas with a 5 T
-floor that is ≈68,000 creations before the rail closes.
+floor, the headroom depends on **whether webhooks are working**, and the two cases
+are worth keeping apart:
+
+| | cost per abandoned order | creations before the rail closes (n=13) | (n=7) |
+|---|---|---|---|
+| **Webhooks healthy** — the ordinary case | one create, ≈222 M | **≈68,000** | ≈128,000 |
+| **Webhooks failing** — a missed expiry event per order | create + retrieve, ≈612 M | **≈24,000** | ≈46,000 |
+
+⚠️ **The retrieve is NOT on the abuse path in normal operation, and the grace is
+what keeps it off.** Stripe fires `checkout.session.expired` within seconds of the
+deadline, so an abandoned order is already `#expired` about half an hour before the
+sweep would look at it — `expiryCheckDue` tests the status first. So a buyer, or an
+attacker, abandoning orders costs the gateway one create outcall each, exactly as
+before #52. The second row is the *degraded* case: it needs the webhook path broken
+as well, which is a different incident with its own P1 rows in §9.
+
+⚠️ **These four figures are computed from the formula above, not carried forward.** At
+`max_response_bytes` 16,384 and 32,768 with a 15 T spendable balance they are 67,685 /
+128,413 healthy and 24,515 / 46,236 degraded — recompute rather than reuse if a cap
+changes, because a stale performance number reads exactly like a measured one. (The
+previous ≈127,000 here was slightly low for n=7.)
+
+Either way the shape is unchanged — this is **availability, not memory**, it closes
+the rail via `minCanisterCycles` rather than freezing the canister, and it takes
+hours of sustained paid-for abuse. And one thing improved in the same change: the
+per-principal *instantaneous* strand fell from 20 open orders to **1**, a 20×
+reduction in what a single identity can tie up at once (#52 PR-B).
 
 ⚠️ **The retrieve's cap is deliberately double the others', so its call costs
 roughly double.** A *completed* session carries `customer_details`, a resolved
