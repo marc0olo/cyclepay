@@ -203,12 +203,26 @@ GENERATION="$(icp canister call backend webhook_secret_status '()' --query 2>/de
   tr -d ' _' | sed -nE 's/.*generation=([0-9]+).*/\1/p')"
 echo "secret set:  generation ${GENERATION:-?} (the secret itself is never readable back)"
 
-cat <<NOTES
+# ⚠️ **BOTH heredocs stay QUOTED, and the one dynamic line lives between them.**
+#
+# This block was briefly `cat <<NOTES` — unquoted — so that ${TRIGGER_PREFIX} would
+# interpolate. That activated three `…` spans that had been inert prose:
+# `icp deploy`, `icp identity principal` and `get_order`. Printing the closing notes
+# would have RUN a deploy, and under `set -euo pipefail` died at the final step with an
+# error naming none of it.
+#
+# ⚠️ Escaping those three backticks would work today and re-break the next time someone
+# adds one to what reads like Markdown prose — which in a block full of command names
+# is close to certain. So the fix is structural: the text can never expand, and the one
+# line that must expand is not in the text.
+cat <<'NOTES'
 
 --- ready ---
 In a second terminal:
 
-  ${TRIGGER_PREFIX}stripe trigger checkout.session.completed
+NOTES
+printf '%s\n' "  ${TRIGGER_PREFIX}stripe trigger checkout.session.completed"
+cat <<'NOTES'
       Builds a SYNTHETIC session with no client_reference_id, so it lands as a
       Type 1 #unattributed entry. That is a real test of the attribution guard,
       not the happy path.

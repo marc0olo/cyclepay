@@ -86,6 +86,12 @@ command -v mops >/dev/null 2>&1 || {
 #
 # It lives here rather than in mops.toml's [moc] args because `mops test` passes
 # --hide-warnings, and moc rejects that combination outright.
+# ⚠️ **First, because it is the cheapest and it guards the gate's own substrate.** An
+# unquoted heredoc that runs its own body has bitten twice in three days — once destroying
+# a GitHub issue body, once turning `stripe-dev.sh`'s closing notes into an `icp deploy`.
+# Fixed syntax, so it is enforceable here rather than written down again; see the script.
+run "shell — no unquoted heredoc runs its own body" scripts/check-heredocs.sh
+
 run "mops check — lint + typecheck (-Werror)" mops check -- -Werror
 run "mops test — Motoko unit suites" mops test
 
