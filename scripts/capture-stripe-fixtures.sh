@@ -49,8 +49,7 @@ die() {
 wanted() {
   cat <<'LIST'
 checkout.session.completed.paid|create an order in the app and pay its session URL with 4242 4242 4242 4242
-checkout.session.completed.unpaid|OUT OF BAND: hand-make a session with a DELAYED method (see the note below)
-checkout.session.completed.no-intent|OUT OF BAND: hand-make a session at unit_amount=0 (see the note below)
+checkout.session.completed.unpaid|arrives free with 'stripe trigger checkout.session.async_payment_succeeded'
 checkout.session.async_payment_succeeded|stripe trigger checkout.session.async_payment_succeeded
 checkout.session.async_payment_failed|stripe trigger checkout.session.async_payment_failed
 charge.refunded.full|refund a charge IN FULL in the Dashboard
@@ -146,25 +145,24 @@ rather than the output of a real payment, which is still far better than the
 hand-written JSON they replace, but note the distinction for the async pair: a
 real SEPA settlement is the thing group F of docs/SANDBOX-TESTPLAN.md exercises.
 
-⚠️ The two marked OUT OF BAND cannot be produced by this app at all since #33.
-Its sessions are card-only, mode=payment, at a fixed unit_amount above the $10
-floor, with no promo codes — so `payment_status` is never `unpaid` and
-`payment_intent` is never absent. Both used to come from Payment Link settings,
-which no longer exist here.
+⚠️ `checkout.session.completed.unpaid` needs no special effort: triggering
+`checkout.session.async_payment_succeeded` emits the WHOLE delayed sequence, which
+begins with a real `completed` carrying `payment_status: unpaid`. An earlier version
+of this script sent you to create a SEPA session by hand and pay it with a test
+IBAN — unnecessary, and nobody found out until someone ran the triggers and got the
+fixture anyway.
 
-To capture them, create the session yourself against the sandbox and pay it:
-
-  stripe checkout sessions create --mode=payment \
-    --payment-method-types=sepa_debit --success-url=https://example.com \
-    -d "line_items[0][price_data][currency]=eur" \
-    -d "line_items[0][price_data][unit_amount]=1000" \
-    -d "line_items[0][price_data][product_data][name]=fixture" \
-    -d "line_items[0][quantity]=1"
-
-(and the same at unit_amount=0 for the no-intent case). The handlers they
-exercise are still live — a delayed method could be enabled at account level, and
-a zero-amount session is still a shape Stripe can send — which is why the
-fixtures are still wanted even though the app cannot produce them.
+⚠️ A `payment_intent: null` fixture was on this list and was REMOVED, deliberately.
+Since #33 this app pins `payment_method_types[]=card` at a fixed unit_amount above
+the $10 floor with no promo codes, so `payment_intent` is never absent — and an
+explicit `payment_method_types` overrides whatever the account has enabled, so the
+old justification here ("a delayed method could be enabled at account level") was
+simply wrong. The handler stays and is covered by a crafted body in
+`test/webhook.test.mo`, which is honest: #4 exists because crafted JSON encodes our
+assumptions about what Stripe *sends us*, and for a payload it will never send there
+is nothing to be wrong about. If a non-card method is ever enabled — a product
+decision, not a config accident — capture becomes necessary again, because then the
+real shape is load-bearing.
 
 Ctrl-C when the list is complete.
 
