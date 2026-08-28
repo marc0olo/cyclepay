@@ -46,7 +46,14 @@ cd "$(dirname "$0")/.."
 #
 # Not an error when it says `main`: releasing from main is legitimate, and a gate that
 # refused would be wrong. It reports; the reader decides.
+# ⚠️ **Detached HEAD gets named, not printed as the word "HEAD".** `--abbrev-ref` answers
+# `HEAD` when detached, which reads like a branch called HEAD and hides exactly the state
+# this header exists to surface: a checkout where "which branch am I on" has no answer and
+# a commit would be orphaned.
 BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '(not a git checkout)')"
+if [ "$BRANCH" = "HEAD" ]; then
+  BRANCH="(detached: $(git rev-parse --short HEAD))"
+fi
 # One comparison against HEAD, so staged and unstaged both count and neither masks the
 # other. Tracked files only: an untracked scratch file is not a reason to say "uncommitted".
 DIRTY=""
