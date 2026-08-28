@@ -49,8 +49,7 @@ die() {
 wanted() {
   cat <<'LIST'
 checkout.session.completed.paid|create an order in the app and pay its session URL with 4242 4242 4242 4242
-checkout.session.completed.unpaid|OUT OF BAND: hand-make a session with a DELAYED method (see the note below)
-checkout.session.completed.no-intent|OUT OF BAND: hand-make a session at unit_amount=0 (see the note below)
+checkout.session.completed.unpaid|arrives free with 'stripe trigger checkout.session.async_payment_succeeded'
 checkout.session.async_payment_succeeded|stripe trigger checkout.session.async_payment_succeeded
 checkout.session.async_payment_failed|stripe trigger checkout.session.async_payment_failed
 charge.refunded.full|refund a charge IN FULL in the Dashboard
@@ -69,6 +68,15 @@ report_status() {
       printf '  \033[32m✓\033[0m %-46s\n' "$name"
       have=$((have + 1))
     else
+      # ⚠️ **Print the command that works in THIS shell, not the tidy one.** Our own calls
+      # go through `stripe_cli`, but a hint the operator pastes runs in their shell — where
+      # an exported STRIPE_API_KEY makes the CLI use the restricted backend key and fail
+      # with "more_permissions_required". Protecting the script and printing bare copy is
+      # the same split #52 rejected: two of that round's eleven key-scope sites were
+      # terminal output, and they counted because that is the copy people follow.
+      case "${STRIPE_API_KEY:-}|$how" in
+        ?*'|stripe '*) how="env -u STRIPE_API_KEY $how" ;;
+      esac
       printf '  \033[33m·\033[0m %-46s %s\n' "$name" "$how"
     fi
   done < <(wanted)
@@ -86,6 +94,38 @@ command -v jq >/dev/null 2>&1 || die "jq not found. brew install jq"
 command -v node >/dev/null 2>&1 || die "node not found"
 
 mkdir -p "$FIXTURES"
+
+# ⚠️ **Run the CLI with STRIPE_API_KEY UNSET, deliberately.**
+#
+# The Stripe CLI prefers `STRIPE_API_KEY` from the environment over its own `stripe login`
+# credential — and the key we tell operators to export is the **restricted** `rk_` one,
+# scoped to write Checkout Sessions and nothing else. `stripe listen` opens a CLI session,
+# which needs `stripecli_session_write`; a correctly-scoped rk_ key does not have it and
+# **must not**. So exporting the key for the backend silently breaks the CLI:
+#
+#   FATAL Error while authenticating with Stripe: Authorization failed, status=403
+#   "code": "more_permissions_required" … key 'rk_test_…' does not have the required
+#   permissions … Enabling Debugging Tools Write ('stripecli_session_write') …
+#
+# The wrong fix is widening that key. The right one is this: the CLI uses its keychain
+# login, the canister uses the restricted key, and neither borrows the other's credential.
+stripe_cli() { env -u STRIPE_API_KEY stripe "$@"; }
+
+if [ -n "${STRIPE_API_KEY:-}" ]; then
+  printf '\033[33m!\033[0m STRIPE_API_KEY is set in this shell; ignoring it for the Stripe CLI.\n'
+  printf '  It is the restricted backend key and cannot open a CLI session — see the note in this script.\n\n'
+fi
+
+# ⚠️ **Preflight the SESSION, not a read.** The first version of this check ran
+# `stripe events list`, which a restricted key is allowed to do — so it passed, printed
+# nothing, and the failure still happened later inside the pipe. Checking a *proxy* for a
+# credential rather than the capability actually needed is how a preflight gives false
+# confidence. `--print-secret` opens the same CLI session `listen` does, so it fails for
+# the same reason and says so here, where the message is visible.
+if ! STRIPE_PREFLIGHT="$(stripe_cli listen --print-secret 2>&1)"; then
+  printf '\n\033[31m✗ the Stripe CLI cannot open a session.\033[0m\n\n%s\n\n' "$STRIPE_PREFLIGHT" >&2
+  die "run 'stripe login' (choose a SANDBOX account) and try again"
+fi
 
 FORWARD_ARGS=()
 if [ "$FORWARD" -eq 1 ]; then
@@ -114,25 +154,24 @@ rather than the output of a real payment, which is still far better than the
 hand-written JSON they replace, but note the distinction for the async pair: a
 real SEPA settlement is the thing group F of docs/SANDBOX-TESTPLAN.md exercises.
 
-⚠️ The two marked OUT OF BAND cannot be produced by this app at all since #33.
-Its sessions are card-only, mode=payment, at a fixed unit_amount above the $10
-floor, with no promo codes — so `payment_status` is never `unpaid` and
-`payment_intent` is never absent. Both used to come from Payment Link settings,
-which no longer exist here.
+⚠️ `checkout.session.completed.unpaid` needs no special effort: triggering
+`checkout.session.async_payment_succeeded` emits the WHOLE delayed sequence, which
+begins with a real `completed` carrying `payment_status: unpaid`. An earlier version
+of this script sent you to create a SEPA session by hand and pay it with a test
+IBAN — unnecessary, and nobody found out until someone ran the triggers and got the
+fixture anyway.
 
-To capture them, create the session yourself against the sandbox and pay it:
-
-  stripe checkout sessions create --mode=payment \
-    --payment-method-types=sepa_debit --success-url=https://example.com \
-    -d "line_items[0][price_data][currency]=eur" \
-    -d "line_items[0][price_data][unit_amount]=1000" \
-    -d "line_items[0][price_data][product_data][name]=fixture" \
-    -d "line_items[0][quantity]=1"
-
-(and the same at unit_amount=0 for the no-intent case). The handlers they
-exercise are still live — a delayed method could be enabled at account level, and
-a zero-amount session is still a shape Stripe can send — which is why the
-fixtures are still wanted even though the app cannot produce them.
+⚠️ A `payment_intent: null` fixture was on this list and was REMOVED, deliberately.
+Since #33 this app pins `payment_method_types[]=card` at a fixed unit_amount above
+the $10 floor with no promo codes, so `payment_intent` is never absent — and an
+explicit `payment_method_types` overrides whatever the account has enabled, so the
+old justification here ("a delayed method could be enabled at account level") was
+simply wrong. The handler stays and is covered by a crafted body in
+`test/webhook.test.mo`, which is honest: #4 exists because crafted JSON encodes our
+assumptions about what Stripe *sends us*, and for a payload it will never send there
+is nothing to be wrong about. If a non-card method is ever enabled — a product
+decision, not a config accident — capture becomes necessary again, because then the
+real shape is load-bearing.
 
 Ctrl-C when the list is complete.
 
@@ -141,7 +180,18 @@ NOTES
 # `--print-json` emits one JSON object per line. Sort by type, and by the field that
 # distinguishes the variants we care about — paid vs unpaid, full vs partial refund,
 # and the missing-payment_intent case a zero-amount or subscription session produces.
-stripe listen --print-json "${FORWARD_ARGS[@]}" 2>/dev/null | node -e '
+# ⚠️ **`--format json`, not the deprecated `--print-json`.** The CLI now warns on the old
+# flag ("Please use `--format json` instead"), and a deprecated flag eventually stops being
+# accepted — at which point this script would fail in the way described just below.
+#
+# ⚠️ **stderr is NOT redirected, and that is a fix rather than an oversight.** This line
+# used to end `2>/dev/null`, which hid Stripe's "Ready! … signing secret" banner *and*
+# every reason it might refuse: an expired session, a revoked key, an account problem. The
+# pipeline then ended, the script exited **0**, and the operator got their prompt back with
+# no output and no error — indistinguishable from "nothing happened". That is exactly the
+# quiet-inertness this repo keeps removing from the canister, in our own tooling. The
+# banner on stderr is noise worth paying for.
+stripe_cli listen --format json "${FORWARD_ARGS[@]}" | node -e '
 const fs = require("fs");
 const dir = process.argv[1];
 const WANTED = new Set([
@@ -176,6 +226,13 @@ process.stdin.on("data", (chunk) => {
     // Only the fixtures the parity suite asserts on. Stripe emits a dozen
     // incidental events per checkout (product.created, charge.succeeded, …) and
     // writing those files clutters the directory with payloads nothing reads.
+    //
+    // ⚠️ **This set is a deliberate SUPERSET of `wanted()` and the difference is not
+    // drift.** `wanted()` drives the checklist and the missing-report, and no longer asks
+    // for `completed.no-intent` — unreachable since #33 pinned card. This set still
+    // accepts it, because if such a body ever does arrive it is worth having on disk
+    // rather than discarded. Asking for it and accepting it are different questions:
+    // do not "fix" one list to match the other.
     if (!WANTED.has(name)) {
       process.stdout.write(`  (ignored ${ev.type})\n`);
       continue;

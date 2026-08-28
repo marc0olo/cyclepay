@@ -17,6 +17,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, test } from 'vitest';
+import { checkoutSessionBody, partialRefundBody } from './harness';
 
 const DIR = resolve(__dirname, '..', 'fixtures');
 
@@ -65,17 +66,21 @@ describe('recorded Stripe events match what the canister expects', () => {
     expect(o.client_reference_id == null).toBe(false);
   });
 
-  withFixture('checkout.session.completed.unpaid', 'is genuinely not paid', (ev) => {
-    // The premise of the async path: `completed` can arrive with no money behind it.
+  withFixture('checkout.session.completed.unpaid', 'is a real delayed-method body, intent and all', (ev) => {
+    // ⚠️ **This assertion used to be `payment_status !== 'paid'` — a tautology**: it
+    // checked that the file captured for being unpaid contains the field it was captured
+    // for. What matters is the rest of the shape, because our code reads it: the guard in
+    // `Card.handleWebhook` acks these and waits, and `Session.classify` routes
+    // complete+unpaid to `#unknown` so the #52 sweep cannot claim a buyer paid.
     expect(ev.data.object.payment_status).not.toBe('paid');
+    // Stripe still sends an intent for an unsettled session, so "unpaid" is NOT
+    // detectable by a missing intent — the field we actually branch on is the only one
+    // that says so. A parser keying off `payment_intent == null` would read this as paid.
+    expect(typeof ev.data.object.payment_intent).toBe('string');
+    // And it really is the delayed flow rather than a card session we mislabelled.
+    expect(ev.data.object.payment_method_types).toContain('sepa_debit');
   });
 
-  withFixture('checkout.session.completed.no-intent', 'has a null payment_intent', (ev) => {
-    // What a 100%-off promo code or subscription-mode link produces. The canister
-    // acks these 200 and queues `#unprocessable` rather than 4xx-ing until Stripe
-    // disables the endpoint — so this fixture pins that the case is real.
-    expect(ev.data.object.payment_intent == null).toBe(true);
-  });
 
   withFixture('checkout.session.async_payment_succeeded', 'carries the same session shape as completed', (ev) => {
     // The canister parses this into the *same* structure and runs the same handler.
@@ -130,7 +135,6 @@ describe('capture progress', () => {
     const all = [
       'checkout.session.completed.paid',
       'checkout.session.completed.unpaid',
-      'checkout.session.completed.no-intent',
       'checkout.session.async_payment_succeeded',
       'checkout.session.async_payment_failed',
       'charge.refunded.full',
@@ -149,5 +153,125 @@ describe('capture progress', () => {
       );
     }
     expect(missing.length).toBeLessThanOrEqual(all.length);
+  });
+});
+
+describe('real vs crafted: the same values, the same shape (#4 the point of the issue)', () => {
+  // ⚠️ **This is what #4 was opened for, and it did not exist until now.** Everything
+  // above pins the *real* bodies. This compares them against the **crafted** builders the
+  // rest of the suite runs on, field by field, because the crafted ones encode our
+  // reading of the API docs and that reading is the thing at risk.
+  //
+  // The precedent, from #4's own text: a unit test "covered" delayed-payment settlement by
+  // sending a second `checkout.session.completed`, an event Stripe does not send. Nothing
+  // could catch that except a real body.
+  //
+  // Any disagreement here is a finding, not a failure: either our crafted payload is
+  // wrong (and every suite built on it proves the wrong thing) or our parser reads a
+  // field Stripe does not send.
+
+  /// Every field path `Card.parseEvent` and `Card.handleWebhook` read, per event type.
+  /// Kept as paths rather than a shape so a missing *parent* is reported precisely.
+  const REQUIRED: Record<string, string[]> = {
+    'checkout.session.completed': [
+      'id', 'type', 'livemode',
+      'data.object.payment_intent',
+      'data.object.amount_total',
+      'data.object.currency',
+      'data.object.payment_status',
+    ],
+    // ⚠️ **No `livemode` on these two, and that is not an omission.** The canister reads
+    // `livemode` only off a checkout **session** — `#chargeRefunded` carries
+    // `{eventId, paymentIntent, amountRefundedCents, chargeAmountCents}` and
+    // `#disputeCreated` carries `{eventId, paymentIntent, amountCents}`. Neither has it.
+    //
+    // The first draft of this list included it, and the parity test failed on its first
+    // run: the crafted refund hardcodes `livemode: true` while every real sandbox refund
+    // is `false`. That was **my test overreaching**, not a builder bug — asserting parity
+    // on a field the path does not consume. Same discipline as "check which guard actually
+    // fires": establish that the code reads it before requiring it to match.
+    //
+    // ⚠️ The latent half is still worth knowing: `partialRefundBody` cannot express a
+    // test-mode refund at all. Harmless **only because nothing reads it here** — so if a
+    // livemode check is ever added to the refund path, that builder needs a parameter
+    // first, or every refund scenario will be testing a body Stripe never sends in test
+    // mode.
+    'charge.refunded': [
+      'id', 'type',
+      'data.object.payment_intent',
+      'data.object.amount',
+      'data.object.amount_refunded',
+    ],
+    'charge.dispute.created': ['id', 'type', 'data.object.payment_intent'],
+  };
+
+  function at(o: any, path: string): unknown {
+    return path.split('.').reduce((n, k) => (n == null ? undefined : n[k]), o);
+  }
+
+  for (const name of [
+    'checkout.session.completed.paid',
+    'checkout.session.async_payment_succeeded',
+    'checkout.session.async_payment_failed',
+    'charge.refunded.full',
+    'charge.refunded.partial',
+    'charge.dispute.created',
+  ]) {
+    withFixture(name, 'carries every field the canister reads, at the path it reads it', (ev) => {
+      // `async_payment_*` carry the session object, so they answer to the same required
+      // set as `completed` — which is the assumption that broke once and is asserted here
+      // against Stripe rather than against our belief.
+      const key = ev.type.startsWith('checkout.session.') ? 'checkout.session.completed' : ev.type;
+      const required = REQUIRED[key];
+      expect(required, `no required-field list for ${ev.type}`).toBeDefined();
+      for (const path of required!) {
+        expect(at(ev, path), `${name}: real body is missing ${path}`).not.toBeUndefined();
+      }
+    });
+  }
+
+  withFixture('checkout.session.completed.paid', 'agrees with the crafted body field for field', (ev) => {
+    // Rebuild the crafted payload from the REAL body's own values, then compare the parsed
+    // structures. Identical values by construction — so any difference that survives is a
+    // difference in *shape*: a field we invent, a field we omit, or a type mismatch.
+    const o = ev.data.object;
+    const crafted = JSON.parse(
+      checkoutSessionBody({
+        eventId: ev.id,
+        paymentIntent: o.payment_intent,
+        clientReferenceId: o.client_reference_id ?? null,
+        amountCents: BigInt(o.amount_total),
+        currency: o.currency,
+        paymentStatus: o.payment_status,
+        livemode: ev.livemode,
+      }),
+    );
+    for (const path of REQUIRED['checkout.session.completed']!) {
+      expect(at(crafted, path), `crafted body disagrees with Stripe at ${path}`).toEqual(at(ev, path));
+    }
+    // ⚠️ The crafted builder is a SUBSET of the real body, deliberately — the real one
+    // carries dozens of fields the canister never reads. What must not happen is the
+    // reverse: a crafted field with no real counterpart, which is an invented assumption.
+    const invented = Object.keys(crafted.data.object).filter((k) => !(k in o));
+    expect(invented, 'crafted payload has fields Stripe does not send').toEqual([]);
+  });
+
+  withFixture('charge.refunded.partial', 'agrees with the crafted refund, and is genuinely partial', (ev) => {
+    const o = ev.data.object;
+    const crafted = JSON.parse(
+      partialRefundBody(ev.id, o.payment_intent, BigInt(o.amount_refunded), BigInt(o.amount)),
+    );
+    for (const path of REQUIRED['charge.refunded']!) {
+      expect(at(crafted, path), `crafted refund disagrees with Stripe at ${path}`).toEqual(at(ev, path));
+    }
+    const invented = Object.keys(crafted.data.object).filter((k) => !(k in o));
+    expect(invented, 'crafted refund has fields Stripe does not send').toEqual([]);
+    // The distinction three review rounds argued about, now read off a real body: a
+    // partial refund is only distinguishable by comparing the two amounts.
+    expect(o.amount_refunded).toBeLessThan(o.amount);
+  });
+
+  withFixture('charge.refunded.full', 'a full refund reaches the charge total', (ev) => {
+    expect(ev.data.object.amount_refunded).toBe(ev.data.object.amount);
   });
 });

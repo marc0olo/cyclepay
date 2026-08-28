@@ -1,0 +1,134 @@
+{
+  "api_version": "2026-07-29.dahlia",
+  "created": 1787923705,
+  "data": {
+    "object": {
+      "adaptive_pricing": {
+        "enabled": true
+      },
+      "after_expiration": null,
+      "allow_promotion_codes": null,
+      "amount_subtotal": 3000,
+      "amount_total": 3000,
+      "automatic_tax": {
+        "enabled": false,
+        "liability": null,
+        "provider": null,
+        "status": null
+      },
+      "billing_address_collection": null,
+      "branding_settings": {
+        "background_color": "#ffffff",
+        "border_style": "rounded",
+        "button_color": "#0074d4",
+        "display_name": "DFINITY Stiftung Sandbox",
+        "font_family": "default",
+        "icon": null,
+        "logo": null
+      },
+      "cancel_url": "https://httpbin.org/post",
+      "client_reference_id": null,
+      "client_secret": null,
+      "collected_information": null,
+      "consent": null,
+      "consent_collection": null,
+      "created": 1787923686,
+      "currency": "eur",
+      "currency_conversion": null,
+      "custom_fields": [],
+      "custom_text": {
+        "after_submit": null,
+        "shipping_address": null,
+        "submit": null,
+        "terms_of_service_acceptance": null
+      },
+      "customer": null,
+      "customer_account": null,
+      "customer_creation": "if_required",
+      "customer_details": {
+        "address": {
+          "city": "London",
+          "country": "GB",
+          "line1": "71 Crown Street",
+          "line2": null,
+          "postal_code": "W10 2WB",
+          "state": null
+        },
+        "business_name": null,
+        "email": "buyer@example.com",
+        "individual_name": null,
+        "name": "Test Buyer",
+        "phone": null,
+        "tax_exempt": "none",
+        "tax_ids": []
+      },
+      "customer_email": null,
+      "discounts": [],
+      "expires_at": 1788010086,
+      "id": "cs_test_a1gZ3FX3Zb3B2OmTsM4FVinhKvd6IQqfB8B9BXnoJLO2kMVdC0rAzctW7u",
+      "integration_identifier": null,
+      "invoice": null,
+      "invoice_creation": {
+        "enabled": false,
+        "invoice_data": {
+          "account_tax_ids": null,
+          "custom_fields": null,
+          "description": null,
+          "footer": null,
+          "issuer": null,
+          "metadata": {},
+          "rendering_options": null
+        }
+      },
+      "livemode": false,
+      "locale": null,
+      "managed_payments": {
+        "enabled": false
+      },
+      "metadata": {},
+      "mode": "payment",
+      "object": "checkout.session",
+      "origin_context": null,
+      "payment_intent": "pi_3U9PpEHaCNzOTFGb1bkFqTMj",
+      "payment_link": null,
+      "payment_method_collection": "if_required",
+      "payment_method_configuration_details": null,
+      "payment_method_options": {},
+      "payment_method_types": [
+        "sepa_debit"
+      ],
+      "payment_status": "paid",
+      "permissions": null,
+      "phone_number_collection": {
+        "enabled": false
+      },
+      "recovered_from": null,
+      "saved_payment_method_options": null,
+      "setup_intent": null,
+      "shipping_address_collection": null,
+      "shipping_cost": null,
+      "shipping_options": [],
+      "status": "complete",
+      "submit_type": null,
+      "subscription": null,
+      "success_url": "https://httpbin.org/post",
+      "total_details": {
+        "amount_discount": 0,
+        "amount_shipping": 0,
+        "amount_tax": 0
+      },
+      "ui_mode": "hosted_page",
+      "url": null,
+      "wallet_options": null
+    }
+  },
+  "id": "evt_1U9PpVHaCNzOTFGbQ8nL7N6k",
+  "livemode": false,
+  "object": "event",
+  "pending_webhooks": 2,
+  "request": {
+    "id": null,
+    "idempotency_key": null
+  },
+  "type": "checkout.session.async_payment_succeeded"
+}

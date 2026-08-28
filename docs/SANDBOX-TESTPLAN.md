@@ -96,6 +96,11 @@ npm --prefix test/browser ci                    # only if you also want the suit
 #    and so it never lands in your shell history. Without it the seed sets a
 #    placeholder: everything except paying works, and create_order fails with a
 #    real Stripe 401 rather than at a config check.
+#
+#    ⚠️ Keep it in that file rather than `export`ing it: the Stripe CLI prefers
+#    STRIPE_API_KEY over its own `stripe login`, and the restricted key cannot open a
+#    CLI session — `stripe listen` then dies with "more_permissions_required". The seed
+#    sources the file into its own process, so the variable never reaches your shell.
 #    Nothing to configure in the Dashboard: the session carries inline price_data
 #    with a fixed unit_amount and quantity 1, and none of the settings that could
 #    move amount_total is enabled — src/backend/rails/Session.mo lists all eight
@@ -359,6 +364,13 @@ STRIPE_API_KEY=rk_...                         \
 # then, second terminal:
 stripe listen --forward-to '<the URL it prints>'
 ```
+
+⚠️ **Both keys are prefixed onto one command, not exported — and that matters.** The
+Stripe CLI prefers `STRIPE_API_KEY` from the environment over its own `stripe login`
+credential, and the restricted key cannot open a CLI session (`stripecli_session_write`
+is not among its permissions, correctly). Export it and the second command above fails
+with *"more_permissions_required"* naming your `rk_` key. Prefixing scopes it to the
+process that needs it.
 
 ⚠️ **`STRIPE_API_KEY` is what makes an order possible, not just a payment.** The rail
 creates a Checkout Session per order, so `create_order` itself calls Stripe — without
