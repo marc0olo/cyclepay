@@ -509,6 +509,24 @@ icp canister call backend receipt '("<orderId>")'           # owner identity onl
 
 ## C. Amount honouring
 
+⚠️ **Three of these five rows became optional when #4 landed, and one should be dropped.**
+They were written when crafted JSON was our only description of Stripe. The parity test in
+`test/integration/src/fixtures.spec.ts` now compares a **recorded real** session against the
+crafted builder on exactly the fields this group questions — `amount_total`, `currency`,
+`payment_status`, `payment_intent` — so the shape question is automated and the crafted
+guard tests inherit its credibility.
+
+| row | now | why |
+|---|---|---|
+| **C1** | **required** | the happy path; covered by any real purchase |
+| **C4** | **required** | reachable with no tampering, and nothing else covers the ceiling's one live case |
+| C2, C5 | optional | the field question is automated; a hand-made session adds the HTTP path and ordering, not the shape |
+| C3 | **drop** | its own row says it is not a separate outcome since #33 — it *is* C2 |
+
+A manual plan ages against the automation built beside it. The rows to re-read first are the
+ones whose justification is about **what we cannot otherwise know**, because that is the
+claim automation invalidates.
+
 | # | Scenario | How | Expect |
 |---|---|---|---|
 ⚠️ **Rewritten by #33.** The canister sets the amount on the session, so C2 and

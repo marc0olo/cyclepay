@@ -1,15 +1,15 @@
 {
   "api_version": "2026-07-29.dahlia",
-  "created": 1785932685,
+  "created": 1787934197,
   "data": {
     "object": {
-      "amount": 500,
-      "amount_captured": 500,
-      "amount_refunded": 500,
+      "amount": 1300,
+      "amount_captured": 1300,
+      "amount_refunded": 1300,
       "application": null,
       "application_fee": null,
       "application_fee_amount": null,
-      "balance_transaction": "txn_3U13r2HaCNzOTFGb0gtQ92iw",
+      "balance_transaction": "txn_3U9SJfHaCNzOTFGb0WmtKbQU",
       "billing_details": {
         "address": {
           "city": null,
@@ -26,7 +26,7 @@
       },
       "calculated_statement_descriptor": "Stripe",
       "captured": true,
-      "created": 1785932608,
+      "created": 1787933263,
       "currency": "usd",
       "customer": null,
       "description": null,
@@ -37,7 +37,7 @@
       "failure_code": null,
       "failure_message": null,
       "fraud_details": {},
-      "id": "ch_3U13r2HaCNzOTFGb0s4bLUz9",
+      "id": "ch_3U9SJfHaCNzOTFGb0ovieL27",
       "livemode": false,
       "metadata": {},
       "object": "charge",
@@ -50,17 +50,17 @@
         "network_status": "approved_by_network",
         "reason": null,
         "risk_level": "normal",
-        "risk_score": 37,
+        "risk_score": 52,
         "seller_message": "Payment complete.",
         "type": "authorized"
       },
       "paid": true,
-      "payment_intent": "pi_3U13r2HaCNzOTFGb0C2c9SEK",
-      "payment_method": "pm_1U13r1HaCNzOTFGbk2EPrQOY",
+      "payment_intent": "pi_3U9SJfHaCNzOTFGb0uETzqAW",
+      "payment_method": "pm_1U9SJeHaCNzOTFGbtTeAR1J7",
       "payment_method_details": {
         "card": {
-          "amount_authorized": 500,
-          "authorization_code": "819770",
+          "amount_authorized": 1300,
+          "authorization_code": "459682",
           "brand": "visa",
           "checks": {
             "address_line1_check": null,
@@ -68,8 +68,8 @@
             "cvc_check": "pass"
           },
           "country": "US",
-          "exp_month": 8,
-          "exp_year": 2028,
+          "exp_month": 1,
+          "exp_year": 2030,
           "extended_authorization": {
             "status": "disabled"
           },
@@ -90,7 +90,7 @@
           },
           "network_transaction_id": "678986118841105",
           "overcapture": {
-            "maximum_amount_capturable": 500,
+            "maximum_amount_capturable": 1300,
             "status": "unavailable"
           },
           "regulated_status": "unregulated",
@@ -103,7 +103,7 @@
       "radar_options": {},
       "receipt_email": null,
       "receipt_number": null,
-      "receipt_url": "https://pay.stripe.com/receipts/payment/CAcaFwoVYWNjdF8xVTEzWnNIYUNOek9URkdiKI3XzNMGMgYScHDd64M6LBaWffASNTx1oxyq6kKvhLqadc3Vyd2WIqRYAtrx-H3O7LHbT9Dbgu_ig4QN",
+      "receipt_url": "https://pay.stripe.com/receipts/payment/CAcaFwoVYWNjdF8xVTEzWnNIYUNOek9URkdiKPXrxtQGMga7ABeCgzM6LBZIfTXcVGHtkSTEWDkS-DR_6Cui14g9G5RLO3l8K536tsis2Kx339680YzX",
       "refunded": true,
       "review": null,
       "shipping": null,
@@ -117,17 +117,17 @@
     },
     "previous_attributes": {
       "amount_refunded": 0,
-      "receipt_url": "https://pay.stripe.com/receipts/payment/CAcaFwoVYWNjdF8xVTEzWnNIYUNOek9URkdiKIzXzNMGMgYmeQk-ge86LBY152K7OQ_LwqSm5BCziY6JdhV9r975bfs1lmEs9rjZOuzvv7lkd_wMFpya",
+      "receipt_url": "https://pay.stripe.com/receipts/payment/CAcaFwoVYWNjdF8xVTEzWnNIYUNOek9URkdiKPTrxtQGMgYjEnpT9j06LBbKbRE3remcZKid29U8Sb08fhZQDHei3se5saffiqIt7gFmAZ-qintzTBYx",
       "refunded": false
     }
   },
-  "id": "evt_3U13r2HaCNzOTFGb0i8XCqie",
+  "id": "evt_3U9SJfHaCNzOTFGb0oELBW4J",
   "livemode": false,
   "object": "event",
   "pending_webhooks": 2,
   "request": {
-    "id": "req_bIA3dUYfice79Q",
-    "idempotency_key": "42e59b72-456b-4fd4-9b0a-269e67369816"
+    "id": "req_rU5smCxo8ZmeYq",
+    "idempotency_key": "db04e726-4cb4-402a-be68-b3fd49312efc"
   },
   "type": "charge.refunded"
 }

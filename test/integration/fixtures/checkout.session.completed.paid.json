@@ -1,33 +1,38 @@
 {
   "api_version": "2026-07-29.dahlia",
-  "created": 1785933314,
+  "created": 1787933264,
   "data": {
     "object": {
       "adaptive_pricing": {
-        "enabled": true
+        "enabled": false
       },
       "after_expiration": null,
-      "allow_promotion_codes": false,
-      "amount_subtotal": 500,
-      "amount_total": 500,
+      "allow_promotion_codes": null,
+      "amount_subtotal": 1300,
+      "amount_total": 1300,
       "automatic_tax": {
         "enabled": false,
         "liability": null,
         "provider": null,
         "status": null
       },
-      "billing_address_collection": "auto",
-      "cancel_url": "https://stripe.com",
-      "client_reference_id": "aaaaa-aa_abcdef0123456789abcdef0123456789",
+      "billing_address_collection": null,
+      "branding_settings": {
+        "background_color": "#ffffff",
+        "border_style": "rounded",
+        "button_color": "#0074d4",
+        "display_name": "DFINITY Stiftung Sandbox",
+        "font_family": "default",
+        "icon": null,
+        "logo": null
+      },
+      "cancel_url": "https://4qggx-l3777-77775-aaaca-cai.icp0.io/#/order/7dfc1cb7dc9a8e65129778a332fec358",
+      "client_reference_id": "nvt22-vmomy-6bpp2-emu7o-yokuy-oymum-xru6i-7a6hz-qhbpm-3tnni-6ae_7dfc1cb7dc9a8e65129778a332fec358",
       "client_secret": null,
       "collected_information": null,
       "consent": null,
-      "consent_collection": {
-        "payment_method_reuse_agreement": null,
-        "promotions": "none",
-        "terms_of_service": "none"
-      },
-      "created": 1785933254,
+      "consent_collection": null,
+      "created": 1787933239,
       "currency": "usd",
       "currency_conversion": null,
       "custom_fields": [],
@@ -59,8 +64,8 @@
       },
       "customer_email": null,
       "discounts": [],
-      "expires_at": 1786019653,
-      "id": "cs_test_a1lONRo2y2u2ZjRgPWrPW8dplCfjwfUe0jpbU5ET95cSVBrFe5x43aqHeM",
+      "expires_at": 1787935336,
+      "id": "cs_test_a1rOfrlC618cLdIYIlHSpIGUBb4dSRfMGRA4xLKhzkOkF7oh9XqSZTCOvj",
       "integration_identifier": null,
       "invoice": null,
       "invoice_creation": {
@@ -76,7 +81,7 @@
         }
       },
       "livemode": false,
-      "locale": "auto",
+      "locale": null,
       "managed_payments": {
         "enabled": false
       },
@@ -84,22 +89,17 @@
       "mode": "payment",
       "object": "checkout.session",
       "origin_context": null,
-      "payment_intent": "pi_3U142PHaCNzOTFGb1SUEa2kr",
-      "payment_link": "plink_1U13pgHaCNzOTFGbxImuOA1Y",
+      "payment_intent": "pi_3U9SJfHaCNzOTFGb0uETzqAW",
+      "payment_link": null,
       "payment_method_collection": "if_required",
-      "payment_method_configuration_details": {
-        "id": "pmc_1U13aOHaCNzOTFGbXpwyfgVn",
-        "parent": null
-      },
+      "payment_method_configuration_details": null,
       "payment_method_options": {
         "card": {
           "request_three_d_secure": "automatic"
         }
       },
       "payment_method_types": [
-        "card",
-        "link",
-        "amazon_pay"
+        "card"
       ],
       "payment_status": "paid",
       "permissions": null,
@@ -113,9 +113,9 @@
       "shipping_cost": null,
       "shipping_options": [],
       "status": "complete",
-      "submit_type": "auto",
+      "submit_type": null,
       "subscription": null,
-      "success_url": "https://stripe.com",
+      "success_url": "https://4qggx-l3777-77775-aaaca-cai.icp0.io/#/order/7dfc1cb7dc9a8e65129778a332fec358",
       "total_details": {
         "amount_discount": 0,
         "amount_shipping": 0,
@@ -126,7 +126,7 @@
       "wallet_options": null
     }
   },
-  "id": "evt_1U142QHaCNzOTFGbgEKYRXff",
+  "id": "evt_1U9SJgHaCNzOTFGbZCM6tNU2",
   "livemode": false,
   "object": "event",
   "pending_webhooks": 2,
