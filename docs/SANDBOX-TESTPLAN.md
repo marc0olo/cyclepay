@@ -75,7 +75,13 @@ scenarios to work through or a by-hand reference for one of these steps.
 What you have to supply: a **Stripe sandbox account** with the Stripe CLI logged in
 to it, and a **restricted API key** (`rk_...`) with **Checkout Sessions = Write**
 and everything else None. Write is the level that also grants read, which the recovery
-sweep needs in order to retrieve a session (#52). No Payment Links, no Products, no Prices — the canister creates a
+sweep needs in order to retrieve a session (#52) — **measured, not inferred: a `rk_`
+key scoped to Checkout Sessions = Write returns HTTP 200 on
+`GET /v1/checkout/sessions/{id}`.** It is worth stating as a measurement because the
+failure mode is invisible to the test suite: PocketIC answers the sweep's outcall
+itself, so a key that could create sessions but not read them would 401 in production
+with every scenario green. `Main.mo` carries a `stripe.retrieveUnauthorized` audit tag
+for that case. No Payment Links, no Products, no Prices — the canister creates a
 session per order through the API (#33). Nothing else, and no mainnet.
 
 **How to create the key, and the go-live ordering, is RUNBOOK §3.**
