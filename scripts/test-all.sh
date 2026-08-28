@@ -32,6 +32,27 @@ done
 
 cd "$(dirname "$0")/.."
 
+# ⚠️ **Print the branch, because "I assumed where I was" has cost this repo twice.**
+#
+# Two work-in-progress commits landed on `main` in one session — the branch had been
+# created before an intervening merge and never re-checked. `git branch --show-current`
+# before committing is written down in #12 both times, and the second time it still was
+# not run: a rule that needs remembering is a rule that gets skipped.
+#
+# This gate runs far more often than commits do, so putting the answer on screen turns
+# "remember to check" into "you already know". Both strays were in fact caught by reading
+# a number in this output — a scenario count that differed from the branch's — so the
+# header is the same detector made explicit rather than incidental.
+#
+# Not an error when it says `main`: releasing from main is legitimate, and a gate that
+# refused would be wrong. It reports; the reader decides.
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '(not a git checkout)')"
+# One comparison against HEAD, so staged and unstaged both count and neither masks the
+# other. Tracked files only: an untracked scratch file is not a reason to say "uncommitted".
+DIRTY=""
+git diff HEAD --quiet 2>/dev/null || DIRTY=" · uncommitted changes"
+printf '\033[1mgate\033[0m on \033[1m%s\033[0m%s\n' "$BRANCH" "$DIRTY"
+
 step=0
 run() {
   step=$((step + 1))
