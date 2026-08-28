@@ -116,6 +116,30 @@ scripts/local-dev-seed.sh
 scripts/stripe-dev.sh
 ```
 
+⚠️ **The CMC rate has a 15-minute fuse, and it is the single most likely thing to
+derail this run.** The seed arms a rate; 15 minutes later the gateway cannot price,
+`create_order` is refused, and the symptom is *not* a rate error — `scripts/stripe-dev.sh`
+fails its preflight with **"the gateway cannot price a $10 purchase"**, which reads like a
+configuration problem. That is exactly how this procedure failed when it was last walked.
+
+The fix takes two seconds and needs no reinstall:
+
+```sh
+scripts/local-dev-seed.sh --rate-only
+```
+
+So: **re-arm immediately before you pay**, not when you started. Any pause — reading this
+file, registering a passkey, a phone call between creating the order and opening Checkout —
+can outlast the rate. Two things soften it, and knowing which is which saves confusion:
+
+- An order that **already exists** keeps its locked quantity forever; a stale rate only
+  refuses *new* orders. So if you got the order created, paying still works.
+- A run that sits in the browser for half an hour will fail at **create**, not at pay.
+
+⚠️ And the reason it cannot simply be longer: `Pricing.mo` refuses a CMC rate older than
+15 minutes **by design** — a stale rate misprices an order, and the local CMC's rate is
+stamped 2021 until something sets it. The fuse is the guard working, not a rough edge.
+
 Then, in the browser at the frontend URL `icp deploy` printed
 (`http://frontend.local.localhost:8000/` with the default gateway port):
 
