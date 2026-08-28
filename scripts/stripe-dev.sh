@@ -132,16 +132,42 @@ if [ "$BOOTSTRAP" -eq 1 ]; then
   echo "livemode:    expecting TEST events (mainnet must be 'opt true')"
 fi
 
+# ⚠️ **Run the Stripe CLI with STRIPE_API_KEY UNSET.**
+#
+# The CLI prefers `STRIPE_API_KEY` from the environment over its own `stripe login`
+# credential — and this repo tells operators to export that variable, holding the
+# **restricted** `rk_` key scoped to write Checkout Sessions and nothing else. Opening a
+# CLI session needs `stripecli_session_write`, which a correctly-scoped rk_ key does not
+# have and must not, so an exported key turns every call here into:
+#
+#   FATAL … status=403 "more_permissions_required" … 'rk_test_…' does not have the
+#   required permissions … Enabling Debugging Tools Write ('stripecli_session_write')
+#
+# The wrong fix is widening the key. The CLI uses its keychain login, the canister uses the
+# restricted key, and neither borrows the other's credential.
+stripe_cli() { env -u STRIPE_API_KEY stripe "$@"; }
+
+if [ -n "${STRIPE_API_KEY:-}" ]; then
+  printf '\033[33m!\033[0m STRIPE_API_KEY is set; ignoring it for the Stripe CLI (it is the backend key).\n'
+fi
+
 # --- wire the forwarding session's signing secret ---------------------------
 # `stripe listen` mints a secret for the forwarding session. It is NOT the
 # Dashboard endpoint's secret, and it changes per `stripe login` — so read it
 # rather than pasting one.
 echo
 echo "--- reading the forwarding session's signing secret ---"
-WHSEC="$(stripe listen --print-secret 2>/dev/null || true)"
+# stderr is kept, not sent to /dev/null: when this fails the reason is the whole message —
+# a 403 naming the permission, or "not logged in" — and discarding it leaves only "could
+# not read a signing secret", which describes the symptom and hides the cause.
+WHSEC_OUT="$(stripe_cli listen --print-secret 2>&1 || true)"
+WHSEC="$(printf '%s' "$WHSEC_OUT" | grep -oE 'whsec_[A-Za-z0-9]+' | head -1 || true)"
 case "$WHSEC" in
   whsec_*) ;;
-  *) die "could not read a signing secret from 'stripe listen --print-secret'. Run 'stripe login' first (choose a SANDBOX account)." ;;
+  *)
+    printf '\n%s\n\n' "$WHSEC_OUT" >&2
+    die "could not read a signing secret from 'stripe listen --print-secret' (output above). Run 'stripe login' first (choose a SANDBOX account)."
+    ;;
 esac
 
 icp canister call backend set_webhook_secret "(\"${WHSEC}\")" >/dev/null
@@ -223,4 +249,4 @@ Two things to expect locally:
 Starting the forwarder (Ctrl-C to stop)...
 NOTES
 
-exec stripe listen --forward-to "$FORWARD_URL"
+exec env -u STRIPE_API_KEY stripe listen --forward-to "$FORWARD_URL"

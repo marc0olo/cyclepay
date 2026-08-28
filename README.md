@@ -106,6 +106,15 @@ STRIPE_API_KEY=rk_test_...
 ENV
 scripts/local-dev-seed.sh
 ```
+⚠️ **Do NOT `export` that key into a shell where you run the Stripe CLI.** The CLI
+prefers `STRIPE_API_KEY` from the environment over its own `stripe login` credential, and
+opening a CLI session needs `stripecli_session_write` — a permission the restricted key
+correctly does **not** have. Exporting it makes `stripe listen` fail with
+*"more_permissions_required"*, naming your `rk_` key. **The fix is not to widen the key:**
+keep it in `scripts/.local-dev.env` (which the seed sources into its own process), or prefix a
+single command rather than exporting. Our scripts now strip the variable before calling
+the CLI, so they are immune; a CLI command you type yourself is not.
+
 
 That is the whole file — the `STRIPE_LINK_*` variables it used to hold went with
 `Tier.paymentLinkUrl` (#33).

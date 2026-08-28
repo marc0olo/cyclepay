@@ -87,6 +87,38 @@ command -v node >/dev/null 2>&1 || die "node not found"
 
 mkdir -p "$FIXTURES"
 
+# ⚠️ **Run the CLI with STRIPE_API_KEY UNSET, deliberately.**
+#
+# The Stripe CLI prefers `STRIPE_API_KEY` from the environment over its own `stripe login`
+# credential — and the key we tell operators to export is the **restricted** `rk_` one,
+# scoped to write Checkout Sessions and nothing else. `stripe listen` opens a CLI session,
+# which needs `stripecli_session_write`; a correctly-scoped rk_ key does not have it and
+# **must not**. So exporting the key for the backend silently breaks the CLI:
+#
+#   FATAL Error while authenticating with Stripe: Authorization failed, status=403
+#   "code": "more_permissions_required" … key 'rk_test_…' does not have the required
+#   permissions … Enabling Debugging Tools Write ('stripecli_session_write') …
+#
+# The wrong fix is widening that key. The right one is this: the CLI uses its keychain
+# login, the canister uses the restricted key, and neither borrows the other's credential.
+stripe_cli() { env -u STRIPE_API_KEY stripe "$@"; }
+
+if [ -n "${STRIPE_API_KEY:-}" ]; then
+  printf '\033[33m!\033[0m STRIPE_API_KEY is set in this shell; ignoring it for the Stripe CLI.\n'
+  printf '  It is the restricted backend key and cannot open a CLI session — see the note in this script.\n\n'
+fi
+
+# ⚠️ **Preflight the SESSION, not a read.** The first version of this check ran
+# `stripe events list`, which a restricted key is allowed to do — so it passed, printed
+# nothing, and the failure still happened later inside the pipe. Checking a *proxy* for a
+# credential rather than the capability actually needed is how a preflight gives false
+# confidence. `--print-secret` opens the same CLI session `listen` does, so it fails for
+# the same reason and says so here, where the message is visible.
+if ! STRIPE_PREFLIGHT="$(stripe_cli listen --print-secret 2>&1)"; then
+  printf '\n\033[31m✗ the Stripe CLI cannot open a session.\033[0m\n\n%s\n\n' "$STRIPE_PREFLIGHT" >&2
+  die "run 'stripe login' (choose a SANDBOX account) and try again"
+fi
+
 FORWARD_ARGS=()
 if [ "$FORWARD" -eq 1 ]; then
   # Forwarding is optional but recommended: it exercises the canister at the same
@@ -141,7 +173,18 @@ NOTES
 # `--print-json` emits one JSON object per line. Sort by type, and by the field that
 # distinguishes the variants we care about — paid vs unpaid, full vs partial refund,
 # and the missing-payment_intent case a zero-amount or subscription session produces.
-stripe listen --print-json "${FORWARD_ARGS[@]}" 2>/dev/null | node -e '
+# ⚠️ **`--format json`, not the deprecated `--print-json`.** The CLI now warns on the old
+# flag ("Please use `--format json` instead"), and a deprecated flag eventually stops being
+# accepted — at which point this script would fail in the way described just below.
+#
+# ⚠️ **stderr is NOT redirected, and that is a fix rather than an oversight.** This line
+# used to end `2>/dev/null`, which hid Stripe's "Ready! … signing secret" banner *and*
+# every reason it might refuse: an expired session, a revoked key, an account problem. The
+# pipeline then ended, the script exited **0**, and the operator got their prompt back with
+# no output and no error — indistinguishable from "nothing happened". That is exactly the
+# quiet-inertness this repo keeps removing from the canister, in our own tooling. The
+# banner on stderr is noise worth paying for.
+stripe_cli listen --format json "${FORWARD_ARGS[@]}" | node -e '
 const fs = require("fs");
 const dir = process.argv[1];
 const WANTED = new Set([
