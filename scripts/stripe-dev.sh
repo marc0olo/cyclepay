@@ -147,6 +147,14 @@ fi
 # restricted key, and neither borrows the other's credential.
 stripe_cli() { env -u STRIPE_API_KEY stripe "$@"; }
 
+# ⚠️ **The hints this script PRINTS run in the operator's shell, not through the wrapper
+# above.** With STRIPE_API_KEY exported, a pasted `stripe trigger` uses the restricted
+# backend key and fails with "more_permissions_required" — the same failure the wrapper
+# exists to prevent, one layer out. So the printed copy carries the prefix exactly when it
+# is needed, and stays clean when it is not.
+TRIGGER_PREFIX=""
+[ -z "${STRIPE_API_KEY:-}" ] || TRIGGER_PREFIX="env -u STRIPE_API_KEY " 
+
 if [ -n "${STRIPE_API_KEY:-}" ]; then
   printf '\033[33m!\033[0m STRIPE_API_KEY is set; ignoring it for the Stripe CLI (it is the backend key).\n'
 fi
@@ -195,12 +203,12 @@ GENERATION="$(icp canister call backend webhook_secret_status '()' --query 2>/de
   tr -d ' _' | sed -nE 's/.*generation=([0-9]+).*/\1/p')"
 echo "secret set:  generation ${GENERATION:-?} (the secret itself is never readable back)"
 
-cat <<'NOTES'
+cat <<NOTES
 
 --- ready ---
 In a second terminal:
 
-  stripe trigger checkout.session.completed
+  ${TRIGGER_PREFIX}stripe trigger checkout.session.completed
       Builds a SYNTHETIC session with no client_reference_id, so it lands as a
       Type 1 #unattributed entry. That is a real test of the attribution guard,
       not the happy path.

@@ -68,6 +68,15 @@ report_status() {
       printf '  \033[32m✓\033[0m %-46s\n' "$name"
       have=$((have + 1))
     else
+      # ⚠️ **Print the command that works in THIS shell, not the tidy one.** Our own calls
+      # go through `stripe_cli`, but a hint the operator pastes runs in their shell — where
+      # an exported STRIPE_API_KEY makes the CLI use the restricted backend key and fail
+      # with "more_permissions_required". Protecting the script and printing bare copy is
+      # the same split #52 rejected: two of that round's eleven key-scope sites were
+      # terminal output, and they counted because that is the copy people follow.
+      case "${STRIPE_API_KEY:-}|$how" in
+        ?*'|stripe '*) how="env -u STRIPE_API_KEY $how" ;;
+      esac
       printf '  \033[33m·\033[0m %-46s %s\n' "$name" "$how"
     fi
   done < <(wanted)
@@ -217,6 +226,13 @@ process.stdin.on("data", (chunk) => {
     // Only the fixtures the parity suite asserts on. Stripe emits a dozen
     // incidental events per checkout (product.created, charge.succeeded, …) and
     // writing those files clutters the directory with payloads nothing reads.
+    //
+    // ⚠️ **This set is a deliberate SUPERSET of `wanted()` and the difference is not
+    // drift.** `wanted()` drives the checklist and the missing-report, and no longer asks
+    // for `completed.no-intent` — unreachable since #33 pinned card. This set still
+    // accepts it, because if such a body ever does arrive it is worth having on disk
+    // rather than discarded. Asking for it and accepting it are different questions:
+    // do not "fix" one list to match the other.
     if (!WANTED.has(name)) {
       process.stdout.write(`  (ignored ${ev.type})\n`);
       continue;
