@@ -561,24 +561,55 @@ module {
     store.orders.get(id);
   };
 
-  /// Count of this principal's still-open (`#created`) orders — the input to
-  /// the `Gate` admission cap. Only `#created` counts: an `#expired` order is
-  /// abandoned (it costs the principal nothing to leave lying around, but it is
-  /// also on its way to being swept), and anything past `#paid` is a record of
-  /// money, not an open slot.
-  public func openOrderCount(store : Store, caller : Principal) : Nat {
+  /// Count of this principal's still-open orders — the input to the `Gate` admission cap.
+  ///
+  /// `#created` **and not past its own deadline**. Anything past `#paid` is a record of
+  /// money rather than an open slot, and an `#expired` or `#cancelled` order is finished.
+  ///
+  /// ⚠️ **The deadline check is what makes a cap of 1 safe, and the reason it needs no
+  /// Stripe call is the whole distinction.** A slot is **our** resource: we may grant it
+  /// on our own clock, because being generous with it cannot lose money — at worst a
+  /// buyer gets a second slot a little early, and the order they abandoned is unpayable
+  /// anyway once Stripe expires its session. Reserve *capacity* is money, so releasing it
+  /// needs Stripe's authority (#52 PR-A's sweep, and the reason option 3 was rejected).
+  /// Same input, two resources, two standards of proof.
+  ///
+  /// Without it, one missed `checkout.session.expired` locks a buyer out **permanently**
+  /// at a cap of 1 — not for the 35 minutes the session lasts, because nothing else moves
+  /// a `#created` order. That is why the cap and this check land together and why
+  /// shipping the cap alone would have been the harmful half.
+  ///
+  /// ⚠️ **`expiresAtNs` is null until the session-create response lands**, and a null
+  /// deadline counts as open: an order with no session is one whose fate we do not know
+  /// yet, and the residue case (a lost create response) is a canister-level fault whose
+  /// lever is `expire_order`. Counting it as free would hand out a slot on the strength
+  /// of an order we cannot even expire.
+  public func openOrderCount(store : Store, caller : Principal, nowNs : Int) : Nat {
     switch (store.principalsToOrders.get(caller)) {
       case null 0;
       case (?ids) {
         var open = 0;
         for (id in ids.values()) {
           switch (store.orders.get(id)) {
-            case (?order) { if (order.status == #created) open += 1 };
+            case (?order) {
+              if (order.status == #created and not pastDeadline(order, nowNs)) open += 1;
+            };
             case null {}; // id indexed without a record — cannot happen
           };
         };
         open;
       };
+    };
+  };
+
+  /// Is this order past the deadline Stripe set for its own session?
+  ///
+  /// Null answers **false** — see `openOrderCount`. Separate and named so the one
+  /// comparison has one home and one test, the way `Session.secondsToNs` does.
+  public func pastDeadline(order : Types.Order, nowNs : Int) : Bool {
+    switch (order.expiresAtNs) {
+      case (?deadline) nowNs > deadline;
+      case null false;
     };
   };
 

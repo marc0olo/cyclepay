@@ -55,8 +55,18 @@ beforeAll(async () => {
   // The floor moves rather than the amount: 500¢ − 45¢ fee = 455¢ = exactly one ICP at
   // $4.55 = exactly 3.5 T cycles at the seeded CMC rate, and every quantity assertion in
   // this suite comes off that vector.
+  // ⚠️ **Pin the open-order cap too.** The shipped default is 1 per principal, and every
+  // scenario here creates an order for the same buyer. They worked at 1 only because
+  // `openOrderCount` stops counting an order past its own deadline and these scenarios
+  // advance the clock — an accidental dependency on behaviour they do not test, which a
+  // mutation removing that check exposed by failing four of them. Pinned, so a cap change
+  // fails scenario 88 and nothing else.
   const gate = (await gw.asAnon.lifecycle_config()).gate;
-  expectOk(await gw.asAdmin.set_gate_config({ ...gate, minPurchaseUsdCents: 100n }));
+  expectOk(await gw.asAdmin.set_gate_config({
+    ...gate,
+    minPurchaseUsdCents: 100n,
+    maxOpenOrdersPerPrincipal: 20n,
+  }));
 
   // ⚠️ **`setupGateway` provisions NOTHING** — no secrets, no key, no tiers, no origin.
   // `gateway.spec.ts` gets its provisioning from its own early scenarios (01–04), which

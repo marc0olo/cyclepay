@@ -36,6 +36,17 @@ module {
     /// (`canister-security`: allowing unbounded user-controlled storage).
     /// Not a money decision — an abuse bound. Raise it for legitimate power
     /// users; do not set it to 0, which would block the rail entirely.
+    ///
+    /// ⚠️ **One, decided as a product call rather than a safety control.** A buyer who
+    /// wants another slot cancels the one they have, which is what makes `cancel_order`
+    /// load-bearing rather than a nicety. Abuse (trolling, a flood of identities) is
+    /// deliberately **not** pre-built for: a per-principal cap cannot bound an attacker
+    /// who rotates self-authenticating principals anyway, so the honest bound is the
+    /// cycles cost of the update calls plus `minCanisterCycles` failing the rail closed.
+    /// Mitigate if it happens; do not harden against it now.
+    ///
+    /// ⚠️ **Only safe because `Orders.openOrderCount` skips past-deadline orders.** At a
+    /// cap of 1 without that check, one missed expiry webhook locks a buyer out forever.
     maxOpenOrdersPerPrincipal : Nat;
     /// Floor on this canister's OWN cycle balance — its gas, not the cycles it
     /// sells. Below the freezing threshold the canister stops accepting updates;
@@ -87,7 +98,7 @@ module {
   /// shown", because a custom amount is orderable without one.
   public func defaultConfig() : Config {
     {
-      maxOpenOrdersPerPrincipal = 20;
+      maxOpenOrdersPerPrincipal = 1;
       minCanisterCycles = 5_000_000_000_000; // 5T
       // $100, down from $1,000 (#33). The ceiling IS the per-order reserve
       // exposure, so this is the main lever on #30's reserve-griefing vector.

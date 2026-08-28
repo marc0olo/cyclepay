@@ -104,6 +104,15 @@ beforeAll(async () => {
   // ⚠️ The gate refuses to quote against an **unobserved** reserve, and a funded reserve
   // is not a sellable one until `fundReserve` makes the gateway look (scenario 73 is the
   // guard on that). Every scenario below that creates an order needs both calls above.
+  //
+  // ⚠️ **The open-order cap is pinned here, and the shipped default is 1, not 20.** A
+  // test that depends on a limit should state the limit rather than inherit it — and this
+  // file's 55 order-creations against one principal would all refuse under the shipped
+  // value. Scenario 88 is where the cap of 1 is actually exercised, by setting it and
+  // restoring it. Do NOT "fix" a scenario that trips this by making it create fewer
+  // orders: scenario 07 needs two in the same round for a reason spelled out there.
+  const gateDefaults = (await gw.asAnon.lifecycle_config()).gate;
+  expectOk(await gw.asAdmin.set_gate_config({ ...gateDefaults, maxOpenOrdersPerPrincipal: 20n }));
 });
 
 
@@ -408,6 +417,13 @@ test('07 — the transfer memo is the ORDER id, so two identical orders both del
   await ensureRates(gw);
   const creditedBefore = await userCycles();
 
+  // ⚠️ **Two orders open at once, and the cap must be RAISED for this rather than the
+  // scenario reduced to one.** Both intents have to be built in the *same round* to share
+  // a `created_at_time`; that is what makes the ledger's
+  // `(created_at_time, from, to, amount, memo)` key collide, which is the entire bug being
+  // guarded. Serialising it to pay → create → pay puts the intents in different rounds,
+  // removes the collision, and the test still passes — testing nothing. The suite's
+  // `beforeAll` pins the cap at 20 for exactly this.
   const first = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
   const second = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
 
@@ -1701,7 +1717,8 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
   // tells the user to pay or abandon one. Without a buyer-facing cancel that is
   // advice they cannot follow: abandon_order is admin-only and only accepts a
   // *paid* order, so someone who opened the cap's worth of checkouts and
-  // completed none would be locked out until the 48 h TTL expired them.
+  // completed none would be locked out until their sessions' own deadlines passed —
+  // which since #52 PR-B is what frees the slot, there being no TTL of ours since #33.
   await setCmcRate(gw);
   await ensureRates(gw);
 
@@ -3285,6 +3302,67 @@ test('87 — the stranded scan RESUMES: a crowd of due orders does not starve th
   // no resume this is exactly `maxRetrievesPerPass` forever — the same head of the list,
   // pass after pass — so a cursor that does not advance fails here.
   expect(asked.size, 'the scan asked about the same orders every pass — the cursor is not advancing').toBeGreaterThan(10);
+
+  await setCmcRate(gw);
+  await ensureRates(gw);
+});
+
+test('88 — one open order per principal, and its own deadline is what frees the slot', async () => {
+  // The shipped cap (#52 PR-B): **1 per principal**, as a product decision rather than a
+  // safety control — a buyer who wants another order cancels the one they have, which is
+  // what makes `cancel_order` load-bearing. This file pins 20 in `beforeAll` because 55
+  // creations need it, so the shipped value is exercised here and restored at the end.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  const gate = (await gw.asAnon.lifecycle_config()).gate;
+
+  try {
+    expectOk(await gw.asAdmin.set_gate_config({ ...gate, maxOpenOrdersPerPrincipal: 1n }));
+
+    // A fresh order takes the slot; the next one is refused, and the refusal names the
+    // cap rather than blaming the reserve or the rate.
+    const held = expectOk(await createOrderWithSession(
+      gw, { tier: 'tier5' }, USER_ACCOUNT, [], { sessionId: 'cs_cap_88' },
+    ));
+    const refused = expectErr(await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []));
+    // Wrapped in `#notAdmitted`, because the gate's reasons are one variant and the
+    // create error is another — the refusal names the cap AND the count, so the message
+    // the frontend renders can say "you already have 1 open order" rather than "try
+    // later".
+    expect(refused).toMatchObject({ notAdmitted: { tooManyOpenOrders: { max: 1n, open: 1n } } });
+
+    // ⚠️ **THE assertion this PR exists for: the slot frees at the order's OWN deadline,
+    // with no Stripe call and no state change.** Without it, a cap of 1 plus one missed
+    // `checkout.session.expired` locks this buyer out **permanently** — nothing else moves
+    // a `#created` order, so "wait 35 minutes" would become "wait forever".
+    //
+    // A slot is our resource, so we may grant it on our own clock; releasing reserve
+    // *capacity* is money and needs Stripe's authority, which is PR-A's sweep. Same
+    // input, two resources, two standards of proof.
+    await gw.pic.advanceTime(40 * 60 * 1_000); // past the session's 35-minute deadline
+    await gw.pic.tick(3);
+    // ⚠️ Re-arm the rates: 40 minutes is well past the 15-minute staleness window, so
+    // without this the next `create_order` is refused for an unpriceable quote and the
+    // failure reads as "no HTTPS outcall was made" — nothing to do with the slot. This is
+    // the `advanceTime` coupling the README warns about, and it bit this scenario first.
+    await setCmcRate(gw);
+    await ensureRates(gw);
+    const allowed = expectOk(await createOrderWithSession(
+      gw, { tier: 'tier5' }, USER_ACCOUNT, [], { sessionId: 'cs_cap_88b' },
+    ));
+
+    // And the first order was NOT touched to make room — it is still `#created`, still
+    // holding its reserve promise, waiting for Stripe or the sweep to settle it.
+    expect(await orderStatus(gw, held.order.id)).toBe('created');
+    expect(await orderStatus(gw, allowed.order.id)).toBe('created');
+
+    // The buyer's own escape hatch still works, which is what makes the cap of 1 a
+    // product decision rather than a trap.
+    expectOk(await cancelOrderWithExpire(gw, allowed.order.id));
+  } finally {
+    // Restore, or every later scenario in this order-coupled file refuses.
+    expectOk(await gw.asAdmin.set_gate_config({ ...gate, maxOpenOrdersPerPrincipal: 20n }));
+  }
 
   await setCmcRate(gw);
   await ensureRates(gw);

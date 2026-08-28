@@ -582,19 +582,66 @@ suite("openOrderCount — the Gate admission input", func() {
     ignore newOrder(store, "ord-1", alice);
     ignore newOrder(store, "ord-2", alice);
     ignore newOrder(store, "ord-3", bob);
-    assert Orders.openOrderCount(store, alice) == 2;
-    assert Orders.openOrderCount(store, bob) == 1;
+    assert Orders.openOrderCount(store, alice, 200) == 2;
+    assert Orders.openOrderCount(store, bob, 200) == 1;
   });
 
   test("a principal with no orders counts zero", func() {
-    assert Orders.openOrderCount(Orders.emptyStore(), alice) == 0;
+    assert Orders.openOrderCount(Orders.emptyStore(), alice, 200) == 0;
   });
 
   test("an expired order no longer occupies a slot", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
     ignore Orders.applyTransition(store, "ord-1", #expired, 200);
-    assert Orders.openOrderCount(store, alice) == 0;
+    assert Orders.openOrderCount(store, alice, 200) == 0;
+  });
+
+  test("⚠️ a #created order PAST ITS DEADLINE frees the slot without any Stripe call", func() {
+    // The half that makes a cap of 1 safe. Without it, one missed
+    // `checkout.session.expired` locks the buyer out **permanently** — not for the 35
+    // minutes the session lasts, because nothing else moves a `#created` order.
+    //
+    // ⚠️ And it needs no outcall, which is the asymmetry worth remembering: a slot is
+    // OUR resource, so we may grant it on our own clock — being early costs nothing,
+    // because the order it frees is unpayable anyway once Stripe expires its session.
+    // Reserve capacity is money, so releasing THAT needs Stripe's authority (#52 PR-A).
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore Orders.attachSession(store, "ord-1", "cs_1", "https://pay.example/1", 5_000, 120);
+    // One ns before the deadline it still holds the slot; one ns after, it does not.
+    assert Orders.openOrderCount(store, alice, 5_000) == 1;
+    assert Orders.openOrderCount(store, alice, 5_001) == 0;
+    // The order itself is untouched — this frees a slot, it does not expire anything.
+    switch (Orders.get(store, "ord-1")) {
+      case (?order) assert order.status == #created;
+      case null assert false;
+    };
+  });
+
+  test("⚠️ a null deadline still occupies the slot", func() {
+    // `expiresAtNs` is null until the session-create response lands. Counting that as
+    // free would hand out a slot on the strength of an order whose fate we do not know —
+    // and the residue case (a lost create response) is a canister-level fault whose only
+    // lever is `expire_order`, not a slot we should be optimistic about.
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    assert Orders.openOrderCount(store, alice, 9_999_999_999) == 1;
+  });
+
+  test("pastDeadline: both sides of the boundary, and null is never past", func() {
+    let store = Orders.emptyStore();
+    let fresh = newOrder(store, "ord-1", alice);
+    assert not Orders.pastDeadline(fresh, 9_999_999_999); // null deadline
+    ignore Orders.attachSession(store, "ord-1", "cs_1", "https://pay.example/1", 5_000, 120);
+    switch (Orders.get(store, "ord-1")) {
+      case (?dated) {
+        assert not Orders.pastDeadline(dated, 4_999);
+        assert not Orders.pastDeadline(dated, 5_000); // AT the deadline is not past it
+        assert Orders.pastDeadline(dated, 5_001);
+      };
+      case null assert false;
+    };
   });
 
   test("anything past #created no longer occupies a slot", func() {
@@ -603,7 +650,7 @@ suite("openOrderCount — the Gate admission input", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
     ignore Orders.markPaid(store, "ord-1", 500, 200);
-    assert Orders.openOrderCount(store, alice) == 0;
+    assert Orders.openOrderCount(store, alice, 200) == 0;
   });
 });
 
