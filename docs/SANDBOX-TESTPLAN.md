@@ -75,7 +75,13 @@ scenarios to work through or a by-hand reference for one of these steps.
 What you have to supply: a **Stripe sandbox account** with the Stripe CLI logged in
 to it, and a **restricted API key** (`rk_...`) with **Checkout Sessions = Write**
 and everything else None. Write is the level that also grants read, which the recovery
-sweep needs in order to retrieve a session (#52). No Payment Links, no Products, no Prices — the canister creates a
+sweep needs in order to retrieve a session (#52) — **measured, not inferred: a `rk_`
+key scoped to Checkout Sessions = Write returns HTTP 200 on
+`GET /v1/checkout/sessions/{id}`.** It is worth stating as a measurement because the
+failure mode is invisible to the test suite: PocketIC answers the sweep's outcall
+itself, so a key that could create sessions but not read them would 401 in production
+with every scenario green. `Main.mo` carries a `stripe.retrieveUnauthorized` audit tag
+for that case. No Payment Links, no Products, no Prices — the canister creates a
 session per order through the API (#33). Nothing else, and no mainnet.
 
 **How to create the key, and the go-live ordering, is RUNBOOK §3.**
@@ -115,6 +121,30 @@ scripts/local-dev-seed.sh
 #    starts, and leaves the forwarder running until Ctrl-C.
 scripts/stripe-dev.sh
 ```
+
+⚠️ **The CMC rate has a 15-minute fuse, and it is the single most likely thing to
+derail this run.** The seed arms a rate; 15 minutes later the gateway cannot price,
+`create_order` is refused, and the symptom is *not* a rate error — `scripts/stripe-dev.sh`
+fails its preflight with **"the gateway cannot price a $10 purchase"**, which reads like a
+configuration problem. That is exactly how this procedure failed when it was last walked.
+
+The fix takes two seconds and needs no reinstall:
+
+```sh
+scripts/local-dev-seed.sh --rate-only
+```
+
+So: **re-arm immediately before you pay**, not when you started. Any pause — reading this
+file, registering a passkey, a phone call between creating the order and opening Checkout —
+can outlast the rate. Two things soften it, and knowing which is which saves confusion:
+
+- An order that **already exists** keeps its locked quantity forever; a stale rate only
+  refuses *new* orders. So if you got the order created, paying still works.
+- A run that sits in the browser for half an hour will fail at **create**, not at pay.
+
+⚠️ And the reason it cannot simply be longer: `Pricing.mo` refuses a CMC rate older than
+15 minutes **by design** — a stale rate misprices an order, and the local CMC's rate is
+stamped 2021 until something sets it. The fuse is the guard working, not a rough edge.
 
 Then, in the browser at the frontend URL `icp deploy` printed
 (`http://frontend.local.localhost:8000/` with the default gateway port):
@@ -484,6 +514,24 @@ icp canister call backend receipt '("<orderId>")'           # owner identity onl
 | B7 | There is no rescue lever | — | `attach_payment` was deleted in #33. For B5 and B6 the only remedy is a refund in Stripe, which auto-resolves the entry |
 
 ## C. Amount honouring
+
+⚠️ **Three of these five rows became optional when #4 landed, and one should be dropped.**
+They were written when crafted JSON was our only description of Stripe. The parity test in
+`test/integration/src/fixtures.spec.ts` now compares a **recorded real** session against the
+crafted builder on exactly the fields this group questions — `amount_total`, `currency`,
+`payment_status`, `payment_intent` — so the shape question is automated and the crafted
+guard tests inherit its credibility.
+
+| row | now | why |
+|---|---|---|
+| **C1** | **required** | the happy path; covered by any real purchase |
+| **C4** | **required** | reachable with no tampering, and nothing else covers the ceiling's one live case |
+| C2, C5 | optional | the field question is automated; a hand-made session adds the HTTP path and ordering, not the shape |
+| C3 | **drop** | its own row says it is not a separate outcome since #33 — it *is* C2 |
+
+A manual plan ages against the automation built beside it. The rows to re-read first are the
+ones whose justification is about **what we cannot otherwise know**, because that is the
+claim automation invalidates.
 
 | # | Scenario | How | Expect |
 |---|---|---|---|
