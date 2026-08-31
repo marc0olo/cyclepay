@@ -2400,6 +2400,83 @@ persistent actor CyclesGateway {
   /// skipping" gets diagnosed. `#needsReview` entries are included because an
   /// operator asking "what is wrong right now" wants them, but they are deliberately
   /// NOT in the reconcile's predicate — see `unsettledDeliveries`.
+  /// Deliveries outstanding past `alertAfterNs` — **the heir to the
+  /// `#deliveryDelayed` worklist entry** (#37).
+  ///
+  /// ⚠️ **The alert it replaces stored nothing of its own.** It was raised as
+  /// `#deliveryDelayed({ orderId = order.id; stage = "deliveryDelayed"; sinceNs =
+  /// order.updatedAtNs })` with a fixed sentence for `detail` — every field copied
+  /// off the order, a constant stage, and no operator decision of its own. It
+  /// self-resolved on delivery or escalation, so its whole content was *"this order
+  /// is past the threshold"*, which is a **reading**, not an obligation.
+  ///
+  /// ⚠️ **Self-clearing by construction**, which is the property that makes this
+  /// usable where the entry was not: an order leaves this set the moment it
+  /// delivers or escalates, because that moves its status. There is no resolve step
+  /// to forget and no `delayedAlerts` mapping to leak.
+  ///
+  /// ⚠️ **`alertAfterNs` survives as this predicate's threshold, not as a trigger.**
+  /// The admin still tunes when a slow delivery *shows up*; it no longer files
+  /// anything. That is also why the old 2 h floor mattered less than it looked —
+  /// lowering a *filter* costs nothing, whereas lowering a trigger filed worklist
+  /// entries for orders that deliver themselves.
+  public shared query ({ caller }) func delayed_deliveries() : async [{
+    orderId : Types.OrderId;
+    status : Types.OrderStatus;
+    /// `order.updatedAtNs` — retries deliberately do not move it, so the clock is
+    /// pinned to the moment the order entered its current state.
+    heldSinceNs : Int;
+    waitedNs : Int;
+    /// How many times delivery has already failed. `0` is an order simply waiting.
+    retries : Nat;
+    /// True once the wait has also passed `maxHoldNs`, i.e. the next sweep
+    /// escalates it rather than retrying.
+    pastMaxHold : Bool;
+  }] {
+    requireAdmin(caller);
+    // ⚠️ **A full scan, and #37's status index is what makes that acceptable.**
+    // Under indefinite retention this walks every order ever created, which is the
+    // same growth the daily reconcile has — so this query is a second consumer of
+    // that index, not an independent problem. Do not lower `alertAfterNs` to
+    // compensate: the cost is the scan, not the threshold.
+    let now = Time.now();
+    let out = List.empty<{
+      orderId : Types.OrderId;
+      status : Types.OrderStatus;
+      heldSinceNs : Int;
+      waitedNs : Int;
+      retries : Nat;
+      pastMaxHold : Bool;
+    }>();
+    for ((_, order) in orderStore.orders.entries()) {
+      // `#paid` is the only status that sits still waiting to deliver; every other
+      // in-flight position is either terminal or already escalated. If a second
+      // status can ever wait, this becomes a set membership rather than an equality
+      // — the same note `waitStage`'s caller carries.
+      if (order.status == #paid) {
+        let stage = Delivery.waitStage(order.updatedAtNs, now, deliveryConfig);
+        let delayed = switch (stage) {
+          case (#retry) false;
+          case (#alert or #terminate) true;
+        };
+        if (delayed) {
+          out.add({
+            orderId = order.id;
+            status = order.status;
+            heldSinceNs = order.updatedAtNs;
+            waitedNs = now - order.updatedAtNs;
+            retries = switch (deliveryJournal.get(order.id)) {
+              case (?entry) entry.retries;
+              case null 0;
+            };
+            pastMaxHold = stage == #terminate;
+          });
+        };
+      };
+    };
+    out.toArray();
+  };
+
   public shared query ({ caller }) func pending_deliveries() : async [Types.JournalEntry] {
     requireAdmin(caller);
     let out = List.empty<Types.JournalEntry>();

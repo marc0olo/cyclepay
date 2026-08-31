@@ -117,6 +117,17 @@ export interface RefusalCounts {
 
 /// Which rail-state conditions are refusing right now. Latched per condition, so
 /// entering one writes exactly one `gate.startedRefusing` line.
+/// Heir to the `#deliveryDelayed` worklist entry (#37): a reading, not an
+/// obligation, and self-clearing by construction.
+export interface DelayedDelivery {
+  orderId: string;
+  status: StatusVariant;
+  heldSinceNs: bigint;
+  waitedNs: bigint;
+  retries: bigint;
+  pastMaxHold: boolean;
+}
+
 export interface RailStateLatch {
   canisterCyclesLow: boolean;
   railClosed: boolean;
@@ -260,6 +271,7 @@ export interface BackendService {
   error_queue_unresolved(afterId: Opt<bigint>, limit: bigint): Promise<ErrorQueuePage>;
   error_queue_depth(): Promise<{ unresolved: bigint; retained: bigint }>;
   refusal_counts(): Promise<{ counts: RefusalCounts; refusingNow: RailStateLatch }>;
+  delayed_deliveries(): Promise<DelayedDelivery[]>;
   lifecycle_config(): Promise<{ gate: GateConfig }>;
   order_for_payment(paymentRef: string): Promise<Opt<string>>;
   abandon_order(id: string, reason: string): Promise<Result<Order, string>>;

@@ -317,6 +317,18 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Record({ entries: IDL.Vec(ErrorEntry), nextCursor: IDL.Opt(IDL.Nat) })],
       ['query'],
     ),
+    delayed_deliveries: IDL.Func(
+      [],
+      [IDL.Vec(IDL.Record({
+        heldSinceNs: IDL.Int,
+        orderId: IDL.Text,
+        pastMaxHold: IDL.Bool,
+        retries: IDL.Nat,
+        status: OrderStatus,
+        waitedNs: IDL.Int,
+      }))],
+      ['query'],
+    ),
     refusal_counts: IDL.Func(
       [],
       [IDL.Record({ counts: RefusalCounts, refusingNow: RailStateLatch })],
