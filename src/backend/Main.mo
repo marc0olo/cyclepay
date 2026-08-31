@@ -3075,6 +3075,21 @@ persistent actor CyclesGateway {
       );
       audit("orders.countDrift", rendered.values().join(", "));
     };
+    // ⚠️ **The adjudicator for the unresolved-problems index, on the same cadence.**
+    // That index is derived state keyed by order id, which is only safe because the
+    // orders are the authority and this can rebuild it. A non-zero count does not mean
+    // bad data — it means **a writer of `order.problems` bypassed
+    // `Orders.fileProblem`/`resolveProblems`**, which is a bug in `Orders.mo` rather
+    // than a condition to tolerate. So it is audited as a breach, not as a repair.
+    let problemDrift = Orders.recountUnresolvedProblems(orderStore);
+    if (problemDrift > 0) {
+      audit(
+        "orders.problemIndexDrift",
+        problemDrift.toText() # " order id(s) disagreed with the unresolved-problems index and it was rebuilt."
+        # " The index is maintained only by Orders.fileProblem and Orders.resolveProblems, so a non-zero count means"
+        # " something else wrote order.problems directly — find that writer; the rebuild is not the fix.",
+      );
+    };
   };
 
   /// The timer job. Correctness against concurrent drivers is processDelivery's
