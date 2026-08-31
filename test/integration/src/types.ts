@@ -297,6 +297,9 @@ export interface BackendService {
   error_queue_unresolved(afterId: Opt<bigint>, limit: bigint): Promise<ErrorQueuePage>;
   error_queue_depth(): Promise<{ unresolved: bigint; retained: bigint }>;
   refusal_counts(): Promise<{ counts: RefusalCounts; refusingNow: RailStateLatch }>;
+  /// The worklist, as a filter over orders (#37). `unresolved` is NOT orders.length —
+  /// one order can carry several problems.
+  orders_with_problems(): Promise<{ orders: Order[]; unresolved: bigint }>;
   delayed_deliveries(): Promise<DelayedDelivery[]>;
   lifecycle_config(): Promise<{ gate: GateConfig }>;
   order_for_payment(paymentRef: string): Promise<Opt<string>>;

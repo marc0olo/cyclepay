@@ -511,6 +511,14 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   expect(dupProblem).toBeDefined();
   expect(dupProblem!.resolvedAtNs).toEqual([]);
 
+  // ⚠️ **The worklist filter sees it** (#37) — this is the query that replaced the
+  // queue's worklist function, and the acceptance criterion "everything outstanding is
+  // a filter over orders" is only checkable because it exists.
+  const worklist = await gw.asAdmin.orders_with_problems();
+  expect(worklist.orders.some((o) => o.id === orderA.id)).toBe(true);
+  expect(worklist.unresolved).toBeGreaterThan(0n);
+  await expect(gw.asUser.orders_with_problems()).rejects.toThrow(/not a controller/);
+
   // charge.refunded auto-resolves it by payment_intent — and this is the assertion
   // that would catch the closer being wired to only one of the two stores, since
   // `#unattributed` still lives in the queue while `#duplicate` is on the order.
@@ -523,6 +531,10 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   // Resolved, not gone: nothing drops.
   expect(resolvedProblem).toBeDefined();
   expect(resolvedProblem!.resolvedAtNs.length).toBe(1);
+  // And the order has left the worklist, because the filter reads UNRESOLVED problems
+  // while the order keeps the resolved one forever.
+  expect((await gw.asAdmin.orders_with_problems()).orders.some((o) => o.id === orderA.id))
+    .toBe(false);
 
   await gw.pic.tick(5);
   expect(await reserveBalance(gw)).toBe(reserveBefore);

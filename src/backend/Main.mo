@@ -1496,6 +1496,36 @@ persistent actor CyclesGateway {
   /// per counter with the response — the counters mean different things:
   /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
   /// `reserveShort` climbing is a refill. Same shape, opposite actions.
+  /// **The worklist, as a filter over orders** (#37) — every order carrying at least
+  /// one unresolved problem, plus the count an operator watches.
+  ///
+  /// ⚠️ **This is what replaced the error queue's worklist function**, and #37's
+  /// acceptance criterion is only evaluable because it exists: "everything
+  /// outstanding" is a query over orders with an unresolved problem rather than a
+  /// separate structure that can fall out of step with the orders it points at.
+  ///
+  /// ⚠️ **It walks the `unresolvedProblems` index, not the store.** The set is small
+  /// and attacker-priced — every problem in it required a real payment event — and the
+  /// daily reconcile audits `orders.problemIndexDrift` if the projection ever
+  /// disagrees with the orders.
+  ///
+  /// ⚠️ **Not the whole picture on its own.** `error_queue_unresolved` holds the two
+  /// order-less kinds, which by definition cannot appear here: a payment we cannot
+  /// attribute has no order to hang off. An operator watching only one of the two
+  /// numbers is watching half the obligations.
+  public shared query ({ caller }) func orders_with_problems() : async {
+    orders : [Types.Order];
+    /// Total unresolved problems, which is **not** `orders.size()` — one order can
+    /// carry several.
+    unresolved : Nat;
+  } {
+    requireAdmin(caller);
+    {
+      orders = Orders.withUnresolvedProblems(orderStore);
+      unresolved = Orders.unresolvedProblemCount(orderStore);
+    };
+  };
+
   public query func refusal_counts() : async {
     counts : Gate.RefusalCounts;
     /// True while that rail-state condition is refusing. Each flips to true with
