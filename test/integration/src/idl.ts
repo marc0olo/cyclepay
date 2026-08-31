@@ -130,6 +130,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     to: Account,
   });
   const JournalEntry = IDL.Record({
+    lastError: IDL.Opt(IDL.Text),
     blockIndex: IDL.Opt(IDL.Nat),
     createdAtNs: IDL.Int,
     cyclesDelivered: IDL.Opt(IDL.Nat),

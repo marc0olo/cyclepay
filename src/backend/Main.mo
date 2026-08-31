@@ -1771,7 +1771,7 @@ persistent actor CyclesGateway {
       case (?e) e.blockIndex;
       case null null;
     };
-    Delivery.patch(deliveryJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesDelivered = null; bumpRetries = false }, Time.now());
+    Delivery.patch(deliveryJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesDelivered = null; bumpRetries = false; lastError = null }, Time.now());
     // ⚠️ **No delay alert to close here, by construction (#37).** An entry saying "it
     // delivers on the next sweep" would have become a false promise on the
     // worklist next to the real problem. Escalation moves the status off `#paid`, so
@@ -1987,7 +1987,7 @@ persistent actor CyclesGateway {
             // tells us nothing about whether the ledger acted, and rule 2 exists to
             // be pessimistic about exactly that. A reconcile heals it if the
             // transfer never happened.
-            Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, Time.now());
+            Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true; lastError = ?e.message() }, Time.now());
             audit("delivery.transferFailed", orderId # ": " # e.message());
             return;
           };
@@ -2005,7 +2005,7 @@ persistent actor CyclesGateway {
               reserveFloor += debited;
               deliveryBlockedAudited.remove(orderId);
               ignore tryTransition(orderId, #delivered);
-              Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
+              Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false; lastError = null }, Time.now());
               audit("delivery.deduplicated", orderId # ": ledger block " # block.toText() # " was already ours; floor credited back " # debited.toText());
               return;
             };
@@ -2013,7 +2013,7 @@ persistent actor CyclesGateway {
               deliveryBlockedAudited.remove(orderId);
               // Block + `#delivered` in ONE sync block, so the pair cannot disagree.
               ignore tryTransition(orderId, #delivered);
-              Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
+              Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false; lastError = null }, Time.now());
               audit("delivery.sent", orderId # ": " # intent.amountCycles.toText() # " cycles, ledger block " # block.toText());
               return;
             };
@@ -2059,7 +2059,7 @@ persistent actor CyclesGateway {
               let retried = try {
                 await cyclesLedger.icrc1_transfer(Delivery.deliveryArgs(intent, expected));
               } catch (e) {
-                Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, Time.now());
+                Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true; lastError = ?("after fee correction: " # e.message()) }, Time.now());
                 audit("delivery.transferFailed", orderId # " (after fee correction): " # e.message());
                 return;
               };
@@ -2069,14 +2069,14 @@ persistent actor CyclesGateway {
                   reserveFloor += reDebited;
                   deliveryBlockedAudited.remove(orderId);
                   ignore tryTransition(orderId, #delivered);
-                  Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
+                  Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false; lastError = null }, Time.now());
                   audit("delivery.deduplicated", orderId # ": block " # block.toText() # " after fee correction; floor credited back");
                   return;
                 };
                 case (#delivered(block)) {
                   deliveryBlockedAudited.remove(orderId);
                   ignore tryTransition(orderId, #delivered);
-                  Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
+                  Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false; lastError = null }, Time.now());
                   audit("delivery.sent", orderId # ": " # intent.amountCycles.toText() # " cycles at the corrected fee, ledger block " # block.toText());
                   return;
                 };
@@ -2085,7 +2085,7 @@ persistent actor CyclesGateway {
                   // again mid-flight the next sweep starts over from the derived
                   // fee — which is still the byte-identical replay, so the
                   // at-most-once guarantee is never traded for convergence.
-                  Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, Time.now());
+                  Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true; lastError = null }, Time.now());
                   audit("delivery.retriable", orderId # ": fee correction to " # expected.toText() # " did not settle; retrying next sweep");
                   return;
                 };
@@ -2103,7 +2103,7 @@ persistent actor CyclesGateway {
               // quantity — and if it does fire, the floor and the ledger disagree.
               // Check `reserve_status.tallySaturations` and the last reconcile before
               // hunting a fee delta.
-              Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, Time.now());
+              Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true; lastError = ?detail }, Time.now());
               audit("delivery.retriable", orderId # ": " # detail);
               return;
             };
@@ -2134,7 +2134,7 @@ persistent actor CyclesGateway {
           // degrades to something resumable rather than to a stuck paid order
           // whose buyer already has their cycles.
           ignore tryTransition(orderId, #delivered);
-          Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = null; bumpRetries = false }, Time.now());
+          Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = null; bumpRetries = false; lastError = null }, Time.now());
           audit("delivery.healed", orderId # ": block " # block.toText() # " was recorded but the order had not moved");
           return;
         };
@@ -2824,7 +2824,7 @@ persistent actor CyclesGateway {
     let ?abandoned = tryTransition(id, #abandoned) else {
       return #err("order " # id # " refused the transition to abandoned");
     };
-    Delivery.patch(deliveryJournal, id, { status = ?#abandoned; blockIndex = null; cyclesDelivered = null; bumpRetries = false }, Time.now());
+    Delivery.patch(deliveryJournal, id, { status = ?#abandoned; blockIndex = null; cyclesDelivered = null; bumpRetries = false; lastError = null }, Time.now());
     ignore queueDeliveryError(order.rail, #abandoned({ orderId = id; reason }), "abandoned by operator: " # reason);
     auditAdmin(caller, "order.abandoned", id # ": " # reason);
     #ok(abandoned);
@@ -2868,7 +2868,7 @@ persistent actor CyclesGateway {
     let ?delivered = tryTransition(id, #delivered) else {
       return #err("order " # id # " refused the transition to delivered");
     };
-    Delivery.patch(deliveryJournal, id, { status = ?#delivered; blockIndex = ?blockIndex; cyclesDelivered = null; bumpRetries = false }, Time.now());
+    Delivery.patch(deliveryJournal, id, { status = ?#delivered; blockIndex = ?blockIndex; cyclesDelivered = null; bumpRetries = false; lastError = null }, Time.now());
     auditAdmin(caller, "order.recordedDelivered", id # ": operator confirmed cycles-ledger block " # blockIndex.toText());
     #ok(delivered);
   };

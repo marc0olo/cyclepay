@@ -290,6 +290,19 @@ module {
     blockIndex : ?Nat;
     cyclesDelivered : ?Nat;
     retries : Nat;
+    /// The ledger's own words from the most recent failed attempt, or null if
+    /// nothing has failed (#37 §1b).
+    ///
+    /// ⚠️ **The one thing `#deliveryStuck` carried that exists nowhere else.** Its
+    /// `orderId`, `status`, `blockIndex` and `retries` are all already here, so once
+    /// the error text lives on the journal the kind's identity fields are pure
+    /// duplication — which is what lets the problem move onto the order carrying only
+    /// its stage and resolution state.
+    ///
+    /// ⚠️ **Overwritten, not accumulated.** An operator acts on the *current*
+    /// obstacle; a growing list of every historical rejection is unbounded state fed
+    /// by retries, and `retries` already says how many there were.
+    lastError : ?Text;
     createdAtNs : Int;
     updatedAtNs : Int;
   };

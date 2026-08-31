@@ -298,6 +298,7 @@ type JournalEntry =
    createdAtNs: int;
    cyclesDelivered: opt nat;
    destination: Destination;
+   lastError: opt text;
    orderId: OrderId;
    retries: nat;
    status: OrderStatus;

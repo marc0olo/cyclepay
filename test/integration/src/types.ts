@@ -182,6 +182,10 @@ export interface TransferIntent {
 }
 
 export interface JournalEntry {
+  /// The ledger's own words from the most recent failed attempt (#37 §1b). The one
+  /// thing `#deliveryStuck` carried that exists nowhere else — overwritten rather
+  /// than accumulated, since `retries` already says how many there were.
+  lastError: Opt<string>;
   orderId: string;
   status: StatusVariant;
   destination: Destination;
