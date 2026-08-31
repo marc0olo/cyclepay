@@ -911,3 +911,52 @@ suite("#37 — the unresolved-problems index", func() {
     assert Orders.withUnresolvedProblems(store).size() == 0;
   });
 });
+
+suite("#37 — the pay link is dropped on the way into a terminal state", func() {
+  func withUrl(store : Orders.Store, id : Text) : Types.Order {
+    let o = switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1_000, pricing, 100)) {
+      case (#ok(x)) x;
+      case (#err(_)) { assert false; loop {} };
+    };
+    switch (Orders.attachSession(store, id, "cs_" # id, "https://checkout.stripe.com/c/pay/cs_" # id, 999, 200)) {
+      case (#ok(x)) x;
+      case (#err(_)) { assert false; loop {} };
+    };
+  };
+
+  test("every terminal status clears it; the non-terminal ones keep it", func() {
+    // ⚠️ Terminality comes from `Reserve.holdsPromise`, which is the single authority
+    // — a second list in `commitTransition` would be a place for the two to disagree.
+    for (terminal in [#cancelled, #expired].vals()) {
+      let store = Orders.emptyStore();
+      let o = withUrl(store, "t-" # Types.statusToText(terminal));
+      assert o.stripeSessionUrl != null;
+      switch (Orders.applyTransition(store, o.id, terminal, 300)) {
+        case (#ok(after)) assert after.stripeSessionUrl == null;
+        case (#err(_)) assert false;
+      };
+    };
+  });
+
+  test("#paid keeps the link — the order is still payable-adjacent and not terminal", func() {
+    let store = Orders.emptyStore();
+    let o = withUrl(store, "keeps");
+    switch (Orders.markPaid(store, o.id, 500, 300)) {
+      case (#ok(after)) assert after.stripeSessionUrl != null;
+      case (#err(_)) assert false;
+    };
+  });
+
+  test("the stored order agrees with what the transition returned", func() {
+    // The clearing happens inside `commitTransition`, so the returned value and the
+    // stored value must be the same object — a version that only patched the return
+    // would leave the big field on disk forever.
+    let store = Orders.emptyStore();
+    let o = withUrl(store, "stored");
+    ignore Orders.applyTransition(store, o.id, #cancelled, 300);
+    let fromStore = switch (Orders.get(store, o.id)) { case (?x) x; case null { assert false; loop {} } };
+    assert fromStore.stripeSessionUrl == null;
+    // The session ID is NOT dropped: the recovery sweep reads it.
+    assert fromStore.stripeSessionId != null;
+  });
+});

@@ -397,8 +397,37 @@ module {
   /// cannot forget the tally, because writing a status *is* calling this.
   /// (`attachSession` is the one writer that legitimately does not — it changes no
   /// status, and says so at its own `add`.)
-  func commitTransition(store : Store, before : Types.Order, after : Types.Order) {
-    store.orders.add(after.id, after);
+  /// Returns the order **as stored**, which callers must hand back instead of the
+  /// value they passed in.
+  ///
+  /// ⚠️ **It returns something now because it mutates the order, not just the
+  /// tallies.** The pay-link clearing below meant the stored order and the caller's
+  /// return value could disagree — the store had the cleared one, the caller returned
+  /// the original. Caught by a test asserting the two agree; the type now makes
+  /// ignoring the difference impossible.
+  func commitTransition(store : Store, before : Types.Order, after : Types.Order) : Types.Order {
+    // ⚠️ **Clear the pay link on the way into a terminal state (#37), HERE and not at
+    // each terminal site.** It is by far the largest field on an order — a Stripe
+    // checkout URL runs to a couple of hundred characters — and it is worthless
+    // thirty minutes after creation, so dropping it roughly halves the long-term size
+    // of an order under indefinite retention.
+    //
+    // Structural for the same reason the tally is: a future terminal path added
+    // elsewhere cannot forget, because writing a status *is* calling this. Doing it at
+    // the call sites would work today and silently stop working on the next one.
+    //
+    // ⚠️ Safe against every reader: the recovery sweep reads `stripeSessionId`, not the
+    // url, and the frontend only offers the pay link while the order is `#created`. A
+    // terminal order should not be carrying a payable link at all.
+    // ⚠️ **`Reserve.holdsPromise` is the authority on terminality, so this reuses it
+    // rather than listing the statuses again.** Its own comment reads "terminal, and
+    // nothing else is" — a second list here would be a place for the two to disagree,
+    // which is how `#needsReview` (promise still held, not terminal) would eventually
+    // get its pay link dropped by one of them and not the other.
+    let settled = if (Reserve.holdsPromise(after.status)) { after } else {
+      { after with stripeSessionUrl = null };
+    };
+    store.orders.add(settled.id, settled);
     bump(store, before.status, -1);
     bump(store, after.status, 1);
     // Zero when the transition stays inside the counted set — `#created → #paid`
@@ -414,6 +443,7 @@ module {
     // an exact release — the first evidence would otherwise be the daily recount,
     // up to 24 h of a wrong tally gating real sales. `Main` audits this.
     if (moved.saturated) store.tallySaturations += 1;
+    settled;
   };
 
   public func applyTransition(
@@ -434,8 +464,7 @@ module {
             // order, a sweep racing a webhook, or a delivery retry answering
             // `#Duplicate` after the transition already committed all no-op here
             // rather than double-releasing.
-            commitTransition(store, order, updated);
-            #ok(updated);
+            #ok(commitTransition(store, order, updated));
           };
           case (#err(e)) #err(e);
         };
@@ -514,8 +543,7 @@ module {
             };
             // Release point 1 (#30), and the most common one: Stripe says the
             // session died unpaid, so every unpaid order releases here.
-            commitTransition(store, order, expired);
-            #ok(expired);
+            #ok(commitTransition(store, order, expired));
           };
           case (#err(e)) #err(e);
         };
@@ -718,8 +746,7 @@ module {
           case (#ok(updated)) {
             let expired = { updated with expiredBy = ?cause };
             // Release point 4 (#30): in-call session-creation failure.
-            commitTransition(store, order, expired);
-            #ok(expired);
+            #ok(commitTransition(store, order, expired));
           };
           case (#err(e)) #err(e);
         };
@@ -756,8 +783,7 @@ module {
             let paid = { updated with paidUsdCents = ?paidUsdCents };
             // ⚠️ Release is at DELIVERY, never at payment, so this delta is ZERO.
             // `Reserve.tallyDelta` carries the two-orders-one-reserve argument.
-            commitTransition(store, order, paid);
-            #ok(paid);
+            #ok(commitTransition(store, order, paid));
           };
           case (#err(e)) #err(e);
         };
