@@ -58,40 +58,6 @@ module {
     /// is an attacker-editable URL param), or it resolved to an order that is
     /// `#cancelled` or `#expired`, neither of which is payable.
     #unattributed : { claimedRef : Text; paymentRef : Text };
-    /// **A delivery stopped somewhere it cannot continue automatically.** Not
-    /// refund-resolvable: the fiat is in, and what happens next depends on the money
-    /// position rather than on the reason it stopped.
-    ///
-    /// ⚠️ **`stage` IS the money position, and it is what the operator acts on.**
-    /// `Delivery.terminationFor` derives it from the **journal**, not the status, because
-    /// one status covers several positions:
-    ///
-    ///   - `staleIntent` — a transfer was issued, no block was recorded, and the
-    ///     intent is past the ledger's ~24 h dedup window. **Unknown**: the question
-    ///     is *"did this transfer land?"*, answerable on the cycles ledger by the
-    ///     order id in the transfer's memo. Never "should we refund?" — refunding a
-    ///     buyer who already holds the cycles pays twice.
-    ///   - `deliveryWaitExceeded` — the 72 h bound on an order where **nothing was
-    ///     ever sent**. **Certain**: fiat in, nothing moved, refund in the Stripe
-    ///     Dashboard.
-    ///   - `transferRejected` / `journalInconsistent` — the ledger refused this call
-    ///     definitively, or the intent contradicts the order. Establish the fate
-    ///     before re-sending.
-    ///
-    /// ⚠️ **`stage` is a stringly-typed discriminator, and it must stay advisory.**
-    /// It is safe only because the **journal is the authority** — `terminationFor`
-    /// reads it to *produce* this string, and the operator's triage table is the only
-    /// consumer. **Never branch a money decision on comparing it.** If code ever needs
-    /// to distinguish the positions, it should ask the journal the same way
-    /// `terminationFor` does, or the string should become a variant first.
-    ///
-    /// ⚠️ **One kind, not two.** Splitting "did it land?" from "nothing was sent" into
-    /// separate kinds puts one operator question behind two names, and leaves whichever
-    /// kind is narrower unable to carry the other position. `blockIndex` is present
-    /// only in the should-be-unreachable case where the transfer is known to have
-    /// landed and the order never moved — it arrives with the entry so the operator
-    /// does not have to fetch the journal to start looking.
-    #deliveryStuck : { orderId : Types.OrderId; stage : Text; blockIndex : ?Nat };
     /// Not refund-resolvable — the money moved *both* ways. A
     /// `charge.refunded` arrived for a payment that had already been delivered
     /// as cycles, so the fiat went back to the payer and the cycles are
@@ -141,7 +107,7 @@ module {
   public func refundResolvable(kind : Kind) : Bool {
     switch (kind) {
       case (#duplicate(_) or #unattributed(_)) true;
-      case (#deliveryStuck(_) or #refundAfterDelivery(_)) false;
+      case (#refundAfterDelivery(_)) false;
       case (#unprocessable(_)) false;
       // ⚠️ **False even though a refund is a legal thing for the operator to do here.**
       // The question this answers is "does a `charge.refunded` settle this entry *on its
@@ -180,7 +146,7 @@ module {
       // from `resolveByPaymentRef`: the refund is what created the entry, so
       // auto-resolving on it would close the loss the instant it was recorded.
       // Only a human closes this one.
-      case (#deliveryStuck(_) or #refundAfterDelivery(_)) null;
+      case (#refundAfterDelivery(_)) null;
       // Neither is settled by a refund landing: an abandonment was already a
       // conscious decision, and an unprocessable event has no established money
       // position to settle.

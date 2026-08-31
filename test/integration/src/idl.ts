@@ -172,7 +172,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     // auto-close the entry — refunding settles the money and leaves the order stranded.
     // #36 folded `stuckMint` and `transferUnresolved` into one honestly-named kind:
     // `stage` carries the money position, `blockIndex` the should-be-unreachable landed case.
-    deliveryStuck: IDL.Record({ orderId: IDL.Text, stage: IDL.Text, blockIndex: IDL.Opt(IDL.Nat) }),
     unattributed: IDL.Record({ claimedRef: IDL.Text, paymentRef: IDL.Text }),
   });
   const ErrorEntry = IDL.Record({

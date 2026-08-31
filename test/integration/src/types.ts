@@ -221,7 +221,6 @@ export interface JournalEntry {
 export type ErrorKind =
   | { duplicate: { orderId: string; paymentRef: string } }
   | { unattributed: { claimedRef: string; paymentRef: string } }
-  | { deliveryStuck: { orderId: string; stage: string; blockIndex: Opt<bigint> } }
   | { refundAfterDelivery: { orderId: string; paymentRef: string; cycles: bigint; refundedCents: bigint; fullRefund: boolean } }
   | { unprocessable: { eventId: string; field: string } }
 

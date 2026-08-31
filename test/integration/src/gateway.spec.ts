@@ -21,6 +21,9 @@ import {
   nowSeconds, setXrcRate, setXrcResponse, warmRates, ensureRates, tickRateTimer,
   orderStatus, statusKey, tickUntilStatus, expectOk, expectErr,
   allErrorEntries, openErrorEntries,
+
+  orderProblems,
+  unresolvedProblems,
 } from './harness';
 import type { Destination, ErrorEntry, Order } from './types';
 
@@ -600,10 +603,9 @@ test('11 — a cycles-ledger outage strands NOTHING: the order stays payable-out
 
     // Still #paid — retrying, not escalated, not delivered.
     expect(await orderStatus(gw, orderC.id)).toBe('paid');
-    // No queue entry: an outage is not an obligation.
-    expect((await allErrorEntries(gw)).some(
-      (e) => 'deliveryStuck' in e.kind && e.kind.deliveryStuck.orderId === orderC.id,
-    )).toBe(false);
+    // No problem filed: an outage is not an obligation (#37 — now on the order).
+    expect((await orderProblems(gw, orderC.id)).some((p) => 'deliveryStuck' in p.kind))
+      .toBe(false);
     // ⚠️ Do NOT read the ledger here. It is stopped, so a balance query is
     // rejected — the first version of this scenario asserted the balances inside
     // the outage and failed on the assertion rather than on the behaviour.
@@ -735,6 +737,11 @@ test('15 — operational trail is coherent end-to-end (§4.2)', async () => {
   // delivered against — which is what makes `error_queue_depth` a real alarm rather
   // than a gauge that always reads non-zero.
   const kinds = open.map((e) => Object.keys(e.kind)[0]);
+  // ⚠️ **`deliveryStuck` cannot appear here at all since #37** — it is an
+  // order-bound problem, not a queue entry. The assertion is kept because what it
+  // guards is unchanged: everything left in this queue is money we took and cannot
+  // attribute, which is what makes `error_queue_depth` a real alarm rather than a
+  // gauge that always reads non-zero.
   expect(kinds).not.toContain('deliveryStuck');
   // Depth agrees with the paged content — the number ops monitors.
   expect((await gw.asAnon.error_queue_depth()).unresolved).toBe(BigInt(open.length));
@@ -1556,9 +1563,9 @@ test('35 — past the max-wait bound the order terminates so the operator refund
     await startNns(gw, CYCLES_LEDGER_ID);
   }
 
-  const entry = (await openErrorEntries(gw)).find(
-    (e) => 'deliveryStuck' in e.kind && e.kind.deliveryStuck.orderId === doomed.id,
-  ) as ErrorEntry;
+  // Now a problem on the order (#37); no `orderId` to compare, the order supplies it.
+  const entry = unresolvedProblems(await orderProblems(gw, doomed.id))
+    .find((p) => 'deliveryStuck' in p.kind)!;
   expect(entry).toBeDefined();
   // ⚠️ The money position must say NOTHING WAS DELIVERED, because the action it
   // implies is a refund. Emitting a position that hedged here is what put an
@@ -1605,10 +1612,9 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   // a stronger claim about a stronger mechanism.
   expect((await gw.asAdmin.delayed_deliveries()).filter((d) => d.orderId === settled.order.id))
     .toHaveLength(0);
-  // The stuck obligation is a real worklist item and still lives in the queue.
-  expect((await openErrorEntries(gw)).filter(
-    (e) => 'deliveryStuck' in e.kind && e.kind.deliveryStuck.orderId === settled.order.id,
-  )).toHaveLength(0);
+  // Nor a stuck problem: a delivered order attracts neither tier.
+  expect((await orderProblems(gw, settled.order.id)).filter((p) => 'deliveryStuck' in p.kind))
+    .toHaveLength(0);
   // ⚠️ This scenario advanced the clock by ~170 h in total, which stales BOTH
   // rates. `ensureRates` alone is not enough — the CMC rate needs governance to
   // re-arm — and skipping it fails the next nine scenarios on rates they never
@@ -2070,11 +2076,18 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
   expect((await gw.asAdmin.delayed_deliveries()).filter((d) => d.orderId === doomed.id))
     .toHaveLength(0);
   // And exactly one entry for this order remains open — the escalation itself.
-  const openForOrder = (await openErrorEntries(gw)).filter(
-    (e) => JSON.stringify(e.kind, bigIntReplacer).includes(doomed.id),
-  );
+  // ⚠️ **Exactly one open problem, and it is the escalation.** Under #37 this is a
+  // stronger statement than the queue version: the order's problems ARE the complete
+  // set for that order, where before it was a substring match over every entry's
+  // JSON — which would have matched an entry about a different order that happened to
+  // mention this id.
+  const openForOrder = unresolvedProblems(await orderProblems(gw, doomed.id));
   expect(openForOrder).toHaveLength(1);
-  expect(openForOrder[0]!.kind).toMatchObject({ deliveryStuck: { orderId: doomed.id } });
+  expect(openForOrder[0]!.kind).toMatchObject({ deliveryStuck: {} });
+  // And nothing was filed in the queue for it: the queue holds only order-less money.
+  expect((await openErrorEntries(gw)).some(
+    (e) => JSON.stringify(e.kind, bigIntReplacer).includes(doomed.id),
+  )).toBe(false);
   // ⚠️ ~80 h of clock advance stales both rates; see the README.
   await setCmcRate(gw);
   await ensureRates(gw);
@@ -3327,15 +3340,19 @@ test('80 — an issued intent escalates at the DEDUP window, not at the 72 h max
     // The stage IS the cause, and the runbook's triage table is keyed by it. A pass
     // here that read `deliveryWaitExceeded` would mean the max-hold bound fired 47 h
     // early; one that read `missingJournal` would mean the intent never got written.
-    const filed = (await openErrorEntries(gw)).find(
-      (e) => 'deliveryStuck' in e.kind && e.kind.deliveryStuck.orderId === stale.id,
-    );
+    const filed = unresolvedProblems(await orderProblems(gw, stale.id))
+      .find((p) => 'deliveryStuck' in p.kind);
     expect(filed).toBeDefined();
     expect((filed!.kind as { deliveryStuck: { stage: string } }).deliveryStuck.stage).toBe('staleIntent');
     // No block recorded, so the money position is genuinely unknown — the entry must
     // not claim otherwise.
-    expect((filed!.kind as { deliveryStuck: { blockIndex: [] | [bigint] } }).deliveryStuck.blockIndex)
-      .toHaveLength(0);
+    // ⚠️ **`blockIndex` moved to the journal (#37 §1b)**, which is where it always
+    // belonged — the problem carried a copy so an operator would not have to fetch
+    // the journal, and that copy was the duplication the move removes. Asserted at
+    // its real home, so the claim is about the authority rather than a mirror.
+    const journal = await gw.asAdmin.delivery_journal(stale.id);
+    expect(journal).toHaveLength(1);
+    expect(journal[0]!.blockIndex).toHaveLength(0);
   } finally {
     await startNns(gw, CYCLES_LEDGER_ID);
   }

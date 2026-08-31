@@ -4,6 +4,7 @@
 /// module layout this actor grows into: Orders.mo wiring, rails/, Delivery.mo,
 /// Pricing.mo, Delivery.mo, ErrorQueue.mo, Auth.mo.
 import Array "mo:core/Array";
+import Problems "Problems";
 import Cycles "mo:core/Cycles";
 import Error "mo:core/Error";
 import Int "mo:core/Int";
@@ -1548,6 +1549,34 @@ persistent actor CyclesGateway {
   /// close themselves; `#deliveryStuck`, `#refundAfterDelivery` and `#abandoned` carry
   /// no `paymentRef` and can only be closed here. Resolving an entry never transitions
   /// the order — see `ErrorQueue`'s header.
+  /// Close an order-bound problem an operator has dealt with (#37).
+  ///
+  /// ⚠️ **The order-shaped counterpart to `resolve_error`**, which addresses entries by
+  /// a queue id that no longer exists for the kinds that moved. `kindTag` is matched
+  /// against `Problems.kindToText`, so a typo closes nothing rather than the wrong
+  /// thing — and every unresolved problem of that kind on that order closes together,
+  /// because "the same problem, filed twice" is what `Problems.file` already prevents.
+  public shared ({ caller }) func resolve_problem(
+    orderId : Types.OrderId,
+    kindTag : Text,
+  ) : async Result.Result<Nat, Text> {
+    requireAdmin(caller);
+    let closed = Orders.resolveProblems(
+      orderStore,
+      orderId,
+      func(k) { Problems.kindToText(k) == kindTag },
+      Time.now(),
+    );
+    if (closed == 0) {
+      return #err(
+        "no unresolved " # kindTag # " problem on order " # orderId
+        # " — check the tag against the order's own problems, and note a resolved one stays on the order rather than disappearing"
+      );
+    };
+    auditAdmin(caller, "order.problemResolved", orderId # ": " # kindTag # " (" # closed.toText() # ")");
+    #ok(closed);
+  };
+
   public shared ({ caller }) func resolve_error(id : Nat) : async Result.Result<ErrorQueue.Entry, ErrorQueue.ResolveError> {
     requireAdmin(caller);
     let resolved = ErrorQueue.resolve(errorQueue, id, Time.now());
@@ -1706,17 +1735,6 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Queue a delivery-path error entry, audit-logging any unresolved eviction
-  /// (each is a live money obligation dropped from on-chain state, §4.1).
-  func queueDeliveryError(rail : Types.Rail, kind : ErrorQueue.Kind, detail : Text) : Nat {
-    let result = ErrorQueue.add(errorQueue, errorQueueCapacity, rail, kind, detail, Time.now());
-    for (victim in result.evicted.values()) {
-      if (victim.resolvedAtNs == null) {
-        audit("errorQueue.evictedUnresolved", "entry " # victim.id.toText() # ": " # victim.detail);
-      };
-    };
-    result.entry.id;
-  };
 
   /// **The one escalation.** A delivery stopped where it cannot continue
   /// automatically, so the order goes `#needsReview` — **not** `#abandoned`: the
@@ -1767,10 +1785,6 @@ persistent actor CyclesGateway {
   ///     Escalating rather than guessing a fee on a money path is the point.
   func escalateDelivery(order : Types.Order, stage : Text, detail : Text) {
     ignore tryTransition(order.id, #needsReview);
-    let blockIndex = switch (deliveryJournal.get(order.id)) {
-      case (?e) e.blockIndex;
-      case null null;
-    };
     Delivery.patch(deliveryJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesDelivered = null; bumpRetries = false; lastError = null }, Time.now());
     // ⚠️ **No delay alert to close here, by construction (#37).** An entry saying "it
     // delivers on the next sweep" would have become a false promise on the
@@ -1779,7 +1793,12 @@ persistent actor CyclesGateway {
     // delivery for an escalated order, and keeping the id would only suppress a
     // legitimate line if it were ever re-driven.
     deliveryBlockedAudited.remove(order.id);
-    ignore queueDeliveryError(order.rail, #deliveryStuck({ orderId = order.id; stage; blockIndex }), detail);
+    // ⚠️ **`blockIndex` is no longer carried here.** It is on the `JournalEntry`
+    // along with `status`, `retries` and `updatedAtNs`, and §1b moved the last thing
+    // this problem held alone — the ledger's error text — to `JournalEntry.lastError`.
+    // What is left is the stage and the resolution state, which is what a problem on
+    // an order is for.
+    ignore Orders.fileProblem(orderStore, order.id, #deliveryStuck({ stage }), detail, Time.now());
     audit("delivery.stuck", order.id # " [" # stage # "]: " # detail);
   };
 

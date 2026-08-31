@@ -19,8 +19,12 @@ func addUnattributed(store : ErrorQueue.Store, claimedRef : Text, paymentRef : T
 
 /// An obligation a refund cannot settle — the counterpart to the two above, and what
 /// the eviction and resolution tests need in order to be about anything.
+///
+/// ⚠️ Was `#deliveryStuck` until #37 moved that onto the order. `#refundAfterDelivery`
+/// carries the same property that matters here: a `charge.refunded` must never close
+/// it, because the refund is what created it.
 func addStuck(store : ErrorQueue.Store, orderId : Text, nowNs : Int) : ErrorQueue.AddResult {
-  ErrorQueue.add(store, cap, #card, #deliveryStuck({ orderId; stage = "staleIntent"; blockIndex = null }), "transfer unconfirmed", nowNs);
+  ErrorQueue.add(store, cap, #card, #refundAfterDelivery({ orderId; paymentRef = "pi_loss"; cycles = 1; refundedCents = 1; fullRefund = true }), "money moved both ways", nowNs);
 };
 
 suite("kinds: what a refund can settle, and what it cannot", func() {
@@ -35,7 +39,7 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
     // property seen from two sides.
     assert ErrorQueue.paymentRefOf(#duplicate({ orderId = "o1"; paymentRef = "pi_1" })) == ?"pi_1";
     assert ErrorQueue.paymentRefOf(#unattributed({ claimedRef = "x"; paymentRef = "pi_2" })) == ?"pi_2";
-    assert ErrorQueue.paymentRefOf(#deliveryStuck({ orderId = "o3"; stage = "staleIntent"; blockIndex = null })) == null;
+    assert ErrorQueue.paymentRefOf(#refundAfterDelivery({ orderId = "o3"; paymentRef = "pi_loss"; cycles = 1; refundedCents = 1; fullRefund = true })) == null;
   });
 
   test("⚠️ refundResolvable and paymentRefOf agree on EVERY kind", func() {
@@ -71,7 +75,6 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
       switch k {
         case (#duplicate(_)) "duplicate";
         case (#unattributed(_)) "unattributed";
-        case (#deliveryStuck(_)) "deliveryStuck";
         case (#refundAfterDelivery(_)) "refundAfterDelivery";
         case (#unprocessable(_)) "unprocessable";
       };
@@ -79,11 +82,10 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
     let all : [ErrorQueue.Kind] = [
       #duplicate({ orderId = "o1"; paymentRef = "pi_1" }),
       #unattributed({ claimedRef = "x"; paymentRef = "pi_2" }),
-      #deliveryStuck({ orderId = "o3"; stage = "staleIntent"; blockIndex = null }),
       #refundAfterDelivery({ orderId = "o4"; paymentRef = "pi_4"; cycles = 1; refundedCents = 1; fullRefund = true }),
       #unprocessable({ eventId = "evt_1"; field = "amount_total" }),
     ];
-    assert all.size() == 5;
+    assert all.size() == 4;
     var seen = "";
     for (kind in all.values()) {
       let carriesRef = ErrorQueue.paymentRefOf(kind) != null;
@@ -97,17 +99,17 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
   });
 
   test("an escalated delivery is never settled by a refund arriving", func() {
-    assert not ErrorQueue.refundResolvable(#deliveryStuck({ orderId = "o3"; stage = "staleIntent"; blockIndex = null }));
-    assert ErrorQueue.paymentRefOf(#deliveryStuck({ orderId = "o3"; stage = "staleIntent"; blockIndex = null })) == null;
+    assert not ErrorQueue.refundResolvable(#refundAfterDelivery({ orderId = "o3"; paymentRef = "pi_l"; cycles = 1; refundedCents = 1; fullRefund = true }));
+    assert ErrorQueue.paymentRefOf(#refundAfterDelivery({ orderId = "o3"; paymentRef = "pi_l"; cycles = 1; refundedCents = 1; fullRefund = true })) == null;
   });
 
-  test("charge.refunded auto-resolve never touches a deliveryStuck entry", func() {
+  test("charge.refunded auto-resolve never touches an entry it did not settle", func() {
     let store = ErrorQueue.emptyStore();
-    ignore ErrorQueue.add(store, cap, #card, #deliveryStuck({ orderId = "o3"; stage = "landedNotRecorded"; blockIndex = null }), "the transfer landed and the order never moved", 100);
+    ignore ErrorQueue.add(store, cap, #card, #refundAfterDelivery({ orderId = "o3"; paymentRef = "pi_x"; cycles = 1; refundedCents = 1; fullRefund = true }), "money moved both ways", 100);
     ignore addDuplicate(store, "o4", "pi_9", 200);
     let resolved = ErrorQueue.resolveByPaymentRef(store, "pi_9", 300);
     assert resolved.size() == 1;
-    assert ErrorQueue.unresolved(store).size() == 1; // the deliveryStuck entry stays
+    assert ErrorQueue.unresolved(store).size() == 1; // the unsettleable entry stays
   });
 });
 
