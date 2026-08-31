@@ -117,7 +117,7 @@ consciously set. Work the list in order:
 12. **Create a LIVE restricted API key (`rk_...`) with Checkout Sessions = Write**
    (Write is the level that also grants read, and the recovery sweep needs the read to
    settle a stranded order — §6's `#paidNotCredited` row and §8's
-   `stripe.retrieveUnauthorized` row), everything else None, and provision it with
+   `stripeApiFailing` row), everything else None, and provision it with
    `set_stripe_api_key`. Your sandbox key cannot
    be reused. There are no Payment Links, Products or Prices to create: the
    session carries inline `price_data`, and `amount_total == usdCents` holds
@@ -238,7 +238,7 @@ rather than a click path through three screens.
 #    else None. Write is the level that also grants read, and the recovery sweep needs
 #    the read: it retrieves a session to settle an order whose expiry event never
 #    arrived (#52). A key without it 401s on every retrieve and stranded capacity is
-#    never released — watch for `stripe.retrieveUnauthorized` (§8).
+#    never released — watch for refusingNow.stripeApiFailing (§8).
 icp canister call backend set_stripe_api_key '("rk_...")' -e ic --identity <operator>
 
 # 2. Where Stripe returns the buyer. Validated: https, no query, no fragment.
@@ -954,7 +954,7 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | `reserve_status.availableToSell` | 0, or far below `reserveFloor` − `promisedTotal` as you expect it | **P2** | the gateway is refusing sales. Three causes and the same query separates them: the reserve is genuinely spent (`reserveFloor` low), it is committed to live orders (`promisedTotal` high), or **the floor has not observed a top-up** (`reserveObservedAtNs` old). The last is the common one and the lever is `refresh_reserve` |
 | `reserve_status.reserveObservedAtNs` | materially older than `recovery_status.lastReserveReconcileAttemptNs` | **P3** | the hourly reserve reconcile is attempting and not adopting: either the ledger read is failing (`reserve.observeFailed` in the audit log) or every attempt lands while a delivery is in flight (`reserve.reconcileSkipped`). Under-sells rather than over-sells, so it explains refusals; it is not a loss |
 | `delivery.feeChanged` in the audit log | on **every** delivery rather than once | **P3** | the stored cycles-ledger fee is stale, so every order pays one rejected call before its transfer lands. Self-correcting by design — the first `#BadFee` persists the ledger's value — so a *repeating* tag means the correction is not sticking (an upgrade reverting the stored value, or the ledger's fee moving repeatedly). ⚠️ **This is the ONLY detector for a stored fee that will not stick**, since nothing but the ledger writes that value and the persistence itself is untested (`docs/TEST-COVERAGE.md`). Each occurrence costs one rejected call, never a wrong debit — the buyer still gets the quoted amount and the reserve absorbs the real fee. If it repeats, redeploy rather than looking for a lever; there is none, deliberately |
-| `stripe.retrieveUnauthorized` in the audit log | any occurrence | **P1** | ⚠️ **The restricted key cannot read Checkout Sessions, so stranded capacity can never be released automatically.** The recovery sweep's retrieve is 401/403ing. Fix the key's permission (Checkout Sessions = **Write**, which is the level that also grants read — §3) and rotate it in; nothing else recovers, and the failure is otherwise silent because the sweep audits and moves on. Until it is fixed, `expire_order` is the manual release |
+| `refusal_counts.refusingNow.stripeApiFailing` true, with `gate.startedRefusing` naming **retrieve REFUSED** | any occurrence | **P1** | ⚠️ **The restricted key cannot read Checkout Sessions, so stranded capacity can never be released automatically.** The recovery sweep's retrieve is 401/403ing. Fix the key's permission (Checkout Sessions = **Write**, which is the level that also grants read — §3) and rotate it in; nothing else recovers. Until it is fixed, `expire_order` is the manual release. <br><br>⚠️ **This replaced a `stripe.retrieveUnauthorized` tag, deleted by #37 §2c.** That tag fired **once per stranded order per hourly pass** — up to ~240 permanent lines a day for one unfixed problem once the ring was gone. Our own cadence bounded a *rate*, and a rate against an unfixed persistent condition is unbounded over time. It is now the same latched condition as a failing session *create* or *expire*, because a 401 on any of the three is one incident with one lever: **rotate the key** |
 | `stripe.retrieveFailed` in the audit log | repeatedly for the same order | **P3** | Stripe is unreachable or answering non-200 for the session read. Distinct from the row above on purpose: **"Stripe refused the read" and "Stripe is down" are different actions.** Transient failures retry hourly and need nothing; a persistent one means the outcall path is broken, so check `pricing_status` (the same egress) before suspecting the key |
 | `stripe.paidAwaitingEvent` in the audit log | any occurrence | **P2** | a buyer paid and Stripe has not delivered `checkout.session.completed`. **Not yet an obligation** — Stripe redelivers for ~3 days and the entry is deliberately withheld until then — but it IS the support signal: the buyer's own page renders expired from `expiresAtNs`, so expect a contact the same hour. If it is one order, resend the event from the Dashboard now rather than waiting. If it is many, the webhook endpoint is broken: check the secret and the subscribed event list (§3) |
 | `stripe.paidNotCredited` in the audit log | any occurrence | **P1** | a buyer paid, Stripe has given up redelivering, and the obligation is now filed in the error queue. Follow the `#paidNotCredited` row in §6 — **resend first, always** |
@@ -994,9 +994,11 @@ claims an alert nobody can wire is worse than a documented gap.
 - **`orphans_unresolved`** for the entries themselves. `orphan_depth` is
   public, so **alert on the public depth and only fetch details when it fires** —
   that keeps the key out of the polling loop.
-- ⚠️ Gaps in `audit_log`'s `seq` mean the 4,096-entry ring dropped events. Read it
-  often enough that it doesn't, and remember it is *telemetry*: the order store,
-  delivery journal and error queue are the records of money.
+- ⚠️ **The audit log no longer drops anything (#37).** It was a 4,096-entry ring, and
+  gaps in `seq` were how you detected drops; there are no gaps now, and `seq` is only a
+  never-reused ordering. What has not changed is what it IS: *telemetry*. The order
+  store, delivery journal and orphan list are the records of money, and an order's own
+  `problems` array is where its obligations live.
 
 ### Off-chain
 

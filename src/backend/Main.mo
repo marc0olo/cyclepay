@@ -1116,7 +1116,7 @@ persistent actor CyclesGateway {
           case (#ok(_)) {};
           case (#err(_)) {}; // already cancelled or gone; nothing to undo
         };
-        noteStripeApiFailed(e);
+        noteStripeApiFailed("create: " # sessionErrorToText(e));
         return #err(#sessionUnavailable(sessionErrorToText(e)));
       };
       case (#ok(created)) {
@@ -1355,7 +1355,7 @@ persistent actor CyclesGateway {
   /// remedies an entry takes — a Stripe refund, or a human establishing the position.
   let orphanStore : Orphans.Store = Orphans.emptyStore();
 
-  /// §4.2 bounded audit-log ring buffer — operational trail, not a
+  /// §4.2 audit log, unbounded since #37 — operational trail, not a
   /// financial record (orders/error queue are the records of money).
   let auditLog : AuditLog.Log = AuditLog.emptyLog();
 
@@ -1448,19 +1448,20 @@ persistent actor CyclesGateway {
   /// the `client_reference_id` — so no pre-commit check can cover this branch. A
   /// circuit breaker is deferred behind the evidence #37 §2c asks for; this fixes the
   /// audit half, which is the half that becomes permanent when the ring comes out.
-  func noteStripeApiFailed(e : SessionError) {
+  /// ⚠️ **Takes a DETAIL rather than a `SessionError`, because the callers know
+  /// different things.** It used to render `sessionErrorToText(e)`, and the retrieve
+  /// path's `#unauthorized` has no honest `SessionError` to pass: `#railClosed` renders
+  /// as "the API key is not provisioned", which is exactly wrong — the key is present
+  /// and Stripe is refusing it. The remedy differs too (rotate versus provision), so
+  /// squeezing three call sites through one enum produced a confident wrong sentence.
+  func noteStripeApiFailed(detail : Text) {
     refusalCounts := Gate.countStripeApiFailed(refusalCounts);
     let latched = Gate.latchCondition(railStateLatch, #stripeApiFailing);
     railStateLatch := latched.latch;
     if (latched.announce) {
-      audit("gate.startedRefusing", "stripeApiFailing: " # sessionErrorToText(e));
+      audit("gate.startedRefusing", "stripeApiFailing: " # detail);
     };
   };
-
-  /// Bounds are operator headroom knobs, not financial records — transient
-  /// so a redeploy can retune them (same reasoning as maxRequestBodyBytes).
-  transient let orphanCapacity : Nat = 1_000;
-  transient let auditLogCapacity : Nat = 4_096;
 
   /// Built per request rather than held in a transient field: it carries
   /// `maxPurchaseUsdCents` from the live gate config, so a ceiling change takes
@@ -1470,10 +1471,8 @@ persistent actor CyclesGateway {
       orders = orderStore;
       dedup;
       orphanStore;
-      orphanCapacity;
       expectLivemode;
       auditLog;
-      auditLogCapacity;
       paidIntents;
       maxPurchaseUsdCents = gateConfig.maxPurchaseUsdCents;
     };
@@ -1795,7 +1794,7 @@ persistent actor CyclesGateway {
   };
 
   func audit(tag : Text, detail : Text) {
-    ignore AuditLog.append(auditLog, auditLogCapacity, Time.now(), tag, detail);
+    ignore AuditLog.append(auditLog, Time.now(), tag, detail);
   };
 
   /// Audit an admin action, recording **which principal took it**.
@@ -2860,7 +2859,7 @@ persistent actor CyclesGateway {
             // condition `create_order` latches, with the same cause and the same lever,
             // so it routes through the same latch: one line when the API starts
             // refusing us, a counter for the volume.
-            noteStripeApiFailed(#outcallFailed(detail));
+            noteStripeApiFailed("expire: " # detail);
             return #err(
               "could not reach Stripe to cancel order " # id # " — try again, or it expires on its own"
             );
@@ -3266,14 +3265,30 @@ persistent actor CyclesGateway {
     let ?fresh = Orders.get(orderStore, orderId) else return;
 
     switch (answer) {
+      // ⚠️ **The THIRD Stripe outcall, and it needs the same latch as the other two
+      // (#37 §2c).** These two arms passed the admission rule on a technicality: their
+      // frequency is bounded by *our own* sweep cadence, which the rule accepts.
+      //
+      // ⚠️ **But our cadence bounds a RATE, and a rate against an unfixed persistent
+      // condition is unbounded over time.** A revoked key — the exact cause
+      // `#stripeApiFailing` exists for — fails the retrieve on every stranded order the
+      // sweep touches: hourly, up to `maxRetrievesPerPass` each pass, forever, for one
+      // unfixed problem. Roughly 240 permanent lines a day once the ring is gone. The
+      // ring is what turned "bounded per day" into "bounded in total", and removing it
+      // is what makes the difference matter.
+      //
+      // Same condition, not a fourth: a 401 on retrieve and a 401 on create are **one
+      // incident with one lever**. Which is why the condition is named for the API.
       case (#unauthorized) {
-        audit(
-          "stripe.retrieveUnauthorized",
-          "order " # orderId # ": Stripe refused the session read — the restricted key needs WRITE on Checkout Sessions (which includes read). Stranded capacity cannot be released until it does",
+        // The guidance the deleted `stripe.retrieveUnauthorized` line carried, kept
+        // verbatim — it is the one message that names the fix, and RUNBOOK §8's P1 row
+        // is keyed on this text now rather than on a tag that no longer exists.
+        noteStripeApiFailed(
+          "retrieve REFUSED (401/403): the restricted key needs WRITE on Checkout Sessions, which includes the read this sweep does. Stranded reserve capacity cannot be released until it does — rotate the key"
         );
       };
       case (#failed(detail)) {
-        audit("stripe.retrieveFailed", "order " # orderId # ": " # detail);
+        noteStripeApiFailed("retrieve: " # detail);
       };
       case (#ok(#open) or #ok(#unknown(_))) {
         // Nothing. Our clock decided when to ask; Stripe decides what is true, and it

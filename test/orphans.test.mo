@@ -7,17 +7,16 @@ import Orphans "../src/backend/Orphans";
 // bounded eviction (resolved-first), manual resolve, and charge.refunded auto-resolve
 // by payment_intent.
 
-let cap = 3; // small capacity so bounds are easy to exercise
 
 /// ⚠️ Was `#duplicate` until #37 moved that onto the order. `#unattributed` carries
 /// the property this fixture is for: refund-resolvable, and it names the payment a
 /// `charge.refunded` closes it by.
 func addDuplicate(store : Orphans.Store, orderId : Text, paymentRef : Text, nowNs : Int) : Orphans.AddResult {
-  Orphans.add(store, cap, #card, #unattributed({ claimedRef = orderId; paymentRef }), "2nd payment", nowNs);
+  Orphans.add(store, #card, #unattributed({ claimedRef = orderId; paymentRef }), "2nd payment", nowNs);
 };
 
 func addUnattributed(store : Orphans.Store, claimedRef : Text, paymentRef : Text, nowNs : Int) : Orphans.AddResult {
-  Orphans.add(store, cap, #card, #unattributed({ claimedRef; paymentRef }), "no such order", nowNs);
+  Orphans.add(store, #card, #unattributed({ claimedRef; paymentRef }), "no such order", nowNs);
 };
 
 /// An obligation a refund cannot settle — the counterpart to the two above, and what
@@ -27,7 +26,7 @@ func addUnattributed(store : Orphans.Store, claimedRef : Text, paymentRef : Text
 /// carries the same property that matters here: a `charge.refunded` must never close
 /// it, because the refund is what created it.
 func addStuck(store : Orphans.Store, orderId : Text, nowNs : Int) : Orphans.AddResult {
-  Orphans.add(store, cap, #card, #unprocessable({ eventId = "evt_" # orderId; field = "payment_intent" }), "a verified event we cannot parse", nowNs);
+  Orphans.add(store, #card, #unprocessable({ eventId = "evt_" # orderId; field = "payment_intent" }), "a verified event we cannot parse", nowNs);
 };
 
 suite("kinds: what a refund can settle, and what it cannot", func() {
@@ -104,7 +103,7 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
 
   test("charge.refunded auto-resolve never touches an entry it did not settle", func() {
     let store = Orphans.emptyStore();
-    ignore Orphans.add(store, cap, #card, #unprocessable({ eventId = "evt_x"; field = "amount_total" }), "a verified event we cannot parse", 100);
+    ignore Orphans.add(store, #card, #unprocessable({ eventId = "evt_x"; field = "amount_total" }), "a verified event we cannot parse", 100);
     ignore addDuplicate(store, "o4", "pi_9", 200);
     let resolved = Orphans.resolveByPaymentRef(store, "pi_9", 300);
     assert resolved.size() == 1;
@@ -120,7 +119,6 @@ suite("add", func() {
     assert a.entry.id == 0;
     assert b.entry.id == 1;
     assert a.entry.resolvedAtNs == null;
-    assert a.evicted == [];
     assert Orphans.size(store) == 2;
     assert Orphans.get(store, 0) == ?a.entry;
   });
@@ -136,71 +134,55 @@ suite("add", func() {
   });
 });
 
-suite("bounded eviction", func() {
-  test("an unresolved obligation is NEVER evicted — the queue grows instead", func() {
-    // Each unresolved entry is a dollar that arrived and has not been dealt
-    // with. Dropping one would break the §4.1 invariant silently, since the only
-    // trace would be an audit line in a ring buffer that also drops. So the
-    // queue is allowed to exceed capacity rather than forget.
-    let store = Orphans.emptyStore();
-    ignore addDuplicate(store, "o1", "pi_1", 100);
-    ignore addDuplicate(store, "o2", "pi_2", 200);
-    ignore addDuplicate(store, "o3", "pi_3", 300);
-    let r = addDuplicate(store, "o4", "pi_4", 400);
-    assert r.evicted.size() == 0;
-    assert Orphans.size(store) == cap + 1;
-    assert Orphans.get(store, 0) != null; // the oldest obligation survives
-    assert Orphans.unresolvedCount(store) == cap + 1;
-  });
+// ── The "bounded eviction" suite was DELETED by #37, with its heirs named ─────
+//
+// Three tests asserted about a bound that no longer exists: "an unresolved obligation
+// is NEVER evicted", "growth is bounded by resolution, not by capacity", and "resolved
+// entries are evicted before older unresolved ones". The `capacity` parameter is gone
+// from `add`, so none of those claims is expressible.
+//
+// ⚠️ **Their heirs, because a deleted test needs one named:**
+//   - The first test's property — an unresolved obligation is never dropped — became
+//     **unrepresentable rather than untested**. Nothing is dropped at all now, which is
+//     strictly stronger than "not this one", and the suite below pins it.
+//   - The second and third were about *which* entries eviction preferred. With no
+//     eviction there is no preference to get wrong. What survives from them is the
+//     property they were protecting, `unresolvedCount`, which the resolution suite
+//     already covers directly.
+//   - The §4.1 invariant they existed for — every verified dollar resolves to a
+//     delivery or an obligation — is now carried by `test/webhook.test.mo`'s orphan
+//     fallback test, which is the only place a problem can still fail to find a home.
 
-  test("growth is bounded by resolution, not by capacity", func() {
-    // The operator working the queue down is what shrinks it — and once an
-    // entry is resolved it becomes evictable history.
+suite("nothing is evicted (#37)", func() {
+  test("the list grows with real events and never drops one", func() {
     let store = Orphans.emptyStore();
-    for (i in Nat.range(0, cap + 3)) {
+    for (i in Nat.range(0, 12)) {
       ignore addDuplicate(store, "o" # i.toText(), "pi_" # i.toText(), 100 + i);
     };
-    assert Orphans.size(store) == cap + 3;
-    assert Orphans.unresolvedCount(store) == cap + 3;
-    // Resolve the two oldest; the next add can now trim them as history.
+    assert Orphans.size(store) == 12;
+    assert Orphans.unresolvedCount(store) == 12;
+    // The oldest is still there, which is what the deleted test was really about.
+    assert Orphans.get(store, 0) != null;
+  });
+
+  test("resolving does not remove — history is retained, only the count moves", func() {
+    let store = Orphans.emptyStore();
+    for (i in Nat.range(0, 5)) {
+      ignore addDuplicate(store, "o" # i.toText(), "pi_" # i.toText(), 100 + i);
+    };
     for (id in ([0, 1] : [Nat]).values()) {
       switch (Orphans.resolve(store, id, 900)) {
         case (#ok(_)) {};
         case (#err(_)) assert false;
       };
     };
-    let r = addDuplicate(store, "oX", "pi_X", 999);
-    assert r.evicted.size() == 2;
-    assert r.evicted[0].id == 0;
-    assert r.evicted[1].id == 1;
-    assert Orphans.unresolvedCount(store) == cap + 2;
-  });
-
-  test("resolved entries are evicted before older unresolved ones", func() {
-    let store = Orphans.emptyStore();
-    ignore addDuplicate(store, "o1", "pi_1", 100); // id 0, stays unresolved
-    ignore addDuplicate(store, "o2", "pi_2", 200); // id 1, resolved below
-    ignore addDuplicate(store, "o3", "pi_3", 300); // id 2
-    switch (Orphans.resolve(store, 1, 250)) {
-      case (#ok(_)) {};
-      case (#err(_)) assert false;
-    };
-    let r = addDuplicate(store, "o4", "pi_4", 400);
-    assert r.evicted.size() == 1;
-    assert r.evicted[0].id == 1; // the resolved one, not unresolved id 0
-    assert r.evicted[0].resolvedAtNs == ?250;
-    assert Orphans.get(store, 0) != null;
-  });
-
-  test("ids are never reused, whether or not anything was evicted", func() {
-    let store = Orphans.emptyStore();
-    for (i in [1, 2, 3, 4, 5].values()) {
-      ignore addDuplicate(store, "o", "pi", 100 * i);
-    };
-    let r = addDuplicate(store, "last", "pi_last", 600);
-    assert r.entry.id == 5;
-    // All six are unresolved obligations, so none were dropped.
+    // ⚠️ **Before #37 a subsequent add would have trimmed these two as history.** Now
+    // resolving is purely a state change: the entries stay, and only the outstanding
+    // count falls.
+    ignore addDuplicate(store, "oX", "pi_X", 999);
     assert Orphans.size(store) == 6;
+    assert Orphans.unresolvedCount(store) == 4;
+    assert Orphans.get(store, 0) != null;
   });
 });
 
@@ -273,7 +255,7 @@ suite("paging", func() {
   // Candid response. Paging bounds the response instead of the record.
   func fill(store : Orphans.Store, n : Nat) {
     for (i in Nat.range(0, n)) {
-      ignore Orphans.add(store, 1_000_000, #card, #unattributed({ claimedRef = "o" # i.toText(); paymentRef = "pi_" # i.toText() }), "d", 100 + i);
+      ignore Orphans.add(store, #card, #unattributed({ claimedRef = "o" # i.toText(); paymentRef = "pi_" # i.toText() }), "d", 100 + i);
     };
   };
 
@@ -349,40 +331,14 @@ suite("paging", func() {
     assert page.nextCursor == null;
   });
 
-  test("one add evicts every entry it needs to, not just one", func() {
-    let store = Orphans.emptyStore();
-    // Five resolved entries, then a capacity of 2: the single add below has to
-    // shed four at once. A trim that dropped one victim per add would leave the
-    // queue over capacity and only converge after three more arrivals.
-    fill(store, 5);
-    for (id in ([0, 1, 2, 3, 4] : [Nat]).values()) {
-      switch (Orphans.resolve(store, id, 900)) {
-        case (#ok(_)) {};
-        case (#err(_)) assert false;
-      };
-    };
-    let result = Orphans.add(store, 2, #card, #unattributed({ claimedRef = "o"; paymentRef = "pi" }), "2nd payment", 1_000);
-    assert result.evicted.size() == 4;
-    // Oldest-first: the survivors are the newest resolved entry and the new one.
-    assert result.evicted[0].id == 0;
-    assert result.evicted[3].id == 3;
-    assert Orphans.size(store) == 2;
-  });
-
-  test("an unresolved entry is never evicted, however far over capacity", func() {
-    let store = Orphans.emptyStore();
-    // Nothing resolved: capacity 1 cannot be honoured without dropping a live
-    // obligation, so the queue is allowed to exceed it instead.
-    ignore addDuplicate(store, "o1", "pi_1", 100);
-    ignore addDuplicate(store, "o2", "pi_2", 200);
-    let result = Orphans.add(store, 1, #card, #unattributed({ claimedRef = "o3"; paymentRef = "pi_3" }), "2nd payment", 300);
-    assert result.evicted.size() == 0;
-    assert Orphans.size(store) == 3;
-  });
+  // ⚠️ Two more capacity tests deleted by #37 — the same heirs as the suite above.
+  // "resolved entries are evicted oldest-first" and "an unresolved entry is never
+  // evicted, however far over capacity" both describe a bound that no longer exists.
+  // The second one's property is now unrepresentable: nothing is evicted at all.
 
   test("an unprocessable event is recognised as already queued", func() {
     let store = Orphans.emptyStore();
-    ignore Orphans.add(store, 10, #card, #unprocessable({ eventId = "evt_a"; field = "payment_intent" }), "missing field", 100);
+    ignore Orphans.add(store, #card, #unprocessable({ eventId = "evt_a"; field = "payment_intent" }), "missing field", 100);
     // What ingestion checks before filing: the same event id, past the ~7-day
     // dedup retention, must not become a second worklist item.
     switch (Orphans.unresolvedUnprocessable(store, "evt_a")) {

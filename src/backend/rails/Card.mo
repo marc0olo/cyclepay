@@ -324,12 +324,10 @@ module {
     orders : Orders.Store;
     dedup : Idempotency.Store;
     orphanStore : Orphans.Store;
-    orphanCapacity : Nat;
     /// Operator's declared Stripe mode; null = unset, which accepts either and
     /// says so in the audit trail. The go-live checklist sets it.
     expectLivemode : ?Bool;
     auditLog : AuditLog.Log;
-    auditLogCapacity : Nat;
     /// `payment_intent` → order it paid for. Written when an order is marked
     /// paid; the only way a later `charge.refunded` can tell whether the
     /// refunded payment had already been delivered as cycles. A financial
@@ -365,7 +363,7 @@ module {
   };
 
   func audit(deps : Deps, nowNs : Int, tag : Text, detail : Text) {
-    ignore AuditLog.append(deps.auditLog, deps.auditLogCapacity, nowNs, tag, detail);
+    ignore AuditLog.append(deps.auditLog, nowNs, tag, detail);
   };
 
   /// Whether a paid amount may be honoured for this order (§3/§6.1) — since
@@ -415,14 +413,12 @@ module {
   /// just not by delivery; a non-2xx would make Stripe redeliver an event
   /// we have already routed.
   func queueRefundable(deps : Deps, kind : Orphans.Kind, detail : Text, nowNs : Int) : Http.Response {
-    let result = Orphans.add(deps.orphanStore, deps.orphanCapacity, #card, kind, detail, nowNs);
-    for (victim in result.evicted.values()) {
-      if (victim.resolvedAtNs == null) {
-        // §4.1: an unresolved eviction is a live money obligation dropped
-        // from on-chain state — the one thing the audit trail must show.
-        audit(deps, nowNs, "orphanStore.evictedUnresolved", "entry " # victim.id.toText() # ": " # victim.detail);
-      };
-    };
+    // ⚠️ **No eviction to report since #37.** The loop that used to run here audited
+    // `orphanStore.evictedUnresolved` — "a live money obligation dropped from on-chain
+    // state", §4.1's one unforgivable event. With no bound there is nothing to drop, so
+    // the tag is deleted rather than left unreachable: a tag that cannot fire is a
+    // reader's false reassurance that someone is watching for it.
+    let result = Orphans.add(deps.orphanStore, #card, kind, detail, nowNs);
     audit(deps, nowNs, "stripe.type1", "entry " # result.entry.id.toText() # ": " # detail);
     Http.text(200, "queued for operator review");
   };
@@ -685,7 +681,6 @@ module {
         if (session.livemode) {
           ignore Orphans.add(
             deps.orphanStore,
-            deps.orphanCapacity,
             #card,
             // The real reference, not a placeholder: it is the only field that
             // identifies WHICH order to rescue once the config is fixed, and
@@ -1023,7 +1018,6 @@ module {
         };
         ignore Orphans.add(
           deps.orphanStore,
-          deps.orphanCapacity,
           #card,
           #unprocessable({ eventId = id; field }),
           detail,

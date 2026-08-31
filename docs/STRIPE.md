@@ -283,7 +283,7 @@ Two consequences worth naming, because things downstream depend on them:
   higher ceiling matches its own quote after the ceiling is lowered.
 
 **What was actually paid is stored on the order** (`paidUsdCents`), not only in
-the audit log. The audit ring buffer drops its oldest entries, so a fact about
+the audit log. ⚠️ **The log no longer drops anything (#37)**, but the division still holds: a fact about
 money cannot live only there — "what did this buyer pay?" has to be answerable
 from state for the life of the canister. It can now only equal `usdCents`, and it
 is stored anyway: "what Stripe said" and "what we asked for" being the same is
@@ -445,9 +445,11 @@ public `refusal_counts` query, and RUNBOOK §8 carries a row per counter with th
 response. Refusals are free to attempt — `#amountBelowMin` needs no prior state at
 all, so one cent from any principal reaches it with no order and no payment — and the
 audit log is the one structure here whose growth is **not** attacker-priced (orders
-are bounded by the open-order cap and the reserve; error-queue entries each require a
-real payment to exist). A line per attempt was harmless only while the log was a
-4,096-entry ring.
+are bounded by the open-order cap and the reserve; orphan entries each require a real
+payment to exist). ⚠️ **A line per attempt was harmless only while the log was a
+4,096-entry ring — and #37 removed that ring**, which is why the refusal lines had to go
+first and why the admission rule was applied to all 71 tags rather than to the two paths
+that prompted it.
 
 **The exception is the transition, and it falls out of the distinction above.** The
 *operational* conditions are facts about the **gateway**, so entering one writes

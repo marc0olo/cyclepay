@@ -156,25 +156,24 @@ module {
 
   public type AddResult = {
     entry : Entry;
-    /// Evicted to honour the bound. **Only resolved entries are ever evicted.**
-    ///
-    /// An unresolved entry is a live money obligation: a dollar arrived and has
-    /// not yet been dealt with. Dropping one breaks the §4.1 invariant that
-    /// every verified dollar resolves to a delivery or to an entry here — and it
-    /// breaks it silently, because the only trace would be an audit line in a
-    /// ring buffer that itself drops.
-    ///
-    /// So the queue grows past `capacity` rather than forgetting an obligation.
-    /// That is safe in a way unbounded *order* growth is not: every unresolved
-    /// entry requires a real payment to exist, so growth costs an attacker
-    /// actual money per entry. `unresolvedCount` is the number to watch.
-    evicted : [Entry];
   };
 
   /// Append an entry, evicting past `capacity` (see `AddResult.evicted`).
+  /// Append an entry. **Nothing is evicted** (#37).
+  ///
+  /// ⚠️ **The `capacity` parameter and the whole eviction pass are gone**, not raised
+  /// to a number nobody reaches. This list only ever held *resolved* entries as
+  /// eviction candidates — it already grew past capacity rather than forget an
+  /// obligation — so removing the bound changes what happens to **history**, not to
+  /// obligations.
+  ///
+  /// ⚠️ **Growth is attacker-priced, which is what makes unbounded acceptable here.**
+  /// Reaching this needs either a verified payment we cannot attribute or an event that
+  /// passes HMAC verification, so only a real dollar or the holder of the signing secret
+  /// can add one. That argument is the whole reason the two order-less kinds stayed here
+  /// while the four order-bound ones moved onto orders.
   public func add(
     store : Store,
-    capacity : Nat,
     rail : Types.Rail,
     kind : Kind,
     detail : Text,
@@ -190,32 +189,7 @@ module {
     };
     store.nextId += 1;
     store.entries.add(entry.id, entry);
-    // Trim only *resolved* history, oldest first. If nothing resolved is left to
-    // drop, the queue exceeds capacity and stays that way until the operator works
-    // it down — a visibly growing worklist is strictly better than a forgotten
-    // obligation.
-    //
-    // One pass, collecting victims before removing any: repeatedly re-scanning for
-    // the next-oldest resolved entry costs O(size) per eviction, and removing while
-    // iterating mutates the map under the iterator.
-    let evicted = List.empty<Entry>();
-    let size = store.entries.size();
-    if (size > capacity) {
-      // Int-subtract: the `if` above makes this non-negative, but that is the
-      // guard talking and not the type (M0155).
-      var over = Int.abs(size.toInt() - capacity.toInt());
-      let victims = List.empty<Nat>();
-      label scan for ((id, existing) in store.entries.entries()) {
-        if (over == 0) break scan;
-        if (existing.resolvedAtNs != null) {
-          victims.add(id);
-          evicted.add(existing);
-          over -= 1;
-        };
-      };
-      for (id in victims.values()) store.entries.remove(id);
-    };
-    { entry; evicted = evicted.toArray() };
+    { entry };
   };
 
   /// The unresolved `#unprocessable` entry for this Stripe event, if one is

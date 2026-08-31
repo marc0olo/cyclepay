@@ -205,7 +205,7 @@ module {
     /// Distinct from `pricing.usdCents`, which is what the order was *quoted*
     /// for. The two differ whenever a card payment arrives for a different
     /// amount. Recorded here, on the money record, so "what did this buyer
-    /// pay?" is answerable from state forever — the audit ring buffer is
+    /// pay?" is answerable from state forever — the audit log is
     /// telemetry and drops its oldest entries, so it cannot be the only place
     /// a fact about money lives.
     ///
