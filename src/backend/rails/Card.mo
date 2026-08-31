@@ -766,7 +766,7 @@ module {
         // ⚠️ **Close any `#paidNotCredited` obligation for this order (#52).** The
         // recovery sweep files that when Stripe reports a paid session we never
         // credited; this is the resend landing, which is the remedy the entry asks for.
-        // Same rule `clearDelayed` follows for delay alerts: **an open worklist entry
+        // The rule every closer follows here: **an open worklist entry
         // must describe a live problem**, and the moment the order is credited this one
         // does not.
         //

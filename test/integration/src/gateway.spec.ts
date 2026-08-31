@@ -1380,25 +1380,39 @@ test('33 — an UNDELIVERED order alerts and waits, then delivers when the cause
   // an alert that only fired at the give-up would be useless.
   await gw.pic.advanceTime(3 * 3_600 * 1_000);
   await gw.pic.tick(5);
-  const alert = (await openErrorEntries(gw)).find(
-    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === stuck.id,
-  ) as ErrorEntry;
-  expect(alert).toBeDefined();
+  // ⚠️ **Converted from a `#deliveryDelayed` worklist entry to the reading that
+  // replaced it (#37).** The entry stored nothing of its own — a constant stage
+  // string, a fixed sentence, and `sinceNs` copied off the order — so what it
+  // actually asserted was "this order is past the threshold", which is what
+  // `delayed_deliveries` reports.
+  const delayed = (await gw.asAdmin.delayed_deliveries()).find((d) => d.orderId === stuck.id);
+  expect(delayed).toBeDefined();
+  // Past the alert threshold, short of the terminal bound: still retrying.
+  expect(delayed!.pastMaxHold).toBe(false);
+  expect(delayed!.status).toEqual({ paid: null });
   expect(await orderStatus(gw, stuck.id)).toBe('paid');
+  // The permanent record was stamped on the order at the crossing.
+  const firstCrossing = delayed!.delayedAtNs;
+  expect(firstCrossing).toHaveLength(1);
 
   // ── Salvaged from scenario 60, which #30 PR-A deleted ────────────────────
-  // Repeated sweeps at the SAME stall must stay silent. 60's subject was a stall
-  // moving between stages, and there is only one stage now — but this direction
-  // has nothing to do with stages and a live failure mode: an alert re-filed on
-  // every tick would flood the worklist and push real obligations out of the ring
-  // buffer.
+  // Repeated sweeps at the SAME stall must not re-record anything. 60's subject was
+  // a stall moving between stages, and there is only one stage now — but this
+  // direction has a live failure mode of its own.
+  //
+  // ⚠️ **The property survives the mechanism, in a stronger form.** Under the entry
+  // this asked "is there still exactly ONE, with the same id" — a count that could
+  // in principle have been two. `delayedAtNs` is set-if-unset on the order, so
+  // re-filing is not merely absent but unrepresentable; what remains to assert is
+  // that the stamp does not MOVE, which is the thing a careless "refresh the
+  // timestamp" would break.
   await gw.pic.advanceTime(3 * 3_600 * 1_000);
   await gw.pic.tick(5);
-  const stillOne = (await openErrorEntries(gw)).filter(
-    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === stuck.id,
-  );
-  expect(stillOne).toHaveLength(1);
-  expect(stillOne[0]!.id).toBe(alert.id);
+  const stillDelayed = (await gw.asAdmin.delayed_deliveries()).filter((d) => d.orderId === stuck.id);
+  expect(stillDelayed).toHaveLength(1);
+  expect(stillDelayed[0]!.delayedAtNs).toEqual(firstCrossing);
+  // And the wait keeps growing, so the reading is live rather than frozen.
+  expect(stillDelayed[0]!.waitedNs).toBeGreaterThan(delayed!.waitedNs);
 
   // Fixing the cause delivers it, automatically, on the next sweep — no operator
   // action on the order itself.
@@ -1542,10 +1556,19 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   // Nothing moved out of the reserve — the position is certain, not merely likely.
   expect(await reserveBalance(gw)).toBe(reserveBefore);
 
-  // The superseded delay alert was closed, not left orphaned alongside it.
-  expect((await openErrorEntries(gw)).filter(
-    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === doomed.id,
-  )).toHaveLength(0);
+  // ⚠️ **Scenario 47's property, now structural (#37).** It asserted that a
+  // superseded delay alert was CLOSED rather than left orphaned beside the real
+  // obligation. There is nothing to close any more: escalation moves the status off
+  // `#paid`, so the order leaves `delayed_deliveries` by construction — no resolve
+  // step to forget and no `delayedAlerts` mapping to leak, which were the two ways
+  // the old version could go wrong.
+  expect((await gw.asAdmin.delayed_deliveries()).filter((d) => d.orderId === doomed.id))
+    .toHaveLength(0);
+  // ⚠️ The permanent record of the delay survives on `Order.delayedAtNs` — the half
+  // a live view cannot carry, since the delay HAPPENED and that stays true. Not
+  // asserted here: reading another principal's order needs #38's admin order view,
+  // which does not exist yet. `orders.test.mo` pins `markDelayed` directly, and this
+  // line is the pointer to add the assertion when that view lands.
 
   // ── Salvaged from scenario 48, which #30 PR-A deleted ────────────────────
   // 48's subject was "the NOTIFY stage is bounded by time, not only by the retry
@@ -1565,9 +1588,15 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   await gw.pic.advanceTime(100 * 3_600 * 1_000);
   await gw.pic.tick(5);
   expect(await orderStatus(gw, settled.order.id)).toBe('delivered');
+  // ⚠️ **A delivered order is now excluded by CONSTRUCTION, not by an absence
+  // assertion.** `delayed_deliveries` filters on `status == #paid`, so this asks
+  // whether the filter holds rather than whether an entry happens not to exist —
+  // a stronger claim about a stronger mechanism.
+  expect((await gw.asAdmin.delayed_deliveries()).filter((d) => d.orderId === settled.order.id))
+    .toHaveLength(0);
+  // The stuck obligation is a real worklist item and still lives in the queue.
   expect((await openErrorEntries(gw)).filter(
-    (e) => ('deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === settled.order.id)
-      || ('deliveryStuck' in e.kind && e.kind.deliveryStuck.orderId === settled.order.id),
+    (e) => 'deliveryStuck' in e.kind && e.kind.deliveryStuck.orderId === settled.order.id,
   )).toHaveLength(0);
   // ⚠️ This scenario advanced the clock by ~170 h in total, which stales BOTH
   // rates. `ensureRates` alone is not enough — the CMC rate needs governance to
@@ -1962,9 +1991,9 @@ test('46 — a test-mode payment cannot deliver on a gateway declared live', asy
 
 test('47 — a delay alert never outlives the delay, even when the order escalates', async () => {
   // The invariant the code states for itself: an open worklist entry must
-  // describe a live problem. A #deliveryDelayed alert says "it delivers on the
+  // describe a live problem. The delay alert this scenario was written against said "it delivers on the
   // next sweep" — the moment the order escalates instead, that becomes a false
-  // promise sitting next to the real entry, plus a leaked delayedAlerts mapping
+  // promise sitting next to the real entry, plus a leaked mapping
   // that nothing can ever clear.
   //
   // Scenario 33 covers the happy exit (fixed → delivered → alert resolved). This
@@ -1988,13 +2017,13 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
     await gw.pic.tick(10);
     expect(await orderStatus(gw, doomed.id)).toBe('paid');
 
-    // Past the 2 h alert threshold: the delay alert opens.
+    // Past the 2 h alert threshold: the order appears in the delayed reading, and
+    // the crossing is stamped on the order.
     await gw.pic.advanceTime(3 * 3_600 * 1_000);
     await gw.pic.tick(5);
-    alert = (await openErrorEntries(gw)).find(
-      (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === doomed.id,
-    )!;
+    alert = (await gw.asAdmin.delayed_deliveries()).find((d) => d.orderId === doomed.id)!;
     expect(alert).toBeDefined();
+    expect(alert.delayedAtNs).toHaveLength(1);
   } finally {
     await startNns(gw, CYCLES_LEDGER_ID);
   }
@@ -2021,11 +2050,14 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
   // any delay has happened. The tag names what it reports: a delivery delay.
   expect((await gw.asAdmin.audit_log()).map((e) => e.tag)).toContain('delivery.delayed');
 
-  // THE ASSERTION: the delay alert is **resolved**, not merely absent — an entry that
-  // promised "it delivers on the next sweep" must not sit on the worklist next to the
-  // real problem, and its `delayedAlerts` mapping must not leak.
-  const after = (await allErrorEntries(gw)).find((e) => e.id === alert.id)!;
-  expect(after.resolvedAtNs).toHaveLength(1);
+  // ⚠️ **THE ASSERTION, and #37 turned it from a promise into a property.** It used
+  // to read "the delay entry is *resolved*, not merely absent" — because an entry
+  // promising "it delivers on the next sweep" must not sit beside the real problem,
+  // and its `delayedAlerts` mapping must not leak. Both failure modes are now
+  // unrepresentable: escalation moves the status off `#paid`, so the order leaves the
+  // reading by construction, and there is no mapping and no resolve step at all.
+  expect((await gw.asAdmin.delayed_deliveries()).filter((d) => d.orderId === doomed.id))
+    .toHaveLength(0);
   // And exactly one entry for this order remains open — the escalation itself.
   const openForOrder = (await openErrorEntries(gw)).filter(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes(doomed.id),
@@ -2309,8 +2341,8 @@ test('59 — a Stripe resend past the dedup window does not file a second unproc
 //
 // There are no longer two stages to move between. Money-out runs from `#paid`
 // alone, so `mint.delayedStageChanged` was unreachable — and #30 PR-C **deleted it**,
-// along with the branch that raised it and the stage half of the `delayedAlerts`
-// pair, which existed only to detect a change that cannot happen. That
+// along with the branch that raised it and the stage half of the delay-alert
+// bookkeeping, which existed only to detect a change that cannot happen. That
 // is a simplification, not a coverage loss: the confusion the scenario guarded
 // against — two open alerts for one order, or wording describing a state the
 // order has left — cannot arise from one stage.
@@ -3027,7 +3059,7 @@ test('75 — a buyer can heal their OWN stuck delivery, and only their own (#30 
   }
 
   // ⚠️ **The admin can SEE it immediately, with no 2 h wait.** The error queue is the
-  // worklist and self-clears correctly, but `#deliveryDelayed` does not open until the
+  // worklist; `delayed_deliveries` does not list an order until the
   // alert threshold — and a delivery taking a sweep or two is normal, so lowering that
   // threshold would file entries for orders that deliver themselves. This is the
   // two-hour blind window closed.

@@ -16,7 +16,7 @@
 ///     through `resolveByPaymentRef`. Nothing on-chain is owed.
 ///   - **Everything else** — a delivery a human must look at (`#deliveryStuck`), a
 ///     refund that arrived after delivery (`#refundAfterDelivery`), an alert
-///     (`#deliveryDelayed`), an operator's decision (`#abandoned`), or an event that
+///     an operator's decision (`#abandoned`), or an event that
 ///     could not be parsed (`#unprocessable`). A refund cannot resolve these: either
 ///     the position is unknown, or money moved both ways, or nothing is owed yet.
 ///
@@ -113,19 +113,6 @@ module {
       /// Whether that settled the whole charge.
       fullRefund : Bool;
     };
-    /// **An alert, not a failure.** Money is in and delivery has not happened yet
-    /// for a reason that is always operator-fixable: the reserve is short, or the
-    /// cycles ledger is unreachable. The order stays `#paid` and keeps being swept,
-    /// so fixing the *cause* delivers it with no further intervention.
-    ///
-    /// ⚠️ **An alert, deliberately, and not a termination.** Terminating on these
-    /// causes would give up on a purchase that is going to succeed once the cause is
-    /// fixed. Delivery is the product; a refund is what happens when we cannot
-    /// identify a buyer, not when we are merely busy.
-    ///
-    /// Raised once per order. Resolve it when the cause is fixed, or convert it
-    /// to `#abandoned` if you decide to stop.
-    #deliveryDelayed : { orderId : Types.OrderId; stage : Text; sinceNs : Int };
     /// A human decided to stop trying. The **only** path to a terminal
     /// non-delivered state — nothing automatic ends here.
     #abandoned : { orderId : Types.OrderId; reason : Text };
@@ -176,13 +163,12 @@ module {
   /// ⚠️ **True only where the remedy is exactly "refund the fiat".** Anything else
   /// needs a decision a webhook cannot make: `#deliveryStuck` may be an unknown money
   /// position (refunding blind pays a buyer who already holds their cycles),
-  /// `#refundAfterDelivery` is money that moved both ways, and `#deliveryDelayed` is
-  /// not an obligation at all.
+  /// and `#refundAfterDelivery` is money that moved both ways.
   public func refundResolvable(kind : Kind) : Bool {
     switch (kind) {
       case (#duplicate(_) or #unattributed(_)) true;
       case (#deliveryStuck(_) or #refundAfterDelivery(_)) false;
-      case (#deliveryDelayed(_) or #abandoned(_) or #unprocessable(_)) false;
+      case (#abandoned(_) or #unprocessable(_)) false;
       // ⚠️ **False even though a refund is a legal thing for the operator to do here.**
       // The question this answers is "does a `charge.refunded` settle this entry *on its
       // own*", and it does not: refunding returns the buyer's money and leaves the order
@@ -221,10 +207,10 @@ module {
       // auto-resolving on it would close the loss the instant it was recorded.
       // Only a human closes this one.
       case (#deliveryStuck(_) or #refundAfterDelivery(_) or #paidNotCredited(_)) null;
-      // None of these is settled by a refund landing: a delay wants its cause
-      // fixed, an abandonment was already a conscious decision, and an
-      // unprocessable event has no established money position to settle.
-      case (#deliveryDelayed(_) or #abandoned(_) or #unprocessable(_)) null;
+      // Neither is settled by a refund landing: an abandonment was already a
+      // conscious decision, and an unprocessable event has no established money
+      // position to settle.
+      case (#abandoned(_) or #unprocessable(_)) null;
       // Same reasoning as #deliveryStuck, and sharper: a refund arriving does not
       // tell us whether the cycles left the reserve, which is the only open
       // question. Auto-resolving on it would close an entry whose answer nobody
@@ -496,9 +482,10 @@ module {
 
   /// Close every unresolved `#paidNotCredited` for an order that has just been credited.
   ///
-  /// The mirror of `Card`'s `clearDelayed`: the obligation was "this order is paid and
-  /// uncredited", so it ends when the order stops being that — **not** when the money
-  /// moves. Returns what it closed, for the audit line.
+  /// The rule every closer here follows: **an open entry must describe a live
+  /// problem.** The obligation was "this order is paid and uncredited", so it ends
+  /// when the order stops being that — **not** when the money moves. Returns what it
+  /// closed, for the audit line.
   public func resolveCreditedOrder(store : Store, orderId : Types.OrderId, nowNs : Int) : [Entry] {
     let closed = List.empty<Entry>();
     for (entry in store.entries.values()) {

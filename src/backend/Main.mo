@@ -1648,57 +1648,8 @@ persistent actor CyclesGateway {
   /// bound trips, not this.
   transient let deliveryBlockedAudited = Set.empty<Types.OrderId>();
 
-  /// Orders already alerted as delayed → the error-queue entry id raised for it.
-  ///
-  /// Persistent, so an upgrade does not re-alert an order that is still waiting
-  /// (which would put duplicate obligations on the operator's worklist).
-  ///
-  /// The *entry id* rather than a timestamp, because the alert has to be closed
-  /// when the delay ends: an order that eventually delivers must not leave an
-  /// open obligation on the worklist describing a problem that no longer exists.
-  /// order id → (error-queue entry id, the stage that alert described).
-  ///
-  /// ⚠️ **No stage is stored alongside the entry id, and that follows from having one
-  /// in-flight status.** A stage was worth keeping only so a stall that MOVED between
-  /// stages could close the stale alert and raise one naming where the order actually
-  /// is. With `#paid` the sole status a delivery can sit in, there is nowhere to move
-  /// to: `#paid` is the one in-flight status, so a stalled order's stage is always the
-  /// same string, and a comparison would be a branch describing a transition that
-  /// cannot occur.
-  let delayedAlerts = Map.empty<Types.OrderId, Nat>();
 
-  /// Raise the §5 delivery-delayed alert for an order, at most once.
-  ///
-  /// Deliberately does NOT transition the order: the cause is operator-fixable
-  /// and the order must stay sweepable so that fixing it delivers with no
-  /// further intervention. Only `abandon_order` ends an order without delivery.
-  func alertDelayed(order : Types.Order, stage : Text, detail : Text) {
-    // Already alerted for this order, so stay silent: re-raising on every sweep
-    // would flood the worklist and the audit ring.
-    if (delayedAlerts.get(order.id) != null) return;
-    let entryId = queueDeliveryError(
-      order.rail,
-      #deliveryDelayed({ orderId = order.id; stage; sinceNs = order.updatedAtNs }),
-      detail,
-    );
-    delayedAlerts.add(order.id, entryId);
-    audit("delivery.delayed", order.id # " [" # stage # "]: " # detail);
-  };
 
-  /// The delay ended, so close the alert it raised.
-  ///
-  /// Resolving the entry matters as much as forgetting the mapping: an open
-  /// obligation describing a delay that is over is an orphan on the operator's
-  /// worklist, and the worklist is only useful if everything on it is live.
-  func clearDelayed(orderId : Types.OrderId) {
-    switch (delayedAlerts.get(orderId)) {
-      case (?entryId) {
-        ignore ErrorQueue.resolve(errorQueue, entryId, Time.now());
-        delayedAlerts.remove(orderId);
-      };
-      case null {};
-    };
-  };
 
   /// Audit a blocked delivery at most once per order per session.
   func auditDeliveryBlockedOnce(orderId : Types.OrderId, tag : Text, detail : Text) {
@@ -1821,10 +1772,9 @@ persistent actor CyclesGateway {
       case null null;
     };
     Delivery.patch(deliveryJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesDelivered = null; bumpRetries = false }, Time.now());
-    // Any open delay alert for this order says "it delivers on the next sweep", which
-    // just stopped being true. Leaving it open would put a false promise on the
-    // worklist next to the real problem, and leak its `delayedAlerts` entry forever.
-    clearDelayed(order.id);
+    // ⚠️ **No delay alert to close here, by construction (#37).** An entry saying "it
+    // delivers on the next sweep" would have become a false promise on the
+    // worklist next to the real problem. Escalation moves the status off `#paid`, so
     // Same for the once-per-order audit guard: nothing will re-audit a blocked
     // delivery for an escalated order, and keeping the id would only suppress a
     // legitimate line if it were ever re-driven.
@@ -1857,23 +1807,28 @@ persistent actor CyclesGateway {
         switch (Delivery.waitStage(order.updatedAtNs, Time.now(), deliveryConfig)) {
           case (#retry) {};
           case (#alert) {
-            // Record the crossing on the ORDER, once. This is the historical half the
-            // dropped `#deliveryDelayed` entry carried in its `resolvedAtNs`:
-            // `delayed_deliveries` is a live view, so without this "how often were
-            // deliveries delayed last week" stops being answerable the moment the
-            // order delivers — and that is a question #3's monitoring will ask.
-            ignore Orders.markDelayed(orderStore, orderId, Time.now());
             // Tell someone while the cause is still fixable, and keep retrying: most
             // incidents end here with the order delivering.
             //
-            // ⚠️ One in-flight status means one stage and one sentence — no switch on
-            // status here. If a second status can ever sit still, this becomes a switch
-            // again, and the alert wording has to name which one.
-            alertDelayed(
-              order,
-              "deliveryDelayed",
-              "paid but not yet delivered past the alert threshold — fix the cause and it delivers on the next sweep",
-            );
+            // ⚠️ **One line per order, and `markDelayed` is what bounds it** — it
+            // returns true only on the first crossing, so the line needs no
+            // bookkeeping of its own. That is what retires the `delayedAlerts` map
+            // rather than relocating it: the guard is a field on the order, and
+            // setting an already-set field is idempotent.
+            //
+            // The line passes `AuditLog.mo`'s admission rule cleanly — a state
+            // transition, once per order, and reaching it needs a real paid order, so
+            // it is attacker-priced unlike the refusal lines #61 removed.
+            //
+            // ⚠️ One in-flight status means one sentence — no switch on status here.
+            // If a second status can ever sit still, this becomes a switch again and
+            // the wording has to name which one.
+            if (Orders.markDelayed(orderStore, orderId, Time.now())) {
+              audit(
+                "delivery.delayed",
+                orderId # ": paid but not yet delivered past the alert threshold — fix the cause and it delivers on the next sweep",
+              );
+            };
           };
           case (#terminate) {
             // §5.3 max-wait bound. By now the cause is not transient, and a buyer left
@@ -1886,7 +1841,6 @@ persistent actor CyclesGateway {
             // what the operator acts on.
             let termination = Delivery.terminationFor(order.status, deliveryJournal.get(orderId));
             escalateDelivery(order, termination.stage, termination.detail);
-            clearDelayed(orderId);
             deliveryBlockedAudited.remove(orderId);
             return;
           };
@@ -2052,7 +2006,6 @@ persistent actor CyclesGateway {
               deliveryBlockedAudited.remove(orderId);
               ignore tryTransition(orderId, #delivered);
               Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
-              clearDelayed(orderId);
               audit("delivery.deduplicated", orderId # ": ledger block " # block.toText() # " was already ours; floor credited back " # debited.toText());
               return;
             };
@@ -2061,7 +2014,6 @@ persistent actor CyclesGateway {
               // Block + `#delivered` in ONE sync block, so the pair cannot disagree.
               ignore tryTransition(orderId, #delivered);
               Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
-              clearDelayed(orderId);
               audit("delivery.sent", orderId # ": " # intent.amountCycles.toText() # " cycles, ledger block " # block.toText());
               return;
             };
@@ -2118,7 +2070,6 @@ persistent actor CyclesGateway {
                   deliveryBlockedAudited.remove(orderId);
                   ignore tryTransition(orderId, #delivered);
                   Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
-                  clearDelayed(orderId);
                   audit("delivery.deduplicated", orderId # ": block " # block.toText() # " after fee correction; floor credited back");
                   return;
                 };
@@ -2126,7 +2077,6 @@ persistent actor CyclesGateway {
                   deliveryBlockedAudited.remove(orderId);
                   ignore tryTransition(orderId, #delivered);
                   Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
-                  clearDelayed(orderId);
                   audit("delivery.sent", orderId # ": " # intent.amountCycles.toText() # " cycles at the corrected fee, ledger block " # block.toText());
                   return;
                 };
@@ -2185,7 +2135,6 @@ persistent actor CyclesGateway {
           // whose buyer already has their cycles.
           ignore tryTransition(orderId, #delivered);
           Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = null; bumpRetries = false }, Time.now());
-          clearDelayed(orderId);
           audit("delivery.healed", orderId # ": block " # block.toText() # " was recorded but the order had not moved");
           return;
         };
@@ -2382,7 +2331,7 @@ persistent actor CyclesGateway {
   ///
   /// **The immediate answer to "is a delivery failing?", which nothing else gave.**
   /// The error queue is the worklist and it self-clears correctly — a
-  /// `#deliveryDelayed` alert resolves on delivery *or* escalation — but it does not
+  /// `delayed_deliveries` self-clears on delivery *or* escalation — but it does not
   /// open until the 2 h alert threshold, and a delivery taking a sweep or two is
   /// normal, so lowering that threshold would file worklist entries for orders that
   /// deliver themselves. This closes the two-hour blind window without touching the
@@ -2811,7 +2760,7 @@ persistent actor CyclesGateway {
   /// terminal non-delivered state.**
   ///
   /// Nothing in the system gives up on a purchase automatically: a delay raises
-  /// `#deliveryDelayed` and keeps retrying, because its causes are all
+  /// `delayed_deliveries` and keeps retrying, because its causes are all
   /// operator-fixable. This is the deliberate human decision that a purchase
   /// will not be completed, and it demands a reason so the trail records *why*
   /// alongside *who*.
@@ -2876,7 +2825,6 @@ persistent actor CyclesGateway {
       return #err("order " # id # " refused the transition to abandoned");
     };
     Delivery.patch(deliveryJournal, id, { status = ?#abandoned; blockIndex = null; cyclesDelivered = null; bumpRetries = false }, Time.now());
-    clearDelayed(id);
     ignore queueDeliveryError(order.rail, #abandoned({ orderId = id; reason }), "abandoned by operator: " # reason);
     auditAdmin(caller, "order.abandoned", id # ": " # reason);
     #ok(abandoned);
@@ -2921,7 +2869,6 @@ persistent actor CyclesGateway {
       return #err("order " # id # " refused the transition to delivered");
     };
     Delivery.patch(deliveryJournal, id, { status = ?#delivered; blockIndex = ?blockIndex; cyclesDelivered = null; bumpRetries = false }, Time.now());
-    clearDelayed(id);
     auditAdmin(caller, "order.recordedDelivered", id # ": operator confirmed cycles-ledger block " # blockIndex.toText());
     #ok(delivered);
   };

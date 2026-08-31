@@ -200,7 +200,6 @@ export type ErrorKind =
   | { refundAfterDelivery: { orderId: string; paymentRef: string; cycles: bigint; refundedCents: bigint; fullRefund: boolean } }
   | { unprocessable: { eventId: string; field: string } }
   | { paidNotCredited: { orderId: string; paymentRef: string; sessionId: string } }
-  | { deliveryDelayed: { orderId: string; stage: string; sinceNs: bigint } }
   | { abandoned: { orderId: string; reason: string } };
 
 export interface ErrorQueuePage {

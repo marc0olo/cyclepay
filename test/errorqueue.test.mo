@@ -62,13 +62,17 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
     // `paymentRefOf` were forced to handle it by their own exhaustive switches, and
     // **this test kept passing at "all seven"**. A test whose name promises
     // exhaustiveness its body cannot deliver is the defect this repo keeps deleting.
+    //
+    // ⚠️ **It works in the removal direction too**, which is the half a hand-written
+    // count usually misses: #37 dropped `#deliveryDelayed`, and `named`'s exhaustive
+    // switch plus this count caught the array still listing it — the compiler on the
+    // switch, this assertion on the tally.
     func named(k : ErrorQueue.Kind) : Text {
       switch k {
         case (#duplicate(_)) "duplicate";
         case (#unattributed(_)) "unattributed";
         case (#deliveryStuck(_)) "deliveryStuck";
         case (#refundAfterDelivery(_)) "refundAfterDelivery";
-        case (#deliveryDelayed(_)) "deliveryDelayed";
         case (#abandoned(_)) "abandoned";
         case (#unprocessable(_)) "unprocessable";
         case (#paidNotCredited(_)) "paidNotCredited";
@@ -79,12 +83,11 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
       #unattributed({ claimedRef = "x"; paymentRef = "pi_2" }),
       #deliveryStuck({ orderId = "o3"; stage = "staleIntent"; blockIndex = null }),
       #refundAfterDelivery({ orderId = "o4"; paymentRef = "pi_4"; cycles = 1; refundedCents = 1; fullRefund = true }),
-      #deliveryDelayed({ orderId = "o5"; stage = "staleIntent"; sinceNs = 0 }),
       #abandoned({ orderId = "o6"; reason = "operator" }),
       #unprocessable({ eventId = "evt_1"; field = "amount_total" }),
       #paidNotCredited({ orderId = "o7"; paymentRef = "pi_7"; sessionId = "cs_7" }),
     ];
-    assert all.size() == 8;
+    assert all.size() == 7;
     var seen = "";
     for (kind in all.values()) {
       let carriesRef = ErrorQueue.paymentRefOf(kind) != null;

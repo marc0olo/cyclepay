@@ -159,11 +159,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       paymentRef: IDL.Text,
       sessionId: IDL.Text,
     }),
-    deliveryDelayed: IDL.Record({
-      orderId: IDL.Text,
-      sinceNs: IDL.Int,
-      stage: IDL.Text,
-    }),
     // #36 folded `stuckMint` and `transferUnresolved` into one honestly-named kind:
     // `stage` carries the money position, `blockIndex` the should-be-unreachable landed case.
     deliveryStuck: IDL.Record({ orderId: IDL.Text, stage: IDL.Text, blockIndex: IDL.Opt(IDL.Nat) }),

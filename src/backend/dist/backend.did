@@ -260,11 +260,6 @@ type Kind =
                 orderId: OrderId;
                 reason: text;
               };
-   deliveryDelayed: record {
-                      orderId: OrderId;
-                      sinceNs: int;
-                      stage: text;
-                    };
    deliveryStuck: record {
                     blockIndex: opt nat;
                     orderId: OrderId;
@@ -455,7 +450,7 @@ service : {
   /// terminal non-delivered state.**
   /// 
   /// Nothing in the system gives up on a purchase automatically: a delay raises
-  /// `#deliveryDelayed` and keeps retrying, because its causes are all
+  /// `delayed_deliveries` and keeps retrying, because its causes are all
   /// operator-fixable. This is the deliberate human decision that a purchase
   /// will not be completed, and it demands a reason so the trail records *why*
   /// alongside *who*.
@@ -523,7 +518,7 @@ service : {
   /// 
   /// **The immediate answer to "is a delivery failing?", which nothing else gave.**
   /// The error queue is the worklist and it self-clears correctly — a
-  /// `#deliveryDelayed` alert resolves on delivery *or* escalation — but it does not
+  /// `delayed_deliveries` self-clears on delivery *or* escalation — but it does not
   /// open until the 2 h alert threshold, and a delivery taking a sweep or two is
   /// normal, so lowering that threshold would file worklist entries for orders that
   /// deliver themselves. This closes the two-hour blind window without touching the
