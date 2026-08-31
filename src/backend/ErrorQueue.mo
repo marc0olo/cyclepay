@@ -130,29 +130,6 @@ module {
     /// event id is the only pointer the canister keeps to a dollar it could not
     /// account for.
     #unprocessable : { eventId : Text; field : Text };
-    /// **Stripe says this session was paid and we never credited it** (#52). Found by
-    /// the recovery sweep asking Stripe about a `#created` order whose expiry event
-    /// never arrived, past the point where Stripe would still be retrying the
-    /// `completed` event it owed us.
-    ///
-    /// The order stays `#created`, and that is deliberate: `#created → #paid` is the
-    /// only edge a resent event can travel, so **keeping the order here is what
-    /// preserves the remedy that delivers to the buyer.** Route it anywhere else and
-    /// the operator's only exit becomes a refund.
-    ///
-    /// ⚠️ **Carries `paymentRef`, and `paymentRefOf` returns null for it anyway.** Same
-    /// shape as `#refundAfterDelivery`, different reason: a `charge.refunded` settles
-    /// the *money* here and leaves the *order* broken, so letting `resolveByPaymentRef`
-    /// match this would close the worklist item pointing at capacity that is still
-    /// stranded — and nothing would ever release it, because a complete session never
-    /// fires `expired`. The id is carried because it is the first thing an operator
-    /// looks up in Stripe; it is withheld from the accessor because the accessor is
-    /// wired to a closer that must not fire here.
-    #paidNotCredited : {
-      orderId : Types.OrderId;
-      paymentRef : Text;
-      sessionId : Text;
-    };
   };
 
   /// Can a `charge.refunded` for the same payment settle this on its own?
@@ -172,7 +149,7 @@ module {
       // stranded in `#created` holding reserve capacity, with no event left that can
       // release it. Answering true would auto-close the only worklist item pointing at
       // that. The remedy that settles it whole is a resend.
-      case (#paidNotCredited(_)) false;
+
       // NOT refund-resolvable. That answer means "fiat in, nothing delivered" — a
       // *settled* position the operator refunds. Here whether the cycles moved is
       // unknown, so answering true would tell them to refund a buyer who may already
@@ -203,7 +180,7 @@ module {
       // from `resolveByPaymentRef`: the refund is what created the entry, so
       // auto-resolving on it would close the loss the instant it was recorded.
       // Only a human closes this one.
-      case (#deliveryStuck(_) or #refundAfterDelivery(_) or #paidNotCredited(_)) null;
+      case (#deliveryStuck(_) or #refundAfterDelivery(_)) null;
       // Neither is settled by a refund landing: an abandonment was already a
       // conscious decision, and an unprocessable event has no established money
       // position to settle.
@@ -454,52 +431,7 @@ module {
   };
 
 
-  /// Is there already an unresolved `#paidNotCredited` for this order?
-  ///
-  /// ⚠️ **The sweep's do-not-re-file guard, and it is only safe because of a coupling
-  /// elsewhere.** This kind's closer is *the order being credited*, not the money
-  /// moving, so an unresolved entry means the problem is still live and suppressing a
-  /// duplicate hides nothing. **Move that closer onto money state and this guard becomes
-  /// a hider** — an auto-closed entry would stop the sweep from ever filing again while
-  /// the capacity stayed stranded. Delete this guard before moving the closer.
-  public func hasUnresolvedPaidNotCredited(store : Store, orderId : Types.OrderId) : Bool {
-    for (entry in store.entries.values()) {
-      if (entry.resolvedAtNs == null) {
-        switch (entry.kind) {
-          case (#paidNotCredited({ orderId = id; paymentRef = _; sessionId = _ })) {
-            if (id == orderId) return true;
-          };
-          case (_) {};
-        };
-      };
-    };
-    false;
-  };
 
 
-  /// Close every unresolved `#paidNotCredited` for an order that has just been credited.
-  ///
-  /// The rule every closer here follows: **an open entry must describe a live
-  /// problem.** The obligation was "this order is paid and uncredited", so it ends
-  /// when the order stops being that — **not** when the money moves. Returns what it
-  /// closed, for the audit line.
-  public func resolveCreditedOrder(store : Store, orderId : Types.OrderId, nowNs : Int) : [Entry] {
-    let closed = List.empty<Entry>();
-    for (entry in store.entries.values()) {
-      if (entry.resolvedAtNs == null) {
-        switch (entry.kind) {
-          case (#paidNotCredited({ orderId = id; paymentRef = _; sessionId = _ })) {
-            if (id == orderId) {
-              let updated = { entry with resolvedAtNs = ?nowNs };
-              store.entries.add(entry.id, updated);
-              closed.add(updated);
-            };
-          };
-          case (_) {};
-        };
-      };
-    };
-    closed.toArray();
-  };
 
 };

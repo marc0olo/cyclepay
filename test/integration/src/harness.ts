@@ -30,7 +30,7 @@ import {
 import type {
   BackendService, CmcService, ErrorEntry,
   Destination, HttpResponse, Icrc1Service, Order, OrderStatusKey, Result, StatusVariant,
-  CreatedOrder, CreateOrderError, Amount,
+  CreatedOrder, CreateOrderError, Amount, Problem,
 } from './types';
 
 // Mainnet principals — identical on PocketIC's NNS subnet (Cmc.mo pins the
@@ -592,6 +592,21 @@ export async function openErrorEntries(gw: Gateway): Promise<ErrorEntry[]> {
 
 export function statusKey(holder: { status: StatusVariant }): OrderStatusKey {
   return Object.keys(holder.status)[0] as OrderStatusKey;
+}
+
+/// The order's own problems (#37), as the owner sees them.
+///
+/// ⚠️ **Owner-scoped, like `orderStatus`.** Reading another principal's order needs
+/// #38's admin view, which does not exist yet — so scenarios asserting a problem must
+/// either own the order or read it off the mutating call's return value.
+export async function orderProblems(gw: Gateway, orderId: string): Promise<Problem[]> {
+  const result = await gw.asUser.get_order(orderId);
+  if (result.length === 0) throw new Error(`order ${orderId} not visible to user`);
+  return result[0]!.problems;
+}
+
+export function unresolvedProblems(problems: Problem[]): Problem[] {
+  return problems.filter((p) => p.resolvedAtNs.length === 0);
 }
 
 export async function orderStatus(gw: Gateway, orderId: string): Promise<OrderStatusKey> {

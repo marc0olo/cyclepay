@@ -24,6 +24,9 @@ import {
   nowSeconds, orderStatus, setCmcRate, setXrcRate, settleSweepRetrieveFor, setupGateway, teardownGateway,
   tickUntilStatus, user,
   type Gateway,
+
+  orderProblems,
+  unresolvedProblems,
 } from './harness';
 import type { Destination, Order } from './types';
 
@@ -175,9 +178,11 @@ test('83 — past the retry horizon it becomes an obligation, and a resend close
     status: 'complete', payment_status: 'paid', payment_intent: 'pi_83',
   }));
 
-  const filed = (await openErrorEntries(gw)).find(
-    (e) => 'paidNotCredited' in e.kind && e.kind.paidNotCredited.orderId === paid.id,
-  );
+  // ⚠️ **Now on the ORDER, not in a queue (#37).** The problem always had an
+  // `orderId`, so the order it belongs to supplies that structurally — which is the
+  // whole reason it moved. No `orderId` field to compare against any more.
+  const filed = unresolvedProblems(await orderProblems(gw, paid.id))
+    .find((p) => 'paidNotCredited' in p.kind);
   expect(filed).toBeDefined();
   // It carries the intent, which is the first thing an operator looks up in Stripe — and
   // the ONLY place it could come from is the retrieve, since the order never reached
@@ -204,9 +209,11 @@ test('83 — past the retry horizon it becomes an obligation, and a resend close
     'the resend was acked but did not credit the order',
   ).toBe('ok');
   expect(await tickUntilStatus(gw, paid.id, ['delivered'])).toBe('delivered');
-  expect((await openErrorEntries(gw)).some(
-    (e) => 'paidNotCredited' in e.kind && e.kind.paidNotCredited.orderId === paid.id,
-  )).toBe(false);
+  // Resolved, not deleted: nothing drops, so the record of what happened survives on
+  // the order while the worklist count goes to zero.
+  const after = await orderProblems(gw, paid.id);
+  expect(after.some((p) => 'paidNotCredited' in p.kind)).toBe(true);
+  expect(unresolvedProblems(after).some((p) => 'paidNotCredited' in p.kind)).toBe(false);
   await setCmcRate(gw);
   await ensureRates(gw);
 });

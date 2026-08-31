@@ -775,7 +775,12 @@ module {
         // the money and leaves the order stranded in `#created` with no event left to
         // release its capacity. That is why the kind withholds its `paymentRef` from
         // `paymentRefOf`, and why the sweep's do-not-re-file guard is safe.
-        ignore ErrorQueue.resolveCreditedOrder(deps.errorQueue, orderId, nowNs);
+        ignore Orders.resolveProblems(
+          deps.orders,
+          orderId,
+          func(k) { switch (k) { case (#paidNotCredited(_)) true; case (_) false } },
+          nowNs,
+        );
         // The one path that creates money-out work.
         { response = Http.text(200, "ok"); paidOrder = ?orderId };
       };

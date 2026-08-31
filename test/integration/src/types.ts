@@ -71,6 +71,9 @@ export interface Order {
   /// Why an operator ended this order, set only on `#abandoned`. Replaces the
   /// `#abandoned` queue entry, which was the fourth copy of one decision (#37).
   abandonedReason: Opt<string>;
+  /// Problems that belong to this order, with resolution state (#37). The worklist
+  /// is a filter over these rather than a separate structure.
+  problems: Problem[];
   paidUsdCents: Opt<bigint>;
   /// Null except on an `#expired` order with a known cause, and null for every
   /// sweep expiry — that mechanism has no tag because #33 deletes it (#34).
@@ -107,6 +110,21 @@ export type GateReason =
   | { amountBelowMin: { usdCents: bigint; minUsdCents: bigint } };
 
 /// One counter per `GateReason` (#61), replacing the per-attempt audit line.
+/// An order-bound problem (#37). Every arm had an `orderId` in the old
+/// `ErrorQueue.Kind`; the order it hangs off supplies that now.
+export type ProblemKind =
+  | { duplicate: { paymentRef: string } }
+  | { deliveryStuck: { stage: string } }
+  | { refundAfterDelivery: { paymentRef: string; cycles: bigint; refundedCents: bigint; fullRefund: boolean } }
+  | { paidNotCredited: { paymentRef: string; sessionId: string } };
+
+export interface Problem {
+  kind: ProblemKind;
+  detail: string;
+  filedAtNs: bigint;
+  resolvedAtNs: Opt<bigint>;
+}
+
 export interface RefusalCounts {
   amountAboveMax: bigint;
   amountBelowMin: bigint;
@@ -206,7 +224,6 @@ export type ErrorKind =
   | { deliveryStuck: { orderId: string; stage: string; blockIndex: Opt<bigint> } }
   | { refundAfterDelivery: { orderId: string; paymentRef: string; cycles: bigint; refundedCents: bigint; fullRefund: boolean } }
   | { unprocessable: { eventId: string; field: string } }
-  | { paidNotCredited: { orderId: string; paymentRef: string; sessionId: string } }
 
 
 export interface ErrorQueuePage {

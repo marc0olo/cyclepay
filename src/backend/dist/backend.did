@@ -290,12 +290,6 @@ type Kind =
                 orderId: OrderId;
                 paymentRef: text;
               };
-   paidNotCredited:
-    record {
-      orderId: OrderId;
-      paymentRef: text;
-      sessionId: text;
-    };
    refundAfterDelivery:
     record {
       cycles: nat;

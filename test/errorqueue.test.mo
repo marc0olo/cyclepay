@@ -74,7 +74,6 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
         case (#deliveryStuck(_)) "deliveryStuck";
         case (#refundAfterDelivery(_)) "refundAfterDelivery";
         case (#unprocessable(_)) "unprocessable";
-        case (#paidNotCredited(_)) "paidNotCredited";
       };
     };
     let all : [ErrorQueue.Kind] = [
@@ -83,9 +82,8 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
       #deliveryStuck({ orderId = "o3"; stage = "staleIntent"; blockIndex = null }),
       #refundAfterDelivery({ orderId = "o4"; paymentRef = "pi_4"; cycles = 1; refundedCents = 1; fullRefund = true }),
       #unprocessable({ eventId = "evt_1"; field = "amount_total" }),
-      #paidNotCredited({ orderId = "o7"; paymentRef = "pi_7"; sessionId = "cs_7" }),
     ];
-    assert all.size() == 6;
+    assert all.size() == 5;
     var seen = "";
     for (kind in all.values()) {
       let carriesRef = ErrorQueue.paymentRefOf(kind) != null;

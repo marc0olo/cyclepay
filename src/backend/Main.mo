@@ -3183,18 +3183,26 @@ persistent actor CyclesGateway {
         };
         // Past the horizon: nobody is going to credit this on its own.
         //
-        // ⚠️ **Do not re-file.** The entry cannot be closed while the problem exists —
-        // its closer is the order being credited, not the money moving — so suppressing a
-        // duplicate cannot hide anything. **This guard is only safe because of that
-        // coupling: do not move the closer onto money state without deleting this guard**,
-        // or it silently becomes a hider.
-        if (ErrorQueue.hasUnresolvedPaidNotCredited(errorQueue, orderId)) return;
-        ignore queueDeliveryError(
-          fresh.rail,
-          #paidNotCredited({ orderId; paymentRef = paymentIntent; sessionId }),
-          "Stripe says session " # sessionId # " was paid and this order was never credited, past the point where Stripe would still be retrying. **Resend the event from the Stripe Dashboard first, always** — that credits the order through the normal path and closes this entry. Refunding instead settles the money and leaves the order stranded in Created with no event left to release it.",
-        );
-        audit("stripe.paidNotCredited", orderId # ": paid and uncredited past Stripe's retry horizon; obligation filed");
+        // ⚠️ **Do not re-file — and that guard is now free.** `Problems.file` dedups on
+        // the kind's `paymentRef`, so the explicit `hasUnresolvedPaidNotCredited` check
+        // this used to need is gone along with the function.
+        //
+        // ⚠️ **The dedup is only safe because of one coupling, which survives the move:**
+        // the problem cannot be closed while it still exists, because its closer is *the
+        // order being credited*, not the money moving. Suppressing a duplicate therefore
+        // cannot hide anything. **Do not move the closer onto money state without
+        // revisiting this**, or the dedup silently becomes a hider.
+        if (
+          Orders.fileProblem(
+            orderStore,
+            orderId,
+            #paidNotCredited({ paymentRef = paymentIntent; sessionId }),
+            "Stripe says session " # sessionId # " was paid and this order was never credited, past the point where Stripe would still be retrying. **Resend the event from the Stripe Dashboard first, always** — that credits the order through the normal path and closes this problem. Refunding instead settles the money and leaves the order stranded in Created with no event left to release it.",
+            Time.now(),
+          )
+        ) {
+          audit("stripe.paidNotCredited", orderId # ": paid and uncredited past Stripe's retry horizon; obligation filed");
+        };
       };
     };
   };

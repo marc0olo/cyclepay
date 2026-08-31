@@ -41,8 +41,23 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     usdPerIcpMicros: IDL.Nat,
     xdrPermyriadPerIcp: IDL.Nat,
   });
+  const ProblemKind = IDL.Variant({
+    deliveryStuck: IDL.Record({ stage: IDL.Text }),
+    duplicate: IDL.Record({ paymentRef: IDL.Text }),
+    paidNotCredited: IDL.Record({ paymentRef: IDL.Text, sessionId: IDL.Text }),
+    refundAfterDelivery: IDL.Record({
+      cycles: IDL.Nat, fullRefund: IDL.Bool, paymentRef: IDL.Text, refundedCents: IDL.Nat,
+    }),
+  });
+  const Problem = IDL.Record({
+    detail: IDL.Text,
+    filedAtNs: IDL.Int,
+    kind: ProblemKind,
+    resolvedAtNs: IDL.Opt(IDL.Int),
+  });
   const Order = IDL.Record({
     abandonedReason: IDL.Opt(IDL.Text),
+    problems: IDL.Vec(Problem),
     delayedAtNs: IDL.Opt(IDL.Int),
     createdAtNs: IDL.Int,
     paidUsdCents: IDL.Opt(IDL.Nat),
@@ -155,11 +170,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     // #52: the buyer paid and we never credited them. Carries the intent id for the
     // operator, which `paymentRefOf` deliberately withholds so a refund cannot
     // auto-close the entry — refunding settles the money and leaves the order stranded.
-    paidNotCredited: IDL.Record({
-      orderId: IDL.Text,
-      paymentRef: IDL.Text,
-      sessionId: IDL.Text,
-    }),
     // #36 folded `stuckMint` and `transferUnresolved` into one honestly-named kind:
     // `stage` carries the money position, `blockIndex` the should-be-unreachable landed case.
     deliveryStuck: IDL.Record({ orderId: IDL.Text, stage: IDL.Text, blockIndex: IDL.Opt(IDL.Nat) }),
