@@ -50,9 +50,6 @@ module {
   /// `#refundAfterDelivery.cycles` is the opposite case — cycles that *were*
   /// delivered, recorded as an operator loss.
   public type Kind = {
-    /// Refund-resolvable — a genuine 2nd/distinct payment for an already-handled
-    /// order.
-    #duplicate : { orderId : Types.OrderId; paymentRef : Text };
     /// Refund-resolvable — the payment could not be attributed to an order that can accept
     /// it: `client_reference_id` resolved to no order (claimed, not trusted — it
     /// is an attacker-editable URL param), or it resolved to an order that is
@@ -85,7 +82,7 @@ module {
   /// and `#refundAfterDelivery` is money that moved both ways.
   public func refundResolvable(kind : Kind) : Bool {
     switch (kind) {
-      case (#duplicate(_) or #unattributed(_)) true;
+      case (#unattributed(_)) true;
 
       case (#unprocessable(_)) false;
       // ⚠️ **False even though a refund is a legal thing for the operator to do here.**
@@ -119,7 +116,7 @@ module {
   /// payment_intent, and a refund alone doesn't settle an uncertain delivery.)
   public func paymentRefOf(kind : Kind) : ?Text {
     switch (kind) {
-      case (#duplicate({ paymentRef; orderId = _ })) ?paymentRef;
+
       case (#unattributed({ paymentRef; claimedRef = _ })) ?paymentRef;
       // #refundAfterDelivery carries a paymentRef but must NOT be reachable
       // from `resolveByPaymentRef`: the refund is what created the entry, so

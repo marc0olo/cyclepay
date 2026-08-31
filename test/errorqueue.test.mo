@@ -9,8 +9,11 @@ import ErrorQueue "../src/backend/ErrorQueue";
 
 let cap = 3; // small capacity so bounds are easy to exercise
 
+/// ⚠️ Was `#duplicate` until #37 moved that onto the order. `#unattributed` carries
+/// the property this fixture is for: refund-resolvable, and it names the payment a
+/// `charge.refunded` closes it by.
 func addDuplicate(store : ErrorQueue.Store, orderId : Text, paymentRef : Text, nowNs : Int) : ErrorQueue.AddResult {
-  ErrorQueue.add(store, cap, #card, #duplicate({ orderId; paymentRef }), "2nd payment", nowNs);
+  ErrorQueue.add(store, cap, #card, #unattributed({ claimedRef = orderId; paymentRef }), "2nd payment", nowNs);
 };
 
 func addUnattributed(store : ErrorQueue.Store, claimedRef : Text, paymentRef : Text, nowNs : Int) : ErrorQueue.AddResult {
@@ -29,7 +32,7 @@ func addStuck(store : ErrorQueue.Store, orderId : Text, nowNs : Int) : ErrorQueu
 
 suite("kinds: what a refund can settle, and what it cannot", func() {
   test("a refund settles exactly the fiat-only obligations", func() {
-    assert ErrorQueue.refundResolvable(#duplicate({ orderId = "o1"; paymentRef = "pi_1" }));
+    assert ErrorQueue.refundResolvable(#unattributed({ claimedRef = "o1"; paymentRef = "pi_1" }));
     assert ErrorQueue.refundResolvable(#unattributed({ claimedRef = "x"; paymentRef = "pi_2" }));
   });
 
@@ -37,7 +40,7 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
     // The pairing is the point: `resolveByPaymentRef` can only find an entry that
     // names its payment, so carrying a ref and being refund-settleable are the same
     // property seen from two sides.
-    assert ErrorQueue.paymentRefOf(#duplicate({ orderId = "o1"; paymentRef = "pi_1" })) == ?"pi_1";
+    assert ErrorQueue.paymentRefOf(#unattributed({ claimedRef = "o1"; paymentRef = "pi_1" })) == ?"pi_1";
     assert ErrorQueue.paymentRefOf(#unattributed({ claimedRef = "x"; paymentRef = "pi_2" })) == ?"pi_2";
     assert ErrorQueue.paymentRefOf(#unprocessable({ eventId = "evt_1"; field = "payment_intent" })) == null;
   });
@@ -73,17 +76,15 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
     // switch, this assertion on the tally.
     func named(k : ErrorQueue.Kind) : Text {
       switch k {
-        case (#duplicate(_)) "duplicate";
         case (#unattributed(_)) "unattributed";
         case (#unprocessable(_)) "unprocessable";
       };
     };
     let all : [ErrorQueue.Kind] = [
-      #duplicate({ orderId = "o1"; paymentRef = "pi_1" }),
       #unattributed({ claimedRef = "x"; paymentRef = "pi_2" }),
       #unprocessable({ eventId = "evt_1"; field = "amount_total" }),
     ];
-    assert all.size() == 3;
+    assert all.size() == 2;
     var seen = "";
     for (kind in all.values()) {
       let carriesRef = ErrorQueue.paymentRefOf(kind) != null;
@@ -272,7 +273,7 @@ suite("paging", func() {
   // Candid response. Paging bounds the response instead of the record.
   func fill(store : ErrorQueue.Store, n : Nat) {
     for (i in Nat.range(0, n)) {
-      ignore ErrorQueue.add(store, 1_000_000, #card, #duplicate({ orderId = "o" # i.toText(); paymentRef = "pi_" # i.toText() }), "d", 100 + i);
+      ignore ErrorQueue.add(store, 1_000_000, #card, #unattributed({ claimedRef = "o" # i.toText(); paymentRef = "pi_" # i.toText() }), "d", 100 + i);
     };
   };
 
@@ -360,7 +361,7 @@ suite("paging", func() {
         case (#err(_)) assert false;
       };
     };
-    let result = ErrorQueue.add(store, 2, #card, #duplicate({ orderId = "o"; paymentRef = "pi" }), "2nd payment", 1_000);
+    let result = ErrorQueue.add(store, 2, #card, #unattributed({ claimedRef = "o"; paymentRef = "pi" }), "2nd payment", 1_000);
     assert result.evicted.size() == 4;
     // Oldest-first: the survivors are the newest resolved entry and the new one.
     assert result.evicted[0].id == 0;
@@ -374,7 +375,7 @@ suite("paging", func() {
     // obligation, so the queue is allowed to exceed it instead.
     ignore addDuplicate(store, "o1", "pi_1", 100);
     ignore addDuplicate(store, "o2", "pi_2", 200);
-    let result = ErrorQueue.add(store, 1, #card, #duplicate({ orderId = "o3"; paymentRef = "pi_3" }), "2nd payment", 300);
+    let result = ErrorQueue.add(store, 1, #card, #unattributed({ claimedRef = "o3"; paymentRef = "pi_3" }), "2nd payment", 300);
     assert result.evicted.size() == 0;
     assert ErrorQueue.size(store) == 3;
   });

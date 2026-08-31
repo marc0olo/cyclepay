@@ -503,17 +503,26 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
     amountCents: TIER_USD_CENTS,
   }));
   expect(doublePay.status_code).toBe(200);
-  const dupEntry = (await allErrorEntries(gw)).find(
-    (e) => 'duplicate' in e.kind && e.kind.duplicate.paymentRef === 'pi_a_double',
-  ) as ErrorEntry;
-  expect(dupEntry).toBeDefined();
-  expect(dupEntry.resolvedAtNs).toEqual([]);
+  // On the ORDER now (#37) — the order supplies the id the kind used to carry.
+  const dupProblem = (await orderProblems(gw, orderA.id)).find(
+    (p) => 'duplicate' in p.kind
+      && (p.kind as { duplicate: { paymentRef: string } }).duplicate.paymentRef === 'pi_a_double',
+  );
+  expect(dupProblem).toBeDefined();
+  expect(dupProblem!.resolvedAtNs).toEqual([]);
 
-  // charge.refunded auto-resolves the entry by payment_intent.
+  // charge.refunded auto-resolves it by payment_intent — and this is the assertion
+  // that would catch the closer being wired to only one of the two stores, since
+  // `#unattributed` still lives in the queue while `#duplicate` is on the order.
   const refund = await deliverWebhook(gw, chargeRefundedBody('evt_a4', 'pi_a_double'));
   expect(refund.status_code).toBe(200);
-  const resolved = (await allErrorEntries(gw)).find((e) => e.id === dupEntry.id) as ErrorEntry;
-  expect(resolved.resolvedAtNs.length).toBe(1);
+  const resolvedProblem = (await orderProblems(gw, orderA.id)).find(
+    (p) => 'duplicate' in p.kind
+      && (p.kind as { duplicate: { paymentRef: string } }).duplicate.paymentRef === 'pi_a_double',
+  );
+  // Resolved, not gone: nothing drops.
+  expect(resolvedProblem).toBeDefined();
+  expect(resolvedProblem!.resolvedAtNs.length).toBe(1);
 
   await gw.pic.tick(5);
   expect(await reserveBalance(gw)).toBe(reserveBefore);

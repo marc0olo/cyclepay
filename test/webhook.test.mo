@@ -358,8 +358,29 @@ suite("a resent webhook is never a second payment", func() {
     assert AuditLog.events(deps.auditLog).find(
       func(e) = e.tag == "stripe.creditedElsewhere"
     ) != null;
+    // ⚠️ **The obligation lands in the ORPHAN list, not on an order (#37).** The
+    // intent is credited to an id that is not in the store, so there is no order to
+    // attach a problem to — and dropping it would break §4.1's invariant that every
+    // verified dollar resolves to a delivery or to an obligation. Money that cannot
+    // be attached to an order is money held for nobody, which is what `#unattributed`
+    // means.
+    //
+    // This assertion is what caught the hole: moving problems onto orders introduced a
+    // way to lose one, because the queue's `add` filed regardless of whether the order
+    // existed and `Orders.fileProblem` cannot.
     let open = ErrorQueue.unresolved(deps.errorQueue);
     assert open.size() == 1;
+    switch (open[0].kind) {
+      case (#unattributed({ claimedRef; paymentRef })) {
+        assert claimedRef == "ffffffffffffffffffffffffffffffff";
+        assert paymentRef == "pi_1";
+      };
+      case (_) Runtime.trap("expected the orphan fallback to file #unattributed");
+    };
+    // And it says why it went there rather than onto the order.
+    assert AuditLog.events(deps.auditLog).find(
+      func(e) = e.tag == "stripe.problemOrphaned"
+    ) != null;
     // The link is NOT overwritten: whatever it pointed at still does.
     assert deps.paidIntents.get("pi_1") == ?"ffffffffffffffffffffffffffffffff";
   });
@@ -371,10 +392,15 @@ suite("a resent webhook is never a second payment", func() {
     withOrder(deps, #card);
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
     assert deliver(deps, paidBody("evt_2", "pi_2", ?goodRef, 500)).status_code == 200;
-    let open = ErrorQueue.unresolved(deps.errorQueue);
-    assert open.size() == 1;
-    switch (open[0].kind) {
-      case (#duplicate({ paymentRef; orderId = _ })) assert paymentRef == "pi_2";
+    // On the order now (#37); no orderId to compare, the order supplies it.
+    assert ErrorQueue.unresolved(deps.errorQueue).size() == 0;
+    let filed = switch (Orders.get(deps.orders, orderId)) {
+      case (?o) o.problems;
+      case null Runtime.trap("order vanished");
+    };
+    assert filed.size() == 1;
+    switch (filed[0].kind) {
+      case (#duplicate({ paymentRef })) assert paymentRef == "pi_2";
       case (_) Runtime.trap("expected #duplicate");
     };
   });
@@ -635,9 +661,14 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
     let resp = deliver(deps, paidBody("evt_2", "pi_2", ?goodRef, 500));
     assert resp.status_code == 200;
     assert bodyText(resp) == "queued for operator review";
-    let queued = ErrorQueue.unresolved(deps.errorQueue);
+    // On the order (#37); the queue holds only order-less money now.
+    assert ErrorQueue.unresolved(deps.errorQueue).size() == 0;
+    let queued = switch (Orders.get(deps.orders, orderId)) {
+      case (?o) o.problems;
+      case null Runtime.trap("order vanished");
+    };
     assert queued.size() == 1;
-    assert queued[0].kind == #duplicate({ orderId; paymentRef = "pi_2" });
+    assert queued[0].kind == #duplicate({ paymentRef = "pi_2" });
     assert statusOf(deps) == #paid; // first payment's delivery is untouched
   });
 

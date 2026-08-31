@@ -17,6 +17,7 @@
 /// State lives in `Deps` (Main.mo's stores, injected) so the path unit-tests
 /// without an IC environment.
 import Int "mo:core/Int";
+import Problems "../Problems";
 import Iter "mo:core/Iter";
 import List "mo:core/List";
 import Map "mo:core/Map";
@@ -426,9 +427,63 @@ module {
     Http.text(200, "queued for operator review");
   };
 
-  /// `charge.refunded` (§4.1): auto-resolve every unresolved refund-resolvable entry
-  /// carrying this payment_intent. No matches is fine — operators may
-  /// refund payments that never queued.
+  /// File a refund-resolvable problem **on the order** (#37) and answer 200.
+  ///
+  /// ⚠️ **The order-bound sibling of `queueRefundable`, and the split is the point.**
+  /// That function now serves only `#unattributed`, which by definition has no order
+  /// to attach to. Everything with an `orderId` lives on the order, so there is no
+  /// eviction to audit here either: orders are never evicted.
+  ///
+  /// Always 200, for the same reason: the payment is handled, just not by delivery, and
+  /// a non-2xx would make Stripe redeliver an event we have already routed.
+  func fileOrderProblem(
+    deps : Deps,
+    orderId : Types.OrderId,
+    paymentRef : Text,
+    kind : Types.ProblemKind,
+    detail : Text,
+    nowNs : Int,
+  ) : Http.Response {
+    switch (deps.orders.orders.get(orderId)) {
+      case (?_) {
+        let filed = Orders.fileProblem(deps.orders, orderId, kind, detail, nowNs);
+        if (filed) {
+          audit(deps, nowNs, "stripe.type1", orderId # " [" # Problems.kindToText(kind) # "]: " # detail);
+        };
+        Http.text(200, "queued for operator review");
+      };
+      // ⚠️ **No such order, so the problem has no home — and it must NOT be dropped.**
+      // §4.1's invariant is that every verified dollar resolves to a delivery or to an
+      // obligation. Moving problems onto orders introduced a way to lose one: the
+      // queue's `add` filed regardless of whether the order existed, and
+      // `Orders.fileProblem` cannot.
+      //
+      // Money that cannot be attached to an order is money **held for nobody**, which
+      // is exactly what `#unattributed` means — so it goes to the orphan list, where
+      // it is refund-resolvable and names the payment. Reachable via a corrupted
+      // intent-to-order link; a test pins it, which is how it was found.
+      case null {
+        audit(
+          deps,
+          nowNs,
+          "stripe.problemOrphaned",
+          "order " # orderId # " is not in the store, so a " # Problems.kindToText(kind)
+          # " problem for intent " # paymentRef # " was filed as unattributed instead",
+        );
+        queueRefundable(
+          deps,
+          #unattributed({ claimedRef = orderId; paymentRef }),
+          detail # " ⚠️ Filed here rather than on the order because order " # orderId
+          # " is not in the store — the reference and our records disagree.",
+          nowNs,
+        );
+      };
+    };
+  };
+
+  /// `charge.refunded` (§4.1): auto-resolve every unresolved refund-resolvable
+  /// obligation carrying this payment_intent — **on both sides now**. No matches is
+  /// fine: operators may refund payments that never filed anything.
   func handleRefund(deps : Deps, refund : ChargeRefunded, nowNs : Int) : Outcome {
     if (not Idempotency.recordStripeEvent(deps.dedup, refund.eventId, nowNs)) {
       return ack(Http.text(200, "duplicate event"));
@@ -464,11 +519,18 @@ module {
     };
 
     if (full) {
+      // ⚠️ **Two stores to close against since #37**, and forgetting either is a
+      // silent failure: an obligation left open after the refund that settles it is
+      // exactly the false worklist entry the queue's own rule forbids.
       let resolved = ErrorQueue.resolveByPaymentRef(deps.errorQueue, refund.paymentIntent, nowNs);
       for (entry in resolved.values()) {
         audit(deps, nowNs, "stripe.refundResolved", "entry " # entry.id.toText() # " auto-resolved by full refund of " # refund.paymentIntent # " (" # amounts # ")");
       };
-      if (resolved.size() > 0) return ack(Http.text(200, "ok"));
+      let closedOnOrders = Orders.resolveByPaymentRef(deps.orders, refund.paymentIntent, nowNs);
+      if (closedOnOrders > 0) {
+        audit(deps, nowNs, "stripe.refundResolved", closedOnOrders.toText() # " order problem(s) auto-resolved by full refund of " # refund.paymentIntent # " (" # amounts # ")");
+      };
+      if (resolved.size() > 0 or closedOnOrders > 0) return ack(Http.text(200, "ok"));
     };
 
     // Nothing resolved. Usually benign — operators may refund a payment that
@@ -574,9 +636,11 @@ module {
       "intent " # session.paymentIntent # " names " # namedText
       # " but was already credited to order " # credited # " — nothing delivered a second time",
     );
-    queueRefundable(
+    fileOrderProblem(
       deps,
-      #duplicate({ orderId = credited; paymentRef = session.paymentIntent }),
+      credited,
+      session.paymentIntent,
+      #duplicate({ paymentRef = session.paymentIntent }),
       "intent " # session.paymentIntent # " was credited to order " # credited
       # " but its Stripe session names " # namedText
       # " — the reference and our record disagree, which should not be reachable. Nothing was delivered twice. Decide which order the buyer paid for; there is no way to credit the other one, so settle it by refunding in Stripe.",
@@ -732,9 +796,11 @@ module {
         // Stripe dedup is redelivery protection, not double-pay protection).
         // Reaching here means the intent is NOT in paidIntents, so it is new
         // money against an order that has already been paid.
-        return ack(queueRefundable(
+        return ack(fileOrderProblem(
           deps,
-          #duplicate({ orderId; paymentRef = session.paymentIntent }),
+          orderId,
+          session.paymentIntent,
+          #duplicate({ paymentRef = session.paymentIntent }),
           "second payment for order " # orderId # " (status " # Types.statusToText(status) # ")",
           nowNs,
         ));

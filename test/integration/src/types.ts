@@ -219,7 +219,6 @@ export interface JournalEntry {
 }
 
 export type ErrorKind =
-  | { duplicate: { orderId: string; paymentRef: string } }
   | { unattributed: { claimedRef: string; paymentRef: string } }
   | { unprocessable: { eventId: string; field: string } }
 

@@ -286,10 +286,6 @@ type Order =
  };
 type Kind = 
  variant {
-   duplicate: record {
-                orderId: OrderId;
-                paymentRef: text;
-              };
    unattributed: record {
                    claimedRef: text;
                    paymentRef: text;
