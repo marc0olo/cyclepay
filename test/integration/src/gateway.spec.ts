@@ -156,11 +156,34 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
   expect((await gw.asAdmin.stripe_api_key_status()).isSet).toBe(false);
   expect(await gw.asAdmin.stripe_origin()).toHaveLength(0);
   const ordersBefore = (await gw.asAdmin.reserve_status()).totalOrders;
+  const linesBefore = (await gw.asAdmin.audit_log()).length;
+  const closedBefore = (await gw.asAnon.refusal_counts()).counts.railClosed;
   const noKey = expectErr(
     await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []),
   ) as { sessionUnavailable: string };
   expect(noKey.sessionUnavailable).toContain('API key');
   expect((await gw.asAdmin.reserve_status()).totalOrders).toBe(ordersBefore);
+
+  // ⚠️ **#61: the rail closing is ONE line, however many buyers hit it.** This is
+  // the second free-to-drive path — no order, no payment, no prior state — and it
+  // refuses BEFORE the gate, so while the rail is closed 100% of attempts take
+  // this branch and never reach `admit`. Three more attempts must add nothing to
+  // the log.
+  for (let i = 0; i < 3; i += 1) {
+    expectErr(await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []));
+  }
+  const afterClosed = await gw.asAdmin.audit_log();
+  // Exactly one new line: the transition in.
+  expect(afterClosed.length).toBe(linesBefore + 1);
+  expect(afterClosed[afterClosed.length - 1].tag).toBe('gate.startedRefusing');
+  // Four refusals, all tallied — the volume survives even though the lines do not.
+  const closedAfter = (await gw.asAnon.refusal_counts()).counts.railClosed;
+  expect(closedAfter).toBe(closedBefore + 4n);
+  expect((await gw.asAnon.refusal_counts()).refusingNow.railClosed).toBe(true);
+  // And it did not leak into a gate counter: these refusals never reached `admit`.
+  const counts = (await gw.asAnon.refusal_counts()).counts;
+  expect(counts.canisterCyclesLow).toBe(0n);
+  expect(counts.reserveShort).toBe(0n);
 
   // The key alone is not enough: without a return origin there is no URL to send
   // the buyer back to, and the same no-record rule applies.

@@ -105,6 +105,9 @@ export interface RefusalCounts {
   amountAboveMax: bigint;
   amountBelowMin: bigint;
   canisterCyclesLow: bigint;
+  /// Not a `GateReason`: the rail being unprovisioned refuses BEFORE the gate, so
+  /// while it is closed no attempt reaches `admit` at all.
+  railClosed: bigint;
   reserveShort: bigint;
   tooManyOpenOrders: bigint;
 }
@@ -113,6 +116,7 @@ export interface RefusalCounts {
 /// entering one writes exactly one `gate.startedRefusing` line.
 export interface RailStateLatch {
   canisterCyclesLow: boolean;
+  railClosed: boolean;
   reserveShort: boolean;
 }
 

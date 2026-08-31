@@ -240,6 +240,14 @@ module {
     tooManyOpenOrders : Nat;
     canisterCyclesLow : Nat;
     reserveShort : Nat;
+    /// ⚠️ **Not a `Reason`, and that is why it is easy to miss.** The rail being
+    /// unprovisioned is refused *before* the gate — `create_order` checks caller,
+    /// destination, then the RAIL, then tier and admission — so while the rail is
+    /// closed **100% of attempts never reach `admit` at all**. A counter set that
+    /// only covered `Reason` would record nothing during exactly the window the
+    /// gateway spends freshly deployed, because RUNBOOK §1 prescribes
+    /// provisioning the secrets last.
+    railClosed : Nat;
   };
 
   public func noRefusals() : RefusalCounts {
@@ -249,7 +257,14 @@ module {
       tooManyOpenOrders = 0;
       canisterCyclesLow = 0;
       reserveShort = 0;
+      railClosed = 0;
     });
+  };
+
+  /// Rail closure is counted through its own entry point, because it is not a
+  /// `Reason` — see `RefusalCounts.railClosed`.
+  public func countRailClosed(counts : RefusalCounts) : RefusalCounts {
+    ({ counts with railClosed = counts.railClosed + 1 });
   };
 
   public func countRefusal(counts : RefusalCounts, reason : Reason) : RefusalCounts {
@@ -271,11 +286,34 @@ module {
   /// about the gateway changed, one request was malformed (`#amountBelowMin`,
   /// `#amountAboveMax`) or one principal used its own slot
   /// (`#tooManyOpenOrders`).
-  public func isRailState(reason : Reason) : Bool {
+  /// A condition that is a fact about the **gateway**, so entering it is worth
+  /// exactly one audit line and every later refusal under it is noise.
+  ///
+  /// ⚠️ **Three, not two.** `#railClosed` belongs here for the same reason the
+  /// other two do — either the API key and origin are provisioned or they are not
+  /// — and it is refused on a path that never reaches `admit`, so it cannot be
+  /// expressed as a `Reason`.
+  public type RailCondition = {
+    #reserveShort;
+    #canisterCyclesLow;
+    #railClosed;
+  };
+
+  /// Which refusals describe the gateway rather than one request. Exhaustive, so
+  /// a new `Reason` has to decide rather than defaulting to "not rail state".
+  public func railConditionOf(reason : Reason) : ?RailCondition {
     switch (reason) {
-      case (#reserveShort(_) or #canisterCyclesLow(_)) true;
-      case (#amountAboveMax(_) or #amountBelowMin(_) or #tooManyOpenOrders(_)) false;
+      case (#reserveShort(_)) ?#reserveShort;
+      case (#canisterCyclesLow(_)) ?#canisterCyclesLow;
+      // Nothing about the gateway changed: one request was malformed
+      // (`#amountBelowMin`, `#amountAboveMax`) or one principal used its own slot
+      // (`#tooManyOpenOrders`).
+      case (#amountAboveMax(_) or #amountBelowMin(_) or #tooManyOpenOrders(_)) null;
     };
+  };
+
+  public func isRailState(reason : Reason) : Bool {
+    railConditionOf(reason) != null;
   };
 
   /// Which rail-state conditions are **currently** refusing, latched per
@@ -290,10 +328,33 @@ module {
   public type RailStateLatch = {
     reserveShort : Bool;
     canisterCyclesLow : Bool;
+    railClosed : Bool;
   };
 
   public func admitting() : RailStateLatch {
-    ({ reserveShort = false; canisterCyclesLow = false });
+    ({ reserveShort = false; canisterCyclesLow = false; railClosed = false });
+  };
+
+  /// Enter a rail-state condition. `announce` is true only on the **transition
+  /// in** — the caller writes its audit line exactly then.
+  ///
+  /// This is the single place the announce-once semantics live, so every refusal
+  /// path gets them by routing here rather than by reimplementing them.
+  public func latchCondition(latch : RailStateLatch, condition : RailCondition) : {
+    latch : RailStateLatch;
+    announce : Bool;
+  } {
+    switch (condition) {
+      case (#reserveShort) {
+        ({ latch = { latch with reserveShort = true }; announce = not latch.reserveShort });
+      };
+      case (#canisterCyclesLow) {
+        ({ latch = { latch with canisterCyclesLow = true }; announce = not latch.canisterCyclesLow });
+      };
+      case (#railClosed) {
+        ({ latch = { latch with railClosed = true }; announce = not latch.railClosed });
+      };
+    };
   };
 
   /// Observe a refusal. `announce` is true only on the **transition into** a
@@ -302,18 +363,11 @@ module {
     latch : RailStateLatch;
     announce : Bool;
   } {
-    switch (reason) {
-      case (#reserveShort(_)) {
-        ({ latch = { latch with reserveShort = true }; announce = not latch.reserveShort });
-      };
-      case (#canisterCyclesLow(_)) {
-        ({ latch = { latch with canisterCyclesLow = true }; announce = not latch.canisterCyclesLow });
-      };
+    switch (railConditionOf(reason)) {
+      case (?condition) latchCondition(latch, condition);
       // Per-request and per-principal reasons never announce and never latch:
       // they say nothing about whether the gateway is refusing.
-      case (#amountAboveMax(_) or #amountBelowMin(_) or #tooManyOpenOrders(_)) {
-        ({ latch; announce = false });
-      };
+      case null ({ latch; announce = false });
     };
   };
 

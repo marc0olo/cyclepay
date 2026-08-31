@@ -982,7 +982,7 @@ persistent actor CyclesGateway {
     let config = switch (sessionConfig()) {
       case (#ok(c)) c;
       case (#err(e)) {
-        audit("stripe.railClosed", "create_order refused: " # sessionErrorToText(e));
+        noteRailClosed(e);
         return #err(#sessionUnavailable(sessionErrorToText(e)));
       };
     };
@@ -1376,6 +1376,53 @@ persistent actor CyclesGateway {
     railStateLatch := latched.latch;
     if (latched.announce) {
       audit("gate.startedRefusing", Gate.reasonToText(reason));
+    };
+  };
+
+  /// Which `sessionConfig` failures are rail **state** — a configuration fact
+  /// about this gateway rather than anything about the request.
+  ///
+  /// ⚠️ **Exhaustive on purpose.** `sessionConfig` can only produce the first two
+  /// today, but a new `SessionError` must decide whether it is a persistent
+  /// configuration state (latch it, announce once) or a transient outcall failure
+  /// (do not latch — a transient that latched would be cleared by the next
+  /// success anyway, but announcing it as "the rail started refusing" would be a
+  /// false report).
+  func railClosureCondition(e : SessionError) : ?Gate.RailCondition {
+    switch (e) {
+      // Either the key and origin are provisioned or they are not.
+      case (#railClosed or #originUnset) ?#railClosed;
+      // These five come from the outcall in `createStripeSession` and cannot
+      // reach `sessionConfig`. If one ever does, it is counted but not
+      // announced — a `railClosed` counter climbing while
+      // `refusingNow.railClosed` stays false is the tell that this happened.
+      case (
+        #outcallFailed(_) or #stripeRejected(_) or #unparseableResponse
+        or #missingField(_) or #livemodeMismatch(_)
+      ) null;
+    };
+  };
+
+  /// Tally a pre-gate refusal caused by the rail being closed, announcing once
+  /// on the way in (#61).
+  ///
+  /// ⚠️ **This path never reaches `admit`, which is what made it easy to miss.**
+  /// `create_order` checks caller, destination, then the RAIL, then tier and
+  /// admission — so while the rail is closed, **100% of attempts refuse here** and
+  /// a counter set covering only `Gate.Reason` would record nothing. RUNBOOK §1
+  /// prescribes provisioning the secrets last, so a freshly deployed gateway sits
+  /// in exactly this state by design.
+  func noteRailClosed(e : SessionError) {
+    refusalCounts := Gate.countRailClosed(refusalCounts);
+    switch (railClosureCondition(e)) {
+      case (?condition) {
+        let latched = Gate.latchCondition(railStateLatch, condition);
+        railStateLatch := latched.latch;
+        if (latched.announce) {
+          audit("gate.startedRefusing", "railClosed: " # sessionErrorToText(e));
+        };
+      };
+      case null {};
     };
   };
 

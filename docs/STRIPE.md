@@ -450,11 +450,21 @@ real payment to exist). A line per attempt was harmless only while the log was a
 4,096-entry ring.
 
 **The exception is the transition, and it falls out of the distinction above.** The
-two *operational* reasons — `#reserveShort` and `#canisterCyclesLow` — are facts about
-the **gateway**, so entering one writes exactly one `gate.startedRefusing` line and
-`refusal_counts.refusingNow` stays true until the next successful admission. The
-permanent-for-that-request and about-the-caller reasons write nothing: nothing about
-the gateway changed, so there is no transition to record.
+*operational* conditions are facts about the **gateway**, so entering one writes
+exactly one `gate.startedRefusing` line and `refusal_counts.refusingNow` stays true
+until the next successful admission. The permanent-for-that-request and
+about-the-caller reasons write nothing: nothing about the gateway changed, so there is
+no transition to record.
+
+⚠️ **There are three such conditions, and the third is not in the table above.**
+`#reserveShort` and `#canisterCyclesLow` are gate reasons; **rail closure is not.**
+An unprovisioned API key or origin is refused *before* the gate — the order is
+caller, destination, **rail**, tier, admission — so while the rail is closed **100% of
+attempts never reach `admit` at all**, and a counter set covering only the table above
+would record nothing. That window is not hypothetical: RUNBOOK §1 provisions the
+secrets last, so a freshly deployed gateway sits in exactly this state by design. It
+gets its own `refusal_counts.counts.railClosed` counter, its own
+`refusingNow.railClosed` flag, and the same announce-once semantics.
 
 ⚠️ **Latched per condition, not globally.** A single "was admitting, now refusing"
 flag is reset by any legitimate success, so the next refusal announces again — a

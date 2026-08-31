@@ -323,3 +323,51 @@ suite("#61 rail-state latch", func() {
     assert Gate.latchRefusal(recovered, shortReserve).announce;
   });
 });
+
+suite("#61 rail closure is the third latching condition", func() {
+  test("entering rail closure announces once, and independently of the other two", func() {
+    // ⚠️ **The condition that was missed on the first pass**, and the reason it
+    // was easy to miss: rail closure is refused BEFORE the gate, so it is not a
+    // `Reason` at all and a counter set covering only `Reason` records nothing
+    // during the window a freshly deployed gateway spends unprovisioned.
+    let first = Gate.latchCondition(Gate.admitting(), #railClosed);
+    assert first.announce;
+    assert first.latch.railClosed;
+    // Still closed: no second line, however many attempts arrive.
+    assert not Gate.latchCondition(first.latch, #railClosed).announce;
+
+    // Independent of the other two, both directions.
+    assert not first.latch.reserveShort;
+    assert not first.latch.canisterCyclesLow;
+    let alsoReserve = Gate.latchCondition(first.latch, #reserveShort);
+    assert alsoReserve.announce;
+    assert alsoReserve.latch.railClosed;
+  });
+
+  test("a successful admission clears rail closure with the rest", func() {
+    let closed = Gate.latchCondition(Gate.admitting(), #railClosed);
+    assert closed.announce;
+    let open = Gate.latchAdmission(closed.latch);
+    assert not open.railClosed;
+    // Reaching a full admission means the rail was open AND the gate passed, so
+    // clearing all three on it is sound rather than optimistic.
+    assert Gate.latchCondition(open, #railClosed).announce;
+  });
+
+  test("railConditionOf covers every Reason, and only the rail-state ones map", func() {
+    assert Gate.railConditionOf(shortReserve) == ?#reserveShort;
+    assert Gate.railConditionOf(lowGas) == ?#canisterCyclesLow;
+    assert Gate.railConditionOf(belowMin) == null;
+    assert Gate.railConditionOf(aboveMax) == null;
+    assert Gate.railConditionOf(capReached) == null;
+  });
+
+  test("the rail-closed counter is separate from every Reason counter", func() {
+    let c = Gate.countRailClosed(Gate.countRailClosed(Gate.noRefusals()));
+    assert c.railClosed == 2;
+    // A refusal that never reached the gate must not show up as a gate reason.
+    assert c.amountBelowMin == 0;
+    assert c.reserveShort == 0;
+    assert c.canisterCyclesLow == 0;
+  });
+});

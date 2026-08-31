@@ -74,11 +74,13 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     amountAboveMax: IDL.Nat,
     amountBelowMin: IDL.Nat,
     canisterCyclesLow: IDL.Nat,
+    railClosed: IDL.Nat,
     reserveShort: IDL.Nat,
     tooManyOpenOrders: IDL.Nat,
   });
   const RailStateLatch = IDL.Record({
     canisterCyclesLow: IDL.Bool,
+    railClosed: IDL.Bool,
     reserveShort: IDL.Bool,
   });
   const GateConfig = IDL.Record({

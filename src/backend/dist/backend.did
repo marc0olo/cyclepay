@@ -120,6 +120,7 @@ type RefusalCounts =
    amountAboveMax: nat;
    amountBelowMin: nat;
    canisterCyclesLow: nat;
+   railClosed: nat;
    reserveShort: nat;
    tooManyOpenOrders: nat;
  };
@@ -171,6 +172,7 @@ type Rates =
 type RailStateLatch = 
  record {
    canisterCyclesLow: bool;
+   railClosed: bool;
    reserveShort: bool;
  };
 type Rail = variant {card;};
