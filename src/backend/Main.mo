@@ -1116,15 +1116,15 @@ persistent actor CyclesGateway {
           case (#ok(_)) {};
           case (#err(_)) {}; // already cancelled or gone; nothing to undo
         };
-        noteSessionCreateFailed(e);
+        noteStripeApiFailed(e);
         return #err(#sessionUnavailable(sessionErrorToText(e)));
       };
       case (#ok(created)) {
         // Stripe answered, so the outcall is working again. This is the ONLY
-        // evidence that bears on `#sessionCreateFailing` — `latchAdmission` cannot
+        // evidence that bears on `#stripeApiFailing` — `latchAdmission` cannot
         // clear it, because admission runs *before* this call and says nothing
         // about it (#37 §2c).
-        railStateLatch := Gate.latchSessionCreated(railStateLatch);
+        railStateLatch := Gate.latchStripeApiOk(railStateLatch);
         // ⚠️ Re-check the status before storing. `create_order` committed the
         // order as `#created` and then awaited, so `cancel_order` from a second
         // tab can have run in between — its sessionless branch fires, because no
@@ -1448,12 +1448,12 @@ persistent actor CyclesGateway {
   /// the `client_reference_id` — so no pre-commit check can cover this branch. A
   /// circuit breaker is deferred behind the evidence #37 §2c asks for; this fixes the
   /// audit half, which is the half that becomes permanent when the ring comes out.
-  func noteSessionCreateFailed(e : SessionError) {
-    refusalCounts := Gate.countSessionCreateFailed(refusalCounts);
-    let latched = Gate.latchCondition(railStateLatch, #sessionCreateFailing);
+  func noteStripeApiFailed(e : SessionError) {
+    refusalCounts := Gate.countStripeApiFailed(refusalCounts);
+    let latched = Gate.latchCondition(railStateLatch, #stripeApiFailing);
     railStateLatch := latched.latch;
     if (latched.announce) {
-      audit("gate.startedRefusing", "sessionCreateFailing: " # sessionErrorToText(e));
+      audit("gate.startedRefusing", "stripeApiFailing: " # sessionErrorToText(e));
     };
   };
 
@@ -2836,7 +2836,16 @@ persistent actor CyclesGateway {
             // session completed (the payment won the race) or it expired already.
             // Change nothing and let the incoming `checkout.session.completed` or
             // `checkout.session.expired` resolve it.
-            audit("order.cancelRaced", id # ": session " # sessionId # " is no longer open");
+            //
+            // ⚠️ **No audit line, deliberately (#37 §2c).** It failed the admission
+            // rule on both halves: a buyer can retry the cancel and hit this again, so
+            // it was caller-bounded — and its information exists nowhere else *only*
+            // if you ignore that **the resolving event is itself logged**. The
+            // `completed` or `expired` webhook that settles this race writes the record,
+            // and it is the one an operator actually needs, because it says WHICH of
+            // the two causes it was. This line said only "one of two things happened".
+            //
+            // The buyer still learns, from the error returned below.
             return #err(
               "order " # id # " is already settled or has expired — refresh the page"
             );
@@ -2844,7 +2853,14 @@ persistent actor CyclesGateway {
           case (#failed(detail)) {
             // The order stays payable and uncancelled, which is the safe side:
             // the buyer can retry, or it expires on its own.
-            audit("order.cancelFailed", id # ": " # detail);
+            //
+            // ⚠️ **And because the buyer CAN retry, this line was caller-bounded** —
+            // the comment above invites exactly the loop that made it fail
+            // `AuditLog.mo`'s admission rule. It is the same Stripe-API-failing
+            // condition `create_order` latches, with the same cause and the same lever,
+            // so it routes through the same latch: one line when the API starts
+            // refusing us, a counter for the volume.
+            noteStripeApiFailed(#outcallFailed(detail));
             return #err(
               "could not reach Stripe to cancel order " # id # " — try again, or it expires on its own"
             );

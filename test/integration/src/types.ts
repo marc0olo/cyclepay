@@ -135,7 +135,7 @@ export interface RefusalCounts {
   reserveShort: bigint;
   /// The session outcall failed. Separate from `railClosed`: a present-but-invalid
   /// key is a different incident from an absent one, with a different lever.
-  sessionCreateFailed: bigint;
+  stripeApiFailed: bigint;
   tooManyOpenOrders: bigint;
 }
 
@@ -159,7 +159,7 @@ export interface RailStateLatch {
   canisterCyclesLow: boolean;
   railClosed: boolean;
   reserveShort: boolean;
-  sessionCreateFailing: boolean;
+  stripeApiFailing: boolean;
 }
 
 export interface GateConfig {

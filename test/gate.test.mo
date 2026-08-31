@@ -374,10 +374,10 @@ suite("#61 rail closure is the third latching condition", func() {
 
 suite("#37 §2c — the session outcall is a fourth condition, cleared differently", func() {
   test("entering it announces once", func() {
-    let first = Gate.latchCondition(Gate.admitting(), #sessionCreateFailing);
+    let first = Gate.latchCondition(Gate.admitting(), #stripeApiFailing);
     assert first.announce;
-    assert first.latch.sessionCreateFailing;
-    assert not Gate.latchCondition(first.latch, #sessionCreateFailing).announce;
+    assert first.latch.stripeApiFailing;
+    assert not Gate.latchCondition(first.latch, #stripeApiFailing).announce;
   });
 
   test("a successful ADMISSION does not clear it, and that is the whole point", func() {
@@ -386,18 +386,18 @@ suite("#37 §2c — the session outcall is a fourth condition, cleared different
     // cleared it, then "admit ok → session fails → admit ok → session fails" would
     // announce on every single attempt — the naive global-flag bug, one level down
     // from where it was first caught.
-    let failing = Gate.latchCondition(Gate.admitting(), #sessionCreateFailing);
+    let failing = Gate.latchCondition(Gate.admitting(), #stripeApiFailing);
     assert failing.announce;
     let afterAdmit = Gate.latchAdmission(failing.latch);
-    assert afterAdmit.sessionCreateFailing;
-    assert not Gate.latchCondition(afterAdmit, #sessionCreateFailing).announce;
+    assert afterAdmit.stripeApiFailing;
+    assert not Gate.latchCondition(afterAdmit, #stripeApiFailing).announce;
   });
 
   test("only a created session clears it, and it clears nothing else", func() {
-    var latch = Gate.latchCondition(Gate.admitting(), #sessionCreateFailing).latch;
+    var latch = Gate.latchCondition(Gate.admitting(), #stripeApiFailing).latch;
     latch := Gate.latchCondition(latch, #reserveShort).latch;
-    let created = Gate.latchSessionCreated(latch);
-    assert not created.sessionCreateFailing;
+    let created = Gate.latchStripeApiOk(latch);
+    assert not created.stripeApiFailing;
     // The reserve is a separate fact and a working Stripe call is no evidence
     // about it.
     assert created.reserveShort;
@@ -405,7 +405,7 @@ suite("#37 §2c — the session outcall is a fourth condition, cleared different
 
   test("latchAdmission clears exactly the three conditions admission is evidence for", func() {
     var latch = Gate.admitting();
-    for (c in [#reserveShort, #canisterCyclesLow, #railClosed, #sessionCreateFailing].vals()) {
+    for (c in [#reserveShort, #canisterCyclesLow, #railClosed, #stripeApiFailing].vals()) {
       latch := Gate.latchCondition(latch, c).latch;
     };
     let admitted = Gate.latchAdmission(latch);
@@ -414,6 +414,6 @@ suite("#37 §2c — the session outcall is a fourth condition, cleared different
     // Rail config is checked BEFORE admission, so getting admitted proves it passed.
     assert not admitted.railClosed;
     // The outcall is not.
-    assert admitted.sessionCreateFailing;
+    assert admitted.stripeApiFailing;
   });
 });

@@ -93,14 +93,14 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     canisterCyclesLow: IDL.Nat,
     railClosed: IDL.Nat,
     reserveShort: IDL.Nat,
-    sessionCreateFailed: IDL.Nat,
+    stripeApiFailed: IDL.Nat,
     tooManyOpenOrders: IDL.Nat,
   });
   const RailStateLatch = IDL.Record({
     canisterCyclesLow: IDL.Bool,
     railClosed: IDL.Bool,
     reserveShort: IDL.Bool,
-    sessionCreateFailing: IDL.Bool,
+    stripeApiFailing: IDL.Bool,
   });
   const GateConfig = IDL.Record({
     maxOpenOrdersPerPrincipal: IDL.Nat,

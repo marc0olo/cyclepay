@@ -127,7 +127,7 @@ type RefusalCounts =
    canisterCyclesLow: nat;
    railClosed: nat;
    reserveShort: nat;
-   sessionCreateFailed: nat;
+   stripeApiFailed: nat;
    tooManyOpenOrders: nat;
  };
 type Receipt = 
@@ -180,7 +180,7 @@ type RailStateLatch =
    canisterCyclesLow: bool;
    railClosed: bool;
    reserveShort: bool;
-   sessionCreateFailing: bool;
+   stripeApiFailing: bool;
  };
 type Rail = variant {card;};
 type QuotePreviews = 
