@@ -371,3 +371,49 @@ suite("#61 rail closure is the third latching condition", func() {
     assert c.canisterCyclesLow == 0;
   });
 });
+
+suite("#37 §2c — the session outcall is a fourth condition, cleared differently", func() {
+  test("entering it announces once", func() {
+    let first = Gate.latchCondition(Gate.admitting(), #sessionCreateFailing);
+    assert first.announce;
+    assert first.latch.sessionCreateFailing;
+    assert not Gate.latchCondition(first.latch, #sessionCreateFailing).announce;
+  });
+
+  test("a successful ADMISSION does not clear it, and that is the whole point", func() {
+    // ⚠️ **The trap this scoping exists to avoid.** The session outcall runs
+    // *after* admission, so admission is no evidence about it. If `latchAdmission`
+    // cleared it, then "admit ok → session fails → admit ok → session fails" would
+    // announce on every single attempt — the naive global-flag bug, one level down
+    // from where it was first caught.
+    let failing = Gate.latchCondition(Gate.admitting(), #sessionCreateFailing);
+    assert failing.announce;
+    let afterAdmit = Gate.latchAdmission(failing.latch);
+    assert afterAdmit.sessionCreateFailing;
+    assert not Gate.latchCondition(afterAdmit, #sessionCreateFailing).announce;
+  });
+
+  test("only a created session clears it, and it clears nothing else", func() {
+    var latch = Gate.latchCondition(Gate.admitting(), #sessionCreateFailing).latch;
+    latch := Gate.latchCondition(latch, #reserveShort).latch;
+    let created = Gate.latchSessionCreated(latch);
+    assert not created.sessionCreateFailing;
+    // The reserve is a separate fact and a working Stripe call is no evidence
+    // about it.
+    assert created.reserveShort;
+  });
+
+  test("latchAdmission clears exactly the three conditions admission is evidence for", func() {
+    var latch = Gate.admitting();
+    for (c in [#reserveShort, #canisterCyclesLow, #railClosed, #sessionCreateFailing].vals()) {
+      latch := Gate.latchCondition(latch, c).latch;
+    };
+    let admitted = Gate.latchAdmission(latch);
+    assert not admitted.reserveShort;
+    assert not admitted.canisterCyclesLow;
+    // Rail config is checked BEFORE admission, so getting admitted proves it passed.
+    assert not admitted.railClosed;
+    // The outcall is not.
+    assert admitted.sessionCreateFailing;
+  });
+});

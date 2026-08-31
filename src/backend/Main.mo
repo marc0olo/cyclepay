@@ -1115,10 +1115,15 @@ persistent actor CyclesGateway {
           case (#ok(_)) {};
           case (#err(_)) {}; // already cancelled or gone; nothing to undo
         };
-        audit("stripe.sessionFailed", order.id # ": " # sessionErrorToText(e));
+        noteSessionCreateFailed(e);
         return #err(#sessionUnavailable(sessionErrorToText(e)));
       };
       case (#ok(created)) {
+        // Stripe answered, so the outcall is working again. This is the ONLY
+        // evidence that bears on `#sessionCreateFailing` — `latchAdmission` cannot
+        // clear it, because admission runs *before* this call and says nothing
+        // about it (#37 §2c).
+        railStateLatch := Gate.latchSessionCreated(railStateLatch);
         // ⚠️ Re-check the status before storing. `create_order` committed the
         // order as `#created` and then awaited, so `cancel_order` from a second
         // tab can have run in between — its sessionless branch fires, because no
@@ -1423,6 +1428,31 @@ persistent actor CyclesGateway {
         };
       };
       case null {};
+    };
+  };
+
+  /// Tally a failed session creation, announcing once on the way into the
+  /// condition (#37 §2c).
+  ///
+  /// ⚠️ **Per-attempt before this.** `stripe.sessionFailed` wrote one line per try,
+  /// and the reachable driver is not a transient outage — it is a key that is
+  /// **present but invalid**, rotated or revoked at Stripe without updating the
+  /// canister. `sessionConfig` cannot see that (the secret exists), so every attempt
+  /// reaches the outcall, 401s, and files a line. A transient timeout is
+  /// self-limiting; a revoked key repeats until `minCanisterCycles` closes the rail.
+  ///
+  /// ⚠️ **The order-record half of that loop is NOT fixed here.** Each attempt still
+  /// commits an order and expires it, and because the record is not `#created` the
+  /// open-order cap does not bound it. Committing first is forced — the order id *is*
+  /// the `client_reference_id` — so no pre-commit check can cover this branch. A
+  /// circuit breaker is deferred behind the evidence #37 §2c asks for; this fixes the
+  /// audit half, which is the half that becomes permanent when the ring comes out.
+  func noteSessionCreateFailed(e : SessionError) {
+    refusalCounts := Gate.countSessionCreateFailed(refusalCounts);
+    let latched = Gate.latchCondition(railStateLatch, #sessionCreateFailing);
+    railStateLatch := latched.latch;
+    if (latched.announce) {
+      audit("gate.startedRefusing", "sessionCreateFailing: " # sessionErrorToText(e));
     };
   };
 

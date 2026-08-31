@@ -109,6 +109,9 @@ export interface RefusalCounts {
   /// while it is closed no attempt reaches `admit` at all.
   railClosed: bigint;
   reserveShort: bigint;
+  /// The session outcall failed. Separate from `railClosed`: a present-but-invalid
+  /// key is a different incident from an absent one, with a different lever.
+  sessionCreateFailed: bigint;
   tooManyOpenOrders: bigint;
 }
 
@@ -118,6 +121,7 @@ export interface RailStateLatch {
   canisterCyclesLow: boolean;
   railClosed: boolean;
   reserveShort: boolean;
+  sessionCreateFailing: boolean;
 }
 
 export interface GateConfig {
