@@ -79,8 +79,16 @@ GATEWAY_URL="$(printf '%s' "$STATUS_JSON" | jq -r '.gateway_url')"
 PORT="$(printf '%s' "$GATEWAY_URL" | sed -E 's#^https?://[^:]+:([0-9]+)/?$#\1#')"
 [ -n "$PORT" ] || die "could not parse a port out of '$GATEWAY_URL'"
 
-BACKEND_ID="$(icp canister status backend --json 2>/dev/null | jq -r '.id')" ||
-  die "backend not deployed. Run: icp deploy backend"
+# ⚠️ **"backend not deployed" is the likely cause, not the only one.** This also fires
+# on a network that is not running and on the wrong identity, and swallowing the reason
+# sends the operator to re-deploy something that is already there.
+if ! BACKEND_STATUS="$(icp canister status backend --json 2>&1)"; then
+  printf '\n%s\n\n' "$BACKEND_STATUS" >&2
+  die "could not read the backend canister's status — the reason is above. Usually it is
+    not deployed (\`icp deploy backend\`); it can also be a stopped network or the wrong
+    identity."
+fi
+BACKEND_ID="$(printf '%s' "$BACKEND_STATUS" | jq -r '.id')"
 [ "$BACKEND_ID" != "null" ] && [ -n "$BACKEND_ID" ] ||
   die "backend not deployed. Run: icp deploy backend"
 

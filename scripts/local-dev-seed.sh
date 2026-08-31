@@ -387,9 +387,29 @@ ok "a \$10 purchase is admitted"
 # the reserve is verified separately, against the same figure the gate decides on —
 # otherwise a missing `refresh_reserve` sails past every check in this script and
 # surfaces as a refusal on the first real order.
-RESERVE="$(icp canister call backend reserve_status '()' 2>/dev/null)"
-AVAILABLE="$(printf '%s' "$RESERVE" | grep -oE 'availableToSell = [0-9_]+' | tr -d '_' | grep -oE '[0-9]+$' || echo 0)"
-if [ "${AVAILABLE:-0}" -eq 0 ]; then
+# ⚠️ **Two faults here, and the second is worse than a swallowed reason.** This read
+# used to be `2>/dev/null` with `|| echo 0` on the parse — so ANY failure became
+# `AVAILABLE=0` and was reported as the one cause below. A wrong VALUE substituted for
+# an error is worse than a hidden message, because the message that follows is
+# confident and specific.
+#
+# The die's cause is the dominant one and stays. But the same swallow hid "the method
+# does not exist" — which is exactly what a rename produces, and this file has just been
+# through one — plus "the canister is not deployed" and "the network is down". So the
+# call is checked separately from the parse, and each says which happened.
+if ! RESERVE="$(icp canister call backend reserve_status '()' 2>&1)"; then
+  printf '\n%s\n\n' "$RESERVE" >&2
+  die "could not read reserve_status — the reason is printed above. A missing method means
+    this script is older than the canister it is seeding; anything else is the network
+    or the deployment."
+fi
+AVAILABLE="$(printf '%s' "$RESERVE" | grep -oE 'availableToSell = [0-9_]+' | tr -d '_' | grep -oE '[0-9]+$' || true)"
+if [ -z "$AVAILABLE" ]; then
+  printf '\n%s\n\n' "$RESERVE" >&2
+  die "reserve_status answered but had no availableToSell field — the response is above.
+    The shape changed and this script did not."
+fi
+if [ "$AVAILABLE" -eq 0 ]; then
   die "the gateway will sell 0 cycles even though the reserve was funded — its floor
     has not observed the balance. Fix:
       icp canister call backend refresh_reserve '()'
