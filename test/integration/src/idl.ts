@@ -328,6 +328,11 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       }))],
       ['query'],
     ),
+    resolve_problem: IDL.Func(
+      [IDL.Text, IDL.Text, IDL.Opt(IDL.Text)],
+      [IDL.Variant({ err: IDL.Text, ok: IDL.Nat })],
+      [],
+    ),
     orders_with_problems: IDL.Func(
       [],
       [IDL.Record({ orders: IDL.Vec(Order), unresolved: IDL.Nat })],

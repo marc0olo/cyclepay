@@ -300,6 +300,9 @@ export interface BackendService {
   /// The worklist, as a filter over orders (#37). `unresolved` is NOT orders.length —
   /// one order can carry several problems.
   orders_with_problems(): Promise<{ orders: Order[]; unresolved: bigint }>;
+  /// Close ONE order-bound problem. `paymentRef` selects which, and omitting it is
+  /// refused when more than one candidate exists (#37).
+  resolve_problem(orderId: string, kindTag: string, paymentRef: Opt<string>): Promise<Result<bigint, string>>;
   delayed_deliveries(): Promise<DelayedDelivery[]>;
   lifecycle_config(): Promise<{ gate: GateConfig }>;
   order_for_payment(paymentRef: string): Promise<Opt<string>>;

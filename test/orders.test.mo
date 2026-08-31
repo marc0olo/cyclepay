@@ -960,3 +960,61 @@ suite("#37 — the pay link is dropped on the way into a terminal state", func()
     assert fromStore.stripeSessionId != null;
   });
 });
+
+suite("#37 — resolving a problem is precise, and refuses when it cannot be", func() {
+  func orderWith(store : Orders.Store, id : Text) : Types.Order {
+    switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1_000, pricing, 100)) {
+      case (#ok(o)) o;
+      case (#err(_)) { assert false; loop {} };
+    };
+  };
+
+  test("⚠️ two #duplicate problems with different refs are BOTH kept", func() {
+    // This is the state that made a tag-only resolver dangerous: the dedup key is
+    // (kind, paymentRef), so a buyer paying three times files three problems.
+    let store = Orders.emptyStore();
+    let o = orderWith(store, "multi");
+    assert Orders.fileProblem(store, o.id, #duplicate({ paymentRef = "pi_a" }), "2nd", 200);
+    assert Orders.fileProblem(store, o.id, #duplicate({ paymentRef = "pi_b" }), "3rd", 210);
+    assert Orders.unresolvedOfKind(store, o.id, "duplicate").size() == 2;
+  });
+
+  test("resolving by ref closes exactly one, leaving the other outstanding", func() {
+    let store = Orders.emptyStore();
+    let o = orderWith(store, "precise");
+    assert Orders.fileProblem(store, o.id, #duplicate({ paymentRef = "pi_a" }), "2nd", 200);
+    assert Orders.fileProblem(store, o.id, #duplicate({ paymentRef = "pi_b" }), "3rd", 210);
+    let closed = Orders.resolveProblems(
+      store, o.id,
+      func(k) { Problems.identifyingRef(k) == ?"pi_a" },
+      300,
+    );
+    assert closed == 1;
+    let left = Orders.unresolvedOfKind(store, o.id, "duplicate");
+    assert left.size() == 1;
+    assert left[0].ref == ?"pi_b";
+    // The order is still on the worklist, because one problem is still open.
+    assert Orders.withUnresolvedProblems(store).size() == 1;
+  });
+
+  test("#deliveryStuck can only ever have one, so a ref is never needed", func() {
+    // `sameShape` matches it on the discriminator alone, which makes a second
+    // unresolved one unrepresentable rather than merely unlikely.
+    let store = Orders.emptyStore();
+    let o = orderWith(store, "stuck-once");
+    assert Orders.fileProblem(store, o.id, #deliveryStuck({ stage = "staleIntent" }), "a", 200);
+    assert not Orders.fileProblem(store, o.id, #deliveryStuck({ stage = "transferRejected" }), "b", 210);
+    assert Orders.unresolvedOfKind(store, o.id, "deliveryStuck").size() == 1;
+    assert Problems.identifyingRef(#deliveryStuck({ stage = "x" })) == null;
+  });
+
+  test("sameShape and the operator's selector are the same key", func() {
+    // They were separate definitions, and that is precisely what let the resolver be
+    // coarser than the dedup. One definition now, both users.
+    let a : Types.ProblemKind = #duplicate({ paymentRef = "pi_1" });
+    let b : Types.ProblemKind = #duplicate({ paymentRef = "pi_2" });
+    assert not Problems.sameShape(a, b);
+    assert Problems.identifyingRef(a) != Problems.identifyingRef(b);
+    assert Problems.sameShape(a, #duplicate({ paymentRef = "pi_1" }));
+  });
+});

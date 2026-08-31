@@ -641,6 +641,23 @@ module {
     result.closed;
   };
 
+  /// Every unresolved problem on this order matching `kindTag`, and their identifying
+  /// references — what an operator needs to disambiguate before closing one.
+  public func unresolvedOfKind(
+    store : Store,
+    id : Types.OrderId,
+    kindTag : Text,
+  ) : [{ kind : Types.ProblemKind; detail : Text; ref : ?Text }] {
+    let ?order = store.orders.get(id) else return [];
+    let out = List.empty<{ kind : Types.ProblemKind; detail : Text; ref : ?Text }>();
+    for (p in order.problems.vals()) {
+      if (Problems.isUnresolved(p) and Problems.kindToText(p.kind) == kindTag) {
+        out.add({ kind = p.kind; detail = p.detail; ref = Problems.identifyingRef(p.kind) });
+      };
+    };
+    out.toArray();
+  };
+
   /// Close every problem a `charge.refunded` for `paymentRef` settles on its own.
   ///
   /// ⚠️ **Walks `unresolvedProblems`, NOT the order store.** This runs synchronously

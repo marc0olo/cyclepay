@@ -511,6 +511,30 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   expect(dupProblem).toBeDefined();
   expect(dupProblem!.resolvedAtNs).toEqual([]);
 
+  // ⚠️ **A SECOND distinct payment files a SECOND problem**, because the dedup key is
+  // (kind, paymentRef) — a buyer who pays three times has three obligations, not one.
+  const doublePay2 = await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_a3b', paymentIntent: 'pi_a_double_2', clientReferenceId: refA,
+    amountCents: TIER_USD_CENTS,
+  }));
+  expect(doublePay2.status_code).toBe(200);
+  expect((await orderProblems(gw, orderA.id)).filter((p) => 'duplicate' in p.kind))
+    .toHaveLength(2);
+
+  // ⚠️ **And `resolve_problem` REFUSES the ambiguous close**, listing the references.
+  // Closing "the duplicate" would mark settled a payment the operator has not
+  // refunded — the automatic closer matches on the reference and is exact, so only the
+  // manual lever could ever guess, and it declines instead.
+  const ambiguous = expectErr(await gw.asAdmin.resolve_problem(orderA.id, 'duplicate', []));
+  expect(ambiguous).toMatch(/2 unresolved duplicate problems/);
+  expect(ambiguous).toContain('pi_a_double');
+  expect(ambiguous).toContain('pi_a_double_2');
+
+  // Named precisely, it closes exactly one and leaves the other outstanding.
+  expect(expectOk(await gw.asAdmin.resolve_problem(orderA.id, 'duplicate', ['pi_a_double_2']))).toBe(1n);
+  expect(unresolvedProblems(await orderProblems(gw, orderA.id)).filter((p) => 'duplicate' in p.kind))
+    .toHaveLength(1);
+
   // ⚠️ **The worklist filter sees it** (#37) — this is the query that replaced the
   // queue's worklist function, and the acceptance criterion "everything outstanding is
   // a filter over orders" is only checkable because it exists.

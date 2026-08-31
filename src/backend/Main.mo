@@ -1579,31 +1579,85 @@ persistent actor CyclesGateway {
   /// close themselves; `#deliveryStuck`, `#refundAfterDelivery` and `#abandoned` carry
   /// no `paymentRef` and can only be closed here. Resolving an entry never transitions
   /// the order — see `Orphans`'s header.
-  /// Close an order-bound problem an operator has dealt with (#37).
+  /// Close **one** order-bound problem an operator has dealt with (#37).
   ///
-  /// ⚠️ **The order-shaped counterpart to `resolve_orphan`**, which addresses entries by
-  /// a queue id that no longer exists for the kinds that moved. `kindTag` is matched
-  /// against `Problems.kindToText`, so a typo closes nothing rather than the wrong
-  /// thing — and every unresolved problem of that kind on that order closes together,
-  /// because "the same problem, filed twice" is what `Problems.file` already prevents.
+  /// The order-shaped counterpart to `resolve_orphan`, which addresses entries by a
+  /// queue id that no longer exists for the kinds that moved.
+  ///
+  /// ⚠️ **`paymentRef` is the selector, and omitting it is only safe when there is one
+  /// candidate.** An earlier version took the tag alone and closed *every* unresolved
+  /// problem of that kind — which over-resolves, because `Problems.sameShape`
+  /// deliberately allows two unresolved `#duplicate` problems on one order with
+  /// different payment references (a buyer who pays three times). An operator who
+  /// refunded one payment would have marked the other settled.
+  ///
+  /// ⚠️ **The root cause is structural, so the fix is a real selector rather than a
+  /// warning.** Queue entries had monotonic ids; problems in an array have no stable
+  /// handle, so **the dedup key is the handle** — `(kindTag, identifyingRef)`, the same
+  /// pair `sameShape` uses to decide identity. One definition, both users.
+  ///
+  /// ⚠️ **And it refuses rather than guesses when the selector is ambiguous**, which is
+  /// this codebase's posture wherever a lever might act on the wrong thing — the
+  /// abandon guard and `cancel_order`'s `#notOpen` do the same. The refusal lists the
+  /// references so the operator can disambiguate, because declining without a way
+  /// through is a dead end rather than a safeguard.
   public shared ({ caller }) func resolve_problem(
     orderId : Types.OrderId,
     kindTag : Text,
+    /// Which one, when the kind can have several. `#deliveryStuck` never can — it is
+    /// matched on the discriminator alone — so null is always right for it.
+    paymentRef : ?Text,
   ) : async Result.Result<Nat, Text> {
     requireAdmin(caller);
-    let closed = Orders.resolveProblems(
-      orderStore,
-      orderId,
-      func(k) { Problems.kindToText(k) == kindTag },
-      Time.now(),
-    );
-    if (closed == 0) {
+    let candidates = Orders.unresolvedOfKind(orderStore, orderId, kindTag);
+    if (candidates.size() == 0) {
       return #err(
         "no unresolved " # kindTag # " problem on order " # orderId
         # " — check the tag against the order's own problems, and note a resolved one stays on the order rather than disappearing"
       );
     };
-    auditAdmin(caller, "order.problemResolved", orderId # ": " # kindTag # " (" # closed.toText() # ")");
+    switch (paymentRef) {
+      case null {
+        if (candidates.size() > 1) {
+          let refs = candidates.map(
+            func(c) = switch (c.ref) { case (?r) r; case null "(none)" }
+          );
+          return #err(
+            candidates.size().toText() # " unresolved " # kindTag # " problems on order "
+            # orderId # ", so this would close all of them — pass the payment reference for the one you dealt with. Candidates: "
+            # refs.values().join(", ")
+          );
+        };
+      };
+      case (?_) {};
+    };
+    let closed = Orders.resolveProblems(
+      orderStore,
+      orderId,
+      func(k) {
+        Problems.kindToText(k) == kindTag
+        and (
+          switch (paymentRef) {
+            case null true; // exactly one candidate, checked above
+            case (?want) Problems.identifyingRef(k) == ?want;
+          }
+        );
+      },
+      Time.now(),
+    );
+    if (closed == 0) {
+      return #err(
+        "no unresolved " # kindTag # " problem on order " # orderId
+        # " with that payment reference — the candidates are listed by resolve_problem with no reference given"
+      );
+    };
+    auditAdmin(
+      caller,
+      "order.problemResolved",
+      orderId # ": " # kindTag
+      # (switch (paymentRef) { case (?r) " (" # r # ")"; case null "" })
+      # " — " # closed.toText() # " closed",
+    );
     #ok(closed);
   };
 

@@ -805,6 +805,39 @@ whether attribution is broken — since #33 nothing but the canister writes
 `client_reference_id`, so a payment that cannot be attributed is a bug worth
 finding, not a routine occurrence to be papered over.
 
+### Closing an order-bound problem (#37)
+
+Since #37, four of the six kinds live on the order rather than in this list, and they
+are closed with `resolve_problem` rather than `resolve_orphan`:
+
+```sh
+# See what is outstanding, and on which orders
+icp canister call backend orders_with_problems '()'
+
+# Close one. The third argument selects WHICH, by payment reference.
+icp canister call backend resolve_problem '("<orderId>", "duplicate", opt "pi_...")'
+
+# `deliveryStuck` can only ever have one per order, so null is always right:
+icp canister call backend resolve_problem '("<orderId>", "deliveryStuck", null)'
+```
+
+⚠️ **Passing `null` when the order has several problems of that kind is REFUSED, and
+the refusal lists the references.** A buyer who pays three times files three
+`#duplicate` problems, and closing "the duplicate" would mark settled a payment you
+have not refunded. Refunding one and closing another is the mistake this refusal
+exists to prevent — the error message is the disambiguation step, not an obstacle.
+
+⚠️ **A resolved problem stays on the order.** Nothing drops, so `orders_with_problems`
+stops listing the order while its history remains readable. "It disappeared" is not
+what success looks like here.
+
+| kind tag | ref needed? | what closing it means |
+|---|---|---|
+| `duplicate` | **yes** when several exist | you refunded that specific second payment in Stripe |
+| `deliveryStuck` | no — one per order | you established the money position and acted (§6's stage table) |
+| `refundAfterDelivery` | **yes** when several exist | you reconciled the recorded loss; the cycles are not recoverable |
+| `paidNotCredited` | **yes** when several exist | ⚠️ normally closes ITSELF on the resend — closing it by hand says you gave up on crediting the buyer |
+
 ## 7. Recovery timer & manual kicks (§5.2)
 
 The recurring sweep is the backstop for every detached delivery kick that dies:

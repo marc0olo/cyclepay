@@ -124,6 +124,26 @@ module {
     };
   };
 
+  /// The reference that identifies **which** problem of a kind this is, where the kind
+  /// has one.
+  ///
+  /// ⚠️ **This is the PAYLOAD, not `paymentRefOf`'s accessor**, and the two must not be
+  /// confused. `paymentRefOf` answers "can a refund close this", so it withholds the
+  /// ref from `#refundAfterDelivery` and `#paidNotCredited` on purpose. This answers
+  /// "which one are we talking about", which those kinds can and must answer.
+  ///
+  /// ⚠️ **Null for `#deliveryStuck` because there can only be one.** `sameShape`
+  /// matches it on the discriminator alone, so a second unresolved one on the same
+  /// order is unrepresentable — nothing needs distinguishing.
+  public func identifyingRef(kind : Kind) : ?Text {
+    switch (kind) {
+      case (#duplicate({ paymentRef })) ?paymentRef;
+      case (#refundAfterDelivery({ paymentRef })) ?paymentRef;
+      case (#paidNotCredited({ paymentRef })) ?paymentRef;
+      case (#deliveryStuck(_)) null;
+    };
+  };
+
   /// Two kinds describe the same problem for dedup purposes.
   ///
   /// ⚠️ **Compared on the discriminator plus the identifying reference, not on every
@@ -131,14 +151,13 @@ module {
   /// partial refund arrives with a larger figure — comparing it would file a fresh
   /// problem per partial, and comparing nothing at all would let a genuinely
   /// different payment be swallowed.
+  /// ⚠️ **Expressed through `identifyingRef` so the dedup key and the operator's
+  /// selector cannot drift apart.** They were separate before and that is what let
+  /// `resolve_problem` be coarser than the dedup: the queue's monotonic entry ids gave
+  /// `resolve_orphan(id)` a stable handle, and problems in an array have none, so the
+  /// key IS the handle. One definition, both users.
   public func sameShape(a : Kind, b : Kind) : Bool {
-    switch (a, b) {
-      case (#duplicate(x), #duplicate(y)) x.paymentRef == y.paymentRef;
-      case (#deliveryStuck(_), #deliveryStuck(_)) true;
-      case (#refundAfterDelivery(x), #refundAfterDelivery(y)) x.paymentRef == y.paymentRef;
-      case (#paidNotCredited(x), #paidNotCredited(y)) x.paymentRef == y.paymentRef;
-      case (_, _) false;
-    };
+    kindToText(a) == kindToText(b) and identifyingRef(a) == identifyingRef(b);
   };
 
   /// Mark every unresolved problem matching `pred` resolved. Returns the updated
