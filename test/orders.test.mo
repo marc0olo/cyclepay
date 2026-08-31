@@ -1,4 +1,5 @@
 import { test; suite } "mo:test";
+import Problems "../src/backend/Problems";
 import Array "mo:core/Array";
 import List "mo:core/List";
 import Nat "mo:core/Nat";
@@ -832,5 +833,81 @@ suite("#37 — markDelayed records the first crossing, and only the first", func
   test("an unknown order records nothing and reports false", func() {
     let store = Orders.emptyStore();
     assert not Orders.markDelayed(store, "no-such-order", 1);
+  });
+});
+
+suite("#37 — the unresolved-problems index", func() {
+  func freshOrder(store : Orders.Store, id : Text) : Types.Order {
+    switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1_000, pricing, 100)) {
+      case (#ok(o)) o;
+      case (#err(_)) { assert false; loop {} };
+    };
+  };
+
+  test("filing enters the index, resolving the last problem leaves it", func() {
+    let store = Orders.emptyStore();
+    let o = freshOrder(store, "idx-1");
+    assert Orders.unresolvedProblemCount(store) == 0;
+    assert Orders.withUnresolvedProblems(store).size() == 0;
+
+    assert Orders.fileProblem(store, o.id, #duplicate({ paymentRef = "pi_1" }), "second payment", 200);
+    assert Orders.unresolvedProblemCount(store) == 1;
+    assert Orders.withUnresolvedProblems(store).size() == 1;
+
+    // Two problems, one order: the order is in the index once and stays until BOTH
+    // are closed.
+    assert Orders.fileProblem(store, o.id, #deliveryStuck({ stage = "staleIntent" }), "ledger", 210);
+    assert Orders.unresolvedProblemCount(store) == 2;
+    assert Orders.withUnresolvedProblems(store).size() == 1;
+
+    assert Orders.resolveProblems(store, o.id, func(k) { Problems.refundResolvable(k) }, 300) == 1;
+    assert Orders.withUnresolvedProblems(store).size() == 1;
+    assert Orders.resolveProblems(store, o.id, func(_) { true }, 310) == 1;
+    assert Orders.withUnresolvedProblems(store).size() == 0;
+    assert Orders.unresolvedProblemCount(store) == 0;
+
+    // ⚠️ **Nothing dropped.** The resolved problems are still on the order; only the
+    // worklist shrank.
+    let after = switch (Orders.get(store, o.id)) { case (?x) x; case null { assert false; loop {} } };
+    assert after.problems.size() == 2;
+  });
+
+  test("resolveByPaymentRef closes only the matching refund-resolvable problem", func() {
+    let store = Orders.emptyStore();
+    let a = freshOrder(store, "idx-a");
+    let b = freshOrder(store, "idx-b");
+    assert Orders.fileProblem(store, a.id, #duplicate({ paymentRef = "pi_match" }), "dup", 200);
+    assert Orders.fileProblem(store, b.id, #duplicate({ paymentRef = "pi_other" }), "dup", 200);
+    // Carries a paymentRef and must NOT be closed by a refund: the refund is what
+    // created it.
+    assert Orders.fileProblem(store, b.id, #refundAfterDelivery({ paymentRef = "pi_match"; cycles = 1; refundedCents = 1; fullRefund = true }), "loss", 200);
+
+    assert Orders.resolveByPaymentRef(store, "pi_match", 300) == 1;
+    assert Orders.withUnresolvedProblems(store).size() == 1; // b still has two open
+    assert Orders.unresolvedProblemCount(store) == 2;
+  });
+
+  test("⚠️ the index agrees with a full scan — the tripwire that makes derived state safe", func() {
+    // Without this the index is the `delayedAlerts` mistake again: a second structure
+    // that can disagree with the orders it points at and no way to tell which is
+    // right. A non-zero drift means a writer bypassed fileProblem/resolveProblems.
+    let store = Orders.emptyStore();
+    let a = freshOrder(store, "drift-a");
+    let b = freshOrder(store, "drift-b");
+    let c = freshOrder(store, "drift-c");
+    assert Orders.fileProblem(store, a.id, #duplicate({ paymentRef = "p1" }), "d", 200);
+    assert Orders.fileProblem(store, b.id, #deliveryStuck({ stage = "s" }), "d", 200);
+    assert Orders.fileProblem(store, c.id, #paidNotCredited({ paymentRef = "p3"; sessionId = "cs" }), "d", 200);
+    ignore Orders.resolveProblems(store, b.id, func(_) { true }, 300);
+    assert Orders.recountUnresolvedProblems(store) == 0;
+    // And the rebuild is idempotent.
+    assert Orders.recountUnresolvedProblems(store) == 0;
+    assert Orders.withUnresolvedProblems(store).size() == 2;
+  });
+
+  test("filing on an unknown order changes nothing", func() {
+    let store = Orders.emptyStore();
+    assert not Orders.fileProblem(store, "no-such-order", #duplicate({ paymentRef = "p" }), "d", 1);
+    assert Orders.withUnresolvedProblems(store).size() == 0;
   });
 });
