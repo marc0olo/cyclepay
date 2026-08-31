@@ -280,9 +280,21 @@ step "admission gate"
 # under-funded canister, and it means local development never exercises a gate
 # that is load-bearing on mainnet.
 CYCLES_TOP_UP=20t
-icp canister top-up backend --amount "$CYCLES_TOP_UP" >/dev/null 2>&1 ||
-  die "could not top up the backend canister with $CYCLES_TOP_UP cycles.
-    Needs icp-cli 1.2.0 or newer (\`icp canister top-up --help\`)."
+# ⚠️ **stderr is NOT redirected, and that is the fix rather than an oversight.** This
+# line used to end `>/dev/null 2>&1` with a `die` that asserted "needs icp-cli 1.2.0 or
+# newer" — a guess that was WRONG on a machine running 1.3.0, where the real error was
+# `Insufficient cycles. Requested: 20_000_000_000_000, balance: 13997200000000` after a
+# few reinstalls had spent the local identity's balance. Hiding the reason and printing
+# a hardcoded cause sends the operator to upgrade a tool that was already current.
+#
+# Same fault as `capture-stripe-fixtures.sh`'s preflight before it was fixed: a swallowed
+# stderr plus a guessed diagnosis is worse than no diagnosis, because it is believed.
+if ! TOP_UP_OUT="$(icp canister top-up backend --amount "$CYCLES_TOP_UP" 2>&1)"; then
+  printf '\n%s\n\n' "$TOP_UP_OUT" >&2
+  die "could not top up the backend canister with $CYCLES_TOP_UP cycles — the reason is printed above.
+    Two causes are common, and the message says which: the local identity's cycles are spent
+    (reinstall a few times and they are), or icp-cli predates \`icp canister top-up\` (1.2.0)."
+fi
 
 step "cycles reserve"
 # Delivery is a TRANSFER out of the gateway's own cycles-ledger account. So the
@@ -302,7 +314,14 @@ BACKEND_ID="$(icp canister status backend --json | jq -r '.id')"
 [ -n "$BACKEND_ID" ] && [ "$BACKEND_ID" != "null" ] ||
   die "could not read the backend canister id — is the network up and the canister deployed?"
 RESERVE_TOP_UP=100t
-if icp cycles transfer "$RESERVE_TOP_UP" "$BACKEND_ID" >/dev/null 2>&1; then
+# ⚠️ **Capture the reason, do not discard it.** This was `>/dev/null 2>&1`, so the
+# warning below could only say "could not fund the cycles reserve" — and the actual
+# message (`Insufficient cycles. Requested: 100_000_000_000_000, balance: …`) is the
+# one thing that tells an operator whether to mint more or fix something. Third
+# instance of the swallowed-reason pattern in this file, which is the file whose whole
+# job is printing guidance.
+RESERVE_OUT=""
+if RESERVE_OUT="$(icp cycles transfer "$RESERVE_TOP_UP" "$BACKEND_ID" 2>&1)"; then
   # ⚠️ **A funded reserve is not a SELLABLE reserve until the gateway looks.** #30
   # PR-B decides solvency against a maintained lower bound on this account, and that
   # bound only ever rises by observation: it starts at zero on a fresh install, and a
@@ -319,7 +338,8 @@ if icp cycles transfer "$RESERVE_TOP_UP" "$BACKEND_ID" >/dev/null 2>&1; then
   fi
   echo "reserve:     $RESERVE_TOP_UP cycles in the gateway's own ledger account, observed"
 else
-  printf '  \033[33m!\033[0m could not fund the cycles reserve with %s.\n' "$RESERVE_TOP_UP"
+  printf '  \033[33m!\033[0m could not fund the cycles reserve with %s:\n' "$RESERVE_TOP_UP"
+  printf '    %s\n' "$RESERVE_OUT"
   printf '    Orders will be created and PAID and then retry delivery forever.\n'
   printf '    Fund it by hand, then let the gateway observe it:\n'
   printf '      icp cycles transfer %s %s\n' "$RESERVE_TOP_UP" "$BACKEND_ID"
