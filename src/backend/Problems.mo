@@ -82,18 +82,46 @@ module {
     problem.resolvedAtNs == null;
   };
 
-  /// File a problem, unless an unresolved one of the same shape is already there.
+  /// File a problem — or **refresh** the unresolved one of the same shape that is
+  /// already there.
   ///
   /// ⚠️ **Dedup is by kind-shape, not by equality.** Re-filing on every sweep is the
-  /// flood that `#deliveryDelayed`'s `delayedAlerts` map existed to suppress; here
-  /// the order itself carries the answer, so the guard needs no second structure.
-  /// `detail` is deliberately excluded from the comparison — the ledger's wording can
-  /// change between attempts without the problem being a new one.
-  public func file(problems : [Problem], kind : Kind, detail : Text, nowNs : Int) : [Problem] {
-    for (existing in problems.vals()) {
-      if (isUnresolved(existing) and sameShape(existing.kind, kind)) return problems;
+  /// flood that `#deliveryDelayed`'s `delayedAlerts` map existed to suppress; here the
+  /// order itself carries the answer, so the guard needs no second structure.
+  ///
+  /// ⚠️ **A match REFRESHES the payload and the detail, and suppressing instead would
+  /// be a regression.** The queue's `add` had no dedup at all, so a second partial
+  /// refund filed a second entry carrying the larger *cumulative* `refundedCents`.
+  /// Plain suppression would leave an operator reading the **stale, smaller** figure —
+  /// reconciling against Stripe by amount is the whole reason that field is sized.
+  /// The same applies to `#deliveryStuck`'s `stage`: it is the money position, and an
+  /// operator acts on the *current* one, not the first one observed.
+  ///
+  /// So the two halves are separate concerns: **shape** decides whether this is the
+  /// same problem, and a match then **updates** what the problem currently says.
+  /// `filedAtNs` is preserved, because when the trouble started is not something a
+  /// refresh may overwrite.
+  public func file(
+    problems : [Problem],
+    kind : Kind,
+    detail : Text,
+    nowNs : Int,
+  ) : { problems : [Problem]; filed : Bool } {
+    var found = false;
+    let refreshed = problems.map(
+      func(p : Problem) : Problem {
+        if (not found and isUnresolved(p) and sameShape(p.kind, kind)) {
+          found := true;
+          // `filedAtNs` deliberately kept: first seen, not last seen.
+          { p with kind; detail };
+        } else { p };
+      }
+    );
+    if (found) return { problems = refreshed; filed = false };
+    {
+      problems = problems.concat([{ kind; detail; filedAtNs = nowNs; resolvedAtNs = null }]);
+      filed = true;
     };
-    problems.concat([{ kind; detail; filedAtNs = nowNs; resolvedAtNs = null }]);
   };
 
   /// Two kinds describe the same problem for dedup purposes.

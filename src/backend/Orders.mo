@@ -580,13 +580,18 @@ module {
     nowNs : Int,
   ) : Bool {
     let ?order = store.orders.get(id) else return false;
-    let updated = Problems.file(order.problems, kind, detail, nowNs);
-    if (updated.size() == order.problems.size()) return false;
+    let result = Problems.file(order.problems, kind, detail, nowNs);
+    let updated = result.problems;
     // ⚠️ `updatedAtNs` is deliberately untouched: it is the held-since clock
     // `Delivery.waitStage` reads, and filing a problem is not a state transition.
     store.orders.add(id, { order with problems = updated });
     store.unresolvedProblems.add(id);
-    true;
+    // ⚠️ **False on a refresh, and that is what the callers want.** A refreshed
+    // problem must not re-audit: the audit line marks the transition into trouble,
+    // not every observation of it. The *payload* is still updated, so an operator
+    // reading the order sees the current figure — which is why this returns "was it
+    // newly filed" rather than "did anything change".
+    result.filed;
   };
 
   /// Resolve every unresolved problem on one order matching `pred`.
