@@ -274,6 +274,14 @@ module {
     /// `stripe.refundOfEscalated`, and RUNBOOK documents the procedure as
     /// refund-then-abandon. The entry was never what tracked the money.
     abandonedReason : ?Text;
+    /// Problems that belong to this order, with their resolution state (#37).
+    ///
+    /// **Problems that belong to an order live on the order. Nothing drops.** See
+    /// `Problems.mo` for the kinds and the admission rule they have to pass. The
+    /// worklist function survives as a *filter* over this — "everything outstanding"
+    /// is a query for orders with an unresolved problem — rather than as a separate
+    /// structure that can fall out of step with the orders it points at.
+    problems : [Problem];
   };
 
   /// Why an `#expired` order expired. Two producers, and they are the only two:
@@ -283,6 +291,61 @@ module {
   public type ExpiredBy = {
     #sessionExpired;
     #sessionFailed;
+  };
+
+  /// An order-bound problem. Every arm had an `orderId` in `ErrorQueue.Kind`; the
+  /// order it hangs off supplies that now.
+  public type ProblemKind = {
+    /// Refund-resolvable — a genuine second, distinct payment for an order that was
+    /// already handled.
+    #duplicate : { paymentRef : Text };
+    /// **A delivery stopped somewhere it cannot continue automatically.** Not
+    /// refund-resolvable: the fiat is in, and what happens next depends on the money
+    /// position rather than on the reason it stopped.
+    ///
+    /// ⚠️ **`stage` IS the money position, and it is what the operator acts on.**
+    /// `Delivery.terminationFor` derives it from the **journal**, not the status,
+    /// because one status covers several positions — `staleIntent` (unknown: did the
+    /// transfer land?), `deliveryWaitExceeded` (certain: fiat in, nothing sent), and
+    /// `transferRejected`/`journalInconsistent` (the ledger refused, or the intent
+    /// contradicts the order).
+    ///
+    /// ⚠️ **`stage` is a stringly-typed discriminator and must stay advisory.** It is
+    /// safe only because the journal is the authority. **Never branch a money
+    /// decision on comparing it** — ask the journal the way `terminationFor` does, or
+    /// make it a variant first.
+    #deliveryStuck : { stage : Text };
+    /// Not refund-resolvable — the money moved *both* ways. A `charge.refunded`
+    /// arrived for a payment already delivered as cycles, so the fiat went back and
+    /// the cycles are irreversibly gone to an arbitrary destination. The canister
+    /// cannot claw cycles back, so this **records a loss to reconcile** rather than
+    /// starting a recovery flow.
+    #refundAfterDelivery : {
+      paymentRef : Text;
+      cycles : Nat;
+      /// Cumulative cents returned to the payer. Sized, because a partial refund is
+      /// a partial loss and the operator reconciles against Stripe by **amount**,
+      /// not by the existence of a problem.
+      refundedCents : Nat;
+      /// Whether that settled the whole charge.
+      fullRefund : Bool;
+    };
+    /// **Stripe says this session was paid and we never credited it** (#52). Found by
+    /// the recovery sweep asking Stripe about a `#created` order whose expiry event
+    /// never arrived, past the point where Stripe would still be retrying.
+    ///
+    /// The order stays `#created` deliberately: `#created → #paid` is the only edge a
+    /// resent event can travel, so **keeping it there is what preserves the remedy
+    /// that delivers to the buyer.** Route it anywhere else and the operator's only
+    /// exit becomes a refund.
+    #paidNotCredited : { paymentRef : Text; sessionId : Text };
+  };
+
+  public type Problem = {
+    kind : ProblemKind;
+    detail : Text;
+    filedAtNs : Int;
+    resolvedAtNs : ?Int;
   };
 
   /// §5.1 — deterministic transfer args persisted *before* the ledger call

@@ -37,6 +37,7 @@ func orderAt(id : Text, status : Types.OrderStatus, lockedCycles : Nat) : Types.
     updatedAtNs = 0;
     delayedAtNs = null;
     abandonedReason = null;
+    problems = [];
   };
 };
 

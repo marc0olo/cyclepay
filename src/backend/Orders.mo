@@ -7,6 +7,7 @@
 /// reads a caller itself; owners come from an II Candid call,
 /// a future Base owner from a verified EIP-3009 signature.
 import Array "mo:core/Array";
+import Problems "Problems";
 import Blob "mo:core/Blob";
 import Map "mo:core/Map";
 import List "mo:core/List";
@@ -321,6 +322,7 @@ module {
       stripeSessionUrl = null;
       delayedAtNs = null;
       abandonedReason = null;
+      problems = [];
       createdAtNs = nowNs;
       updatedAtNs = nowNs;
     };
@@ -529,6 +531,89 @@ module {
         #ok(withReason);
       };
     };
+  };
+
+  // ── Problems on the order (#37) ────────────────────────────────────────────
+
+  /// File a problem on an order. Returns false if the order is gone, or if an
+  /// unresolved problem of the same shape is already there.
+  ///
+  /// ⚠️ **Dedup lives in `Problems.file`, and it needs no second structure.** The
+  /// order carries its own answer to "have I already filed this", which is what the
+  /// `delayedAlerts` map used to do for one kind — badly, because a separate map can
+  /// fall out of step with the orders it points at, and leaking one was a real
+  /// failure mode.
+  public func fileProblem(
+    store : Store,
+    id : Types.OrderId,
+    kind : Types.ProblemKind,
+    detail : Text,
+    nowNs : Int,
+  ) : Bool {
+    let ?order = store.orders.get(id) else return false;
+    let updated = Problems.file(order.problems, kind, detail, nowNs);
+    if (updated.size() == order.problems.size()) return false;
+    // ⚠️ `updatedAtNs` is deliberately untouched: it is the held-since clock
+    // `Delivery.waitStage` reads, and filing a problem is not a state transition.
+    store.orders.add(id, { order with problems = updated });
+    true;
+  };
+
+  /// Resolve every unresolved problem on one order matching `pred`.
+  public func resolveProblems(
+    store : Store,
+    id : Types.OrderId,
+    pred : Types.ProblemKind -> Bool,
+    nowNs : Int,
+  ) : Nat {
+    let ?order = store.orders.get(id) else return 0;
+    let result = Problems.resolveWhere(order.problems, pred, nowNs);
+    if (result.closed == 0) return 0;
+    store.orders.add(id, { order with problems = result.problems });
+    result.closed;
+  };
+
+  /// Close every problem a `charge.refunded` for `paymentRef` settles on its own.
+  ///
+  /// ⚠️ **A scan across orders, where the queue had an index.** That is the cost of
+  /// moving problems onto the objects they belong to, and it is bounded by the same
+  /// status index #37 adds for the reconcile — the refundable kinds sit on orders
+  /// that are not terminal. ⚠️ **Only kinds where `paymentRefOf` gives a match are
+  /// touched**, so `#refundAfterDelivery` and `#paidNotCredited` are never closed
+  /// here even though both carry a `paymentRef`.
+  public func resolveByPaymentRef(store : Store, paymentRef : Text, nowNs : Int) : Nat {
+    var closed = 0;
+    for ((id, order) in store.orders.entries()) {
+      let hit = resolveProblems(
+        store,
+        id,
+        func(k) {
+          Problems.refundResolvable(k) and Problems.paymentRefOf(k) == ?paymentRef;
+        },
+        nowNs,
+      );
+      closed += hit;
+    };
+    closed;
+  };
+
+  /// Every order carrying at least one unresolved problem — **the worklist, as a
+  /// filter rather than a structure** (#37).
+  public func withUnresolvedProblems(store : Store) : [Types.Order] {
+    let out = List.empty<Types.Order>();
+    for ((_, order) in store.orders.entries()) {
+      if (Problems.unresolvedCount(order.problems) > 0) out.add(order);
+    };
+    out.toArray();
+  };
+
+  /// Total unresolved problems across all orders — the number an operator watches.
+  public func unresolvedProblemCount(store : Store) : Nat {
+    var n = 0;
+    for ((_, order) in store.orders.entries()) {
+      n += Problems.unresolvedCount(order.problems);
+    };
+    n;
   };
 
   public func markDelayed(store : Store, id : Types.OrderId, nowNs : Int) : Bool {

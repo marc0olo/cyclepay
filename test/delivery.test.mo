@@ -188,6 +188,7 @@ suite("journal", func() {
       updatedAtNs = 2;
       delayedAtNs = null;
     abandonedReason = null;
+    problems = [];
     };
   };
 

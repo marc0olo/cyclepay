@@ -201,6 +201,29 @@ type ProcessOrderError =
    inFlight;
    notFound;
  };
+type ProblemKind = 
+ variant {
+   deliveryStuck: record {stage: text;};
+   duplicate: record {paymentRef: text;};
+   paidNotCredited: record {
+                      paymentRef: text;
+                      sessionId: text;
+                    };
+   refundAfterDelivery:
+    record {
+      cycles: nat;
+      fullRefund: bool;
+      paymentRef: text;
+      refundedCents: nat;
+    };
+ };
+type Problem = 
+ record {
+   detail: text;
+   filedAtNs: int;
+   kind: ProblemKind;
+   resolvedAtNs: opt int;
+ };
 type Pricing = 
  record {
    feeBps: nat;
@@ -249,6 +272,7 @@ type Order =
    owner: Owner;
    paidUsdCents: opt nat;
    pricing: Pricing;
+   problems: vec Problem;
    rail: Rail;
    status: OrderStatus;
    stripeSessionId: opt text;
