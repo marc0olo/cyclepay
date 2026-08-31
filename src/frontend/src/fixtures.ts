@@ -78,6 +78,9 @@ const CREATED_AT_NS = 1_770_000_000_000_000_000n;
 const EXPIRES_AT_NS = 4_000_000_000_000_000_000n;
 const SESSION_ID = "cs_test_a1b2c3d4";
 const SESSION_URL = "https://checkout.stripe.com/c/pay/cs_test_a1b2c3d4";
+/// The statuses `Reserve.holdsPromise` calls terminal — kept in sync with it by name
+/// rather than by comment, since a fixture that disagrees depicts an impossible order.
+const TERMINAL = new Set(["delivered", "expired", "cancelled", "abandoned"]);
 
 function cannedOrder(spec: OrderSpec): Order {
   const status = spec.status ?? "delivered";
@@ -109,9 +112,20 @@ function cannedOrder(spec: OrderSpec): Order {
     expiredBy: undefined,
     expiresAtNs: EXPIRES_AT_NS,
     stripeSessionId: SESSION_ID,
-    stripeSessionUrl: SESSION_URL,
+    // ⚠️ **Cleared on terminal statuses since #37**, which the rule above demands:
+    // `commitTransition` drops the pay link on the way into a terminal state, so a
+    // fixture that carries one on a `delivered` order depicts a state no real order
+    // can be in — the exact fault the comment above was written about.
+    stripeSessionUrl: TERMINAL.has(status) ? undefined : SESSION_URL,
     createdAtNs: CREATED_AT_NS,
     updatedAtNs: CREATED_AT_NS,
+    // ⚠️ The three fields #37 added, set explicitly for the reason above — and note
+    // that only `problems` (required) failed the typecheck. `delayedAtNs` and
+    // `abandonedReason` are optional, so they defaulted to `undefined` silently:
+    // the rule exists precisely because the compiler does not enforce it.
+    delayedAtNs: undefined,
+    abandonedReason: status === "abandoned" ? "operator ended it after refunding" : undefined,
+    problems: [],
   };
 }
 
