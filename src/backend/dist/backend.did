@@ -115,6 +115,15 @@ type Request =
    method: text;
    url: text;
  };
+type RefusalCounts = 
+ record {
+   amountAboveMax: nat;
+   amountBelowMin: nat;
+   canisterCyclesLow: nat;
+   railClosed: nat;
+   reserveShort: nat;
+   tooManyOpenOrders: nat;
+ };
 type Receipt = 
  record {
    cyclesDelivered: opt nat;
@@ -159,6 +168,12 @@ type Rates =
    quality: Quality;
    usdPerIcpMicros: nat;
    xdrPermyriadPerIcp: nat;
+ };
+type RailStateLatch = 
+ record {
+   canisterCyclesLow: bool;
+   railClosed: bool;
+   reserveShort: bool;
  };
 type Rail = variant {card;};
 type QuotePreviews = 
@@ -513,13 +528,6 @@ service : {
   /// mattered most. Pass `null` to start; feed `nextCursor` back until it is
   /// null. `limit` is capped at `ErrorQueue.maxPageSize`.
   error_queue: (afterId: opt nat, limit: nat) -> (Page) query;
-  /// Open-obligation depth, public.
-  /// 
-  /// Unresolved entries are never evicted, so this number only ever comes down
-  /// by the operator working it. A climbing value means dollars are arriving
-  /// that nobody has dealt with — the single most important operational number
-  /// on the money path, and it is public because §9's transparency stance says
-  /// operational state is not secret.
   error_queue_depth: () -> (record {
                               retained: nat;
                               unresolved: nat;
@@ -773,6 +781,28 @@ service : {
   /// gateway refuses every sale against a fully funded reserve and nothing anywhere
   /// says why.
   refresh_reserve: () -> (nat);
+  /// Open-obligation depth, public.
+  /// 
+  /// Unresolved entries are never evicted, so this number only ever comes down
+  /// by the operator working it. A climbing value means dollars are arriving
+  /// that nobody has dealt with — the single most important operational number
+  /// on the money path, and it is public because §9's transparency stance says
+  /// operational state is not secret.
+  /// Refusal tallies, and whether the gate is refusing right now (#61).
+  /// 
+  /// ⚠️ **Public, like every other monitoring surface here** — operational state
+  /// is public by design; the webhook secret is the only secret in the system.
+  /// 
+  /// ⚠️ **This query is the point of the counters.** A tally nobody reads is the
+  /// `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
+  /// per counter with the response — the counters mean different things:
+  /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
+  /// `reserveShort` climbing is a refill. Same shape, opposite actions.
+  refusal_counts: () ->
+   (record {
+      counts: RefusalCounts;
+      refusingNow: RailStateLatch;
+    }) query;
   /// Reserve solvency and order counters, public (#30 PR-B).
   /// 
   /// **The three figures that decide whether a sale is admitted, in one answer**,

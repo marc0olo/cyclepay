@@ -438,6 +438,40 @@ Two things worth being precise about:
   decided synchronously inside `create_order` against the maintained reserve floor. A
   green `can_purchase` with `availableToSell = 0` is the split working, not a bug.
 
+### What a refusal records (#61)
+
+⚠️ **A refusal writes no audit line.** It increments a counter, readable through the
+public `refusal_counts` query, and RUNBOOK §8 carries a row per counter with the
+response. Refusals are free to attempt — `#amountBelowMin` needs no prior state at
+all, so one cent from any principal reaches it with no order and no payment — and the
+audit log is the one structure here whose growth is **not** attacker-priced (orders
+are bounded by the open-order cap and the reserve; error-queue entries each require a
+real payment to exist). A line per attempt was harmless only while the log was a
+4,096-entry ring.
+
+**The exception is the transition, and it falls out of the distinction above.** The
+*operational* conditions are facts about the **gateway**, so entering one writes
+exactly one `gate.startedRefusing` line and `refusal_counts.refusingNow` stays true
+until the next successful admission. The permanent-for-that-request and
+about-the-caller reasons write nothing: nothing about the gateway changed, so there is
+no transition to record.
+
+⚠️ **There are three such conditions, and the third is not in the table above.**
+`#reserveShort` and `#canisterCyclesLow` are gate reasons; **rail closure is not.**
+An unprovisioned API key or origin is refused *before* the gate — the order is
+caller, destination, **rail**, tier, admission — so while the rail is closed **100% of
+attempts never reach `admit` at all**, and a counter set covering only the table above
+would record nothing. That window is not hypothetical: RUNBOOK §1 provisions the
+secrets last, so a freshly deployed gateway sits in exactly this state by design. It
+gets its own `refusal_counts.counts.railClosed` counter, its own
+`refusingNow.railClosed` flag, and the same announce-once semantics.
+
+⚠️ **Latched per condition, not globally.** A single "was admitting, now refusing"
+flag is reset by any legitimate success, so the next refusal announces again — a
+smaller copy of the same leak. `test/gate.test.mo` pins this with a case that a global
+flag fails: rail refuses → a sub-minimum request is refused → rail refuses again, and
+only the first announces.
+
 The gate refuses *before* the user pays. The authoritative check is the one inside
 `create_order`, in the same synchronous block as the hold it takes.
 

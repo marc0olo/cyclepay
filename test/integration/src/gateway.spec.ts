@@ -156,11 +156,34 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
   expect((await gw.asAdmin.stripe_api_key_status()).isSet).toBe(false);
   expect(await gw.asAdmin.stripe_origin()).toHaveLength(0);
   const ordersBefore = (await gw.asAdmin.reserve_status()).totalOrders;
+  const linesBefore = (await gw.asAdmin.audit_log()).length;
+  const closedBefore = (await gw.asAnon.refusal_counts()).counts.railClosed;
   const noKey = expectErr(
     await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []),
   ) as { sessionUnavailable: string };
   expect(noKey.sessionUnavailable).toContain('API key');
   expect((await gw.asAdmin.reserve_status()).totalOrders).toBe(ordersBefore);
+
+  // ⚠️ **#61: the rail closing is ONE line, however many buyers hit it.** This is
+  // the second free-to-drive path — no order, no payment, no prior state — and it
+  // refuses BEFORE the gate, so while the rail is closed 100% of attempts take
+  // this branch and never reach `admit`. Three more attempts must add nothing to
+  // the log.
+  for (let i = 0; i < 3; i += 1) {
+    expectErr(await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []));
+  }
+  const afterClosed = await gw.asAdmin.audit_log();
+  // Exactly one new line: the transition in.
+  expect(afterClosed.length).toBe(linesBefore + 1);
+  expect(afterClosed[afterClosed.length - 1].tag).toBe('gate.startedRefusing');
+  // Four refusals, all tallied — the volume survives even though the lines do not.
+  const closedAfter = (await gw.asAnon.refusal_counts()).counts.railClosed;
+  expect(closedAfter).toBe(closedBefore + 4n);
+  expect((await gw.asAnon.refusal_counts()).refusingNow.railClosed).toBe(true);
+  // And it did not leak into a gate counter: these refusals never reached `admit`.
+  const counts = (await gw.asAnon.refusal_counts()).counts;
+  expect(counts.canisterCyclesLow).toBe(0n);
+  expect(counts.reserveShort).toBe(0n);
 
   // The key alone is not enough: without a return origin there is no URL to send
   // the buyer back to, and the same no-record rule applies.
@@ -2701,6 +2724,50 @@ test('69 — a FAILED session creation racing a cancel does not double-release (
   const stayed = (await gw.asUser.get_order(orderId))[0]!;
   expect(statusKey(stayed)).toBe('cancelled');
   expect(stayed.expiredBy).toHaveLength(0);
+});
+
+test('88 — refusals tally and never write a line per attempt (#61)', async () => {
+  // ⚠️ **This is the leak #61 exists to close, and it is the assertion the
+  // per-attempt line would fail.** `#amountBelowMin` needs no prior state: one
+  // cent from any principal reaches it with no order, no payment and no setup.
+  // While the audit log was a 4,096-entry ring that was harmless churn — #37
+  // removes the ring, and an unbounded log fed by a free caller is permanent
+  // stable-state growth at zero attacker cost.
+  //
+  // Mutation check: restore `audit("order.notAdmitted", …)` in `Main.mo`'s
+  // `admit` and this scenario fails on the line count while everything else
+  // stays green.
+  await ensureRates(gw);
+  const { gate } = await gw.asAnon.lifecycle_config();
+
+  const before = (await gw.asAdmin.audit_log()).length;
+  const tallyBefore = (await gw.asAnon.refusal_counts()).counts.amountBelowMin;
+
+  const ATTEMPTS = 5;
+  for (let i = 0; i < ATTEMPTS; i += 1) {
+    const refused = expectErr(
+      await gw.asUser.create_order({ custom: gate.minPurchaseUsdCents - 1n }, USER_ACCOUNT, []),
+    ) as { notAdmitted: { amountBelowMin: { minUsdCents: bigint } } };
+    // Still a real, distinguishable refusal — the buyer's answer is unchanged.
+    expect(refused.notAdmitted.amountBelowMin.minUsdCents).toBe(gate.minPurchaseUsdCents);
+  }
+
+  // The whole point: five refusals, zero new audit lines.
+  const after = await gw.asAdmin.audit_log();
+  expect(after.length).toBe(before);
+
+  // And nothing was lost that the old line carried. It was
+  // `audit("order.notAdmitted", reasonToText(reason))` — no principal, no amount
+  // — so its entire content was "a refusal of this kind happened", which the
+  // counter keeps in full.
+  const tallyAfter = (await gw.asAnon.refusal_counts()).counts.amountBelowMin;
+  expect(tallyAfter).toBe(tallyBefore + BigInt(ATTEMPTS));
+
+  // A per-request reason is not the rail refusing, so nothing latched — which is
+  // what keeps a later genuine rail-state refusal announceable.
+  const { refusingNow } = await gw.asAnon.refusal_counts();
+  expect(refusingNow.reserveShort).toBe(false);
+  expect(refusingNow.canisterCyclesLow).toBe(false);
 });
 
 test('71 — a custom amount is bounded by the gate, in both directions (#33)', async () => {

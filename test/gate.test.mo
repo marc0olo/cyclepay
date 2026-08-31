@@ -215,3 +215,159 @@ suite("the ceiling cannot be lowered under a live tier", func() {
     };
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #61 — refusal tallies and the rail-state latch.
+//
+// These replace a per-attempt audit line. The properties worth pinning are not
+// "the counter goes up" but the two that a plausible wrong implementation gets
+// wrong: the latch is PER CONDITION, and only a full admission clears it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+let shortReserve : Gate.Reason = #reserveShort({ requested = 10; available = 1 });
+let lowGas : Gate.Reason = #canisterCyclesLow({ balance = 1; min = 10 });
+let belowMin : Gate.Reason = #amountBelowMin({ usdCents = 1; minUsdCents = 1_000 });
+let aboveMax : Gate.Reason = #amountAboveMax({ usdCents = 1_000_000; maxUsdCents = 10_000 });
+let capReached : Gate.Reason = #tooManyOpenOrders({ open = 1; max = 1 });
+
+suite("#61 refusal counters", func() {
+  test("each reason increments its own counter and no other", func() {
+    let c = Gate.countRefusal(Gate.noRefusals(), belowMin);
+    assert c.amountBelowMin == 1;
+    // The point of the record-not-a-map choice: nothing else moved.
+    assert c.amountAboveMax == 0;
+    assert c.tooManyOpenOrders == 0;
+    assert c.canisterCyclesLow == 0;
+    assert c.reserveShort == 0;
+  });
+
+  test("counters accumulate across every reason", func() {
+    var c = Gate.noRefusals();
+    for (r in [belowMin, belowMin, aboveMax, capReached, lowGas, shortReserve].vals()) {
+      c := Gate.countRefusal(c, r);
+    };
+    assert c.amountBelowMin == 2;
+    assert c.amountAboveMax == 1;
+    assert c.tooManyOpenOrders == 1;
+    assert c.canisterCyclesLow == 1;
+    assert c.reserveShort == 1;
+  });
+
+  test("only the two rail-state conditions are rail state", func() {
+    assert Gate.isRailState(shortReserve);
+    assert Gate.isRailState(lowGas);
+    // Nothing about the gateway changed in these three.
+    assert not Gate.isRailState(belowMin);
+    assert not Gate.isRailState(aboveMax);
+    assert not Gate.isRailState(capReached);
+  });
+});
+
+suite("#61 rail-state latch", func() {
+  test("entering a rail-state condition announces exactly once", func() {
+    let first = Gate.latchRefusal(Gate.admitting(), shortReserve);
+    assert first.announce;
+    // Still refusing for the same reason: no second line.
+    let second = Gate.latchRefusal(first.latch, shortReserve);
+    assert not second.announce;
+    let third = Gate.latchRefusal(second.latch, shortReserve);
+    assert not third.announce;
+  });
+
+  test("a per-request refusal between two rail-state refusals does NOT re-announce", func() {
+    // ⚠️ **This is the test that rejects the naive implementation.** A single
+    // global "was admitting, now refusing" flag passes every other case here and
+    // fails this one, because a per-request refusal looks like a change of state
+    // to it. That version reintroduces a smaller copy of the leak #61 closes:
+    // bounded by real traffic rather than free, but avoidable entirely.
+    let entered = Gate.latchRefusal(Gate.admitting(), shortReserve);
+    assert entered.announce;
+    let malformed = Gate.latchRefusal(entered.latch, belowMin);
+    assert not malformed.announce;
+    let again = Gate.latchRefusal(malformed.latch, shortReserve);
+    assert not again.announce;
+  });
+
+  test("the two conditions latch independently", func() {
+    let reserve = Gate.latchRefusal(Gate.admitting(), shortReserve);
+    assert reserve.announce;
+    // Gas going low is a DIFFERENT fact about the gateway and deserves its own
+    // line, even while the reserve is already refusing.
+    let gas = Gate.latchRefusal(reserve.latch, lowGas);
+    assert gas.announce;
+    assert gas.latch.reserveShort;
+    assert gas.latch.canisterCyclesLow;
+  });
+
+  test("per-request and per-principal reasons never latch anything", func() {
+    var latch = Gate.admitting();
+    for (r in [belowMin, aboveMax, capReached, belowMin].vals()) {
+      let step = Gate.latchRefusal(latch, r);
+      assert not step.announce;
+      latch := step.latch;
+    };
+    // Nothing latched, so a later genuine rail-state refusal still announces.
+    assert not latch.reserveShort;
+    assert not latch.canisterCyclesLow;
+    assert Gate.latchRefusal(latch, shortReserve).announce;
+  });
+
+  test("a successful admission clears the latch, so recovery re-announces", func() {
+    let entered = Gate.latchRefusal(Gate.admitting(), shortReserve);
+    assert entered.announce;
+    let recovered = Gate.latchAdmission(entered.latch);
+    assert not recovered.reserveShort;
+    assert not recovered.canisterCyclesLow;
+    // The condition genuinely cleared and came back: that is a new incident and
+    // an operator wants to know it started again.
+    assert Gate.latchRefusal(recovered, shortReserve).announce;
+  });
+});
+
+suite("#61 rail closure is the third latching condition", func() {
+  test("entering rail closure announces once, and independently of the other two", func() {
+    // ⚠️ **The condition that was missed on the first pass**, and the reason it
+    // was easy to miss: rail closure is refused BEFORE the gate, so it is not a
+    // `Reason` at all and a counter set covering only `Reason` records nothing
+    // during the window a freshly deployed gateway spends unprovisioned.
+    let first = Gate.latchCondition(Gate.admitting(), #railClosed);
+    assert first.announce;
+    assert first.latch.railClosed;
+    // Still closed: no second line, however many attempts arrive.
+    assert not Gate.latchCondition(first.latch, #railClosed).announce;
+
+    // Independent of the other two, both directions.
+    assert not first.latch.reserveShort;
+    assert not first.latch.canisterCyclesLow;
+    let alsoReserve = Gate.latchCondition(first.latch, #reserveShort);
+    assert alsoReserve.announce;
+    assert alsoReserve.latch.railClosed;
+  });
+
+  test("a successful admission clears rail closure with the rest", func() {
+    let closed = Gate.latchCondition(Gate.admitting(), #railClosed);
+    assert closed.announce;
+    let open = Gate.latchAdmission(closed.latch);
+    assert not open.railClosed;
+    // Reaching a full admission means the rail was open AND the gate passed, so
+    // clearing all three on it is sound rather than optimistic.
+    assert Gate.latchCondition(open, #railClosed).announce;
+  });
+
+  test("railConditionOf covers every Reason, and only the rail-state ones map", func() {
+    assert Gate.railConditionOf(shortReserve) == ?#reserveShort;
+    assert Gate.railConditionOf(lowGas) == ?#canisterCyclesLow;
+    assert Gate.railConditionOf(belowMin) == null;
+    assert Gate.railConditionOf(aboveMax) == null;
+    assert Gate.railConditionOf(capReached) == null;
+  });
+
+  test("the rail-closed counter is separate from every Reason counter", func() {
+    let c = Gate.countRailClosed(Gate.countRailClosed(Gate.noRefusals()));
+    assert c.railClosed == 2;
+    // A refusal that never reached the gate must not show up as a gate reason.
+    assert c.amountBelowMin == 0;
+    assert c.reserveShort == 0;
+    assert c.canisterCyclesLow == 0;
+  });
+});

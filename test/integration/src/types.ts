@@ -96,10 +96,29 @@ export interface CreatedOrder {
 export type GateReason =
   | { tooManyOpenOrders: { open: bigint; max: bigint } }
   | { canisterCyclesLow: { balance: bigint; min: bigint } }
-  | { burnCapExhausted: { burnedE8s: bigint; capE8s: bigint } }
-  | { floatLow: { observedE8s: Opt<bigint>; thresholdE8s: bigint } }
+  | { reserveShort: { requested: bigint; available: bigint } }
   | { amountAboveMax: { usdCents: bigint; maxUsdCents: bigint } }
   | { amountBelowMin: { usdCents: bigint; minUsdCents: bigint } };
+
+/// One counter per `GateReason` (#61), replacing the per-attempt audit line.
+export interface RefusalCounts {
+  amountAboveMax: bigint;
+  amountBelowMin: bigint;
+  canisterCyclesLow: bigint;
+  /// Not a `GateReason`: the rail being unprovisioned refuses BEFORE the gate, so
+  /// while it is closed no attempt reaches `admit` at all.
+  railClosed: bigint;
+  reserveShort: bigint;
+  tooManyOpenOrders: bigint;
+}
+
+/// Which rail-state conditions are refusing right now. Latched per condition, so
+/// entering one writes exactly one `gate.startedRefusing` line.
+export interface RailStateLatch {
+  canisterCyclesLow: boolean;
+  railClosed: boolean;
+  reserveShort: boolean;
+}
 
 export interface GateConfig {
   maxOpenOrdersPerPrincipal: bigint;
@@ -236,6 +255,7 @@ export interface BackendService {
   error_queue(afterId: Opt<bigint>, limit: bigint): Promise<ErrorQueuePage>;
   error_queue_unresolved(afterId: Opt<bigint>, limit: bigint): Promise<ErrorQueuePage>;
   error_queue_depth(): Promise<{ unresolved: bigint; retained: bigint }>;
+  refusal_counts(): Promise<{ counts: RefusalCounts; refusingNow: RailStateLatch }>;
   lifecycle_config(): Promise<{ gate: GateConfig }>;
   order_for_payment(paymentRef: string): Promise<Opt<string>>;
   abandon_order(id: string, reason: string): Promise<Result<Order, string>>;

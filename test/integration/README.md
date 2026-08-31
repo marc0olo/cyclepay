@@ -246,7 +246,7 @@ before landing.)
 | 71 | a custom amount is bounded by the gate in both directions (#33) | floor and ceiling on typed input |
 | 72 | a delivery completing during a create cannot manufacture capacity (#30 PR-B) | guard on `promisedTotal ≤ balance` |
 | 73 | a funded reserve sells **nothing** until the gateway observes it; one quiet observation adopts the ledger's truth outright (#30 PR-B) | rule 1, and the trap the design accepts |
-| ~~74~~ | **deleted with the `set_cycles_ledger_fee` lever it depended on.** The lever was the only seam for making the stored fee differ from the ledger's, and it was removed as self-justifying — the one state it fixed was one it could create, and its typo silently shorted buyers. Shipping an admin money lever so a test can stage a state is the wrong trade | heirs: `interpretTransfer(#Err(#BadFee))` in `test/cmc.test.mo`, the `delivery.feeChanged` P3 row in RUNBOOK §9, and scenarios 06/10 for the fee arithmetic |
+| ~~74~~ | **deleted with the `set_cycles_ledger_fee` lever it depended on.** The lever was the only seam for making the stored fee differ from the ledger's, and it was removed as self-justifying — the one state it fixed was one it could create, and its typo silently shorted buyers. Shipping an admin money lever so a test can stage a state is the wrong trade | heirs: `interpretTransfer(#Err(#BadFee))` in `test/cmc.test.mo`, the `delivery.feeChanged` P3 row in RUNBOOK §8, and scenarios 06/10 for the fee arithmetic |
 | 75 | a buyer heals their **own** stuck delivery; a stranger and the anonymous principal cannot; the admin lever still works and is the only one audited (#30 PR-B) | owner-scoped `process_order` |
 | 76 | one escalated order must not freeze the reserve reconcile forever (#30 PR-B) | regression test for a shipped bug |
 | 77 | an escalated order whose cycles **did** arrive is recorded as delivered rather than filed as abandoned (#30 PR-B) | `#needsReview → #delivered` |
@@ -259,6 +259,22 @@ clock advance plus the two rate re-arms that follow it. They assert the shape th
 depend on (`needsReview`, intent journalled, no block) rather than assuming it, so a
 change in 35 fails there instead of passing vacuously. 76 must stay **before** 77:
 77 fills in the block index, which settles the entry 76 needs unsettled.
+
+### Added by #61 (refusals stop writing a line per attempt)
+
+| # | Scenario | §9 item |
+|---|---|---|
+| 88 | five sub-minimum `create_order` calls tally and write **zero** audit lines (#61) | the leak the ring was hiding |
+
+⚠️ **Its assertion is a line *count*, which is the only form that catches the
+regression.** `#amountBelowMin` needs no prior state — one cent from any principal
+reaches it — so before #61 each attempt wrote a permanent line once #37 removes the
+ring. Mutation-verified: restoring `audit("order.notAdmitted", …)` in `Main.mo`'s
+`admit` fails **this scenario and nothing else** (`expected 192 to be 187`).
+
+⚠️ **The counter assertion is the other half.** Asserting only "no lines" would pass
+if refusals stopped being recorded at all; asserting the tally moved by exactly 5
+pins that the information survived the move.
 
 ### Live HTTP gateway (`live-gateway.spec.ts`)
 

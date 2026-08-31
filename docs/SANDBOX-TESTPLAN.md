@@ -708,7 +708,7 @@ found.
 5. **The reproducible-build gate has never run against a real deployment** —
    `RELEASE.md`'s publish-and-verify procedure is untested end to end.
 6. **No monitoring exists.** Every safety mechanism here is a number someone has
-   to go and look at; an alert nobody receives is not an alert. **`RUNBOOK.md` §9
+   to go and look at; an alert nobody receives is not an alert. **`RUNBOOK.md` §8
    owns the plan** — metric table with thresholds and severities, and the reason the
    **reserve balance** has to be *pushed* rather than polled. Wire it before taking
    money.

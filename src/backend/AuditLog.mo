@@ -11,6 +11,36 @@
 /// lossy. #37 removes the ring; the division survives it, because an order is
 /// still the thing an order's facts are attached to.
 ///
+/// ## What may be written here
+///
+/// ⚠️ **An audit line may be written only where something other than a caller's
+/// willingness to call bounds how often it fires** (#61).
+///
+/// Qualifying bounds, and they are the only three: **our own timer cadence**, **an
+/// authenticated event** (the `stripe.*` webhook lines need the signing secret, so
+/// growth is bounded by Stripe rather than by a caller — the same argument
+/// `ErrorQueue`'s `#unprocessable` rests on), or **a state transition**
+/// (`gate.startedRefusing` fires once when the rail starts refusing, not once per
+/// refused request).
+///
+/// ⚠️ **The rule is about frequency, not about what the line describes.** An
+/// earlier draft said *"records a state change, not a request"* and it was wrong:
+/// it would have excluded `stripe.retrieveUnauthorized`, which is the outcome of
+/// our own outbound request and the only detector for a silently non-functioning
+/// recovery sweep (RUNBOOK §8 carries it as P1), and `stripe.disputeCreated`,
+/// which records an external fact rather than any state change of ours and exists
+/// because nothing else records it at all. Both are legitimate; both are bounded
+/// by something other than a caller.
+///
+/// What the rule excludes is the pre-commit refusal line #61 removed: refusals are
+/// free to attempt — `#amountBelowMin` needs no prior state, so one cent from any
+/// fresh principal reached it — and once #37 removes the ring, a log fed by a free
+/// caller is permanent stable-state growth at zero attacker cost. Every other
+/// structure here is attacker-priced. This one is not, so admission is the guard.
+///
+/// **Adding a tag?** Name the bound. If the honest answer is "a caller decides",
+/// it is a counter with a monitoring row, not a line.
+///
 /// A refund is the one money fact deliberately not on the order: it lives in
 /// **Stripe**, where it was issued, plus the unresolved `#refundAfterDelivery`
 /// entry the queue never evicts. That is the whole record until there is real

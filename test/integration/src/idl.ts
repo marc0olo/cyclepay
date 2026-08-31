@@ -58,13 +58,30 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     updatedAtNs: IDL.Int,
   });
   const CreatedOrder = IDL.Record({ order: Order });
+  // Mirrors `Gate.Reason` exactly, all five arms. Nothing typechecks this against
+  // the Motoko, so it drifts silently: it carried `burnCapExhausted` and `floatLow`
+  // long after #36 deleted the treasury path, and was missing `reserveShort`
+  // entirely — which made a reserve-short refusal undecodable from this suite and
+  // therefore untestable. Re-check it whenever `Gate.Reason` changes.
   const GateReason = IDL.Variant({
     amountAboveMax: IDL.Record({ maxUsdCents: IDL.Nat, usdCents: IDL.Nat }),
     amountBelowMin: IDL.Record({ minUsdCents: IDL.Nat, usdCents: IDL.Nat }),
-    burnCapExhausted: IDL.Record({ burnedE8s: IDL.Nat, capE8s: IDL.Nat }),
     canisterCyclesLow: IDL.Record({ balance: IDL.Nat, min: IDL.Nat }),
-    floatLow: IDL.Record({ observedE8s: IDL.Opt(IDL.Nat), thresholdE8s: IDL.Nat }),
+    reserveShort: IDL.Record({ available: IDL.Nat, requested: IDL.Nat }),
     tooManyOpenOrders: IDL.Record({ max: IDL.Nat, open: IDL.Nat }),
+  });
+  const RefusalCounts = IDL.Record({
+    amountAboveMax: IDL.Nat,
+    amountBelowMin: IDL.Nat,
+    canisterCyclesLow: IDL.Nat,
+    railClosed: IDL.Nat,
+    reserveShort: IDL.Nat,
+    tooManyOpenOrders: IDL.Nat,
+  });
+  const RailStateLatch = IDL.Record({
+    canisterCyclesLow: IDL.Bool,
+    railClosed: IDL.Bool,
+    reserveShort: IDL.Bool,
   });
   const GateConfig = IDL.Record({
     maxOpenOrdersPerPrincipal: IDL.Nat,
@@ -296,6 +313,11 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     error_queue_unresolved: IDL.Func(
       [IDL.Opt(IDL.Nat), IDL.Nat],
       [IDL.Record({ entries: IDL.Vec(ErrorEntry), nextCursor: IDL.Opt(IDL.Nat) })],
+      ['query'],
+    ),
+    refusal_counts: IDL.Func(
+      [],
+      [IDL.Record({ counts: RefusalCounts, refusingNow: RailStateLatch })],
       ['query'],
     ),
     error_queue_depth: IDL.Func(

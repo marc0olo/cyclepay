@@ -469,7 +469,7 @@ persistent actor CyclesGateway {
     /// Which Exchange Rate Canister the last refresh actually priced from. On
     /// mainnet this MUST read `uf6dk-hyaaa-aaaaq-qaaaq-cai`; anything else means
     /// the deploy injected `PUBLIC_CANISTER_ID:xrc` and prices are coming from
-    /// somewhere else. Alert on it (RUNBOOK §9).
+    /// somewhere else. Alert on it (RUNBOOK §8).
     ///
     /// **Null means no refresh has resolved it yet** — not that it is the mainnet
     /// canister. Null is the expected reading for the first seconds after an
@@ -836,7 +836,7 @@ persistent actor CyclesGateway {
     switch (Gate.admit(gateConfig, gateObservation(caller), usdCents)) {
       case (#ok) #ok;
       case (#err(reason)) {
-        audit("order.notAdmitted", Gate.reasonToText(reason));
+        noteRefusal(reason);
         #err(reason);
       };
     };
@@ -876,10 +876,19 @@ persistent actor CyclesGateway {
     // was removing the read from the decision.
     switch (Gate.solvent(reserveFloor, Orders.promised(orderStore), lockedCycles)) {
       case (#err(reason)) {
-        audit("order.notAdmitted", Gate.reasonToText(reason));
+        noteRefusal(reason);
         #err(reason);
       };
-      case (#ok) #ok;
+      case (#ok) {
+        // ⚠️ **The only thing that clears the latch, and the only place it can
+        // be cleared correctly.** Reaching here means neither rail-state
+        // condition fired. A refusal earlier in `admit` — below the minimum,
+        // say — returns before the reserve is ever consulted, so it is not
+        // evidence that the reserve recovered; clearing on it would drop the
+        // latch and re-announce on the next genuine refusal.
+        railStateLatch := Gate.latchAdmission(railStateLatch);
+        #ok;
+      };
     };
   };
 
@@ -973,7 +982,7 @@ persistent actor CyclesGateway {
     let config = switch (sessionConfig()) {
       case (#ok(c)) c;
       case (#err(e)) {
-        audit("stripe.railClosed", "create_order refused: " # sessionErrorToText(e));
+        noteRailClosed(e);
         return #err(#sessionUnavailable(sessionErrorToText(e)));
       };
     };
@@ -1344,6 +1353,79 @@ persistent actor CyclesGateway {
   /// financial record (orders/error queue are the records of money).
   let auditLog : AuditLog.Log = AuditLog.emptyLog();
 
+  /// Refusal tallies and the rail-state latch (#61).
+  ///
+  /// ⚠️ **Stable, because they replace an audit line.** These carry the content
+  /// of the per-attempt `order.notAdmitted` line that #61 removed, and losing
+  /// them on upgrade would lose the volume signal the monitoring rows read.
+  var refusalCounts : Gate.RefusalCounts = Gate.noRefusals();
+  var railStateLatch : Gate.RailStateLatch = Gate.admitting();
+
+  /// Tally a refusal, and write an audit line **only** on the transition into a
+  /// rail-state condition (#61).
+  ///
+  /// ⚠️ **The one place a refusal is recorded.** It replaced two
+  /// `audit("order.notAdmitted", …)` calls, both pre-commit, both reachable for
+  /// free — `#amountBelowMin` needs no prior state at all, so one cent from any
+  /// fresh principal drove one permanent line per attempt once #37 removes the
+  /// ring. The audit log is the only structure here whose growth is not
+  /// attacker-priced, which is why this is a counter and not a line.
+  func noteRefusal(reason : Gate.Reason) {
+    refusalCounts := Gate.countRefusal(refusalCounts, reason);
+    let latched = Gate.latchRefusal(railStateLatch, reason);
+    railStateLatch := latched.latch;
+    if (latched.announce) {
+      audit("gate.startedRefusing", Gate.reasonToText(reason));
+    };
+  };
+
+  /// Which `sessionConfig` failures are rail **state** — a configuration fact
+  /// about this gateway rather than anything about the request.
+  ///
+  /// ⚠️ **Exhaustive on purpose.** `sessionConfig` can only produce the first two
+  /// today, but a new `SessionError` must decide whether it is a persistent
+  /// configuration state (latch it, announce once) or a transient outcall failure
+  /// (do not latch — a transient that latched would be cleared by the next
+  /// success anyway, but announcing it as "the rail started refusing" would be a
+  /// false report).
+  func railClosureCondition(e : SessionError) : ?Gate.RailCondition {
+    switch (e) {
+      // Either the key and origin are provisioned or they are not.
+      case (#railClosed or #originUnset) ?#railClosed;
+      // These five come from the outcall in `createStripeSession` and cannot
+      // reach `sessionConfig`. If one ever does, it is counted but not
+      // announced — a `railClosed` counter climbing while
+      // `refusingNow.railClosed` stays false is the tell that this happened.
+      case (
+        #outcallFailed(_) or #stripeRejected(_) or #unparseableResponse
+        or #missingField(_) or #livemodeMismatch(_)
+      ) null;
+    };
+  };
+
+  /// Tally a pre-gate refusal caused by the rail being closed, announcing once
+  /// on the way in (#61).
+  ///
+  /// ⚠️ **This path never reaches `admit`, which is what made it easy to miss.**
+  /// `create_order` checks caller, destination, then the RAIL, then tier and
+  /// admission — so while the rail is closed, **100% of attempts refuse here** and
+  /// a counter set covering only `Gate.Reason` would record nothing. RUNBOOK §1
+  /// prescribes provisioning the secrets last, so a freshly deployed gateway sits
+  /// in exactly this state by design.
+  func noteRailClosed(e : SessionError) {
+    refusalCounts := Gate.countRailClosed(refusalCounts);
+    switch (railClosureCondition(e)) {
+      case (?condition) {
+        let latched = Gate.latchCondition(railStateLatch, condition);
+        railStateLatch := latched.latch;
+        if (latched.announce) {
+          audit("gate.startedRefusing", "railClosed: " # sessionErrorToText(e));
+        };
+      };
+      case null {};
+    };
+  };
+
   /// Bounds are operator headroom knobs, not financial records — transient
   /// so a redeploy can retune them (same reasoning as maxRequestBodyBytes).
   transient let errorQueueCapacity : Nat = 1_000;
@@ -1373,6 +1455,26 @@ persistent actor CyclesGateway {
   /// that nobody has dealt with — the single most important operational number
   /// on the money path, and it is public because §9's transparency stance says
   /// operational state is not secret.
+  /// Refusal tallies, and whether the gate is refusing right now (#61).
+  ///
+  /// ⚠️ **Public, like every other monitoring surface here** — operational state
+  /// is public by design; the webhook secret is the only secret in the system.
+  ///
+  /// ⚠️ **This query is the point of the counters.** A tally nobody reads is the
+  /// `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
+  /// per counter with the response — the counters mean different things:
+  /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
+  /// `reserveShort` climbing is a refill. Same shape, opposite actions.
+  public query func refusal_counts() : async {
+    counts : Gate.RefusalCounts;
+    /// True while that rail-state condition is refusing. Each flips to true with
+    /// exactly one `gate.startedRefusing` audit line and clears on the next
+    /// successful admission.
+    refusingNow : Gate.RailStateLatch;
+  } {
+    { counts = refusalCounts; refusingNow = railStateLatch };
+  };
+
   public query func error_queue_depth() : async { unresolved : Nat; retained : Nat } {
     {
       unresolved = ErrorQueue.unresolvedCount(errorQueue);
@@ -2401,7 +2503,7 @@ persistent actor CyclesGateway {
       /// release asking to remove more than was held, so it says the tally was
       /// already wrong *before* that order got there — strictly worse than a fault
       /// in the order being released. The daily recount reports drift's SIZE; this
-      /// reports its EXISTENCE, same day. RUNBOOK §9 alerts on any increment.
+      /// reports its EXISTENCE, same day. RUNBOOK §8 alerts on any increment.
       tallySaturations = orderStore.tallySaturations;
       // Named so an operator (or the frontend) can point a ledger query at the
       // right account without reconstructing it.
@@ -2827,7 +2929,7 @@ persistent actor CyclesGateway {
   /// Surfaced on `recovery_status` so "the counts are trustworthy" is an
   /// observable fact rather than an assumption. Written only on success, so it
   /// falling behind while `lastSweep` advances is the signal that the reconcile
-  /// itself is failing (RUNBOOK §9).
+  /// itself is failing (RUNBOOK §8).
   var lastCountReconcile : ?{ atNs : Int; drift : [Orders.Drift] } = null;
 
   /// How often the sweep reconciles the reserve floor against the cycles ledger.
@@ -3032,7 +3134,7 @@ persistent actor CyclesGateway {
       // Claiming the cadence here, in the sweep's own message, is what bounds the
       // damage: this write commits whatever the detached message does, so a
       // trapping reconcile retries daily rather than every tick. Its cost is a
-      // visibly stale `lastCountReconcile` (RUNBOOK §9), which is the right
+      // visibly stale `lastCountReconcile` (RUNBOOK §8), which is the right
       // signal — the tallies are unverified, not known-wrong.
       let now = Time.now();
       if (Recovery.reconcileDue(lastCountReconcileAttemptNs, now, countReconcileIntervalNs)) {
@@ -3130,7 +3232,7 @@ persistent actor CyclesGateway {
     /// When one was last *attempted*. Reported alongside the success timestamp so
     /// "due tomorrow" and "attempted today and failed" are distinguishable without
     /// correlating against the sweep clock: an attempt materially newer than the
-    /// success means the reconcile is trapping (RUNBOOK §9).
+    /// success means the reconcile is trapping (RUNBOOK §8).
     lastCountReconcileAttemptNs : Int;
     /// When the RESERVE reconcile was last attempted (#30 PR-B). Its success clock
     /// is `reserve_status.reserveObservedAtNs`, and the two diverging is the one
