@@ -319,6 +319,7 @@ module {
       expiresAtNs = null;
       stripeSessionId = null;
       stripeSessionUrl = null;
+      delayedAtNs = null;
       createdAtNs = nowNs;
       updatedAtNs = nowNs;
     };
@@ -497,6 +498,27 @@ module {
   /// cancelled while the outcall was in flight), and the tallies stay coupled to
   /// the status change. A direct write would bypass both — and on the reserve path
   /// (#30) it would release an already-released promise.
+  /// Record that this order has crossed `alertAfterNs` while waiting to deliver.
+  ///
+  /// Returns true only on the **first** crossing, so the caller can announce once
+  /// without keeping any state of its own — which is what retires the
+  /// `delayedAlerts` map rather than relocating it.
+  ///
+  /// ⚠️ **`updatedAtNs` is deliberately left alone.** It is the held-since clock
+  /// `Delivery.waitStage` reads; moving it here would reset the wait being recorded,
+  /// and an order that keeps resetting its own clock can never reach `maxHoldNs` —
+  /// it would be alerted about forever and escalated never.
+  public func markDelayed(store : Store, id : Types.OrderId, nowNs : Int) : Bool {
+    let ?order = store.orders.get(id) else return false;
+    switch (order.delayedAtNs) {
+      case (?_) false; // already recorded; idempotent by construction
+      case null {
+        store.orders.add(id, { order with delayedAtNs = ?nowNs });
+        true;
+      };
+    };
+  };
+
   public func expireWithCause(
     store : Store,
     id : Types.OrderId,

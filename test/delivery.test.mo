@@ -185,6 +185,7 @@ suite("journal", func() {
       status = #paid;
       createdAtNs = 1;
       updatedAtNs = 2;
+      delayedAtNs = null;
     };
   };
 

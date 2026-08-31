@@ -239,6 +239,7 @@ type OrderId = text;
 type Order = 
  record {
    createdAtNs: int;
+   delayedAtNs: opt int;
    destination: Destination;
    expiredBy: opt ExpiredBy;
    expiresAtNs: opt int;
@@ -569,6 +570,7 @@ service : {
   delayed_deliveries: () ->
    (vec
      record {
+       delayedAtNs: opt int;
        heldSinceNs: int;
        orderId: OrderId;
        pastMaxHold: bool;

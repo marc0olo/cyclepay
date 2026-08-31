@@ -239,6 +239,26 @@ module {
     stripeSessionUrl : ?Text;
     createdAtNs : Int;
     updatedAtNs : Int;
+    /// When this order first crossed `alertAfterNs` while waiting to deliver, or
+    /// null if it never did (#37).
+    ///
+    /// ⚠️ **The historical half of the dropped `#deliveryDelayed` entry.** That
+    /// entry carried `resolvedAtNs`, so "a delay happened here and was closed" was
+    /// recorded; `delayed_deliveries` is a live view and leaves no trace once the
+    /// order delivers. Removing a capability is not the same as dropping a worklist
+    /// item, so the record moves onto the order rather than vanishing — which is
+    /// this issue's own thesis.
+    ///
+    /// ⚠️ **A field, deliberately, and NOT the `delayedAlerts` map returning.** That
+    /// map existed to remember an *entry id* so the entry could be resolved later,
+    /// and leaking it was a real failure mode. Nothing needs resolving here, so the
+    /// state lives on the order and "set it if unset" is idempotent — there is no
+    /// second structure to fall out of step with this one.
+    ///
+    /// ⚠️ **Setting this must NOT move `updatedAtNs`.** `Delivery.waitStage` reads
+    /// `updatedAtNs` as the held-since clock, so touching it here would reset the
+    /// very wait being recorded and the order could never reach `maxHoldNs`.
+    delayedAtNs : ?Int;
   };
 
   /// Why an `#expired` order expired. Two producers, and they are the only two:

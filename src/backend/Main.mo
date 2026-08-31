@@ -1857,6 +1857,12 @@ persistent actor CyclesGateway {
         switch (Delivery.waitStage(order.updatedAtNs, Time.now(), deliveryConfig)) {
           case (#retry) {};
           case (#alert) {
+            // Record the crossing on the ORDER, once. This is the historical half the
+            // dropped `#deliveryDelayed` entry carried in its `resolvedAtNs`:
+            // `delayed_deliveries` is a live view, so without this "how often were
+            // deliveries delayed last week" stops being answerable the moment the
+            // order delivers — and that is a question #3's monitoring will ask.
+            ignore Orders.markDelayed(orderStore, orderId, Time.now());
             // Tell someone while the cause is still fixable, and keep retrying: most
             // incidents end here with the order delivering.
             //
@@ -2431,7 +2437,17 @@ persistent actor CyclesGateway {
     retries : Nat;
     /// True once the wait has also passed `maxHoldNs`, i.e. the next sweep
     /// escalates it rather than retrying.
+    ///
+    /// ⚠️ **A transient window, at most one sweep interval wide** — past `maxHoldNs`
+    /// the next sweep escalates the order out of `#paid` and out of this set. Useful
+    /// to read ("about to escalate"), but **do not assert it in an integration
+    /// scenario**: pinning that window without ticking the clock is exactly the shape
+    /// that produces a flaky test. The boundary is already unit-pinned on
+    /// `Delivery.waitStage`, which is where it belongs.
     pastMaxHold : Bool;
+    /// When this order FIRST crossed the threshold, read off the order — the
+    /// permanent record, where every other field here is a live reading.
+    delayedAtNs : ?Int;
   }] {
     requireAdmin(caller);
     // ⚠️ **A full scan, and #37's status index is what makes that acceptable.**
@@ -2447,6 +2463,7 @@ persistent actor CyclesGateway {
       waitedNs : Int;
       retries : Nat;
       pastMaxHold : Bool;
+      delayedAtNs : ?Int;
     }>();
     for ((_, order) in orderStore.orders.entries()) {
       // `#paid` is the only status that sits still waiting to deliver; every other
@@ -2470,6 +2487,7 @@ persistent actor CyclesGateway {
               case null 0;
             };
             pastMaxHold = stage == #terminate;
+            delayedAtNs = order.delayedAtNs;
           });
         };
       };

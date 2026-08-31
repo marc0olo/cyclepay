@@ -42,6 +42,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     xdrPermyriadPerIcp: IDL.Nat,
   });
   const Order = IDL.Record({
+    delayedAtNs: IDL.Opt(IDL.Int),
     createdAtNs: IDL.Int,
     paidUsdCents: IDL.Opt(IDL.Nat),
     expiredBy: IDL.Opt(ExpiredBy),
@@ -320,6 +321,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     delayed_deliveries: IDL.Func(
       [],
       [IDL.Vec(IDL.Record({
+        delayedAtNs: IDL.Opt(IDL.Int),
         heldSinceNs: IDL.Int,
         orderId: IDL.Text,
         pastMaxHold: IDL.Bool,

@@ -65,6 +65,9 @@ export interface PricingConfig {
 }
 
 export interface Order {
+  /// When it first crossed `alertAfterNs` while waiting to deliver, else null.
+  /// The historical half of the dropped `#deliveryDelayed` entry (#37).
+  delayedAtNs: Opt<bigint>;
   paidUsdCents: Opt<bigint>;
   /// Null except on an `#expired` order with a known cause, and null for every
   /// sweep expiry — that mechanism has no tag because #33 deletes it (#34).
@@ -121,6 +124,9 @@ export interface RefusalCounts {
 /// obligation, and self-clearing by construction.
 export interface DelayedDelivery {
   orderId: string;
+  /// When it FIRST crossed the threshold — the permanent record on the order,
+  /// where every other field here is a live reading.
+  delayedAtNs: Opt<bigint>;
   status: StatusVariant;
   heldSinceNs: bigint;
   waitedNs: bigint;

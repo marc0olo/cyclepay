@@ -799,3 +799,38 @@ suite("status counts — the O(1) query inputs", func() {
   });
 });
 
+
+suite("#37 — markDelayed records the first crossing, and only the first", func() {
+  test("first call records, later calls do not, and updatedAtNs never moves", func() {
+    let store = Orders.emptyStore();
+    let order = switch (
+      Orders.create(store, "o-delay", #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1_000, pricing, 1_000)
+    ) {
+      case (#ok(o)) o;
+      case (#err(e)) { assert false; loop {} };
+    };
+    assert order.delayedAtNs == null;
+    let heldSince = order.updatedAtNs;
+
+    assert Orders.markDelayed(store, order.id, 5_000);
+    let marked = switch (Orders.get(store, order.id)) { case (?o) o; case null { assert false; loop {} } };
+    assert marked.delayedAtNs == ?5_000;
+    // ⚠️ **The clock must not move.** `Delivery.waitStage` reads `updatedAtNs` as
+    // held-since, so bumping it here would reset the very wait being recorded and
+    // the order could never reach `maxHoldNs` — alerted forever, escalated never.
+    assert marked.updatedAtNs == heldSince;
+
+    // Idempotent by construction: this is what retires the `delayedAlerts` map
+    // rather than relocating it, so there is no second structure to fall out of
+    // step with the order.
+    assert not Orders.markDelayed(store, order.id, 9_999);
+    let again = switch (Orders.get(store, order.id)) { case (?o) o; case null { assert false; loop {} } };
+    assert again.delayedAtNs == ?5_000;
+    assert again.updatedAtNs == heldSince;
+  });
+
+  test("an unknown order records nothing and reports false", func() {
+    let store = Orders.emptyStore();
+    assert not Orders.markDelayed(store, "no-such-order", 1);
+  });
+});
