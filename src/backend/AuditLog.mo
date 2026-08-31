@@ -1,4 +1,4 @@
-/// Bounded audit-log ring buffer (§4.2).
+/// The audit log — an unbounded, append-only operational trail (§4.2, #37).
 ///
 /// **Facts about money live on the objects, not here.** Where an order got to,
 /// what the buyer actually paid, why it expired, when its rates were read: all of
@@ -19,7 +19,7 @@
 /// Qualifying bounds, and they are the only three: **our own timer cadence**, **an
 /// authenticated event** (the `stripe.*` webhook lines need the signing secret, so
 /// growth is bounded by Stripe rather than by a caller — the same argument
-/// `ErrorQueue`'s `#unprocessable` rests on), or **a state transition**
+/// `Orphans`'s `#unprocessable` rests on), or **a state transition**
 /// (`gate.startedRefusing` fires once when the rail starts refusing, not once per
 /// refused request).
 ///
@@ -46,8 +46,9 @@
 /// entry the queue never evicts. That is the whole record until there is real
 /// money to reconcile (#34 dropped a `refundedUsdCents` field as premature).
 ///
-/// This buffer hard-caps and drops oldest-first. `seq` is monotonic and never
-/// reused, so a reader holding the last seq it saw can tell dropped events from
+/// ⚠️ **Nothing is dropped since #37, and the `capacity` parameter is gone rather
+/// than large.** `seq` is monotonic and never reused; with no drops there are no gaps,
+/// so a reader holding the last seq it saw can tell new events from
 /// an empty interval.
 import Queue "mo:core/Queue";
 import Iter "mo:core/Iter";
@@ -57,7 +58,7 @@ module {
   public type Event = {
     seq : Nat;
     atNs : Int;
-    /// Short greppable category, e.g. "delivery.sent", "errorQueue.evicted".
+    /// Short greppable category, e.g. "delivery.sent", "orphans.evicted".
     tag : Text;
     detail : Text;
   };
@@ -72,13 +73,23 @@ module {
   };
 
   /// Append, dropping oldest events past `capacity`.
-  public func append(log : Log, capacity : Nat, atNs : Int, tag : Text, detail : Text) : Event {
+  /// Append. **Nothing is evicted** (#37).
+  ///
+  /// ⚠️ **The `capacity` parameter and the eviction loop are gone, not defaulted to a
+  /// large number.** A bound that is never reached still has to be reasoned about at
+  /// every call site, and a later "let's lower it for safety" would silently reintroduce
+  /// a lossy log under a name that says it is not. Removing the parameter makes the
+  /// property structural: there is nowhere left to put a cap.
+  ///
+  /// ⚠️ **This is only safe because of the admission rule above**, applied to the whole
+  /// tag population rather than to the paths someone happened to look at: 71 tags
+  /// checked, 2 removed for being caller-bounded. An unbounded log fed by a free caller
+  /// is permanent stable-state growth at zero attacker cost; an unbounded log fed by
+  /// timer cadence, authenticated events and state transitions grows with real activity.
+  public func append(log : Log, atNs : Int, tag : Text, detail : Text) : Event {
     let event : Event = { seq = log.nextSeq; atNs; tag; detail };
     log.nextSeq += 1;
     log.events.pushBack(event);
-    while (log.events.size() > capacity) {
-      ignore log.events.popFront();
-    };
     event;
   };
 

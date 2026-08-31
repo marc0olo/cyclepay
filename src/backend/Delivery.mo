@@ -288,6 +288,7 @@ module {
       blockIndex = null;
       cyclesDelivered = null;
       retries = 0;
+      lastError = null;
       createdAtNs = nowNs;
       updatedAtNs = nowNs;
     };
@@ -305,6 +306,10 @@ module {
       blockIndex : ?Nat;
       cyclesDelivered : ?Nat;
       bumpRetries : Bool;
+      /// The ledger's words for a failed attempt. `null` leaves the stored value
+      /// alone — pass it only when something actually failed, so a later success
+      /// does not erase the diagnosis an operator is reading.
+      lastError : ?Text;
     },
     nowNs : Int,
   ) {
@@ -317,6 +322,7 @@ module {
         blockIndex = switch (changes.blockIndex) { case (?b) ?b; case null entry.blockIndex };
         cyclesDelivered = switch (changes.cyclesDelivered) { case (?c) ?c; case null entry.cyclesDelivered };
         retries = entry.retries + (if (changes.bumpRetries) 1 else 0);
+        lastError = switch (changes.lastError) { case (?e) ?e; case null entry.lastError };
         updatedAtNs = nowNs;
       },
     );

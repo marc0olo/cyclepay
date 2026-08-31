@@ -2,8 +2,9 @@
 ///
 /// See design-docs/ONCHAIN_GATEWAY_SPEC.md (spec v2.1) and PRD.md for the
 /// module layout this actor grows into: Orders.mo wiring, rails/, Delivery.mo,
-/// Pricing.mo, Delivery.mo, ErrorQueue.mo, Auth.mo.
+/// Pricing.mo, Delivery.mo, Orphans.mo, Auth.mo.
 import Array "mo:core/Array";
+import Problems "Problems";
 import Cycles "mo:core/Cycles";
 import Error "mo:core/Error";
 import Int "mo:core/Int";
@@ -25,7 +26,7 @@ import AuditLog "AuditLog";
 import Auth "Auth";
 import Cmc "Cmc";
 import Delivery "Delivery";
-import ErrorQueue "ErrorQueue";
+import Orphans "Orphans";
 import Pricing "Pricing";
 import Xrc "Xrc";
 import Gate "Gate";
@@ -1115,10 +1116,15 @@ persistent actor CyclesGateway {
           case (#ok(_)) {};
           case (#err(_)) {}; // already cancelled or gone; nothing to undo
         };
-        audit("stripe.sessionFailed", order.id # ": " # sessionErrorToText(e));
+        noteStripeApiFailed("create: " # sessionErrorToText(e));
         return #err(#sessionUnavailable(sessionErrorToText(e)));
       };
       case (#ok(created)) {
+        // Stripe answered, so the outcall is working again. This is the ONLY
+        // evidence that bears on `#stripeApiFailing` — `latchAdmission` cannot
+        // clear it, because admission runs *before* this call and says nothing
+        // about it (#37 §2c).
+        railStateLatch := Gate.latchStripeApiOk(railStateLatch);
         // ⚠️ Re-check the status before storing. `create_order` committed the
         // order as `#created` and then awaited, so `cancel_order` from a second
         // tab can have run in between — its sessionless branch fires, because no
@@ -1345,11 +1351,11 @@ persistent actor CyclesGateway {
   let dedup : Idempotency.Store = Idempotency.emptyStore();
 
   /// §4.1 bounded error queue: every dollar that arrives resolves to a delivery or to
-  /// an obligation here, and `ErrorQueue.refundResolvable` says which of the two
+  /// an obligation here, and `Orphans.refundResolvable` says which of the two
   /// remedies an entry takes — a Stripe refund, or a human establishing the position.
-  let errorQueue : ErrorQueue.Store = ErrorQueue.emptyStore();
+  let orphanStore : Orphans.Store = Orphans.emptyStore();
 
-  /// §4.2 bounded audit-log ring buffer — operational trail, not a
+  /// §4.2 audit log, unbounded since #37 — operational trail, not a
   /// financial record (orders/error queue are the records of money).
   let auditLog : AuditLog.Log = AuditLog.emptyLog();
 
@@ -1426,10 +1432,36 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Bounds are operator headroom knobs, not financial records — transient
-  /// so a redeploy can retune them (same reasoning as maxRequestBodyBytes).
-  transient let errorQueueCapacity : Nat = 1_000;
-  transient let auditLogCapacity : Nat = 4_096;
+  /// Tally a failed session creation, announcing once on the way into the
+  /// condition (#37 §2c).
+  ///
+  /// ⚠️ **Per-attempt before this.** `stripe.sessionFailed` wrote one line per try,
+  /// and the reachable driver is not a transient outage — it is a key that is
+  /// **present but invalid**, rotated or revoked at Stripe without updating the
+  /// canister. `sessionConfig` cannot see that (the secret exists), so every attempt
+  /// reaches the outcall, 401s, and files a line. A transient timeout is
+  /// self-limiting; a revoked key repeats until `minCanisterCycles` closes the rail.
+  ///
+  /// ⚠️ **The order-record half of that loop is NOT fixed here.** Each attempt still
+  /// commits an order and expires it, and because the record is not `#created` the
+  /// open-order cap does not bound it. Committing first is forced — the order id *is*
+  /// the `client_reference_id` — so no pre-commit check can cover this branch. A
+  /// circuit breaker is deferred behind the evidence #37 §2c asks for; this fixes the
+  /// audit half, which is the half that becomes permanent when the ring comes out.
+  /// ⚠️ **Takes a DETAIL rather than a `SessionError`, because the callers know
+  /// different things.** It used to render `sessionErrorToText(e)`, and the retrieve
+  /// path's `#unauthorized` has no honest `SessionError` to pass: `#railClosed` renders
+  /// as "the API key is not provisioned", which is exactly wrong — the key is present
+  /// and Stripe is refusing it. The remedy differs too (rotate versus provision), so
+  /// squeezing three call sites through one enum produced a confident wrong sentence.
+  func noteStripeApiFailed(detail : Text) {
+    refusalCounts := Gate.countStripeApiFailed(refusalCounts);
+    let latched = Gate.latchCondition(railStateLatch, #stripeApiFailing);
+    railStateLatch := latched.latch;
+    if (latched.announce) {
+      audit("gate.startedRefusing", "stripeApiFailing: " # detail);
+    };
+  };
 
   /// Built per request rather than held in a transient field: it carries
   /// `maxPurchaseUsdCents` from the live gate config, so a ceiling change takes
@@ -1438,11 +1470,9 @@ persistent actor CyclesGateway {
     {
       orders = orderStore;
       dedup;
-      errorQueue;
-      errorQueueCapacity;
+      orphanStore;
       expectLivemode;
       auditLog;
-      auditLogCapacity;
       paidIntents;
       maxPurchaseUsdCents = gateConfig.maxPurchaseUsdCents;
     };
@@ -1465,6 +1495,36 @@ persistent actor CyclesGateway {
   /// per counter with the response — the counters mean different things:
   /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
   /// `reserveShort` climbing is a refill. Same shape, opposite actions.
+  /// **The worklist, as a filter over orders** (#37) — every order carrying at least
+  /// one unresolved problem, plus the count an operator watches.
+  ///
+  /// ⚠️ **This is what replaced the error queue's worklist function**, and #37's
+  /// acceptance criterion is only evaluable because it exists: "everything
+  /// outstanding" is a query over orders with an unresolved problem rather than a
+  /// separate structure that can fall out of step with the orders it points at.
+  ///
+  /// ⚠️ **It walks the `unresolvedProblems` index, not the store.** The set is small
+  /// and attacker-priced — every problem in it required a real payment event — and the
+  /// daily reconcile audits `orders.problemIndexDrift` if the projection ever
+  /// disagrees with the orders.
+  ///
+  /// ⚠️ **Not the whole picture on its own.** `orphans_unresolved` holds the two
+  /// order-less kinds, which by definition cannot appear here: a payment we cannot
+  /// attribute has no order to hang off. An operator watching only one of the two
+  /// numbers is watching half the obligations.
+  public shared query ({ caller }) func orders_with_problems() : async {
+    orders : [Types.Order];
+    /// Total unresolved problems, which is **not** `orders.size()` — one order can
+    /// carry several.
+    unresolved : Nat;
+  } {
+    requireAdmin(caller);
+    {
+      orders = Orders.withUnresolvedProblems(orderStore);
+      unresolved = Orders.unresolvedProblemCount(orderStore);
+    };
+  };
+
   public query func refusal_counts() : async {
     counts : Gate.RefusalCounts;
     /// True while that rail-state condition is refusing. Each flips to true with
@@ -1475,10 +1535,10 @@ persistent actor CyclesGateway {
     { counts = refusalCounts; refusingNow = railStateLatch };
   };
 
-  public query func error_queue_depth() : async { unresolved : Nat; retained : Nat } {
+  public query func orphan_depth() : async { unresolved : Nat; retained : Nat } {
     {
-      unresolved = ErrorQueue.unresolvedCount(errorQueue);
-      retained = ErrorQueue.size(errorQueue);
+      unresolved = Orphans.unresolvedCount(orphanStore);
+      retained = Orphans.size(orphanStore);
     };
   };
 
@@ -1489,24 +1549,24 @@ persistent actor CyclesGateway {
   /// grow — and an unpaginated read would eventually exceed Candid's 2 MB
   /// message limit, i.e. the record would become unreadable exactly when it
   /// mattered most. Pass `null` to start; feed `nextCursor` back until it is
-  /// null. `limit` is capped at `ErrorQueue.maxPageSize`.
-  public shared query ({ caller }) func error_queue(
+  /// null. `limit` is capped at `Orphans.maxPageSize`.
+  public shared query ({ caller }) func orphans(
     afterId : ?Nat,
     limit : Nat,
-  ) : async ErrorQueue.Page {
+  ) : async Orphans.Page {
     requireAdmin(caller);
-    ErrorQueue.page(errorQueue, afterId, limit);
+    Orphans.page(orphanStore, afterId, limit);
   };
 
   /// The operator worklist: open obligations only, paged. Filtered server-side
   /// so a large body of resolved history never stands between the operator and
   /// the dollars that still need an answer.
-  public shared query ({ caller }) func error_queue_unresolved(
+  public shared query ({ caller }) func orphans_unresolved(
     afterId : ?Nat,
     limit : Nat,
-  ) : async ErrorQueue.Page {
+  ) : async Orphans.Page {
     requireAdmin(caller);
-    ErrorQueue.unresolvedPage(errorQueue, afterId, limit);
+    Orphans.unresolvedPage(orphanStore, afterId, limit);
   };
 
   /// Manual resolution (§4.1/§7) — the operator marking an obligation settled after
@@ -1517,12 +1577,94 @@ persistent actor CyclesGateway {
   /// `charge.refunded` auto-resolves the refund-resolvable kinds, so those usually
   /// close themselves; `#deliveryStuck`, `#refundAfterDelivery` and `#abandoned` carry
   /// no `paymentRef` and can only be closed here. Resolving an entry never transitions
-  /// the order — see `ErrorQueue`'s header.
-  public shared ({ caller }) func resolve_error(id : Nat) : async Result.Result<ErrorQueue.Entry, ErrorQueue.ResolveError> {
+  /// the order — see `Orphans`'s header.
+  /// Close **one** order-bound problem an operator has dealt with (#37).
+  ///
+  /// The order-shaped counterpart to `resolve_orphan`, which addresses entries by a
+  /// queue id that no longer exists for the kinds that moved.
+  ///
+  /// ⚠️ **`paymentRef` is the selector, and omitting it is only safe when there is one
+  /// candidate.** An earlier version took the tag alone and closed *every* unresolved
+  /// problem of that kind — which over-resolves, because `Problems.sameShape`
+  /// deliberately allows two unresolved `#duplicate` problems on one order with
+  /// different payment references (a buyer who pays three times). An operator who
+  /// refunded one payment would have marked the other settled.
+  ///
+  /// ⚠️ **The root cause is structural, so the fix is a real selector rather than a
+  /// warning.** Queue entries had monotonic ids; problems in an array have no stable
+  /// handle, so **the dedup key is the handle** — `(kindTag, identifyingRef)`, the same
+  /// pair `sameShape` uses to decide identity. One definition, both users.
+  ///
+  /// ⚠️ **And it refuses rather than guesses when the selector is ambiguous**, which is
+  /// this codebase's posture wherever a lever might act on the wrong thing — the
+  /// abandon guard and `cancel_order`'s `#notOpen` do the same. The refusal lists the
+  /// references so the operator can disambiguate, because declining without a way
+  /// through is a dead end rather than a safeguard.
+  public shared ({ caller }) func resolve_problem(
+    orderId : Types.OrderId,
+    kindTag : Text,
+    /// Which one, when the kind can have several. `#deliveryStuck` never can — it is
+    /// matched on the discriminator alone — so null is always right for it.
+    paymentRef : ?Text,
+  ) : async Result.Result<Nat, Text> {
     requireAdmin(caller);
-    let resolved = ErrorQueue.resolve(errorQueue, id, Time.now());
+    let candidates = Orders.unresolvedOfKind(orderStore, orderId, kindTag);
+    if (candidates.size() == 0) {
+      return #err(
+        "no unresolved " # kindTag # " problem on order " # orderId
+        # " — check the tag against the order's own problems, and note a resolved one stays on the order rather than disappearing"
+      );
+    };
+    switch (paymentRef) {
+      case null {
+        if (candidates.size() > 1) {
+          let refs = candidates.map(
+            func(c) = switch (c.ref) { case (?r) r; case null "(none)" }
+          );
+          return #err(
+            candidates.size().toText() # " unresolved " # kindTag # " problems on order "
+            # orderId # ", so this would close all of them — pass the payment reference for the one you dealt with. Candidates: "
+            # refs.values().join(", ")
+          );
+        };
+      };
+      case (?_) {};
+    };
+    let closed = Orders.resolveProblems(
+      orderStore,
+      orderId,
+      func(k) {
+        Problems.kindToText(k) == kindTag
+        and (
+          switch (paymentRef) {
+            case null true; // exactly one candidate, checked above
+            case (?want) Problems.identifyingRef(k) == ?want;
+          }
+        );
+      },
+      Time.now(),
+    );
+    if (closed == 0) {
+      return #err(
+        "no unresolved " # kindTag # " problem on order " # orderId
+        # " with that payment reference — the candidates are listed by resolve_problem with no reference given"
+      );
+    };
+    auditAdmin(
+      caller,
+      "order.problemResolved",
+      orderId # ": " # kindTag
+      # (switch (paymentRef) { case (?r) " (" # r # ")"; case null "" })
+      # " — " # closed.toText() # " closed",
+    );
+    #ok(closed);
+  };
+
+  public shared ({ caller }) func resolve_orphan(id : Nat) : async Result.Result<Orphans.Entry, Orphans.ResolveError> {
+    requireAdmin(caller);
+    let resolved = Orphans.resolve(orphanStore, id, Time.now());
     switch (resolved) {
-      case (#ok(entry)) auditAdmin(caller, "errorQueue.resolved", "entry " # id.toText() # ": " # entry.detail);
+      case (#ok(entry)) auditAdmin(caller, "orphanStore.resolved", "entry " # id.toText() # ": " # entry.detail);
       case (#err(_)) {};
     };
     resolved;
@@ -1618,57 +1760,8 @@ persistent actor CyclesGateway {
   /// bound trips, not this.
   transient let deliveryBlockedAudited = Set.empty<Types.OrderId>();
 
-  /// Orders already alerted as delayed → the error-queue entry id raised for it.
-  ///
-  /// Persistent, so an upgrade does not re-alert an order that is still waiting
-  /// (which would put duplicate obligations on the operator's worklist).
-  ///
-  /// The *entry id* rather than a timestamp, because the alert has to be closed
-  /// when the delay ends: an order that eventually delivers must not leave an
-  /// open obligation on the worklist describing a problem that no longer exists.
-  /// order id → (error-queue entry id, the stage that alert described).
-  ///
-  /// ⚠️ **No stage is stored alongside the entry id, and that follows from having one
-  /// in-flight status.** A stage was worth keeping only so a stall that MOVED between
-  /// stages could close the stale alert and raise one naming where the order actually
-  /// is. With `#paid` the sole status a delivery can sit in, there is nowhere to move
-  /// to: `#paid` is the one in-flight status, so a stalled order's stage is always the
-  /// same string, and a comparison would be a branch describing a transition that
-  /// cannot occur.
-  let delayedAlerts = Map.empty<Types.OrderId, Nat>();
 
-  /// Raise the §5 delivery-delayed alert for an order, at most once.
-  ///
-  /// Deliberately does NOT transition the order: the cause is operator-fixable
-  /// and the order must stay sweepable so that fixing it delivers with no
-  /// further intervention. Only `abandon_order` ends an order without delivery.
-  func alertDelayed(order : Types.Order, stage : Text, detail : Text) {
-    // Already alerted for this order, so stay silent: re-raising on every sweep
-    // would flood the worklist and the audit ring.
-    if (delayedAlerts.get(order.id) != null) return;
-    let entryId = queueDeliveryError(
-      order.rail,
-      #deliveryDelayed({ orderId = order.id; stage; sinceNs = order.updatedAtNs }),
-      detail,
-    );
-    delayedAlerts.add(order.id, entryId);
-    audit("delivery.delayed", order.id # " [" # stage # "]: " # detail);
-  };
 
-  /// The delay ended, so close the alert it raised.
-  ///
-  /// Resolving the entry matters as much as forgetting the mapping: an open
-  /// obligation describing a delay that is over is an orphan on the operator's
-  /// worklist, and the worklist is only useful if everything on it is live.
-  func clearDelayed(orderId : Types.OrderId) {
-    switch (delayedAlerts.get(orderId)) {
-      case (?entryId) {
-        ignore ErrorQueue.resolve(errorQueue, entryId, Time.now());
-        delayedAlerts.remove(orderId);
-      };
-      case null {};
-    };
-  };
 
   /// Audit a blocked delivery at most once per order per session.
   func auditDeliveryBlockedOnce(orderId : Types.OrderId, tag : Text, detail : Text) {
@@ -1701,7 +1794,7 @@ persistent actor CyclesGateway {
   };
 
   func audit(tag : Text, detail : Text) {
-    ignore AuditLog.append(auditLog, auditLogCapacity, Time.now(), tag, detail);
+    ignore AuditLog.append(auditLog, Time.now(), tag, detail);
   };
 
   /// Audit an admin action, recording **which principal took it**.
@@ -1725,17 +1818,6 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Queue a delivery-path error entry, audit-logging any unresolved eviction
-  /// (each is a live money obligation dropped from on-chain state, §4.1).
-  func queueDeliveryError(rail : Types.Rail, kind : ErrorQueue.Kind, detail : Text) : Nat {
-    let result = ErrorQueue.add(errorQueue, errorQueueCapacity, rail, kind, detail, Time.now());
-    for (victim in result.evicted.values()) {
-      if (victim.resolvedAtNs == null) {
-        audit("errorQueue.evictedUnresolved", "entry " # victim.id.toText() # ": " # victim.detail);
-      };
-    };
-    result.entry.id;
-  };
 
   /// **The one escalation.** A delivery stopped where it cannot continue
   /// automatically, so the order goes `#needsReview` — **not** `#abandoned`: the
@@ -1786,20 +1868,20 @@ persistent actor CyclesGateway {
   ///     Escalating rather than guessing a fee on a money path is the point.
   func escalateDelivery(order : Types.Order, stage : Text, detail : Text) {
     ignore tryTransition(order.id, #needsReview);
-    let blockIndex = switch (deliveryJournal.get(order.id)) {
-      case (?e) e.blockIndex;
-      case null null;
-    };
-    Delivery.patch(deliveryJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesDelivered = null; bumpRetries = false }, Time.now());
-    // Any open delay alert for this order says "it delivers on the next sweep", which
-    // just stopped being true. Leaving it open would put a false promise on the
-    // worklist next to the real problem, and leak its `delayedAlerts` entry forever.
-    clearDelayed(order.id);
+    Delivery.patch(deliveryJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesDelivered = null; bumpRetries = false; lastError = null }, Time.now());
+    // ⚠️ **No delay alert to close here, by construction (#37).** An entry saying "it
+    // delivers on the next sweep" would have become a false promise on the
+    // worklist next to the real problem. Escalation moves the status off `#paid`, so
     // Same for the once-per-order audit guard: nothing will re-audit a blocked
     // delivery for an escalated order, and keeping the id would only suppress a
     // legitimate line if it were ever re-driven.
     deliveryBlockedAudited.remove(order.id);
-    ignore queueDeliveryError(order.rail, #deliveryStuck({ orderId = order.id; stage; blockIndex }), detail);
+    // ⚠️ **`blockIndex` is no longer carried here.** It is on the `JournalEntry`
+    // along with `status`, `retries` and `updatedAtNs`, and §1b moved the last thing
+    // this problem held alone — the ledger's error text — to `JournalEntry.lastError`.
+    // What is left is the stage and the resolution state, which is what a problem on
+    // an order is for.
+    ignore Orders.fileProblem(orderStore, order.id, #deliveryStuck({ stage }), detail, Time.now());
     audit("delivery.stuck", order.id # " [" # stage # "]: " # detail);
   };
 
@@ -1830,14 +1912,25 @@ persistent actor CyclesGateway {
             // Tell someone while the cause is still fixable, and keep retrying: most
             // incidents end here with the order delivering.
             //
-            // ⚠️ One in-flight status means one stage and one sentence — no switch on
-            // status here. If a second status can ever sit still, this becomes a switch
-            // again, and the alert wording has to name which one.
-            alertDelayed(
-              order,
-              "deliveryDelayed",
-              "paid but not yet delivered past the alert threshold — fix the cause and it delivers on the next sweep",
-            );
+            // ⚠️ **One line per order, and `markDelayed` is what bounds it** — it
+            // returns true only on the first crossing, so the line needs no
+            // bookkeeping of its own. That is what retires the `delayedAlerts` map
+            // rather than relocating it: the guard is a field on the order, and
+            // setting an already-set field is idempotent.
+            //
+            // The line passes `AuditLog.mo`'s admission rule cleanly — a state
+            // transition, once per order, and reaching it needs a real paid order, so
+            // it is attacker-priced unlike the refusal lines #61 removed.
+            //
+            // ⚠️ One in-flight status means one sentence — no switch on status here.
+            // If a second status can ever sit still, this becomes a switch again and
+            // the wording has to name which one.
+            if (Orders.markDelayed(orderStore, orderId, Time.now())) {
+              audit(
+                "delivery.delayed",
+                orderId # ": paid but not yet delivered past the alert threshold — fix the cause and it delivers on the next sweep",
+              );
+            };
           };
           case (#terminate) {
             // §5.3 max-wait bound. By now the cause is not transient, and a buyer left
@@ -1850,7 +1943,6 @@ persistent actor CyclesGateway {
             // what the operator acts on.
             let termination = Delivery.terminationFor(order.status, deliveryJournal.get(orderId));
             escalateDelivery(order, termination.stage, termination.detail);
-            clearDelayed(orderId);
             deliveryBlockedAudited.remove(orderId);
             return;
           };
@@ -1997,7 +2089,7 @@ persistent actor CyclesGateway {
             // tells us nothing about whether the ledger acted, and rule 2 exists to
             // be pessimistic about exactly that. A reconcile heals it if the
             // transfer never happened.
-            Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, Time.now());
+            Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true; lastError = ?e.message() }, Time.now());
             audit("delivery.transferFailed", orderId # ": " # e.message());
             return;
           };
@@ -2015,8 +2107,7 @@ persistent actor CyclesGateway {
               reserveFloor += debited;
               deliveryBlockedAudited.remove(orderId);
               ignore tryTransition(orderId, #delivered);
-              Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
-              clearDelayed(orderId);
+              Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false; lastError = null }, Time.now());
               audit("delivery.deduplicated", orderId # ": ledger block " # block.toText() # " was already ours; floor credited back " # debited.toText());
               return;
             };
@@ -2024,8 +2115,7 @@ persistent actor CyclesGateway {
               deliveryBlockedAudited.remove(orderId);
               // Block + `#delivered` in ONE sync block, so the pair cannot disagree.
               ignore tryTransition(orderId, #delivered);
-              Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
-              clearDelayed(orderId);
+              Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false; lastError = null }, Time.now());
               audit("delivery.sent", orderId # ": " # intent.amountCycles.toText() # " cycles, ledger block " # block.toText());
               return;
             };
@@ -2071,7 +2161,7 @@ persistent actor CyclesGateway {
               let retried = try {
                 await cyclesLedger.icrc1_transfer(Delivery.deliveryArgs(intent, expected));
               } catch (e) {
-                Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, Time.now());
+                Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true; lastError = ?("after fee correction: " # e.message()) }, Time.now());
                 audit("delivery.transferFailed", orderId # " (after fee correction): " # e.message());
                 return;
               };
@@ -2081,16 +2171,14 @@ persistent actor CyclesGateway {
                   reserveFloor += reDebited;
                   deliveryBlockedAudited.remove(orderId);
                   ignore tryTransition(orderId, #delivered);
-                  Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
-                  clearDelayed(orderId);
+                  Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false; lastError = null }, Time.now());
                   audit("delivery.deduplicated", orderId # ": block " # block.toText() # " after fee correction; floor credited back");
                   return;
                 };
                 case (#delivered(block)) {
                   deliveryBlockedAudited.remove(orderId);
                   ignore tryTransition(orderId, #delivered);
-                  Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false }, Time.now());
-                  clearDelayed(orderId);
+                  Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false; lastError = null }, Time.now());
                   audit("delivery.sent", orderId # ": " # intent.amountCycles.toText() # " cycles at the corrected fee, ledger block " # block.toText());
                   return;
                 };
@@ -2099,7 +2187,7 @@ persistent actor CyclesGateway {
                   // again mid-flight the next sweep starts over from the derived
                   // fee — which is still the byte-identical replay, so the
                   // at-most-once guarantee is never traded for convergence.
-                  Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, Time.now());
+                  Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true; lastError = null }, Time.now());
                   audit("delivery.retriable", orderId # ": fee correction to " # expected.toText() # " did not settle; retrying next sweep");
                   return;
                 };
@@ -2117,7 +2205,7 @@ persistent actor CyclesGateway {
               // quantity — and if it does fire, the floor and the ledger disagree.
               // Check `reserve_status.tallySaturations` and the last reconcile before
               // hunting a fee delta.
-              Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, Time.now());
+              Delivery.patch(deliveryJournal, orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true; lastError = ?detail }, Time.now());
               audit("delivery.retriable", orderId # ": " # detail);
               return;
             };
@@ -2148,8 +2236,7 @@ persistent actor CyclesGateway {
           // degrades to something resumable rather than to a stuck paid order
           // whose buyer already has their cycles.
           ignore tryTransition(orderId, #delivered);
-          Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = null; bumpRetries = false }, Time.now());
-          clearDelayed(orderId);
+          Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = null; bumpRetries = false; lastError = null }, Time.now());
           audit("delivery.healed", orderId # ": block " # block.toText() # " was recorded but the order had not moved");
           return;
         };
@@ -2346,7 +2433,7 @@ persistent actor CyclesGateway {
   ///
   /// **The immediate answer to "is a delivery failing?", which nothing else gave.**
   /// The error queue is the worklist and it self-clears correctly — a
-  /// `#deliveryDelayed` alert resolves on delivery *or* escalation — but it does not
+  /// `delayed_deliveries` self-clears on delivery *or* escalation — but it does not
   /// open until the 2 h alert threshold, and a delivery taking a sweep or two is
   /// normal, so lowering that threshold would file worklist entries for orders that
   /// deliver themselves. This closes the two-hour blind window without touching the
@@ -2370,6 +2457,95 @@ persistent actor CyclesGateway {
   /// skipping" gets diagnosed. `#needsReview` entries are included because an
   /// operator asking "what is wrong right now" wants them, but they are deliberately
   /// NOT in the reconcile's predicate — see `unsettledDeliveries`.
+  /// Deliveries outstanding past `alertAfterNs` — **the heir to the
+  /// `#deliveryDelayed` worklist entry** (#37).
+  ///
+  /// ⚠️ **The alert it replaces stored nothing of its own.** It was raised as
+  /// `#deliveryDelayed({ orderId = order.id; stage = "deliveryDelayed"; sinceNs =
+  /// order.updatedAtNs })` with a fixed sentence for `detail` — every field copied
+  /// off the order, a constant stage, and no operator decision of its own. It
+  /// self-resolved on delivery or escalation, so its whole content was *"this order
+  /// is past the threshold"*, which is a **reading**, not an obligation.
+  ///
+  /// ⚠️ **Self-clearing by construction**, which is the property that makes this
+  /// usable where the entry was not: an order leaves this set the moment it
+  /// delivers or escalates, because that moves its status. There is no resolve step
+  /// to forget and no `delayedAlerts` mapping to leak.
+  ///
+  /// ⚠️ **`alertAfterNs` survives as this predicate's threshold, not as a trigger.**
+  /// The admin still tunes when a slow delivery *shows up*; it no longer files
+  /// anything. That is also why the old 2 h floor mattered less than it looked —
+  /// lowering a *filter* costs nothing, whereas lowering a trigger filed worklist
+  /// entries for orders that deliver themselves.
+  public shared query ({ caller }) func delayed_deliveries() : async [{
+    orderId : Types.OrderId;
+    status : Types.OrderStatus;
+    /// `order.updatedAtNs` — retries deliberately do not move it, so the clock is
+    /// pinned to the moment the order entered its current state.
+    heldSinceNs : Int;
+    waitedNs : Int;
+    /// How many times delivery has already failed. `0` is an order simply waiting.
+    retries : Nat;
+    /// True once the wait has also passed `maxHoldNs`, i.e. the next sweep
+    /// escalates it rather than retrying.
+    ///
+    /// ⚠️ **A transient window, at most one sweep interval wide** — past `maxHoldNs`
+    /// the next sweep escalates the order out of `#paid` and out of this set. Useful
+    /// to read ("about to escalate"), but **do not assert it in an integration
+    /// scenario**: pinning that window without ticking the clock is exactly the shape
+    /// that produces a flaky test. The boundary is already unit-pinned on
+    /// `Delivery.waitStage`, which is where it belongs.
+    pastMaxHold : Bool;
+    /// When this order FIRST crossed the threshold, read off the order — the
+    /// permanent record, where every other field here is a live reading.
+    delayedAtNs : ?Int;
+  }] {
+    requireAdmin(caller);
+    // ⚠️ **A full scan, and #37's status index is what makes that acceptable.**
+    // Under indefinite retention this walks every order ever created, which is the
+    // same growth the daily reconcile has — so this query is a second consumer of
+    // that index, not an independent problem. Do not lower `alertAfterNs` to
+    // compensate: the cost is the scan, not the threshold.
+    let now = Time.now();
+    let out = List.empty<{
+      orderId : Types.OrderId;
+      status : Types.OrderStatus;
+      heldSinceNs : Int;
+      waitedNs : Int;
+      retries : Nat;
+      pastMaxHold : Bool;
+      delayedAtNs : ?Int;
+    }>();
+    for ((_, order) in orderStore.orders.entries()) {
+      // `#paid` is the only status that sits still waiting to deliver; every other
+      // in-flight position is either terminal or already escalated. If a second
+      // status can ever wait, this becomes a set membership rather than an equality
+      // — the same note `waitStage`'s caller carries.
+      if (order.status == #paid) {
+        let stage = Delivery.waitStage(order.updatedAtNs, now, deliveryConfig);
+        let delayed = switch (stage) {
+          case (#retry) false;
+          case (#alert or #terminate) true;
+        };
+        if (delayed) {
+          out.add({
+            orderId = order.id;
+            status = order.status;
+            heldSinceNs = order.updatedAtNs;
+            waitedNs = now - order.updatedAtNs;
+            retries = switch (deliveryJournal.get(order.id)) {
+              case (?entry) entry.retries;
+              case null 0;
+            };
+            pastMaxHold = stage == #terminate;
+            delayedAtNs = order.delayedAtNs;
+          });
+        };
+      };
+    };
+    out.toArray();
+  };
+
   public shared query ({ caller }) func pending_deliveries() : async [Types.JournalEntry] {
     requireAdmin(caller);
     let out = List.empty<Types.JournalEntry>();
@@ -2659,7 +2835,16 @@ persistent actor CyclesGateway {
             // session completed (the payment won the race) or it expired already.
             // Change nothing and let the incoming `checkout.session.completed` or
             // `checkout.session.expired` resolve it.
-            audit("order.cancelRaced", id # ": session " # sessionId # " is no longer open");
+            //
+            // ⚠️ **No audit line, deliberately (#37 §2c).** It failed the admission
+            // rule on both halves: a buyer can retry the cancel and hit this again, so
+            // it was caller-bounded — and its information exists nowhere else *only*
+            // if you ignore that **the resolving event is itself logged**. The
+            // `completed` or `expired` webhook that settles this race writes the record,
+            // and it is the one an operator actually needs, because it says WHICH of
+            // the two causes it was. This line said only "one of two things happened".
+            //
+            // The buyer still learns, from the error returned below.
             return #err(
               "order " # id # " is already settled or has expired — refresh the page"
             );
@@ -2667,7 +2852,14 @@ persistent actor CyclesGateway {
           case (#failed(detail)) {
             // The order stays payable and uncancelled, which is the safe side:
             // the buyer can retry, or it expires on its own.
-            audit("order.cancelFailed", id # ": " # detail);
+            //
+            // ⚠️ **And because the buyer CAN retry, this line was caller-bounded** —
+            // the comment above invites exactly the loop that made it fail
+            // `AuditLog.mo`'s admission rule. It is the same Stripe-API-failing
+            // condition `create_order` latches, with the same cause and the same lever,
+            // so it routes through the same latch: one line when the API starts
+            // refusing us, a counter for the volume.
+            noteStripeApiFailed("expire: " # detail);
             return #err(
               "could not reach Stripe to cancel order " # id # " — try again, or it expires on its own"
             );
@@ -2686,7 +2878,7 @@ persistent actor CyclesGateway {
   /// terminal non-delivered state.**
   ///
   /// Nothing in the system gives up on a purchase automatically: a delay raises
-  /// `#deliveryDelayed` and keeps retrying, because its causes are all
+  /// `delayed_deliveries` and keeps retrying, because its causes are all
   /// operator-fixable. This is the deliberate human decision that a purchase
   /// will not be completed, and it demands a reason so the trail records *why*
   /// alongside *who*.
@@ -2701,7 +2893,7 @@ persistent actor CyclesGateway {
     let ?order = Orders.get(orderStore, id) else return #err("no order " # id);
     switch (order.status) {
       // `#needsReview` is newly accepted here, and it is the point of splitting
-      // `#errorQueue`: an escalated order could not previously be abandoned,
+      // `#orphanStore`: an escalated order could not previously be abandoned,
       // because one status meant both "promise held" and "promise released" and
       // the transition was to itself (#34).
       case (#paid or #needsReview) {};
@@ -2747,12 +2939,17 @@ persistent actor CyclesGateway {
       };
     };
     if (reason.size() == 0) return #err("a reason is required — the audit trail must record why");
-    let ?abandoned = tryTransition(id, #abandoned) else {
-      return #err("order " # id # " refused the transition to abandoned");
+    // Status and reason in one step, so they cannot diverge — an `#abandoned` order
+    // with no explanation is the gap the dropped queue entry used to paper over.
+    let abandoned = switch (Orders.abandonWithReason(orderStore, id, reason, Time.now())) {
+      case (#ok(o)) o;
+      case (#err(_)) return #err("order " # id # " refused the transition to abandoned");
     };
-    Delivery.patch(deliveryJournal, id, { status = ?#abandoned; blockIndex = null; cyclesDelivered = null; bumpRetries = false }, Time.now());
-    clearDelayed(id);
-    ignore queueDeliveryError(order.rail, #abandoned({ orderId = id; reason }), "abandoned by operator: " # reason);
+    Delivery.patch(deliveryJournal, id, { status = ?#abandoned; blockIndex = null; cyclesDelivered = null; bumpRetries = false; lastError = null }, Time.now());
+    // ⚠️ **No queue entry.** It was the fourth copy of one decision — the status, the
+    // journal patch and this audit line already carry it, and nothing about it was
+    // outstanding. Review established the refund is tracked separately, via
+    // `stripe.refundOfEscalated` on the `charge.refunded` for the intent.
     auditAdmin(caller, "order.abandoned", id # ": " # reason);
     #ok(abandoned);
   };
@@ -2795,8 +2992,7 @@ persistent actor CyclesGateway {
     let ?delivered = tryTransition(id, #delivered) else {
       return #err("order " # id # " refused the transition to delivered");
     };
-    Delivery.patch(deliveryJournal, id, { status = ?#delivered; blockIndex = ?blockIndex; cyclesDelivered = null; bumpRetries = false }, Time.now());
-    clearDelayed(id);
+    Delivery.patch(deliveryJournal, id, { status = ?#delivered; blockIndex = ?blockIndex; cyclesDelivered = null; bumpRetries = false; lastError = null }, Time.now());
     auditAdmin(caller, "order.recordedDelivered", id # ": operator confirmed cycles-ledger block " # blockIndex.toText());
     #ok(delivered);
   };
@@ -2978,6 +3174,21 @@ persistent actor CyclesGateway {
       );
       audit("orders.countDrift", rendered.values().join(", "));
     };
+    // ⚠️ **The adjudicator for the unresolved-problems index, on the same cadence.**
+    // That index is derived state keyed by order id, which is only safe because the
+    // orders are the authority and this can rebuild it. A non-zero count does not mean
+    // bad data — it means **a writer of `order.problems` bypassed
+    // `Orders.fileProblem`/`resolveProblems`**, which is a bug in `Orders.mo` rather
+    // than a condition to tolerate. So it is audited as a breach, not as a repair.
+    let problemDrift = Orders.recountUnresolvedProblems(orderStore);
+    if (problemDrift > 0) {
+      audit(
+        "orders.problemIndexDrift",
+        problemDrift.toText() # " order id(s) disagreed with the unresolved-problems index and it was rebuilt."
+        # " The index is maintained only by Orders.fileProblem and Orders.resolveProblems, so a non-zero count means"
+        # " something else wrote order.problems directly — find that writer; the rebuild is not the fix.",
+      );
+    };
   };
 
   /// The timer job. Correctness against concurrent drivers is processDelivery's
@@ -3054,14 +3265,30 @@ persistent actor CyclesGateway {
     let ?fresh = Orders.get(orderStore, orderId) else return;
 
     switch (answer) {
+      // ⚠️ **The THIRD Stripe outcall, and it needs the same latch as the other two
+      // (#37 §2c).** These two arms passed the admission rule on a technicality: their
+      // frequency is bounded by *our own* sweep cadence, which the rule accepts.
+      //
+      // ⚠️ **But our cadence bounds a RATE, and a rate against an unfixed persistent
+      // condition is unbounded over time.** A revoked key — the exact cause
+      // `#stripeApiFailing` exists for — fails the retrieve on every stranded order the
+      // sweep touches: hourly, up to `maxRetrievesPerPass` each pass, forever, for one
+      // unfixed problem. Roughly 240 permanent lines a day once the ring is gone. The
+      // ring is what turned "bounded per day" into "bounded in total", and removing it
+      // is what makes the difference matter.
+      //
+      // Same condition, not a fourth: a 401 on retrieve and a 401 on create are **one
+      // incident with one lever**. Which is why the condition is named for the API.
       case (#unauthorized) {
-        audit(
-          "stripe.retrieveUnauthorized",
-          "order " # orderId # ": Stripe refused the session read — the restricted key needs WRITE on Checkout Sessions (which includes read). Stranded capacity cannot be released until it does",
+        // The guidance the deleted `stripe.retrieveUnauthorized` line carried, kept
+        // verbatim — it is the one message that names the fix, and RUNBOOK §8's P1 row
+        // is keyed on this text now rather than on a tag that no longer exists.
+        noteStripeApiFailed(
+          "retrieve REFUSED (401/403): the restricted key needs WRITE on Checkout Sessions, which includes the read this sweep does. Stranded reserve capacity cannot be released until it does — rotate the key"
         );
       };
       case (#failed(detail)) {
-        audit("stripe.retrieveFailed", "order " # orderId # ": " # detail);
+        noteStripeApiFailed("retrieve: " # detail);
       };
       case (#ok(#open) or #ok(#unknown(_))) {
         // Nothing. Our clock decided when to ask; Stripe decides what is true, and it
@@ -3105,18 +3332,26 @@ persistent actor CyclesGateway {
         };
         // Past the horizon: nobody is going to credit this on its own.
         //
-        // ⚠️ **Do not re-file.** The entry cannot be closed while the problem exists —
-        // its closer is the order being credited, not the money moving — so suppressing a
-        // duplicate cannot hide anything. **This guard is only safe because of that
-        // coupling: do not move the closer onto money state without deleting this guard**,
-        // or it silently becomes a hider.
-        if (ErrorQueue.hasUnresolvedPaidNotCredited(errorQueue, orderId)) return;
-        ignore queueDeliveryError(
-          fresh.rail,
-          #paidNotCredited({ orderId; paymentRef = paymentIntent; sessionId }),
-          "Stripe says session " # sessionId # " was paid and this order was never credited, past the point where Stripe would still be retrying. **Resend the event from the Stripe Dashboard first, always** — that credits the order through the normal path and closes this entry. Refunding instead settles the money and leaves the order stranded in Created with no event left to release it.",
-        );
-        audit("stripe.paidNotCredited", orderId # ": paid and uncredited past Stripe's retry horizon; obligation filed");
+        // ⚠️ **Do not re-file — and that guard is now free.** `Problems.file` dedups on
+        // the kind's `paymentRef`, so the explicit `hasUnresolvedPaidNotCredited` check
+        // this used to need is gone along with the function.
+        //
+        // ⚠️ **The dedup is only safe because of one coupling, which survives the move:**
+        // the problem cannot be closed while it still exists, because its closer is *the
+        // order being credited*, not the money moving. Suppressing a duplicate therefore
+        // cannot hide anything. **Do not move the closer onto money state without
+        // revisiting this**, or the dedup silently becomes a hider.
+        if (
+          Orders.fileProblem(
+            orderStore,
+            orderId,
+            #paidNotCredited({ paymentRef = paymentIntent; sessionId }),
+            "Stripe says session " # sessionId # " was paid and this order was never credited, past the point where Stripe would still be retrying. **Resend the event from the Stripe Dashboard first, always** — that credits the order through the normal path and closes this problem. Refunding instead settles the money and leaves the order stranded in Created with no event left to release it.",
+            Time.now(),
+          )
+        ) {
+          audit("stripe.paidNotCredited", orderId # ": paid and uncredited past Stripe's retry horizon; obligation filed");
+        };
       };
     };
   };

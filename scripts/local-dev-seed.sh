@@ -209,7 +209,7 @@ step "delivery timeline"
 # The gateway ships with a 2 h alert and a 72 h terminate bound, which is what you
 # want locally too — an order that cannot deliver should end up on the worklist
 # rather than retrying in silence. Set explicitly so the seed states the numbers a
-# reader will see in `error_queue_unresolved`.
+# reader will see in `orphans_unresolved`.
 icp canister call backend set_delivery_config \
   '(record { maxHoldNs = 259_200_000_000_000 : int;
              alertAfterNs = 7_200_000_000_000 : int })' \
@@ -280,9 +280,21 @@ step "admission gate"
 # under-funded canister, and it means local development never exercises a gate
 # that is load-bearing on mainnet.
 CYCLES_TOP_UP=20t
-icp canister top-up backend --amount "$CYCLES_TOP_UP" >/dev/null 2>&1 ||
-  die "could not top up the backend canister with $CYCLES_TOP_UP cycles.
-    Needs icp-cli 1.2.0 or newer (\`icp canister top-up --help\`)."
+# ⚠️ **stderr is NOT redirected, and that is the fix rather than an oversight.** This
+# line used to end `>/dev/null 2>&1` with a `die` that asserted "needs icp-cli 1.2.0 or
+# newer" — a guess that was WRONG on a machine running 1.3.0, where the real error was
+# `Insufficient cycles. Requested: 20_000_000_000_000, balance: 13997200000000` after a
+# few reinstalls had spent the local identity's balance. Hiding the reason and printing
+# a hardcoded cause sends the operator to upgrade a tool that was already current.
+#
+# Same fault as `capture-stripe-fixtures.sh`'s preflight before it was fixed: a swallowed
+# stderr plus a guessed diagnosis is worse than no diagnosis, because it is believed.
+if ! TOP_UP_OUT="$(icp canister top-up backend --amount "$CYCLES_TOP_UP" 2>&1)"; then
+  printf '\n%s\n\n' "$TOP_UP_OUT" >&2
+  die "could not top up the backend canister with $CYCLES_TOP_UP cycles — the reason is printed above.
+    Two causes are common, and the message says which: the local identity's cycles are spent
+    (reinstall a few times and they are), or icp-cli predates \`icp canister top-up\` (1.2.0)."
+fi
 
 step "cycles reserve"
 # Delivery is a TRANSFER out of the gateway's own cycles-ledger account. So the
@@ -302,7 +314,14 @@ BACKEND_ID="$(icp canister status backend --json | jq -r '.id')"
 [ -n "$BACKEND_ID" ] && [ "$BACKEND_ID" != "null" ] ||
   die "could not read the backend canister id — is the network up and the canister deployed?"
 RESERVE_TOP_UP=100t
-if icp cycles transfer "$RESERVE_TOP_UP" "$BACKEND_ID" >/dev/null 2>&1; then
+# ⚠️ **Capture the reason, do not discard it.** This was `>/dev/null 2>&1`, so the
+# warning below could only say "could not fund the cycles reserve" — and the actual
+# message (`Insufficient cycles. Requested: 100_000_000_000_000, balance: …`) is the
+# one thing that tells an operator whether to mint more or fix something. Third
+# instance of the swallowed-reason pattern in this file, which is the file whose whole
+# job is printing guidance.
+RESERVE_OUT=""
+if RESERVE_OUT="$(icp cycles transfer "$RESERVE_TOP_UP" "$BACKEND_ID" 2>&1)"; then
   # ⚠️ **A funded reserve is not a SELLABLE reserve until the gateway looks.** #30
   # PR-B decides solvency against a maintained lower bound on this account, and that
   # bound only ever rises by observation: it starts at zero on a fresh install, and a
@@ -319,7 +338,8 @@ if icp cycles transfer "$RESERVE_TOP_UP" "$BACKEND_ID" >/dev/null 2>&1; then
   fi
   echo "reserve:     $RESERVE_TOP_UP cycles in the gateway's own ledger account, observed"
 else
-  printf '  \033[33m!\033[0m could not fund the cycles reserve with %s.\n' "$RESERVE_TOP_UP"
+  printf '  \033[33m!\033[0m could not fund the cycles reserve with %s:\n' "$RESERVE_TOP_UP"
+  printf '    %s\n' "$RESERVE_OUT"
   printf '    Orders will be created and PAID and then retry delivery forever.\n'
   printf '    Fund it by hand, then let the gateway observe it:\n'
   printf '      icp cycles transfer %s %s\n' "$RESERVE_TOP_UP" "$BACKEND_ID"
@@ -367,9 +387,29 @@ ok "a \$10 purchase is admitted"
 # the reserve is verified separately, against the same figure the gate decides on —
 # otherwise a missing `refresh_reserve` sails past every check in this script and
 # surfaces as a refusal on the first real order.
-RESERVE="$(icp canister call backend reserve_status '()' 2>/dev/null)"
-AVAILABLE="$(printf '%s' "$RESERVE" | grep -oE 'availableToSell = [0-9_]+' | tr -d '_' | grep -oE '[0-9]+$' || echo 0)"
-if [ "${AVAILABLE:-0}" -eq 0 ]; then
+# ⚠️ **Two faults here, and the second is worse than a swallowed reason.** This read
+# used to be `2>/dev/null` with `|| echo 0` on the parse — so ANY failure became
+# `AVAILABLE=0` and was reported as the one cause below. A wrong VALUE substituted for
+# an error is worse than a hidden message, because the message that follows is
+# confident and specific.
+#
+# The die's cause is the dominant one and stays. But the same swallow hid "the method
+# does not exist" — which is exactly what a rename produces, and this file has just been
+# through one — plus "the canister is not deployed" and "the network is down". So the
+# call is checked separately from the parse, and each says which happened.
+if ! RESERVE="$(icp canister call backend reserve_status '()' 2>&1)"; then
+  printf '\n%s\n\n' "$RESERVE" >&2
+  die "could not read reserve_status — the reason is printed above. A missing method means
+    this script is older than the canister it is seeding; anything else is the network
+    or the deployment."
+fi
+AVAILABLE="$(printf '%s' "$RESERVE" | grep -oE 'availableToSell = [0-9_]+' | tr -d '_' | grep -oE '[0-9]+$' || true)"
+if [ -z "$AVAILABLE" ]; then
+  printf '\n%s\n\n' "$RESERVE" >&2
+  die "reserve_status answered but had no availableToSell field — the response is above.
+    The shape changed and this script did not."
+fi
+if [ "$AVAILABLE" -eq 0 ]; then
   die "the gateway will sell 0 cycles even though the reserve was funded — its floor
     has not observed the balance. Fix:
       icp canister call backend refresh_reserve '()'

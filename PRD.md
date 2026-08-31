@@ -33,8 +33,8 @@ Status: ☐ todo · ◐ in progress · ☑ done
 | # | Status | Task |
 |---|--------|------|
 | 0 | ☑ | **Scaffold**: PRD, `mops.toml` (pinned moc 1.9.0 + lintoko, core 2.5.0, test), `icp.yaml` (`@dfinity/motoko` recipe, port-0 local network), minimal `persistent actor` in `src/backend/Main.mo`, smoke test green, `mops check`/`build` green. |
-| 1 | ☑ | **Core types + Order state machine** (`Types.mo`, `Orders.mo`): `Owner = { #ii : Principal }` variant (binding seam §11.1.1), `Destination = { #canister; #cyclesLedgerAccount }`, `OrderStatus` (`Created/Expired/Paid/Minting/IcpAtCMC/Delivered/AwaitingTreasury/ErrorQueue`), `Order`, `JournalEntry`; legal-transition function with owner passed as a parameter (seam §11.1.3); locked cycle *quantity* at creation (§3); unit tests for every legal/illegal transition. |
-| 2 | ☑ | **Idempotency + error queue** (`Idempotency.mo`, `ErrorQueue.mo`): per-rail dedup sets (`processedStripeEvents` w/ ~7-day pruning, `processedIntents`, `processedCkUsdcBlocks`), bounded error queue with exactly Type 1 `{Duplicate|Unattributed}` (fiat-only) and Type 2 `{Undeliverable}` (cycles in app balance), bounded audit-log ring buffer; unit tests incl. pruning + bounds. |
+| 1 | ☑ | **Core types + Order state machine** (`Types.mo`, `Orders.mo`): `Owner = { #ii : Principal }` variant (binding seam §11.1.1), `Destination = { #canister; #cyclesLedgerAccount }`, `OrderStatus` (`Created/Expired/Paid/Minting/IcpAtCMC/Delivered/AwaitingTreasury/Orphans`), `Order`, `JournalEntry`; legal-transition function with owner passed as a parameter (seam §11.1.3); locked cycle *quantity* at creation (§3); unit tests for every legal/illegal transition. |
+| 2 | ☑ | **Idempotency + error queue** (`Idempotency.mo`, `Orphans.mo`): per-rail dedup sets (`processedStripeEvents` w/ ~7-day pruning, `processedIntents`, `processedCkUsdcBlocks`), bounded error queue with exactly Type 1 `{Duplicate|Unattributed}` (fiat-only) and Type 2 `{Undeliverable}` (cycles in app balance), bounded audit-log ring buffer; unit tests incl. pruning + bounds. |
 | 3 | ☑ | **HMAC-SHA256 + Stripe signature** (`Hmac.mo` or mops sha2 pkg, `rails/Card.mo` verify half): constant-time-compare HMAC over `timestamp.body`, `Stripe-Signature` header parse (`t=`, `v1=` list), timestamp-window replay guard; unit tests against known HMAC vectors + crafted Stripe signatures. |
 | 4 | ☑ | **Hand-rolled `Http.mo`** (spec §6.0): parse `HttpRequest`, case-insensitive header lookup, query-string strip, body-size guard, dispatch off a `[(method, path, handler)]` route table with per-route `upgrade` flag (binding seam §11.1.2) — one entry: `POST /webhook/stripe`; `http_request` returns `upgrade = ?true`, `http_request_update` dispatches; unit tests for parser + routing. |
 | 5 | ☑ | **Auth + secret** (`Auth.mo`, `Secret.mo`): controller allowlist (flat, equal privileges, §7), reject anonymous principal on user API, admin-set/rotate plaintext webhook secret (SEV-SNP posture documented, §7); unit tests. |
@@ -473,7 +473,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
   refill or rolled window clears the hold with no second code path; at/past
   `maxHoldNs` it escalates as `#stuckMint{stage = "treasuryWaitExceeded"}`
   (position certain — fiat in, nothing minted — operator refunds in the
-  Stripe Dashboard; ErrorQueue doc widened). `sweepMintable` now includes
+  Stripe Dashboard; Orphans doc widened). `sweepMintable` now includes
   `#awaitingTreasury`. **Defaults fail closed**: `burnCapE8s = 0` — every
   mint holds until the operator consciously sizes the bound (the
   empty-tier-list stance: a default cap in ICP would be an invented money
@@ -525,7 +525,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
   forward await — a death mid-forward resumes as `#ambiguousForward`
   (operator checks the destination) rather than risking double delivery; a
   *failed* forward (deposit rejected → cycles auto-refunded to the app
-  balance) is the clean Type 2 `#undeliverable`. `ErrorQueue.Kind` gains
+  balance) is the clean Type 2 `#undeliverable`. `Orphans.Kind` gains
   `#stuckMint {orderId; stage}` for the §5.1 escalations — deliberately
   neither Type 1 nor Type 2 (money position uncertain; no paymentRef, so
   `charge.refunded` auto-resolve never touches it). §4.2 `journal` map
@@ -584,7 +584,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
   `Forex.quote` `#ok` now also returns the rate so `Main.quoteTier` can
   persist the snapshot from the same epoch as the quote. `Main.mo` wires
   persistent `dedup`/`errorQueue`/`auditLog` stores, `Card.Deps`, the
-  real webhook handler, and admin `error_queue`/`resolve_error`/
+  real webhook handler, and admin `orphans`/`resolve_orphan`/
   `audit_log` methods. 58 new tests (json parser matrix incl. surrogate
   pairs, depth cap boundary 63 vs 64, inert-string-values;
   parseClientReferenceId incl. no-trap-on-garbage-principal; markPaid;
@@ -751,7 +751,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
   refreshed on replay) + `ckUsdcBlocks : Set<Nat>` (never pruned — financial
   record); `record*` returns false on duplicate (ack-and-drop semantics, §4.1
   "dedup gates the mint"); `pruneStripe` drops keys ≥7 days old.
-  `ErrorQueue.mo` (§4.1): `Kind` payloads make the two types structural —
+  `Orphans.mo` (§4.1): `Kind` payloads make the two types structural —
   Type 1 `#duplicate`/`#unattributed` always carry `paymentRef`
   (payment_intent), Type 2 `#undeliverable` carries stranded `cycles`;
   bounded `add` (monotonic ids = age order; evicts oldest *resolved* first,
@@ -771,7 +771,7 @@ Status: ☐ todo · ◐ in progress · ☑ done
   `lockedCycles` quantity per §3, `TransferIntent` per §5.1, `JournalEntry`
   per §4.2) and `Orders.mo` (Store = `orders` map + `principalsToOrders`
   history; `isLegalTransition` encoding the §4 diagram — 11 legal edges incl.
-  `Minting→ErrorQueue` (§5.1 stale intent) and `IcpAtCMC→ErrorQueue` (§4.1
+  `Minting→Orphans` (§5.1 stale intent) and `IcpAtCMC→Orphans` (§4.1
   Type 2); pure `transition` returning an updated copy; `create` taking owner
   as a parameter per seam §11.1.3, rejecting duplicate IDs; `applyTransition`,
   `getOwned`, `ordersFor`). `test/orders.test.mo`: exhaustive 8×8 matrix (64

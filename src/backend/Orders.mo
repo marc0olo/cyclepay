@@ -7,8 +7,10 @@
 /// reads a caller itself; owners come from an II Candid call,
 /// a future Base owner from a verified EIP-3009 signature.
 import Array "mo:core/Array";
+import Problems "Problems";
 import Blob "mo:core/Blob";
 import Map "mo:core/Map";
+import Set "mo:core/Set";
 import List "mo:core/List";
 import Int "mo:core/Int";
 import Iter "mo:core/Iter";
@@ -97,6 +99,33 @@ module {
     /// remove more than was held. **Any non-zero value means the tally diverged**,
     /// and it is surfaced by `reserve_status` so it does not wait for a recount.
     var tallySaturations : Nat;
+    /// Orders carrying at least one **unresolved** problem (#37).
+    ///
+    /// ⚠️ **An index, because the alternative is a full scan on the webhook path.**
+    /// `resolveByPaymentRef` runs synchronously inside the `charge.refunded` handler,
+    /// where a trap is a 5xx Stripe retries for three days. Under indefinite retention
+    /// a scan over every order ever created is exactly the hazard this codebase guards
+    /// everywhere else.
+    ///
+    /// ⚠️ **A status index would NOT have bounded it, and an earlier comment here
+    /// claimed it would.** The only order-side refund-resolvable kind is `#duplicate`,
+    /// filed from `handleCheckout`'s `case (status)` catch-all — which covers `#paid`,
+    /// `#delivered`, `#needsReview` and `#abandoned`. Two of those are terminal, and
+    /// `#delivered` is the *common* one (order delivered, buyer pays again), so a
+    /// non-terminal index narrows nothing. Check that the bound actually narrows the
+    /// set before writing that it does.
+    ///
+    /// ⚠️ **Derived state, and that is only safe with a rebuild.** This is the same
+    /// discipline `counts` and `promised` follow: maintained by the only two functions
+    /// that write `problems` — `fileProblem` and `resolveProblems`, both in this file —
+    /// and rebuildable by `recountUnresolvedProblems` if ever suspected wrong. It is
+    /// **not** the `delayedAlerts` mistake repeated: that map pointed at *entry ids in
+    /// another structure*, so the two could disagree with no way to tell which was
+    /// right. This is a projection of `orders`, recomputable at any time, and a test
+    /// pins it against a full scan.
+    ///
+    /// Growth is attacker-priced: every problem needs a real payment event to exist.
+    unresolvedProblems : Set.Set<Types.OrderId>;
   };
 
   public func emptyStore() : Store {
@@ -106,6 +135,7 @@ module {
       counts = Map.empty<Text, Nat>();
       var promised = 0;
       var tallySaturations = 0;
+      unresolvedProblems = Set.empty<Types.OrderId>();
     };
   };
 
@@ -265,7 +295,7 @@ module {
       // is the double-delivery this status prevents.
       case (#needsReview, #delivered) true;
       // `abandon_order` — the operator ends it, having refunded by hand. The
-      // #needsReview edge is what the #errorQueue split made possible: an
+      // #needsReview edge is what the error-queue split made possible: an
       // escalated order could not previously be abandoned, because one status
       // meant both "promise held" and "promise released".
       case (#paid, #abandoned) true;
@@ -319,6 +349,9 @@ module {
       expiresAtNs = null;
       stripeSessionId = null;
       stripeSessionUrl = null;
+      delayedAtNs = null;
+      abandonedReason = null;
+      problems = [];
       createdAtNs = nowNs;
       updatedAtNs = nowNs;
     };
@@ -364,8 +397,37 @@ module {
   /// cannot forget the tally, because writing a status *is* calling this.
   /// (`attachSession` is the one writer that legitimately does not — it changes no
   /// status, and says so at its own `add`.)
-  func commitTransition(store : Store, before : Types.Order, after : Types.Order) {
-    store.orders.add(after.id, after);
+  /// Returns the order **as stored**, which callers must hand back instead of the
+  /// value they passed in.
+  ///
+  /// ⚠️ **It returns something now because it mutates the order, not just the
+  /// tallies.** The pay-link clearing below meant the stored order and the caller's
+  /// return value could disagree — the store had the cleared one, the caller returned
+  /// the original. Caught by a test asserting the two agree; the type now makes
+  /// ignoring the difference impossible.
+  func commitTransition(store : Store, before : Types.Order, after : Types.Order) : Types.Order {
+    // ⚠️ **Clear the pay link on the way into a terminal state (#37), HERE and not at
+    // each terminal site.** It is by far the largest field on an order — a Stripe
+    // checkout URL runs to a couple of hundred characters — and it is worthless
+    // thirty minutes after creation, so dropping it roughly halves the long-term size
+    // of an order under indefinite retention.
+    //
+    // Structural for the same reason the tally is: a future terminal path added
+    // elsewhere cannot forget, because writing a status *is* calling this. Doing it at
+    // the call sites would work today and silently stop working on the next one.
+    //
+    // ⚠️ Safe against every reader: the recovery sweep reads `stripeSessionId`, not the
+    // url, and the frontend only offers the pay link while the order is `#created`. A
+    // terminal order should not be carrying a payable link at all.
+    // ⚠️ **`Reserve.holdsPromise` is the authority on terminality, so this reuses it
+    // rather than listing the statuses again.** Its own comment reads "terminal, and
+    // nothing else is" — a second list here would be a place for the two to disagree,
+    // which is how `#needsReview` (promise still held, not terminal) would eventually
+    // get its pay link dropped by one of them and not the other.
+    let settled = if (Reserve.holdsPromise(after.status)) { after } else {
+      { after with stripeSessionUrl = null };
+    };
+    store.orders.add(settled.id, settled);
     bump(store, before.status, -1);
     bump(store, after.status, 1);
     // Zero when the transition stays inside the counted set — `#created → #paid`
@@ -381,6 +443,7 @@ module {
     // an exact release — the first evidence would otherwise be the daily recount,
     // up to 24 h of a wrong tally gating real sales. `Main` audits this.
     if (moved.saturated) store.tallySaturations += 1;
+    settled;
   };
 
   public func applyTransition(
@@ -401,8 +464,7 @@ module {
             // order, a sweep racing a webhook, or a delivery retry answering
             // `#Duplicate` after the transition already committed all no-op here
             // rather than double-releasing.
-            commitTransition(store, order, updated);
-            #ok(updated);
+            #ok(commitTransition(store, order, updated));
           };
           case (#err(e)) #err(e);
         };
@@ -481,8 +543,7 @@ module {
             };
             // Release point 1 (#30), and the most common one: Stripe says the
             // session died unpaid, so every unpaid order releases here.
-            commitTransition(store, order, expired);
-            #ok(expired);
+            #ok(commitTransition(store, order, expired));
           };
           case (#err(e)) #err(e);
         };
@@ -497,6 +558,198 @@ module {
   /// cancelled while the outcall was in flight), and the tallies stay coupled to
   /// the status change. A direct write would bypass both — and on the reserve path
   /// (#30) it would release an already-released promise.
+  /// Record that this order has crossed `alertAfterNs` while waiting to deliver.
+  ///
+  /// Returns true only on the **first** crossing, so the caller can announce once
+  /// without keeping any state of its own — which is what retires the
+  /// `delayedAlerts` map rather than relocating it.
+  ///
+  /// ⚠️ **`updatedAtNs` is deliberately left alone.** It is the held-since clock
+  /// `Delivery.waitStage` reads; moving it here would reset the wait being recorded,
+  /// and an order that keeps resetting its own clock can never reach `maxHoldNs` —
+  /// it would be alerted about forever and escalated never.
+  /// Move an order to `#abandoned` AND record why, in one step.
+  ///
+  /// ⚠️ **One function, so the status and the reason cannot diverge.** They are two
+  /// halves of one operator decision; a caller that transitioned and then set the
+  /// reason separately could leave an `#abandoned` order with no explanation, which
+  /// is precisely the gap the dropped `#abandoned` queue entry used to paper over.
+  public func abandonWithReason(
+    store : Store,
+    id : Types.OrderId,
+    reason : Text,
+    nowNs : Int,
+  ) : Result.Result<Types.Order, TransitionError> {
+    switch (applyTransition(store, id, #abandoned, nowNs)) {
+      case (#err(e)) #err(e);
+      case (#ok(order)) {
+        let withReason = { order with abandonedReason = ?reason };
+        store.orders.add(id, withReason);
+        #ok(withReason);
+      };
+    };
+  };
+
+  // ── Problems on the order (#37) ────────────────────────────────────────────
+
+  /// File a problem on an order. Returns false if the order is gone, or if an
+  /// unresolved problem of the same shape is already there.
+  ///
+  /// ⚠️ **Dedup lives in `Problems.file`, and it needs no second structure.** The
+  /// order carries its own answer to "have I already filed this", which is what the
+  /// `delayedAlerts` map used to do for one kind — badly, because a separate map can
+  /// fall out of step with the orders it points at, and leaking one was a real
+  /// failure mode.
+  public func fileProblem(
+    store : Store,
+    id : Types.OrderId,
+    kind : Types.ProblemKind,
+    detail : Text,
+    nowNs : Int,
+  ) : Bool {
+    let ?order = store.orders.get(id) else return false;
+    let result = Problems.file(order.problems, kind, detail, nowNs);
+    let updated = result.problems;
+    // ⚠️ `updatedAtNs` is deliberately untouched: it is the held-since clock
+    // `Delivery.waitStage` reads, and filing a problem is not a state transition.
+    store.orders.add(id, { order with problems = updated });
+    store.unresolvedProblems.add(id);
+    // ⚠️ **False on a refresh, and that is what the callers want.** A refreshed
+    // problem must not re-audit: the audit line marks the transition into trouble,
+    // not every observation of it. The *payload* is still updated, so an operator
+    // reading the order sees the current figure — which is why this returns "was it
+    // newly filed" rather than "did anything change".
+    result.filed;
+  };
+
+  /// Resolve every unresolved problem on one order matching `pred`.
+  public func resolveProblems(
+    store : Store,
+    id : Types.OrderId,
+    pred : Types.ProblemKind -> Bool,
+    nowNs : Int,
+  ) : Nat {
+    let ?order = store.orders.get(id) else return 0;
+    let result = Problems.resolveWhere(order.problems, pred, nowNs);
+    if (result.closed == 0) return 0;
+    store.orders.add(id, { order with problems = result.problems });
+    // Leaves the index the moment nothing is outstanding — the resolved problems
+    // stay on the order, because nothing drops; only the worklist shrinks.
+    if (Problems.unresolvedCount(result.problems) == 0) {
+      store.unresolvedProblems.remove(id);
+    };
+    result.closed;
+  };
+
+  /// Every unresolved problem on this order matching `kindTag`, and their identifying
+  /// references — what an operator needs to disambiguate before closing one.
+  public func unresolvedOfKind(
+    store : Store,
+    id : Types.OrderId,
+    kindTag : Text,
+  ) : [{ kind : Types.ProblemKind; detail : Text; ref : ?Text }] {
+    let ?order = store.orders.get(id) else return [];
+    let out = List.empty<{ kind : Types.ProblemKind; detail : Text; ref : ?Text }>();
+    for (p in order.problems.vals()) {
+      if (Problems.isUnresolved(p) and Problems.kindToText(p.kind) == kindTag) {
+        out.add({ kind = p.kind; detail = p.detail; ref = Problems.identifyingRef(p.kind) });
+      };
+    };
+    out.toArray();
+  };
+
+  /// Close every problem a `charge.refunded` for `paymentRef` settles on its own.
+  ///
+  /// ⚠️ **Walks `unresolvedProblems`, NOT the order store.** This runs synchronously
+  /// inside the `charge.refunded` handler, where a trap is a 5xx Stripe retries for
+  /// three days — so it must not be O(every order ever created). The set is small and
+  /// attacker-priced: every problem in it required a real payment event.
+  ///
+  /// ⚠️ **Only kinds where `paymentRefOf` gives a match are touched**, so
+  /// `#refundAfterDelivery` and `#paidNotCredited` are never closed here even though
+  /// both carry a `paymentRef`.
+  public func resolveByPaymentRef(store : Store, paymentRef : Text, nowNs : Int) : Nat {
+    var closed = 0;
+    // Snapshot the ids: `resolveProblems` mutates the set we would otherwise be
+    // iterating.
+    let candidates = List.empty<Types.OrderId>();
+    for (id in store.unresolvedProblems.values()) candidates.add(id);
+    for (id in candidates.values()) {
+      closed += resolveProblems(
+        store,
+        id,
+        func(k) {
+          Problems.refundResolvable(k) and Problems.paymentRefOf(k) == ?paymentRef;
+        },
+        nowNs,
+      );
+    };
+    closed;
+  };
+
+  /// Every order carrying at least one unresolved problem — **the worklist, as a
+  /// filter rather than a structure** (#37).
+  public func withUnresolvedProblems(store : Store) : [Types.Order] {
+    let out = List.empty<Types.Order>();
+    for (id in store.unresolvedProblems.values()) {
+      switch (store.orders.get(id)) {
+        case (?order) out.add(order);
+        // An id in the index with no order cannot happen — orders are never deleted
+        // under #37 — so this arm is unreachable rather than defensive. Skipping is
+        // still the right response if the impossible occurs: the rebuild fixes it.
+        case null {};
+      };
+    };
+    out.toArray();
+  };
+
+  /// Total unresolved problems across all orders — the number an operator watches.
+  public func unresolvedProblemCount(store : Store) : Nat {
+    var n = 0;
+    for (id in store.unresolvedProblems.values()) {
+      switch (store.orders.get(id)) {
+        case (?order) n += Problems.unresolvedCount(order.problems);
+        case null {};
+      };
+    };
+    n;
+  };
+
+  /// Rebuild `unresolvedProblems` from the orders, returning how many ids were wrong.
+  ///
+  /// ⚠️ **The reason an index is allowed here at all.** Derived state without a
+  /// rebuild is the `delayedAlerts` mistake: two structures that can disagree with no
+  /// way to tell which is right. This one is a projection of `orders`, so it is always
+  /// recomputable — and a non-zero return means a writer of `problems` bypassed
+  /// `fileProblem`/`resolveProblems`, which is a bug in this file rather than bad data.
+  public func recountUnresolvedProblems(store : Store) : Nat {
+    let want = Set.empty<Types.OrderId>();
+    for ((id, order) in store.orders.entries()) {
+      if (Problems.unresolvedCount(order.problems) > 0) want.add(id);
+    };
+    var drift = 0;
+    for (id in want.values()) {
+      if (not store.unresolvedProblems.contains(id)) { drift += 1 };
+    };
+    for (id in store.unresolvedProblems.values()) {
+      if (not want.contains(id)) { drift += 1 };
+    };
+    store.unresolvedProblems.clear();
+    for (id in want.values()) store.unresolvedProblems.add(id);
+    drift;
+  };
+
+  public func markDelayed(store : Store, id : Types.OrderId, nowNs : Int) : Bool {
+    let ?order = store.orders.get(id) else return false;
+    switch (order.delayedAtNs) {
+      case (?_) false; // already recorded; idempotent by construction
+      case null {
+        store.orders.add(id, { order with delayedAtNs = ?nowNs });
+        true;
+      };
+    };
+  };
+
   public func expireWithCause(
     store : Store,
     id : Types.OrderId,
@@ -510,8 +763,7 @@ module {
           case (#ok(updated)) {
             let expired = { updated with expiredBy = ?cause };
             // Release point 4 (#30): in-call session-creation failure.
-            commitTransition(store, order, expired);
-            #ok(expired);
+            #ok(commitTransition(store, order, expired));
           };
           case (#err(e)) #err(e);
         };
@@ -548,8 +800,7 @@ module {
             let paid = { updated with paidUsdCents = ?paidUsdCents };
             // ⚠️ Release is at DELIVERY, never at payment, so this delta is ZERO.
             // `Reserve.tallyDelta` carries the two-orders-one-reserve argument.
-            commitTransition(store, order, paid);
-            #ok(paid);
+            #ok(commitTransition(store, order, paid));
           };
           case (#err(e)) #err(e);
         };

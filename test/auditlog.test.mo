@@ -7,8 +7,8 @@ import AuditLog "../src/backend/AuditLog";
 suite("audit log ring buffer", func() {
   test("append returns the event and retains oldest -> newest", func() {
     let log = AuditLog.emptyLog();
-    let a = AuditLog.append(log, 10, 100, "delivery.sent", "3.5 T to the buyer");
-    let b = AuditLog.append(log, 10, 200, "dedup.drop", "evt_1 redelivered");
+    let a = AuditLog.append(log, 100, "delivery.sent", "3.5 T to the buyer");
+    let b = AuditLog.append(log, 200, "dedup.drop", "evt_1 redelivered");
     assert a.seq == 0;
     assert b.seq == 1;
     let events = AuditLog.events(log);
@@ -17,25 +17,43 @@ suite("audit log ring buffer", func() {
     assert events[1] == b;
   });
 
-  test("hard cap drops oldest first", func() {
+  // ── Deleted by #37, with their heirs named ────────────────────────────────
+  //
+  // ~~"hard cap drops oldest first"~~ and ~~"seq stays monotonic across drops (gap
+  // detection)"~~ both asserted about a bound that no longer exists. The `capacity`
+  // parameter is gone from `append`, so neither claim is expressible — which is
+  // stronger than a test asserting the cap is large.
+  //
+  // ⚠️ **Their heirs, because a deleted test needs one named:**
+  //   - "nothing is ever dropped" below is the direct replacement: it is the same
+  //     property inverted, and it is the one that would fail if a cap came back.
+  //   - `seq` monotonicity survives as a claim in its own right, tested below without
+  //     reference to drops. Readers used gaps in `seq` to DETECT drops; with no drops
+  //     there are no gaps, so what is left to pin is that `seq` never repeats.
+
+  test("nothing is ever dropped, however many events arrive (#37)", func() {
     let log = AuditLog.emptyLog();
-    for (i in [0, 1, 2, 3, 4].values()) {
-      ignore AuditLog.append(log, 3, i, "tag", "e" # debug_show(i));
+    for (i in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].values()) {
+      ignore AuditLog.append(log, i, "tag", "e" # debug_show(i));
     };
-    assert AuditLog.size(log) == 3;
+    assert AuditLog.size(log) == 10;
     let events = AuditLog.events(log);
-    assert events[0].seq == 2;
-    assert events[2].seq == 4;
+    // Oldest still first, newest still last: retention is total, not a larger window.
+    assert events[0].seq == 0;
+    assert events[9].seq == 9;
   });
 
-  test("seq stays monotonic across drops (gap detection)", func() {
+  test("seq never repeats, which is what readers actually rely on", func() {
     let log = AuditLog.emptyLog();
     for (i in [0, 1, 2, 3].values()) {
-      ignore AuditLog.append(log, 2, i, "tag", "");
+      ignore AuditLog.append(log, i, "tag", "");
     };
-    // seqs 0 and 1 were dropped; next append continues at 4, never reusing
-    let e = AuditLog.append(log, 2, 99, "tag", "");
+    let e = AuditLog.append(log, 99, "tag", "");
     assert e.seq == 4;
-    assert AuditLog.events(log)[0].seq == 3;
+    // ⚠️ **No gap, and that is the point.** Gaps in `seq` used to be how a reader
+    // detected drops; with nothing dropped there is nothing to detect, and the only
+    // remaining property is that a seq is never reused.
+    assert AuditLog.events(log)[0].seq == 0;
+    assert AuditLog.size(log) == 5;
   });
 });

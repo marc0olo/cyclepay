@@ -248,6 +248,9 @@ module {
     /// gateway spends freshly deployed, because RUNBOOK §1 prescribes
     /// provisioning the secrets last.
     railClosed : Nat;
+    /// The session outcall failed. Separate from `railClosed` because a present
+    /// but invalid key is a different incident from an absent one.
+    stripeApiFailed : Nat;
   };
 
   public func noRefusals() : RefusalCounts {
@@ -258,6 +261,7 @@ module {
       canisterCyclesLow = 0;
       reserveShort = 0;
       railClosed = 0;
+      stripeApiFailed = 0;
     });
   };
 
@@ -265,6 +269,10 @@ module {
   /// `Reason` — see `RefusalCounts.railClosed`.
   public func countRailClosed(counts : RefusalCounts) : RefusalCounts {
     ({ counts with railClosed = counts.railClosed + 1 });
+  };
+
+  public func countStripeApiFailed(counts : RefusalCounts) : RefusalCounts {
+    ({ counts with stripeApiFailed = counts.stripeApiFailed + 1 });
   };
 
   public func countRefusal(counts : RefusalCounts, reason : Reason) : RefusalCounts {
@@ -297,6 +305,22 @@ module {
     #reserveShort;
     #canisterCyclesLow;
     #railClosed;
+    /// A Stripe session **outcall** is failing, as distinct from `#railClosed`'s "no
+    /// key at all". Its clearest cause is a key that is present but **invalid** —
+    /// rotated or revoked at Stripe without updating the canister — which
+    /// `sessionConfig` cannot detect, because the secret exists.
+    ///
+    /// ⚠️ **One condition for BOTH session outcalls — create and expire — because they
+    /// share one diagnosis and one lever.** A revoked key fails both, and "rotate the
+    /// key" is the answer to either. Splitting them would file two incidents for one
+    /// cause and leave an operator wondering which to act on. Named for the API rather
+    /// than for `create`, so the next outcall added here does not need a third
+    /// condition.
+    ///
+    /// ⚠️ **Different diagnosis, different lever, so not folded into `#railClosed`:**
+    /// that one says *provision the key*, this one says *rotate it*. Folding them
+    /// would file the wrong instruction.
+    #stripeApiFailing;
   };
 
   /// Which refusals describe the gateway rather than one request. Exhaustive, so
@@ -329,10 +353,16 @@ module {
     reserveShort : Bool;
     canisterCyclesLow : Bool;
     railClosed : Bool;
+    stripeApiFailing : Bool;
   };
 
   public func admitting() : RailStateLatch {
-    ({ reserveShort = false; canisterCyclesLow = false; railClosed = false });
+    ({
+      reserveShort = false;
+      canisterCyclesLow = false;
+      railClosed = false;
+      stripeApiFailing = false;
+    });
   };
 
   /// Enter a rail-state condition. `announce` is true only on the **transition
@@ -353,6 +383,12 @@ module {
       };
       case (#railClosed) {
         ({ latch = { latch with railClosed = true }; announce = not latch.railClosed });
+      };
+      case (#stripeApiFailing) {
+        ({
+          latch = { latch with stripeApiFailing = true };
+          announce = not latch.stripeApiFailing;
+        });
       };
     };
   };
@@ -381,8 +417,22 @@ module {
   /// evidence that does not bear on it — and then re-announce on the next
   /// genuine refusal. Reaching a full admission means neither condition fired,
   /// which is exactly the evidence the latch needs.
-  public func latchAdmission(_latch : RailStateLatch) : RailStateLatch {
-    admitting();
+  public func latchAdmission(latch : RailStateLatch) : RailStateLatch {
+    ({ latch with reserveShort = false; canisterCyclesLow = false; railClosed = false });
+  };
+
+  /// A session was created successfully — the only evidence that bears on
+  /// `#stripeApiFailing`.
+  ///
+  /// ⚠️ **Deliberately NOT cleared by `latchAdmission`, and this is the trap.** The
+  /// session outcall runs *after* admission, so a successful admission says nothing
+  /// about it. If admission cleared it, the sequence "admit ok → session fails →
+  /// admit ok → session fails" would announce **every time** — the naive global-flag
+  /// bug reappearing one level down. Each condition is cleared only by the evidence
+  /// that actually bears on it, which is why `latchAdmission` now names the three it
+  /// covers instead of resetting everything.
+  public func latchStripeApiOk(latch : RailStateLatch) : RailStateLatch {
+    ({ latch with stripeApiFailing = false });
   };
 
   /// Everything the gate needs to decide, read by the caller immediately

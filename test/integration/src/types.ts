@@ -65,6 +65,15 @@ export interface PricingConfig {
 }
 
 export interface Order {
+  /// When it first crossed `alertAfterNs` while waiting to deliver, else null.
+  /// The historical half of the dropped `#deliveryDelayed` entry (#37).
+  delayedAtNs: Opt<bigint>;
+  /// Why an operator ended this order, set only on `#abandoned`. Replaces the
+  /// `#abandoned` queue entry, which was the fourth copy of one decision (#37).
+  abandonedReason: Opt<string>;
+  /// Problems that belong to this order, with resolution state (#37). The worklist
+  /// is a filter over these rather than a separate structure.
+  problems: Problem[];
   paidUsdCents: Opt<bigint>;
   /// Null except on an `#expired` order with a known cause, and null for every
   /// sweep expiry — that mechanism has no tag because #33 deletes it (#34).
@@ -101,6 +110,21 @@ export type GateReason =
   | { amountBelowMin: { usdCents: bigint; minUsdCents: bigint } };
 
 /// One counter per `GateReason` (#61), replacing the per-attempt audit line.
+/// An order-bound problem (#37). Every arm had an `orderId` in the old
+/// the queue that is now `Orphans`; the order it hangs off supplies that now.
+export type ProblemKind =
+  | { duplicate: { paymentRef: string } }
+  | { deliveryStuck: { stage: string } }
+  | { refundAfterDelivery: { paymentRef: string; cycles: bigint; refundedCents: bigint; fullRefund: boolean } }
+  | { paidNotCredited: { paymentRef: string; sessionId: string } };
+
+export interface Problem {
+  kind: ProblemKind;
+  detail: string;
+  filedAtNs: bigint;
+  resolvedAtNs: Opt<bigint>;
+}
+
 export interface RefusalCounts {
   amountAboveMax: bigint;
   amountBelowMin: bigint;
@@ -109,15 +133,33 @@ export interface RefusalCounts {
   /// while it is closed no attempt reaches `admit` at all.
   railClosed: bigint;
   reserveShort: bigint;
+  /// The session outcall failed. Separate from `railClosed`: a present-but-invalid
+  /// key is a different incident from an absent one, with a different lever.
+  stripeApiFailed: bigint;
   tooManyOpenOrders: bigint;
 }
 
 /// Which rail-state conditions are refusing right now. Latched per condition, so
 /// entering one writes exactly one `gate.startedRefusing` line.
+/// Heir to the `#deliveryDelayed` worklist entry (#37): a reading, not an
+/// obligation, and self-clearing by construction.
+export interface DelayedDelivery {
+  orderId: string;
+  /// When it FIRST crossed the threshold — the permanent record on the order,
+  /// where every other field here is a live reading.
+  delayedAtNs: Opt<bigint>;
+  status: StatusVariant;
+  heldSinceNs: bigint;
+  waitedNs: bigint;
+  retries: bigint;
+  pastMaxHold: boolean;
+}
+
 export interface RailStateLatch {
   canisterCyclesLow: boolean;
   railClosed: boolean;
   reserveShort: boolean;
+  stripeApiFailing: boolean;
 }
 
 export interface GateConfig {
@@ -161,6 +203,10 @@ export interface TransferIntent {
 }
 
 export interface JournalEntry {
+  /// The ledger's own words from the most recent failed attempt (#37 §1b). The one
+  /// thing `#deliveryStuck` carried that exists nowhere else — overwritten rather
+  /// than accumulated, since `retries` already says how many there were.
+  lastError: Opt<string>;
   orderId: string;
   status: StatusVariant;
   destination: Destination;
@@ -173,21 +219,16 @@ export interface JournalEntry {
 }
 
 export type ErrorKind =
-  | { duplicate: { orderId: string; paymentRef: string } }
   | { unattributed: { claimedRef: string; paymentRef: string } }
-  | { deliveryStuck: { orderId: string; stage: string; blockIndex: Opt<bigint> } }
-  | { refundAfterDelivery: { orderId: string; paymentRef: string; cycles: bigint; refundedCents: bigint; fullRefund: boolean } }
   | { unprocessable: { eventId: string; field: string } }
-  | { paidNotCredited: { orderId: string; paymentRef: string; sessionId: string } }
-  | { deliveryDelayed: { orderId: string; stage: string; sinceNs: bigint } }
-  | { abandoned: { orderId: string; reason: string } };
 
-export interface ErrorQueuePage {
-  entries: ErrorEntry[];
+
+export interface OrphanPage {
+  entries: OrphanEntry[];
   nextCursor: Opt<bigint>;
 }
 
-export interface ErrorEntry {
+export interface OrphanEntry {
   id: bigint;
   rail: Partial<Record<'card', null>>;
   kind: ErrorKind;
@@ -252,10 +293,17 @@ export interface BackendService {
   set_expected_livemode(expected: [] | [boolean]): Promise<void>;
   expected_livemode(): Promise<[] | [boolean]>;
   can_purchase(usdCents: bigint): Promise<Result<null, GateReason>>;
-  error_queue(afterId: Opt<bigint>, limit: bigint): Promise<ErrorQueuePage>;
-  error_queue_unresolved(afterId: Opt<bigint>, limit: bigint): Promise<ErrorQueuePage>;
-  error_queue_depth(): Promise<{ unresolved: bigint; retained: bigint }>;
+  orphans(afterId: Opt<bigint>, limit: bigint): Promise<OrphanPage>;
+  orphans_unresolved(afterId: Opt<bigint>, limit: bigint): Promise<OrphanPage>;
+  orphan_depth(): Promise<{ unresolved: bigint; retained: bigint }>;
   refusal_counts(): Promise<{ counts: RefusalCounts; refusingNow: RailStateLatch }>;
+  /// The worklist, as a filter over orders (#37). `unresolved` is NOT orders.length —
+  /// one order can carry several problems.
+  orders_with_problems(): Promise<{ orders: Order[]; unresolved: bigint }>;
+  /// Close ONE order-bound problem. `paymentRef` selects which, and omitting it is
+  /// refused when more than one candidate exists (#37).
+  resolve_problem(orderId: string, kindTag: string, paymentRef: Opt<string>): Promise<Result<bigint, string>>;
+  delayed_deliveries(): Promise<DelayedDelivery[]>;
   lifecycle_config(): Promise<{ gate: GateConfig }>;
   order_for_payment(paymentRef: string): Promise<Opt<string>>;
   abandon_order(id: string, reason: string): Promise<Result<Order, string>>;
@@ -325,7 +373,7 @@ export interface BackendService {
   /// ⚠️ Required after funding the reserve: the gate decides against a maintained
   /// lower bound that only rises by observation, so an unobserved top-up sells nothing.
   refresh_reserve(): Promise<bigint>;
-  resolve_error(id: bigint): Promise<Result<ErrorEntry, { notFound: bigint } | { alreadyResolved: bigint }>>;
+  resolve_orphan(id: bigint): Promise<Result<OrphanEntry, { notFound: bigint } | { alreadyResolved: bigint }>>;
   set_card_tiers(tiers: Tier[]): Promise<Result<null, unknown>>;
   set_recovery_interval(intervalNs: bigint): Promise<Result<null, unknown>>;
   set_delivery_config(config: DeliveryConfig): Promise<Result<null, DeliveryConfigError>>;

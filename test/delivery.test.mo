@@ -44,6 +44,7 @@ func entryWith(
     blockIndex;
     cyclesDelivered;
     retries;
+    lastError = null;
     createdAtNs = 1_000;
     updatedAtNs = 1_000;
   };
@@ -185,6 +186,9 @@ suite("journal", func() {
       status = #paid;
       createdAtNs = 1;
       updatedAtNs = 2;
+      delayedAtNs = null;
+    abandonedReason = null;
+    problems = [];
     };
   };
 
@@ -218,7 +222,7 @@ suite("journal", func() {
   test("patch updates only the requested fields and bumps updatedAt", func() {
     let journal = Delivery.emptyJournal();
     let entry = Delivery.openEntry(journal, order(), intentAt(42), 100);
-    Delivery.patch(journal, entry.orderId, { status = ?#delivered; blockIndex = ?77; cyclesDelivered = null; bumpRetries = false }, 200);
+    Delivery.patch(journal, entry.orderId, { status = ?#delivered; blockIndex = ?77; cyclesDelivered = null; bumpRetries = false; lastError = null }, 200);
     let ?after = journal.get(entry.orderId) else { assert false; return };
     assert after.status == #delivered;
     assert after.blockIndex == ?77;
@@ -231,16 +235,47 @@ suite("journal", func() {
   test("bumpRetries accumulates", func() {
     let journal = Delivery.emptyJournal();
     let entry = Delivery.openEntry(journal, order(), intentAt(42), 100);
-    Delivery.patch(journal, entry.orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, 200);
-    Delivery.patch(journal, entry.orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, 300);
+    Delivery.patch(journal, entry.orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true; lastError = null }, 200);
+    Delivery.patch(journal, entry.orderId, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true; lastError = null }, 300);
     let ?after = journal.get(entry.orderId) else { assert false; return };
     assert after.retries == 2;
   });
 
   test("patch on a missing id is a no-op, never a trap", func() {
     let journal = Delivery.emptyJournal();
-    Delivery.patch(journal, "nope", { status = ?#delivered; blockIndex = null; cyclesDelivered = null; bumpRetries = true }, 200);
+    Delivery.patch(journal, "nope", { status = ?#delivered; blockIndex = null; cyclesDelivered = null; bumpRetries = true; lastError = null }, 200);
     assert journal.get("nope") == null;
+  });
+
+  test("§1b — patch records the last delivery error, and a success does not erase it", func() {
+    let journal = Delivery.emptyJournal();
+    let o = order();
+    ignore Delivery.openEntry(journal, o, intentAt(42), 100);
+    assert (switch (journal.get(o.id)) { case (?e) e.lastError; case null null }) == null;
+
+    Delivery.patch(journal, o.id, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true; lastError = ?"ledger said BadFee" }, 2_000);
+    assert (switch (journal.get(o.id)) { case (?e) e.lastError; case null null }) == ?"ledger said BadFee";
+
+    // ⚠️ **A later success must not erase the diagnosis an operator is reading.**
+    // `null` means "leave it alone", which is why every non-failure call site passes
+    // null rather than clearing — nine of the twelve do.
+    Delivery.patch(journal, o.id, { status = null; blockIndex = ?7; cyclesDelivered = ?1_000; bumpRetries = false; lastError = null }, 3_000);
+    let settled = switch (journal.get(o.id)) { case (?e) e; case null { assert false; loop {} } };
+    assert settled.lastError == ?"ledger said BadFee";
+    assert settled.blockIndex == ?7;
+  });
+
+  test("§1b — a second failure overwrites rather than accumulating", func() {
+    let journal = Delivery.emptyJournal();
+    let o = order();
+    ignore Delivery.openEntry(journal, o, intentAt(42), 100);
+    Delivery.patch(journal, o.id, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true; lastError = ?"first" }, 2_000);
+    Delivery.patch(journal, o.id, { status = null; blockIndex = null; cyclesDelivered = null; bumpRetries = true; lastError = ?"second" }, 3_000);
+    let e = switch (journal.get(o.id)) { case (?x) x; case null { assert false; loop {} } };
+    // An operator acts on the CURRENT obstacle, and `retries` already carries how
+    // many there were — so accumulating would be unbounded state fed by retries.
+    assert e.lastError == ?"second";
+    assert e.retries == 2;
   });
 });
 

@@ -63,7 +63,7 @@ async function main(): Promise<void> {
   // ⚠️ **A 2-minute alert threshold, deliberately not the mainnet 2 h.** The delay
   // path is the one thing in this harness a human cannot reach by waiting: at the
   // default an operator would have to keep the session open for two hours to see a
-  // `#deliveryDelayed` entry appear. The max hold stays at 72 h — an escalation
+  // delayed delivery appear in `delayed_deliveries`. The max hold stays at 72 h — an escalation
   // during a demo would be a false alarm, and 35/47/80 cover that path in CI.
   //
   // ⚠️ **A config a harness declares but never sends is worse than no config**: the

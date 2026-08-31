@@ -38,18 +38,18 @@ type SetError = variant {tooShort: record {
                                    };};
 type Result_9 = 
  variant {
-   err: ProcessOrderError;
+   err: text;
    ok: Order;
  };
 type Result_8 = 
  variant {
-   err: text;
-   ok: Order;
+   err: ResolveError;
+   ok: Entry;
  };
 type Result_7 = 
  variant {
-   err: ResolveError;
-   ok: Entry;
+   err: text;
+   ok: nat;
  };
 type Result_6 = 
  variant {
@@ -76,15 +76,20 @@ type Result_2 =
    err: IntervalError;
    ok;
  };
-type Result_11 = 
+type Result_12 = 
  variant {
    err: Reason;
    ok;
  };
-type Result_10 = 
+type Result_11 = 
  variant {
    err: CreateOrderError;
    ok: CreatedOrder;
+ };
+type Result_10 = 
+ variant {
+   err: ProcessOrderError;
+   ok: Order;
  };
 type Result_1 = 
  variant {
@@ -122,6 +127,7 @@ type RefusalCounts =
    canisterCyclesLow: nat;
    railClosed: nat;
    reserveShort: nat;
+   stripeApiFailed: nat;
    tooManyOpenOrders: nat;
  };
 type Receipt = 
@@ -174,6 +180,7 @@ type RailStateLatch =
    canisterCyclesLow: bool;
    railClosed: bool;
    reserveShort: bool;
+   stripeApiFailing: bool;
  };
 type Rail = variant {card;};
 type QuotePreviews = 
@@ -198,6 +205,29 @@ type ProcessOrderError =
  variant {
    inFlight;
    notFound;
+ };
+type ProblemKind = 
+ variant {
+   deliveryStuck: record {stage: text;};
+   duplicate: record {paymentRef: text;};
+   paidNotCredited: record {
+                      paymentRef: text;
+                      sessionId: text;
+                    };
+   refundAfterDelivery:
+    record {
+      cycles: nat;
+      fullRefund: bool;
+      paymentRef: text;
+      refundedCents: nat;
+    };
+ };
+type Problem = 
+ record {
+   detail: text;
+   filedAtNs: int;
+   kind: ProblemKind;
+   resolvedAtNs: opt int;
  };
 type Pricing = 
  record {
@@ -236,7 +266,9 @@ type OrderStatus =
 type OrderId = text;
 type Order = 
  record {
+   abandonedReason: opt text;
    createdAtNs: int;
+   delayedAtNs: opt int;
    destination: Destination;
    expiredBy: opt ExpiredBy;
    expiresAtNs: opt int;
@@ -245,6 +277,7 @@ type Order =
    owner: Owner;
    paidUsdCents: opt nat;
    pricing: Pricing;
+   problems: vec Problem;
    rail: Rail;
    status: OrderStatus;
    stripeSessionId: opt text;
@@ -253,38 +286,6 @@ type Order =
  };
 type Kind = 
  variant {
-   abandoned: record {
-                orderId: OrderId;
-                reason: text;
-              };
-   deliveryDelayed: record {
-                      orderId: OrderId;
-                      sinceNs: int;
-                      stage: text;
-                    };
-   deliveryStuck: record {
-                    blockIndex: opt nat;
-                    orderId: OrderId;
-                    stage: text;
-                  };
-   duplicate: record {
-                orderId: OrderId;
-                paymentRef: text;
-              };
-   paidNotCredited:
-    record {
-      orderId: OrderId;
-      paymentRef: text;
-      sessionId: text;
-    };
-   refundAfterDelivery:
-    record {
-      cycles: nat;
-      fullRefund: bool;
-      orderId: OrderId;
-      paymentRef: text;
-      refundedCents: nat;
-    };
    unattributed: record {
                    claimedRef: text;
                    paymentRef: text;
@@ -300,6 +301,7 @@ type JournalEntry =
    createdAtNs: int;
    cyclesDelivered: opt nat;
    destination: Destination;
+   lastError: opt text;
    orderId: OrderId;
    retries: nat;
    status: OrderStatus;
@@ -446,20 +448,20 @@ type Account =
 /// 
 /// See design-docs/ONCHAIN_GATEWAY_SPEC.md (spec v2.1) and PRD.md for the
 /// module layout this actor grows into: Orders.mo wiring, rails/, Delivery.mo,
-/// Pricing.mo, Delivery.mo, ErrorQueue.mo, Auth.mo.
+/// Pricing.mo, Delivery.mo, Orphans.mo, Auth.mo.
 service : {
   /// Stop trying to deliver an order (admin, §7) — **the only path to a
   /// terminal non-delivered state.**
   /// 
   /// Nothing in the system gives up on a purchase automatically: a delay raises
-  /// `#deliveryDelayed` and keeps retrying, because its causes are all
+  /// `delayed_deliveries` and keeps retrying, because its causes are all
   /// operator-fixable. This is the deliberate human decision that a purchase
   /// will not be completed, and it demands a reason so the trail records *why*
   /// alongside *who*.
   /// 
   /// Only reachable from a pre-delivery money-bearing state. A `#created` order
   /// has taken no money and needs no decision; a `#delivered` one is done.
-  abandon_order: (id: OrderId, reason: text) -> (Result_8);
+  abandon_order: (id: OrderId, reason: text) -> (Result_9);
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
   audit_log: () -> (vec Event) query;
@@ -472,8 +474,8 @@ service : {
   /// anonymous callers may ask: it reveals only operational state that
   /// `reserve_status` already publishes. Answered for the *calling* principal,
   /// so the open-order cap it reports is the caller's own.
-  can_purchase: (usdCents: nat) -> (Result_11) query;
-  cancel_order: (id: OrderId) -> (Result_8);
+  can_purchase: (usdCents: nat) -> (Result_12) query;
+  cancel_order: (id: OrderId) -> (Result_9);
   /// Public — the frontend renders the amount tiles from this. There is no link
   /// to render: the canister creates a session per order (#33).
   card_tiers: () -> (vec Tier) query;
@@ -497,7 +499,7 @@ service : {
   /// favour passes through and they keep the extra cycles. The guard can only
   /// ever protect the buyer. `null` opts out entirely.
   create_order: (amount: Amount, destination: Destination, minCycles:
-   opt nat) -> (Result_10);
+   opt nat) -> (Result_11);
   /// §5.2 liveness observability, public (operational transparency, same stance as
   /// `reserve_status`): cadence + last completed timer sweep. A null or stale
   /// `lastSweep` means recovery is not running.
@@ -516,26 +518,68 @@ service : {
                           balance: nat;
                           floor: nat;
                         }) query;
+  /// Every delivery with money-out work outstanding, right now (admin).
+  /// 
+  /// **The immediate answer to "is a delivery failing?", which nothing else gave.**
+  /// The error queue is the worklist and it self-clears correctly — a
+  /// `delayed_deliveries` self-clears on delivery *or* escalation — but it does not
+  /// open until the 2 h alert threshold, and a delivery taking a sweep or two is
+  /// normal, so lowering that threshold would file worklist entries for orders that
+  /// deliver themselves. This closes the two-hour blind window without touching the
+  /// queue's meaning.
+  /// 
+  /// **It self-clears by construction**, which is the property that makes it usable
+  /// as a dashboard: an entry leaves this set the moment delivery lands, because
+  /// landing records the block and moves the status. There is no "resolve" step to
+  /// forget, and a successful `process_order` empties it for that order immediately.
+  /// 
+  /// Read `retries` as "how many times this has already failed" — `0` is an order in
+  /// its first attempt, which is not a problem yet.
+  /// 
+  /// ⚠️ **Admin, and O(journal) — those two facts belong together.** It scans every
+  /// order ever created, so a public version would let an unauthenticated caller make
+  /// this canister scan its whole history for free. That is also why none of it went
+  /// into `reserve_status`, which is public and O(1) on purpose.
+  /// 
+  /// ⚠️ The subset with `status = #paid` is **exactly** the reconcile's in-flight
+  /// predicate (`unsettledDelivery`), so this is also how "the reserve reconcile keeps
+  /// skipping" gets diagnosed. `#needsReview` entries are included because an
+  /// operator asking "what is wrong right now" wants them, but they are deliberately
+  /// NOT in the reconcile's predicate — see `unsettledDeliveries`.
+  /// Deliveries outstanding past `alertAfterNs` — **the heir to the
+  /// `#deliveryDelayed` worklist entry** (#37).
+  /// 
+  /// ⚠️ **The alert it replaces stored nothing of its own.** It was raised as
+  /// `#deliveryDelayed({ orderId = order.id; stage = "deliveryDelayed"; sinceNs =
+  /// order.updatedAtNs })` with a fixed sentence for `detail` — every field copied
+  /// off the order, a constant stage, and no operator decision of its own. It
+  /// self-resolved on delivery or escalation, so its whole content was *"this order
+  /// is past the threshold"*, which is a **reading**, not an obligation.
+  /// 
+  /// ⚠️ **Self-clearing by construction**, which is the property that makes this
+  /// usable where the entry was not: an order leaves this set the moment it
+  /// delivers or escalates, because that moves its status. There is no resolve step
+  /// to forget and no `delayedAlerts` mapping to leak.
+  /// 
+  /// ⚠️ **`alertAfterNs` survives as this predicate's threshold, not as a trigger.**
+  /// The admin still tunes when a slow delivery *shows up*; it no longer files
+  /// anything. That is also why the old 2 h floor mattered less than it looked —
+  /// lowering a *filter* costs nothing, whereas lowering a trigger filed worklist
+  /// entries for orders that deliver themselves.
+  delayed_deliveries: () ->
+   (vec
+     record {
+       delayedAtNs: opt int;
+       heldSinceNs: int;
+       orderId: OrderId;
+       pastMaxHold: bool;
+       retries: nat;
+       status: OrderStatus;
+       waitedNs: int;
+     }) query;
   /// Money-out journal for one order (admin, §4.2) — intent, block_index, cycles
   /// delivered, retries.
   delivery_journal: (id: OrderId) -> (opt JournalEntry) query;
-  /// §4.1 retained history, oldest first, **paged**. Admin: entries carry
-  /// payment references and claimed-but-bogus URL params.
-  /// 
-  /// Paged because unresolved obligations are never evicted, so the queue can
-  /// grow — and an unpaginated read would eventually exceed Candid's 2 MB
-  /// message limit, i.e. the record would become unreadable exactly when it
-  /// mattered most. Pass `null` to start; feed `nextCursor` back until it is
-  /// null. `limit` is capped at `ErrorQueue.maxPageSize`.
-  error_queue: (afterId: opt nat, limit: nat) -> (Page) query;
-  error_queue_depth: () -> (record {
-                              retained: nat;
-                              unresolved: nat;
-                            }) query;
-  /// The operator worklist: open obligations only, paged. Filtered server-side
-  /// so a large body of resolved history never stands between the operator and
-  /// the dollars that still need an answer.
-  error_queue_unresolved: (afterId: opt nat, limit: nat) -> (Page) query;
   expected_livemode: () -> (opt bool) query;
   /// Let a buyer give up on their own unpaid order (owner-scoped).
   /// 
@@ -576,7 +620,7 @@ service : {
   /// completed or already expired, and those demand opposite actions — expiring an order
   /// whose buyer just paid would strand a real payment. Let the webhook (or the sweep)
   /// settle it on Stripe's answer.
-  expire_order: (id: OrderId) -> (Result_8);
+  expire_order: (id: OrderId) -> (Result_9);
   /// §2 query authz: `caller == order.owner`, null otherwise — existence is
   /// not revealed to non-owners. Anonymous callers own nothing by
   /// construction (create_order rejects them), so they always get null.
@@ -607,34 +651,62 @@ service : {
   /// order it funded. Null means the payment was never attributed to an order
   /// here — check the error queue for an obligation carrying it.
   order_for_payment: (paymentRef: text) -> (opt OrderId) query;
-  /// Every delivery with money-out work outstanding, right now (admin).
+  /// Open-obligation depth, public.
   /// 
-  /// **The immediate answer to "is a delivery failing?", which nothing else gave.**
-  /// The error queue is the worklist and it self-clears correctly — a
-  /// `#deliveryDelayed` alert resolves on delivery *or* escalation — but it does not
-  /// open until the 2 h alert threshold, and a delivery taking a sweep or two is
-  /// normal, so lowering that threshold would file worklist entries for orders that
-  /// deliver themselves. This closes the two-hour blind window without touching the
-  /// queue's meaning.
+  /// Unresolved entries are never evicted, so this number only ever comes down
+  /// by the operator working it. A climbing value means dollars are arriving
+  /// that nobody has dealt with — the single most important operational number
+  /// on the money path, and it is public because §9's transparency stance says
+  /// operational state is not secret.
+  /// Refusal tallies, and whether the gate is refusing right now (#61).
   /// 
-  /// **It self-clears by construction**, which is the property that makes it usable
-  /// as a dashboard: an entry leaves this set the moment delivery lands, because
-  /// landing records the block and moves the status. There is no "resolve" step to
-  /// forget, and a successful `process_order` empties it for that order immediately.
+  /// ⚠️ **Public, like every other monitoring surface here** — operational state
+  /// is public by design; the webhook secret is the only secret in the system.
   /// 
-  /// Read `retries` as "how many times this has already failed" — `0` is an order in
-  /// its first attempt, which is not a problem yet.
+  /// ⚠️ **This query is the point of the counters.** A tally nobody reads is the
+  /// `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
+  /// per counter with the response — the counters mean different things:
+  /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
+  /// `reserveShort` climbing is a refill. Same shape, opposite actions.
+  /// **The worklist, as a filter over orders** (#37) — every order carrying at least
+  /// one unresolved problem, plus the count an operator watches.
   /// 
-  /// ⚠️ **Admin, and O(journal) — those two facts belong together.** It scans every
-  /// order ever created, so a public version would let an unauthenticated caller make
-  /// this canister scan its whole history for free. That is also why none of it went
-  /// into `reserve_status`, which is public and O(1) on purpose.
+  /// ⚠️ **This is what replaced the error queue's worklist function**, and #37's
+  /// acceptance criterion is only evaluable because it exists: "everything
+  /// outstanding" is a query over orders with an unresolved problem rather than a
+  /// separate structure that can fall out of step with the orders it points at.
   /// 
-  /// ⚠️ The subset with `status = #paid` is **exactly** the reconcile's in-flight
-  /// predicate (`unsettledDelivery`), so this is also how "the reserve reconcile keeps
-  /// skipping" gets diagnosed. `#needsReview` entries are included because an
-  /// operator asking "what is wrong right now" wants them, but they are deliberately
-  /// NOT in the reconcile's predicate — see `unsettledDeliveries`.
+  /// ⚠️ **It walks the `unresolvedProblems` index, not the store.** The set is small
+  /// and attacker-priced — every problem in it required a real payment event — and the
+  /// daily reconcile audits `orders.problemIndexDrift` if the projection ever
+  /// disagrees with the orders.
+  /// 
+  /// ⚠️ **Not the whole picture on its own.** `orphans_unresolved` holds the two
+  /// order-less kinds, which by definition cannot appear here: a payment we cannot
+  /// attribute has no order to hang off. An operator watching only one of the two
+  /// numbers is watching half the obligations.
+  orders_with_problems: () ->
+   (record {
+      orders: vec Order;
+      unresolved: nat;
+    }) query;
+  orphan_depth: () -> (record {
+                         retained: nat;
+                         unresolved: nat;
+                       }) query;
+  /// §4.1 retained history, oldest first, **paged**. Admin: entries carry
+  /// payment references and claimed-but-bogus URL params.
+  /// 
+  /// Paged because unresolved obligations are never evicted, so the queue can
+  /// grow — and an unpaginated read would eventually exceed Candid's 2 MB
+  /// message limit, i.e. the record would become unreadable exactly when it
+  /// mattered most. Pass `null` to start; feed `nextCursor` back until it is
+  /// null. `limit` is capped at `Orphans.maxPageSize`.
+  orphans: (afterId: opt nat, limit: nat) -> (Page) query;
+  /// The operator worklist: open obligations only, paged. Filtered server-side
+  /// so a large body of resolved history never stands between the operator and
+  /// the dollars that still need an answer.
+  orphans_unresolved: (afterId: opt nat, limit: nat) -> (Page) query;
   pending_deliveries: () -> (vec JournalEntry) query;
   /// Rates + params + refresh liveness, public: both rates are market data any
   /// third party can query for themselves, and the fee formula is what users
@@ -675,7 +747,7 @@ service : {
   /// An admin kick is audited (it is an ops action on someone else's order); an owner
   /// kicking their own is not, or a refresh loop would fill the ring buffer with
   /// lines that say nothing.
-  process_order: (id: OrderId) -> (Result_9);
+  process_order: (id: OrderId) -> (Result_10);
   /// Batch pre-purchase quote, public.
   /// 
   /// This exists so the price a buyer is shown is **computed by the same code
@@ -743,7 +815,7 @@ service : {
   /// credit the reserve floor back — the floor already assumed the debit when the
   /// transfer was issued (rule 2), and this call is the confirmation that the
   /// assumption was right.
-  record_delivered: (id: OrderId, blockIndex: nat) -> (Result_8);
+  record_delivered: (id: OrderId, blockIndex: nat) -> (Result_9);
   /// Rebuild the per-status tallies from the order store (admin, §7).
   /// 
   /// The tallies are maintained incrementally so the public status queries stay
@@ -781,23 +853,6 @@ service : {
   /// gateway refuses every sale against a fully funded reserve and nothing anywhere
   /// says why.
   refresh_reserve: () -> (nat);
-  /// Open-obligation depth, public.
-  /// 
-  /// Unresolved entries are never evicted, so this number only ever comes down
-  /// by the operator working it. A climbing value means dollars are arriving
-  /// that nobody has dealt with — the single most important operational number
-  /// on the money path, and it is public because §9's transparency stance says
-  /// operational state is not secret.
-  /// Refusal tallies, and whether the gate is refusing right now (#61).
-  /// 
-  /// ⚠️ **Public, like every other monitoring surface here** — operational state
-  /// is public by design; the webhook secret is the only secret in the system.
-  /// 
-  /// ⚠️ **This query is the point of the counters.** A tally nobody reads is the
-  /// `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
-  /// per counter with the response — the counters mean different things:
-  /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
-  /// `reserveShort` climbing is a refill. Same shape, opposite actions.
   refusal_counts: () ->
    (record {
       counts: RefusalCounts;
@@ -848,6 +903,7 @@ service : {
       tallySaturations: nat;
       totalOrders: nat;
     }) query;
+  resolve_orphan: (id: nat) -> (Result_8);
   /// Manual resolution (§4.1/§7) — the operator marking an obligation settled after
   /// acting off-chain: a refund issued in the Stripe Dashboard, or a delivery whose
   /// fate they established on the cycles ledger.
@@ -856,8 +912,31 @@ service : {
   /// `charge.refunded` auto-resolves the refund-resolvable kinds, so those usually
   /// close themselves; `#deliveryStuck`, `#refundAfterDelivery` and `#abandoned` carry
   /// no `paymentRef` and can only be closed here. Resolving an entry never transitions
-  /// the order — see `ErrorQueue`'s header.
-  resolve_error: (id: nat) -> (Result_7);
+  /// the order — see `Orphans`'s header.
+  /// Close **one** order-bound problem an operator has dealt with (#37).
+  /// 
+  /// The order-shaped counterpart to `resolve_orphan`, which addresses entries by a
+  /// queue id that no longer exists for the kinds that moved.
+  /// 
+  /// ⚠️ **`paymentRef` is the selector, and omitting it is only safe when there is one
+  /// candidate.** An earlier version took the tag alone and closed *every* unresolved
+  /// problem of that kind — which over-resolves, because `Problems.sameShape`
+  /// deliberately allows two unresolved `#duplicate` problems on one order with
+  /// different payment references (a buyer who pays three times). An operator who
+  /// refunded one payment would have marked the other settled.
+  /// 
+  /// ⚠️ **The root cause is structural, so the fix is a real selector rather than a
+  /// warning.** Queue entries had monotonic ids; problems in an array have no stable
+  /// handle, so **the dedup key is the handle** — `(kindTag, identifyingRef)`, the same
+  /// pair `sameShape` uses to decide identity. One definition, both users.
+  /// 
+  /// ⚠️ **And it refuses rather than guesses when the selector is ambiguous**, which is
+  /// this codebase's posture wherever a lever might act on the wrong thing — the
+  /// abandon guard and `cancel_order`'s `#notOpen` do the same. The refusal lists the
+  /// references so the operator can disambiguate, because declining without a way
+  /// through is a dead end rather than a safeguard.
+  resolve_problem: (orderId: OrderId, kindTag: text, paymentRef: opt text) ->
+   (Result_7);
   /// Replace the card presets (§3/§7 — admin, validated atomically: a bad config
   /// never partially applies).
   /// 

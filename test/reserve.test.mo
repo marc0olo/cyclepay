@@ -35,6 +35,9 @@ func orderAt(id : Text, status : Types.OrderStatus, lockedCycles : Nat) : Types.
     stripeSessionUrl = null;
     createdAtNs = 0;
     updatedAtNs = 0;
+    delayedAtNs = null;
+    abandonedReason = null;
+    problems = [];
   };
 };
 

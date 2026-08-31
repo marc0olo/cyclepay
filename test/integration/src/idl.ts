@@ -41,7 +41,24 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     usdPerIcpMicros: IDL.Nat,
     xdrPermyriadPerIcp: IDL.Nat,
   });
+  const ProblemKind = IDL.Variant({
+    deliveryStuck: IDL.Record({ stage: IDL.Text }),
+    duplicate: IDL.Record({ paymentRef: IDL.Text }),
+    paidNotCredited: IDL.Record({ paymentRef: IDL.Text, sessionId: IDL.Text }),
+    refundAfterDelivery: IDL.Record({
+      cycles: IDL.Nat, fullRefund: IDL.Bool, paymentRef: IDL.Text, refundedCents: IDL.Nat,
+    }),
+  });
+  const Problem = IDL.Record({
+    detail: IDL.Text,
+    filedAtNs: IDL.Int,
+    kind: ProblemKind,
+    resolvedAtNs: IDL.Opt(IDL.Int),
+  });
   const Order = IDL.Record({
+    abandonedReason: IDL.Opt(IDL.Text),
+    problems: IDL.Vec(Problem),
+    delayedAtNs: IDL.Opt(IDL.Int),
     createdAtNs: IDL.Int,
     paidUsdCents: IDL.Opt(IDL.Nat),
     expiredBy: IDL.Opt(ExpiredBy),
@@ -76,12 +93,14 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     canisterCyclesLow: IDL.Nat,
     railClosed: IDL.Nat,
     reserveShort: IDL.Nat,
+    stripeApiFailed: IDL.Nat,
     tooManyOpenOrders: IDL.Nat,
   });
   const RailStateLatch = IDL.Record({
     canisterCyclesLow: IDL.Bool,
     railClosed: IDL.Bool,
     reserveShort: IDL.Bool,
+    stripeApiFailing: IDL.Bool,
   });
   const GateConfig = IDL.Record({
     maxOpenOrdersPerPrincipal: IDL.Nat,
@@ -127,6 +146,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     to: Account,
   });
   const JournalEntry = IDL.Record({
+    lastError: IDL.Opt(IDL.Text),
     blockIndex: IDL.Opt(IDL.Nat),
     createdAtNs: IDL.Int,
     cyclesDelivered: IDL.Opt(IDL.Nat),
@@ -138,35 +158,15 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     updatedAtNs: IDL.Int,
   });
   const Kind = IDL.Variant({
-    duplicate: IDL.Record({ orderId: IDL.Text, paymentRef: IDL.Text }),
-    refundAfterDelivery: IDL.Record({
-      cycles: IDL.Nat,
-      orderId: IDL.Text,
-      paymentRef: IDL.Text,
-      refundedCents: IDL.Nat,
-      fullRefund: IDL.Bool,
-    }),
-    abandoned: IDL.Record({ orderId: IDL.Text, reason: IDL.Text }),
     unprocessable: IDL.Record({ eventId: IDL.Text, field: IDL.Text }),
     // #52: the buyer paid and we never credited them. Carries the intent id for the
     // operator, which `paymentRefOf` deliberately withholds so a refund cannot
     // auto-close the entry — refunding settles the money and leaves the order stranded.
-    paidNotCredited: IDL.Record({
-      orderId: IDL.Text,
-      paymentRef: IDL.Text,
-      sessionId: IDL.Text,
-    }),
-    deliveryDelayed: IDL.Record({
-      orderId: IDL.Text,
-      sinceNs: IDL.Int,
-      stage: IDL.Text,
-    }),
     // #36 folded `stuckMint` and `transferUnresolved` into one honestly-named kind:
     // `stage` carries the money position, `blockIndex` the should-be-unreachable landed case.
-    deliveryStuck: IDL.Record({ orderId: IDL.Text, stage: IDL.Text, blockIndex: IDL.Opt(IDL.Nat) }),
     unattributed: IDL.Record({ claimedRef: IDL.Text, paymentRef: IDL.Text }),
   });
-  const ErrorEntry = IDL.Record({
+  const OrphanEntry = IDL.Record({
     createdAtNs: IDL.Int,
     detail: IDL.Text,
     id: IDL.Nat,
@@ -305,14 +305,37 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       ],
       ['query'],
     ),
-    error_queue: IDL.Func(
+    orphans: IDL.Func(
       [IDL.Opt(IDL.Nat), IDL.Nat],
-      [IDL.Record({ entries: IDL.Vec(ErrorEntry), nextCursor: IDL.Opt(IDL.Nat) })],
+      [IDL.Record({ entries: IDL.Vec(OrphanEntry), nextCursor: IDL.Opt(IDL.Nat) })],
       ['query'],
     ),
-    error_queue_unresolved: IDL.Func(
+    orphans_unresolved: IDL.Func(
       [IDL.Opt(IDL.Nat), IDL.Nat],
-      [IDL.Record({ entries: IDL.Vec(ErrorEntry), nextCursor: IDL.Opt(IDL.Nat) })],
+      [IDL.Record({ entries: IDL.Vec(OrphanEntry), nextCursor: IDL.Opt(IDL.Nat) })],
+      ['query'],
+    ),
+    delayed_deliveries: IDL.Func(
+      [],
+      [IDL.Vec(IDL.Record({
+        delayedAtNs: IDL.Opt(IDL.Int),
+        heldSinceNs: IDL.Int,
+        orderId: IDL.Text,
+        pastMaxHold: IDL.Bool,
+        retries: IDL.Nat,
+        status: OrderStatus,
+        waitedNs: IDL.Int,
+      }))],
+      ['query'],
+    ),
+    resolve_problem: IDL.Func(
+      [IDL.Text, IDL.Text, IDL.Opt(IDL.Text)],
+      [IDL.Variant({ err: IDL.Text, ok: IDL.Nat })],
+      [],
+    ),
+    orders_with_problems: IDL.Func(
+      [],
+      [IDL.Record({ orders: IDL.Vec(Order), unresolved: IDL.Nat })],
       ['query'],
     ),
     refusal_counts: IDL.Func(
@@ -320,7 +343,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Record({ counts: RefusalCounts, refusingNow: RailStateLatch })],
       ['query'],
     ),
-    error_queue_depth: IDL.Func(
+    orphan_depth: IDL.Func(
       [],
       [IDL.Record({ retained: IDL.Nat, unresolved: IDL.Nat })],
       ['query'],
@@ -443,9 +466,9 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       ['query'],
     ),
     refresh_reserve: IDL.Func([], [IDL.Nat], []),
-    resolve_error: IDL.Func(
+    resolve_orphan: IDL.Func(
       [IDL.Nat],
-      [IDL.Variant({ ok: ErrorEntry, err: ResolveError })],
+      [IDL.Variant({ ok: OrphanEntry, err: ResolveError })],
       [],
     ),
     set_card_tiers: IDL.Func(

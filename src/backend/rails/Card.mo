@@ -17,6 +17,7 @@
 /// State lives in `Deps` (Main.mo's stores, injected) so the path unit-tests
 /// without an IC environment.
 import Int "mo:core/Int";
+import Problems "../Problems";
 import Iter "mo:core/Iter";
 import List "mo:core/List";
 import Map "mo:core/Map";
@@ -26,7 +27,7 @@ import Result "mo:core/Result";
 import Runtime "mo:core/Runtime";
 import Text "mo:core/Text";
 import AuditLog "../AuditLog";
-import ErrorQueue "../ErrorQueue";
+import Orphans "../Orphans";
 import Hmac "../Hmac";
 import Http "../Http";
 import Idempotency "../Idempotency";
@@ -322,13 +323,11 @@ module {
   public type Deps = {
     orders : Orders.Store;
     dedup : Idempotency.Store;
-    errorQueue : ErrorQueue.Store;
-    errorQueueCapacity : Nat;
+    orphanStore : Orphans.Store;
     /// Operator's declared Stripe mode; null = unset, which accepts either and
     /// says so in the audit trail. The go-live checklist sets it.
     expectLivemode : ?Bool;
     auditLog : AuditLog.Log;
-    auditLogCapacity : Nat;
     /// `payment_intent` → order it paid for. Written when an order is marked
     /// paid; the only way a later `charge.refunded` can tell whether the
     /// refunded payment had already been delivered as cycles. A financial
@@ -364,7 +363,7 @@ module {
   };
 
   func audit(deps : Deps, nowNs : Int, tag : Text, detail : Text) {
-    ignore AuditLog.append(deps.auditLog, deps.auditLogCapacity, nowNs, tag, detail);
+    ignore AuditLog.append(deps.auditLog, nowNs, tag, detail);
   };
 
   /// Whether a paid amount may be honoured for this order (§3/§6.1) — since
@@ -413,22 +412,74 @@ module {
   /// refunds in the Stripe Dashboard). Always 200: the payment is handled,
   /// just not by delivery; a non-2xx would make Stripe redeliver an event
   /// we have already routed.
-  func queueRefundable(deps : Deps, kind : ErrorQueue.Kind, detail : Text, nowNs : Int) : Http.Response {
-    let result = ErrorQueue.add(deps.errorQueue, deps.errorQueueCapacity, #card, kind, detail, nowNs);
-    for (victim in result.evicted.values()) {
-      if (victim.resolvedAtNs == null) {
-        // §4.1: an unresolved eviction is a live money obligation dropped
-        // from on-chain state — the one thing the audit trail must show.
-        audit(deps, nowNs, "errorQueue.evictedUnresolved", "entry " # victim.id.toText() # ": " # victim.detail);
-      };
-    };
+  func queueRefundable(deps : Deps, kind : Orphans.Kind, detail : Text, nowNs : Int) : Http.Response {
+    // ⚠️ **No eviction to report since #37.** The loop that used to run here audited
+    // `orphanStore.evictedUnresolved` — "a live money obligation dropped from on-chain
+    // state", §4.1's one unforgivable event. With no bound there is nothing to drop, so
+    // the tag is deleted rather than left unreachable: a tag that cannot fire is a
+    // reader's false reassurance that someone is watching for it.
+    let result = Orphans.add(deps.orphanStore, #card, kind, detail, nowNs);
     audit(deps, nowNs, "stripe.type1", "entry " # result.entry.id.toText() # ": " # detail);
     Http.text(200, "queued for operator review");
   };
 
-  /// `charge.refunded` (§4.1): auto-resolve every unresolved refund-resolvable entry
-  /// carrying this payment_intent. No matches is fine — operators may
-  /// refund payments that never queued.
+  /// File a refund-resolvable problem **on the order** (#37) and answer 200.
+  ///
+  /// ⚠️ **The order-bound sibling of `queueRefundable`, and the split is the point.**
+  /// That function now serves only `#unattributed`, which by definition has no order
+  /// to attach to. Everything with an `orderId` lives on the order, so there is no
+  /// eviction to audit here either: orders are never evicted.
+  ///
+  /// Always 200, for the same reason: the payment is handled, just not by delivery, and
+  /// a non-2xx would make Stripe redeliver an event we have already routed.
+  func fileOrderProblem(
+    deps : Deps,
+    orderId : Types.OrderId,
+    paymentRef : Text,
+    kind : Types.ProblemKind,
+    detail : Text,
+    nowNs : Int,
+  ) : Http.Response {
+    switch (deps.orders.orders.get(orderId)) {
+      case (?_) {
+        let filed = Orders.fileProblem(deps.orders, orderId, kind, detail, nowNs);
+        if (filed) {
+          audit(deps, nowNs, "stripe.type1", orderId # " [" # Problems.kindToText(kind) # "]: " # detail);
+        };
+        Http.text(200, "queued for operator review");
+      };
+      // ⚠️ **No such order, so the problem has no home — and it must NOT be dropped.**
+      // §4.1's invariant is that every verified dollar resolves to a delivery or to an
+      // obligation. Moving problems onto orders introduced a way to lose one: the
+      // queue's `add` filed regardless of whether the order existed, and
+      // `Orders.fileProblem` cannot.
+      //
+      // Money that cannot be attached to an order is money **held for nobody**, which
+      // is exactly what `#unattributed` means — so it goes to the orphan list, where
+      // it is refund-resolvable and names the payment. Reachable via a corrupted
+      // intent-to-order link; a test pins it, which is how it was found.
+      case null {
+        audit(
+          deps,
+          nowNs,
+          "stripe.problemOrphaned",
+          "order " # orderId # " is not in the store, so a " # Problems.kindToText(kind)
+          # " problem for intent " # paymentRef # " was filed as unattributed instead",
+        );
+        queueRefundable(
+          deps,
+          #unattributed({ claimedRef = orderId; paymentRef }),
+          detail # " ⚠️ Filed here rather than on the order because order " # orderId
+          # " is not in the store — the reference and our records disagree.",
+          nowNs,
+        );
+      };
+    };
+  };
+
+  /// `charge.refunded` (§4.1): auto-resolve every unresolved refund-resolvable
+  /// obligation carrying this payment_intent — **on both sides now**. No matches is
+  /// fine: operators may refund payments that never filed anything.
   func handleRefund(deps : Deps, refund : ChargeRefunded, nowNs : Int) : Outcome {
     if (not Idempotency.recordStripeEvent(deps.dedup, refund.eventId, nowNs)) {
       return ack(Http.text(200, "duplicate event"));
@@ -441,7 +492,7 @@ module {
     // remainder owed, so auto-resolving on it would erase the record of what is
     // still outstanding — the entry stays open and the operator decides.
     if (not full) {
-      let open = ErrorQueue.unresolvedByPaymentRef(deps.errorQueue, refund.paymentIntent);
+      let open = Orphans.unresolvedByPaymentRef(deps.orphanStore, refund.paymentIntent);
       for (entry in open.values()) {
         audit(
           deps,
@@ -464,11 +515,18 @@ module {
     };
 
     if (full) {
-      let resolved = ErrorQueue.resolveByPaymentRef(deps.errorQueue, refund.paymentIntent, nowNs);
+      // ⚠️ **Two stores to close against since #37**, and forgetting either is a
+      // silent failure: an obligation left open after the refund that settles it is
+      // exactly the false worklist entry the queue's own rule forbids.
+      let resolved = Orphans.resolveByPaymentRef(deps.orphanStore, refund.paymentIntent, nowNs);
       for (entry in resolved.values()) {
         audit(deps, nowNs, "stripe.refundResolved", "entry " # entry.id.toText() # " auto-resolved by full refund of " # refund.paymentIntent # " (" # amounts # ")");
       };
-      if (resolved.size() > 0) return ack(Http.text(200, "ok"));
+      let closedOnOrders = Orders.resolveByPaymentRef(deps.orders, refund.paymentIntent, nowNs);
+      if (closedOnOrders > 0) {
+        audit(deps, nowNs, "stripe.refundResolved", closedOnOrders.toText() # " order problem(s) auto-resolved by full refund of " # refund.paymentIntent # " (" # amounts # ")");
+      };
+      if (resolved.size() > 0 or closedOnOrders > 0) return ack(Http.text(200, "ok"));
     };
 
     // Nothing resolved. Usually benign — operators may refund a payment that
@@ -488,12 +546,15 @@ module {
             switch (order.status) {
               case (#delivered) {
                 // The loss case: fiat returned, cycles irreversibly gone.
-                ignore ErrorQueue.add(
-                  deps.errorQueue,
-                  deps.errorQueueCapacity,
-                  order.rail,
+                // ⚠️ **A second partial refund REFRESHES this rather than filing
+                // again.** `refundedCents` is cumulative, so the figure an operator
+                // reconciles by is the latest one — `Problems.file` matches on
+                // `paymentRef` and updates the payload, which is why suppressing
+                // instead would have frozen the total at the first partial.
+                ignore Orders.fileProblem(
+                  deps.orders,
+                  orderId,
                   #refundAfterDelivery({
-                    orderId;
                     paymentRef = refund.paymentIntent;
                     cycles = order.lockedCycles;
                     refundedCents = refund.amountRefundedCents;
@@ -571,9 +632,11 @@ module {
       "intent " # session.paymentIntent # " names " # namedText
       # " but was already credited to order " # credited # " — nothing delivered a second time",
     );
-    queueRefundable(
+    fileOrderProblem(
       deps,
-      #duplicate({ orderId = credited; paymentRef = session.paymentIntent }),
+      credited,
+      session.paymentIntent,
+      #duplicate({ paymentRef = session.paymentIntent }),
       "intent " # session.paymentIntent # " was credited to order " # credited
       # " but its Stripe session names " # namedText
       # " — the reference and our record disagree, which should not be reachable. Nothing was delivered twice. Decide which order the buyer paid for; there is no way to credit the other one, so settle it by refunding in Stripe.",
@@ -616,16 +679,15 @@ module {
         // test-configured gateway is an obligation. The reverse is a test event
         // and owes nobody anything.
         if (session.livemode) {
-          ignore ErrorQueue.add(
-            deps.errorQueue,
-            deps.errorQueueCapacity,
+          ignore Orphans.add(
+            deps.orphanStore,
             #card,
             // The real reference, not a placeholder: it is the only field that
             // identifies WHICH order to rescue once the config is fixed, and
             // discarding it would turn a recoverable misconfiguration into a
             // manual hunt through the Stripe Dashboard.
             #unattributed({
-              claimedRef = ErrorQueue.truncateClaimedRef(
+              claimedRef = Orphans.truncateClaimedRef(
                 switch (session.clientReferenceId) { case (?r) r; case null "(no client_reference_id)" }
               );
               paymentRef = session.paymentIntent;
@@ -672,7 +734,7 @@ module {
     };
     // ── Attribution (§4.1: claimed, not trusted). Failures are refund-resolvable
     // #unattributed: fiat arrived, nothing will be delivered.
-    let claimedRef = ErrorQueue.truncateClaimedRef(
+    let claimedRef = Orphans.truncateClaimedRef(
       switch (session.clientReferenceId) { case (?r) r; case (null) "" }
     );
     func unattributed(detail : Text) : Outcome {
@@ -729,9 +791,11 @@ module {
         // Stripe dedup is redelivery protection, not double-pay protection).
         // Reaching here means the intent is NOT in paidIntents, so it is new
         // money against an order that has already been paid.
-        return ack(queueRefundable(
+        return ack(fileOrderProblem(
           deps,
-          #duplicate({ orderId; paymentRef = session.paymentIntent }),
+          orderId,
+          session.paymentIntent,
+          #duplicate({ paymentRef = session.paymentIntent }),
           "second payment for order " # orderId # " (status " # Types.statusToText(status) # ")",
           nowNs,
         ));
@@ -766,7 +830,7 @@ module {
         // ⚠️ **Close any `#paidNotCredited` obligation for this order (#52).** The
         // recovery sweep files that when Stripe reports a paid session we never
         // credited; this is the resend landing, which is the remedy the entry asks for.
-        // Same rule `clearDelayed` follows for delay alerts: **an open worklist entry
+        // The rule every closer follows here: **an open worklist entry
         // must describe a live problem**, and the moment the order is credited this one
         // does not.
         //
@@ -775,7 +839,12 @@ module {
         // the money and leaves the order stranded in `#created` with no event left to
         // release its capacity. That is why the kind withholds its `paymentRef` from
         // `paymentRefOf`, and why the sweep's do-not-re-file guard is safe.
-        ignore ErrorQueue.resolveCreditedOrder(deps.errorQueue, orderId, nowNs);
+        ignore Orders.resolveProblems(
+          deps.orders,
+          orderId,
+          func(k) { switch (k) { case (#paidNotCredited(_)) true; case (_) false } },
+          nowNs,
+        );
         // The one path that creates money-out work.
         { response = Http.text(200, "ok"); paidOrder = ?orderId };
       };
@@ -940,16 +1009,15 @@ module {
         // Past the ~7-day dedup retention the check above no longer recognises a
         // resend, so the worklist itself is the second line of defence: one
         // unreadable event must not become two items to reconcile.
-        switch (ErrorQueue.unresolvedUnprocessable(deps.errorQueue, id)) {
+        switch (Orphans.unresolvedUnprocessable(deps.orphanStore, id)) {
           case (?_) {
             audit(deps, nowNs, "stripe.unprocessableResend", id # " already on the worklist");
             return ack(Http.text(200, "already queued"));
           };
           case null {};
         };
-        ignore ErrorQueue.add(
-          deps.errorQueue,
-          deps.errorQueueCapacity,
+        ignore Orphans.add(
+          deps.orphanStore,
           #card,
           #unprocessable({ eventId = id; field }),
           detail,

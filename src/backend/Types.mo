@@ -205,7 +205,7 @@ module {
     /// Distinct from `pricing.usdCents`, which is what the order was *quoted*
     /// for. The two differ whenever a card payment arrives for a different
     /// amount. Recorded here, on the money record, so "what did this buyer
-    /// pay?" is answerable from state forever — the audit ring buffer is
+    /// pay?" is answerable from state forever — the audit log is
     /// telemetry and drops its oldest entries, so it cannot be the only place
     /// a fact about money lives.
     ///
@@ -239,6 +239,49 @@ module {
     stripeSessionUrl : ?Text;
     createdAtNs : Int;
     updatedAtNs : Int;
+    /// When this order first crossed `alertAfterNs` while waiting to deliver, or
+    /// null if it never did (#37).
+    ///
+    /// ⚠️ **The historical half of the dropped `#deliveryDelayed` entry.** That
+    /// entry carried `resolvedAtNs`, so "a delay happened here and was closed" was
+    /// recorded; `delayed_deliveries` is a live view and leaves no trace once the
+    /// order delivers. Removing a capability is not the same as dropping a worklist
+    /// item, so the record moves onto the order rather than vanishing — which is
+    /// this issue's own thesis.
+    ///
+    /// ⚠️ **A field, deliberately, and NOT the `delayedAlerts` map returning.** That
+    /// map existed to remember an *entry id* so the entry could be resolved later,
+    /// and leaking it was a real failure mode. Nothing needs resolving here, so the
+    /// state lives on the order and "set it if unset" is idempotent — there is no
+    /// second structure to fall out of step with this one.
+    ///
+    /// ⚠️ **Setting this must NOT move `updatedAtNs`.** `Delivery.waitStage` reads
+    /// `updatedAtNs` as the held-since clock, so touching it here would reset the
+    /// very wait being recorded and the order could never reach `maxHoldNs`.
+    delayedAtNs : ?Int;
+    /// Why an operator ended this order, set only on `#abandoned` (#37).
+    ///
+    /// ⚠️ **This replaces the `#abandoned` error-queue entry, which was the fourth
+    /// copy of one decision.** `abandon_order` already moves the status to
+    /// `#abandoned`, patches the journal to match, and writes an `order.abandoned`
+    /// audit line naming who decided and why. The queue entry added nothing an
+    /// operator had to act on: `refundResolvable` and `paymentRefOf` both said so —
+    /// *"an abandonment was already a conscious decision"*.
+    ///
+    /// ⚠️ **Review established that the refund is tracked elsewhere**, which is what
+    /// made the drop safe rather than lossy: a `charge.refunded` for the intent
+    /// reaches `rails/Card.mo`'s `#needsReview`/`#abandoned` arm and audits
+    /// `stripe.refundOfEscalated`, and RUNBOOK documents the procedure as
+    /// refund-then-abandon. The entry was never what tracked the money.
+    abandonedReason : ?Text;
+    /// Problems that belong to this order, with their resolution state (#37).
+    ///
+    /// **Problems that belong to an order live on the order. Nothing drops.** See
+    /// `Problems.mo` for the kinds and the admission rule they have to pass. The
+    /// worklist function survives as a *filter* over this — "everything outstanding"
+    /// is a query for orders with an unresolved problem — rather than as a separate
+    /// structure that can fall out of step with the orders it points at.
+    problems : [Problem];
   };
 
   /// Why an `#expired` order expired. Two producers, and they are the only two:
@@ -248,6 +291,62 @@ module {
   public type ExpiredBy = {
     #sessionExpired;
     #sessionFailed;
+  };
+
+  /// An order-bound problem. Every arm carried an `orderId` when these lived in the
+  /// queue that is now `Orphans`; the
+  /// order it hangs off supplies that now.
+  public type ProblemKind = {
+    /// Refund-resolvable — a genuine second, distinct payment for an order that was
+    /// already handled.
+    #duplicate : { paymentRef : Text };
+    /// **A delivery stopped somewhere it cannot continue automatically.** Not
+    /// refund-resolvable: the fiat is in, and what happens next depends on the money
+    /// position rather than on the reason it stopped.
+    ///
+    /// ⚠️ **`stage` IS the money position, and it is what the operator acts on.**
+    /// `Delivery.terminationFor` derives it from the **journal**, not the status,
+    /// because one status covers several positions — `staleIntent` (unknown: did the
+    /// transfer land?), `deliveryWaitExceeded` (certain: fiat in, nothing sent), and
+    /// `transferRejected`/`journalInconsistent` (the ledger refused, or the intent
+    /// contradicts the order).
+    ///
+    /// ⚠️ **`stage` is a stringly-typed discriminator and must stay advisory.** It is
+    /// safe only because the journal is the authority. **Never branch a money
+    /// decision on comparing it** — ask the journal the way `terminationFor` does, or
+    /// make it a variant first.
+    #deliveryStuck : { stage : Text };
+    /// Not refund-resolvable — the money moved *both* ways. A `charge.refunded`
+    /// arrived for a payment already delivered as cycles, so the fiat went back and
+    /// the cycles are irreversibly gone to an arbitrary destination. The canister
+    /// cannot claw cycles back, so this **records a loss to reconcile** rather than
+    /// starting a recovery flow.
+    #refundAfterDelivery : {
+      paymentRef : Text;
+      cycles : Nat;
+      /// Cumulative cents returned to the payer. Sized, because a partial refund is
+      /// a partial loss and the operator reconciles against Stripe by **amount**,
+      /// not by the existence of a problem.
+      refundedCents : Nat;
+      /// Whether that settled the whole charge.
+      fullRefund : Bool;
+    };
+    /// **Stripe says this session was paid and we never credited it** (#52). Found by
+    /// the recovery sweep asking Stripe about a `#created` order whose expiry event
+    /// never arrived, past the point where Stripe would still be retrying.
+    ///
+    /// The order stays `#created` deliberately: `#created → #paid` is the only edge a
+    /// resent event can travel, so **keeping it there is what preserves the remedy
+    /// that delivers to the buyer.** Route it anywhere else and the operator's only
+    /// exit becomes a refund.
+    #paidNotCredited : { paymentRef : Text; sessionId : Text };
+  };
+
+  public type Problem = {
+    kind : ProblemKind;
+    detail : Text;
+    filedAtNs : Int;
+    resolvedAtNs : ?Int;
   };
 
   /// §5.1 — deterministic transfer args persisted *before* the ledger call
@@ -270,6 +369,19 @@ module {
     blockIndex : ?Nat;
     cyclesDelivered : ?Nat;
     retries : Nat;
+    /// The ledger's own words from the most recent failed attempt, or null if
+    /// nothing has failed (#37 §1b).
+    ///
+    /// ⚠️ **The one thing `#deliveryStuck` carried that exists nowhere else.** Its
+    /// `orderId`, `status`, `blockIndex` and `retries` are all already here, so once
+    /// the error text lives on the journal the kind's identity fields are pure
+    /// duplication — which is what lets the problem move onto the order carrying only
+    /// its stage and resolution state.
+    ///
+    /// ⚠️ **Overwritten, not accumulated.** An operator acts on the *current*
+    /// obstacle; a growing list of every historical rejection is unbounded state fed
+    /// by retries, and `retries` already says how many there were.
+    lastError : ?Text;
     createdAtNs : Int;
     updatedAtNs : Int;
   };

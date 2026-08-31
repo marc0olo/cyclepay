@@ -230,7 +230,7 @@ the operator's refund queue rather than by delivery — and a non-2xx would make
 Stripe redeliver an event that has already been routed (`Card.mo`).
 
 The stored `claimedRef` is length-capped at 128 bytes
-(`ErrorQueue.maxClaimedRefBytes`) so an attacker cannot stuff arbitrary data
+(`Orphans.maxClaimedRefBytes`) so an attacker cannot stuff arbitrary data
 into admin-visible stable state one webhook at a time.
 
 ## 7. Dedup: two layers, and what they do not protect against
@@ -283,7 +283,7 @@ Two consequences worth naming, because things downstream depend on them:
   higher ceiling matches its own quote after the ceiling is lowered.
 
 **What was actually paid is stored on the order** (`paidUsdCents`), not only in
-the audit log. The audit ring buffer drops its oldest entries, so a fact about
+the audit log. ⚠️ **The log no longer drops anything (#37)**, but the division still holds: a fact about
 money cannot live only there — "what did this buyer pay?" has to be answerable
 from state for the life of the canister. It can now only equal `usdCents`, and it
 is stored anyway: "what Stripe said" and "what we asked for" being the same is
@@ -445,9 +445,11 @@ public `refusal_counts` query, and RUNBOOK §8 carries a row per counter with th
 response. Refusals are free to attempt — `#amountBelowMin` needs no prior state at
 all, so one cent from any principal reaches it with no order and no payment — and the
 audit log is the one structure here whose growth is **not** attacker-priced (orders
-are bounded by the open-order cap and the reserve; error-queue entries each require a
-real payment to exist). A line per attempt was harmless only while the log was a
-4,096-entry ring.
+are bounded by the open-order cap and the reserve; orphan entries each require a real
+payment to exist). ⚠️ **A line per attempt was harmless only while the log was a
+4,096-entry ring — and #37 removed that ring**, which is why the refusal lines had to go
+first and why the admission rule was applied to all 71 tags rather than to the two paths
+that prompted it.
 
 **The exception is the transition, and it falls out of the distinction above.** The
 *operational* conditions are facts about the **gateway**, so entering one writes
@@ -617,7 +619,7 @@ if you see one, treat it as a bug to find rather than a queue to work.
      refund payments that never queued.
 
 `#refundAfterDelivery` deliberately does **not** expose a `paymentRef` to
-`resolveByPaymentRef` (`ErrorQueue.paymentRefOf`), because the refund is what
+`resolveByPaymentRef` (`Orphans.paymentRefOf`), because the refund is what
 created the entry — auto-resolving on it would close the loss the instant it was
 recorded. Only a human closes that one.
 
@@ -783,7 +785,7 @@ privileges — any controller can do any of this):
 | `set_pricing_config` | fee formula, staleness window (capped at 1 h), delta bound, minimum rate sources |
 | `refresh_rates` | force a rate tick now instead of waiting for the timer |
 | `set_delivery_config` | the two delivery time bounds: alert-after (2 h) and max hold (72 h) |
-| `error_queue` / `resolve_error` | the operator worklist |
+| `orphans` / `resolve_orphan` | the operator worklist |
 | `order_for_payment` | reconciliation: Stripe charge → order it funded |
 | `delivery_journal` | money-out record for one order |
 | `audit_log` | operational trail; gaps in `seq` mean ring-buffer drops |
@@ -803,7 +805,7 @@ canister. `record_delivered` records a *fact about the ledger*, it does not send
 
 Public queries (transparency is the product thesis): `card_tiers`,
 `pricing_status`, `quote_previews`, `recovery_status`, `lifecycle_config`,
-`reserve_status`, `can_purchase`, `cycles_status`, `error_queue_depth`,
+`reserve_status`, `can_purchase`, `cycles_status`, `orphan_depth`,
 `stripe_origin`, `expected_livemode`, `health`.
 
 **Owner-scoped, not admin-scoped:** `get_order`, `list_orders`, `cancel_order`,

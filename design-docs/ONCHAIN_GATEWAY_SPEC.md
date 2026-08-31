@@ -210,7 +210,7 @@ Created ──(never paid; advisory)──▶ Expired
                  [enough ICP float?]
                   ├─ yes ─▶ Minting ─▶ IcpAtCMC ─▶ Delivered
                   └─ no  ─▶ AwaitingTreasury ─(refill)─▶ Minting
-                                  └─(max-wait exceeded)─▶ ErrorQueue
+                                  └─(max-wait exceeded)─▶ Order.problems
 ```
 
 - **Money-in differs per rail; money-out is unified** (all converge on CMC mint
@@ -510,7 +510,7 @@ src/backend/
   Http.mo        # hand-rolled minimal HTTP: parse, case-insensitive headers, one route
   Orders.mo      # Order + JournalEntry types, state machine, stable store
   Idempotency.mo # per-rail dedup sets + retention/pruning
-  ErrorQueue.mo  # entries; only resolved ones are evicted
+  Orphans.mo    # order-less payment problems (#37)
   rails/Card.mo  # Stripe webhook HMAC verify + parse + charge.refunded
   rails/CkUsdc.mo# ICRC-2 approve/transfer_from flow (Candid)
   Cmc.mo         # ICP transfer (write-intent + created_at_time) + notify_*

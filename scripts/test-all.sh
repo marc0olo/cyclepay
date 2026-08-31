@@ -13,7 +13,12 @@
 # run in arm64 Linux guests with 16 KiB pages — the replica hard-asserts 4096-byte
 # pages and the server dies at instance creation. --fast exists for that case; say
 # the bar is unverified rather than inferring it from the unit tests.
-set -euo pipefail
+# ⚠️ **`-E` (errtrace) is load-bearing, not decoration.** Without it the `ERR` trap
+# below is NOT inherited by shell functions — and every step runs inside `run()` — so
+# the gate exited on failure with no banner at all, only the failing tool's own output
+# and a nonzero status. That is how a truncated run gets misread as a pass: there was
+# nothing for a reader (or a grep) to find that said the gate itself had stopped.
+set -Eeuo pipefail
 
 FAST=0
 for arg in "$@"; do
@@ -68,8 +73,27 @@ run() {
   "$@"
 }
 
+# Counted from the script itself so it cannot drift from the steps it announces.
+#
+# ⚠️ **Counting increment SITES is wrong and was the first attempt**: `run()` has one
+# site and eleven invocations, which gave 3 against a real run's 13. What has to be
+# counted is invocations — every `run "…"` call at any indent, plus the two steps that
+# increment inline because they are shell rather than a command. Verified against an
+# actual green run's output rather than reasoned about, which is the only way a count
+# like this is ever right.
+TOTAL_STEPS=$((
+  $(grep -cE '^[[:space:]]*run "' "$0") + $(grep -cE '^step=\$\(\(step \+ 1\)\)' "$0")
+))
+
 fail() {
-  printf '\n\033[31m✗ gate FAILED at step %d\033[0m\n' "$step" >&2
+  printf '\n\033[31m✗ gate FAILED at step %d of %d\033[0m\n' "$step" "$TOTAL_STEPS" >&2
+  # ⚠️ **Say what did NOT run.** A fail-fast gate's output is genuinely about the step
+  # that broke, and the mind supplies "…and everything else was fine". It did not run.
+  # A passing step is evidence; a run that ended early is not evidence about the rest.
+  if [ "$step" -lt "$TOTAL_STEPS" ]; then
+    printf '\033[31m  steps %d–%d DID NOT RUN — this says nothing about them\033[0m\n' \
+      $((step + 1)) "$TOTAL_STEPS" >&2
+  fi
   exit 1
 }
 trap fail ERR

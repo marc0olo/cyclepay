@@ -1,4 +1,5 @@
 import { test; suite } "mo:test";
+import Problems "../src/backend/Problems";
 import Array "mo:core/Array";
 import List "mo:core/List";
 import Nat "mo:core/Nat";
@@ -799,3 +800,221 @@ suite("status counts — the O(1) query inputs", func() {
   });
 });
 
+
+suite("#37 — markDelayed records the first crossing, and only the first", func() {
+  test("first call records, later calls do not, and updatedAtNs never moves", func() {
+    let store = Orders.emptyStore();
+    let order = switch (
+      Orders.create(store, "o-delay", #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1_000, pricing, 1_000)
+    ) {
+      case (#ok(o)) o;
+      case (#err(e)) { assert false; loop {} };
+    };
+    assert order.delayedAtNs == null;
+    let heldSince = order.updatedAtNs;
+
+    assert Orders.markDelayed(store, order.id, 5_000);
+    let marked = switch (Orders.get(store, order.id)) { case (?o) o; case null { assert false; loop {} } };
+    assert marked.delayedAtNs == ?5_000;
+    // ⚠️ **The clock must not move.** `Delivery.waitStage` reads `updatedAtNs` as
+    // held-since, so bumping it here would reset the very wait being recorded and
+    // the order could never reach `maxHoldNs` — alerted forever, escalated never.
+    assert marked.updatedAtNs == heldSince;
+
+    // Idempotent by construction: this is what retires the `delayedAlerts` map
+    // rather than relocating it, so there is no second structure to fall out of
+    // step with the order.
+    assert not Orders.markDelayed(store, order.id, 9_999);
+    let again = switch (Orders.get(store, order.id)) { case (?o) o; case null { assert false; loop {} } };
+    assert again.delayedAtNs == ?5_000;
+    assert again.updatedAtNs == heldSince;
+  });
+
+  test("an unknown order records nothing and reports false", func() {
+    let store = Orders.emptyStore();
+    assert not Orders.markDelayed(store, "no-such-order", 1);
+  });
+});
+
+suite("#37 — the unresolved-problems index", func() {
+  func freshOrder(store : Orders.Store, id : Text) : Types.Order {
+    switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1_000, pricing, 100)) {
+      case (#ok(o)) o;
+      case (#err(_)) { assert false; loop {} };
+    };
+  };
+
+  test("filing enters the index, resolving the last problem leaves it", func() {
+    let store = Orders.emptyStore();
+    let o = freshOrder(store, "idx-1");
+    assert Orders.unresolvedProblemCount(store) == 0;
+    assert Orders.withUnresolvedProblems(store).size() == 0;
+
+    assert Orders.fileProblem(store, o.id, #duplicate({ paymentRef = "pi_1" }), "second payment", 200);
+    assert Orders.unresolvedProblemCount(store) == 1;
+    assert Orders.withUnresolvedProblems(store).size() == 1;
+
+    // Two problems, one order: the order is in the index once and stays until BOTH
+    // are closed.
+    assert Orders.fileProblem(store, o.id, #deliveryStuck({ stage = "staleIntent" }), "ledger", 210);
+    assert Orders.unresolvedProblemCount(store) == 2;
+    assert Orders.withUnresolvedProblems(store).size() == 1;
+
+    assert Orders.resolveProblems(store, o.id, func(k) { Problems.refundResolvable(k) }, 300) == 1;
+    assert Orders.withUnresolvedProblems(store).size() == 1;
+    assert Orders.resolveProblems(store, o.id, func(_) { true }, 310) == 1;
+    assert Orders.withUnresolvedProblems(store).size() == 0;
+    assert Orders.unresolvedProblemCount(store) == 0;
+
+    // ⚠️ **Nothing dropped.** The resolved problems are still on the order; only the
+    // worklist shrank.
+    let after = switch (Orders.get(store, o.id)) { case (?x) x; case null { assert false; loop {} } };
+    assert after.problems.size() == 2;
+  });
+
+  test("resolveByPaymentRef closes only the matching refund-resolvable problem", func() {
+    let store = Orders.emptyStore();
+    let a = freshOrder(store, "idx-a");
+    let b = freshOrder(store, "idx-b");
+    assert Orders.fileProblem(store, a.id, #duplicate({ paymentRef = "pi_match" }), "dup", 200);
+    assert Orders.fileProblem(store, b.id, #duplicate({ paymentRef = "pi_other" }), "dup", 200);
+    // Carries a paymentRef and must NOT be closed by a refund: the refund is what
+    // created it.
+    assert Orders.fileProblem(store, b.id, #refundAfterDelivery({ paymentRef = "pi_match"; cycles = 1; refundedCents = 1; fullRefund = true }), "loss", 200);
+
+    assert Orders.resolveByPaymentRef(store, "pi_match", 300) == 1;
+    assert Orders.withUnresolvedProblems(store).size() == 1; // b still has two open
+    assert Orders.unresolvedProblemCount(store) == 2;
+  });
+
+  test("⚠️ the index agrees with a full scan — the tripwire that makes derived state safe", func() {
+    // Without this the index is the `delayedAlerts` mistake again: a second structure
+    // that can disagree with the orders it points at and no way to tell which is
+    // right. A non-zero drift means a writer bypassed fileProblem/resolveProblems.
+    let store = Orders.emptyStore();
+    let a = freshOrder(store, "drift-a");
+    let b = freshOrder(store, "drift-b");
+    let c = freshOrder(store, "drift-c");
+    assert Orders.fileProblem(store, a.id, #duplicate({ paymentRef = "p1" }), "d", 200);
+    assert Orders.fileProblem(store, b.id, #deliveryStuck({ stage = "s" }), "d", 200);
+    assert Orders.fileProblem(store, c.id, #paidNotCredited({ paymentRef = "p3"; sessionId = "cs" }), "d", 200);
+    ignore Orders.resolveProblems(store, b.id, func(_) { true }, 300);
+    assert Orders.recountUnresolvedProblems(store) == 0;
+    // And the rebuild is idempotent.
+    assert Orders.recountUnresolvedProblems(store) == 0;
+    assert Orders.withUnresolvedProblems(store).size() == 2;
+  });
+
+  test("filing on an unknown order changes nothing", func() {
+    let store = Orders.emptyStore();
+    assert not Orders.fileProblem(store, "no-such-order", #duplicate({ paymentRef = "p" }), "d", 1);
+    assert Orders.withUnresolvedProblems(store).size() == 0;
+  });
+});
+
+suite("#37 — the pay link is dropped on the way into a terminal state", func() {
+  func withUrl(store : Orders.Store, id : Text) : Types.Order {
+    let o = switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1_000, pricing, 100)) {
+      case (#ok(x)) x;
+      case (#err(_)) { assert false; loop {} };
+    };
+    switch (Orders.attachSession(store, id, "cs_" # id, "https://checkout.stripe.com/c/pay/cs_" # id, 999, 200)) {
+      case (#ok(x)) x;
+      case (#err(_)) { assert false; loop {} };
+    };
+  };
+
+  test("every terminal status clears it; the non-terminal ones keep it", func() {
+    // ⚠️ Terminality comes from `Reserve.holdsPromise`, which is the single authority
+    // — a second list in `commitTransition` would be a place for the two to disagree.
+    for (terminal in [#cancelled, #expired].vals()) {
+      let store = Orders.emptyStore();
+      let o = withUrl(store, "t-" # Types.statusToText(terminal));
+      assert o.stripeSessionUrl != null;
+      switch (Orders.applyTransition(store, o.id, terminal, 300)) {
+        case (#ok(after)) assert after.stripeSessionUrl == null;
+        case (#err(_)) assert false;
+      };
+    };
+  });
+
+  test("#paid keeps the link — the order is still payable-adjacent and not terminal", func() {
+    let store = Orders.emptyStore();
+    let o = withUrl(store, "keeps");
+    switch (Orders.markPaid(store, o.id, 500, 300)) {
+      case (#ok(after)) assert after.stripeSessionUrl != null;
+      case (#err(_)) assert false;
+    };
+  });
+
+  test("the stored order agrees with what the transition returned", func() {
+    // The clearing happens inside `commitTransition`, so the returned value and the
+    // stored value must be the same object — a version that only patched the return
+    // would leave the big field on disk forever.
+    let store = Orders.emptyStore();
+    let o = withUrl(store, "stored");
+    ignore Orders.applyTransition(store, o.id, #cancelled, 300);
+    let fromStore = switch (Orders.get(store, o.id)) { case (?x) x; case null { assert false; loop {} } };
+    assert fromStore.stripeSessionUrl == null;
+    // The session ID is NOT dropped: the recovery sweep reads it.
+    assert fromStore.stripeSessionId != null;
+  });
+});
+
+suite("#37 — resolving a problem is precise, and refuses when it cannot be", func() {
+  func orderWith(store : Orders.Store, id : Text) : Types.Order {
+    switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1_000, pricing, 100)) {
+      case (#ok(o)) o;
+      case (#err(_)) { assert false; loop {} };
+    };
+  };
+
+  test("⚠️ two #duplicate problems with different refs are BOTH kept", func() {
+    // This is the state that made a tag-only resolver dangerous: the dedup key is
+    // (kind, paymentRef), so a buyer paying three times files three problems.
+    let store = Orders.emptyStore();
+    let o = orderWith(store, "multi");
+    assert Orders.fileProblem(store, o.id, #duplicate({ paymentRef = "pi_a" }), "2nd", 200);
+    assert Orders.fileProblem(store, o.id, #duplicate({ paymentRef = "pi_b" }), "3rd", 210);
+    assert Orders.unresolvedOfKind(store, o.id, "duplicate").size() == 2;
+  });
+
+  test("resolving by ref closes exactly one, leaving the other outstanding", func() {
+    let store = Orders.emptyStore();
+    let o = orderWith(store, "precise");
+    assert Orders.fileProblem(store, o.id, #duplicate({ paymentRef = "pi_a" }), "2nd", 200);
+    assert Orders.fileProblem(store, o.id, #duplicate({ paymentRef = "pi_b" }), "3rd", 210);
+    let closed = Orders.resolveProblems(
+      store, o.id,
+      func(k) { Problems.identifyingRef(k) == ?"pi_a" },
+      300,
+    );
+    assert closed == 1;
+    let left = Orders.unresolvedOfKind(store, o.id, "duplicate");
+    assert left.size() == 1;
+    assert left[0].ref == ?"pi_b";
+    // The order is still on the worklist, because one problem is still open.
+    assert Orders.withUnresolvedProblems(store).size() == 1;
+  });
+
+  test("#deliveryStuck can only ever have one, so a ref is never needed", func() {
+    // `sameShape` matches it on the discriminator alone, which makes a second
+    // unresolved one unrepresentable rather than merely unlikely.
+    let store = Orders.emptyStore();
+    let o = orderWith(store, "stuck-once");
+    assert Orders.fileProblem(store, o.id, #deliveryStuck({ stage = "staleIntent" }), "a", 200);
+    assert not Orders.fileProblem(store, o.id, #deliveryStuck({ stage = "transferRejected" }), "b", 210);
+    assert Orders.unresolvedOfKind(store, o.id, "deliveryStuck").size() == 1;
+    assert Problems.identifyingRef(#deliveryStuck({ stage = "x" })) == null;
+  });
+
+  test("sameShape and the operator's selector are the same key", func() {
+    // They were separate definitions, and that is precisely what let the resolver be
+    // coarser than the dedup. One definition now, both users.
+    let a : Types.ProblemKind = #duplicate({ paymentRef = "pi_1" });
+    let b : Types.ProblemKind = #duplicate({ paymentRef = "pi_2" });
+    assert not Problems.sameShape(a, b);
+    assert Problems.identifyingRef(a) != Problems.identifyingRef(b);
+    assert Problems.sameShape(a, #duplicate({ paymentRef = "pi_1" }));
+  });
+});

@@ -20,9 +20,12 @@ import {
   checkoutSessionBody, chargeRefundedBody, deliverWebhook, stripeSignature,
   nowSeconds, setXrcRate, setXrcResponse, warmRates, ensureRates, tickRateTimer,
   orderStatus, statusKey, tickUntilStatus, expectOk, expectErr,
-  allErrorEntries, openErrorEntries,
+  allOrphans, openOrphans,
+
+  orderProblems,
+  unresolvedProblems,
 } from './harness';
-import type { Destination, ErrorEntry, Order } from './types';
+import type { Destination, OrphanEntry, Order } from './types';
 
 let gw: Gateway;
 
@@ -472,7 +475,7 @@ test('07 — the transfer memo is the ORDER id, so two identical orders both del
 
 test('08 — duplicate/replay: every dedup layer holds through real ingress (§4.1/§4.2)', async () => {
   const reserveBefore = await reserveBalance(gw);
-  const errorsBefore = (await allErrorEntries(gw)).length;
+  const errorsBefore = (await allOrphans(gw)).length;
 
   // Replay 1: identical event redelivered (Stripe retry) → ack-and-drop.
   const sameEvent = await deliverWebhook(gw, checkoutSessionBody({
@@ -491,7 +494,7 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   await gw.pic.tick(10);
   expect(await orderStatus(gw, orderA.id)).toBe('delivered');
   expect(await reserveBalance(gw)).toBe(reserveBefore);
-  expect((await allErrorEntries(gw)).length).toBe(errorsBefore);
+  expect((await allOrphans(gw)).length).toBe(errorsBefore);
 
   // Genuine double-pay: a *new* payment intent against the handled order →
   // #duplicate, acked 200 (the money is handled — by the operator).
@@ -500,17 +503,62 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
     amountCents: TIER_USD_CENTS,
   }));
   expect(doublePay.status_code).toBe(200);
-  const dupEntry = (await allErrorEntries(gw)).find(
-    (e) => 'duplicate' in e.kind && e.kind.duplicate.paymentRef === 'pi_a_double',
-  ) as ErrorEntry;
-  expect(dupEntry).toBeDefined();
-  expect(dupEntry.resolvedAtNs).toEqual([]);
+  // On the ORDER now (#37) — the order supplies the id the kind used to carry.
+  const dupProblem = (await orderProblems(gw, orderA.id)).find(
+    (p) => 'duplicate' in p.kind
+      && (p.kind as { duplicate: { paymentRef: string } }).duplicate.paymentRef === 'pi_a_double',
+  );
+  expect(dupProblem).toBeDefined();
+  expect(dupProblem!.resolvedAtNs).toEqual([]);
 
-  // charge.refunded auto-resolves the entry by payment_intent.
+  // ⚠️ **A SECOND distinct payment files a SECOND problem**, because the dedup key is
+  // (kind, paymentRef) — a buyer who pays three times has three obligations, not one.
+  const doublePay2 = await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_a3b', paymentIntent: 'pi_a_double_2', clientReferenceId: refA,
+    amountCents: TIER_USD_CENTS,
+  }));
+  expect(doublePay2.status_code).toBe(200);
+  expect((await orderProblems(gw, orderA.id)).filter((p) => 'duplicate' in p.kind))
+    .toHaveLength(2);
+
+  // ⚠️ **And `resolve_problem` REFUSES the ambiguous close**, listing the references.
+  // Closing "the duplicate" would mark settled a payment the operator has not
+  // refunded — the automatic closer matches on the reference and is exact, so only the
+  // manual lever could ever guess, and it declines instead.
+  const ambiguous = expectErr(await gw.asAdmin.resolve_problem(orderA.id, 'duplicate', []));
+  expect(ambiguous).toMatch(/2 unresolved duplicate problems/);
+  expect(ambiguous).toContain('pi_a_double');
+  expect(ambiguous).toContain('pi_a_double_2');
+
+  // Named precisely, it closes exactly one and leaves the other outstanding.
+  expect(expectOk(await gw.asAdmin.resolve_problem(orderA.id, 'duplicate', ['pi_a_double_2']))).toBe(1n);
+  expect(unresolvedProblems(await orderProblems(gw, orderA.id)).filter((p) => 'duplicate' in p.kind))
+    .toHaveLength(1);
+
+  // ⚠️ **The worklist filter sees it** (#37) — this is the query that replaced the
+  // queue's worklist function, and the acceptance criterion "everything outstanding is
+  // a filter over orders" is only checkable because it exists.
+  const worklist = await gw.asAdmin.orders_with_problems();
+  expect(worklist.orders.some((o) => o.id === orderA.id)).toBe(true);
+  expect(worklist.unresolved).toBeGreaterThan(0n);
+  await expect(gw.asUser.orders_with_problems()).rejects.toThrow(/not a controller/);
+
+  // charge.refunded auto-resolves it by payment_intent — and this is the assertion
+  // that would catch the closer being wired to only one of the two stores, since
+  // `#unattributed` still lives in the queue while `#duplicate` is on the order.
   const refund = await deliverWebhook(gw, chargeRefundedBody('evt_a4', 'pi_a_double'));
   expect(refund.status_code).toBe(200);
-  const resolved = (await allErrorEntries(gw)).find((e) => e.id === dupEntry.id) as ErrorEntry;
-  expect(resolved.resolvedAtNs.length).toBe(1);
+  const resolvedProblem = (await orderProblems(gw, orderA.id)).find(
+    (p) => 'duplicate' in p.kind
+      && (p.kind as { duplicate: { paymentRef: string } }).duplicate.paymentRef === 'pi_a_double',
+  );
+  // Resolved, not gone: nothing drops.
+  expect(resolvedProblem).toBeDefined();
+  expect(resolvedProblem!.resolvedAtNs.length).toBe(1);
+  // And the order has left the worklist, because the filter reads UNRESOLVED problems
+  // while the order keeps the resolved one forever.
+  expect((await gw.asAdmin.orders_with_problems()).orders.some((o) => o.id === orderA.id))
+    .toBe(false);
 
   await gw.pic.tick(5);
   expect(await reserveBalance(gw)).toBe(reserveBefore);
@@ -525,14 +573,14 @@ test('09 — unattributed: claimed-not-trusted reference resolution (§6.1)', as
   }));
   expect(response.status_code).toBe(200);
 
-  const entry = (await allErrorEntries(gw)).find(
+  const entry = (await allOrphans(gw)).find(
     (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_u',
-  ) as ErrorEntry;
+  ) as OrphanEntry;
   expect(entry).toBeDefined();
 
   // Manual operator resolution (§4.1) — admin-gated.
-  await expect(gw.asUser.resolve_error(entry.id)).rejects.toThrow(/not a controller/);
-  const resolved = expectOk(await gw.asAdmin.resolve_error(entry.id));
+  await expect(gw.asUser.resolve_orphan(entry.id)).rejects.toThrow(/not a controller/);
+  const resolved = expectOk(await gw.asAdmin.resolve_orphan(entry.id));
   expect(resolved.resolvedAtNs.length).toBe(1);
 });
 
@@ -600,10 +648,9 @@ test('11 — a cycles-ledger outage strands NOTHING: the order stays payable-out
 
     // Still #paid — retrying, not escalated, not delivered.
     expect(await orderStatus(gw, orderC.id)).toBe('paid');
-    // No queue entry: an outage is not an obligation.
-    expect((await allErrorEntries(gw)).some(
-      (e) => 'deliveryStuck' in e.kind && e.kind.deliveryStuck.orderId === orderC.id,
-    )).toBe(false);
+    // No problem filed: an outage is not an obligation (#37 — now on the order).
+    expect((await orderProblems(gw, orderC.id)).some((p) => 'deliveryStuck' in p.kind))
+      .toBe(false);
     // ⚠️ Do NOT read the ledger here. It is stopped, so a balance query is
     // rejected — the first version of this scenario asserted the balances inside
     // the outage and failed on the assertion rather than on the behaviour.
@@ -728,23 +775,28 @@ test('15 — operational trail is coherent end-to-end (§4.2)', async () => {
   expect(tags.filter((t) => t.startsWith('mint.'))).toEqual([]);
 
   // The server-side worklist, which is what an operator actually reads.
-  const open = await openErrorEntries(gw);
+  const open = await openOrphans(gw);
   // ⚠️ **Only fiat can be stranded, never cycles**, and this list is where that shows.
   // A failed delivery leaves the cycles in the reserve and the order retrying, so it
   // files no obligation at all. Everything open here is money we took and have not
-  // delivered against — which is what makes `error_queue_depth` a real alarm rather
+  // delivered against — which is what makes `orphan_depth` a real alarm rather
   // than a gauge that always reads non-zero.
   const kinds = open.map((e) => Object.keys(e.kind)[0]);
+  // ⚠️ **`deliveryStuck` cannot appear here at all since #37** — it is an
+  // order-bound problem, not a queue entry. The assertion is kept because what it
+  // guards is unchanged: everything left in this queue is money we took and cannot
+  // attribute, which is what makes `orphan_depth` a real alarm rather than a
+  // gauge that always reads non-zero.
   expect(kinds).not.toContain('deliveryStuck');
   // Depth agrees with the paged content — the number ops monitors.
-  expect((await gw.asAnon.error_queue_depth()).unresolved).toBe(BigInt(open.length));
+  expect((await gw.asAnon.orphan_depth()).unresolved).toBe(BigInt(open.length));
 
   // Admin gates on the trail itself.
   await expect(gw.asUser.audit_log()).rejects.toThrow(/not a controller/);
-  await expect(gw.asUser.error_queue([], 10n)).rejects.toThrow(/not a controller/);
-  await expect(gw.asUser.error_queue_unresolved([], 10n)).rejects.toThrow(/not a controller/);
+  await expect(gw.asUser.orphans([], 10n)).rejects.toThrow(/not a controller/);
+  await expect(gw.asUser.orphans_unresolved([], 10n)).rejects.toThrow(/not a controller/);
   // Depth is public — it is the monitoring signal, not the payment references.
-  expect((await gw.asAnon.error_queue_depth()).retained).toBeGreaterThan(0n);
+  expect((await gw.asAnon.orphan_depth()).retained).toBeGreaterThan(0n);
 });
 
 test('16 — admission gate: the gas floor refuses the quote before any money moves', async () => {
@@ -877,7 +929,7 @@ test('18 — an expired order is never deleted, and a late payment is refunded n
   }))).toMatchObject({ status_code: 200 });
   await gw.pic.tick(5);
   expect(await orderStatus(gw, lapsed.id)).toBe('expired');
-  const obligation = (await openErrorEntries(gw)).find(
+  const obligation = (await openOrphans(gw)).find(
     (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_late',
   );
   expect(obligation).toBeDefined();
@@ -1380,25 +1432,39 @@ test('33 — an UNDELIVERED order alerts and waits, then delivers when the cause
   // an alert that only fired at the give-up would be useless.
   await gw.pic.advanceTime(3 * 3_600 * 1_000);
   await gw.pic.tick(5);
-  const alert = (await openErrorEntries(gw)).find(
-    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === stuck.id,
-  ) as ErrorEntry;
-  expect(alert).toBeDefined();
+  // ⚠️ **Converted from a `#deliveryDelayed` worklist entry to the reading that
+  // replaced it (#37).** The entry stored nothing of its own — a constant stage
+  // string, a fixed sentence, and `sinceNs` copied off the order — so what it
+  // actually asserted was "this order is past the threshold", which is what
+  // `delayed_deliveries` reports.
+  const delayed = (await gw.asAdmin.delayed_deliveries()).find((d) => d.orderId === stuck.id);
+  expect(delayed).toBeDefined();
+  // Past the alert threshold, short of the terminal bound: still retrying.
+  expect(delayed!.pastMaxHold).toBe(false);
+  expect(delayed!.status).toEqual({ paid: null });
   expect(await orderStatus(gw, stuck.id)).toBe('paid');
+  // The permanent record was stamped on the order at the crossing.
+  const firstCrossing = delayed!.delayedAtNs;
+  expect(firstCrossing).toHaveLength(1);
 
   // ── Salvaged from scenario 60, which #30 PR-A deleted ────────────────────
-  // Repeated sweeps at the SAME stall must stay silent. 60's subject was a stall
-  // moving between stages, and there is only one stage now — but this direction
-  // has nothing to do with stages and a live failure mode: an alert re-filed on
-  // every tick would flood the worklist and push real obligations out of the ring
-  // buffer.
+  // Repeated sweeps at the SAME stall must not re-record anything. 60's subject was
+  // a stall moving between stages, and there is only one stage now — but this
+  // direction has a live failure mode of its own.
+  //
+  // ⚠️ **The property survives the mechanism, in a stronger form.** Under the entry
+  // this asked "is there still exactly ONE, with the same id" — a count that could
+  // in principle have been two. `delayedAtNs` is set-if-unset on the order, so
+  // re-filing is not merely absent but unrepresentable; what remains to assert is
+  // that the stamp does not MOVE, which is the thing a careless "refresh the
+  // timestamp" would break.
   await gw.pic.advanceTime(3 * 3_600 * 1_000);
   await gw.pic.tick(5);
-  const stillOne = (await openErrorEntries(gw)).filter(
-    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === stuck.id,
-  );
-  expect(stillOne).toHaveLength(1);
-  expect(stillOne[0]!.id).toBe(alert.id);
+  const stillDelayed = (await gw.asAdmin.delayed_deliveries()).filter((d) => d.orderId === stuck.id);
+  expect(stillDelayed).toHaveLength(1);
+  expect(stillDelayed[0]!.delayedAtNs).toEqual(firstCrossing);
+  // And the wait keeps growing, so the reading is live rather than frozen.
+  expect(stillDelayed[0]!.waitedNs).toBeGreaterThan(delayed!.waitedNs);
 
   // Fixing the cause delivers it, automatically, on the next sweep — no operator
   // action on the order itself.
@@ -1420,6 +1486,10 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
   // Park it in `#paid` with a real outage — a stopped cycles ledger is the only way to
   // hold an order undelivered, since delivery reads no rate and asks no other canister.
   // `#paid` is the state that matters here: money in, nothing delivered.
+  // Declared out here so the assertions after the `finally` can read it: the reason
+  // now lives on the ORDER (#37), and `abandon_order`'s return value is the only way
+  // an admin can see another principal's order until #38 lands its view.
+  let abandonedOrder: Order;
   await stopNns(gw, CYCLES_LEDGER_ID);
   try {
     expect(await deliverWebhook(gw, checkoutSessionBody({
@@ -1454,7 +1524,8 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
     await gw.pic.tick(5);
     expect(await tickUntilStatus(gw, doomed.id, ['needsReview'])).toBe('needsReview');
 
-    const abandoned = expectOk(await gw.asAdmin.abandon_order(doomed.id, 'buyer asked to cancel'));
+    abandonedOrder = expectOk(await gw.asAdmin.abandon_order(doomed.id, 'buyer asked to cancel'));
+    const abandoned = abandonedOrder;
     // `#abandoned`, the released half of the old `#errorQueue` (#34): the operator
     // ended it, so nothing is owed. ⚠️ #30 depends on this releasing the promise —
     // an abandoned order must not keep reserving cycles nobody will receive.
@@ -1463,13 +1534,19 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
     await startNns(gw, CYCLES_LEDGER_ID);
   }
 
-  const entry = (await openErrorEntries(gw)).find(
-    (e) => 'abandoned' in e.kind && e.kind.abandoned.orderId === doomed.id,
-  ) as ErrorEntry;
-  expect(entry).toBeDefined();
-  if ('abandoned' in entry.kind) {
-    expect(entry.kind.abandoned.reason).toBe('buyer asked to cancel');
-  }
+  // ⚠️ **Converted from a queue entry to the order's own field (#37).** The entry was
+  // the FOURTH copy of one decision — the status, the journal patch and the audit
+  // line below already carried it — and nothing about it was outstanding, which
+  // `refundResolvable = false` and `paymentRefOf = null` were already saying.
+  //
+  // Read off `abandon_order`'s own return value rather than a query: an admin
+  // abandoning another principal's order cannot use owner-scoped `get_order`, and
+  // #38's admin order view does not exist yet.
+  expect(abandonedOrder.abandonedReason).toEqual(['buyer asked to cancel']);
+  // No entry was filed for it, which is the point of the drop.
+  expect((await openOrphans(gw)).filter(
+    (e) => JSON.stringify(e.kind, bigIntReplacer).includes(doomed.id),
+  ).some((e) => 'abandoned' in e.kind)).toBe(false);
 
   // The audit trail names WHO decided, not just that it happened.
   const audit = await gw.asAdmin.audit_log();
@@ -1531,9 +1608,9 @@ test('35 — past the max-wait bound the order terminates so the operator refund
     await startNns(gw, CYCLES_LEDGER_ID);
   }
 
-  const entry = (await openErrorEntries(gw)).find(
-    (e) => 'deliveryStuck' in e.kind && e.kind.deliveryStuck.orderId === doomed.id,
-  ) as ErrorEntry;
+  // Now a problem on the order (#37); no `orderId` to compare, the order supplies it.
+  const entry = unresolvedProblems(await orderProblems(gw, doomed.id))
+    .find((p) => 'deliveryStuck' in p.kind)!;
   expect(entry).toBeDefined();
   // ⚠️ The money position must say NOTHING WAS DELIVERED, because the action it
   // implies is a refund. Emitting a position that hedged here is what put an
@@ -1542,10 +1619,19 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   // Nothing moved out of the reserve — the position is certain, not merely likely.
   expect(await reserveBalance(gw)).toBe(reserveBefore);
 
-  // The superseded delay alert was closed, not left orphaned alongside it.
-  expect((await openErrorEntries(gw)).filter(
-    (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === doomed.id,
-  )).toHaveLength(0);
+  // ⚠️ **Scenario 47's property, now structural (#37).** It asserted that a
+  // superseded delay alert was CLOSED rather than left orphaned beside the real
+  // obligation. There is nothing to close any more: escalation moves the status off
+  // `#paid`, so the order leaves `delayed_deliveries` by construction — no resolve
+  // step to forget and no `delayedAlerts` mapping to leak, which were the two ways
+  // the old version could go wrong.
+  expect((await gw.asAdmin.delayed_deliveries()).filter((d) => d.orderId === doomed.id))
+    .toHaveLength(0);
+  // ⚠️ The permanent record of the delay survives on `Order.delayedAtNs` — the half
+  // a live view cannot carry, since the delay HAPPENED and that stays true. Not
+  // asserted here: reading another principal's order needs #38's admin order view,
+  // which does not exist yet. `orders.test.mo` pins `markDelayed` directly, and this
+  // line is the pointer to add the assertion when that view lands.
 
   // ── Salvaged from scenario 48, which #30 PR-A deleted ────────────────────
   // 48's subject was "the NOTIFY stage is bounded by time, not only by the retry
@@ -1565,10 +1651,15 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   await gw.pic.advanceTime(100 * 3_600 * 1_000);
   await gw.pic.tick(5);
   expect(await orderStatus(gw, settled.order.id)).toBe('delivered');
-  expect((await openErrorEntries(gw)).filter(
-    (e) => ('deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === settled.order.id)
-      || ('deliveryStuck' in e.kind && e.kind.deliveryStuck.orderId === settled.order.id),
-  )).toHaveLength(0);
+  // ⚠️ **A delivered order is now excluded by CONSTRUCTION, not by an absence
+  // assertion.** `delayed_deliveries` filters on `status == #paid`, so this asks
+  // whether the filter holds rather than whether an entry happens not to exist —
+  // a stronger claim about a stronger mechanism.
+  expect((await gw.asAdmin.delayed_deliveries()).filter((d) => d.orderId === settled.order.id))
+    .toHaveLength(0);
+  // Nor a stuck problem: a delivered order attracts neither tier.
+  expect((await orderProblems(gw, settled.order.id)).filter((p) => 'deliveryStuck' in p.kind))
+    .toHaveLength(0);
   // ⚠️ This scenario advanced the clock by ~170 h in total, which stales BOTH
   // rates. `ensureRates` alone is not enough — the CMC rate needs governance to
   // re-arm — and skipping it fails the next nine scenarios on rates they never
@@ -1609,7 +1700,7 @@ test('39 — a payment against a CANCELLED order is refunded, never a trap', asy
 
   expect(await orderStatus(gw, doomed.order.id)).toBe('cancelled');
   expect((await gw.asUser.get_order(doomed.order.id))[0]!.paidUsdCents).toHaveLength(0);
-  const filed = (await openErrorEntries(gw)).find(
+  const filed = (await openOrphans(gw)).find(
     (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_pay_cancelled',
   );
   expect(filed).toBeDefined();
@@ -1780,7 +1871,7 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
   }))).toMatchObject({ status_code: 200 });
   await gw.pic.tick(5);
   expect(await orderStatus(gw, mine.order.id)).toBe('cancelled');
-  const raced = (await openErrorEntries(gw)).find(
+  const raced = (await openOrphans(gw)).find(
     (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_cancel_race',
   );
   expect(raced).toBeDefined();
@@ -1809,7 +1900,7 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
   // is exactly the orphan the queue must not accumulate, so the count matters —
   // asserting "none" would now be wrong, and asserting "some" would hide a
   // spurious second one.
-  const againstMine = (await openErrorEntries(gw)).filter(
+  const againstMine = (await openOrphans(gw)).filter(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes(mine.order.id),
   );
   expect(againstMine).toHaveLength(1);
@@ -1830,7 +1921,7 @@ test('43 — a partial refund never settles a full obligation', async () => {
     clientReferenceId: 'not-a-real-reference',
     amountCents: TIER_USD_CENTS,
   }))).toMatchObject({ status_code: 200 });
-  const entry = (await openErrorEntries(gw)).find(
+  const entry = (await openOrphans(gw)).find(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes('pi_partial'),
   )!;
   expect(entry).toBeDefined();
@@ -1839,7 +1930,7 @@ test('43 — a partial refund never settles a full obligation', async () => {
   expect(await deliverWebhook(
     gw, partialRefundBody('evt_partial_1', 'pi_partial', 100n, TIER_USD_CENTS),
   )).toMatchObject({ status_code: 200 });
-  const stillOpen = (await allErrorEntries(gw)).find((e) => e.id === entry.id)!;
+  const stillOpen = (await allOrphans(gw)).find((e) => e.id === entry.id)!;
   expect(stillOpen.resolvedAtNs).toHaveLength(0);
 
   // Completing the refund settles it — the auto-resolve still works, it is just
@@ -1847,7 +1938,7 @@ test('43 — a partial refund never settles a full obligation', async () => {
   expect(await deliverWebhook(
     gw, partialRefundBody('evt_partial_2', 'pi_partial', TIER_USD_CENTS, TIER_USD_CENTS),
   )).toMatchObject({ status_code: 200 });
-  const settled = (await allErrorEntries(gw)).find((e) => e.id === entry.id)!;
+  const settled = (await allOrphans(gw)).find((e) => e.id === entry.id)!;
   expect(settled.resolvedAtNs).toHaveLength(1);
 });
 
@@ -1872,7 +1963,7 @@ test('44 — a verified event we cannot process is acked, not retried forever', 
     },
   });
   expect(await deliverWebhook(gw, body)).toMatchObject({ status_code: 200 });
-  const queued = (await openErrorEntries(gw)).filter(
+  const queued = (await openOrphans(gw)).filter(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes('evt_nopi'),
   );
   expect(queued).toHaveLength(1);
@@ -1880,7 +1971,7 @@ test('44 — a verified event we cannot process is acked, not retried forever', 
 
   // Stripe retries the identical event; the obligation must not duplicate.
   expect(await deliverWebhook(gw, body)).toMatchObject({ status_code: 200 });
-  expect((await openErrorEntries(gw)).filter(
+  expect((await openOrphans(gw)).filter(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes('evt_nopi'),
   )).toHaveLength(1);
 
@@ -1962,9 +2053,9 @@ test('46 — a test-mode payment cannot deliver on a gateway declared live', asy
 
 test('47 — a delay alert never outlives the delay, even when the order escalates', async () => {
   // The invariant the code states for itself: an open worklist entry must
-  // describe a live problem. A #deliveryDelayed alert says "it delivers on the
+  // describe a live problem. The delay alert this scenario was written against said "it delivers on the
   // next sweep" — the moment the order escalates instead, that becomes a false
-  // promise sitting next to the real entry, plus a leaked delayedAlerts mapping
+  // promise sitting next to the real entry, plus a leaked mapping
   // that nothing can ever clear.
   //
   // Scenario 33 covers the happy exit (fixed → delivered → alert resolved). This
@@ -1988,13 +2079,13 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
     await gw.pic.tick(10);
     expect(await orderStatus(gw, doomed.id)).toBe('paid');
 
-    // Past the 2 h alert threshold: the delay alert opens.
+    // Past the 2 h alert threshold: the order appears in the delayed reading, and
+    // the crossing is stamped on the order.
     await gw.pic.advanceTime(3 * 3_600 * 1_000);
     await gw.pic.tick(5);
-    alert = (await openErrorEntries(gw)).find(
-      (e) => 'deliveryDelayed' in e.kind && e.kind.deliveryDelayed.orderId === doomed.id,
-    )!;
+    alert = (await gw.asAdmin.delayed_deliveries()).find((d) => d.orderId === doomed.id)!;
     expect(alert).toBeDefined();
+    expect(alert.delayedAtNs).toHaveLength(1);
   } finally {
     await startNns(gw, CYCLES_LEDGER_ID);
   }
@@ -2021,17 +2112,27 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
   // any delay has happened. The tag names what it reports: a delivery delay.
   expect((await gw.asAdmin.audit_log()).map((e) => e.tag)).toContain('delivery.delayed');
 
-  // THE ASSERTION: the delay alert is **resolved**, not merely absent — an entry that
-  // promised "it delivers on the next sweep" must not sit on the worklist next to the
-  // real problem, and its `delayedAlerts` mapping must not leak.
-  const after = (await allErrorEntries(gw)).find((e) => e.id === alert.id)!;
-  expect(after.resolvedAtNs).toHaveLength(1);
+  // ⚠️ **THE ASSERTION, and #37 turned it from a promise into a property.** It used
+  // to read "the delay entry is *resolved*, not merely absent" — because an entry
+  // promising "it delivers on the next sweep" must not sit beside the real problem,
+  // and its `delayedAlerts` mapping must not leak. Both failure modes are now
+  // unrepresentable: escalation moves the status off `#paid`, so the order leaves the
+  // reading by construction, and there is no mapping and no resolve step at all.
+  expect((await gw.asAdmin.delayed_deliveries()).filter((d) => d.orderId === doomed.id))
+    .toHaveLength(0);
   // And exactly one entry for this order remains open — the escalation itself.
-  const openForOrder = (await openErrorEntries(gw)).filter(
-    (e) => JSON.stringify(e.kind, bigIntReplacer).includes(doomed.id),
-  );
+  // ⚠️ **Exactly one open problem, and it is the escalation.** Under #37 this is a
+  // stronger statement than the queue version: the order's problems ARE the complete
+  // set for that order, where before it was a substring match over every entry's
+  // JSON — which would have matched an entry about a different order that happened to
+  // mention this id.
+  const openForOrder = unresolvedProblems(await orderProblems(gw, doomed.id));
   expect(openForOrder).toHaveLength(1);
-  expect(openForOrder[0]!.kind).toMatchObject({ deliveryStuck: { orderId: doomed.id } });
+  expect(openForOrder[0]!.kind).toMatchObject({ deliveryStuck: {} });
+  // And nothing was filed in the queue for it: the queue holds only order-less money.
+  expect((await openOrphans(gw)).some(
+    (e) => JSON.stringify(e.kind, bigIntReplacer).includes(doomed.id),
+  )).toBe(false);
   // ⚠️ ~80 h of clock advance stales both rates; see the README.
   await setCmcRate(gw);
   await ensureRates(gw);
@@ -2081,7 +2182,7 @@ test('49 — an out-of-order async settlement still delivers exactly once', asyn
     clientReferenceId: clientReferenceFor(created.order.id),
     amountCents: TIER_USD_CENTS,
   }))).toMatchObject({ status_code: 200 });
-  const spurious = (await openErrorEntries(gw)).filter(
+  const spurious = (await openOrphans(gw)).filter(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes('pi_oo'),
   );
   expect(spurious).toHaveLength(0);
@@ -2273,7 +2374,7 @@ test('59 — a Stripe resend past the dedup window does not file a second unproc
       },
     },
   });
-  const matching = async () => (await openErrorEntries(gw)).filter(
+  const matching = async () => (await openOrphans(gw)).filter(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes('evt_nopi_resend'),
   );
 
@@ -2293,7 +2394,7 @@ test('59 — a Stripe resend past the dedup window does not file a second unproc
   // Once an operator closes it, a genuine re-report is allowed through: resolved
   // history must not suppress a real event forever.
   const entry = (await matching())[0]!;
-  expectOk(await gw.asAdmin.resolve_error(entry.id));
+  expectOk(await gw.asAdmin.resolve_orphan(entry.id));
   await gw.pic.advanceTime(9 * 24 * 3_600 * 1_000);
   await gw.pic.tick(5);
   expect(await deliverWebhook(gw, body)).toMatchObject({ status_code: 200 });
@@ -2309,8 +2410,8 @@ test('59 — a Stripe resend past the dedup window does not file a second unproc
 //
 // There are no longer two stages to move between. Money-out runs from `#paid`
 // alone, so `mint.delayedStageChanged` was unreachable — and #30 PR-C **deleted it**,
-// along with the branch that raised it and the stage half of the `delayedAlerts`
-// pair, which existed only to detect a change that cannot happen. That
+// along with the branch that raised it and the stage half of the delay-alert
+// bookkeeping, which existed only to detect a change that cannot happen. That
 // is a simplification, not a coverage loss: the confusion the scenario guarded
 // against — two open alerts for one order, or wording describing a state the
 // order has left — cannot arise from one stage.
@@ -3027,7 +3128,7 @@ test('75 — a buyer can heal their OWN stuck delivery, and only their own (#30 
   }
 
   // ⚠️ **The admin can SEE it immediately, with no 2 h wait.** The error queue is the
-  // worklist and self-clears correctly, but `#deliveryDelayed` does not open until the
+  // worklist; `delayed_deliveries` does not list an order until the
   // alert threshold — and a delivery taking a sweep or two is normal, so lowering that
   // threshold would file entries for orders that deliver themselves. This is the
   // two-hour blind window closed.
@@ -3284,15 +3385,19 @@ test('80 — an issued intent escalates at the DEDUP window, not at the 72 h max
     // The stage IS the cause, and the runbook's triage table is keyed by it. A pass
     // here that read `deliveryWaitExceeded` would mean the max-hold bound fired 47 h
     // early; one that read `missingJournal` would mean the intent never got written.
-    const filed = (await openErrorEntries(gw)).find(
-      (e) => 'deliveryStuck' in e.kind && e.kind.deliveryStuck.orderId === stale.id,
-    );
+    const filed = unresolvedProblems(await orderProblems(gw, stale.id))
+      .find((p) => 'deliveryStuck' in p.kind);
     expect(filed).toBeDefined();
     expect((filed!.kind as { deliveryStuck: { stage: string } }).deliveryStuck.stage).toBe('staleIntent');
     // No block recorded, so the money position is genuinely unknown — the entry must
     // not claim otherwise.
-    expect((filed!.kind as { deliveryStuck: { blockIndex: [] | [bigint] } }).deliveryStuck.blockIndex)
-      .toHaveLength(0);
+    // ⚠️ **`blockIndex` moved to the journal (#37 §1b)**, which is where it always
+    // belonged — the problem carried a copy so an operator would not have to fetch
+    // the journal, and that copy was the duplication the move removes. Asserted at
+    // its real home, so the claim is about the authority rather than a mirror.
+    const journal = await gw.asAdmin.delivery_journal(stale.id);
+    expect(journal).toHaveLength(1);
+    expect(journal[0]!.blockIndex).toHaveLength(0);
   } finally {
     await startNns(gw, CYCLES_LEDGER_ID);
   }
