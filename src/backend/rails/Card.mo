@@ -488,12 +488,15 @@ module {
             switch (order.status) {
               case (#delivered) {
                 // The loss case: fiat returned, cycles irreversibly gone.
-                ignore ErrorQueue.add(
-                  deps.errorQueue,
-                  deps.errorQueueCapacity,
-                  order.rail,
+                // ⚠️ **A second partial refund REFRESHES this rather than filing
+                // again.** `refundedCents` is cumulative, so the figure an operator
+                // reconciles by is the latest one — `Problems.file` matches on
+                // `paymentRef` and updates the payload, which is why suppressing
+                // instead would have frozen the total at the first partial.
+                ignore Orders.fileProblem(
+                  deps.orders,
+                  orderId,
                   #refundAfterDelivery({
-                    orderId;
                     paymentRef = refund.paymentIntent;
                     cycles = order.lockedCycles;
                     refundedCents = refund.amountRefundedCents;

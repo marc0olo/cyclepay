@@ -24,7 +24,7 @@ func addUnattributed(store : ErrorQueue.Store, claimedRef : Text, paymentRef : T
 /// carries the same property that matters here: a `charge.refunded` must never close
 /// it, because the refund is what created it.
 func addStuck(store : ErrorQueue.Store, orderId : Text, nowNs : Int) : ErrorQueue.AddResult {
-  ErrorQueue.add(store, cap, #card, #refundAfterDelivery({ orderId; paymentRef = "pi_loss"; cycles = 1; refundedCents = 1; fullRefund = true }), "money moved both ways", nowNs);
+  ErrorQueue.add(store, cap, #card, #unprocessable({ eventId = "evt_" # orderId; field = "payment_intent" }), "a verified event we cannot parse", nowNs);
 };
 
 suite("kinds: what a refund can settle, and what it cannot", func() {
@@ -39,7 +39,7 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
     // property seen from two sides.
     assert ErrorQueue.paymentRefOf(#duplicate({ orderId = "o1"; paymentRef = "pi_1" })) == ?"pi_1";
     assert ErrorQueue.paymentRefOf(#unattributed({ claimedRef = "x"; paymentRef = "pi_2" })) == ?"pi_2";
-    assert ErrorQueue.paymentRefOf(#refundAfterDelivery({ orderId = "o3"; paymentRef = "pi_loss"; cycles = 1; refundedCents = 1; fullRefund = true })) == null;
+    assert ErrorQueue.paymentRefOf(#unprocessable({ eventId = "evt_1"; field = "payment_intent" })) == null;
   });
 
   test("⚠️ refundResolvable and paymentRefOf agree on EVERY kind", func() {
@@ -75,17 +75,15 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
       switch k {
         case (#duplicate(_)) "duplicate";
         case (#unattributed(_)) "unattributed";
-        case (#refundAfterDelivery(_)) "refundAfterDelivery";
         case (#unprocessable(_)) "unprocessable";
       };
     };
     let all : [ErrorQueue.Kind] = [
       #duplicate({ orderId = "o1"; paymentRef = "pi_1" }),
       #unattributed({ claimedRef = "x"; paymentRef = "pi_2" }),
-      #refundAfterDelivery({ orderId = "o4"; paymentRef = "pi_4"; cycles = 1; refundedCents = 1; fullRefund = true }),
       #unprocessable({ eventId = "evt_1"; field = "amount_total" }),
     ];
-    assert all.size() == 4;
+    assert all.size() == 3;
     var seen = "";
     for (kind in all.values()) {
       let carriesRef = ErrorQueue.paymentRefOf(kind) != null;
@@ -99,13 +97,13 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
   });
 
   test("an escalated delivery is never settled by a refund arriving", func() {
-    assert not ErrorQueue.refundResolvable(#refundAfterDelivery({ orderId = "o3"; paymentRef = "pi_l"; cycles = 1; refundedCents = 1; fullRefund = true }));
-    assert ErrorQueue.paymentRefOf(#refundAfterDelivery({ orderId = "o3"; paymentRef = "pi_l"; cycles = 1; refundedCents = 1; fullRefund = true })) == null;
+    assert not ErrorQueue.refundResolvable(#unprocessable({ eventId = "evt_2"; field = "amount_total" }));
+    assert ErrorQueue.paymentRefOf(#unprocessable({ eventId = "evt_2"; field = "amount_total" })) == null;
   });
 
   test("charge.refunded auto-resolve never touches an entry it did not settle", func() {
     let store = ErrorQueue.emptyStore();
-    ignore ErrorQueue.add(store, cap, #card, #refundAfterDelivery({ orderId = "o3"; paymentRef = "pi_x"; cycles = 1; refundedCents = 1; fullRefund = true }), "money moved both ways", 100);
+    ignore ErrorQueue.add(store, cap, #card, #unprocessable({ eventId = "evt_x"; field = "amount_total" }), "a verified event we cannot parse", 100);
     ignore addDuplicate(store, "o4", "pi_9", 200);
     let resolved = ErrorQueue.resolveByPaymentRef(store, "pi_9", 300);
     assert resolved.size() == 1;

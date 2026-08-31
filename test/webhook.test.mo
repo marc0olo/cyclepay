@@ -1,4 +1,5 @@
 import { test; suite } "mo:test";
+import Problems "../src/backend/Problems";
 import Array "mo:core/Array";
 import Map "mo:core/Map";
 import Nat "mo:core/Nat";
@@ -426,17 +427,52 @@ suite("charge.refunded: partial vs full", func() {
     };
 
     assert deliver(deps, partialRefundBody("evt_2", "pi_1", 125, 500)).status_code == 200;
-    let open = ErrorQueue.unresolved(deps.errorQueue);
-    assert open.size() == 1;
-    switch (open[0].kind) {
-      case (#refundAfterDelivery({ refundedCents; fullRefund; cycles; orderId = oid; paymentRef })) {
+    // ⚠️ **On the ORDER now (#37).** No `orderId` to assert — the order it hangs off
+    // supplies that structurally, which is why the kind stopped carrying a copy.
+    let order1 = switch (Orders.get(deps.orders, orderId)) {
+      case (?o) o;
+      case null Runtime.trap("order vanished");
+    };
+    assert order1.problems.size() == 1;
+    switch (order1.problems[0].kind) {
+      case (#refundAfterDelivery({ refundedCents; fullRefund; cycles; paymentRef })) {
         // A partial refund is a partial loss, and the operator reconciles by
         // amount — so the amount has to be on the record, not just the fact.
         assert refundedCents == 125;
         assert not fullRefund;
         assert cycles == lockedCycles;
-        assert oid == orderId;
         assert paymentRef == "pi_1";
+      };
+      case (_) Runtime.trap("expected #refundAfterDelivery");
+    };
+
+    // ⚠️ **A SECOND partial refreshes the total rather than filing again**, which is
+    // the half that makes the dedup safe: `refundedCents` is cumulative, so freezing
+    // it at 125 would leave an operator reconciling against the wrong figure.
+    assert deliver(deps, partialRefundBody("evt_3", "pi_1", 300, 500)).status_code == 200;
+    let order2 = switch (Orders.get(deps.orders, orderId)) {
+      case (?o) o;
+      case null Runtime.trap("order vanished");
+    };
+    assert order2.problems.size() == 1;
+    switch (order2.problems[0].kind) {
+      case (#refundAfterDelivery({ refundedCents; fullRefund })) {
+        assert refundedCents == 300;
+        assert not fullRefund;
+      };
+      case (_) Runtime.trap("expected #refundAfterDelivery");
+    };
+    // And the full refund that follows flips the flag on the same problem.
+    assert deliver(deps, partialRefundBody("evt_4", "pi_1", 500, 500)).status_code == 200;
+    let order3 = switch (Orders.get(deps.orders, orderId)) {
+      case (?o) o;
+      case null Runtime.trap("order vanished");
+    };
+    assert order3.problems.size() == 1;
+    switch (order3.problems[0].kind) {
+      case (#refundAfterDelivery({ refundedCents; fullRefund })) {
+        assert refundedCents == 500;
+        assert fullRefund;
       };
       case (_) Runtime.trap("expected #refundAfterDelivery");
     };
@@ -848,11 +884,15 @@ suite("handleWebhook: charge.refunded auto-resolve (§4.1)", func() {
 
     assert deliver(deps, refundBody("evt_2", "pi_1")).status_code == 200;
 
-    let open = ErrorQueue.unresolved(deps.errorQueue);
-    assert open.size() == 1;
-    switch (open[0].kind) {
-      case (#refundAfterDelivery({ orderId = queued; paymentRef; cycles })) {
-        assert queued == orderId;
+    // On the order now (#37); the queue keeps only order-less money.
+    assert ErrorQueue.unresolved(deps.errorQueue).size() == 0;
+    let filed = switch (Orders.get(deps.orders, orderId)) {
+      case (?o) o.problems;
+      case null Runtime.trap("order vanished");
+    };
+    assert filed.size() == 1;
+    switch (filed[0].kind) {
+      case (#refundAfterDelivery({ paymentRef; cycles })) {
         assert paymentRef == "pi_1";
         assert cycles == lockedCycles;
       };
@@ -864,12 +904,16 @@ suite("handleWebhook: charge.refunded auto-resolve (§4.1)", func() {
   });
 
   test("#refundAfterDelivery is never auto-resolved by the refund that made it", func() {
-    // The refund is what created the entry, so resolving on its paymentRef
-    // would close the loss the instant it was recorded. Only a human closes it.
-    assert ErrorQueue.paymentRefOf(#refundAfterDelivery({
-      orderId; paymentRef = "pi_1"; cycles = lockedCycles;
+    // The refund is what created the problem, so resolving on its paymentRef would
+    // close the loss the instant it was recorded. Only a human closes it.
+    assert Problems.paymentRefOf(#refundAfterDelivery({
+      paymentRef = "pi_1"; cycles = lockedCycles;
       refundedCents = 500; fullRefund = true;
     })) == null;
+    assert not Problems.refundResolvable(#refundAfterDelivery({
+      paymentRef = "pi_1"; cycles = lockedCycles;
+      refundedCents = 500; fullRefund = true;
+    }));
   });
 
   test("refund of a paid-but-undelivered order is audited, not queued as a loss", func() {

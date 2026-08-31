@@ -58,27 +58,6 @@ module {
     /// is an attacker-editable URL param), or it resolved to an order that is
     /// `#cancelled` or `#expired`, neither of which is payable.
     #unattributed : { claimedRef : Text; paymentRef : Text };
-    /// Not refund-resolvable — the money moved *both* ways. A
-    /// `charge.refunded` arrived for a payment that had already been delivered
-    /// as cycles, so the fiat went back to the payer and the cycles are
-    /// irreversibly gone to an arbitrary destination. **Not automatically
-    /// resolvable and not automatically preventable**: the canister cannot claw
-    /// cycles back, so this records a loss for the operator to reconcile rather
-    /// than starting a recovery flow.
-    ///
-    /// Chargeback *prevention* belongs in Stripe (Radar rules, 3DS) and in the
-    /// `Gate` per-purchase ceiling, not in Motoko.
-    #refundAfterDelivery : {
-      orderId : Types.OrderId;
-      paymentRef : Text;
-      cycles : Nat;
-      /// Cumulative cents returned to the payer. Sized, because a partial
-      /// refund is a partial loss and the operator reconciles against Stripe by
-      /// amount, not by the existence of an entry.
-      refundedCents : Nat;
-      /// Whether that settled the whole charge.
-      fullRefund : Bool;
-    };
     /// A **verified** Stripe event the canister cannot process — a required
     /// field is absent (e.g. a checkout session with no `payment_intent`, which
     /// a subscription-mode link or a 100%-off promo code produces).
@@ -107,7 +86,7 @@ module {
   public func refundResolvable(kind : Kind) : Bool {
     switch (kind) {
       case (#duplicate(_) or #unattributed(_)) true;
-      case (#refundAfterDelivery(_)) false;
+
       case (#unprocessable(_)) false;
       // ⚠️ **False even though a refund is a legal thing for the operator to do here.**
       // The question this answers is "does a `charge.refunded` settle this entry *on its
@@ -146,7 +125,7 @@ module {
       // from `resolveByPaymentRef`: the refund is what created the entry, so
       // auto-resolving on it would close the loss the instant it was recorded.
       // Only a human closes this one.
-      case (#refundAfterDelivery(_)) null;
+
       // Neither is settled by a refund landing: an abandonment was already a
       // conscious decision, and an unprocessable event has no established money
       // position to settle.

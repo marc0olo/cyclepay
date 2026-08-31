@@ -290,14 +290,6 @@ type Kind =
                 orderId: OrderId;
                 paymentRef: text;
               };
-   refundAfterDelivery:
-    record {
-      cycles: nat;
-      fullRefund: bool;
-      orderId: OrderId;
-      paymentRef: text;
-      refundedCents: nat;
-    };
    unattributed: record {
                    claimedRef: text;
                    paymentRef: text;

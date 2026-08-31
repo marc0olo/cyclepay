@@ -159,13 +159,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   });
   const Kind = IDL.Variant({
     duplicate: IDL.Record({ orderId: IDL.Text, paymentRef: IDL.Text }),
-    refundAfterDelivery: IDL.Record({
-      cycles: IDL.Nat,
-      orderId: IDL.Text,
-      paymentRef: IDL.Text,
-      refundedCents: IDL.Nat,
-      fullRefund: IDL.Bool,
-    }),
     unprocessable: IDL.Record({ eventId: IDL.Text, field: IDL.Text }),
     // #52: the buyer paid and we never credited them. Carries the intent id for the
     // operator, which `paymentRefOf` deliberately withholds so a refund cannot
