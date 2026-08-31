@@ -211,6 +211,126 @@ module {
     };
   };
 
+  /// Running tally of refusals, one counter per `Reason` (#61).
+  ///
+  /// ⚠️ **This replaces a per-attempt audit line, and it replaces it without
+  /// losing anything.** The line it replaces was
+  /// `audit("order.notAdmitted", reasonToText(reason))` — no principal, no
+  /// amount. It could not attribute abuse to anyone and never could; its whole
+  /// content was *"a refusal of this kind happened at time T"*. A counter keeps
+  /// the kind and the volume; `RailStateLatch` below keeps the timestamp anyone
+  /// actually wants.
+  ///
+  /// ⚠️ **Why a counter and not a log line at all: refusals are free to
+  /// attempt.** `#amountBelowMin` needs no prior state — `create_order` with one
+  /// cent from any fresh principal reaches it, with no order, no payment and no
+  /// setup. Principals are free and there is no rate limit by decision. While the
+  /// audit log was a 4,096-entry ring that was harmless churn; #37 removes the
+  /// ring, and an unbounded log fed by a free caller is permanent stable-state
+  /// growth at zero attacker cost. Every other structure here is attacker-priced
+  /// — orders by the open-order cap and the reserve, error-queue entries by
+  /// needing a real payment to exist. Audit lines were the exception.
+  ///
+  /// **A record rather than a map, so a new `Reason` cannot be silently
+  /// untallied**: `countRefusal` switches exhaustively, so adding a variant is a
+  /// compile error here rather than a counter that stays at zero in production.
+  public type RefusalCounts = {
+    amountAboveMax : Nat;
+    amountBelowMin : Nat;
+    tooManyOpenOrders : Nat;
+    canisterCyclesLow : Nat;
+    reserveShort : Nat;
+  };
+
+  public func noRefusals() : RefusalCounts {
+    ({
+      amountAboveMax = 0;
+      amountBelowMin = 0;
+      tooManyOpenOrders = 0;
+      canisterCyclesLow = 0;
+      reserveShort = 0;
+    });
+  };
+
+  public func countRefusal(counts : RefusalCounts, reason : Reason) : RefusalCounts {
+    switch (reason) {
+      case (#amountAboveMax(_)) ({ counts with amountAboveMax = counts.amountAboveMax + 1 });
+      case (#amountBelowMin(_)) ({ counts with amountBelowMin = counts.amountBelowMin + 1 });
+      case (#tooManyOpenOrders(_)) ({ counts with tooManyOpenOrders = counts.tooManyOpenOrders + 1 });
+      case (#canisterCyclesLow(_)) ({ counts with canisterCyclesLow = counts.canisterCyclesLow + 1 });
+      case (#reserveShort(_)) ({ counts with reserveShort = counts.reserveShort + 1 });
+    };
+  };
+
+  /// Does this refusal describe the **gateway's** state, or **one request's**?
+  ///
+  /// Only the two rail-state conditions get an audit line, and the split is the
+  /// whole point of #61: `#reserveShort` and `#canisterCyclesLow` are global facts
+  /// about this gateway, so *"it started refusing at T"* is a real event an
+  /// operator wants. The other three have **no meaningful transition** — nothing
+  /// about the gateway changed, one request was malformed (`#amountBelowMin`,
+  /// `#amountAboveMax`) or one principal used its own slot
+  /// (`#tooManyOpenOrders`).
+  public func isRailState(reason : Reason) : Bool {
+    switch (reason) {
+      case (#reserveShort(_) or #canisterCyclesLow(_)) true;
+      case (#amountAboveMax(_) or #amountBelowMin(_) or #tooManyOpenOrders(_)) false;
+    };
+  };
+
+  /// Which rail-state conditions are **currently** refusing, latched per
+  /// condition so that entering the state writes exactly one audit line.
+  ///
+  /// ⚠️ **Per condition, NOT one global "was admitting, now refusing" flag** —
+  /// that naive version reintroduces a smaller copy of the leak this exists to
+  /// close. A single flag is reset by *any* legitimate success, so the next
+  /// refusal announces again: bounded by real traffic rather than free, but
+  /// avoidable entirely by latching only the conditions that actually **have**
+  /// states.
+  public type RailStateLatch = {
+    reserveShort : Bool;
+    canisterCyclesLow : Bool;
+  };
+
+  public func admitting() : RailStateLatch {
+    ({ reserveShort = false; canisterCyclesLow = false });
+  };
+
+  /// Observe a refusal. `announce` is true only on the **transition into** a
+  /// rail-state condition — the caller writes its audit line exactly then.
+  public func latchRefusal(latch : RailStateLatch, reason : Reason) : {
+    latch : RailStateLatch;
+    announce : Bool;
+  } {
+    switch (reason) {
+      case (#reserveShort(_)) {
+        ({ latch = { latch with reserveShort = true }; announce = not latch.reserveShort });
+      };
+      case (#canisterCyclesLow(_)) {
+        ({ latch = { latch with canisterCyclesLow = true }; announce = not latch.canisterCyclesLow });
+      };
+      // Per-request and per-principal reasons never announce and never latch:
+      // they say nothing about whether the gateway is refusing.
+      case (#amountAboveMax(_) or #amountBelowMin(_) or #tooManyOpenOrders(_)) {
+        ({ latch; announce = false });
+      };
+    };
+  };
+
+  /// Observe a **successful** admission, which is the only thing that clears the
+  /// latches.
+  ///
+  /// ⚠️ **Only a full admission clears them, and that is deliberate.** `admit`
+  /// returns on the first failure, so a request refused for being below the
+  /// minimum never reaches the reserve check and tells us nothing about whether
+  /// the reserve recovered. Clearing on any refusal would drop the latch on
+  /// evidence that does not bear on it — and then re-announce on the next
+  /// genuine refusal. Reaching a full admission means neither condition fired,
+  /// which is exactly the evidence the latch needs.
+  public func latchAdmission(_latch : RailStateLatch) : RailStateLatch {
+    admitting();
+  };
+
   /// Everything the gate needs to decide, read by the caller immediately
   /// before the decision (all synchronous — no awaits, so no TOCTOU window
   /// between reading and deciding).
