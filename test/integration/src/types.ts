@@ -68,6 +68,9 @@ export interface Order {
   /// When it first crossed `alertAfterNs` while waiting to deliver, else null.
   /// The historical half of the dropped `#deliveryDelayed` entry (#37).
   delayedAtNs: Opt<bigint>;
+  /// Why an operator ended this order, set only on `#abandoned`. Replaces the
+  /// `#abandoned` queue entry, which was the fourth copy of one decision (#37).
+  abandonedReason: Opt<string>;
   paidUsdCents: Opt<bigint>;
   /// Null except on an `#expired` order with a known cause, and null for every
   /// sweep expiry — that mechanism has no tag because #33 deletes it (#34).
@@ -204,7 +207,7 @@ export type ErrorKind =
   | { refundAfterDelivery: { orderId: string; paymentRef: string; cycles: bigint; refundedCents: bigint; fullRefund: boolean } }
   | { unprocessable: { eventId: string; field: string } }
   | { paidNotCredited: { orderId: string; paymentRef: string; sessionId: string } }
-  | { abandoned: { orderId: string; reason: string } };
+
 
 export interface ErrorQueuePage {
   entries: ErrorEntry[];

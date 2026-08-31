@@ -259,6 +259,21 @@ module {
     /// `updatedAtNs` as the held-since clock, so touching it here would reset the
     /// very wait being recorded and the order could never reach `maxHoldNs`.
     delayedAtNs : ?Int;
+    /// Why an operator ended this order, set only on `#abandoned` (#37).
+    ///
+    /// ⚠️ **This replaces the `#abandoned` error-queue entry, which was the fourth
+    /// copy of one decision.** `abandon_order` already moves the status to
+    /// `#abandoned`, patches the journal to match, and writes an `order.abandoned`
+    /// audit line naming who decided and why. The queue entry added nothing an
+    /// operator had to act on: `refundResolvable` and `paymentRefOf` both said so —
+    /// *"an abandonment was already a conscious decision"*.
+    ///
+    /// ⚠️ **Review established that the refund is tracked elsewhere**, which is what
+    /// made the drop safe rather than lossy: a `charge.refunded` for the intent
+    /// reaches `rails/Card.mo`'s `#needsReview`/`#abandoned` arm and audits
+    /// `stripe.refundOfEscalated`, and RUNBOOK documents the procedure as
+    /// refund-then-abandon. The entry was never what tracked the money.
+    abandonedReason : ?Text;
   };
 
   /// Why an `#expired` order expired. Two producers, and they are the only two:

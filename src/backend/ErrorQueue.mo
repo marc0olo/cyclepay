@@ -113,9 +113,6 @@ module {
       /// Whether that settled the whole charge.
       fullRefund : Bool;
     };
-    /// A human decided to stop trying. The **only** path to a terminal
-    /// non-delivered state — nothing automatic ends here.
-    #abandoned : { orderId : Types.OrderId; reason : Text };
     /// A **verified** Stripe event the canister cannot process — a required
     /// field is absent (e.g. a checkout session with no `payment_intent`, which
     /// a subscription-mode link or a 100%-off promo code produces).
@@ -168,7 +165,7 @@ module {
     switch (kind) {
       case (#duplicate(_) or #unattributed(_)) true;
       case (#deliveryStuck(_) or #refundAfterDelivery(_)) false;
-      case (#abandoned(_) or #unprocessable(_)) false;
+      case (#unprocessable(_)) false;
       // ⚠️ **False even though a refund is a legal thing for the operator to do here.**
       // The question this answers is "does a `charge.refunded` settle this entry *on its
       // own*", and it does not: refunding returns the buyer's money and leaves the order
@@ -210,7 +207,7 @@ module {
       // Neither is settled by a refund landing: an abandonment was already a
       // conscious decision, and an unprocessable event has no established money
       // position to settle.
-      case (#abandoned(_) or #unprocessable(_)) null;
+      case (#unprocessable(_)) null;
       // Same reasoning as #deliveryStuck, and sharper: a refund arriving does not
       // tell us whether the cycles left the reserve, which is the only open
       // question. Auto-resolving on it would close an entry whose answer nobody

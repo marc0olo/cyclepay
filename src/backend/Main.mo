@@ -2821,11 +2821,17 @@ persistent actor CyclesGateway {
       };
     };
     if (reason.size() == 0) return #err("a reason is required — the audit trail must record why");
-    let ?abandoned = tryTransition(id, #abandoned) else {
-      return #err("order " # id # " refused the transition to abandoned");
+    // Status and reason in one step, so they cannot diverge — an `#abandoned` order
+    // with no explanation is the gap the dropped queue entry used to paper over.
+    let abandoned = switch (Orders.abandonWithReason(orderStore, id, reason, Time.now())) {
+      case (#ok(o)) o;
+      case (#err(_)) return #err("order " # id # " refused the transition to abandoned");
     };
     Delivery.patch(deliveryJournal, id, { status = ?#abandoned; blockIndex = null; cyclesDelivered = null; bumpRetries = false; lastError = null }, Time.now());
-    ignore queueDeliveryError(order.rail, #abandoned({ orderId = id; reason }), "abandoned by operator: " # reason);
+    // ⚠️ **No queue entry.** It was the fourth copy of one decision — the status, the
+    // journal patch and this audit line already carry it, and nothing about it was
+    // outstanding. Review established the refund is tracked separately, via
+    // `stripe.refundOfEscalated` on the `charge.refunded` for the intent.
     auditAdmin(caller, "order.abandoned", id # ": " # reason);
     #ok(abandoned);
   };

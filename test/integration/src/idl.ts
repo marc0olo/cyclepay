@@ -42,6 +42,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     xdrPermyriadPerIcp: IDL.Nat,
   });
   const Order = IDL.Record({
+    abandonedReason: IDL.Opt(IDL.Text),
     delayedAtNs: IDL.Opt(IDL.Int),
     createdAtNs: IDL.Int,
     paidUsdCents: IDL.Opt(IDL.Nat),
@@ -150,7 +151,6 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       refundedCents: IDL.Nat,
       fullRefund: IDL.Bool,
     }),
-    abandoned: IDL.Record({ orderId: IDL.Text, reason: IDL.Text }),
     unprocessable: IDL.Record({ eventId: IDL.Text, field: IDL.Text }),
     // #52: the buyer paid and we never credited them. Carries the intent id for the
     // operator, which `paymentRefOf` deliberately withholds so a refund cannot

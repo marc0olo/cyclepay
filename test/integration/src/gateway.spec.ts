@@ -1434,6 +1434,10 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
   // Park it in `#paid` with a real outage — a stopped cycles ledger is the only way to
   // hold an order undelivered, since delivery reads no rate and asks no other canister.
   // `#paid` is the state that matters here: money in, nothing delivered.
+  // Declared out here so the assertions after the `finally` can read it: the reason
+  // now lives on the ORDER (#37), and `abandon_order`'s return value is the only way
+  // an admin can see another principal's order until #38 lands its view.
+  let abandonedOrder: Order;
   await stopNns(gw, CYCLES_LEDGER_ID);
   try {
     expect(await deliverWebhook(gw, checkoutSessionBody({
@@ -1468,7 +1472,8 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
     await gw.pic.tick(5);
     expect(await tickUntilStatus(gw, doomed.id, ['needsReview'])).toBe('needsReview');
 
-    const abandoned = expectOk(await gw.asAdmin.abandon_order(doomed.id, 'buyer asked to cancel'));
+    abandonedOrder = expectOk(await gw.asAdmin.abandon_order(doomed.id, 'buyer asked to cancel'));
+    const abandoned = abandonedOrder;
     // `#abandoned`, the released half of the old `#errorQueue` (#34): the operator
     // ended it, so nothing is owed. ⚠️ #30 depends on this releasing the promise —
     // an abandoned order must not keep reserving cycles nobody will receive.
@@ -1477,13 +1482,19 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
     await startNns(gw, CYCLES_LEDGER_ID);
   }
 
-  const entry = (await openErrorEntries(gw)).find(
-    (e) => 'abandoned' in e.kind && e.kind.abandoned.orderId === doomed.id,
-  ) as ErrorEntry;
-  expect(entry).toBeDefined();
-  if ('abandoned' in entry.kind) {
-    expect(entry.kind.abandoned.reason).toBe('buyer asked to cancel');
-  }
+  // ⚠️ **Converted from a queue entry to the order's own field (#37).** The entry was
+  // the FOURTH copy of one decision — the status, the journal patch and the audit
+  // line below already carried it — and nothing about it was outstanding, which
+  // `refundResolvable = false` and `paymentRefOf = null` were already saying.
+  //
+  // Read off `abandon_order`'s own return value rather than a query: an admin
+  // abandoning another principal's order cannot use owner-scoped `get_order`, and
+  // #38's admin order view does not exist yet.
+  expect(abandonedOrder.abandonedReason).toEqual(['buyer asked to cancel']);
+  // No entry was filed for it, which is the point of the drop.
+  expect((await openErrorEntries(gw)).filter(
+    (e) => JSON.stringify(e.kind, bigIntReplacer).includes(doomed.id),
+  ).some((e) => 'abandoned' in e.kind)).toBe(false);
 
   // The audit trail names WHO decided, not just that it happened.
   const audit = await gw.asAdmin.audit_log();

@@ -320,6 +320,7 @@ module {
       stripeSessionId = null;
       stripeSessionUrl = null;
       delayedAtNs = null;
+      abandonedReason = null;
       createdAtNs = nowNs;
       updatedAtNs = nowNs;
     };
@@ -508,6 +509,28 @@ module {
   /// `Delivery.waitStage` reads; moving it here would reset the wait being recorded,
   /// and an order that keeps resetting its own clock can never reach `maxHoldNs` —
   /// it would be alerted about forever and escalated never.
+  /// Move an order to `#abandoned` AND record why, in one step.
+  ///
+  /// ⚠️ **One function, so the status and the reason cannot diverge.** They are two
+  /// halves of one operator decision; a caller that transitioned and then set the
+  /// reason separately could leave an `#abandoned` order with no explanation, which
+  /// is precisely the gap the dropped `#abandoned` queue entry used to paper over.
+  public func abandonWithReason(
+    store : Store,
+    id : Types.OrderId,
+    reason : Text,
+    nowNs : Int,
+  ) : Result.Result<Types.Order, TransitionError> {
+    switch (applyTransition(store, id, #abandoned, nowNs)) {
+      case (#err(e)) #err(e);
+      case (#ok(order)) {
+        let withReason = { order with abandonedReason = ?reason };
+        store.orders.add(id, withReason);
+        #ok(withReason);
+      };
+    };
+  };
+
   public func markDelayed(store : Store, id : Types.OrderId, nowNs : Int) : Bool {
     let ?order = store.orders.get(id) else return false;
     switch (order.delayedAtNs) {

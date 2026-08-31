@@ -238,6 +238,7 @@ type OrderStatus =
 type OrderId = text;
 type Order = 
  record {
+   abandonedReason: opt text;
    createdAtNs: int;
    delayedAtNs: opt int;
    destination: Destination;
@@ -256,10 +257,6 @@ type Order =
  };
 type Kind = 
  variant {
-   abandoned: record {
-                orderId: OrderId;
-                reason: text;
-              };
    deliveryStuck: record {
                     blockIndex: opt nat;
                     orderId: OrderId;
