@@ -20,12 +20,12 @@ import {
   checkoutSessionBody, chargeRefundedBody, deliverWebhook, stripeSignature,
   nowSeconds, setXrcRate, setXrcResponse, warmRates, ensureRates, tickRateTimer,
   orderStatus, statusKey, tickUntilStatus, expectOk, expectErr,
-  allErrorEntries, openErrorEntries,
+  allOrphans, openOrphans,
 
   orderProblems,
   unresolvedProblems,
 } from './harness';
-import type { Destination, ErrorEntry, Order } from './types';
+import type { Destination, OrphanEntry, Order } from './types';
 
 let gw: Gateway;
 
@@ -475,7 +475,7 @@ test('07 — the transfer memo is the ORDER id, so two identical orders both del
 
 test('08 — duplicate/replay: every dedup layer holds through real ingress (§4.1/§4.2)', async () => {
   const reserveBefore = await reserveBalance(gw);
-  const errorsBefore = (await allErrorEntries(gw)).length;
+  const errorsBefore = (await allOrphans(gw)).length;
 
   // Replay 1: identical event redelivered (Stripe retry) → ack-and-drop.
   const sameEvent = await deliverWebhook(gw, checkoutSessionBody({
@@ -494,7 +494,7 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   await gw.pic.tick(10);
   expect(await orderStatus(gw, orderA.id)).toBe('delivered');
   expect(await reserveBalance(gw)).toBe(reserveBefore);
-  expect((await allErrorEntries(gw)).length).toBe(errorsBefore);
+  expect((await allOrphans(gw)).length).toBe(errorsBefore);
 
   // Genuine double-pay: a *new* payment intent against the handled order →
   // #duplicate, acked 200 (the money is handled — by the operator).
@@ -549,14 +549,14 @@ test('09 — unattributed: claimed-not-trusted reference resolution (§6.1)', as
   }));
   expect(response.status_code).toBe(200);
 
-  const entry = (await allErrorEntries(gw)).find(
+  const entry = (await allOrphans(gw)).find(
     (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_u',
-  ) as ErrorEntry;
+  ) as OrphanEntry;
   expect(entry).toBeDefined();
 
   // Manual operator resolution (§4.1) — admin-gated.
-  await expect(gw.asUser.resolve_error(entry.id)).rejects.toThrow(/not a controller/);
-  const resolved = expectOk(await gw.asAdmin.resolve_error(entry.id));
+  await expect(gw.asUser.resolve_orphan(entry.id)).rejects.toThrow(/not a controller/);
+  const resolved = expectOk(await gw.asAdmin.resolve_orphan(entry.id));
   expect(resolved.resolvedAtNs.length).toBe(1);
 });
 
@@ -751,28 +751,28 @@ test('15 — operational trail is coherent end-to-end (§4.2)', async () => {
   expect(tags.filter((t) => t.startsWith('mint.'))).toEqual([]);
 
   // The server-side worklist, which is what an operator actually reads.
-  const open = await openErrorEntries(gw);
+  const open = await openOrphans(gw);
   // ⚠️ **Only fiat can be stranded, never cycles**, and this list is where that shows.
   // A failed delivery leaves the cycles in the reserve and the order retrying, so it
   // files no obligation at all. Everything open here is money we took and have not
-  // delivered against — which is what makes `error_queue_depth` a real alarm rather
+  // delivered against — which is what makes `orphan_depth` a real alarm rather
   // than a gauge that always reads non-zero.
   const kinds = open.map((e) => Object.keys(e.kind)[0]);
   // ⚠️ **`deliveryStuck` cannot appear here at all since #37** — it is an
   // order-bound problem, not a queue entry. The assertion is kept because what it
   // guards is unchanged: everything left in this queue is money we took and cannot
-  // attribute, which is what makes `error_queue_depth` a real alarm rather than a
+  // attribute, which is what makes `orphan_depth` a real alarm rather than a
   // gauge that always reads non-zero.
   expect(kinds).not.toContain('deliveryStuck');
   // Depth agrees with the paged content — the number ops monitors.
-  expect((await gw.asAnon.error_queue_depth()).unresolved).toBe(BigInt(open.length));
+  expect((await gw.asAnon.orphan_depth()).unresolved).toBe(BigInt(open.length));
 
   // Admin gates on the trail itself.
   await expect(gw.asUser.audit_log()).rejects.toThrow(/not a controller/);
-  await expect(gw.asUser.error_queue([], 10n)).rejects.toThrow(/not a controller/);
-  await expect(gw.asUser.error_queue_unresolved([], 10n)).rejects.toThrow(/not a controller/);
+  await expect(gw.asUser.orphans([], 10n)).rejects.toThrow(/not a controller/);
+  await expect(gw.asUser.orphans_unresolved([], 10n)).rejects.toThrow(/not a controller/);
   // Depth is public — it is the monitoring signal, not the payment references.
-  expect((await gw.asAnon.error_queue_depth()).retained).toBeGreaterThan(0n);
+  expect((await gw.asAnon.orphan_depth()).retained).toBeGreaterThan(0n);
 });
 
 test('16 — admission gate: the gas floor refuses the quote before any money moves', async () => {
@@ -905,7 +905,7 @@ test('18 — an expired order is never deleted, and a late payment is refunded n
   }))).toMatchObject({ status_code: 200 });
   await gw.pic.tick(5);
   expect(await orderStatus(gw, lapsed.id)).toBe('expired');
-  const obligation = (await openErrorEntries(gw)).find(
+  const obligation = (await openOrphans(gw)).find(
     (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_late',
   );
   expect(obligation).toBeDefined();
@@ -1520,7 +1520,7 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
   // #38's admin order view does not exist yet.
   expect(abandonedOrder.abandonedReason).toEqual(['buyer asked to cancel']);
   // No entry was filed for it, which is the point of the drop.
-  expect((await openErrorEntries(gw)).filter(
+  expect((await openOrphans(gw)).filter(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes(doomed.id),
   ).some((e) => 'abandoned' in e.kind)).toBe(false);
 
@@ -1676,7 +1676,7 @@ test('39 — a payment against a CANCELLED order is refunded, never a trap', asy
 
   expect(await orderStatus(gw, doomed.order.id)).toBe('cancelled');
   expect((await gw.asUser.get_order(doomed.order.id))[0]!.paidUsdCents).toHaveLength(0);
-  const filed = (await openErrorEntries(gw)).find(
+  const filed = (await openOrphans(gw)).find(
     (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_pay_cancelled',
   );
   expect(filed).toBeDefined();
@@ -1847,7 +1847,7 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
   }))).toMatchObject({ status_code: 200 });
   await gw.pic.tick(5);
   expect(await orderStatus(gw, mine.order.id)).toBe('cancelled');
-  const raced = (await openErrorEntries(gw)).find(
+  const raced = (await openOrphans(gw)).find(
     (e) => 'unattributed' in e.kind && e.kind.unattributed.paymentRef === 'pi_cancel_race',
   );
   expect(raced).toBeDefined();
@@ -1876,7 +1876,7 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
   // is exactly the orphan the queue must not accumulate, so the count matters —
   // asserting "none" would now be wrong, and asserting "some" would hide a
   // spurious second one.
-  const againstMine = (await openErrorEntries(gw)).filter(
+  const againstMine = (await openOrphans(gw)).filter(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes(mine.order.id),
   );
   expect(againstMine).toHaveLength(1);
@@ -1897,7 +1897,7 @@ test('43 — a partial refund never settles a full obligation', async () => {
     clientReferenceId: 'not-a-real-reference',
     amountCents: TIER_USD_CENTS,
   }))).toMatchObject({ status_code: 200 });
-  const entry = (await openErrorEntries(gw)).find(
+  const entry = (await openOrphans(gw)).find(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes('pi_partial'),
   )!;
   expect(entry).toBeDefined();
@@ -1906,7 +1906,7 @@ test('43 — a partial refund never settles a full obligation', async () => {
   expect(await deliverWebhook(
     gw, partialRefundBody('evt_partial_1', 'pi_partial', 100n, TIER_USD_CENTS),
   )).toMatchObject({ status_code: 200 });
-  const stillOpen = (await allErrorEntries(gw)).find((e) => e.id === entry.id)!;
+  const stillOpen = (await allOrphans(gw)).find((e) => e.id === entry.id)!;
   expect(stillOpen.resolvedAtNs).toHaveLength(0);
 
   // Completing the refund settles it — the auto-resolve still works, it is just
@@ -1914,7 +1914,7 @@ test('43 — a partial refund never settles a full obligation', async () => {
   expect(await deliverWebhook(
     gw, partialRefundBody('evt_partial_2', 'pi_partial', TIER_USD_CENTS, TIER_USD_CENTS),
   )).toMatchObject({ status_code: 200 });
-  const settled = (await allErrorEntries(gw)).find((e) => e.id === entry.id)!;
+  const settled = (await allOrphans(gw)).find((e) => e.id === entry.id)!;
   expect(settled.resolvedAtNs).toHaveLength(1);
 });
 
@@ -1939,7 +1939,7 @@ test('44 — a verified event we cannot process is acked, not retried forever', 
     },
   });
   expect(await deliverWebhook(gw, body)).toMatchObject({ status_code: 200 });
-  const queued = (await openErrorEntries(gw)).filter(
+  const queued = (await openOrphans(gw)).filter(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes('evt_nopi'),
   );
   expect(queued).toHaveLength(1);
@@ -1947,7 +1947,7 @@ test('44 — a verified event we cannot process is acked, not retried forever', 
 
   // Stripe retries the identical event; the obligation must not duplicate.
   expect(await deliverWebhook(gw, body)).toMatchObject({ status_code: 200 });
-  expect((await openErrorEntries(gw)).filter(
+  expect((await openOrphans(gw)).filter(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes('evt_nopi'),
   )).toHaveLength(1);
 
@@ -2106,7 +2106,7 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
   expect(openForOrder).toHaveLength(1);
   expect(openForOrder[0]!.kind).toMatchObject({ deliveryStuck: {} });
   // And nothing was filed in the queue for it: the queue holds only order-less money.
-  expect((await openErrorEntries(gw)).some(
+  expect((await openOrphans(gw)).some(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes(doomed.id),
   )).toBe(false);
   // ⚠️ ~80 h of clock advance stales both rates; see the README.
@@ -2158,7 +2158,7 @@ test('49 — an out-of-order async settlement still delivers exactly once', asyn
     clientReferenceId: clientReferenceFor(created.order.id),
     amountCents: TIER_USD_CENTS,
   }))).toMatchObject({ status_code: 200 });
-  const spurious = (await openErrorEntries(gw)).filter(
+  const spurious = (await openOrphans(gw)).filter(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes('pi_oo'),
   );
   expect(spurious).toHaveLength(0);
@@ -2350,7 +2350,7 @@ test('59 — a Stripe resend past the dedup window does not file a second unproc
       },
     },
   });
-  const matching = async () => (await openErrorEntries(gw)).filter(
+  const matching = async () => (await openOrphans(gw)).filter(
     (e) => JSON.stringify(e.kind, bigIntReplacer).includes('evt_nopi_resend'),
   );
 
@@ -2370,7 +2370,7 @@ test('59 — a Stripe resend past the dedup window does not file a second unproc
   // Once an operator closes it, a genuine re-report is allowed through: resolved
   // history must not suppress a real event forever.
   const entry = (await matching())[0]!;
-  expectOk(await gw.asAdmin.resolve_error(entry.id));
+  expectOk(await gw.asAdmin.resolve_orphan(entry.id));
   await gw.pic.advanceTime(9 * 24 * 3_600 * 1_000);
   await gw.pic.tick(5);
   expect(await deliverWebhook(gw, body)).toMatchObject({ status_code: 200 });

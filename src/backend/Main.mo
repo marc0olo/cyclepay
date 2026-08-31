@@ -2,7 +2,7 @@
 ///
 /// See design-docs/ONCHAIN_GATEWAY_SPEC.md (spec v2.1) and PRD.md for the
 /// module layout this actor grows into: Orders.mo wiring, rails/, Delivery.mo,
-/// Pricing.mo, Delivery.mo, ErrorQueue.mo, Auth.mo.
+/// Pricing.mo, Delivery.mo, Orphans.mo, Auth.mo.
 import Array "mo:core/Array";
 import Problems "Problems";
 import Cycles "mo:core/Cycles";
@@ -26,7 +26,7 @@ import AuditLog "AuditLog";
 import Auth "Auth";
 import Cmc "Cmc";
 import Delivery "Delivery";
-import ErrorQueue "ErrorQueue";
+import Orphans "Orphans";
 import Pricing "Pricing";
 import Xrc "Xrc";
 import Gate "Gate";
@@ -1351,9 +1351,9 @@ persistent actor CyclesGateway {
   let dedup : Idempotency.Store = Idempotency.emptyStore();
 
   /// §4.1 bounded error queue: every dollar that arrives resolves to a delivery or to
-  /// an obligation here, and `ErrorQueue.refundResolvable` says which of the two
+  /// an obligation here, and `Orphans.refundResolvable` says which of the two
   /// remedies an entry takes — a Stripe refund, or a human establishing the position.
-  let errorQueue : ErrorQueue.Store = ErrorQueue.emptyStore();
+  let orphanStore : Orphans.Store = Orphans.emptyStore();
 
   /// §4.2 bounded audit-log ring buffer — operational trail, not a
   /// financial record (orders/error queue are the records of money).
@@ -1459,7 +1459,7 @@ persistent actor CyclesGateway {
 
   /// Bounds are operator headroom knobs, not financial records — transient
   /// so a redeploy can retune them (same reasoning as maxRequestBodyBytes).
-  transient let errorQueueCapacity : Nat = 1_000;
+  transient let orphanCapacity : Nat = 1_000;
   transient let auditLogCapacity : Nat = 4_096;
 
   /// Built per request rather than held in a transient field: it carries
@@ -1469,8 +1469,8 @@ persistent actor CyclesGateway {
     {
       orders = orderStore;
       dedup;
-      errorQueue;
-      errorQueueCapacity;
+      orphanStore;
+      orphanCapacity;
       expectLivemode;
       auditLog;
       auditLogCapacity;
@@ -1509,7 +1509,7 @@ persistent actor CyclesGateway {
   /// daily reconcile audits `orders.problemIndexDrift` if the projection ever
   /// disagrees with the orders.
   ///
-  /// ⚠️ **Not the whole picture on its own.** `error_queue_unresolved` holds the two
+  /// ⚠️ **Not the whole picture on its own.** `orphans_unresolved` holds the two
   /// order-less kinds, which by definition cannot appear here: a payment we cannot
   /// attribute has no order to hang off. An operator watching only one of the two
   /// numbers is watching half the obligations.
@@ -1536,10 +1536,10 @@ persistent actor CyclesGateway {
     { counts = refusalCounts; refusingNow = railStateLatch };
   };
 
-  public query func error_queue_depth() : async { unresolved : Nat; retained : Nat } {
+  public query func orphan_depth() : async { unresolved : Nat; retained : Nat } {
     {
-      unresolved = ErrorQueue.unresolvedCount(errorQueue);
-      retained = ErrorQueue.size(errorQueue);
+      unresolved = Orphans.unresolvedCount(orphanStore);
+      retained = Orphans.size(orphanStore);
     };
   };
 
@@ -1550,24 +1550,24 @@ persistent actor CyclesGateway {
   /// grow — and an unpaginated read would eventually exceed Candid's 2 MB
   /// message limit, i.e. the record would become unreadable exactly when it
   /// mattered most. Pass `null` to start; feed `nextCursor` back until it is
-  /// null. `limit` is capped at `ErrorQueue.maxPageSize`.
-  public shared query ({ caller }) func error_queue(
+  /// null. `limit` is capped at `Orphans.maxPageSize`.
+  public shared query ({ caller }) func orphans(
     afterId : ?Nat,
     limit : Nat,
-  ) : async ErrorQueue.Page {
+  ) : async Orphans.Page {
     requireAdmin(caller);
-    ErrorQueue.page(errorQueue, afterId, limit);
+    Orphans.page(orphanStore, afterId, limit);
   };
 
   /// The operator worklist: open obligations only, paged. Filtered server-side
   /// so a large body of resolved history never stands between the operator and
   /// the dollars that still need an answer.
-  public shared query ({ caller }) func error_queue_unresolved(
+  public shared query ({ caller }) func orphans_unresolved(
     afterId : ?Nat,
     limit : Nat,
-  ) : async ErrorQueue.Page {
+  ) : async Orphans.Page {
     requireAdmin(caller);
-    ErrorQueue.unresolvedPage(errorQueue, afterId, limit);
+    Orphans.unresolvedPage(orphanStore, afterId, limit);
   };
 
   /// Manual resolution (§4.1/§7) — the operator marking an obligation settled after
@@ -1578,10 +1578,10 @@ persistent actor CyclesGateway {
   /// `charge.refunded` auto-resolves the refund-resolvable kinds, so those usually
   /// close themselves; `#deliveryStuck`, `#refundAfterDelivery` and `#abandoned` carry
   /// no `paymentRef` and can only be closed here. Resolving an entry never transitions
-  /// the order — see `ErrorQueue`'s header.
+  /// the order — see `Orphans`'s header.
   /// Close an order-bound problem an operator has dealt with (#37).
   ///
-  /// ⚠️ **The order-shaped counterpart to `resolve_error`**, which addresses entries by
+  /// ⚠️ **The order-shaped counterpart to `resolve_orphan`**, which addresses entries by
   /// a queue id that no longer exists for the kinds that moved. `kindTag` is matched
   /// against `Problems.kindToText`, so a typo closes nothing rather than the wrong
   /// thing — and every unresolved problem of that kind on that order closes together,
@@ -1607,11 +1607,11 @@ persistent actor CyclesGateway {
     #ok(closed);
   };
 
-  public shared ({ caller }) func resolve_error(id : Nat) : async Result.Result<ErrorQueue.Entry, ErrorQueue.ResolveError> {
+  public shared ({ caller }) func resolve_orphan(id : Nat) : async Result.Result<Orphans.Entry, Orphans.ResolveError> {
     requireAdmin(caller);
-    let resolved = ErrorQueue.resolve(errorQueue, id, Time.now());
+    let resolved = Orphans.resolve(orphanStore, id, Time.now());
     switch (resolved) {
-      case (#ok(entry)) auditAdmin(caller, "errorQueue.resolved", "entry " # id.toText() # ": " # entry.detail);
+      case (#ok(entry)) auditAdmin(caller, "orphanStore.resolved", "entry " # id.toText() # ": " # entry.detail);
       case (#err(_)) {};
     };
     resolved;
@@ -2824,7 +2824,7 @@ persistent actor CyclesGateway {
     let ?order = Orders.get(orderStore, id) else return #err("no order " # id);
     switch (order.status) {
       // `#needsReview` is newly accepted here, and it is the point of splitting
-      // `#errorQueue`: an escalated order could not previously be abandoned,
+      // `#orphanStore`: an escalated order could not previously be abandoned,
       // because one status meant both "promise held" and "promise released" and
       // the transition was to itself (#34).
       case (#paid or #needsReview) {};

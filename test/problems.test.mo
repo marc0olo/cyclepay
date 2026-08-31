@@ -14,7 +14,7 @@ let uncredited : Types.ProblemKind = #paidNotCredited({ paymentRef = "pi_unc"; s
 
 suite("resolution semantics", func() {
   test("refundResolvable and paymentRefOf agree on every kind", func() {
-    // ⚠️ **The invariant with two sides**, carried over from `ErrorQueue`: a refund
+    // ⚠️ **The invariant with two sides**, shared with `Orphans`: a refund
     // can settle a problem exactly when `paymentRefOf` gives the closer something to
     // match on. If these ever disagree, either a refund closes a problem it cannot
     // settle, or a settleable one is never closed.

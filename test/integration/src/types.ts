@@ -111,7 +111,7 @@ export type GateReason =
 
 /// One counter per `GateReason` (#61), replacing the per-attempt audit line.
 /// An order-bound problem (#37). Every arm had an `orderId` in the old
-/// `ErrorQueue.Kind`; the order it hangs off supplies that now.
+/// the queue that is now `Orphans`; the order it hangs off supplies that now.
 export type ProblemKind =
   | { duplicate: { paymentRef: string } }
   | { deliveryStuck: { stage: string } }
@@ -223,12 +223,12 @@ export type ErrorKind =
   | { unprocessable: { eventId: string; field: string } }
 
 
-export interface ErrorQueuePage {
-  entries: ErrorEntry[];
+export interface OrphanPage {
+  entries: OrphanEntry[];
   nextCursor: Opt<bigint>;
 }
 
-export interface ErrorEntry {
+export interface OrphanEntry {
   id: bigint;
   rail: Partial<Record<'card', null>>;
   kind: ErrorKind;
@@ -293,9 +293,9 @@ export interface BackendService {
   set_expected_livemode(expected: [] | [boolean]): Promise<void>;
   expected_livemode(): Promise<[] | [boolean]>;
   can_purchase(usdCents: bigint): Promise<Result<null, GateReason>>;
-  error_queue(afterId: Opt<bigint>, limit: bigint): Promise<ErrorQueuePage>;
-  error_queue_unresolved(afterId: Opt<bigint>, limit: bigint): Promise<ErrorQueuePage>;
-  error_queue_depth(): Promise<{ unresolved: bigint; retained: bigint }>;
+  orphans(afterId: Opt<bigint>, limit: bigint): Promise<OrphanPage>;
+  orphans_unresolved(afterId: Opt<bigint>, limit: bigint): Promise<OrphanPage>;
+  orphan_depth(): Promise<{ unresolved: bigint; retained: bigint }>;
   refusal_counts(): Promise<{ counts: RefusalCounts; refusingNow: RailStateLatch }>;
   /// The worklist, as a filter over orders (#37). `unresolved` is NOT orders.length —
   /// one order can carry several problems.
@@ -370,7 +370,7 @@ export interface BackendService {
   /// ⚠️ Required after funding the reserve: the gate decides against a maintained
   /// lower bound that only rises by observation, so an unobserved top-up sells nothing.
   refresh_reserve(): Promise<bigint>;
-  resolve_error(id: bigint): Promise<Result<ErrorEntry, { notFound: bigint } | { alreadyResolved: bigint }>>;
+  resolve_orphan(id: bigint): Promise<Result<OrphanEntry, { notFound: bigint } | { alreadyResolved: bigint }>>;
   set_card_tiers(tiers: Tier[]): Promise<Result<null, unknown>>;
   set_recovery_interval(intervalNs: bigint): Promise<Result<null, unknown>>;
   set_delivery_config(config: DeliveryConfig): Promise<Result<null, DeliveryConfigError>>;

@@ -254,7 +254,7 @@ cat <<'NOTES'
 
   Inspect what happened:
       icp canister call backend audit_log '()'
-      icp canister call backend error_queue_unresolved '(null, 50)'
+      icp canister call backend orphans_unresolved '(null, 50)'
       icp canister call backend order_for_payment '("pi_...")'
 
 Two things to expect locally:

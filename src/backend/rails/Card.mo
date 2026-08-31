@@ -27,7 +27,7 @@ import Result "mo:core/Result";
 import Runtime "mo:core/Runtime";
 import Text "mo:core/Text";
 import AuditLog "../AuditLog";
-import ErrorQueue "../ErrorQueue";
+import Orphans "../Orphans";
 import Hmac "../Hmac";
 import Http "../Http";
 import Idempotency "../Idempotency";
@@ -323,8 +323,8 @@ module {
   public type Deps = {
     orders : Orders.Store;
     dedup : Idempotency.Store;
-    errorQueue : ErrorQueue.Store;
-    errorQueueCapacity : Nat;
+    orphanStore : Orphans.Store;
+    orphanCapacity : Nat;
     /// Operator's declared Stripe mode; null = unset, which accepts either and
     /// says so in the audit trail. The go-live checklist sets it.
     expectLivemode : ?Bool;
@@ -414,13 +414,13 @@ module {
   /// refunds in the Stripe Dashboard). Always 200: the payment is handled,
   /// just not by delivery; a non-2xx would make Stripe redeliver an event
   /// we have already routed.
-  func queueRefundable(deps : Deps, kind : ErrorQueue.Kind, detail : Text, nowNs : Int) : Http.Response {
-    let result = ErrorQueue.add(deps.errorQueue, deps.errorQueueCapacity, #card, kind, detail, nowNs);
+  func queueRefundable(deps : Deps, kind : Orphans.Kind, detail : Text, nowNs : Int) : Http.Response {
+    let result = Orphans.add(deps.orphanStore, deps.orphanCapacity, #card, kind, detail, nowNs);
     for (victim in result.evicted.values()) {
       if (victim.resolvedAtNs == null) {
         // §4.1: an unresolved eviction is a live money obligation dropped
         // from on-chain state — the one thing the audit trail must show.
-        audit(deps, nowNs, "errorQueue.evictedUnresolved", "entry " # victim.id.toText() # ": " # victim.detail);
+        audit(deps, nowNs, "orphanStore.evictedUnresolved", "entry " # victim.id.toText() # ": " # victim.detail);
       };
     };
     audit(deps, nowNs, "stripe.type1", "entry " # result.entry.id.toText() # ": " # detail);
@@ -496,7 +496,7 @@ module {
     // remainder owed, so auto-resolving on it would erase the record of what is
     // still outstanding — the entry stays open and the operator decides.
     if (not full) {
-      let open = ErrorQueue.unresolvedByPaymentRef(deps.errorQueue, refund.paymentIntent);
+      let open = Orphans.unresolvedByPaymentRef(deps.orphanStore, refund.paymentIntent);
       for (entry in open.values()) {
         audit(
           deps,
@@ -522,7 +522,7 @@ module {
       // ⚠️ **Two stores to close against since #37**, and forgetting either is a
       // silent failure: an obligation left open after the refund that settles it is
       // exactly the false worklist entry the queue's own rule forbids.
-      let resolved = ErrorQueue.resolveByPaymentRef(deps.errorQueue, refund.paymentIntent, nowNs);
+      let resolved = Orphans.resolveByPaymentRef(deps.orphanStore, refund.paymentIntent, nowNs);
       for (entry in resolved.values()) {
         audit(deps, nowNs, "stripe.refundResolved", "entry " # entry.id.toText() # " auto-resolved by full refund of " # refund.paymentIntent # " (" # amounts # ")");
       };
@@ -683,16 +683,16 @@ module {
         // test-configured gateway is an obligation. The reverse is a test event
         // and owes nobody anything.
         if (session.livemode) {
-          ignore ErrorQueue.add(
-            deps.errorQueue,
-            deps.errorQueueCapacity,
+          ignore Orphans.add(
+            deps.orphanStore,
+            deps.orphanCapacity,
             #card,
             // The real reference, not a placeholder: it is the only field that
             // identifies WHICH order to rescue once the config is fixed, and
             // discarding it would turn a recoverable misconfiguration into a
             // manual hunt through the Stripe Dashboard.
             #unattributed({
-              claimedRef = ErrorQueue.truncateClaimedRef(
+              claimedRef = Orphans.truncateClaimedRef(
                 switch (session.clientReferenceId) { case (?r) r; case null "(no client_reference_id)" }
               );
               paymentRef = session.paymentIntent;
@@ -739,7 +739,7 @@ module {
     };
     // ── Attribution (§4.1: claimed, not trusted). Failures are refund-resolvable
     // #unattributed: fiat arrived, nothing will be delivered.
-    let claimedRef = ErrorQueue.truncateClaimedRef(
+    let claimedRef = Orphans.truncateClaimedRef(
       switch (session.clientReferenceId) { case (?r) r; case (null) "" }
     );
     func unattributed(detail : Text) : Outcome {
@@ -1014,16 +1014,16 @@ module {
         // Past the ~7-day dedup retention the check above no longer recognises a
         // resend, so the worklist itself is the second line of defence: one
         // unreadable event must not become two items to reconcile.
-        switch (ErrorQueue.unresolvedUnprocessable(deps.errorQueue, id)) {
+        switch (Orphans.unresolvedUnprocessable(deps.orphanStore, id)) {
           case (?_) {
             audit(deps, nowNs, "stripe.unprocessableResend", id # " already on the worklist");
             return ack(Http.text(200, "already queued"));
           };
           case null {};
         };
-        ignore ErrorQueue.add(
-          deps.errorQueue,
-          deps.errorQueueCapacity,
+        ignore Orphans.add(
+          deps.orphanStore,
+          deps.orphanCapacity,
           #card,
           #unprocessable({ eventId = id; field }),
           detail,

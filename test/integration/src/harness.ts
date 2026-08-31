@@ -28,7 +28,7 @@ import {
   icrc1IdlFactory, xrcMockIdlFactory,
 } from './idl';
 import type {
-  BackendService, CmcService, ErrorEntry,
+  BackendService, CmcService, OrphanEntry,
   Destination, HttpResponse, Icrc1Service, Order, OrderStatusKey, Result, StatusVariant,
   CreatedOrder, CreateOrderError, Amount, Problem,
 } from './types';
@@ -565,11 +565,11 @@ export async function deliverWebhook(
 /// The canister query is paged (unresolved obligations are never evicted, so the
 /// queue can outgrow a 2 MB Candid response). Scenarios assert over the full set,
 /// so the paging lives here rather than in every test.
-export async function allErrorEntries(gw: Gateway): Promise<ErrorEntry[]> {
-  const all: ErrorEntry[] = [];
+export async function allOrphans(gw: Gateway): Promise<OrphanEntry[]> {
+  const all: OrphanEntry[] = [];
   let cursor: [] | [bigint] = [];
   for (;;) {
-    const page = await gw.asAdmin.error_queue(cursor, 200n);
+    const page = await gw.asAdmin.orphans(cursor, 200n);
     all.push(...page.entries);
     if (page.nextCursor.length === 0) return all;
     cursor = page.nextCursor;
@@ -577,11 +577,11 @@ export async function allErrorEntries(gw: Gateway): Promise<ErrorEntry[]> {
 }
 
 /// The operator worklist — open obligations only, paged server-side.
-export async function openErrorEntries(gw: Gateway): Promise<ErrorEntry[]> {
-  const open: ErrorEntry[] = [];
+export async function openOrphans(gw: Gateway): Promise<OrphanEntry[]> {
+  const open: OrphanEntry[] = [];
   let cursor: [] | [bigint] = [];
   for (;;) {
-    const page = await gw.asAdmin.error_queue_unresolved(cursor, 200n);
+    const page = await gw.asAdmin.orphans_unresolved(cursor, 200n);
     open.push(...page.entries);
     if (page.nextCursor.length === 0) return open;
     cursor = page.nextCursor;

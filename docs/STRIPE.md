@@ -230,7 +230,7 @@ the operator's refund queue rather than by delivery — and a non-2xx would make
 Stripe redeliver an event that has already been routed (`Card.mo`).
 
 The stored `claimedRef` is length-capped at 128 bytes
-(`ErrorQueue.maxClaimedRefBytes`) so an attacker cannot stuff arbitrary data
+(`Orphans.maxClaimedRefBytes`) so an attacker cannot stuff arbitrary data
 into admin-visible stable state one webhook at a time.
 
 ## 7. Dedup: two layers, and what they do not protect against
@@ -617,7 +617,7 @@ if you see one, treat it as a bug to find rather than a queue to work.
      refund payments that never queued.
 
 `#refundAfterDelivery` deliberately does **not** expose a `paymentRef` to
-`resolveByPaymentRef` (`ErrorQueue.paymentRefOf`), because the refund is what
+`resolveByPaymentRef` (`Orphans.paymentRefOf`), because the refund is what
 created the entry — auto-resolving on it would close the loss the instant it was
 recorded. Only a human closes that one.
 
@@ -783,7 +783,7 @@ privileges — any controller can do any of this):
 | `set_pricing_config` | fee formula, staleness window (capped at 1 h), delta bound, minimum rate sources |
 | `refresh_rates` | force a rate tick now instead of waiting for the timer |
 | `set_delivery_config` | the two delivery time bounds: alert-after (2 h) and max hold (72 h) |
-| `error_queue` / `resolve_error` | the operator worklist |
+| `orphans` / `resolve_orphan` | the operator worklist |
 | `order_for_payment` | reconciliation: Stripe charge → order it funded |
 | `delivery_journal` | money-out record for one order |
 | `audit_log` | operational trail; gaps in `seq` mean ring-buffer drops |
@@ -803,7 +803,7 @@ canister. `record_delivered` records a *fact about the ledger*, it does not send
 
 Public queries (transparency is the product thesis): `card_tiers`,
 `pricing_status`, `quote_previews`, `recovery_status`, `lifecycle_config`,
-`reserve_status`, `can_purchase`, `cycles_status`, `error_queue_depth`,
+`reserve_status`, `can_purchase`, `cycles_status`, `orphan_depth`,
 `stripe_origin`, `expected_livemode`, `health`.
 
 **Owner-scoped, not admin-scoped:** `get_order`, `list_orders`, `cancel_order`,

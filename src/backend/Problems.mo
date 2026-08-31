@@ -2,7 +2,7 @@ import Array "mo:core/Array";
 import Types "Types";
 
 /// Problems that belong to an order, and the resolution semantics that came with
-/// them from `ErrorQueue` (#37).
+/// them from the queue that is now `Orphans` (#37).
 ///
 /// **Problems that belong to an order live on the order. Nothing drops.** Four of
 /// the queue's six remaining kinds have an `orderId`, so "which order is this
@@ -13,7 +13,7 @@ import Types "Types";
 ///
 /// ## What a problem may be
 ///
-/// ⚠️ **The admission rule, carried over from `ErrorQueue.mo` because it is the
+/// ⚠️ **The admission rule, shared with `Orphans.mo` because it is the
 /// queue's definition restated:**
 ///
 /// > A problem earns its place only if it holds **information that exists nowhere

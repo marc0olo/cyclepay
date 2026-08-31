@@ -448,7 +448,7 @@ type Account =
 /// 
 /// See design-docs/ONCHAIN_GATEWAY_SPEC.md (spec v2.1) and PRD.md for the
 /// module layout this actor grows into: Orders.mo wiring, rails/, Delivery.mo,
-/// Pricing.mo, Delivery.mo, ErrorQueue.mo, Auth.mo.
+/// Pricing.mo, Delivery.mo, Orphans.mo, Auth.mo.
 service : {
   /// Stop trying to deliver an order (admin, §7) — **the only path to a
   /// terminal non-delivered state.**
@@ -580,23 +580,6 @@ service : {
   /// Money-out journal for one order (admin, §4.2) — intent, block_index, cycles
   /// delivered, retries.
   delivery_journal: (id: OrderId) -> (opt JournalEntry) query;
-  /// §4.1 retained history, oldest first, **paged**. Admin: entries carry
-  /// payment references and claimed-but-bogus URL params.
-  /// 
-  /// Paged because unresolved obligations are never evicted, so the queue can
-  /// grow — and an unpaginated read would eventually exceed Candid's 2 MB
-  /// message limit, i.e. the record would become unreadable exactly when it
-  /// mattered most. Pass `null` to start; feed `nextCursor` back until it is
-  /// null. `limit` is capped at `ErrorQueue.maxPageSize`.
-  error_queue: (afterId: opt nat, limit: nat) -> (Page) query;
-  error_queue_depth: () -> (record {
-                              retained: nat;
-                              unresolved: nat;
-                            }) query;
-  /// The operator worklist: open obligations only, paged. Filtered server-side
-  /// so a large body of resolved history never stands between the operator and
-  /// the dollars that still need an answer.
-  error_queue_unresolved: (afterId: opt nat, limit: nat) -> (Page) query;
   expected_livemode: () -> (opt bool) query;
   /// Let a buyer give up on their own unpaid order (owner-scoped).
   /// 
@@ -698,7 +681,7 @@ service : {
   /// daily reconcile audits `orders.problemIndexDrift` if the projection ever
   /// disagrees with the orders.
   /// 
-  /// ⚠️ **Not the whole picture on its own.** `error_queue_unresolved` holds the two
+  /// ⚠️ **Not the whole picture on its own.** `orphans_unresolved` holds the two
   /// order-less kinds, which by definition cannot appear here: a payment we cannot
   /// attribute has no order to hang off. An operator watching only one of the two
   /// numbers is watching half the obligations.
@@ -707,6 +690,23 @@ service : {
       orders: vec Order;
       unresolved: nat;
     }) query;
+  orphan_depth: () -> (record {
+                         retained: nat;
+                         unresolved: nat;
+                       }) query;
+  /// §4.1 retained history, oldest first, **paged**. Admin: entries carry
+  /// payment references and claimed-but-bogus URL params.
+  /// 
+  /// Paged because unresolved obligations are never evicted, so the queue can
+  /// grow — and an unpaginated read would eventually exceed Candid's 2 MB
+  /// message limit, i.e. the record would become unreadable exactly when it
+  /// mattered most. Pass `null` to start; feed `nextCursor` back until it is
+  /// null. `limit` is capped at `Orphans.maxPageSize`.
+  orphans: (afterId: opt nat, limit: nat) -> (Page) query;
+  /// The operator worklist: open obligations only, paged. Filtered server-side
+  /// so a large body of resolved history never stands between the operator and
+  /// the dollars that still need an answer.
+  orphans_unresolved: (afterId: opt nat, limit: nat) -> (Page) query;
   pending_deliveries: () -> (vec JournalEntry) query;
   /// Rates + params + refresh liveness, public: both rates are market data any
   /// third party can query for themselves, and the fee formula is what users
@@ -903,7 +903,7 @@ service : {
       tallySaturations: nat;
       totalOrders: nat;
     }) query;
-  resolve_error: (id: nat) -> (Result_8);
+  resolve_orphan: (id: nat) -> (Result_8);
   /// Manual resolution (§4.1/§7) — the operator marking an obligation settled after
   /// acting off-chain: a refund issued in the Stripe Dashboard, or a delivery whose
   /// fate they established on the cycles ledger.
@@ -912,10 +912,10 @@ service : {
   /// `charge.refunded` auto-resolves the refund-resolvable kinds, so those usually
   /// close themselves; `#deliveryStuck`, `#refundAfterDelivery` and `#abandoned` carry
   /// no `paymentRef` and can only be closed here. Resolving an entry never transitions
-  /// the order — see `ErrorQueue`'s header.
+  /// the order — see `Orphans`'s header.
   /// Close an order-bound problem an operator has dealt with (#37).
   /// 
-  /// ⚠️ **The order-shaped counterpart to `resolve_error`**, which addresses entries by
+  /// ⚠️ **The order-shaped counterpart to `resolve_orphan`**, which addresses entries by
   /// a queue id that no longer exists for the kinds that moved. `kindTag` is matched
   /// against `Problems.kindToText`, so a typo closes nothing rather than the wrong
   /// thing — and every unresolved problem of that kind on that order closes together,

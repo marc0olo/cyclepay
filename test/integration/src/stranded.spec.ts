@@ -20,7 +20,7 @@ import {
   TIER_USD_CENTS, WEBHOOK_SECRET,
   answerOutcall, awaitNonRetrieveOutcall, awaitSweepRetrieveFor, maybeSweepRetrieveFor,
   checkoutSessionBody, clientReferenceFor, createOrderWithSession,
-  deliverWebhook, ensureRates, expectErr, expectOk, fundReserve, openErrorEntries,
+  deliverWebhook, ensureRates, expectErr, expectOk, fundReserve, openOrphans,
   nowSeconds, orderStatus, setCmcRate, setXrcRate, settleSweepRetrieveFor, setupGateway, teardownGateway,
   tickUntilStatus, user,
   type Gateway,
@@ -139,7 +139,7 @@ test('82 — a PAID session inside Stripe\'s retry window is not an obligation y
   const created = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, [], { sessionId: 'cs_paid_82' }));
   const paid = created.order;
   const promisedBefore = (await gw.asAnon.reserve_status()).promisedTotal;
-  const openBefore = (await openErrorEntries(gw)).length;
+  const openBefore = (await openOrphans(gw)).length;
 
   await gw.pic.advanceTime(70 * 60 * 1_000);
   await gw.pic.tick(5);
@@ -155,7 +155,7 @@ test('82 — a PAID session inside Stripe\'s retry window is not an obligation y
   // self-resolving item into a bounded, evicting queue.
   expect(await orderStatus(gw, paid.id)).toBe('created');
   expect((await gw.asAnon.reserve_status()).promisedTotal).toBe(promisedBefore);
-  expect((await openErrorEntries(gw)).length).toBe(openBefore);
+  expect((await openOrphans(gw)).length).toBe(openBefore);
   // The support signal is an audit line, because a buyer who paid sees their own page
   // render expired and calls the same hour.
   expect((await gw.asAdmin.audit_log()).map((e) => e.tag)).toContain('stripe.paidAwaitingEvent');

@@ -295,7 +295,7 @@ module {
       // is the double-delivery this status prevents.
       case (#needsReview, #delivered) true;
       // `abandon_order` — the operator ends it, having refunded by hand. The
-      // #needsReview edge is what the #errorQueue split made possible: an
+      // #needsReview edge is what the error-queue split made possible: an
       // escalated order could not previously be abandoned, because one status
       // meant both "promise held" and "promise released".
       case (#paid, #abandoned) true;

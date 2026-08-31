@@ -209,7 +209,7 @@ step "delivery timeline"
 # The gateway ships with a 2 h alert and a 72 h terminate bound, which is what you
 # want locally too — an order that cannot deliver should end up on the worklist
 # rather than retrying in silence. Set explicitly so the seed states the numbers a
-# reader will see in `error_queue_unresolved`.
+# reader will see in `orphans_unresolved`.
 icp canister call backend set_delivery_config \
   '(record { maxHoldNs = 259_200_000_000_000 : int;
              alertAfterNs = 7_200_000_000_000 : int })' \

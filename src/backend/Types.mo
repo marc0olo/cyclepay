@@ -293,7 +293,8 @@ module {
     #sessionFailed;
   };
 
-  /// An order-bound problem. Every arm had an `orderId` in `ErrorQueue.Kind`; the
+  /// An order-bound problem. Every arm carried an `orderId` when these lived in the
+  /// queue that is now `Orphans`; the
   /// order it hangs off supplies that now.
   public type ProblemKind = {
     /// Refund-resolvable — a genuine second, distinct payment for an order that was

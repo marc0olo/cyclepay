@@ -37,7 +37,7 @@ argument makes `icp canister call` ask *"Do you want to send this message?
 
 Public queries (`reserve_status`, `pricing_status`, `recovery_status`,
 `card_tiers`, `lifecycle_config`, `reserve_status`,
-`can_purchase`, `cycles_status`, `error_queue_depth`, `health`) work from any
+`can_purchase`, `cycles_status`, `orphan_depth`, `health`) work from any
 identity and are the
 monitoring surface (§9 transparency stance — operational state is public,
 the webhook secret is the only secret in the system).
@@ -650,8 +650,8 @@ grow together and never diverge.
 ## 6. Error queue — triage (§4.1)
 
 ```bash
-icp canister call backend error_queue '()' -e ic --identity <operator>
-icp canister call backend resolve_error '(42)' -e ic --identity <operator>
+icp canister call backend orphans '()' -e ic --identity <operator>
+icp canister call backend resolve_orphan '(42)' -e ic --identity <operator>
 icp canister call backend delivery_journal '("<orderId>")' -e ic --identity <operator>
 ```
 
@@ -684,10 +684,10 @@ gateway's:
 
 | You established, on the ledger | Call | Result |
 |---|---|---|
-| the transfer **did** land — the buyer has the cycles | `record_delivered '("<orderId>", <blockIndex>)'` then `resolve_error '(<entryId>)'` | `Delivered`, with the block recorded in the journal |
-| it did **not**, and you refunded the fiat by hand | `abandon_order '("<orderId>", "<reason>")'` then `resolve_error '(<entryId>)'` | `Abandoned`, reason in the audit trail |
+| the transfer **did** land — the buyer has the cycles | `record_delivered '("<orderId>", <blockIndex>)'` then `resolve_orphan '(<entryId>)'` | `Delivered`, with the block recorded in the journal |
+| it did **not**, and you refunded the fiat by hand | `abandon_order '("<orderId>", "<reason>")'` then `resolve_orphan '(<entryId>)'` | `Abandoned`, reason in the audit trail |
 
-⚠️ **Neither lever closes the queue entry — `resolve_error` is the last step, always.**
+⚠️ **Neither lever closes the queue entry — `resolve_orphan` is the last step, always.**
 Resolving lives on the entry and never transitions an order, and the reverse holds too:
 moving the order does not resolve the entry. The `#deliveryStuck` entry that
 brought you here stays open until you close it, which is deliberate (an obligation
@@ -720,7 +720,7 @@ escalation; everything else is manual.
 
 **Only resolved entries are ever evicted.** The soft cap is 1,000, but an
 unresolved entry is an open obligation — usually someone's money — so the queue
-**grows past the cap rather than dropping one**. That makes `error_queue_depth`
+**grows past the cap rather than dropping one**. That makes `orphan_depth`
 a real alarm instead of a saturating gauge: a depth climbing above 1,000 means
 unresolved work is accumulating faster than it is being cleared, and no amount
 of ignoring it can lose an obligation.
@@ -728,30 +728,30 @@ of ignoring it can lose an obligation.
 Paginate with a cursor rather than fetching the whole queue:
 
 ```bash
-icp canister call backend error_queue_depth '()' -e ic          # public: {total; unresolved}
-icp canister call backend error_queue_unresolved '(null, 50)' -e ic --identity <operator>
-icp canister call backend error_queue '(opt (120 : nat), 50)' -e ic --identity <operator>
-icp canister call backend resolve_error '(137 : nat)' -e ic --identity <operator>
+icp canister call backend orphan_depth '()' -e ic          # public: {total; unresolved}
+icp canister call backend orphans_unresolved '(null, 50)' -e ic --identity <operator>
+icp canister call backend orphans '(opt (120 : nat), 50)' -e ic --identity <operator>
+icp canister call backend resolve_orphan '(137 : nat)' -e ic --identity <operator>
 ```
 
-`error_queue_unresolved` is the worklist; pass the last id returned as
+`orphans_unresolved` is the worklist; pass the last id returned as
 `afterId` to page forward. Page size is capped at 200.
 
 **Two columns decide everything: the money position, and whether a refund can settle
-it on its own.** The second is `ErrorQueue.refundResolvable` — true only where the
+it on its own.** The second is `Orphans.refundResolvable` — true only where the
 remedy is exactly "refund the fiat", so the `charge.refunded` webhook can close the
 entry without a human deciding anything.
 
 | Kind | Refund settles it? | Money position | Action |
 |---|---|---|---|
-| `#duplicate {orderId; paymentRef}` | ✅ **yes**, automatically | Fiat in twice for one order; the second payment delivered nothing | Refund `paymentRef` in the Stripe Dashboard (search by payment_intent). The `charge.refunded` webhook auto-resolves the entry; `resolve_error` is the fallback. |
-| `#unattributed {claimedRef; paymentRef}` | ✅ **yes**, automatically | Fiat in, and no order that can accept it: a bad or missing `client_reference_id`, an owner/rail/currency mismatch, **a paid amount that is not the one the order asked Stripe for**, or a payment against a `cancelled` or `expired` order — the common producer. The entry's `detail` says which | Inspect the session in Stripe by `paymentRef`, then **refund** → auto-resolve (or `resolve_error`). This is the only remedy, whatever the order's status. ⚠️ If the detail says the amount is not the quoted one, refunding is not the end of it: the session carried our own figure, so something in the Stripe configuration moved the total — check the forbidden-settings list in `docs/STRIPE.md` before the next order, because it will recur. |
+| `#duplicate {orderId; paymentRef}` | ✅ **yes**, automatically | Fiat in twice for one order; the second payment delivered nothing | Refund `paymentRef` in the Stripe Dashboard (search by payment_intent). The `charge.refunded` webhook auto-resolves the entry; `resolve_orphan` is the fallback. |
+| `#unattributed {claimedRef; paymentRef}` | ✅ **yes**, automatically | Fiat in, and no order that can accept it: a bad or missing `client_reference_id`, an owner/rail/currency mismatch, **a paid amount that is not the one the order asked Stripe for**, or a payment against a `cancelled` or `expired` order — the common producer. The entry's `detail` says which | Inspect the session in Stripe by `paymentRef`, then **refund** → auto-resolve (or `resolve_orphan`). This is the only remedy, whatever the order's status. ⚠️ If the detail says the amount is not the quoted one, refunding is not the end of it: the session carried our own figure, so something in the Stripe configuration moved the total — check the forbidden-settings list in `docs/STRIPE.md` before the next order, because it will recur. |
 | `#deliveryStuck {orderId; stage; blockIndex}` | ❌ **no** — see the stage table below | **Depends entirely on `stage`.** One of them means the buyer may already hold their cycles, so a blind refund pays twice | Read `stage` first, then follow its row |
 | `#deliveryDelayed {orderId; stage; sinceNs}` | ❌ no — it is not an obligation | Nothing is wrong yet: a delivery is retrying past the 2 h alert threshold and the sweep keeps going | Fix the cause (usually the cycles ledger) and it delivers itself. **Self-resolves** on delivery *or* escalation — the one entry you never close by hand |
-| `#abandoned {orderId; reason}` | ❌ no — the refund already happened | You ended the order, having refunded by hand | `resolve_error` once the refund is reconciled in Stripe |
+| `#abandoned {orderId; reason}` | ❌ no — the refund already happened | You ended the order, having refunded by hand | `resolve_orphan` once the refund is reconciled in Stripe |
 | `#refundAfterDelivery {orderId; paymentRef; cycles; refundedCents; fullRefund}` | ❌ **no, and never** | **A loss, not a recoverable position**: the fiat was refunded or charged back *after* the cycles were credited. Cycles cannot be clawed back | Nothing to recover on-chain. Reconcile in the Dashboard by `paymentRef` to see whether this was your own refund (a support decision) or a dispute (a fraud signal). For repeated disputes, tighten Stripe Radar and lower the per-purchase ceiling (§5a). ⚠️ **Nothing auto-resolves it, deliberately: the refund is the event that created it**, so resolving on that event would close the entry with the loss unrecorded |
 | `#paidNotCredited {orderId; paymentRef; sessionId}` | ❌ **no — and a refund alone makes it worse** | **The buyer paid and this gateway never credited them.** Found by the recovery sweep asking Stripe about a `#created` order past its deadline, once Stripe has had longer than its ~3-day redelivery window to hand us the `completed` event it owed. The order is still `Created`, so it still holds reserve capacity — correctly, because the cycles are genuinely owed | ⚠️ **RESEND FIRST, ALWAYS.** Find the event in the Stripe Dashboard (search by `paymentRef`) and resend `checkout.session.completed`. That credits the order through the normal path, delivers the cycles, and **closes this entry automatically**. <br><br>⚠️ **Refunding instead does not settle it, and leaves no way out.** The refund returns the money and leaves the order in `Created` holding capacity, and a *complete* session never fires `checkout.session.expired`, so nothing is left that can release it — `expire_order` correctly refuses (Stripe reports the session not-open), and `abandon_order` cannot act on `Created`. If you have already refunded: resend anyway to move the order to `Paid`, then `abandon_order`. **The buyer keeps cycles they were refunded for** — that is the cost of refunding first, and it is why the order of operations is the whole procedure. <br><br>The entry does **not** auto-resolve on `charge.refunded`, deliberately: refunding settles the money and leaves the order broken, so auto-closing would delete the only worklist item pointing at the stranded capacity |
-| `#unprocessable {eventId; field}` | ❌ no — the position is unknown | A verified Stripe event was missing a required field, so the canister could not tell whether money moved | Look the `eventId` up in the Dashboard. **Paid** → refund. **Not paid** → nothing happened; `resolve_error`. Then find the configuration that produced it: the canister controls every field it sends, so a missing one points at an account-level API-version change (§1 pins it) and will recur until fixed. ⚠️ Resolve only after establishing the money position — once resolved, a later resend is allowed to file again |
+| `#unprocessable {eventId; field}` | ❌ no — the position is unknown | A verified Stripe event was missing a required field, so the canister could not tell whether money moved | Look the `eventId` up in the Dashboard. **Paid** → refund. **Not paid** → nothing happened; `resolve_orphan`. Then find the configuration that produced it: the canister controls every field it sends, so a missing one points at an account-level API-version change (§1 pins it) and will recur until fixed. ⚠️ Resolve only after establishing the money position — once resolved, a later resend is allowed to file again |
 
 ### `#deliveryStuck`'s stages — read `stage`, never the kind
 
@@ -763,9 +763,9 @@ the code rather than a gap in this table.
 
 | `stage` | Money position | Action |
 |---|---|---|
-| `staleIntent` | ⚠️ **UNKNOWN.** A transfer was issued, no block was recorded, and the intent is past the ledger's ~24 h dedup window — so a replay is no longer protected and re-sending could pay twice | **Establish its fate on the cycles ledger**, matching the order id in the transfer's **memo**, the `created_at_time` and the amount from `delivery_journal(orderId)`. **Executed** → the buyer has them: `record_delivered '("<orderId>", <blockIndex>)'`, then `resolve_error`. **Not executed** → fiat in, nothing delivered: refund in Stripe, `abandon_order`, then `resolve_error`. ⚠️ **Never rebuild the intent** — past the window a rebuilt one pays twice |
-| `landedNotRecorded` | **Certain, and in the buyer's favour**: the transfer landed (the block is in the entry and the journal) and the order never moved to delivered. **The buyer HAS their cycles** | Confirm the block on the cycles ledger, then `record_delivered '("<orderId>", <blockIndex>)'` → `resolve_error`. ⚠️ **Do NOT re-send.** Should be unreachable — the block and the transition commit in one synchronous block — so if you are reading this, file it as a bug too |
-| `deliveryWaitExceeded` | **Certain**: fiat in, **nothing was ever sent** — no transfer was attempted before the 72 h bound | Refund in the Stripe Dashboard, `abandon_order '("<orderId>", "<reason>")'`, then `resolve_error` |
+| `staleIntent` | ⚠️ **UNKNOWN.** A transfer was issued, no block was recorded, and the intent is past the ledger's ~24 h dedup window — so a replay is no longer protected and re-sending could pay twice | **Establish its fate on the cycles ledger**, matching the order id in the transfer's **memo**, the `created_at_time` and the amount from `delivery_journal(orderId)`. **Executed** → the buyer has them: `record_delivered '("<orderId>", <blockIndex>)'`, then `resolve_orphan`. **Not executed** → fiat in, nothing delivered: refund in Stripe, `abandon_order`, then `resolve_orphan`. ⚠️ **Never rebuild the intent** — past the window a rebuilt one pays twice |
+| `landedNotRecorded` | **Certain, and in the buyer's favour**: the transfer landed (the block is in the entry and the journal) and the order never moved to delivered. **The buyer HAS their cycles** | Confirm the block on the cycles ledger, then `record_delivered '("<orderId>", <blockIndex>)'` → `resolve_orphan`. ⚠️ **Do NOT re-send.** Should be unreachable — the block and the transition commit in one synchronous block — so if you are reading this, file it as a bug too |
+| `deliveryWaitExceeded` | **Certain**: fiat in, **nothing was ever sent** — no transfer was attempted before the 72 h bound | Refund in the Stripe Dashboard, `abandon_order '("<orderId>", "<reason>")'`, then `resolve_orphan` |
 | `transferRejected` | The cycles ledger refused the call definitively, so nothing moved | Read the `detail` for the ledger's reason. `#InsufficientFunds` → the reserve is short: top it up and `refresh_reserve`, then re-drive with `process_order`. Fiat is in and nothing was delivered, so refunding is always a valid resolution |
 | `journalInconsistent` | ⚠️ **An invariant breach, not a money position** — the intent's amount exceeds the order's locked quantity, which cannot happen because the amount was derived by subtracting a fee from it | **File it as a bug**: `lockedCycles` has acquired a second writer, which is a larger problem than one order. Establish the transfer's fate on the ledger before re-sending anything |
 | `missingJournal` / `notInFlight` | ⚠️ **Also invariant breaches.** The order's status implies money-out work the journal cannot support, or the drive loop escalated a status that has no delivery in flight | Reconstruct from `audit_log` and the cycles ledger; treat as a bug and file it |
@@ -858,7 +858,7 @@ These are public queries, so a monitor can poll them anonymously — no controll
 key on a monitoring box:
 
 `health` · `cycles_status` · `reserve_status` · `pricing_status` ·
-`recovery_status` · `error_queue_depth` · `refusal_counts`
+`recovery_status` · `orphan_depth` · `refusal_counts`
 
 `can_purchase` is also callable anonymously and is worth special mention: the
 anonymous principal owns no orders, so `tooManyOpenOrders` can never trip for it.
@@ -903,7 +903,7 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | `pricing_status.rates.fetchedAtNs` | older than `maxAgeNs` | **P1** | the rail has stopped selling. Timer dead or every tick rejected |
 | `cycles_status.balance` | below 3× `minCanisterCycles` | **P1** | top up. At zero the canister is **uninstalled** and money-bearing state is lost. Note the XRC needs 1 B attached per refresh, so pricing dies before the gate does |
 | anonymous `can_purchase` | returns `#err` | **P1** | the rail is refusing sales; the reason says which lever |
-| `error_queue_depth.unresolved` | `> 0` | **P2** | §6 triage. Depth climbing past 1,000 means work is accumulating faster than it clears |
+| `orphan_depth.unresolved` | `> 0` | **P2** | §6 triage. Depth climbing past 1,000 means work is accumulating faster than it clears |
 | `reserve_status.promisedTotal` | climbing while deliveries do not complete | **P2** | money in, nothing delivered — those orders are on the clock toward the 72 h bound. `pending_deliveries` says which and why |
 | `recovery_status.lastSweep.atNs` | older than 2 intervals | **P2** | the sweep timer is not running; nothing recovers while it is dead |
 | `recovery_status.lastCountReconcile.drift` | non-empty | **P2** | the per-status tallies had diverged from the order store and were repaired. The counts are correct again; the bookkeeping bug that moved them is not fixed. They gate admission, so a drifted count refuses or admits the wrong orders |
@@ -958,7 +958,7 @@ claims an alert nobody can wire is worse than a documented gap.
   events this gateway cannot use — it will recur until changed),
   `orders.countDrift` (the status tallies were wrong; see the table above),
   `stripe.refundPartial` (an obligation deliberately left open), and `delivery.stuck`.
-- **`error_queue_unresolved`** for the entries themselves. `error_queue_depth` is
+- **`orphans_unresolved`** for the entries themselves. `orphan_depth` is
   public, so **alert on the public depth and only fetch details when it fires** —
   that keeps the key out of the polling loop.
 - ⚠️ Gaps in `audit_log`'s `seq` mean the 4,096-entry ring dropped events. Read it

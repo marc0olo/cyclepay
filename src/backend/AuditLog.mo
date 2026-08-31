@@ -19,7 +19,7 @@
 /// Qualifying bounds, and they are the only three: **our own timer cadence**, **an
 /// authenticated event** (the `stripe.*` webhook lines need the signing secret, so
 /// growth is bounded by Stripe rather than by a caller — the same argument
-/// `ErrorQueue`'s `#unprocessable` rests on), or **a state transition**
+/// `Orphans`'s `#unprocessable` rests on), or **a state transition**
 /// (`gate.startedRefusing` fires once when the rail starts refusing, not once per
 /// refused request).
 ///
@@ -57,7 +57,7 @@ module {
   public type Event = {
     seq : Nat;
     atNs : Int;
-    /// Short greppable category, e.g. "delivery.sent", "errorQueue.evicted".
+    /// Short greppable category, e.g. "delivery.sent", "orphans.evicted".
     tag : Text;
     detail : Text;
   };

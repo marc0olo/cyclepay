@@ -7,7 +7,7 @@ import Principal "mo:core/Principal";
 import Runtime "mo:core/Runtime";
 import Text "mo:core/Text";
 import AuditLog "../src/backend/AuditLog";
-import ErrorQueue "../src/backend/ErrorQueue";
+import Orphans "../src/backend/Orphans";
 import Http "../src/backend/Http";
 import Idempotency "../src/backend/Idempotency";
 import Orders "../src/backend/Orders";
@@ -54,8 +54,8 @@ func freshDeps() : Card.Deps {
   {
     orders = Orders.emptyStore();
     dedup = Idempotency.emptyStore();
-    errorQueue = ErrorQueue.emptyStore();
-    errorQueueCapacity = 10;
+    orphanStore = Orphans.emptyStore();
+    orphanCapacity = 10;
     // Unset: these tests are about ingestion, not Stripe-mode configuration.
     // The livemode gate has its own suite below.
     expectLivemode = null;
@@ -276,7 +276,7 @@ suite("handleWebhook: envelope guards", func() {
       "\"amount_total\":500,\"currency\":\"usd\",\"payment_status\":\"paid\"}}}"
     ).encodeUtf8();
     assert deliver(deps, body).status_code == 200;
-    let open = ErrorQueue.unresolved(deps.errorQueue);
+    let open = Orphans.unresolved(deps.orphanStore);
     assert open.size() == 1;
     switch (open[0].kind) {
       case (#unprocessable({ eventId; field })) {
@@ -287,7 +287,7 @@ suite("handleWebhook: envelope guards", func() {
     };
     // Stripe retries the same event; the obligation must not be duplicated.
     assert deliver(deps, body).status_code == 200;
-    assert ErrorQueue.unresolved(deps.errorQueue).size() == 1;
+    assert Orphans.unresolved(deps.orphanStore).size() == 1;
   });
 
   test("signed unhandled event type is acked 200, ignored, and audited", func() {
@@ -331,7 +331,7 @@ suite("a resent webhook is never a second payment", func() {
     assert resp.status_code == 200;
     assert bodyText(resp) == "already credited";
     // No obligation invented, and nothing delivered twice.
-    assert ErrorQueue.unresolved(replayed.errorQueue).size() == 0;
+    assert Orphans.unresolved(replayed.orphanStore).size() == 0;
     assert AuditLog.events(replayed.auditLog).find(
       func(e) = e.tag == "stripe.replayedAfterPruning"
     ) != null;
@@ -368,7 +368,7 @@ suite("a resent webhook is never a second payment", func() {
     // This assertion is what caught the hole: moving problems onto orders introduced a
     // way to lose one, because the queue's `add` filed regardless of whether the order
     // existed and `Orders.fileProblem` cannot.
-    let open = ErrorQueue.unresolved(deps.errorQueue);
+    let open = Orphans.unresolved(deps.orphanStore);
     assert open.size() == 1;
     switch (open[0].kind) {
       case (#unattributed({ claimedRef; paymentRef })) {
@@ -393,7 +393,7 @@ suite("a resent webhook is never a second payment", func() {
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
     assert deliver(deps, paidBody("evt_2", "pi_2", ?goodRef, 500)).status_code == 200;
     // On the order now (#37); no orderId to compare, the order supplies it.
-    assert ErrorQueue.unresolved(deps.errorQueue).size() == 0;
+    assert Orphans.unresolved(deps.orphanStore).size() == 0;
     let filed = switch (Orders.get(deps.orders, orderId)) {
       case (?o) o.problems;
       case null Runtime.trap("order vanished");
@@ -423,10 +423,10 @@ suite("charge.refunded: partial vs full", func() {
     // the audit ring, which drops.
     let deps = freshDeps();
     assert deliver(deps, paidBody("evt_1", "pi_1", ?"bogus_ref", 500)).status_code == 200;
-    assert ErrorQueue.unresolved(deps.errorQueue).size() == 1;
+    assert Orphans.unresolved(deps.orphanStore).size() == 1;
 
     assert deliver(deps, partialRefundBody("evt_2", "pi_1", 5, 500)).status_code == 200;
-    assert ErrorQueue.unresolved(deps.errorQueue).size() == 1;
+    assert Orphans.unresolved(deps.orphanStore).size() == 1;
     assert AuditLog.events(deps.auditLog).find(func(e) = e.tag == "stripe.refundPartial") != null;
     // ...and it does NOT also claim the refund matched nothing. Two audit lines
     // contradicting each other is worse than either alone: an operator reading
@@ -435,7 +435,7 @@ suite("charge.refunded: partial vs full", func() {
 
     // Completing the refund settles it.
     assert deliver(deps, partialRefundBody("evt_3", "pi_1", 500, 500)).status_code == 200;
-    assert ErrorQueue.unresolved(deps.errorQueue).size() == 0;
+    assert Orphans.unresolved(deps.orphanStore).size() == 0;
   });
 
   test("a partial refund after delivery records the amount actually returned", func() {
@@ -522,7 +522,7 @@ suite("handleWebhook: livemode gate", func() {
     assert deliver(deps, body).status_code == 200;
     assert statusOf(deps) == #created;
     // No obligation: a test payment owes nobody anything.
-    assert ErrorQueue.unresolved(deps.errorQueue).size() == 0;
+    assert Orphans.unresolved(deps.orphanStore).size() == 0;
     assert AuditLog.events(deps.auditLog).find(func(e) = e.tag == "stripe.livemodeMismatch") != null;
   });
 
@@ -536,7 +536,7 @@ suite("handleWebhook: livemode gate", func() {
     );
     assert deliver(deps, body).status_code == 200;
     assert statusOf(deps) == #created;
-    assert ErrorQueue.unresolved(deps.errorQueue).size() == 1;
+    assert Orphans.unresolved(deps.orphanStore).size() == 1;
   });
 
   test("an UNSETTLED session raises no livemode obligation — no money has moved", func() {
@@ -552,7 +552,7 @@ suite("handleWebhook: livemode gate", func() {
       "checkout.session.completed", "evt_1", "pi_1", ?goodRef, 500, "usd", "unpaid", true,
     );
     assert deliver(deps, pending).status_code == 200;
-    assert ErrorQueue.unresolved(deps.errorQueue).size() == 0;
+    assert Orphans.unresolved(deps.orphanStore).size() == 0;
     assert AuditLog.events(deps.auditLog).find(func(e) = e.tag == "stripe.unpaidSession") != null;
     assert AuditLog.events(deps.auditLog).find(func(e) = e.tag == "stripe.livemodeMismatch") == null;
 
@@ -561,7 +561,7 @@ suite("handleWebhook: livemode gate", func() {
       "checkout.session.async_payment_succeeded", "evt_2", "pi_1", ?goodRef, 500, "usd", "paid", true,
     );
     assert deliver(deps, settled).status_code == 200;
-    assert ErrorQueue.unresolved(deps.errorQueue).size() == 1;
+    assert Orphans.unresolved(deps.orphanStore).size() == 1;
   });
 
   test("a live-on-test obligation keeps the real reference, not a placeholder", func() {
@@ -574,7 +574,7 @@ suite("handleWebhook: livemode gate", func() {
       "checkout.session.completed", "evt_1", "pi_1", ?goodRef, 500, "usd", "paid", true,
     );
     assert deliver(deps, body).status_code == 200;
-    let open = ErrorQueue.unresolved(deps.errorQueue);
+    let open = Orphans.unresolved(deps.orphanStore);
     assert open.size() == 1;
     switch (open[0].kind) {
       case (#unattributed({ claimedRef; paymentRef })) {
@@ -631,7 +631,7 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
       };
       case (null) assert false;
     };
-    assert ErrorQueue.size(deps.errorQueue) == 0;
+    assert Orphans.size(deps.orphanStore) == 0;
   });
 
   test("redelivered event.id is acked and dropped", func() {
@@ -641,7 +641,7 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
     let resp = deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500));
     assert resp.status_code == 200;
     assert bodyText(resp) == "duplicate event";
-    assert ErrorQueue.size(deps.errorQueue) == 0; // a redelivery is not a double-pay
+    assert Orphans.size(deps.orphanStore) == 0; // a redelivery is not a double-pay
   });
 
   test("same payment_intent under a fresh event.id is acked and dropped", func() {
@@ -651,7 +651,7 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
     let resp = deliver(deps, paidBody("evt_2", "pi_1", ?goodRef, 500));
     assert resp.status_code == 200;
     assert bodyText(resp) == "duplicate payment intent";
-    assert ErrorQueue.size(deps.errorQueue) == 0;
+    assert Orphans.size(deps.orphanStore) == 0;
   });
 
   test("genuine second payment (fresh event + intent) is a #duplicate obligation", func() {
@@ -662,7 +662,7 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
     assert resp.status_code == 200;
     assert bodyText(resp) == "queued for operator review";
     // On the order (#37); the queue holds only order-less money now.
-    assert ErrorQueue.unresolved(deps.errorQueue).size() == 0;
+    assert Orphans.unresolved(deps.orphanStore).size() == 0;
     let queued = switch (Orders.get(deps.orders, orderId)) {
       case (?o) o.problems;
       case null Runtime.trap("order vanished");
@@ -701,7 +701,7 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
       // Filed as #unattributed, not #duplicate: nothing was ever paid, so there
       // is no first payment for this to be a second of. It carries the
       // paymentRef a `charge.refunded` resolves.
-      let open = ErrorQueue.unresolved(deps.errorQueue);
+      let open = Orphans.unresolved(deps.orphanStore);
       assert open.size() == 1;
       switch (open[0].kind) {
         case (#unattributed({ paymentRef; claimedRef = _ })) assert paymentRef == "pi_1";
@@ -749,7 +749,7 @@ suite("handleWebhook: attribution failures are #unattributed (§4.1)", func() {
     let resp = deliver(deps, body);
     assert resp.status_code == 200;
     assert bodyText(resp) == "queued for operator review";
-    let queued = ErrorQueue.unresolved(deps.errorQueue);
+    let queued = Orphans.unresolved(deps.orphanStore);
     assert queued.size() == 1;
     assert queued[0].kind == #unattributed({ claimedRef; paymentRef });
   };
@@ -829,7 +829,7 @@ suite("handleWebhook: the paid amount must EQUAL the quote (§3/§6.1)", func() 
       };
       case (null) assert false;
     };
-    let open = ErrorQueue.unresolved(deps.errorQueue);
+    let open = Orphans.unresolved(deps.orphanStore);
     assert open.size() == 1;
     // The detail names both figures, because the operator's next step is to find
     // which session setting produced the difference.
@@ -866,11 +866,11 @@ suite("handleWebhook: charge.refunded auto-resolve (§4.1)", func() {
     // two unattributed payments under the same intent... impossible (intent
     // dedup), so: one unattributed payment, refunded.
     assert deliver(deps, paidBody("evt_1", "pi_1", null, 500)).status_code == 200;
-    assert ErrorQueue.unresolved(deps.errorQueue).size() == 1;
+    assert Orphans.unresolved(deps.orphanStore).size() == 1;
     let resp = deliver(deps, refundBody("evt_2", "pi_1"));
     assert resp.status_code == 200;
-    assert ErrorQueue.unresolved(deps.errorQueue).size() == 0;
-    assert ErrorQueue.size(deps.errorQueue) == 1; // resolved, retained
+    assert Orphans.unresolved(deps.orphanStore).size() == 0;
+    assert Orphans.size(deps.orphanStore) == 1; // resolved, retained
   });
 
   test("redelivered refund event is deduped", func() {
@@ -916,7 +916,7 @@ suite("handleWebhook: charge.refunded auto-resolve (§4.1)", func() {
     assert deliver(deps, refundBody("evt_2", "pi_1")).status_code == 200;
 
     // On the order now (#37); the queue keeps only order-less money.
-    assert ErrorQueue.unresolved(deps.errorQueue).size() == 0;
+    assert Orphans.unresolved(deps.orphanStore).size() == 0;
     let filed = switch (Orders.get(deps.orders, orderId)) {
       case (?o) o.problems;
       case null Runtime.trap("order vanished");
@@ -954,7 +954,7 @@ suite("handleWebhook: charge.refunded auto-resolve (§4.1)", func() {
     assert deliver(deps, refundBody("evt_2", "pi_1")).status_code == 200;
     // Money-out may still be mid-flight — a race for the operator to look at,
     // not a settled loss.
-    assert ErrorQueue.unresolved(deps.errorQueue).size() == 0;
+    assert Orphans.unresolved(deps.orphanStore).size() == 0;
     assert AuditLog.events(deps.auditLog).find(
       func(e) = e.tag == "stripe.refundBeforeDelivery"
     ) != null;
@@ -965,7 +965,7 @@ suite("handleWebhook: the purchase ceiling", func() {
   test("an unknown reference is the generic unattributed case", func() {
     let deps = freshDeps();
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
-    let open = ErrorQueue.unresolved(deps.errorQueue);
+    let open = Orphans.unresolved(deps.orphanStore);
     assert open.size() == 1;
     assert open[0].detail.contains(#text "no order");
   });
@@ -979,7 +979,7 @@ suite("handleWebhook: the purchase ceiling", func() {
     // OWN quote, after the ceiling is lowered.
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 5_000)).status_code == 200;
     assert statusOf(deps) == #created; // never marked paid
-    let open = ErrorQueue.unresolved(deps.errorQueue);
+    let open = Orphans.unresolved(deps.orphanStore);
     assert open.size() == 1;
     assert open[0].detail.contains(#text "exceeds the per-purchase ceiling");
   });
@@ -995,7 +995,7 @@ suite("handleWebhook: the purchase ceiling", func() {
     withOrder(deps, #card);
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
     assert statusOf(deps) == #created;
-    let open = ErrorQueue.unresolved(deps.errorQueue);
+    let open = Orphans.unresolved(deps.orphanStore);
     assert open.size() == 1;
     assert open[0].detail.contains(#text "exceeds the per-purchase ceiling");
   });
@@ -1012,7 +1012,7 @@ suite("handleWebhook: the purchase ceiling", func() {
     var long = "";
     for (_ in Nat.range(0, 40)) long #= "0123456789";
     assert deliver(deps, paidBody("evt_1", "pi_1", ?long, 500)).status_code == 200;
-    let open = ErrorQueue.unresolved(deps.errorQueue);
+    let open = Orphans.unresolved(deps.orphanStore);
     assert open.size() == 1;
     switch (open[0].kind) {
       case (#unattributed({ claimedRef; paymentRef = _ })) {

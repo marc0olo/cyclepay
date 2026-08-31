@@ -166,7 +166,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     // `stage` carries the money position, `blockIndex` the should-be-unreachable landed case.
     unattributed: IDL.Record({ claimedRef: IDL.Text, paymentRef: IDL.Text }),
   });
-  const ErrorEntry = IDL.Record({
+  const OrphanEntry = IDL.Record({
     createdAtNs: IDL.Int,
     detail: IDL.Text,
     id: IDL.Nat,
@@ -305,14 +305,14 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       ],
       ['query'],
     ),
-    error_queue: IDL.Func(
+    orphans: IDL.Func(
       [IDL.Opt(IDL.Nat), IDL.Nat],
-      [IDL.Record({ entries: IDL.Vec(ErrorEntry), nextCursor: IDL.Opt(IDL.Nat) })],
+      [IDL.Record({ entries: IDL.Vec(OrphanEntry), nextCursor: IDL.Opt(IDL.Nat) })],
       ['query'],
     ),
-    error_queue_unresolved: IDL.Func(
+    orphans_unresolved: IDL.Func(
       [IDL.Opt(IDL.Nat), IDL.Nat],
-      [IDL.Record({ entries: IDL.Vec(ErrorEntry), nextCursor: IDL.Opt(IDL.Nat) })],
+      [IDL.Record({ entries: IDL.Vec(OrphanEntry), nextCursor: IDL.Opt(IDL.Nat) })],
       ['query'],
     ),
     delayed_deliveries: IDL.Func(
@@ -338,7 +338,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Record({ counts: RefusalCounts, refusingNow: RailStateLatch })],
       ['query'],
     ),
-    error_queue_depth: IDL.Func(
+    orphan_depth: IDL.Func(
       [],
       [IDL.Record({ retained: IDL.Nat, unresolved: IDL.Nat })],
       ['query'],
@@ -461,9 +461,9 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       ['query'],
     ),
     refresh_reserve: IDL.Func([], [IDL.Nat], []),
-    resolve_error: IDL.Func(
+    resolve_orphan: IDL.Func(
       [IDL.Nat],
-      [IDL.Variant({ ok: ErrorEntry, err: ResolveError })],
+      [IDL.Variant({ ok: OrphanEntry, err: ResolveError })],
       [],
     ),
     set_card_tiers: IDL.Func(
