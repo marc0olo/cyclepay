@@ -903,6 +903,7 @@ service : {
       indexScan:
        record {
          chunkSize: nat;
+         expectedFullCycleNs: nat;
          inFlightCycle:
           record {
             ordersRead: nat;

@@ -3503,15 +3503,51 @@ persistent actor CyclesGateway {
     repairs : Nat;
   } = null;
 
+  /// `⌈storedOrders ÷ chunkSize⌉ × sweepInterval` — the expected time for one full
+  /// coverage cycle, hence the detection latency for the outside direction.
+  ///
+  /// A store smaller than one chunk still costs one sweep, so the chunk count floors at
+  /// one: zero would report an instantaneous cycle for an empty store, which reads as
+  /// "already verified" at exactly the moment nothing has been.
+  func expectedIndexScanCycleNs() : Nat {
+    let stored = Orders.storedCount(orderStore);
+    // Ceiling division written without a subtraction: `a + b - 1` warns under M0155
+    // (`operator may trap for inferred type Nat`) and the gate runs -Werror, so the
+    // unreachable underflow still has to be unwritten rather than argued about.
+    let whole = stored / Orders.scanChunkSize;
+    let chunks = if (stored % Orders.scanChunkSize == 0) whole else whole + 1;
+    if (chunks == 0) return recoverySweepIntervalNs;
+    chunks * recoverySweepIntervalNs;
+  };
+
   /// One chunk of the rotating scan, on the sweep cadence.
   ///
   /// ⚠️ **Sweep cadence rather than daily, because one of its findings is money.**
   /// `unindexedHolders` is the one inconsistency the daily reconcile cannot see: an
   /// order that holds a promise, is missing from the index, and whose cycles are missing
   /// from `promised` too — index and tally agree, both low, and the reserve reads as
-  /// more available than it is. At `Orders.scanChunkSize` orders per sweep the coverage
-  /// window is `total ÷ (chunk × sweeps per day)` days, so a store of a few hundred
-  /// thousand orders is covered in a couple of days rather than a couple of months.
+  /// more available than it is.
+  ///
+  /// ⚠️ **#63 turned unbounded WORK into unbounded LATENCY, and the honest claim is
+  /// "bounded per message", not "bounded".** The daily reconcile verifies only the
+  /// inside direction of each index; the outside direction is this scan, so detecting an
+  /// order that holds a promise and is not indexed takes up to **one full cycle**, and
+  /// the cycle grows **linearly in stored orders**:
+  ///
+  ///     cycle = ⌈storedOrders ÷ scanChunkSize⌉ × recoverySweepIntervalNs
+  ///
+  /// At the 15-minute default and 2,000 orders per chunk that is ~192,000 orders a day,
+  /// so 365k orders is covered in about two days and 3.65M in about nineteen. That is
+  /// the right trade — work that traps is fatal, latency that grows is degradable and
+  /// observable — but it is a trade, and a comment claiming the reconcile is simply
+  /// "bounded now" would hide the half that still grows.
+  ///
+  /// ⚠️ **`set_recovery_interval` is therefore a lever on this latency, and nothing
+  /// about its name says so.** The cadence is operator-tunable up to the §5.1 ceiling of
+  /// 6 h, which is **24× the default** — the same 365k store then takes ~46 days per
+  /// cycle. `recovery_status.indexScan.expectedFullCycleNs` is computed from the live
+  /// interval precisely so this is a number an operator reads rather than one they have
+  /// to know to derive.
   ///
   /// ⚠️ **Detached into its own message by the caller, like the reconcile**, so a trap
   /// here cannot take the sweep — and therefore money-out — down with it. It takes no
@@ -3832,7 +3868,20 @@ persistent actor CyclesGateway {
         recoverySweepIntervalNs := intervalNs;
         Timer.cancelTimer(recoveryTimerId);
         recoveryTimerId := Timer.recurringTimer<system>(#nanoseconds(intervalNs), recoverySweep);
-        auditAdmin(caller, "recovery.intervalSet", "sweep cadence set to " # intervalNs.toText() # " ns");
+        // ⚠️ **This knob also sets the index scan's coverage window (#63), which its
+        // name does not say.** The rotating scan runs one chunk per sweep, so coarsening
+        // the cadence multiplies the detection latency for `orders.unindexedHolders` —
+        // a finding that means the reserve was oversellable. Audited with the resulting
+        // window so the consequence is in the same line as the cause, rather than
+        // something an operator has to go and derive.
+        auditAdmin(
+          caller,
+          "recovery.intervalSet",
+          "sweep cadence set to " # intervalNs.toText() # " ns."
+          # " The #63 index scan rides this cadence, so a full coverage cycle now takes about "
+          # (expectedIndexScanCycleNs() / 1_000_000_000 / 3_600).toText()
+          # " h at the current store size — that is the detection latency for orders.unindexedHolders.",
+        );
         #ok;
       };
     };
@@ -3901,6 +3950,16 @@ persistent actor CyclesGateway {
     indexScan : {
       chunkSize : Nat;
       storedOrders : Nat;
+      /// How long a full coverage cycle is **expected** to take at the current store
+      /// size and the current sweep cadence.
+      ///
+      /// ⚠️ **Computed, not configured, so it moves when either input does** — and the
+      /// sweep cadence is one `set_recovery_interval` away from 24× the default. This is
+      /// the detection latency for `orders.unindexedHolders`, which is a money finding,
+      /// so it is reported rather than left as arithmetic an operator has to know to do.
+      /// Compare `lastCompletedCycle.completedAtNs` against this: much older means the
+      /// scan is behind its own expectation, not merely mid-cycle.
+      expectedFullCycleNs : Nat;
       inFlightCycle : { startedAtNs : Int; ordersRead : Nat; repairs : Nat };
       lastCompletedCycle : ?{
         startedAtNs : Int;
@@ -3920,6 +3979,7 @@ persistent actor CyclesGateway {
       indexScan = {
         chunkSize = Orders.scanChunkSize;
         storedOrders = Orders.storedCount(orderStore);
+        expectedFullCycleNs = expectedIndexScanCycleNs();
         inFlightCycle = indexScanCycle;
         lastCompletedCycle = lastIndexScanCycle;
       };

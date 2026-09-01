@@ -420,6 +420,10 @@ export interface BackendService {
     indexScan: {
       chunkSize: bigint;
       storedOrders: bigint;
+      /// ⚠️ Detection latency for `orders.unindexedHolders`, computed from the store
+      /// size AND the live sweep cadence — `set_recovery_interval` moves it by up to
+      /// 24× and its name does not say so (#63).
+      expectedFullCycleNs: bigint;
       inFlightCycle: { startedAtNs: bigint; ordersRead: bigint; repairs: bigint };
       lastCompletedCycle: Opt<{
         startedAtNs: bigint;

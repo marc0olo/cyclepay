@@ -490,6 +490,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
           indexScan: IDL.Record({
             chunkSize: IDL.Nat,
             storedOrders: IDL.Nat,
+            expectedFullCycleNs: IDL.Nat,
             inFlightCycle: IDL.Record({ startedAtNs: IDL.Int, ordersRead: IDL.Nat, repairs: IDL.Nat }),
             lastCompletedCycle: IDL.Opt(
               IDL.Record({

@@ -871,7 +871,8 @@ icp canister call backend process_order '("<orderId>")' -e ic --identity <operat
 
 - Interval validation pins cadence ≤ 6 h (ledger dedup window ÷ 4 — a
   stuck transfer must get several replay attempts while its intent still
-  dedups). Default 1 h; re-arms immediately on change.
+  dedups). Default **15 min** (`Recovery.defaultIntervalNs`); re-arms immediately on
+  change.
 - `recovery_status.lastSweep` not advancing past ~2 intervals = the timer
   is wedged — an upgrade re-arms it, but investigate first.
 - The sweep also **reconciles the per-status tallies once a day** and reports the
@@ -900,6 +901,22 @@ icp canister call backend process_order '("<orderId>")' -e ic --identity <operat
   with a recent `completedAtNs` is *verified clean*, and silence without one is
   *unverified*, which carries the opposite response: wait for the pass rather than hunt
   for a writer.
+- ⚠️ **So #63 converted unbounded WORK into unbounded LATENCY, and the honest claim is
+  "bounded per message" rather than "bounded".** The daily pass verifies only the inside
+  direction of each index. Detecting the outside direction — an order that holds a
+  promise and is not indexed — takes up to one full cycle, and the cycle grows
+  **linearly in stored orders**: `⌈storedOrders ÷ chunkSize⌉ × sweep interval`. At the
+  15-minute default and 2,000 per chunk that is ~192,000 orders a day, so 365k is
+  covered in about two days and 3.65M in about nineteen. This is the right trade — work
+  that traps is fatal, latency that grows is degradable **and observable** — but it is a
+  trade, and `indexScan.expectedFullCycleNs` is where you read the current value rather
+  than assume this paragraph is still accurate.
+- ⚠️ **`set_recovery_interval` is a lever on that latency, and its name does not say
+  so.** The scan rides the sweep, so coarsening the cadence to the §5.1 ceiling of 6 h —
+  **24× the default** — takes the same 365k store to ~46 days per cycle. The
+  `recovery.intervalSet` audit line now names the resulting window, so the consequence
+  is recorded next to the cause. Do not retune the cadence to save cycles without
+  reading it: the finding it delays is `orders.unindexedHolders`, which is **P1**.
 - The sweep also **reconciles the reserve floor against the cycles ledger once an
   hour**, which is how a top-up becomes sellable without an operator call.
   `recovery_status.lastReserveReconcileAttemptNs` is the attempt clock and
@@ -984,7 +1001,7 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | `orders.problemIndexDrift` / `orders.unindexedProblems` in the audit log | any occurrence | **P2** | ⚠️ **Not a data problem — a code problem.** The unresolved-problems index (#37) is maintained by exactly two functions, `Orders.fileProblem` and `Orders.resolveProblems`. Either tag means something else wrote `order.problems` directly. **The repair is not the fix**: find the writer. `problemIndexDrift` is an id in the index with no unresolved problem — the worklist showed an obligation that was already closed. `unindexedProblems` is the worse direction: an order carried an unresolved obligation the worklist did **not** show and `resolveByPaymentRef` could not reach |
 | `orders.expiredWentBackwards` in the audit log | any occurrence | **P2** | the `Expired` tally fell, which the transition matrix makes impossible — `created → expired` is its only inbound edge and it has no outbound one. A bookkeeping breach in `Orders.bump`. ⚠️ **Reported once per decrease, not daily**, so a second occurrence means it fell again. `Expired` is an operator metric that nothing decides on, so this is a bug report rather than an exposure |
 | `orders.expiredOverflow` in the audit log | any occurrence | **P2** | the `Expired` tally plus the non-terminal order count exceeds the number of orders in the store. Those two sets are disjoint subsets of it, so this is arithmetically impossible and `Expired` is over-counted. Same class as the row above — observability, not money |
-| `recovery_status.indexScan.lastCompletedCycle` | empty, or `completedAtNs` older than a few expected windows | **P2** | ⚠️ **Without this the clean-scan rows above mean nothing.** The rotating scan verifies the one property that needs every order, so it can only speak for what it has visited: silence plus a recent `completedAtNs` is *verified clean*, silence with no completed cycle is *unverified*. Expected window is `storedOrders ÷ (chunkSize × sweeps per day)` days. Empty long past that, with `inFlightCycle.ordersRead` frozen, means a chunk is trapping — the cursor does not advance, so the next sweep retries the same chunk rather than skipping forward |
+| `recovery_status.indexScan.lastCompletedCycle` | empty, or `completedAtNs` older than a small multiple of `indexScan.expectedFullCycleNs` | **P2** | ⚠️ **Without this the clean-scan rows above mean nothing.** The rotating scan verifies the one property that needs every order, so it can only speak for what it has visited: silence plus a recent `completedAtNs` is *verified clean*, silence with no completed cycle is *unverified*. ⚠️ **Compare against `indexScan.expectedFullCycleNs`, not against a remembered number** — it is computed from the live store size and the live sweep cadence, and `set_recovery_interval` can move it by 24×. Empty long past that, with `inFlightCycle.ordersRead` frozen, means a chunk is trapping — the cursor does not advance, so the next sweep retries the same chunk rather than skipping forward |
 | `recovery_status.lastCountReconcile.atNs` | older than ~48 h while `lastSweep` advances, or materially older than `lastCountReconcileAttemptNs` | **P3** | the daily reconcile is failing. It runs in its own message, so it cannot take the sweep down with it — money-out is unaffected — but the tallies are now **unverified**, not known-good. Written only on success, and the cadence is claimed by the sweep, so a reconcile that traps retries daily rather than every tick. `recount_orders` is the on-demand repair and will show the same failure if it is a real one |
 | `reserve_status.openOrders` | climbing while `delivered` does not | **P3** | order-creation abuse; lever is `maxOpenOrdersPerPrincipal` (§5a) |
 | `refusal_counts.refusingNow.reserveShort` | true | **P1** | the rail is refusing sales for want of reserve. Exactly one `gate.startedRefusing` line marks when it began — the counter says how many buyers have been turned away since. Fund the reserve (§5); it clears on the next successful admission |

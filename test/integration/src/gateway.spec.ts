@@ -2421,6 +2421,11 @@ test('58 — the sweep reconciles the status tallies on its own cadence and repo
   // A chunk runs every sweep and this store is far smaller than one chunk, so a cycle
   // must have closed by now.
   expect(status.indexScan.lastCompletedCycle.length).toBe(1);
+  // ⚠️ **The latency #63 traded the unbounded work for, reported rather than derived.**
+  // This store is far smaller than one chunk, so a cycle is exactly one sweep — and the
+  // figure must track the LIVE cadence, not a compiled-in assumption, because
+  // `set_recovery_interval` moves it by up to 24×.
+  expect(status.indexScan.expectedFullCycleNs).toBe(status.intervalNs);
   const cycle = status.indexScan.lastCompletedCycle[0]!;
   expect(cycle.completedAtNs).toBeGreaterThanOrEqual(cycle.startedAtNs);
   // Verified CLEAN, not merely silent: the cycle walked every order and repaired none.
