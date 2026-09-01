@@ -174,6 +174,12 @@ identical (45% either way), but the absolute numbers differ by ~1,500 lines and 
 person will compare against them. Same population-scope class as the sweeps themselves,
 arriving one last time in the measurement of the cleanup.
 
+⚠️ **State the METHOD too, because two correct methods disagree.** The line counts in
+this series used `text.split("\n")`, which yields a trailing empty element for a
+newline-terminated file — so they read **one line higher per file** than `wc -l`. Measured:
+23 files, delta exactly 23 (10,265 vs 10,242). Neither is wrong; they count different
+things. One notch finer than "state the glob", and the same lesson.
+
 ⚠️ **Check a measurement against a bound you already know.** A block-detector reported
 "129 blocks of ≥18 lines" in a file with 1,800 comment lines — arithmetically impossible,
 and caught by that multiplication rather than by re-reading the code. Correct figure: 20.
