@@ -191,6 +191,38 @@ invariant arguments — the category that *stays*) and the first two `Main.mo` b
 documenting deleted code) mislead in **opposite** directions. `Main.mo` alone has 53
 blocks of ≥12 comment lines; no rate should be projected from a handful.
 
+### 1d. ⚠️ Outcall CONSENSUS is not testable anywhere before mainnet
+
+Recorded because it was described in review as part of the manual sandbox run's residual,
+and that is wrong in a way that changes where you look for it.
+
+**A local network is a single replica.** HTTPS-outcall consensus is agreement between the
+replicas of a subnet on the transformed response — so with one replica there is nothing to
+agree, and the property is **never exercised locally, by any run, manual or automated**. No
+local procedure could ever have covered it, and a green local run is not weak evidence
+about it; it is *no* evidence.
+
+PocketIC does not cover it either: it mocks the outcall, so the transform runs but no
+consensus step exists.
+
+⚠️ **It is therefore first tested on the first mainnet outcall**, and the failure mode is
+`No consensus could be reached. Replicas had different responses.`
+
+⚠️ **TWO mechanisms carry it, and this is the only place recording that before mainnet — so
+name both, or someone reads the second as dedup-only and removes it.**
+
+1. **The transform strips every response header** (`rails/Session.mo`), which is the
+   documented source of per-replica variation in the *response*.
+2. **`Idempotency-Key = orderId` on the session create** does double duty. Every replica
+   performs the outcall independently, so without the key each creates a **distinct
+   session with a distinct `id` and `url`** — one order spawns many sessions, and
+   consensus becomes unreachable. ⚠️ **No transform can repair that: a transform strips
+   variation, it cannot invent agreement.** Removing the key as "redundant with our own
+   dedup" would break consensus, not just dedup.
+
+Both are arguments, not test results, and should be read as such until a mainnet outcall
+has succeeded.
+
 ### 2. Structural limits in PocketIC — verified, not assumed
 
 | Not covered | Why |

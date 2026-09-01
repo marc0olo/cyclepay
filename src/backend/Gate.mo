@@ -47,11 +47,15 @@ module {
     /// must be well above the freezing threshold so there is room to notice and
     /// top up.
     ///
-    /// ⚠️ **Two pots, and confusing them is the classic operational error.** Gas
-    /// lives in the canister's own balance and is spent by running; stock lives in
-    /// the gateway's cycles-ledger account and is spent by delivering. Different
-    /// resource, different failure, different fix — `icp canister status` reads the
-    /// first, `reserve_status` the second.
+    /// ⚠️ **THREE balances, and confusing them is the classic operational error.**
+    ///   - **gas** — this canister's own balance, spent by running. `icp canister status`.
+    ///   - **stock** — the reserve: the gateway's cycles-ledger *account*, spent by
+    ///     delivering, topped up by a plain `icp cycles transfer <amt> <backend-id>`.
+    ///     `reserve_status`, or `icp cycles balance --of-principal <backend-id>`.
+    ///   - **the operator's own cycles-ledger account**, which funds both. `icp cycles
+    ///     balance`. ⚠️ A failed top-up reports *this* balance, under a message about the
+    ///     reserve — so read "insufficient funds. balance: N" as the sender's, not the
+    ///     reserve's.
     minCanisterCycles : Nat;
     /// Per-purchase ceiling on the gross USD amount.
     ///
