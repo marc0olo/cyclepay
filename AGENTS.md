@@ -141,6 +141,11 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
      have nothing to compare against.
   3. **The commit message carries the mapping** — what moved where. It is the only
      recoverable record if a judgement turns out wrong.
+  4. ⚠️ **Verify the `DESIGN.md` section against the CODE before the deletion, not
+     after.** A section transcribed from comments inherits the comments' errors, and once
+     the comments are gone the original is no longer there to audit against. Three of
+     three passes so far found a comment whose *conclusion* was right and whose *stated
+     reason* was false — so "it was in the comment" is not evidence.
 - ⚠️ **`⚠️` is tiered: prohibitions only.** Use it where ignoring the line loses money or
   breaks an invariant — not for explanation. A marker used 310 times is not a marker;
   it only works while seeing one makes you stop.
