@@ -167,6 +167,19 @@ what produced both.
 | 2 | **Never delete without a destination** — `docs/DESIGN.md` or a rule rewritten at the site | a removal with *no* destination is the only case a reviewer cannot check, so it is the category to scrutinise |
 | 3 | **The commit message carries the mapping** — what moved where | the sole recoverable record if a judgement turns out wrong |
 
+⚠️ **State the glob wherever a count is recorded.** Every "backend" figure in this
+series was `src/backend/*.mo`, which **excludes `src/backend/rails/`** — 1,509 lines and
+642 comment lines that were not in the first four passes. The ratio happened to be
+identical (45% either way), but the absolute numbers differ by ~1,500 lines and the next
+person will compare against them. Same population-scope class as the sweeps themselves,
+arriving one last time in the measurement of the cleanup.
+
+⚠️ **Check a measurement against a bound you already know.** A block-detector reported
+"129 blocks of ≥18 lines" in a file with 1,800 comment lines — arithmetically impossible,
+and caught by that multiplication rather than by re-reading the code. Correct figure: 20.
+When a measurement produces a number, test it against something already known before
+reporting it.
+
 ⚠️ **Read pass rates with suspicion.** `Reserve.mo` (a small pure module, comments mostly
 invariant arguments — the category that *stays*) and the first two `Main.mo` blocks (both
 documenting deleted code) mislead in **opposite** directions. `Main.mo` alone has 53

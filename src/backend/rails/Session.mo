@@ -36,26 +36,21 @@ module {
 
   /// The response reservation, in bytes.
   ///
-  /// ⚠️ **The cap counts HEADERS as well as the body**, at BOTH ends: the raw
-  /// response the adapter receives and the transform's output are each measured
-  /// against it (interface spec, management-canister). So stripping headers in
-  /// the transform cannot buy room under a tight cap — undershooting fails the
-  /// call, which takes the rail down rather than degrading it.
+  /// ⚠️ **The cap counts HEADERS as well as the body, and is checked TWICE against the
+  /// same number.** Headers first, then the body against what remains; then the
+  /// transform's *Candid-encoded* output against the same value. Two consequences the
+  /// next editor would get wrong: **stripping headers in the transform cannot buy room**
+  /// (the first two checks run before it), and a raw response that only just fits can
+  /// still fail *after* the transform. Sizing at ~2× a measured response is the margin
+  /// those checks need, not padding.
   ///
-  /// A session response is roughly 3.5–6 KB of JSON plus 1–2 KB of headers, so
-  /// 16 KB is about 2× headroom. That is an estimate: #4 captures the real
-  /// fixture, and the check to add then is `cap ≥ 2 × measured`.
+  /// A session response is ~3.5–6 KB of JSON plus 1–2 KB of headers, so 16 KB is ~2×
+  /// headroom — an estimate; #4 captures the real fixture and the check to add then is
+  /// `cap ≥ 2 × measured`.
   ///
-  /// The asymmetry decides the value. Too small takes the rail down; too large
-  /// costs ~10,400 cycles per byte at n = 13. Never `null`: the `ic` package
+  /// ⚠️ **The asymmetry decides the value: too small takes the rail DOWN, too large only
+  /// costs cycles** (~10,400 per byte at n = 13). Never `null` — the `ic` package
   /// substitutes 2,000,000 and the call costs ~20.85 B.
-  ///
-  /// ⚠️ **The cap is checked TWICE against the same number, and the second check
-  /// adds Candid overhead.** Headers are counted first, then the body against
-  /// what remains; then the transform's *Candid-encoded output* is checked
-  /// against the same value. So a raw response that only just fits can still fail
-  /// after the transform. Sizing at ~2× a measured response is not padding, it is
-  /// the margin those two checks need.
   ///
   /// **Three distinct failure messages, and the middle one is actively
   /// misleading** — worth recognising before diagnosing the wrong thing:
@@ -163,16 +158,14 @@ module {
   /// | `line_items[][tax_rates]` | manual tax |
   /// | `after_expiration[recovery]` | the expired event carries a URL that spawns a payable copy-session for 30 days — a direct tally bypass |
   ///
-  /// `adaptive_pricing[enabled]=false` is passed explicitly: it is
-  /// Dashboard-toggleable and harmless to `amount_total` for this shape today,
-  /// but pinning it costs one parameter. Cross-sells are structurally
-  /// neutralised because inline `price_data` mints a fresh Product per session
-  /// with nothing attached — which is also proof that Stripe keeps adding
-  /// Dashboard-side amount changers, and why the `amount_total == usdCents`
-  /// check stays even though it should now be unreachable.
+  /// `adaptive_pricing[enabled]=false` is passed explicitly because it is
+  /// Dashboard-toggleable, and pinning it costs one parameter. Inline `price_data` mints a
+  /// fresh Product per session with nothing attached, so cross-sells are structurally
+  /// neutralised and there are no Dashboard objects to keep in sync.
   ///
-  /// **Inline `price_data` means no Stripe Dashboard objects at all** — no
-  /// Products, no Prices, no Payment Links to configure or keep in sync.
+  /// ⚠️ **Keep the `amount_total == usdCents` check even though this shape makes it
+  /// unreachable.** Stripe keeps adding Dashboard-side amount changers, and the table
+  /// above is a snapshot of the ones that exist today.
   public func createBody(args : CreateArgs) : Text {
     let fields : [(Text, Text)] = [
       ("mode", "payment"),

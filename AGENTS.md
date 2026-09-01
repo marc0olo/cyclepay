@@ -164,7 +164,9 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
      destination is what a reviewer should scrutinise — it is the only case where they
      have nothing to compare against.
   3. **The commit message carries the mapping** — what moved where. It is the only
-     recoverable record if a judgement turns out wrong.
+     recoverable record if a judgement turns out wrong. ⚠️ **State the glob when you
+     quote a count**: `src/backend/*.mo` excludes `src/backend/rails/`, and four passes'
+     figures silently did.
   4. ⚠️ **When you DELETE a mechanism, grep its vocabulary and read every hit asking
      whether it is cited as the JUSTIFICATION for unrelated behaviour.** A sweep aimed at
      *usage* misses these — the code no longer used the ring, but comments still cited it
