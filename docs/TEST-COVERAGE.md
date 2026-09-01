@@ -137,6 +137,41 @@ suite run:
 | credit the floor back on `#delivered` — a **real** debit, i.e. breaking rule 2/3's asymmetry in the optimistic direction | an `afterEach` hook asserting `reserveFloor ≤ reserveBalance`, which fails at scenario **06** — the first delivery in the suite. ⚠️ **The history of this row is the useful part.** The bound was originally one assertion inside 73: enough to catch this mutation, and not enough to be the safety net it was described as, since it checked history up to 73 and nothing after. Widening it to three scenarios fixed three instances; the hook fixes the class, and moved the catch 60+ scenarios earlier — onto the scenario that *causes* the optimism rather than a distant one. Every scenario anyone adds is now born checkpointed |
 | `openEntry` recording a hardcoded status instead of the order's | `test/cmc.test.mo`'s coupling test, added after the bug — and scenario **75**, which found it originally by asserting a set was non-empty |
 
+### 1c. ⚠️ The comment purge — the one change in this project with NO artifact
+
+Recorded here because this is the document whose job is saying what nothing checks, and
+because a green gate on a large comment deletion is the most inviting false signal in the
+repo.
+
+**Every other sweep in this project has a verifier.** A wrong tally fails a unit test; a
+stale `.did` fails step 4; a doc claiming a method that does not exist fails step 5; a
+`§N` with no section fails step 6. **Deleting a comment has none.** No compiler error, no
+red test, and the diff shows what left but not what was *lost* — the reviewer sees the
+removal and has nothing to compare it against. The gate passing on such a change proves
+**nothing was broken, not that nothing was lost.**
+
+⚠️ **And the risk is not symmetric with leaving them.** Pass 1 found a 49-line block
+analysing the interleavings of an `await` that no longer exists, which asserted *"the fix
+is in `admitOrder`: the tally is snapshotted and the decision uses `max(snapshot,
+live)`"* — `admitOrder` is synchronous and contains neither. A reader who checks wastes an
+hour; a reader who trusts it reasons about the next change believing a protection exists
+that does not. It also found a 12-line doc block that had drifted 200 lines onto the wrong
+function. **At 50% comments nobody reads closely enough to catch either**, so volume is
+what produced both.
+
+**The mitigation is procedural, in `AGENTS.md`, because no check can substitute:**
+
+| | rule | what it buys |
+|---|---|---|
+| 1 | **Name the mistake the comment prevents.** No nameable mistake, not a keeper | turns "feels useful" into a claim that can be disputed |
+| 2 | **Never delete without a destination** — `docs/DESIGN.md` or a rule rewritten at the site | a removal with *no* destination is the only case a reviewer cannot check, so it is the category to scrutinise |
+| 3 | **The commit message carries the mapping** — what moved where | the sole recoverable record if a judgement turns out wrong |
+
+⚠️ **Read pass rates with suspicion.** `Reserve.mo` (a small pure module, comments mostly
+invariant arguments — the category that *stays*) and the first two `Main.mo` blocks (both
+documenting deleted code) mislead in **opposite** directions. `Main.mo` alone has 53
+blocks of ≥12 comment lines; no rate should be projected from a handful.
+
 ### 2. Structural limits in PocketIC — verified, not assumed
 
 | Not covered | Why |
