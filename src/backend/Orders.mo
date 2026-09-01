@@ -81,7 +81,7 @@ module {
     /// Only the statuses the queries report are tracked; `countOf` returns 0
     /// for the rest. `recount` rebuilds them if they are ever suspected wrong.
     counts : Map.Map<Text, Nat>;
-    /// §30 PR-B — cycles promised to orders that exist and are not settled.
+    /// #30 PR-B — cycles promised to orders that exist and are not settled.
     ///
     /// ⚠️ **It lives HERE, in the store, deliberately.** `create`,
     /// `applyTransition` and `markPaid` are the only three functions that write an

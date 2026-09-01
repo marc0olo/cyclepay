@@ -143,6 +143,14 @@ step=$((step + 1))
 printf '\n\033[1m── %d. %s\033[0m\n' "$step" "docs match the canister's actual surface"
 scripts/check-doc-surface.py
 
+# ⚠️ **The decision record is enforced, not trusted.** Its predecessor was a 697-line
+# spec that rotted by being updated less often than the code — 67 mentions of deleted
+# architecture while Main.mo still cited it by section number. This cannot check whether
+# a section is TRUE, only that every §N the code cites exists and every section is used.
+step=$((step + 1))
+printf '\n\033[1m── %d. %s\033[0m\n' "$step" "docs/DESIGN.md covers every §N the code cites"
+scripts/check-design-sections.py
+
 # `npm run build` regenerates the bindings the typecheck needs; running the
 # typecheck first on a clean tree fails for the wrong reason.
 run "frontend build — regenerate bindings" npm --prefix src/frontend run build

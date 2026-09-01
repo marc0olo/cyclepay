@@ -1,8 +1,8 @@
 /// Core shared types for the cycles gateway.
 ///
-/// Decision record: design-docs/ONCHAIN_GATEWAY_SPEC.md — §2 (ownership),
-/// §3 (locked cycle quantity), §4 (state machine), §4.2 (data model),
-/// §5.1 (transfer intent), §11.1 (binding Base seams).
+/// Decision record: `docs/DESIGN.md` — §2 ownership, §3 the locked quantity,
+/// §4 the state machine, §4.2 this data model, §5.1 transfer intent,
+/// §11.1 the binding seams.
 import Principal "mo:core/Principal";
 
 module {

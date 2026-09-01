@@ -6,6 +6,13 @@
 > instructions below to maintain the status columns and changelog no longer
 > apply. The M1 PRD lives in issue #1; the remaining open work (executing
 > the PocketIC go-live bars) is issues #2 and #3.
+>
+> ⚠️ **The `design-docs/` references below are dangling.** That directory was
+> deleted 2026-09-01 — it described the ICP-float / CMC-mint / ck-USDC
+> architecture that #33, #35 and #36 removed, and two of its claims had been
+> *reversed* rather than merely outdated. What was still true is
+> `docs/DESIGN.md`, which is gate-enforced against the `§N` labels in the code.
+> The body below is left exactly as frozen.
 
 Working task list for the autonomous build loop. Requirements and all design
 decisions live in `design-docs/ONCHAIN_GATEWAY_SPEC.md` (spec v2.1, the

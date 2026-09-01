@@ -2,7 +2,7 @@
 
 Day-2 operations for the cycles gateway: provisioning, money levers, error
 triage, incident response. Build/upgrade/verify procedure lives in
-`RELEASE.md`; design rationale in `design-docs/ONCHAIN_GATEWAY_SPEC.md`
+`RELEASE.md`; design decisions and the `§N` shorthand in `docs/DESIGN.md`
 (spec v2.1 — section references below are to it).
 
 ## 0. Operating model
