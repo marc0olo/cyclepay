@@ -1853,59 +1853,31 @@ persistent actor CyclesGateway {
   /// money position may be unknown, its promise stays held (#30 PR-B), and a human
   /// resolves it off-chain. Only `abandon_order` and `record_delivered` end an order.
   ///
-  /// ⚠️ **One escalation function, and resist splitting it again.** Two of them once
+  /// **One escalation function, and resist splitting it again.** Two of them once
   /// filed two queue kinds for the same question; they differed only in which audit tag
   /// they emitted and whether they read `blockIndex`, and both left the order in the
   /// same state. A second escalation path is a second answer to "where is the money",
   /// which is the one question that must have exactly one.
   ///
-  /// ── EVERY route to `#needsReview` on the delivery path, because the count is
-  /// ── claimed elsewhere and a census beats a claim ─────────────────────────────
+  /// Every route to `#needsReview`, and why the cause and the money position are recorded
+  /// separately: `docs/DESIGN.md` §4.1.
   ///
-  /// **Unknown money position** — "we can no longer ask safely", the only kind that
-  /// needs a human to establish anything:
-  ///
-  ///  1. `#staleIntent` from `Delivery.stageOf`: the intent is past the ledger's ~24 h
-  ///     dedup window, so a replay is no longer protected. Reaching it means a
-  ///     ~day-long ledger outage with an hourly sweep and buyer kicks hammering it
-  ///     throughout — **expected never**, and documented as such rather than as a
-  ///     routine branch. Covered by scenario 80.
-  ///  2. The ledger's `#escalate` responses — `#TooOld`, `#BadBurn` — arriving here.
-  ///     ⚠️ Not a second cause: `#TooOld` **is** case 1 told to us by the ledger
-  ///     instead of derived from our own clock, and `#BadBurn` is meaningless for a
-  ///     transfer. Same position, different messenger.
-  ///
-  /// **Known money position** — no establishing needed, and this is the correction
-  /// to a claim of "one trigger" that was too tidy:
-  ///
-  ///  3. §5.3's 72 h max-wait terminate. It fires on an order that has been `#paid`
-  ///     too long *whatever* the reason, including one where **nothing was ever
-  ///     sent** — position certain, instruction "refund in the Stripe Dashboard".
-  ///     So `#needsReview` is genuinely reachable with the position known, and
-  ///     `Delivery.terminationFor` is what distinguishes the cases. Read the reduction's
-  ///     claim as scoped to the *unknown-position* triggers, which is what "we can
-  ///     no longer ask safely" means; the RUNBOOK's triage is organised by position
-  ///     for exactly this reason.
-  ///
-  /// **Unreachable guard**:
-  ///
-  ///  4. `journalInconsistent` — the intent's amount exceeds the order's locked
-  ///     quantity, which cannot happen because the amount was derived by
-  ///     subtracting a fee from that very quantity. ⚠️ If it ever fires, it is NOT
-  ///     a counter-example to the reduction: it means `lockedCycles` acquired a
-  ///     second writer, which is a much larger problem than one escalated order.
-  ///     Escalating rather than guessing a fee on a money path is the point.
+  /// ⚠️ **`journalInconsistent` is an unreachable guard, and if it ever fires it is not a
+  /// delivery problem.** The intent's amount cannot exceed the order's locked quantity,
+  /// because it was derived by subtracting a fee from that quantity — so firing means
+  /// `lockedCycles` acquired a second writer. Escalating rather than guessing a fee on a
+  /// money path is the point.
   func escalateDelivery(order : Types.Order, stage : Text, detail : Text) {
     ignore tryTransition(order.id, #needsReview);
     Delivery.patch(deliveryJournal, order.id, { status = ?#needsReview; blockIndex = null; cyclesDelivered = null; bumpRetries = false; lastError = null }, Time.now());
-    // ⚠️ **No delay alert to close here, by construction (#37).** An entry saying "it
+    // **No delay alert to close here, by construction (#37).** An entry saying "it
     // delivers on the next sweep" would have become a false promise on the
     // worklist next to the real problem. Escalation moves the status off `#paid`, so
     // Same for the once-per-order audit guard: nothing will re-audit a blocked
     // delivery for an escalated order, and keeping the id would only suppress a
     // legitimate line if it were ever re-driven.
     deliveryBlockedAudited.remove(order.id);
-    // ⚠️ **`blockIndex` is no longer carried here.** It is on the `JournalEntry`
+    // **`blockIndex` is no longer carried here.** It is on the `JournalEntry`
     // along with `status`, `retries` and `updatedAtNs`, and #37 §1b moved the last thing
     // this problem held alone — the ledger's error text — to `JournalEntry.lastError`.
     // What is left is the stage and the resolution state, which is what a problem on
@@ -1923,17 +1895,12 @@ persistent actor CyclesGateway {
   func driveDelivery(orderId : Types.OrderId) : async* () {
     label drive loop {
       let ?order = Orders.get(orderStore, orderId) else return;
-      // ⚠️ **The wait bound applies to `#paid` and only `#paid`**, because that is the
-      // one status with money in and nothing delivered. `updatedAtNs` is the right age
-      // anchor: retries deliberately do not transition, so the clock stays pinned to
-      // the moment the order was paid, and an order that is actually progressing
-      // resets it by moving.
-      //
-      // A delivery has several paths that return without transitioning — the ledger
-      // rejecting retriably, a stored fee the order cannot cover, a call that gets no
-      // reply. Each leaves the order `#paid` for the next sweep, which is correct for a
-      // transient fault and would park an order forever on a persistent one. That is
-      // what this bound exists to stop.
+      // ⚠️ **The wait bound applies to `#paid` and only `#paid`** — the one status with
+      // money in and nothing delivered. `updatedAtNs` is the right anchor because
+      // **retries deliberately do not transition**, so the clock stays pinned to the
+      // moment the order was paid. Several failure paths return without transitioning
+      // and leave the order `#paid` for the next sweep, which is right for a transient
+      // fault and would park an order forever on a persistent one.
       if (order.status == #paid) {
         switch (Delivery.waitStage(order.updatedAtNs, Time.now(), deliveryConfig)) {
           case (#retry) {};
@@ -1941,19 +1908,13 @@ persistent actor CyclesGateway {
             // Tell someone while the cause is still fixable, and keep retrying: most
             // incidents end here with the order delivering.
             //
-            // ⚠️ **One line per order, and `markDelayed` is what bounds it** — it
-            // returns true only on the first crossing, so the line needs no
-            // bookkeeping of its own. That is what retires the `delayedAlerts` map
-            // rather than relocating it: the guard is a field on the order, and
-            // setting an already-set field is idempotent.
+            // ⚠️ **One line per order, bounded by `markDelayed`** — it returns true only
+            // on the first crossing, so the line needs no bookkeeping of its own and
+            // passes `AuditLog.mo`'s admission rule.
             //
-            // The line passes `AuditLog.mo`'s admission rule cleanly — a state
-            // transition, once per order, and reaching it needs a real paid order, so
-            // it is attacker-priced unlike the refusal lines #61 removed.
-            //
-            // ⚠️ One in-flight status means one sentence — no switch on status here.
-            // If a second status can ever sit still, this becomes a switch again and
-            // the wording has to name which one.
+            // One in-flight status means one sentence, so no switch here. If a second
+            // status can ever sit still, this becomes a switch and the wording has to
+            // name which one.
             if (Orders.markDelayed(orderStore, orderId, Time.now())) {
               audit(
                 "delivery.delayed",
@@ -1984,24 +1945,12 @@ persistent actor CyclesGateway {
       switch (stage) {
         case (#none) return;
         case (#escalate(reason)) {
-          // ⚠️ This is the route that actually fires. The recovery sweep runs
-          // every 15 min, so `stageOf` reaches an escalation within minutes of a
-          // failure, while the 72 h wait bound is the rare path. Emitting a bare
-          // "delivery stopped: <reason>" here left the operator's *first*
-          // read of the entry with no instruction, on the high-probability route.
-          //
-          // Two different questions, so both are answered:
-          //
-          // - `stage` stays `stageOf`'s reason — that is the **cause**, and it is
-          //   the key the runbook triage table is organised by.
-          // - the detail comes from `terminationFor` — that is the **money
-          //   position**, which is what determines the action.
-          //
-          // They can legitimately disagree: `stageOf` stops because an intent aged
-          // past the dedup window, while the money position depends on whether a block
-          // was recorded — and "establish its fate, never rebuild" is the correct
-          // action regardless of why we stopped trying. Naming both means neither
-          // reading can mislead.
+          // **The high-probability escalation route, so it must carry an
+          // instruction.** `stage` is the CAUSE (the runbook's triage key); the detail is
+          // the MONEY POSITION from `terminationFor` (what determines the action). They
+          // can legitimately disagree — see §4.1 — so both are recorded and neither
+          // reading can mislead. A bare "delivery stopped: <reason>" left the operator's
+          // first read with no instruction.
           let stage = Delivery.escalateReasonToText(reason);
           let position = Delivery.terminationFor(order.status, deliveryJournal.get(orderId));
           let detail =
@@ -2063,32 +2012,19 @@ persistent actor CyclesGateway {
           // fall through the loop → #replayDelivery issues the transfer
         };
         case (#replayDelivery(intent)) {
-          // ⚠️ **The fee is DERIVED from the intent, never re-read here.**
+          // ⚠️ **The fee is DERIVED from the intent, never re-read here** — the fee the
+          // original attempt used is recoverable exactly as `lockedCycles - amount`, so a
+          // replay reproduces the original args **bit for bit**. Re-reading it would make
+          // a replay after a fee change a DISTINCT transaction if the fee is inside the
+          // ledger's dedup key, and the buyer is paid twice. Whether it is in that key is
+          // not knowable from here, which is why the args are reproduced rather than
+          // rebuilt.
           //
-          // An earlier version read `icrc1_fee()` on every replay and a comment
-          // claimed the fee is outside the ledger's dedup key, so a replay with a
-          // corrected fee was "still byte-identical as far as the ledger is
-          // concerned". **Nobody verified that**, and the whole at-most-once
-          // guarantee rested on it: if the fee IS in the key, then a transfer that
-          // executed, lost its response, and is replayed after a fee change is a
-          // DISTINCT transaction — and the buyer is paid twice.
-          //
-          // So the claim is removed rather than checked. `deliverableCycles` set
-          // `amount = lockedCycles - fee`, which means the fee it used is
-          // recoverable exactly: `lockedCycles - amount`. A replay therefore
-          // reproduces the original args **bit for bit**, and it does not matter
-          // what the ledger's dedup key contains.
-          //
-          // ⚠️ **NO TEST CAN CATCH A REGRESSION HERE — verified by mutation.**
-          // Re-reading the fee on this line passed every Motoko assertion and the
-          // whole PocketIC suite, because the unit tests pin the *arithmetic*
-          // (`test/cmc.test.mo`) and the integration suite runs against a real ledger
-          // whose fee never moves. (#30 PR-B then deleted `icrc1_fee` from the ledger's
-          // service type entirely, so the mutation no longer even compiles — the
-          // strongest form of this guard, and the reason to keep it that way.) The failure
-          // needs a fee change inside the 24 h dedup window, which nothing here
-          // can arrange. Same class as #33's transform/consensus gap: the comment
-          // is the guard, so do not re-read the fee on this path.
+          // ⚠️ **No test can catch a regression here — verified by mutation.** Re-reading
+          // the fee passed every unit assertion and the whole PocketIC suite: the unit
+          // tests pin the arithmetic and the integration ledger's fee never moves. The
+          // real guard is now the ledger's service type, which does not declare
+          // `icrc1_fee` at all, so the mutation no longer compiles. **Keep it undeclared.**
           let fee : Nat = if (order.lockedCycles >= intent.amountCycles) {
             order.lockedCycles - intent.amountCycles : Nat;
           } else {
@@ -2097,19 +2033,14 @@ persistent actor CyclesGateway {
             escalateDelivery(order, "journalInconsistent", "delivery intent amount " # intent.amountCycles.toText() # " exceeds the order's locked " # order.lockedCycles.toText() # " — the fee cannot be recovered; establish the transfer's fate on the cycles ledger before re-sending");
             return;
           };
-          // ── Rule 2 (#30 PR-B): the floor drops when the transfer is ISSUED ──
+          // ── Rule 2 (§5.4): the floor drops when the transfer is ISSUED ──
           //
-          // ⚠️ Not when it settles, and by `amount + fee` — the figure actually
-          // being debited — rather than `lockedCycles` unconditionally, because the
-          // `#BadFee` re-issue below debits `locked + delta`.
-          //
-          // The only way the balance can surprise us downward is one of OUR
-          // transfers landing without us learning it did: our reply callback traps,
-          // so the ledger's debit stands while the journal patch rolls back. (A
-          // controlled upgrade cannot do this — `stop_canister` drains outstanding
-          // callbacks before the canister reaches `Stopped`, so the documented
-          // deploy procedure cannot strand a transfer.)
-          // Assuming the debit now makes that case exact instead of optimistic.
+          // ⚠️ By `amount + fee` — the figure actually being debited — not
+          // `lockedCycles`, because the `#BadFee` re-issue below debits `amount +
+          // corrected fee`. The case this is pessimistic about: our reply callback
+          // traps, so the ledger's debit stands while the journal patch rolls back.
+          // (A controlled upgrade cannot do that — `stop_canister` drains outstanding
+          // callbacks first.)
           let debited = intent.amountCycles + fee;
           reserveFloor := Reserve.floorAfterOutflow(reserveFloor, debited);
           outflowsIssued += 1;
@@ -2149,40 +2080,30 @@ persistent actor CyclesGateway {
               return;
             };
             case (#badFee(expected)) {
-              // The reserve absorbs a risen fee; the buyer is never shorted, so
-              // the intent's AMOUNT is untouched — only the fee we pass.
+              // The reserve absorbs a risen fee; the buyer is never shorted, so the
+              // intent's AMOUNT is untouched — only the fee we pass.
               //
-              // ⚠️ **Re-issued HERE, in the same message, rather than left to the
-              // next sweep.** The fee is derived from the intent, so a later replay
-              // derives the same rejected fee and bounces again — and since #30 PR-B
-              // deleted the retry cap on this path, "again" means every sweep until
-              // the 72 h max-wait, not until a counter runs out. Correcting in-message
-              // is what makes the loop terminate. Changing the fee is safe precisely
-              // because `#BadFee` is *definitive*: the ledger did not execute, so this
-              // is a first attempt with corrected args, not a replay of something that
-              // might already have happened.
+              // ⚠️ **Re-issued HERE, in the same message, or the loop never terminates.**
+              // The fee is derived from the intent, so a later replay derives the same
+              // rejected fee and bounces again — every sweep until the max-wait bound.
+              // Changing the fee is safe only because `#BadFee` is *definitive*: the
+              // ledger did not execute, so this is a first attempt with corrected args,
+              // not a replay of something that might already have happened.
               //
-              // ⚠️ The reserve then drops by `lockedCycles + delta` while #30's
-              // tally drops by `lockedCycles`, so `available` drifts down by the
-              // delta. Fractions of a fee, erring conservative — but the "exactly
-              // invariant under delivery" claim holds only while the fee is
-              // unchanged, so do not read that small drift as a bug.
-              // ⚠️ **Learn the fee, for every LATER order (#30 PR-B).** This arm is
-              // the only place the ledger tells us its fee, now that delivery does not
-              // read it. Persisting here is what bounds the cost of a stale copy to a
-              // single rejected call: without it, every order after a fee change would
-              // pay the same round trip.
-              //
-              // It does NOT change this order's intent — the amount is committed and
-              // rebuilding it is the double-pay this path exists to avoid.
+              // The floor then drops by `amount + corrected fee` while the promise tally
+              // drops by the amount alone, so `available` drifts down by the delta —
+              // fractions of a fee, erring conservative. Not a bug (§5.4).
+              // ⚠️ **Learn the fee for every LATER order.** This arm is the only place
+              // the ledger tells us its fee, so persisting here bounds the cost of a
+              // stale copy to one rejected call. It does **not** change this order's
+              // intent — rebuilding that is the double-pay this path exists to avoid.
               cyclesLedgerFee := expected;
               audit("delivery.feeChanged", orderId # ": ledger expects " # expected.toText() # " (intent implies " # fee.toText() # "); reserve absorbs the difference, and " # expected.toText() # " is now the stored fee");
-              // ── Rule 3 (#30 PR-B): a DEFINITIVE rejection credits the floor back ──
-              // `#BadFee` means the ledger processed the call and refused it, so
-              // nothing moved and rule 2's decrement was not a real debit. Credit it
-              // and re-decrement for what the corrected attempt will actually take.
-              // ⚠️ If the re-issue then fails without a reply, the LARGER decrement
-              // stands — correctly pessimistic.
+              // ── Rule 3 (§5.4): a DEFINITIVE rejection credits the floor back ──
+              // `#BadFee` means the ledger processed the call and refused it, so nothing
+              // moved and rule 2's decrement was not a real debit.
+              // ⚠️ If the re-issue then fails with no reply, the LARGER decrement stands
+              // — correctly pessimistic.
               reserveFloor += debited;
               let reDebited = intent.amountCycles + expected;
               reserveFloor := Reserve.floorAfterOutflow(reserveFloor, reDebited);
@@ -2246,7 +2167,7 @@ persistent actor CyclesGateway {
               // attempt's decrement is exact — and it says nothing about an earlier
               // attempt, whose decrement correctly stands.
               //
-              // ⚠️ That standing decrement is **not a leak**. It is the floor-side
+              // That standing decrement is **not a leak**. It is the floor-side
               // expression of the same unknown that parks the order at
               // `#needsReview`: the money position is unknown, so the floor assumes
               // the debit until a human establishes otherwise, and a quiet adopt
@@ -2321,29 +2242,24 @@ persistent actor CyclesGateway {
 
   /// Manual delivery kick — **admin, or the order's own owner** (#30 PR-B).
   ///
-  /// Safe to spam by construction: every step is journalled, deduplicated,
-  /// idempotent and single-flighted, which is what makes it safe to widen. It does
-  /// exactly the right thing for a buyer whose delivery is stuck — replay the stored
-  /// intent, `#Duplicate` recovers the block — so a page refresh heals their order in
-  /// seconds instead of waiting up to a sweep interval.
+  /// Safe to spam by construction: every step is journalled, deduplicated, idempotent
+  /// and single-flighted. A page refresh heals a stuck order in seconds rather than
+  /// waiting a sweep interval.
   ///
-  /// ⚠️ **Owner-scoped, not public.** `getOwned` is the guard, so a caller can only
-  /// kick their OWN order. The DoS question is real but bounded: one order per kick,
-  /// serialised by `deliveriesInFlight`, on an order they had to pay real money to
-  /// create — a self-funding attack at the purchase floor. Contrast scenario 20's
-  /// property, which is about *unauthenticated* traffic triggering a sweep over
-  /// **every** order; that is a different shape and stays refused.
+  /// ⚠️ **Owner-scoped, not public.** `getOwned` is the guard, so a caller can only kick
+  /// their OWN order — one order per kick, serialised, on an order they paid real money
+  /// to create. *Unauthenticated* traffic triggering a sweep over **every** order is a
+  /// different shape and stays refused.
   ///
-  /// ⚠️ **This does not replace the recovery sweep, and must not be read as making
-  /// it optional.** Two different jobs: the sweep is the *guarantee* — we took the
-  /// money, so we deliver whether or not the buyer ever comes back — and this is the
-  /// *latency fix*. A UI-only retry would make fulfilling an obligation depend on the
-  /// buyer returning, and whoever closed the tab is exactly who most needs us to
-  /// finish.
+  /// ⚠️ **This does not replace the recovery sweep and must not be read as making it
+  /// optional.** The sweep is the *guarantee* — we took the money, so we deliver whether
+  /// or not the buyer comes back; this is the *latency fix*. A retry that only exists in
+  /// the UI makes fulfilling an obligation depend on the buyer returning, and whoever
+  /// closed the tab is exactly who most needs us to finish.
   ///
-  /// An admin kick is audited (it is an ops action on someone else's order); an owner
-  /// kicking their own is not, or a refresh loop would fill the ring buffer with
-  /// lines that say nothing.
+  /// ⚠️ **An owner kicking their own order is NOT audited**, because the log drops
+  /// nothing (#37) and a refresh loop would be permanent state growth driven by a
+  /// caller. An admin kick is audited — it is an ops action on someone else's order.
   public shared ({ caller }) func process_order(id : Types.OrderId) : async Result.Result<Types.Order, ProcessOrderError> {
     let isAdmin = Auth.checkAdmin(caller, Principal.isController).isOk();
     if (isAdmin) {

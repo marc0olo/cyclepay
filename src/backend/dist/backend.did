@@ -796,29 +796,24 @@ service : {
                         }) query;
   /// Manual delivery kick — **admin, or the order's own owner** (#30 PR-B).
   /// 
-  /// Safe to spam by construction: every step is journalled, deduplicated,
-  /// idempotent and single-flighted, which is what makes it safe to widen. It does
-  /// exactly the right thing for a buyer whose delivery is stuck — replay the stored
-  /// intent, `#Duplicate` recovers the block — so a page refresh heals their order in
-  /// seconds instead of waiting up to a sweep interval.
+  /// Safe to spam by construction: every step is journalled, deduplicated, idempotent
+  /// and single-flighted. A page refresh heals a stuck order in seconds rather than
+  /// waiting a sweep interval.
   /// 
-  /// ⚠️ **Owner-scoped, not public.** `getOwned` is the guard, so a caller can only
-  /// kick their OWN order. The DoS question is real but bounded: one order per kick,
-  /// serialised by `deliveriesInFlight`, on an order they had to pay real money to
-  /// create — a self-funding attack at the purchase floor. Contrast scenario 20's
-  /// property, which is about *unauthenticated* traffic triggering a sweep over
-  /// **every** order; that is a different shape and stays refused.
+  /// ⚠️ **Owner-scoped, not public.** `getOwned` is the guard, so a caller can only kick
+  /// their OWN order — one order per kick, serialised, on an order they paid real money
+  /// to create. *Unauthenticated* traffic triggering a sweep over **every** order is a
+  /// different shape and stays refused.
   /// 
-  /// ⚠️ **This does not replace the recovery sweep, and must not be read as making
-  /// it optional.** Two different jobs: the sweep is the *guarantee* — we took the
-  /// money, so we deliver whether or not the buyer ever comes back — and this is the
-  /// *latency fix*. A UI-only retry would make fulfilling an obligation depend on the
-  /// buyer returning, and whoever closed the tab is exactly who most needs us to
-  /// finish.
+  /// ⚠️ **This does not replace the recovery sweep and must not be read as making it
+  /// optional.** The sweep is the *guarantee* — we took the money, so we deliver whether
+  /// or not the buyer comes back; this is the *latency fix*. A retry that only exists in
+  /// the UI makes fulfilling an obligation depend on the buyer returning, and whoever
+  /// closed the tab is exactly who most needs us to finish.
   /// 
-  /// An admin kick is audited (it is an ops action on someone else's order); an owner
-  /// kicking their own is not, or a refresh loop would fill the ring buffer with
-  /// lines that say nothing.
+  /// ⚠️ **An owner kicking their own order is NOT audited**, because the log drops
+  /// nothing (#37) and a refresh loop would be permanent state growth driven by a
+  /// caller. An admin kick is audited — it is an ops action on someone else's order.
   process_order: (id: OrderId) -> (Result_10);
   /// Batch pre-purchase quote, public.
   /// 
