@@ -1026,67 +1026,17 @@ persistent actor CyclesGateway {
     };
     let owner : Types.Owner = #ii(caller);
 
-    // ── The reserve, read from the ledger ────────────────────────────────────
-    //
-    // ⚠️ **Why awaiting this is safe, when `Gate.admit` is synchronous precisely
-    // so nothing can change between observing and deciding.**
-    //
-    // Because `available = balance − promised` is **invariant under delivery**, and
-    // the three interleavings this codebase actually permits all land on
-    // conservative or exact. Written out, because "conservative, never optimistic"
-    // is a universal a reader can falsify in thirty seconds, and this comment is
-    // the only thing between a future maintainer and *"this await looks like a bug,
-    // let me cache the balance"*:
-    //
-    // **(A) racing a concurrent DELIVERY.** ⚠️ **This is the case an earlier version
-    // of this trace got WRONG, and the error was optimistic — the dangerous
-    // direction.** It reasoned about where the balance read falls relative to the
-    // ledger debit and concluded "read-before-debit cancels exactly, because the
-    // balance still includes those cycles and the tally still counts them". The
-    // second half does not follow: the tally is read at DECISION time, not at
-    // balance-read time. A delivery whose continuation runs in that gap debits the
-    // ledger *and* releases the promise, so the stale balance includes the cycles
-    // while the live tally no longer counts them — `available` overstated by a full
-    // order at the ceiling.
-    //
-    // The fix is in `admitOrder`: the tally is snapshotted beside this call and the
-    // decision uses `max(snapshot, live)`, which makes the staleness one-sided. The
-    // ordering fact the old trace relied on is still true and still worth knowing —
-    // the release runs strictly after the transfer response, which follows strictly
-    // after the debit, so *released-but-not-debited* cannot occur — it just was not
-    // sufficient on its own.
-    //
-    // **(B) racing a concurrent EXPIRY's release.** An expired order never moved
-    // cycles, so a release here changes the tally and not the balance. Read before
-    // → we understate `available` (conservative). Read after → exact. There is no
-    // optimistic case, because this path can only ever *reduce* what we consider
-    // owed; it can never raise the balance.
-    //
-    // **(C) racing a second `create_order`'s hold.** Both calls may read a balance
-    // and then decide, but each decides and holds in ONE synchronous block that
-    // re-reads `Orders.promised` — and Motoko messages do not interleave except at
-    // an await, of which that block has none. So whichever block runs second sees
-    // the first one's hold and answers against it. This is the case the reordering
-    // exists for: with the check and the hold split by the `raw_rand` await, both
-    // could pass against the same tally.
-    //
-    // A stale balance is therefore never optimistic **given the `max` in
-    // `admitOrder`** — and that qualifier is the whole content of the fix. Without
-    // it, (A) pairs a not-yet-lowered balance with an already-released promise, and
-    // that is precisely capacity that is free-looking and unaccounted.
     // ── The order, held against the reserve floor ────────────────────────────
     //
-    // ⚠️ **No ledger call here, deliberately.** `reserveFloor` is a maintained
-    // lower bound moved only by our own outflows, so the admission decision is
-    // synchronous — the check and the hold are in one block inside
-    // `createOrderWithFreshId` with no await between them, which is what stops two
-    // concurrent creates promising the same cycles.
-    //
-    // An earlier version awaited `icrc1_balance_of` at this point and paired it
-    // with a live tally. That was optimistic by a full order whenever a delivery
-    // released in the gap, and no fresher read could have fixed it: an awaited
-    // value is historical the moment the continuation resumes. Removing the read
-    // removed the class.
+    // ⚠️ **No ledger call here, and the decision must stay synchronous.**
+    // `reserveFloor` is a maintained lower bound moved only by our own outflows
+    // (§5.4), so the check and the hold sit in ONE block inside
+    // `createOrderWithFreshId` with no await between them. Motoko messages do not
+    // interleave except at an await, so whichever block runs second sees the first
+    // one's hold. **Splitting them across an await lets two concurrent creates
+    // promise the same cycles** — which is what an earlier version did, and no
+    // fresher balance read can fix it: an awaited value is historical the moment
+    // the continuation resumes.
     let order = switch (
       await* createOrderWithFreshId(caller, usdCents, owner, #card, destination, lockedCycles, pricing)
     ) {
@@ -2440,81 +2390,30 @@ persistent actor CyclesGateway {
     report.counts;
   };
 
-  /// Reconcile the floor against the ledger (#30 PR-B) — **rule 1 of three**.
+  /// Deliveries that may still respond: a journalled intent, no recorded block, on an
+  /// order that is still `#paid`. The quiet-window predicate — why it is a superset of
+  /// "in flight", and why the cost is not a deadlock: `docs/DESIGN.md` §5.4.
   ///
-  /// This is where a top-up becomes sellable: the floor only ever learns about
-  /// incoming cycles by looking. Called by the recovery sweep so drift is bounded
-  /// in time, and exposed to the operator so funding does not wait for a tick.
+  /// ⚠️ **The `#paid` clause is load-bearing, and leaving it out froze the reserve.** An
+  /// escalated order keeps the intent-without-block shape *forever*, so without it one
+  /// escalation makes the quiet window unsatisfiable for the life of the canister: every
+  /// reconcile skips, every `refresh_reserve` skips, and top-ups stop registering.
   ///
-  /// ⚠️ **A shortfall here is an invariant breach, not a surprise to absorb.** The
-  /// ledger holding LESS than the floor says would mean an outflow this canister
-  /// did not cause — and per `Reserve.mo`'s asymmetry that cannot happen (no
-  /// allowance exists, `withdraw` is owner-only and unused). It is audited loudly
-  /// and the truth is adopted anyway: continuing to sell against a bound the ledger
-  /// contradicts is the one thing worse than under-selling.
-  /// Deliveries that may still respond: a journalled intent, no recorded block, on
-  /// an order that is still `#paid`.
+  /// ⚠️ **`entry.status` is the JOURNAL's copy of the order's status, and this predicate is
+  /// the only thing that reads it.** `Delivery.openEntry` once wrote a hardcoded status,
+  /// which made this match nothing and quietly disabled the quiet window. If it stops
+  /// recording the order's real status this silently returns 0 and the floor becomes
+  /// adoptable across an in-flight transfer. `test/cmc.test.mo` pins the coupling.
   ///
-  /// ⚠️ **The `#paid` clause is load-bearing, and leaving it out froze the reserve.**
-  /// An escalated order keeps exactly the intent-without-block shape *forever* —
-  /// `escalateDelivery` patches the status and leaves `blockIndex` null, and
-  /// resolution happens off-chain on the queue entry, touching nothing in the
-  /// journal. Without the clause, **one escalation makes the quiet window
-  /// unsatisfiable for the life of the canister**: every reconcile skips, every
-  /// `refresh_reserve` skips, and top-ups silently stop registering. Pessimistic,
-  /// but operationally it reads as the rail slowly closing with no lever.
+  /// ⚠️ **Soundness requires NO AWAIT between the intent write and the transfer issue, and
+  /// nothing in the type system enforces it.** The one await that used to sit in that
+  /// stretch (`icrc1_fee`) became a stored value, which is why the two are adjacent today.
+  /// Reintroduce an await there and a reconcile can adopt a balance while a transfer it
+  /// cannot see is in flight. This comment is the guard.
   ///
-  /// Excluding escalated orders is sound because **they have no outstanding
-  /// callback.** Escalation is decided either from `stageOf` at the top of the drive
-  /// loop (no call in the air) or after a response has already arrived — never with
-  /// one in flight. And their pessimism is not lost: `Orders.promised` still holds
-  /// their promise, which is exactly what `#needsReview` is for, and the standing
-  /// decrement from their issue is absorbed when a quiet adopt takes the ledger's
-  /// truth.
-  ///
-  /// ⚠️ Still a conservative SUPERSET of in-flight for live orders, which is what
-  /// makes it usable: what it counts is "an intent exists and no block is recorded",
-  /// which includes the sweep-to-sweep gap after a retriable failure, when nothing
-  /// is in the air at all. Counting those costs a skipped reconcile, which is free.
-  ///
-  /// The direction that would break the reconcile is the reverse — an outflow in
-  /// flight with no intent to see — and it cannot happen, because `openEntry` commits
-  /// the intent in a synchronous block before any issue and the `#BadFee` re-issue
-  /// runs under an existing one.
-  ///
-  /// ⚠️ **That soundness is a property of there being no await between the intent
-  /// write and the transfer issue, and nothing in the type system enforces it.**
-  /// #30 PR-B removed the one await that used to sit in that stretch (`icrc1_fee`,
-  /// now a stored value), which is why the two are adjacent today. Reintroduce an
-  /// await there and a reconcile can adopt a balance while a transfer it cannot see
-  /// is in flight. This comment is the guard.
-  /// ⚠️ **It counts a delivery PARKED BETWEEN RETRIES, not only one in flight**, and
-  /// that is deliberate: a transfer issued before a balance read can land after it,
-  /// and nothing in the journal distinguishes "issued and awaiting a reply" from
-  /// "failed and waiting for the next sweep". Tracking true in-flight state would
-  /// need a counter incremented before the await, which leaks upward for good if a
-  /// reply callback ever traps — trading a bounded pessimism for an unbounded one.
-  ///
-  /// The cost is therefore: while any delivery is retrying, a top-up is not adopted,
-  /// so **new sales** are refused against cycles the ledger already holds. Bounded
-  /// by the same ~24 h fuse (the intent goes stale, the order escalates, the entry
-  /// leaves this set), and it does **not** block delivery itself — deliveries never
-  /// consult the floor. So the one case that looks like a deadlock is not one: a dry
-  /// reserve makes deliveries fail with `#InsufficientFunds`, the operator tops up,
-  /// the retry succeeds *because the ledger has the cycles regardless of our floor*,
-  /// the entry settles, and the next reconcile adopts. The remaining pessimistic
-  /// case is a ledger outage — where refusing to sell is the correct posture anyway.
-  ///
-  /// ⚠️ There is deliberately **no force flag** on `refresh_reserve`. Adopting
-  /// across an unsettled delivery is the exact bug this predicate exists to prevent,
-  /// so a lever for it would be a lever for the bug.
-  ///
-  /// ⚠️ **`entry.status` is the JOURNAL's copy of the order's status, and this
-  /// predicate is the only thing that reads it.** `Delivery.openEntry` used to hardcode
-  /// a hardcoded status, which made this match nothing at all and quietly disabled the
-  /// quiet window — see the comment there. If it ever stops recording the order's real
-  /// status, this silently returns 0 again and the reserve floor becomes adoptable
-  /// across an in-flight transfer. `test/cmc.test.mo` pins the coupling.
+  /// ⚠️ **Do not add a force flag to `refresh_reserve`.** Adopting across an unsettled
+  /// delivery is the exact bug this predicate prevents, so a lever for it is a lever for
+  /// the bug.
   func unsettledDelivery(entry : Types.JournalEntry) : Bool {
     entry.status == #paid and entry.transferIntent != null and entry.blockIndex == null;
   };
