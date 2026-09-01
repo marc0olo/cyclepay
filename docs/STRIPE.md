@@ -448,8 +448,10 @@ audit log is the one structure here whose growth is **not** attacker-priced (ord
 are bounded by the open-order cap and the reserve; orphan entries each require a real
 payment to exist). ⚠️ **A line per attempt was harmless only while the log was a
 4,096-entry ring — and #37 removed that ring**, which is why the refusal lines had to go
-first and why the admission rule was applied to all 71 tags rather than to the two paths
-that prompted it.
+first and why the admission rule was applied to **every** tag rather than to the two
+paths that prompted it. (#37 §2c did that pass over the whole population; the count is
+deliberately not written here, because a number in prose that nothing checks drifts —
+`grep -c` on the `audit(`/`auditAdmin(` call sites is the answer that cannot be stale.)
 
 **The exception is the transition, and it falls out of the distinction above.** The
 *operational* conditions are facts about the **gateway**, so entering one writes
@@ -774,6 +776,8 @@ during the overlap never drops a delivery.
 Card-rail levers, all controller-gated (`Auth.mo`, flat allowlist, equal
 privileges — any controller can do any of this):
 
+<!-- surface:admin -->
+
 | Method | Purpose |
 |---|---|
 | `set_stripe_api_key` | provision / rotate the restricted `rk_` key (§13) |
@@ -788,29 +792,60 @@ privileges — any controller can do any of this):
 | `orphans` / `resolve_orphan` | the operator worklist |
 | `order_for_payment` | reconciliation: Stripe charge → order it funded |
 | `delivery_journal` | money-out record for one order |
-| `audit_log` | operational trail; gaps in `seq` mean ring-buffer drops |
-| `process_order` | manual delivery kick; safe to spam. **Admin or the order's own owner** |
+| `audit_log` | operational trail, **paginated** (`afterSeq`, `limit`). ⚠️ Nothing drops since #37 — it was a 4,096-entry ring and gaps in `seq` were how you spotted drops; **there are no gaps now**, and `seq` is only a never-reused ordering |
 | `abandon_order` | void an unpaid order, with the reason recorded in the audit trail |
 | `record_delivered` | record that an escalated order's cycles DID reach the buyer, evidenced by the ledger block |
 | `pending_deliveries` | every delivery with work outstanding right now, self-clearing — the live view the 2 h queue alert cannot give |
 | `refresh_reserve` | observe the reserve balance now — **required after a top-up**, or the gateway sells nothing |
-| `recount_orders` | rebuild the O(1) per-status counters from the store |
+| `recount_orders` | run the tally reconcile now instead of waiting for the daily one. ⚠️ **Not a stronger repair than the timer's** — same bounded pass, same one-directional rule, so a recount *below* the maintained tally is refused rather than adopted (#63). No force flag, deliberately |
+| `admin_order` / `admin_orders` | read any order, and list with filters + a cursor — the controller-side counterpart to the owner-scoped reads below (#38) |
+| `admin_receipt` | one order's full receipt for any principal. An **update**, not a query, so the read is audited (#38) |
+| `delayed_deliveries` | orders past the 2 h alert threshold, paginated — the worklist between "delivering normally" and "escalated" (#37) |
+| `resolve_problem` | close one obligation on one order. ⚠️ Takes `(orderId, kindTag, paymentRef)` — a **triple**, because an order can carry several problems of one kind and an earlier version closed all of them at once (#37) |
+| `orphans_unresolved` | the open subset of the orphan list — payments that could not be attributed to any order |
+| `expire_order` | release a stranded `#created` order's reserve capacity by hand, when Stripe's expiry event never arrived (#52) |
 | `set_recovery_interval` | sweep cadence; bounded above at a quarter of the ledger's dedup window |
 | `set_expected_livemode` | pin test-vs-live so a mismatched webhook is refused rather than honoured |
+
+<!-- /surface -->
 
 ⚠️ **This table is the whole admin surface, and there is deliberately no lever that
 moves money.** No method mints, transfers on demand, refunds, or withdraws — funding
 the reserve is `icp cycles transfer` from the operator's own identity, outside the
 canister. `record_delivered` records a *fact about the ledger*, it does not send.
 
-Public queries (transparency is the product thesis): `card_tiers`,
-`pricing_status`, `quote_previews`, `recovery_status`, `lifecycle_config`,
-`reserve_status`, `can_purchase`, `cycles_status`, `orphan_depth`,
-`stripe_origin`, `expected_livemode`, `health`.
+⚠️ **"The whole surface" is now CHECKED, because it was wrong.** This table claimed
+completeness while missing **11 of 29** admin methods — every one added by #37 and #38,
+plus `expire_order` from #52, plus the two secret-status queries §13 tells you to call
+to confirm a rotation. A list of plausible method names reads as complete, so nothing
+short of comparing it against the interface could tell. `scripts/check-doc-surface.py`
+runs in the gate and diffs the marked blocks here against the committed `.did` plus
+`Main.mo`'s guards. ⚠️ It compares **names only** — a stale *description* is still on a
+human, which is how `recount_orders` kept describing the pass #63 deleted.
 
-**Owner-scoped, not admin-scoped:** `get_order`, `list_orders`, `cancel_order`,
-and `receipt(orderId)` answer only for `caller == order.owner` — not even a
-controller can read someone else's receipt. The receipt returns the paid amount,
+Public queries (transparency is the product thesis):
+
+<!-- surface:public -->
+
+`can_purchase` · `card_tiers` · `cycles_status` · `expected_livemode` · `health` ·
+`lifecycle_config` · `orphan_depth` · `pricing_status` · `problem_depth` ·
+`quote_previews` · `recovery_status` · `refusal_counts` · `reserve_status` ·
+`stripe_origin`
+
+<!-- /surface -->
+
+**Owner-scoped, not admin-scoped:**
+
+<!-- surface:owner -->
+
+`get_order` · `list_orders` · `cancel_order` · `receipt` · `process_order`
+
+<!-- /surface -->
+
+They answer only for `caller == order.owner` — not even a
+controller can read someone else's receipt. (`process_order` is the one that also
+accepts an admin: it is a safe-to-spam delivery kick, so the owner of a stuck order can
+retry it themselves.) The receipt returns the paid amount,
 the cycles-ledger block the delivery landed in, the cycles delivered, and both rate inputs
 with their XRC quality signal, so a buyer can recompute
 `netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros` from canisters they
