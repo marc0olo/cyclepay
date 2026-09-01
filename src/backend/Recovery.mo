@@ -50,16 +50,10 @@ module {
   /// Is a tally reconcile due? Gated on the last **attempt**, never on the last
   /// success.
   ///
-  /// A trap rolls back every state change in its own message, so a reconcile that
-  /// traps cannot record that it ran. An earlier version short-circuited on
-  /// `lastSuccessNs == null`, which defeated the whole point in the one case where
-  /// the bound matters most: a canister whose first-ever reconcile keeps trapping
-  /// never records a success, so it stayed due on *every* sweep tick and burned a
-  /// full instruction budget each time. The attempt clock alone is correct —
-  /// `lastAttemptNs` starts at 0, so the first tick is due through it anyway.
-  ///
-  /// `lastSuccessNs` is deliberately not a parameter: taking it would invite
-  /// exactly that bug back.
+  /// ⚠️ A trap rolls back every state change in its own message, so a reconcile that traps
+  /// cannot record that it ran. Gating on success would leave a trapping reconcile due on
+  /// *every* tick, burning a full instruction budget each time. `lastSuccessNs` is
+  /// deliberately **not a parameter**: taking it invites that bug back.
   public func reconcileDue(lastAttemptNs : Int, nowNs : Int, intervalNs : Nat) : Bool {
     nowNs - lastAttemptNs >= intervalNs;
   };
@@ -89,17 +83,14 @@ module {
 
   /// How long past a session's own deadline to wait before asking Stripe about it.
   ///
-  /// ⚠️ **This margin decides when to ASK, never what is TRUE**, and that is the whole
-  /// difference between it and the deadline-aware `holdsPromise` #52 rejected. There, a
-  /// margin decided the *outcome*: capacity was released on our copy of the deadline, so
-  /// being wrong released cycles a buyer was still owed. Here the release comes from
-  /// Stripe's answer either way, so being wrong costs a delayed release, never a wrong
-  /// one. Do not read the rejected design as having come back through this door.
+  /// ⚠️ **This margin decides when to ASK, never what is TRUE.** A margin that decided the
+  /// *outcome* was rejected: releasing capacity on our own copy of the deadline releases
+  /// cycles a buyer may still be owed. Here the release comes from Stripe's answer either
+  /// way, so being wrong costs a delayed release, never a wrong one.
   ///
   /// 30 min = two sweep intervals at the default cadence. Stripe fires the expiry event
-  /// within seconds of `expires_at`, so a healthy gateway is already `#expired` long
-  /// before this fires: the grace makes the outcall count **zero in normal operation**
-  /// and every firing a real missed event rather than noise.
+  /// within seconds, so a healthy gateway is already `#expired` first — the grace makes
+  /// the outcall count **zero in normal operation** and every firing a real missed event.
   public let expiryGraceNs : Nat = 1_800_000_000_000; // 30 min
 
   /// Cadence for the stranded-`#created` scan, distinct from the delivery sweep's.
@@ -123,19 +114,16 @@ module {
   /// How long to let Stripe keep trying before a completed-but-uncredited session becomes
   /// a human's problem. **4 days** — Stripe redelivers for ~3 (§4.2), plus margin.
   ///
-  /// ⚠️ **A heuristic about when to bother a human, NOT a claim about money.** Stripe
-  /// never tells us it has given up, so this cannot be derived. The asymmetry is what
-  /// makes it safe: wrong-late files an obligation a day later than ideal; wrong-early
-  /// manufactures worklist noise in a worklist that never drops anything, which buries real
-  /// obligations out. It fails in the direction that costs patience rather than
-  /// correctness — which is also why tightening it is the wrong instinct.
+  /// ⚠️ **A heuristic about when to bother a human, NOT a claim about money.** Stripe never
+  /// tells us it has given up, so this cannot be derived. The asymmetry makes it safe:
+  /// wrong-late files an obligation a day later than ideal, while wrong-early buries real
+  /// obligations under noise in a worklist that drops nothing. **Tightening it is the wrong
+  /// instinct.**
   ///
-  /// ⚠️ **And the delay costs nothing on #52's own axis.** Capacity held against an order
-  /// the buyer genuinely paid for is capacity *correctly committed* — the promise is doing
-  /// its job and releases at delivery once the event lands. #52's leak is the `expired`
-  /// case, where capacity is held for a session nobody can ever pay. That is why the two
-  /// branches legitimately have different urgencies: `expired` is bounded by reserve
-  /// pressure, `completePaid` by Stripe's retry horizon and the buyer's patience.
+  /// The delay costs nothing on the capacity axis: capacity held against an order the
+  /// buyer genuinely paid for is *correctly committed* and releases at delivery. The leak
+  /// is the `expired` case, where capacity is held for a session nobody can ever pay —
+  /// which is why the two branches legitimately have different urgencies.
   public let paidRetryHorizonNs : Nat = 345_600_000_000_000; // 4 days
 
   /// Is the stranded-`#created` scan due?
@@ -178,17 +166,13 @@ module {
   /// chunk and the 15-minute default a 365k store is one cycle in ~1.9 days; at the
   /// §5.1 ceiling of 6 h the same store takes ~46 days.
   ///
-  /// ⚠️ **Pure, and in this module, so the multiplier can be tested.** It was a private
-  /// `func` in `Main.mo` closing over state, and the only assertion on it compared the
-  /// result to the sweep interval on a store far smaller than one chunk — where `chunks`
-  /// is always 1, so a version that dropped the store-size factor entirely would have
-  /// passed. That is the degenerate-case member of the can-only-pass family: the
-  /// assertion was right, it pinned the coupling to the live interval, and it could not
-  /// see the part that makes the number mean anything.
+  /// ⚠️ **Pure and in this module so the MULTIPLIER can be tested.** As a private func in
+  /// `Main.mo` its only assertion compared the result to the sweep interval, on a store
+  /// smaller than one chunk — where the chunk count is always 1, so a version that dropped
+  /// the store-size factor entirely passed. `test/recovery.test.mo` pins `chunkSize + 1`.
   ///
-  /// A store smaller than one chunk still costs one sweep, so the chunk count floors at
-  /// one — zero would report an instantaneous cycle for an empty store, which reads as
-  /// "already verified" at exactly the moment nothing has been.
+  /// The chunk count floors at one: zero would report an instantaneous cycle for an empty
+  /// store, which reads as "already verified" at exactly the moment nothing has been.
   public func indexScanCycleNs(stored : Nat, chunkSize : Nat, intervalNs : Nat) : Nat {
     // A zero chunk size would divide by zero; it is a compile-time constant today, so
     // this is a guard against a future edit rather than a reachable state, and one

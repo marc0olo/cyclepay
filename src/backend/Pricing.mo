@@ -1,48 +1,25 @@
 /// How USD becomes cycles (§3) — the pure half.
 ///
-/// Two inputs, both from on-chain canisters, cached together:
-///
-/// - **`usdPerIcpMicros`** — USD per ICP × 10⁶, from the Exchange Rate Canister.
-/// - **`xdrPermyriadPerIcp`** — XDR per ICP × 10⁴, from the Cycles Minting
-///   Canister. The protocol's own published exchange rate, which is why it is read
-///   from the CMC and nowhere else.
-///
 /// ```
 /// cycles = netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros
 /// ```
 ///
-/// Derivation, in units: `netCents` is worth `netCents × 10⁴ / usdPerIcpMicros`
-/// ICP, and one ICP is worth `xdrPermyriadPerIcp × 10⁸` cycles at the protocol
-/// rate (1 XDR = 10¹² cycles, so one e8s is `xdrPermyriadPerIcp` cycles).
+/// Two inputs, both from on-chain canisters and cached together: `usdPerIcpMicros` (USD
+/// per ICP × 10⁶, from the Exchange Rate Canister) and `xdrPermyriadPerIcp` (XDR per ICP
+/// × 10⁴, from the Cycles Minting Canister — the protocol's own published rate, which is
+/// why it is read there and nowhere else).
 ///
-/// ⚠️ **ICP is an intermediate unit here, not a position.** The gateway never
-/// holds ICP, buys ICP, or spends ICP — it hands over cycles it already owns. ICP
-/// appears in the arithmetic only because it is the unit both on-chain rate
-/// sources are denominated in, and it cancels: `(USD/ICP) ÷ (XDR/ICP)` is
-/// USD/XDR. Do not read the formula as a purchase of ICP.
+/// In units: `netCents` is worth `netCents × 10⁴ / usdPerIcpMicros` ICP, and one ICP is
+/// `xdrPermyriadPerIcp × 10⁸` cycles at the protocol rate.
 ///
-/// **Why derive rather than price off a market USD/XDR rate.** A cycle is
-/// *defined* in XDR by the protocol, so the price of what we sell is
-/// `cycles/10¹² XDR × USD/XDR`, and the only question is where USD/XDR comes
-/// from. There is no on-chain USD/XDR oracle, and the two rates above are both
-/// on-chain, independently governed, and time-aligned. A market USD/XDR rate
-/// would break even only when it happened to equal
-/// `(CMC's XDR/ICP) / (market USD/ICP)`; any gap between the protocol's published
-/// rate and the market-implied one becomes a systematic bias on every order,
-/// priced against a number the protocol does not use.
+/// **ICP is an intermediate unit here, not a position** — it cancels, and the gateway
+/// never holds it. Why this is derived rather than priced off a market USD/XDR rate, and
+/// where the operator's exposure actually sits: `docs/DESIGN.md` §3.1.
 ///
-/// The operator's remaining exposure is **inventory**, not per-order: cycles are
-/// sold at today's implied USD/XDR and were funded into the reserve at whatever
-/// USD/XDR held when the operator bought them. How and when the reserve is
-/// refilled is the operator's decision, and deliberately outside this module.
-///
-/// Both rates are read on the same tick, so they are time-aligned by
-/// construction and no timestamp reconciliation is needed.
-///
-/// Fail-closed posture: every implausible, stale, or missing input collapses to
-/// "no price", and no price blocks order creation. Nothing is ever priced on a
-/// guess. Main.mo owns the impure half — the XRC/CMC calls, the refresh timer,
-/// and the backoff — so everything here unit-tests without an IC environment.
+/// ⚠️ **Fail-closed: every implausible, stale or missing input collapses to "no price",
+/// and no price blocks order creation.** Nothing is ever priced on a guess. `Main.mo` owns
+/// the impure half — the XRC/CMC calls, the timer and the backoff — so everything here
+/// unit-tests with no IC environment.
 import Int "mo:core/Int";
 import Nat "mo:core/Nat";
 import Result "mo:core/Result";

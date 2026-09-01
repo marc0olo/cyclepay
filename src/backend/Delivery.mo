@@ -145,9 +145,7 @@ module {
   /// purchase. The order id makes every intent unique whatever the timing, and
   /// it makes ledger blocks self-attributing for free.
   ///
-  /// `amountCycles` carries **cycles** here, not e8s. The name is wrong and is
-  /// deliberately left for #30 PR-C, which renames this family in one pass
-  /// rather than half-renaming it under a money change.
+
   public func buildDeliveryIntent(
     orderId : Types.OrderId,
     to : Types.Account,
@@ -166,20 +164,13 @@ module {
   /// change shows up as `#BadFee` and can be audited, rather than being absorbed
   /// silently by passing `null`.
   ///
-  /// ⚠️ **The caller must pass the fee the intent was BUILT with, not a fresh
-  /// read.** This comment used to claim the fee sits outside the ledger's dedup
-  /// key, so a replay carrying a corrected fee was still byte-identical "as far as
-  /// the ledger is concerned". That was an unverified assertion about another
-  /// canister's internals, and the at-most-once guarantee rested on it: if the fee
-  /// IS in the key, a transfer that executed, lost its response and is replayed
-  /// after a fee change is a DISTINCT transaction, and the buyer is paid twice.
-  ///
-  /// The claim is gone rather than checked. `Main.driveDelivery` recovers the
-  /// original fee arithmetically — `lockedCycles - intent.amountCycles`, because
-  /// `deliverableCycles` produced the amount by subtracting it — so a replay is
-  /// byte-identical whatever the ledger keys on. A corrected fee is only ever sent
-  /// after a **definitive** `#BadFee` rejection, where the ledger has told us it
-  /// did not execute.
+  /// ⚠️ **The caller must pass the fee the intent was BUILT with, never a fresh read.**
+  /// Whether the fee sits inside the ledger's dedup key is not knowable from here — and if
+  /// it does, a transfer that executed, lost its response and is replayed after a fee
+  /// change is a **distinct transaction, and the buyer is paid twice.** So the args are
+  /// *reproduced* rather than rebuilt: `Main.driveDelivery` recovers the original fee
+  /// arithmetically as `lockedCycles - intent.amountCycles`. A corrected fee is only ever
+  /// sent after a **definitive** `#BadFee`, where the ledger has said it did not execute.
   public func deliveryArgs(intent : Types.TransferIntent, fee : Nat) : TransferArg {
     {
       from_subaccount = null;
@@ -453,9 +444,9 @@ module {
     dedupWindowNs : Int,
   ) : Stage {
     switch (status) {
-      // #30 PR-A: delivery is ONE transfer from #paid, so the retry state lives
-      // in the journal rather than in a status of its own. Three cases, and the
-      // middle one is the whole point of persisting an intent before the call:
+      // Delivery is ONE transfer from `#paid`, so retry state lives in the journal
+      // rather than in a status of its own. Three cases, and the middle one is why the
+      // intent is persisted before the call:
       //
       //   no entry / no intent  → #begin: read the fee, build the intent, send
       //   intent, no block      → #replayTransfer: re-send the STORED args
@@ -468,17 +459,13 @@ module {
       // `created_at_time`, the ledger does not dedup it, and the buyer is paid
       // twice.
       //
-      // ⚠️ **Correction, because the difference matters if anyone touches the
-      // mutex.** Two drivers (the webhook's detached kick and the recovery sweep)
-      // do *arrive* at one order concurrently, but they do not both run: the
-      // second bounces off `processDelivery`'s in-flight set, which is checked and
-      // added in one synchronous block and released in a `finally`, and every
-      // path into delivery goes through it. **That mutex is the first line of
-      // defence; replay-dedup is the second.** They are not interchangeable —
-      // `openEntry` overwrites, so two drivers past the post-await re-check would
-      // build intents with different `created_at_time`, the second overwriting the
-      // first while the first still holds its copy: two non-duplicate transfers.
-      // Do not remove the mutex on the theory that dedup alone covers it.
+      // ⚠️ **Do not remove the mutex on the theory that replay-dedup covers it.** Two
+      // drivers (the webhook's detached kick and the recovery sweep) do arrive at one
+      // order concurrently; the second bounces off `processDelivery`'s in-flight set,
+      // checked and added in one synchronous block. The mutex is the FIRST line of
+      // defence and dedup the second, and they are not interchangeable: `openEntry`
+      // overwrites, so two drivers past the re-check would build intents with different
+      // `created_at_time` — two transfers the ledger will not dedup.
       case (#paid) {
         let ?e = entry else return #beginDelivery;
         switch (e.blockIndex) {

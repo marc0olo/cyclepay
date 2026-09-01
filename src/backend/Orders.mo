@@ -107,28 +107,22 @@ module {
     /// a scan over every order ever created is exactly the hazard this codebase guards
     /// everywhere else.
     ///
-    /// ⚠️ **A status index would NOT have bounded it, and an earlier comment here
-    /// claimed it would.** The only order-side refund-resolvable kind is `#duplicate`,
-    /// filed from `handleCheckout`'s `case (status)` catch-all — which covers `#paid`,
-    /// `#delivered`, `#needsReview` and `#abandoned`. Two of those are terminal, and
-    /// `#delivered` is the *common* one (order delivered, buyer pays again), so a
-    /// non-terminal index narrows nothing. Check that the bound actually narrows the
-    /// set before writing that it does.
+    /// ⚠️ **A status index would NOT have bounded it** — `#duplicate` is filed from a
+    /// catch-all covering `#delivered` (the *common* case: order delivered, buyer pays
+    /// again) as well as terminal statuses, so a non-terminal index narrows nothing.
+    /// Establish that a bound narrows the set before writing that it does.
     ///
-    /// ⚠️ **Derived state, and that is only safe because the orders can adjudicate
-    /// it.** This is the same discipline `counts` and `promised` follow: maintained by
-    /// the only two functions that write `problems` — `fileProblem` and
-    /// `resolveProblems`, both in this file — and checked from both directions, the
-    /// inside daily by `reconcileBounded` and the outside on a coverage window by
-    /// `scanChunk` (#63). It is **not** the `delayedAlerts` mistake repeated: that map
-    /// pointed at *entry ids in another structure*, so the two could disagree with no
-    /// way to tell which was right. This is a projection of `orders`, recomputable at
-    /// any time, and a test pins it against a full scan.
+    /// ⚠️ **Derived state, safe only because the orders can adjudicate it.** Maintained by
+    /// the only two functions that write `problems` — `fileProblem` and `resolveProblems`,
+    /// both here — and checked from both directions: the inside daily by
+    /// `reconcileBounded`, the outside on a coverage window by `scanChunk` (#63). This is
+    /// a projection of `orders`, recomputable at any time; a **map pointing at ids in
+    /// another structure** would be the unrecoverable version, because the two could
+    /// disagree with no way to tell which was right.
     ///
-    /// ⚠️ **There is deliberately no wholesale rebuild lever.** The pass that used to
-    /// clear and refill this from every order in one message is gone: it grew with
-    /// lifetime sales, and its audit line said "the index was rebuilt", which reads as a
-    /// fix for what is actually a bug in this file.
+    /// ⚠️ **No wholesale rebuild lever, deliberately.** A pass that clears and refills
+    /// this from every order grows with lifetime sales, and "the index was rebuilt" reads
+    /// as a fix for what is actually a bug in this file.
     ///
     /// Growth is attacker-priced: every problem needs a real payment event to exist.
     unresolvedProblems : Set.Set<Types.OrderId>;
@@ -224,28 +218,23 @@ module {
   /// Statuses whose live counts are maintained. Keyed by `statusToText` so the
   /// map is a shared type and the key set is self-documenting.
   ///
-  /// ⚠️ **A status earns an O(1) tally only when something reads it — and here is the
-  /// reader for each, because a justification naming readers that do not exist is how
-  /// this list drifts.**
+  /// ⚠️ **A status earns an O(1) tally only when something READS it, and the reader is
+  /// named here** — a justification citing readers that do not exist is how this list
+  /// drifts.
   ///
-  ///   - `#paid` → `Main.sweepableCount`, which short-circuits the whole recovery
-  ///     sweep when it is 0. The only tally on a money path.
-  ///   - `#created`, `#expired` → `reserve_status`'s `openOrders` / `expiredOrders`.
-  ///     An **operator metric**, not a decision: `openOrders` climbing while
-  ///     deliveries do not is the order-creation abuse signal.
-  ///   - `#needsReview` → nothing reads it directly, and it stays tracked on purpose:
-  ///     being in `trackedStatuses` is what puts escalated orders under `reconcile`'s
-  ///     drift detection. An order whose money position a human is establishing is the
-  ///     last one whose bookkeeping should go unchecked.
+  ///   - `#paid` → `Main.sweepableCount`, which short-circuits the recovery sweep at 0.
+  ///     The only tally on a money path.
+  ///   - `#created`, `#expired` → `reserve_status`. Operator metrics, not decisions.
+  ///   - `#needsReview` → nothing reads it, and it stays tracked on purpose: being here
+  ///     is what puts escalated orders under `reconcileBounded`'s drift detection, and an
+  ///     order whose money position a human is establishing is the last one whose
+  ///     bookkeeping should go unchecked.
   ///
-  /// ⚠️ **The admission gate reads none of these.** Its open-order cap is per
-  /// principal, so it calls `openOrderCount`, which iterates that caller's own order
-  /// ids — a global tally cannot answer a per-principal question. Do not "optimise"
-  /// the gate onto `countOf`; it would silently change the cap's meaning from
-  /// per-buyer to system-wide.
+  /// ⚠️ **The admission gate reads NONE of these**, and must not be "optimised" onto
+  /// `countOf`: its cap is per principal, so a global tally cannot answer it, and
+  /// switching would silently change the cap's meaning from per-buyer to system-wide.
   ///
-  /// `#cancelled`, `#delivered` and `#abandoned` are absent because nothing counts
-  /// them — `countOf` returns 0 and `reconcile` leaves them alone.
+  /// `#cancelled`, `#delivered` and `#abandoned` are absent because nothing counts them.
   let trackedStatuses : [Types.OrderStatus] = [#created, #expired, #paid, #needsReview];
 
   func isTracked(status : Types.OrderStatus) : Bool {
@@ -710,36 +699,20 @@ module {
     #ok(order);
   };
 
-  /// Look up, validate, and persist a transition in one step.
-  /// ⚠️ **The ONLY way a status reaches the store.** Writes the record, both
-  /// per-status counters, and the #30 promise tally, in one place.
+  /// ⚠️ **The ONLY way a status reaches the store.** Writes the record, both per-status
+  /// counters, the promise tally and the non-terminal index, in one place — so a new
+  /// writer cannot forget them, because writing a status *is* calling this.
   ///
-  /// This exists because the alternative failed immediately. The tally was first
-  /// wired into the three writers a comment claimed were the only ones —
-  /// `create`, `applyTransition`, `markPaid` — and that comment was **false in the
-  /// very file it was written in**: `expireWithCause` and `expireBySession` (#47)
-  /// also write status, each with its own hand-rolled `add` plus two `bump`s.
+  /// A comment naming "the only three writers" was once false **in the same file**: two
+  /// more wrote status with hand-rolled tally updates, and one of them is the most common
+  /// release in the design (every unpaid order expires). Every expired order would have
+  /// left its `lockedCycles` in the tally forever, ratcheting `available` down until the
+  /// rail closed on a full reserve. Proximity was not enough; the invariant is structural
+  /// now. (`attachSession` legitimately does not call this — it changes no status.)
   ///
-  /// They are release points 1 and 4 of #30's five, and Stripe's
-  /// `checkout.session.expired` is the most common release in the whole design —
-  /// **every unpaid order ends there.** So every expired order would have left its
-  /// `lockedCycles` in `promised` forever: `available` ratchets down, the gate
-  /// starts refusing sales the reserve can cover, and the rail eventually closes
-  /// on a full reserve. Safe in direction (over-refusal, never a double-sell), and
-  /// a slow self-inflicted outage.
-  ///
-  /// Proximity was not enough, so the invariant is structural now: a sixth writer
-  /// cannot forget the tally, because writing a status *is* calling this.
-  /// (`attachSession` is the one writer that legitimately does not — it changes no
-  /// status, and says so at its own `add`.)
-  /// Returns the order **as stored**, which callers must hand back instead of the
-  /// value they passed in.
-  ///
-  /// ⚠️ **It returns something now because it mutates the order, not just the
-  /// tallies.** The pay-link clearing below meant the stored order and the caller's
-  /// return value could disagree — the store had the cleared one, the caller returned
-  /// the original. Caught by a test asserting the two agree; the type now makes
-  /// ignoring the difference impossible.
+  /// ⚠️ **Returns the order AS STORED, and callers must hand that back** rather than the
+  /// value they passed in: this mutates the order, not just the tallies, so the two can
+  /// disagree.
   func commitTransition(store : Store, before : Types.Order, after : Types.Order) : Types.Order {
     // ⚠️ **Clear the pay link on the way into a terminal state (#37), HERE and not at
     // each terminal site.** It is by far the largest field on an order — a Stripe
