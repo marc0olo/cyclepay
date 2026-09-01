@@ -60,7 +60,7 @@ module {
   public type Event = {
     seq : Nat;
     atNs : Int;
-    /// Short greppable category, e.g. "delivery.sent", "orphans.evicted".
+    /// Short greppable category, e.g. "delivery.sent", "orphanStore.resolved".
     tag : Text;
     detail : Text;
   };

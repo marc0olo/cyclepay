@@ -126,7 +126,7 @@ module {
   /// ⚠️ **A heuristic about when to bother a human, NOT a claim about money.** Stripe
   /// never tells us it has given up, so this cannot be derived. The asymmetry is what
   /// makes it safe: wrong-late files an obligation a day later than ideal; wrong-early
-  /// manufactures worklist noise in a bounded, evicting queue, which can push real
+  /// manufactures worklist noise in a worklist that never drops anything, which buries real
   /// obligations out. It fails in the direction that costs patience rather than
   /// correctness — which is also why tightening it is the wrong instinct.
   ///

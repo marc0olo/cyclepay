@@ -3554,8 +3554,9 @@ persistent actor CyclesGateway {
         //
         // Stripe redelivers for ~3 days (§4.2), so before the horizon the event is still
         // coming and the real credit path will handle it. Filing an obligation then would
-        // put a self-resolving item in a bounded, evicting queue — noise that can push
-        // real obligations out. The audit line is the support signal: a buyer who paid
+        // file a self-resolving obligation on the order — noise in a worklist that
+        // never drops anything, so it buries the real ones. The audit line is the
+        // support signal instead: a buyer who paid
         // sees their own page render expired from `expiresAtNs` and calls the same hour,
         // and this is how an operator confirms Stripe says the session completed.
         if (not Recovery.paidEscalationDue(fresh.createdAtNs, Time.now(), Recovery.paidRetryHorizonNs)) {

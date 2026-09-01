@@ -280,7 +280,7 @@ module {
 
   /// Hard cap on a page. Entries are a few hundred bytes, and a Candid message
   /// is capped at 2 MB — so an unpaginated read of a queue that is allowed to
-  /// grow (see `AddResult.evicted`) would eventually become unreturnable. This
+  /// grow without bound (#37) would eventually become unreturnable. This
   /// bounds the response instead of bounding the record.
   public let maxPageSize : Nat = 200;
 
@@ -339,7 +339,7 @@ module {
     store.entries.values().filter(func(e) = e.resolvedAtNs == null).toArray();
   };
 
-  /// Everything still retained (resolved entries stay until evicted), oldest
+  /// Everything retained — which is everything ever filed (#37) — oldest
   /// first.
   public func all(store : Store) : [Entry] {
     store.entries.values().toArray();
