@@ -35,6 +35,7 @@ Key documents:
 
 | Document | What it is |
 |----------|------------|
+| `docs/agents/deleted-vocabulary.md` | The sweep list: a deleted mechanism's vocabulary, with each term's adjudicated disposition |
 | `docs/DESIGN.md` | The decision record — *why* it is built this way. What the `§N` comments point at. Gate-enforced |
 | `docs/STRIPE.md` | **Start here.** The Card rail end to end, written from the code: ingress, session creation, signature verification, attribution, dedup, pricing, the order lifecycle, refunds, the two secrets, and the local Stripe-sandbox loop |
 | `docs/TEST-COVERAGE.md` | What is tested, how, and what is not — one place to answer "is X covered?" |
