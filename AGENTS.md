@@ -129,6 +129,21 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
   not merely outdated, so a reader was carrying the opposite of the truth. What was
   still true is `docs/DESIGN.md` — 215 lines against 1,252, holding decisions and
   nothing else.
+- ⚠️ **Comment volume is a defect, and deleting a comment is the one change with no
+  failure signal.** No compiler error, no red test, and the diff shows what left but not
+  what was lost. So three rules, front-loaded because nothing downstream can catch a bad
+  call:
+  1. **Name the mistake the comment prevents.** If you cannot name one, it is not a
+     keeper.
+  2. **Never delete without a destination.** Every removed comment either lands in
+     `docs/DESIGN.md` or is rewritten as a **rule at the site**. A removal with no
+     destination is what a reviewer should scrutinise — it is the only case where they
+     have nothing to compare against.
+  3. **The commit message carries the mapping** — what moved where. It is the only
+     recoverable record if a judgement turns out wrong.
+- ⚠️ **`⚠️` is tiered: prohibitions only.** Use it where ignoring the line loses money or
+  breaks an invariant — not for explanation. A marker used 310 times is not a marker;
+  it only works while seeing one makes you stop.
 - ⚠️ **`docs/DESIGN.md` is where a DECISION goes, and it is enforced.** Code comments say
   what the code *does*; the reason it is that way goes in the `§N` record.
   `scripts/check-design-sections.py` fails the gate if a `§N` the code cites has no

@@ -132,6 +132,76 @@ inside it (enforced: cadence ≤ window ÷ 4). An intent older than the window w
 block index must **not** be auto-replayed — it escalates to `NeedsReview`, whose whole
 meaning is "the money position is unknown; a human must read the ledger".
 
+### §5.4 — The reserve floor: why the gate needs no ledger call
+
+The admission gate decides against a **maintained lower bound** on the reserve balance,
+synchronously, with no ledger read. That is sound because of one asymmetry in who can move
+the balance:
+
+- it can only **decrease** when we transfer out, and there is exactly one such outflow;
+- it can only **increase** when someone tops the account up, which we cannot see without
+  asking — and which is always positive.
+
+So every unobserved change is in our favour, and a floor maintained from our own outflows
+is never optimistic. Deciding against it can refuse a sale the reserve could have covered;
+it can never admit one it cannot.
+
+⚠️ **This replaced an awaited balance read on the order-creation path**, which is where a
+whole class of bug lived: the awaited value was correct when computed and historical when
+used, and pairing it with a live tally made the available figure optimistic by a full
+order. There is now nothing to pair — one number, moved only by us, read synchronously.
+
+**Three rules keep it a bound:**
+
+1. **A fresh observation is adopted, and a shortfall is shouted about.** The ledger
+   holding *less* than the floor means an outflow we did not cause, which the asymmetry
+   says is impossible.
+2. **A transfer decrements the floor when it is ISSUED, not when it settles.** The only
+   way the balance can surprise us downward is one of our own transfers landing without
+   our learning it did — our reply callback traps, so the debit stands while our
+   bookkeeping rolls back. Assuming the debit at issue time makes that case exact instead
+   of optimistic.
+3. **A definitively-failed transfer credits the floor back**, `#Duplicate` included — that
+   answer says *this* call moved nothing, so its decrement was never a real debit even
+   though an earlier attempt's was.
+
+⚠️ **Adoption is conditional, and the condition is the whole safety property.** Adopting a
+read that was taken before an outflow erases that outflow's decrement while the transfer
+still debits. So a balance is adopted only when nothing was in flight before the read,
+nothing after it, and nothing was issued in between. Skipping is cheap — the sweep tries
+again; a top-up waits but is never lost.
+
+**The quiet-window predicate is a conservative superset of "in flight".** It counts any
+journalled intent with no recorded block on an order still `Paid` — which includes a
+delivery *parked between retries*, when nothing is in the air at all. That is deliberate:
+a transfer issued before a balance read can land after it, and the journal cannot
+distinguish "awaiting a reply" from "failed, waiting for the next sweep". Tracking true
+in-flight state would need a counter incremented before the await, which leaks upward
+permanently if a reply callback traps — trading bounded pessimism for unbounded.
+
+⚠️ **Escalated orders must be excluded from it, or one escalation freezes the reserve for
+the life of the canister.** An escalated order keeps the intent-without-block shape
+*forever*, so without the `Paid` clause every reconcile skips, every manual refresh skips,
+and top-ups silently stop registering — the rail slowly closing with no lever. Excluding
+them is sound because they have no outstanding callback: escalation is decided either
+before a call is made or after its response arrived, never with one in flight. Their
+pessimism is not lost — the promise tally still holds them.
+
+**The cost, and why it is not a deadlock.** While a delivery is retrying, a top-up is not
+adopted, so *new sales* are refused against cycles the ledger already holds. Deliveries
+never consult the floor, so delivery itself is unaffected: a dry reserve fails with
+insufficient funds, the operator tops up, the retry succeeds *because the ledger has the
+cycles regardless of our floor*, and the next reconcile adopts. The remaining pessimistic
+case is a ledger outage, where refusing to sell is the correct posture anyway.
+
+⚠️ **The floor and the promise tally overlap while a transfer is in flight, deliberately.**
+The floor drops at issue; the promise is released one response later at `Delivered`. In
+between the same order is subtracted twice, so the available figure reads a full order low
+for the length of one ledger call. **Do not close the gap by moving either end**: releasing
+the promise at issue frees capacity for a sale while the transfer consuming it is
+unresolved, and decrementing the floor at settle time lets the balance surprise us
+downward. Both ends sit on the pessimistic side of the same unknown.
+
 ### §5.2 — Recovery
 
 A recurring timer sweeps orders with money-out work outstanding, single-flight, re-armed
