@@ -321,6 +321,7 @@ RESERVE_TOP_UP=100t
 # instance of the swallowed-reason pattern in this file, which is the file whose whole
 # job is printing guidance.
 RESERVE_OUT=""
+RESERVE_TOPPED_UP=1
 if RESERVE_OUT="$(icp cycles transfer "$RESERVE_TOP_UP" "$BACKEND_ID" 2>&1)"; then
   # ⚠️ **A funded reserve is not a SELLABLE reserve until the gateway looks.** #30
   # PR-B decides solvency against a maintained lower bound on this account, and that
@@ -338,10 +339,20 @@ if RESERVE_OUT="$(icp cycles transfer "$RESERVE_TOP_UP" "$BACKEND_ID" 2>&1)"; th
   fi
   echo "reserve:     $RESERVE_TOP_UP cycles in the gateway's own ledger account, observed"
 else
-  printf '  \033[33m!\033[0m could not fund the cycles reserve with %s:\n' "$RESERVE_TOP_UP"
+  printf '  \033[33m!\033[0m could not TOP UP the cycles reserve by %s:\n' "$RESERVE_TOP_UP"
   printf '    %s\n' "$RESERVE_OUT"
-  printf '    Orders will be created and PAID and then retry delivery forever.\n'
-  printf '    Fund it by hand, then let the gateway observe it:\n'
+  # ⚠️ **Observe anyway — a failed top-up does NOT mean the account is empty.** The
+  # gateway's ledger account survives a canister reinstall (it is a separate canister),
+  # so after the documented reinstall-and-reseed loop it usually still holds the whole
+  # reserve while the floor has been reset to zero. Skipping the observation here left
+  # `availableToSell = 0` with 675 T sitting in the account, and the die below then
+  # blamed observation while this branch blamed funding. Neither was actionable.
+  RESERVE_TOPPED_UP=0
+  if icp canister call backend refresh_reserve '()' >/dev/null 2>&1; then
+    printf '    observed the account anyway — if it already held cycles, the floor is now set.\n'
+  fi
+  printf '    If the account really is empty, orders will be created and PAID and then\n'
+  printf '    retry delivery forever. Fund it by hand, then observe:\n'
   printf '      icp cycles transfer %s %s\n' "$RESERVE_TOP_UP" "$BACKEND_ID"
   printf '      icp canister call backend refresh_reserve %s\n' "'()'"
 fi
@@ -408,6 +419,15 @@ if [ -z "$AVAILABLE" ]; then
   printf '\n%s\n\n' "$RESERVE" >&2
   die "reserve_status answered but had no availableToSell field — the response is above.
     The shape changed and this script did not."
+fi
+if [ "$AVAILABLE" -eq 0 ] && [ "$RESERVE_TOPPED_UP" -eq 0 ]; then
+  # ⚠️ Do not claim the reserve was funded when the top-up above failed. That message
+  # sent a reader to `refresh_reserve` for what was an empty account, and — when the
+  # account was NOT empty — hid that the seed had simply never observed it.
+  die "the gateway will sell 0 cycles, and the top-up above FAILED — so the account is
+    empty or unreachable, not merely unobserved. Read that error, fund the account, then:
+      icp cycles transfer $RESERVE_TOP_UP $BACKEND_ID
+      icp canister call backend refresh_reserve '()'"
 fi
 if [ "$AVAILABLE" -eq 0 ]; then
   die "the gateway will sell 0 cycles even though the reserve was funded — its floor
