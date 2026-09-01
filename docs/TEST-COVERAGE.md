@@ -206,11 +206,22 @@ PocketIC does not cover it either: it mocks the outcall, so the transform runs b
 consensus step exists.
 
 ⚠️ **It is therefore first tested on the first mainnet outcall**, and the failure mode is
-`No consensus could be reached. Replicas had different responses.` What makes that
-survivable rather than a launch risk is that the transform strips every response header
-(`rails/Session.mo`), which is the only documented source of per-replica variation for this
-API — but "the transform is correct" is an argument, not a test result, and it should be
-read as such until a mainnet outcall has succeeded.
+`No consensus could be reached. Replicas had different responses.`
+
+⚠️ **TWO mechanisms carry it, and this is the only place recording that before mainnet — so
+name both, or someone reads the second as dedup-only and removes it.**
+
+1. **The transform strips every response header** (`rails/Session.mo`), which is the
+   documented source of per-replica variation in the *response*.
+2. **`Idempotency-Key = orderId` on the session create** does double duty. Every replica
+   performs the outcall independently, so without the key each creates a **distinct
+   session with a distinct `id` and `url`** — one order spawns many sessions, and
+   consensus becomes unreachable. ⚠️ **No transform can repair that: a transform strips
+   variation, it cannot invent agreement.** Removing the key as "redundant with our own
+   dedup" would break consensus, not just dedup.
+
+Both are arguments, not test results, and should be read as such until a mainnet outcall
+has succeeded.
 
 ### 2. Structural limits in PocketIC — verified, not assumed
 

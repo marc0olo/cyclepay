@@ -322,6 +322,12 @@ RESERVE_TOP_UP=100t
 # job is printing guidance.
 RESERVE_OUT=""
 RESERVE_TOPPED_UP=1
+# ⚠️ Initialised HERE, not only inside the failure branch. It is read further down, and
+# being bound today depends on the `&&` conjunct order short-circuiting — reorder that
+# chain and `set -u` hard-stops three quarters of the way through the seed, which is the
+# hazard this file already documents above.
+RESERVE_OBSERVED=0
+RESERVE_OBSERVED_BALANCE=""
 if RESERVE_OUT="$(icp cycles transfer "$RESERVE_TOP_UP" "$BACKEND_ID" 2>&1)"; then
   # ⚠️ **A funded reserve is not a SELLABLE reserve until the gateway looks.** #30
   # PR-B decides solvency against a maintained lower bound on this account, and that
@@ -359,7 +365,6 @@ else
   # `availableToSell = 0` with 675 T sitting in the account, and the die below then
   # blamed observation while this branch blamed funding. Neither was actionable.
   RESERVE_TOPPED_UP=0
-  RESERVE_OBSERVED=0
   # ⚠️ **Capture this failure too — fourth instance of the swallowed-reason pattern in
   # this file, and the one that invalidates the die below.** That die tells the operator
   # the account "is empty or unreachable, not merely unobserved", which is only
@@ -368,6 +373,14 @@ else
   # has been told it is not, with no trace that we even tried.
   if OBSERVE_OUT="$(icp canister call backend refresh_reserve '()' 2>&1)"; then
     RESERVE_OBSERVED=1
+    # ⚠️ **Exit zero does NOT mean the floor was adopted.** `refresh_reserve` returns the
+    # ledger balance it read whether or not it adopted it: `reconcileReserve` returns early
+    # without touching the floor when the quiet window is unsatisfied, audits
+    # `reserve.reconcileSkipped`, and the call still succeeds. One escalated order makes
+    # that window unsatisfiable for the life of the canister, so this is a reachable state
+    # and not a hypothetical. Keep the returned figure — non-zero with nothing to sell is
+    # "observed but not adopted", a different diagnosis and a different fix from "empty".
+    RESERVE_OBSERVED_BALANCE="$(printf '%s' "$OBSERVE_OUT" | tr -d '_' | grep -oE '[0-9]+' | head -1 || true)"
     printf '    observed the account anyway — if it already held cycles, the floor is now set.\n'
   else
     printf '    \033[33mand refresh_reserve ALSO failed, so the floor is not observed either:\033[0m\n'
@@ -452,20 +465,37 @@ if [ "$AVAILABLE" -eq 0 ] && [ "$RESERVE_TOPPED_UP" -eq 0 ] && [ "$RESERVE_OBSER
       icp canister call backend refresh_reserve '()'
       icp canister call backend reserve_status '()'"
 fi
+if [ "$AVAILABLE" -eq 0 ] && [ "$RESERVE_TOPPED_UP" -eq 0 ] &&
+   [ -n "$RESERVE_OBSERVED_BALANCE" ] && [ "$RESERVE_OBSERVED_BALANCE" -gt 0 ]; then
+  # ⚠️ Observed a NON-ZERO balance and still nothing to sell: the read succeeded and the
+  # floor was not adopted. "Fund it" is the useless answer here — the account is full.
+  die "the gateway will sell 0 cycles, and the account holds $RESERVE_OBSERVED_BALANCE.
+    So the balance was OBSERVED and NOT ADOPTED — the quiet window is unsatisfied, which
+    one escalated order can make permanent. Do not fund it; that changes nothing. Look for
+    reserve.reconcileSkipped in the audit log and an order stuck with an unsettled
+    delivery:
+      icp canister call backend pending_deliveries '()'
+      icp canister call backend audit_log '(null, 50 : nat)'"
+fi
 if [ "$AVAILABLE" -eq 0 ] && [ "$RESERVE_TOPPED_UP" -eq 0 ]; then
-  # The observation DID run and still reports nothing to sell, so the account really is
-  # empty — not merely unobserved.
-  die "the gateway will sell 0 cycles. The top-up FAILED and the observation SUCCEEDED,
-    so the account is genuinely empty, not unobserved. Read the transfer error above
+  # The observation ran and reported zero, so the account really is empty.
+  die "the gateway will sell 0 cycles. The top-up FAILED and the observation read an EMPTY
+    account, so it is genuinely empty rather than unobserved. Read the transfer error above
     (⚠️ its \"balance:\" is the SENDER's), fund the account, then:
       icp cycles transfer $RESERVE_TOP_UP $BACKEND_ID
       icp canister call backend refresh_reserve '()'"
 fi
 if [ "$AVAILABLE" -eq 0 ]; then
-  die "the gateway will sell 0 cycles even though the reserve was funded — its floor
-    has not observed the balance. Fix:
-      icp canister call backend refresh_reserve '()'
-      icp canister call backend reserve_status '()'"
+  # ⚠️ The top-up ran, so the account holds cycles and the floor did not take them.
+  # "Run refresh_reserve" is only the fix if the observation was never made — and the
+  # seed just made it. If it skipped, running it again skips again.
+  die "the gateway will sell 0 cycles even though the top-up SUCCEEDED. The floor did not
+    take the balance, and the seed already ran the observation — so re-running it is not
+    the fix unless the first call errored. Check which:
+      icp canister call backend reserve_status '()'      # reserveObservedAtNs recent?
+      icp canister call backend pending_deliveries '()'  # an unsettled delivery freezes
+      icp canister call backend audit_log '(null, 50 : nat)'   # reserve.reconcileSkipped
+    An unsettled delivery makes the quiet window unsatisfiable; settle or escalate it." 
 fi
 ok "reserve floor observed; $((AVAILABLE / 1000000000000)) T available to sell"
 
