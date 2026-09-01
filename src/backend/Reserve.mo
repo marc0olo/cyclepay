@@ -126,8 +126,11 @@ module {
   /// detector the design relies on — and an operator learns fast to ignore a
   /// detector that cries wolf.
   ///
-  /// O(n) over every order ever created, so it belongs on the daily reconcile and
-  /// the admin recount, never on a hot path. #37 adds a status index.
+  /// ⚠️ **O(n) over every order ever created, so no production path may call it —
+  /// it is the TEST ORACLE (#63).** `Orders.reconcileBounded` derives the same total
+  /// from the non-terminal index, whose size the reserve caps; this derives it from the
+  /// orders themselves with no index in the chain, which is exactly what a test needs
+  /// to pin the bounded pass against and exactly what a timer cannot afford.
   public func recount(orders : [Types.Order]) : Nat {
     var total = 0;
     for (order in orders.values()) {

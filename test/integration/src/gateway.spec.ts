@@ -2404,10 +2404,35 @@ test('58 — the sweep reconciles the status tallies on its own cadence and repo
   // Empty drift is the pass condition: the incremental counts agreed with the
   // order store. A non-empty list here would mean the tallies had been wrong.
   expect(status.lastCountReconcile[0]!.drift).toEqual([]);
+  // ⚠️ **And nothing was REFUSED**, which is a different verdict (#63): a refused
+  // entry means the recount came out below the maintained tally and the pass would
+  // not adopt it, so the tallies are still suspect. Asserting only `drift` would
+  // pass while every tally was under review.
+  expect(status.lastCountReconcile[0]!.refused).toEqual([]);
+  // ⚠️ **The acceptance criterion, live: the pass does not read terminal orders.**
+  // This scenario delivered one order and left one `#created`, so the store holds
+  // strictly more orders than the non-terminal set — and the pass must read only the
+  // latter. Before #63 `ordersRead` would have equalled `storedOrders`, and it would
+  // have kept pace with lifetime sales forever.
+  expect(status.indexScan.storedOrders).toBeGreaterThan(status.lastCountReconcile[0]!.ordersRead);
+  // ⚠️ **The coverage reader** (#63). A clean rotating scan is only evidence about the
+  // whole store once a cycle has COMPLETED — silence with no completed cycle means
+  // "not looked at yet", which carries the opposite response to "verified clean".
+  // A chunk runs every sweep and this store is far smaller than one chunk, so a cycle
+  // must have closed by now.
+  expect(status.indexScan.lastCompletedCycle.length).toBe(1);
+  const cycle = status.indexScan.lastCompletedCycle[0]!;
+  expect(cycle.completedAtNs).toBeGreaterThanOrEqual(cycle.startedAtNs);
+  // Verified CLEAN, not merely silent: the cycle walked every order and repaired none.
+  expect(cycle.repairs).toBe(0n);
+  expect(cycle.ordersRead).toBeGreaterThanOrEqual(status.indexScan.storedOrders);
   // And nothing was audited, because a clean reconcile every day would bury the
   // one line that matters.
   const fresh = (await allAuditEvents(gw)).slice(auditBefore);
   expect(fresh.some((e) => e.tag === 'orders.countDrift')).toBe(false);
+  expect(fresh.some((e) => e.tag === 'orders.countRecountLow')).toBe(false);
+  expect(fresh.some((e) => e.tag === 'orders.unindexedHolders')).toBe(false);
+  expect(fresh.some((e) => e.tag === 'orders.staleHolders')).toBe(false);
 
   // The cadence holds in the other direction too: an hour of sweeps must not
   // re-scan the store. The reconcile is detached into its own message, so a gate

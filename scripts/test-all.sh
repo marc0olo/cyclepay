@@ -123,10 +123,16 @@ run "mops test — Motoko unit suites" mops test
 # metadata and the frontend's bindgen source, so it has to be current or the
 # typecheck below is checking against a stale interface.
 run "mops build — regenerate the committed .did" mops build
+# ⚠️ **`fail` rather than a bare `exit 1`.** This check exits the gate outside `run()`,
+# so an `exit 1` here skipped the step banner and — worse — the "steps N–M DID NOT RUN"
+# line, leaving output that reads as one small problem in an otherwise complete run.
+# It is the truncated-run fault in the one place the truncation reporting did not reach:
+# a stale `.did` stops the gate before the frontend, browser and PocketIC suites, and
+# nothing said so.
 if ! git diff --quiet -- src/backend/dist/backend.did; then
   printf '\n\033[31m✗ src/backend/dist/backend.did is out of date — commit the regenerated file\033[0m\n' >&2
   git --no-pager diff --stat -- src/backend/dist/backend.did >&2
-  exit 1
+  fail
 fi
 printf '   .did is current\n'
 

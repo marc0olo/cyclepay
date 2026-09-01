@@ -9,6 +9,7 @@ import Recovery "../src/backend/Recovery";
 import Reserve "../src/backend/Reserve";
 import Types "../src/backend/Types";
 import Map "mo:core/Map";
+import Set "mo:core/Set";
 import Text "mo:core/Text";
 import Orders "../src/backend/Orders";
 
@@ -706,21 +707,23 @@ suite("status counts — the O(1) query inputs", func() {
     assert Orders.countOf(store, #created) == 1;
   });
 
-  test("recount rebuilds from the store and is idempotent", func() {
+  test("the bounded pass recounts from the non-terminal index and is idempotent", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
     ignore newOrder(store, "ord-2", alice);
     ignore newOrder(store, "ord-3", bob);
     ignore Orders.applyTransition(store, "ord-3", #expired, 200);
 
-    let first = Orders.recount(store);
+    let first = Orders.reconcileBounded(store).counts;
     assert Orders.countOf(store, #created) == 2;
+    // ⚠️ **Maintained by `bump`, NOT recounted** — `#expired` is terminal, so the
+    // non-terminal index cannot see it and the pass checks it by monotonicity instead.
     assert Orders.countOf(store, #expired) == 1;
     // Running it again must not double-count.
-    assert Orders.recount(store) == first;
+    assert Orders.reconcileBounded(store).counts == first;
   });
 
-  test("recount lands an order in exactly one bucket after a transition chain", func() {
+  test("the bounded pass lands an order in exactly one bucket after a transition chain", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
     // A real chain rather than a contrived one: paid, then escalated. (It used to be
@@ -728,7 +731,7 @@ suite("status counts — the O(1) query inputs", func() {
     // float, which #36 deleted with the float.)
     ignore Orders.applyTransition(store, "ord-1", #paid, 200);
     ignore Orders.applyTransition(store, "ord-1", #needsReview, 300);
-    ignore Orders.recount(store);
+    ignore Orders.reconcileBounded(store);
     // One order, one bucket: the statuses it passed through must be vacated.
     assert Orders.countOf(store, #created) == 0;
     assert Orders.countOf(store, #expired) == 0;
@@ -736,7 +739,7 @@ suite("status counts — the O(1) query inputs", func() {
     assert Orders.countOf(store, #needsReview) == 1;
   });
 
-  test("reconcile reports no drift while the incremental counts are correct", func() {
+  test("the bounded pass reports nothing while the incremental counts are correct", func() {
     // What the daily sweep asserts. Drift can only come from a bug in `bump`, so
     // it cannot be manufactured through the public API — which is exactly why the
     // useful direction to pin is the negative one: a representative chain of
@@ -751,8 +754,12 @@ suite("status counts — the O(1) query inputs", func() {
     ignore Orders.applyTransition(store, "ord-2", #expired, 300);
     ignore Orders.applyTransition(store, "ord-3", #paid, 300);
 
-    let result = Orders.reconcile(store);
-    assert result.drift.size() == 0;
+    let result = Orders.reconcileBounded(store);
+    assert result.adopted.size() == 0;
+    assert result.refused.size() == 0;
+    assert result.staleHolders.size() == 0;
+    assert result.promisedWas == result.promisedIs;
+    assert not result.expiredOverflow;
     // And the tallies it reports are the ones the queries serve. ⚠️ **Four keys, and
     // a delivered order lands in none of them**: `#delivered` is terminal and
     // untracked, so `ord-1` (paid → delivered) is counted nowhere. That is correct —
@@ -767,26 +774,54 @@ suite("status counts — the O(1) query inputs", func() {
     };
   });
 
-  test("reconcile reports the delta when a tally is stale", func() {
-    // A `bump` bug is the only way a tally drifts, so this writes the wrong value
-    // straight into the counts map to stand in for one. What matters is that the
-    // drift list names the status and *both* values: a repair that silently
-    // succeeded would hide the bug that made it necessary, and the daily sweep
-    // audits nothing when this list is empty.
+  test("⚠️ a tally that reads TOO HIGH is refused, not repaired", func() {
+    // ⚠️ **The one-directional rule, in the direction that must not be adopted.** A
+    // recount below the maintained tally is indistinguishable from an index missing a
+    // member, so adopting it is the only way an index bug could lower `promised` and
+    // oversell the reserve. The old full-scan pass adopted it, because a full scan was
+    // authoritative; the bounded pass is not, and this is the difference.
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
     ignore newOrder(store, "ord-2", alice);
     Map.add(store.counts, Text.compare, "Created", 99);
 
-    let result = Orders.reconcile(store);
-    assert result.drift.size() == 1;
-    assert result.drift[0].status == "Created";
-    assert result.drift[0].was == 99;
-    assert result.drift[0].is == 2;
-    // Repaired, not just reported.
-    assert Orders.countOf(store, #created) == 2;
-    // And a second pass is clean, so the sweep does not re-audit the same drift.
-    assert Orders.reconcile(store).drift.size() == 0;
+    let result = Orders.reconcileBounded(store);
+    assert result.adopted.size() == 0;
+    assert result.refused.size() == 1;
+    assert result.refused[0].status == "Created";
+    assert result.refused[0].was == 99;
+    assert result.refused[0].is == 2;
+    // NOT repaired: the maintained value stands, which over-refuses rather than
+    // overselling.
+    assert Orders.countOf(store, #created) == 99;
+    // ⚠️ And it keeps reporting, because the condition is unfixed and the report is
+    // the only signal. This is a *state* being re-reported, unlike the `#expired`
+    // high-water mark — the difference is that this one is repairable by a human
+    // reading the tag, so silence would be the wrong default.
+    assert Orders.reconcileBounded(store).refused.size() == 1;
+  });
+
+  test("⚠️ a tally that reads TOO LOW is raised, because an under-count stops the sweeps", func() {
+    // The other half of the same rule. An under-counted `#paid` reads as zero to
+    // `sweepableCount`, which short-circuits the recovery sweep — so money-out stops
+    // while orders sit paid and undelivered. Raising is the safe direction and it is
+    // the one the pass adopts.
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    ignore newOrder(store, "ord-2", alice);
+    ignore Orders.applyTransition(store, "ord-1", #paid, 200);
+    ignore Orders.applyTransition(store, "ord-2", #paid, 200);
+    Map.add(store.counts, Text.compare, "Paid", 0);
+
+    let result = Orders.reconcileBounded(store);
+    assert result.refused.size() == 0;
+    assert result.adopted.size() == 1;
+    assert result.adopted[0].status == "Paid";
+    assert result.adopted[0].was == 0;
+    assert result.adopted[0].is == 2;
+    assert Orders.countOf(store, #paid) == 2;
+    // Repaired, so a second pass is clean and the sweep does not re-audit it.
+    assert Orders.reconcileBounded(store).adopted.size() == 0;
   });
 
   test("a status no order is in reads zero", func() {
@@ -890,7 +925,13 @@ suite("#37 — the unresolved-problems index", func() {
   test("⚠️ the index agrees with a full scan — the tripwire that makes derived state safe", func() {
     // Without this the index is the `delayedAlerts` mistake again: a second structure
     // that can disagree with the orders it points at and no way to tell which is
-    // right. A non-zero drift means a writer bypassed fileProblem/resolveProblems.
+    // right. A disagreement means a writer bypassed fileProblem/resolveProblems.
+    //
+    // ⚠️ **Both directions, because #63 split them across two mechanisms** and a test
+    // that only ran one would pass while the other was broken. The inside direction
+    // (nothing in the index lacks a problem) is `reconcileBounded`, daily; the outside
+    // direction (nothing outside the index has one) is `scanChunk`, on a coverage
+    // window. The full scan below is the independent oracle both are checked against.
     let store = Orders.emptyStore();
     let a = freshOrder(store, "drift-a");
     let b = freshOrder(store, "drift-b");
@@ -899,10 +940,19 @@ suite("#37 — the unresolved-problems index", func() {
     assert Orders.fileProblem(store, b.id, #deliveryStuck({ stage = "s" }), "d", 200);
     assert Orders.fileProblem(store, c.id, #paidNotCredited({ paymentRef = "p3"; sessionId = "cs" }), "d", 200);
     ignore Orders.resolveProblems(store, b.id, func(_) { true }, 300);
-    assert Orders.recountUnresolvedProblems(store) == 0;
-    // And the rebuild is idempotent.
-    assert Orders.recountUnresolvedProblems(store) == 0;
+
+    assert Orders.reconcileBounded(store).staleProblemIds.size() == 0;
+    let chunk = Orders.scanChunk(store, null, Orders.scanChunkSize);
+    assert chunk.unindexedProblems.size() == 0;
+    assert chunk.nextCursor == null; // the cycle completed, so this speaks for all of them
     assert Orders.withUnresolvedProblems(store).size() == 2;
+
+    // And the oracle: the index is exactly the set a full scan would build.
+    var byScan = 0;
+    for (order in Orders.all(store).values()) {
+      if (Problems.unresolvedCount(order.problems) > 0) byScan += 1;
+    };
+    assert byScan == Orders.withUnresolvedProblems(store).size();
   });
 
   test("filing on an unknown order changes nothing", func() {
@@ -1106,5 +1156,193 @@ suite("#38 — filtered, cursor-paginated reads", func() {
     ignore Orders.resolveProblems(store, a.id, func(_) { true }, 300);
     assert Orders.page(store, worklist, null, 50).orders.size() == 1;
     assert Orders.page(store, Orders.noFilter(), null, 50).orders.size() == 2;
+  });
+});
+
+suite("#63 — the reconcile is bounded by flow, not by lifetime sales", func() {
+  func mk(store : Orders.Store, id : Text) : Types.Order {
+    switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1_000, pricing, 100)) {
+      case (#ok(o)) o;
+      case (#err(_)) { assert false; loop {} };
+    };
+  };
+
+  /// Drive an order all the way to `#delivered` — a terminal status, so it leaves the
+  /// non-terminal index and must stop costing the reconcile anything.
+  func deliver(store : Orders.Store, id : Text) {
+    ignore mk(store, id);
+    ignore Orders.applyTransition(store, id, #paid, 200);
+    ignore Orders.applyTransition(store, id, #delivered, 300);
+  };
+
+  test("⚠️ the promise recount does not read terminal orders — the acceptance criterion", func() {
+    // ⚠️ **Two assertions, and neither alone is worth anything.** "It reads few orders"
+    // passes trivially for a pass that reads none and answers wrong; "it answers
+    // correctly" passes for the O(every order) pass this replaced. What has to hold is
+    // *both at once*: the answer matches an independent full scan **while** the work
+    // stays flat as terminal history piles up.
+    let store = Orders.emptyStore();
+    ignore mk(store, "open-1");
+    ignore mk(store, "open-2");
+    ignore Orders.applyTransition(store, "open-2", #paid, 200);
+
+    let lean = Orders.reconcileBounded(store);
+    assert lean.ordersRead == 2;
+    assert lean.promisedIs == Reserve.recount(Orders.all(store));
+
+    // Now bury them in history. Fifty delivered orders is fifty the old pass summed
+    // every single day, forever.
+    for (i in Nat.range(0, 50)) deliver(store, "done-" # i.toText());
+    assert Orders.storedCount(store) == 52;
+
+    let heavy = Orders.reconcileBounded(store);
+    // ⚠️ The work did not move. This is the whole issue in one assertion.
+    assert heavy.ordersRead == 2;
+    // And it is still the right answer, checked against the full-scan oracle.
+    assert heavy.promisedIs == Reserve.recount(Orders.all(store));
+    assert heavy.promisedIs == 2_000;
+    assert heavy.promisedWas == heavy.promisedIs;
+  });
+
+  test("a terminal order left in the index is dropped on sight, and reported", func() {
+    // Stands in for a status writer that bypassed `commitTransition`: the order is
+    // terminal but its id is still indexed. Reading the order is authoritative, so the
+    // drop is a sound repair — and the recount must exclude it rather than counting a
+    // promise that was released.
+    let store = Orders.emptyStore();
+    deliver(store, "gone-1");
+    ignore mk(store, "live-1");
+    Set.add(store.promiseHolders, Text.compare, "gone-1");
+
+    let result = Orders.reconcileBounded(store);
+    assert result.staleHolders == ["gone-1"];
+    assert not store.promiseHolders.contains("gone-1");
+    // The delivered order's cycles are not in the recount.
+    assert result.promisedIs == 1_000;
+    // Reported once: a second pass has nothing left to drop.
+    assert Orders.reconcileBounded(store).staleHolders.size() == 0;
+  });
+
+  test("⚠️ `#expired` is checked by monotonicity, and a decrease is a breach", func() {
+    // `#expired` is the ONE tracked status that is terminal, so the index cannot recount
+    // it. Its inbound edge is `#created → #expired` and the matrix has no outbound one,
+    // so the tally can only rise — which is what makes a cheap check sound here and
+    // nowhere else.
+    let store = Orders.emptyStore();
+    ignore mk(store, "exp-1");
+    ignore mk(store, "exp-2");
+    ignore Orders.applyTransition(store, "exp-1", #expired, 200);
+    ignore Orders.applyTransition(store, "exp-2", #expired, 200);
+
+    let first = Orders.reconcileBounded(store);
+    assert first.expiredWas == 0 and first.expiredIs == 2; // 0 → 2 is a rise, not a breach
+    assert Orders.reconcileBounded(store).expiredIs == 2;
+
+    // A `bump` bug is the only way this happens, so write the wrong value directly.
+    Map.add(store.counts, Text.compare, "Expired", 1);
+    let breach = Orders.reconcileBounded(store);
+    assert breach.expiredWas == 2 and breach.expiredIs == 1;
+
+    // ⚠️ **Reported once, not daily.** The high-water mark follows the tally down, so an
+    // unfixed decrease does not re-fire on every pass — our own cadence bounding a rate
+    // against a persistent state is the fault #37 §2c removed from the audit log.
+    let after = Orders.reconcileBounded(store);
+    assert after.expiredWas == 1 and after.expiredIs == 1;
+  });
+
+  test("`#expired` over-counting past the store size is caught by disjointness", func() {
+    // The bound monotonicity cannot give: `#expired` orders and the non-terminal set are
+    // disjoint subsets of the store, so their sizes cannot exceed it. Two O(1) reads.
+    let store = Orders.emptyStore();
+    ignore mk(store, "live-1");
+    assert not Orders.reconcileBounded(store).expiredOverflow;
+    Map.add(store.counts, Text.compare, "Expired", 5);
+    assert Orders.reconcileBounded(store).expiredOverflow;
+  });
+
+  test("⚠️ the rotating scan never claims coverage it did not achieve", func() {
+    // ⚠️ **The three-state requirement, at its mechanical root.** A chunk that stopped
+    // early must return a cursor; only exhaustion returns null. If it ever returned null
+    // early, a partial pass would read as a completed one and `no drift` would mean
+    // `not looked at yet` — two readings with opposite responses.
+    let store = Orders.emptyStore();
+    for (i in Nat.range(0, 5)) ignore mk(store, "scan-" # i.toText());
+
+    let first = Orders.scanChunk(store, null, 2);
+    assert first.visited == 2;
+    let ?cursor1 = first.nextCursor else Runtime.trap("a partial chunk must return a cursor");
+
+    let second = Orders.scanChunk(store, ?cursor1, 2);
+    assert second.visited == 2;
+    let ?cursor2 = second.nextCursor else Runtime.trap("still partial");
+    // The cursor advanced, so the pass makes progress rather than re-reading a prefix.
+    assert cursor2 > cursor1;
+
+    let third = Orders.scanChunk(store, ?cursor2, 2);
+    assert third.visited == 1; // the store is exhausted, not the chunk
+    assert third.nextCursor == null; // and only now is the cycle complete
+
+    // 2 + 2 + 1 = every order exactly once. No overlap, no gap: the cursor is inclusive
+    // in `entriesFrom` and the scan skips it explicitly, which is the off-by-one that
+    // would otherwise re-read one order per chunk forever or skip one per chunk.
+    assert first.visited + second.visited + third.visited == Orders.storedCount(store);
+  });
+
+  test("⚠️ the scan finds the one error the daily pass cannot see, and the tally follows", func() {
+    // The money-critical case. A non-terminal order missing from the index while
+    // `promised` is missing its cycles too: the two agree with each other, so the daily
+    // recount reports nothing, and the reserve reads as MORE available than it is.
+    let store = Orders.emptyStore();
+    ignore mk(store, "hidden-1");
+    ignore mk(store, "seen-1");
+    // Stand in for a writer that entered an order without either bookkeeping step.
+    store.promiseHolders.remove("hidden-1");
+    store.promised -= 1_000;
+
+    // ⚠️ The daily pass is blind to it — index and tally agree at the wrong value. This
+    // assertion is why the rotating scan exists at all; if it ever fails, the scan is
+    // redundant and should go.
+    let blind = Orders.reconcileBounded(store);
+    assert blind.promisedWas == blind.promisedIs;
+    assert blind.promisedIs == 1_000;
+    assert blind.promisedIs != Reserve.recount(Orders.all(store));
+
+    // The scan reads the order itself, so it sees the truth and repairs the index.
+    let chunk = Orders.scanChunk(store, null, Orders.scanChunkSize);
+    assert chunk.unindexedHolders == ["hidden-1"];
+    assert store.promiseHolders.contains("hidden-1");
+
+    // And the repair feeds through to the tally without the scan touching it: the next
+    // recount is larger, and a larger recount is exactly what the pass adopts.
+    let fixed = Orders.reconcileBounded(store);
+    assert fixed.promisedAdopted;
+    assert fixed.promisedIs == 2_000;
+    assert Orders.promised(store) == Reserve.recount(Orders.all(store));
+  });
+
+  test("the scan repairs on a chunk that stopped early, not only on the last one", func() {
+    // ⚠️ **A draft returned from inside the loop when the chunk filled and skipped the
+    // two lines that apply the repair** — so the one thing the scan exists to do was
+    // dropped on every chunk except the last of a cycle, and every test that scanned a
+    // small store in one chunk passed.
+    let store = Orders.emptyStore();
+    for (i in Nat.range(0, 4)) ignore mk(store, "part-" # i.toText());
+    for (i in Nat.range(0, 4)) store.promiseHolders.remove("part-" # i.toText());
+
+    let chunk = Orders.scanChunk(store, null, 2);
+    assert chunk.nextCursor != null; // it stopped early
+    assert chunk.unindexedHolders.size() == 2;
+    // Repaired, despite the early stop.
+    assert Orders.promiseHolderCount(store) == 2;
+  });
+
+  test("a scan over an empty store completes immediately rather than stalling", func() {
+    let store = Orders.emptyStore();
+    let chunk = Orders.scanChunk(store, null, Orders.scanChunkSize);
+    assert chunk.visited == 0;
+    // ⚠️ Null, so the cycle is recorded as complete. A stalled cursor on an empty store
+    // would leave `lastCompletedCycle` null forever and make every clean scan read as
+    // unverified.
+    assert chunk.nextCursor == null;
   });
 });

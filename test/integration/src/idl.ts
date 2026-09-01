@@ -480,11 +480,26 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
             IDL.Record({
               atNs: IDL.Int,
               drift: IDL.Vec(IDL.Record({ status: IDL.Text, was: IDL.Nat, is: IDL.Nat })),
+              refused: IDL.Vec(IDL.Record({ status: IDL.Text, was: IDL.Nat, is: IDL.Nat })),
+              ordersRead: IDL.Nat,
             }),
           ),
           lastCountReconcileAttemptNs: IDL.Int,
           lastSweep: IDL.Opt(IDL.Record({ atNs: IDL.Int, pending: IDL.Nat })),
           sweepInFlight: IDL.Bool,
+          indexScan: IDL.Record({
+            chunkSize: IDL.Nat,
+            storedOrders: IDL.Nat,
+            inFlightCycle: IDL.Record({ startedAtNs: IDL.Int, ordersRead: IDL.Nat, repairs: IDL.Nat }),
+            lastCompletedCycle: IDL.Opt(
+              IDL.Record({
+                startedAtNs: IDL.Int,
+                completedAtNs: IDL.Int,
+                ordersRead: IDL.Nat,
+                repairs: IDL.Nat,
+              }),
+            ),
+          }),
         }),
       ],
       ['query'],
