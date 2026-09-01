@@ -1018,3 +1018,93 @@ suite("#37 — resolving a problem is precise, and refuses when it cannot be", f
     assert Problems.sameShape(a, #duplicate({ paymentRef = "pi_1" }));
   });
 });
+
+suite("#38 — filtered, cursor-paginated reads", func() {
+  func mk(store : Orders.Store, id : Text, who : Principal, createdAtNs : Int) : Types.Order {
+    switch (Orders.create(store, id, #ii(who), #card, #cyclesLedgerAccount({ owner = who; subaccount = null }), 1_000, pricing, createdAtNs)) {
+      case (#ok(o)) o;
+      case (#err(_)) { assert false; loop {} };
+    };
+  };
+
+  test("a cursor walk visits every match exactly once", func() {
+    // ⚠️ The property that matters for a cursor: complete AND no duplicates. An
+    // offset would have both failure modes the moment the set changes under a client.
+    let store = Orders.emptyStore();
+    for (i in Nat.range(0, 25)) {
+      ignore mk(store, "id-" # (if (i < 10) "0" else "") # i.toText(), alice, 100 + i);
+    };
+    var seen : [Text] = [];
+    var cursor : ?Types.OrderId = null;
+    var pages = 0;
+    label walk loop {
+      let p = Orders.page(store, Orders.noFilter(), cursor, 7);
+      pages += 1;
+      for (o in p.orders.vals()) seen := seen.concat([o.id]);
+      switch (p.nextCursor) {
+        case (?c) cursor := ?c;
+        case null break walk;
+      };
+      if (pages > 10) { assert false; break walk };  // no infinite walk
+    };
+    assert seen.size() == 25;
+    // No duplicates: every id appears once.
+    for (id in seen.vals()) {
+      var n = 0;
+      for (other in seen.vals()) { if (other == id) n += 1 };
+      assert n == 1;
+    };
+  });
+
+  test("nextCursor is null only when nothing remains, so a full page can be the last", func() {
+    let store = Orders.emptyStore();
+    for (i in Nat.range(0, 3)) ignore mk(store, "p-" # i.toText(), alice, 100);
+    // Exactly three, page size three: full page, and no wasted follow-up request.
+    let p = Orders.page(store, Orders.noFilter(), null, 3);
+    assert p.orders.size() == 3;
+    assert p.nextCursor == null;
+  });
+
+  test("limit 0 and an oversized limit both clamp to maxPageSize", func() {
+    let store = Orders.emptyStore();
+    for (i in Nat.range(0, 5)) ignore mk(store, "c-" # i.toText(), alice, 100);
+    assert Orders.page(store, Orders.noFilter(), null, 0).orders.size() == 5;
+    assert Orders.page(store, Orders.noFilter(), null, 1_000_000).orders.size() == 5;
+  });
+
+  test("filters AND together", func() {
+    let store = Orders.emptyStore();
+    let a = mk(store, "f-1", alice, 100);
+    let b = mk(store, "f-2", bob, 200);
+    ignore Orders.applyTransition(store, b.id, #cancelled, 300);
+
+    // owner alone
+    assert Orders.page(store, { Orders.noFilter() with owner = ?alice }, null, 50).orders.size() == 1;
+    // status alone
+    assert Orders.page(store, { Orders.noFilter() with status = ?(#cancelled : Types.OrderStatus) }, null, 50).orders.size() == 1;
+    // both, contradicting: alice's order is not cancelled
+    assert Orders.page(store, { Orders.noFilter() with owner = ?alice; status = ?(#cancelled : Types.OrderStatus) }, null, 50).orders.size() == 0;
+    // time range is inclusive at both ends
+    assert Orders.page(store, { Orders.noFilter() with createdFromNs = ?100; createdToNs = ?100 }, null, 50).orders.size() == 1;
+    assert Orders.page(store, { Orders.noFilter() with createdFromNs = ?101 }, null, 50).orders.size() == 1;
+    assert a.createdAtNs == 100;
+  });
+
+  test("withUnresolvedProblems composes with the other filters (#37's thesis)", func() {
+    // The worklist is a FILTER, not a parallel query — which is why it has to compose.
+    let store = Orders.emptyStore();
+    let a = mk(store, "w-1", alice, 100);
+    let b = mk(store, "w-2", bob, 100);
+    assert Orders.fileProblem(store, a.id, #duplicate({ paymentRef = "pi_a" }), "d", 200);
+    assert Orders.fileProblem(store, b.id, #duplicate({ paymentRef = "pi_b" }), "d", 200);
+
+    let worklist = { Orders.noFilter() with withUnresolvedProblems = true };
+    assert Orders.page(store, worklist, null, 50).orders.size() == 2;
+    // Narrowed to one owner: still a filter, so it intersects.
+    assert Orders.page(store, { worklist with owner = ?alice }, null, 50).orders.size() == 1;
+    // Resolving removes it from the worklist while the order stays in the unfiltered set.
+    ignore Orders.resolveProblems(store, a.id, func(_) { true }, 300);
+    assert Orders.page(store, worklist, null, 50).orders.size() == 1;
+    assert Orders.page(store, Orders.noFilter(), null, 50).orders.size() == 2;
+  });
+});

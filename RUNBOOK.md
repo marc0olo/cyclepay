@@ -811,8 +811,12 @@ Since #37, four of the six kinds live on the order rather than in this list, and
 are closed with `resolve_problem` rather than `resolve_orphan`:
 
 ```sh
+# Read ONE order, whoever owns it (#38). Every such read is audited, hit or miss.
+icp canister call backend admin_order '("<orderId>")'
+
 # See what is outstanding, and on which orders
-icp canister call backend orders_with_problems '()'
+icp canister call backend problem_depth '()'                 # the number to alert on
+icp canister call backend admin_orders '(record { status = null; owner = null; createdFromNs = null; createdToNs = null; withUnresolvedProblems = true }, null, 50)'
 
 # Close one. The third argument selects WHICH, by payment reference.
 icp canister call backend resolve_problem '("<orderId>", "duplicate", opt "pi_...")'
@@ -827,7 +831,7 @@ the refusal lists the references.** A buyer who pays three times files three
 have not refunded. Refunding one and closing another is the mistake this refusal
 exists to prevent — the error message is the disambiguation step, not an obstacle.
 
-⚠️ **A resolved problem stays on the order.** Nothing drops, so `orders_with_problems`
+⚠️ **A resolved problem stays on the order.** Nothing drops, so the worklist filter
 stops listing the order while its history remains readable. "It disappeared" is not
 what success looks like here.
 

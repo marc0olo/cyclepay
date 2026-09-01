@@ -241,6 +241,11 @@ type Pricing =
    usdPerIcpMicros: nat;
    xdrPermyriadPerIcp: nat;
  };
+type Page__1 = 
+ record {
+   nextCursor: opt OrderId;
+   orders: vec Order;
+ };
 type Page = 
  record {
    entries: vec Entry;
@@ -328,6 +333,14 @@ type HeaderField =
  record {
    text;
    text;
+ };
+type Filter = 
+ record {
+   createdFromNs: opt int;
+   createdToNs: opt int;
+   owner: opt principal;
+   status: opt OrderStatus;
+   withUnresolvedProblems: bool;
  };
 type ExpiredBy = 
  variant {
@@ -462,6 +475,49 @@ service : {
   /// Only reachable from a pre-delivery money-bearing state. A `#created` order
   /// has taken no money and needs no decision; a `#delivered` one is done.
   abandon_order: (id: OrderId, reason: text) -> (Result_9);
+  /// Open-obligation depth, public.
+  /// 
+  /// Unresolved entries are never evicted, so this number only ever comes down
+  /// by the operator working it. A climbing value means dollars are arriving
+  /// that nobody has dealt with — the single most important operational number
+  /// on the money path, and it is public because §9's transparency stance says
+  /// operational state is not secret.
+  /// Refusal tallies, and whether the gate is refusing right now (#61).
+  /// 
+  /// ⚠️ **Public, like every other monitoring surface here** — operational state
+  /// is public by design; the webhook secret is the only secret in the system.
+  /// 
+  /// ⚠️ **This query is the point of the counters.** A tally nobody reads is the
+  /// `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
+  /// per counter with the response — the counters mean different things:
+  /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
+  /// `reserveShort` climbing is a refill. Same shape, opposite actions.
+  /// Read **any** order by id (admin, #38).
+  /// 
+  /// ⚠️ **A deliberate exception to §2's "existence is not revealed to non-owners", so
+  /// it audits itself on every use.** `get_order` is owner-scoped with no admin bypass,
+  /// which meant an operator handed a Stripe receipt could determine *which* order it
+  /// was — `order_for_payment` is admin-gated — and then could not look at it. Support
+  /// meant asking the buyer to read their own screen.
+  /// 
+  /// ⚠️ **The audit line is the price of the exception, not decoration.** It is an
+  /// `auditAdmin` write, so it names *who* looked, and it fires on the read whether or
+  /// not the order exists — a probe for existence is exactly what §2 withholds from
+  /// everyone else, so a miss has to be as visible as a hit.
+  admin_order: (id: OrderId) -> (opt Order);
+  /// Filtered, cursor-paginated order list (admin, #38).
+  /// 
+  /// ⚠️ **This is also #37's worklist.** `withUnresolvedProblems` is a *filter* here
+  /// rather than a query of its own, which is the whole thesis: "everything outstanding"
+  /// composes with status, owner and time range instead of being a parallel list that
+  /// answers a slightly different question. It replaced `orders_with_problems`.
+  /// 
+  /// ⚠️ **Ordered by order id, which is not time order.** See `Orders.page` — id order
+  /// is arbitrary because ids are random, and sorting by `createdAtNs` would mean
+  /// materialising the filtered set first, which is the unbounded scan #63 exists to
+  /// remove. Narrow with `createdFromNs` for recency.
+  admin_orders: (filter: Filter, afterId: opt OrderId, limit: nat) ->
+   (Page__1) query;
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
   audit_log: () -> (vec Event) query;
@@ -651,45 +707,6 @@ service : {
   /// order it funded. Null means the payment was never attributed to an order
   /// here — check the error queue for an obligation carrying it.
   order_for_payment: (paymentRef: text) -> (opt OrderId) query;
-  /// Open-obligation depth, public.
-  /// 
-  /// Unresolved entries are never evicted, so this number only ever comes down
-  /// by the operator working it. A climbing value means dollars are arriving
-  /// that nobody has dealt with — the single most important operational number
-  /// on the money path, and it is public because §9's transparency stance says
-  /// operational state is not secret.
-  /// Refusal tallies, and whether the gate is refusing right now (#61).
-  /// 
-  /// ⚠️ **Public, like every other monitoring surface here** — operational state
-  /// is public by design; the webhook secret is the only secret in the system.
-  /// 
-  /// ⚠️ **This query is the point of the counters.** A tally nobody reads is the
-  /// `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
-  /// per counter with the response — the counters mean different things:
-  /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
-  /// `reserveShort` climbing is a refill. Same shape, opposite actions.
-  /// **The worklist, as a filter over orders** (#37) — every order carrying at least
-  /// one unresolved problem, plus the count an operator watches.
-  /// 
-  /// ⚠️ **This is what replaced the error queue's worklist function**, and #37's
-  /// acceptance criterion is only evaluable because it exists: "everything
-  /// outstanding" is a query over orders with an unresolved problem rather than a
-  /// separate structure that can fall out of step with the orders it points at.
-  /// 
-  /// ⚠️ **It walks the `unresolvedProblems` index, not the store.** The set is small
-  /// and attacker-priced — every problem in it required a real payment event — and the
-  /// daily reconcile audits `orders.problemIndexDrift` if the projection ever
-  /// disagrees with the orders.
-  /// 
-  /// ⚠️ **Not the whole picture on its own.** `orphans_unresolved` holds the two
-  /// order-less kinds, which by definition cannot appear here: a payment we cannot
-  /// attribute has no order to hang off. An operator watching only one of the two
-  /// numbers is watching half the obligations.
-  orders_with_problems: () ->
-   (record {
-      orders: vec Order;
-      unresolved: nat;
-    }) query;
   orphan_depth: () -> (record {
                          retained: nat;
                          unresolved: nat;
@@ -722,6 +739,20 @@ service : {
       rates: opt Rates;
       xrcCanisterId: opt text;
     }) query;
+  /// How much is outstanding, as two numbers rather than a collection (#38).
+  /// 
+  /// ⚠️ **The shape to poll, and the reason it exists separately from the list.** A
+  /// paginated detail query needs a cheap total beside it or a monitor pages through
+  /// everything to learn one number — the same split `orphan_depth` already has, and
+  /// the same reason RUNBOOK says to alert on the depth and fetch details only when it
+  /// fires.
+  /// 
+  /// ⚠️ **`unresolved` is NOT `orders`.** One order can carry several problems, so a
+  /// caller reading the order count undercounts the work.
+  problem_depth: () -> (record {
+                          orders: nat;
+                          unresolved: nat;
+                        }) query;
   /// Manual delivery kick — **admin, or the order's own owner** (#30 PR-B).
   /// 
   /// Safe to spam by construction: every step is journalled, deduplicated,

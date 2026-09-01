@@ -333,11 +333,23 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Variant({ err: IDL.Text, ok: IDL.Nat })],
       [],
     ),
-    orders_with_problems: IDL.Func(
-      [],
-      [IDL.Record({ orders: IDL.Vec(Order), unresolved: IDL.Nat })],
+    admin_order: IDL.Func([IDL.Text], [IDL.Opt(Order)], []),
+    admin_orders: IDL.Func(
+      [
+        IDL.Record({
+          createdFromNs: IDL.Opt(IDL.Int),
+          createdToNs: IDL.Opt(IDL.Int),
+          owner: IDL.Opt(IDL.Principal),
+          status: IDL.Opt(OrderStatus),
+          withUnresolvedProblems: IDL.Bool,
+        }),
+        IDL.Opt(IDL.Text),
+        IDL.Nat,
+      ],
+      [IDL.Record({ nextCursor: IDL.Opt(IDL.Text), orders: IDL.Vec(Order) })],
       ['query'],
     ),
+    problem_depth: IDL.Func([], [IDL.Record({ orders: IDL.Nat, unresolved: IDL.Nat })], ['query']),
     refusal_counts: IDL.Func(
       [],
       [IDL.Record({ counts: RefusalCounts, refusingNow: RailStateLatch })],

@@ -538,10 +538,33 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   // ⚠️ **The worklist filter sees it** (#37) — this is the query that replaced the
   // queue's worklist function, and the acceptance criterion "everything outstanding is
   // a filter over orders" is only checkable because it exists.
-  const worklist = await gw.asAdmin.orders_with_problems();
+  // ⚠️ **The worklist is a FILTER now (#38), not its own query** — which is #37's
+  // thesis made structural: it composes with owner, status and time range instead of
+  // being a parallel list that answers a slightly different question.
+  const worklist = await gw.asAdmin.admin_orders(
+    { status: [], owner: [], createdFromNs: [], createdToNs: [], withUnresolvedProblems: true },
+    [], 50n,
+  );
   expect(worklist.orders.some((o) => o.id === orderA.id)).toBe(true);
-  expect(worklist.unresolved).toBeGreaterThan(0n);
-  await expect(gw.asUser.orders_with_problems()).rejects.toThrow(/not a controller/);
+  // The cheap total lives beside it, so a monitor never pages to learn one number.
+  expect((await gw.asAnon.problem_depth()).unresolved).toBeGreaterThan(0n);
+  await expect(gw.asUser.admin_orders(
+    { status: [], owner: [], createdFromNs: [], createdToNs: [], withUnresolvedProblems: true },
+    [], 50n,
+  )).rejects.toThrow(/not a controller/);
+
+  // And the admin single-order read, which #38 exists for: an operator handed a Stripe
+  // receipt can now look at the order rather than asking the buyer to read their screen.
+  const adminView = await gw.asAdmin.admin_order(orderA.id);
+  expect(adminView).toHaveLength(1);
+  expect(adminView[0]!.id).toBe(orderA.id);
+  await expect(gw.asUser.admin_order(orderA.id)).rejects.toThrow(/not a controller/);
+  // ⚠️ The read is audited BOTH ways — a probe for existence is what §2 withholds from
+  // everyone else, so a miss has to be as visible as a hit.
+  expect(await gw.asAdmin.admin_order('00000000000000000000000000000000')).toHaveLength(0);
+  const reads = (await gw.asAdmin.audit_log()).filter((e) => e.tag === 'order.adminRead');
+  expect(reads.length).toBeGreaterThanOrEqual(2);
+  expect(reads.some((e) => e.detail.includes('no such order'))).toBe(true);
 
   // charge.refunded auto-resolves it by payment_intent — and this is the assertion
   // that would catch the closer being wired to only one of the two stores, since
@@ -557,8 +580,10 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   expect(resolvedProblem!.resolvedAtNs.length).toBe(1);
   // And the order has left the worklist, because the filter reads UNRESOLVED problems
   // while the order keeps the resolved one forever.
-  expect((await gw.asAdmin.orders_with_problems()).orders.some((o) => o.id === orderA.id))
-    .toBe(false);
+  expect((await gw.asAdmin.admin_orders(
+    { status: [], owner: [], createdFromNs: [], createdToNs: [], withUnresolvedProblems: true },
+    [], 50n,
+  )).orders.some((o) => o.id === orderA.id)).toBe(false);
 
   await gw.pic.tick(5);
   expect(await reserveBalance(gw)).toBe(reserveBefore);

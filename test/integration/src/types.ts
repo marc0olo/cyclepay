@@ -125,6 +125,14 @@ export interface Problem {
   resolvedAtNs: Opt<bigint>;
 }
 
+export interface OrderFilter {
+  status: Opt<StatusVariant>;
+  owner: Opt<Principal>;
+  createdFromNs: Opt<bigint>;
+  createdToNs: Opt<bigint>;
+  withUnresolvedProblems: boolean;
+}
+
 export interface RefusalCounts {
   amountAboveMax: bigint;
   amountBelowMin: bigint;
@@ -299,7 +307,21 @@ export interface BackendService {
   refusal_counts(): Promise<{ counts: RefusalCounts; refusingNow: RailStateLatch }>;
   /// The worklist, as a filter over orders (#37). `unresolved` is NOT orders.length —
   /// one order can carry several problems.
-  orders_with_problems(): Promise<{ orders: Order[]; unresolved: bigint }>;
+  /// Read any order by id (admin, #38). Audited on every use, hit or miss.
+  admin_order(id: string): Promise<Opt<Order>>;
+  /// Filtered, cursor-paginated order list (admin, #38) — and #37's worklist, since
+  /// `withUnresolvedProblems` is a filter here rather than its own query.
+  ///
+  /// ⚠️ Ordered by order ID, which is NOT time order: ids are random. Narrow with
+  /// `createdFromNs` for recency.
+  admin_orders(
+    filter: OrderFilter,
+    afterId: Opt<string>,
+    limit: bigint,
+  ): Promise<{ orders: Order[]; nextCursor: Opt<string> }>;
+  /// Two numbers rather than a collection — the shape to poll. `unresolved` is NOT
+  /// `orders`: one order can carry several problems.
+  problem_depth(): Promise<{ unresolved: bigint; orders: bigint }>;
   /// Close ONE order-bound problem. `paymentRef` selects which, and omitting it is
   /// refused when more than one candidate exists (#37).
   resolve_problem(orderId: string, kindTag: string, paymentRef: Opt<string>): Promise<Result<bigint, string>>;

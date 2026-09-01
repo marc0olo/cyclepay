@@ -1495,33 +1495,63 @@ persistent actor CyclesGateway {
   /// per counter with the response — the counters mean different things:
   /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
   /// `reserveShort` climbing is a refill. Same shape, opposite actions.
-  /// **The worklist, as a filter over orders** (#37) — every order carrying at least
-  /// one unresolved problem, plus the count an operator watches.
+  /// Read **any** order by id (admin, #38).
   ///
-  /// ⚠️ **This is what replaced the error queue's worklist function**, and #37's
-  /// acceptance criterion is only evaluable because it exists: "everything
-  /// outstanding" is a query over orders with an unresolved problem rather than a
-  /// separate structure that can fall out of step with the orders it points at.
+  /// ⚠️ **A deliberate exception to §2's "existence is not revealed to non-owners", so
+  /// it audits itself on every use.** `get_order` is owner-scoped with no admin bypass,
+  /// which meant an operator handed a Stripe receipt could determine *which* order it
+  /// was — `order_for_payment` is admin-gated — and then could not look at it. Support
+  /// meant asking the buyer to read their own screen.
   ///
-  /// ⚠️ **It walks the `unresolvedProblems` index, not the store.** The set is small
-  /// and attacker-priced — every problem in it required a real payment event — and the
-  /// daily reconcile audits `orders.problemIndexDrift` if the projection ever
-  /// disagrees with the orders.
-  ///
-  /// ⚠️ **Not the whole picture on its own.** `orphans_unresolved` holds the two
-  /// order-less kinds, which by definition cannot appear here: a payment we cannot
-  /// attribute has no order to hang off. An operator watching only one of the two
-  /// numbers is watching half the obligations.
-  public shared query ({ caller }) func orders_with_problems() : async {
-    orders : [Types.Order];
-    /// Total unresolved problems, which is **not** `orders.size()` — one order can
-    /// carry several.
-    unresolved : Nat;
-  } {
+  /// ⚠️ **The audit line is the price of the exception, not decoration.** It is an
+  /// `auditAdmin` write, so it names *who* looked, and it fires on the read whether or
+  /// not the order exists — a probe for existence is exactly what §2 withholds from
+  /// everyone else, so a miss has to be as visible as a hit.
+  public shared ({ caller }) func admin_order(id : Types.OrderId) : async ?Types.Order {
     requireAdmin(caller);
+    let found = Orders.get(orderStore, id);
+    auditAdmin(
+      caller,
+      "order.adminRead",
+      id # (switch (found) { case (?_) ""; case null " (no such order)" }),
+    );
+    found;
+  };
+
+  /// Filtered, cursor-paginated order list (admin, #38).
+  ///
+  /// ⚠️ **This is also #37's worklist.** `withUnresolvedProblems` is a *filter* here
+  /// rather than a query of its own, which is the whole thesis: "everything outstanding"
+  /// composes with status, owner and time range instead of being a parallel list that
+  /// answers a slightly different question. It replaced `orders_with_problems`.
+  ///
+  /// ⚠️ **Ordered by order id, which is not time order.** See `Orders.page` — id order
+  /// is arbitrary because ids are random, and sorting by `createdAtNs` would mean
+  /// materialising the filtered set first, which is the unbounded scan #63 exists to
+  /// remove. Narrow with `createdFromNs` for recency.
+  public shared query ({ caller }) func admin_orders(
+    filter : Orders.Filter,
+    afterId : ?Types.OrderId,
+    limit : Nat,
+  ) : async Orders.Page {
+    requireAdmin(caller);
+    Orders.page(orderStore, filter, afterId, limit);
+  };
+
+  /// How much is outstanding, as two numbers rather than a collection (#38).
+  ///
+  /// ⚠️ **The shape to poll, and the reason it exists separately from the list.** A
+  /// paginated detail query needs a cheap total beside it or a monitor pages through
+  /// everything to learn one number — the same split `orphan_depth` already has, and
+  /// the same reason RUNBOOK says to alert on the depth and fetch details only when it
+  /// fires.
+  ///
+  /// ⚠️ **`unresolved` is NOT `orders`.** One order can carry several problems, so a
+  /// caller reading the order count undercounts the work.
+  public query func problem_depth() : async { unresolved : Nat; orders : Nat } {
     {
-      orders = Orders.withUnresolvedProblems(orderStore);
       unresolved = Orders.unresolvedProblemCount(orderStore);
+      orders = Orders.withUnresolvedProblems(orderStore).size();
     };
   };
 
