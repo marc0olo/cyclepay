@@ -136,6 +136,13 @@ if ! git diff --quiet -- src/backend/dist/backend.did; then
 fi
 printf '   .did is current\n'
 
+# ⚠️ **After the .did check, deliberately.** This compares the docs' method lists
+# against that file, so it is only meaningful once the file is known current — running it
+# first would check the docs against a stale interface and pass.
+step=$((step + 1))
+printf '\n\033[1m── %d. %s\033[0m\n' "$step" "docs match the canister's actual surface"
+scripts/check-doc-surface.py
+
 # `npm run build` regenerates the bindings the typecheck needs; running the
 # typecheck first on a clean tree fails for the wrong reason.
 run "frontend build — regenerate bindings" npm --prefix src/frontend run build

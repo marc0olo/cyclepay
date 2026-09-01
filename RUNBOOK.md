@@ -259,7 +259,7 @@ to leak. Stripe's IP and ASN allowlists are unusable here — a subnet's replica
 have many changing addresses.
 
 ⚠️ **Neither secret can be read back out, even by a controller.** `stripe_api_key_status`
-and `webhook_status` report a generation counter and a set timestamp, which is
+and `webhook_secret_status` report a generation counter and a set timestamp, which is
 how you confirm a rotation landed without ever exposing the value.
 
 ⚠️ **Provisioning the two secrets is what OPENS the rail** (§5b of `docs/STRIPE.md`
@@ -936,7 +936,7 @@ icp canister call backend process_order '("<orderId>")' -e ic --identity <operat
 ## 8. Monitoring plan
 
 Every safety mechanism in this system is a **number someone has to look at**. The
-2 h delay alert, the error queue, the rate-refresh liveness — none of them page
+2 h delay alert, the obligation queue, the rate-refresh liveness — none of them page
 anybody. An alert nobody receives is not an alert, so wire this before taking
 money.
 
@@ -945,8 +945,18 @@ money.
 These are public queries, so a monitor can poll them anonymously — no controller
 key on a monitoring box:
 
-`health` · `cycles_status` · `reserve_status` · `pricing_status` ·
-`recovery_status` · `orphan_depth` · `refusal_counts`
+<!-- surface:public -->
+
+`can_purchase` · `card_tiers` · `cycles_status` · `expected_livemode` · `health` ·
+`lifecycle_config` · `orphan_depth` · `pricing_status` · `problem_depth` ·
+`quote_previews` · `recovery_status` · `refusal_counts` · `reserve_status` ·
+`stripe_origin`
+
+<!-- /surface -->
+
+The ones worth a monitor: `health`, `cycles_status`, `reserve_status`,
+`pricing_status`, `recovery_status`, `orphan_depth`, `problem_depth` (open
+obligations — the count §6 triage works from) and `refusal_counts`.
 
 `can_purchase` is also callable anonymously and is worth special mention: the
 anonymous principal owns no orders, so `tooManyOpenOrders` can never trip for it.
@@ -1018,7 +1028,7 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | `refusal_counts.refusingNow.stripeApiFailing` true, with `gate.startedRefusing` naming **retrieve REFUSED** | any occurrence | **P1** | ⚠️ **The restricted key cannot read Checkout Sessions, so stranded capacity can never be released automatically.** The recovery sweep's retrieve is 401/403ing. Fix the key's permission (Checkout Sessions = **Write**, which is the level that also grants read — §3) and rotate it in; nothing else recovers. Until it is fixed, `expire_order` is the manual release. <br><br>⚠️ **This replaced a `stripe.retrieveUnauthorized` tag, deleted by #37 §2c.** That tag fired **once per stranded order per hourly pass** — up to ~240 permanent lines a day for one unfixed problem once the ring was gone. Our own cadence bounded a *rate*, and a rate against an unfixed persistent condition is unbounded over time. It is now the same latched condition as a failing session *create* or *expire*, because a 401 on any of the three is one incident with one lever: **rotate the key** |
 | `stripe.retrieveFailed` in the audit log | repeatedly for the same order | **P3** | Stripe is unreachable or answering non-200 for the session read. Distinct from the row above on purpose: **"Stripe refused the read" and "Stripe is down" are different actions.** Transient failures retry hourly and need nothing; a persistent one means the outcall path is broken, so check `pricing_status` (the same egress) before suspecting the key |
 | `stripe.paidAwaitingEvent` in the audit log | any occurrence | **P2** | a buyer paid and Stripe has not delivered `checkout.session.completed`. **Not yet an obligation** — Stripe redelivers for ~3 days and the entry is deliberately withheld until then — but it IS the support signal: the buyer's own page renders expired from `expiresAtNs`, so expect a contact the same hour. If it is one order, resend the event from the Dashboard now rather than waiting. If it is many, the webhook endpoint is broken: check the secret and the subscribed event list (§3) |
-| `stripe.paidNotCredited` in the audit log | any occurrence | **P1** | a buyer paid, Stripe has given up redelivering, and the obligation is now filed in the error queue. Follow the `#paidNotCredited` row in §6 — **resend first, always** |
+| `stripe.paidNotCredited` in the audit log | any occurrence | **P1** | a buyer paid, Stripe has given up redelivering, and the obligation is now filed on the order itself (#37). Follow the `#paidNotCredited` row in §6 — **resend first, always** |
 | `stripe.retrieveUnreadable` in the audit log | any occurrence | **P3** | Stripe answered the session read in a shape the classifier does not recognise, so the sweep did nothing (fail-safe). Capacity stays held until it is understood. Most likely an API-version change; §1 pins the version, so this points at an account-level change |
 | `reserve.unexplainedShortfall` in the audit log | any occurrence | **P1** | the ledger holds LESS than the floor's lower bound, which the design says is impossible — no allowance exists and `withdraw` is unused. Treat as a bookkeeping breach: stop selling (`set_gate_config` with a high `minPurchaseUsdCents`, or pause), reconcile the journal against the ledger, and find the outflow before funding anything |
 | an order still `created` past its own `expiresAtNs` | any | **P2** | a `checkout.session.expired` was missed. Nothing sweeps it (§5b, deliberately — a sweep would hide a held reserve): resend the event from the Stripe Dashboard. Query it with `admin_orders '(record { status = opt variant { created }; owner = null; createdFromNs = null; createdToNs = null; withUnresolvedProblems = false }, null, 200)'` and compare each `expiresAtNs` against now |

@@ -26,7 +26,7 @@ shown, and afterwards `receipt(orderId)` hands them both rate inputs so they can
 recompute the price themselves rather than take our word for it.
 
 The design bar is "production money-handler from day one": full idempotency,
-write-intent-before-call replay safety, an error queue that never drops an
+write-intent-before-call replay safety, obligations that live on the order and never drop an
 unresolved obligation and carries a defined money position for every failure, and
 a reproducible build so anyone can verify the deployed module hash against a
 tagged commit.
