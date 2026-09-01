@@ -74,6 +74,21 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     status: OrderStatus,
     updatedAtNs: IDL.Int,
   });
+  // ⚠️ Named so `receipt` and `admin_receipt` share ONE definition. Two inline copies
+  // is how shapes drift, which is exactly what #66 is about.
+  const ReceiptRecord = IDL.Record({
+        cyclesDelivered: IDL.Opt(IDL.Nat),
+        deliveryBlockIndex: IDL.Opt(IDL.Nat),
+        order: Order,
+        paidUsdCents: IDL.Opt(IDL.Nat),
+        verification: IDL.Record({
+          netCents: IDL.Opt(IDL.Nat),
+          rateQueriedSources: IDL.Nat,
+          rateReceivedRates: IDL.Nat,
+          usdPerIcpMicros: IDL.Nat,
+          xdrPermyriadPerIcp: IDL.Nat,
+        }),
+      });
   const CreatedOrder = IDL.Record({ order: Order });
   // Mirrors `Gate.Reason` exactly, all five arms. Nothing typechecks this against
   // the Motoko, so it drifts silently: it carried `burnCapExhausted` and `floatLow`
@@ -338,6 +353,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [],
     ),
     admin_order: IDL.Func([IDL.Text], [IDL.Opt(Order)], []),
+    admin_receipt: IDL.Func([IDL.Text], [IDL.Opt(ReceiptRecord)], []),
     admin_orders: IDL.Func(
       [
         IDL.Record({
@@ -416,19 +432,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     pending_deliveries: IDL.Func([], [IDL.Vec(JournalEntry)], ['query']),
     receipt: IDL.Func(
       [IDL.Text],
-      [IDL.Opt(IDL.Record({
-        cyclesDelivered: IDL.Opt(IDL.Nat),
-        deliveryBlockIndex: IDL.Opt(IDL.Nat),
-        order: Order,
-        paidUsdCents: IDL.Opt(IDL.Nat),
-        verification: IDL.Record({
-          netCents: IDL.Opt(IDL.Nat),
-          rateQueriedSources: IDL.Nat,
-          rateReceivedRates: IDL.Nat,
-          usdPerIcpMicros: IDL.Nat,
-          xdrPermyriadPerIcp: IDL.Nat,
-        }),
-      }))],
+      [IDL.Opt(ReceiptRecord)],
       ['query'],
     ),
     set_gate_config: IDL.Func(

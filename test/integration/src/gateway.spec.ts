@@ -987,11 +987,32 @@ test('19 — a buyer can verify their own purchase from the receipt', async () =
   // ⚠️ **Do not re-tighten this thinking it is a privacy boundary.** If `Receipt` ever
   // gains a field that is NOT derivable from the order plus the journal, that is the
   // moment to revisit — and the argument then is about the new field, not about receipts.
-  const adminReceipt = await gw.asAdmin.receipt(orderA.id);
+  // ⚠️ **`receipt` stayed owner-only; the admin path is `admin_receipt`, and that split
+  // is the fix rather than a complication.** Auditing writes state, so an audited read
+  // cannot be a `query` — folding the admin case into `receipt` would have made EVERY
+  // buyer's receipt read an update, putting the common path through consensus to serve
+  // the rare one.
+  expect(await gw.asAdmin.receipt(orderA.id)).toHaveLength(0);
+  expect(await gw.asAnon.receipt(orderA.id)).toHaveLength(0);
+
+  const adminReceipt = await gw.asAdmin.admin_receipt(orderA.id);
   expect(adminReceipt).toHaveLength(1);
   expect(adminReceipt[0]!.order.id).toBe(orderA.id);
-  // The anonymous principal owns nothing and is not an admin, so it still sees nothing.
-  expect(await gw.asAnon.receipt(orderA.id)).toHaveLength(0);
+  await expect(gw.asUser.admin_receipt(orderA.id)).rejects.toThrow(/not a controller/);
+
+  // ⚠️ **And it AUDITS, which is the whole point of the separate method.** An earlier
+  // version folded this into `receipt` unaudited, arguing it revealed no existence
+  // `admin_order` had not already revealed. True, and beside the point: the audit
+  // records that an operator LOOKED, and `Receipt` embeds the whole order — so an
+  // unaudited path made `admin_order`'s audit bypassable by calling the other method.
+  const receiptReads = (await allAuditEvents(gw))
+    .filter((e) => e.tag === 'order.adminRead' && e.detail.includes('(receipt)'));
+  expect(receiptReads.length).toBeGreaterThanOrEqual(1);
+  // A miss is audited too, so an id probe by an operator is as visible as a hit.
+  expect(await gw.asAdmin.admin_receipt('00000000000000000000000000000000')).toHaveLength(0);
+  expect((await allAuditEvents(gw)).some(
+    (e) => e.tag === 'order.adminRead' && e.detail.includes('receipt; no such order'),
+  )).toBe(true);
 
   expect(receipt.paidUsdCents).toEqual([TIER_USD_CENTS]);
   // The on-chain delivery proof: a real cycles-ledger block anyone can look up.

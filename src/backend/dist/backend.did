@@ -533,6 +533,43 @@ service : {
   /// remove. Narrow with `createdFromNs` for recency.
   admin_orders: (filter: Filter, afterId: opt OrderId, limit: nat) ->
    (Page__1) query;
+  /// Everything the **buyer** needs to verify their own purchase (§2 authz:
+  /// `caller == order.owner`).
+  /// 
+  /// The order already carried enough to reproduce the price; nothing surfaced
+  /// it, and the delivery proof was admin-only. A buyer could see *that* we
+  /// claimed to deliver, never check it. Now they can: recompute the quote from
+  /// the two recorded rate inputs, and look up the block index on the ICP ledger.
+  /// 
+  /// `delivery_journal` stays admin-only — it carries retries and raw transfer
+  /// intents, which are operational rather than the buyer's business.
+  /// ⚠️ **Owner-only, and a `query`, which is why the admin path is a separate method.**
+  /// See `admin_receipt`. Auditing writes state, so an audited read cannot be a query —
+  /// and folding the admin case in here would have made **every buyer's** receipt read
+  /// an update, putting the common path through consensus to serve the rare one.
+  /// The same receipt, for **any** order (admin, #38) — and **audited**, which is the
+  /// whole reason it is a separate method.
+  /// 
+  /// ⚠️ **An earlier version folded this into `receipt` and argued the admin branch need
+  /// not be audited. That argument was wrong**, and the error is worth keeping: it
+  /// reasoned about *existence disclosure* — a receipt read cannot reveal existence
+  /// `admin_order` has not already revealed, which is true — but that is not what the
+  /// audit is for. `admin_order` audits because **an operator reading a buyer's order
+  /// should leave a record of having looked**, and `Receipt` embeds the whole `Order`. An
+  /// unaudited admin branch returns exactly the same data with no trace, so the audit on
+  /// `admin_order` becomes **bypassable by calling the other method** — a marker rather
+  /// than an accountability control.
+  /// 
+  /// ⚠️ **A separate method rather than a branch, because auditing writes state.** An
+  /// audited read cannot be a `query`, and folding this into `receipt` would have made
+  /// **every buyer's** receipt read an update — putting the common path through consensus
+  /// to serve the rare one. Two methods, each with the call type its job needs.
+  /// 
+  /// ⚠️ **This is also why the boundary could be lifted at all.** #38's stated gap is
+  /// "an operator cannot read any order but their own"; lifting it is deliberate and
+  /// **auditing is the mitigation**. A path that lifts it without the mitigation is not a
+  /// smaller version of the change — it is the change without its safeguard.
+  admin_receipt: (id: OrderId) -> (opt Receipt);
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
   /// The operational trail, **paginated** (#38).
@@ -798,28 +835,6 @@ service : {
   /// and wrong here, where nothing checks the number a buyer was shown. Delivery
   /// gets a mechanism; a quote would get only the staleness.
   quote_previews: (amounts: vec nat) -> (QuotePreviews) query;
-  /// Everything the **buyer** needs to verify their own purchase (§2 authz:
-  /// `caller == order.owner`).
-  /// 
-  /// The order already carried enough to reproduce the price; nothing surfaced
-  /// it, and the delivery proof was admin-only. A buyer could see *that* we
-  /// claimed to deliver, never check it. Now they can: recompute the quote from
-  /// the two recorded rate inputs, and look up the block index on the ICP ledger.
-  /// 
-  /// `delivery_journal` stays admin-only — it carries retries and raw transfer
-  /// intents, which are operational rather than the buyer's business.
-  /// ⚠️ **Owner OR admin (#38).** An operator handed a Stripe receipt could read the
-  /// order through `admin_order` and still not the receipt — which is the artefact a
-  /// support conversation is actually about, because it carries the rate inputs a buyer
-  /// is disputing.
-  /// 
-  /// ⚠️ **Not audited, deliberately, and the difference from `admin_order` is the
-  /// point.** `admin_order` audits because it defeats §2's "existence is not revealed to
-  /// non-owners" — a bare id probe. A receipt read cannot reveal existence that
-  /// `admin_order` has not already revealed, so a second line per support conversation
-  /// would be noise in a log that #37 made permanent. The admission rule cuts the same
-  /// way: this is bounded by an authenticated admin, and it adds nothing the order read
-  /// did not already record.
   receipt: (id: OrderId) -> (opt Receipt) query;
   /// Record that an escalated order's cycles **did** reach the buyer (admin, §7).
   /// 

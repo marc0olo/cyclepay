@@ -125,6 +125,22 @@ export interface Problem {
   resolvedAtNs: Opt<bigint>;
 }
 
+/// ⚠️ Named so `receipt` and `admin_receipt` share ONE definition. Two inline copies is
+/// how shapes drift, which is what #66 is about.
+export interface Receipt {
+  order: Order;
+  paidUsdCents: Opt<bigint>;
+  deliveryBlockIndex: Opt<bigint>;
+  cyclesDelivered: Opt<bigint>;
+  verification: {
+    netCents: Opt<bigint>;
+    usdPerIcpMicros: bigint;
+    xdrPermyriadPerIcp: bigint;
+    rateReceivedRates: bigint;
+    rateQueriedSources: bigint;
+  };
+}
+
 export interface OrderFilter {
   status: Opt<StatusVariant>;
   owner: Opt<Principal>;
@@ -310,6 +326,11 @@ export interface BackendService {
   /// one order can carry several problems.
   /// Read any order by id (admin, #38). Audited on every use, hit or miss.
   admin_order(id: string): Promise<Opt<Order>>;
+  /// The same receipt for ANY order (admin, #38), and audited — which is why it is a
+  /// separate method rather than a branch in `receipt`: auditing writes state, so an
+  /// audited read cannot be a query, and folding it in would have made every BUYER's
+  /// receipt read an update.
+  admin_receipt(id: string): Promise<Opt<Receipt>>;
   /// Filtered, cursor-paginated order list (admin, #38) — and #37's worklist, since
   /// `withUnresolvedProblems` is a filter here rather than its own query.
   ///
@@ -359,19 +380,7 @@ export interface BackendService {
   /// Deliveries with work outstanding, right now (#30 PR-B). Self-clearing: an entry
   /// leaves the set the moment delivery lands. `retries` is how often it has failed.
   pending_deliveries(): Promise<JournalEntry[]>;
-  receipt(id: string): Promise<Opt<{
-    order: Order;
-    paidUsdCents: Opt<bigint>;
-    deliveryBlockIndex: Opt<bigint>;
-    cyclesDelivered: Opt<bigint>;
-    verification: {
-      netCents: Opt<bigint>;
-      usdPerIcpMicros: bigint;
-      xdrPermyriadPerIcp: bigint;
-      rateReceivedRates: bigint;
-      rateQueriedSources: bigint;
-    };
-  }>>;
+  receipt(id: string): Promise<Opt<Receipt>>;
   set_gate_config(config: GateConfig): Promise<Result<null, unknown>>;
   pricing_status(): Promise<{
     rates: Opt<PricingRates>;

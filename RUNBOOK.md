@@ -811,12 +811,26 @@ Since #37, four of the six kinds live on the order rather than in this list, and
 are closed with `resolve_problem` rather than `resolve_orphan`:
 
 ```sh
+⚠️ **`admin_orders` is ordered by order ID, NOT by time, and the last argument is a page
+size.** Order ids are `raw_rand` hex, so id order is arbitrary — **the first page is not
+the most recent orders.** #38's own scope says "filter by time range", and this is where
+that expectation forms, so: to look at recent orders, set `createdFromNs` rather than
+reading page one. The third argument to each call is `limit`, and `null` in the second
+position means "from the beginning"; pass the returned `nextCursor` back to continue.
+
+⚠️ **Sorting by time is deliberately not offered.** It would mean materialising the whole
+filtered set before sorting, which is the unbounded scan **#63** exists to remove, and a
+time index would be one more piece of derived state the daily reconcile has to adjudicate.
+
 # Read ONE order, whoever owns it (#38). Every such read is audited, hit or miss.
 icp canister call backend admin_order '("<orderId>")'
 
 # See what is outstanding, and on which orders
 icp canister call backend problem_depth '()'                 # the number to alert on
 icp canister call backend admin_orders '(record { status = null; owner = null; createdFromNs = null; createdToNs = null; withUnresolvedProblems = true }, null, 50)'
+
+# Read ONE order's receipt, whoever owns it. Audited, like admin_order.
+icp canister call backend admin_receipt '("<orderId>")'
 
 # Close one. The third argument selects WHICH, by payment reference.
 icp canister call backend resolve_problem '("<orderId>", "duplicate", opt "pi_...")'

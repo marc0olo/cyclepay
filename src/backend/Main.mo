@@ -3088,23 +3088,62 @@ persistent actor CyclesGateway {
   ///
   /// `delivery_journal` stays admin-only — it carries retries and raw transfer
   /// intents, which are operational rather than the buyer's business.
-  /// ⚠️ **Owner OR admin (#38).** An operator handed a Stripe receipt could read the
-  /// order through `admin_order` and still not the receipt — which is the artefact a
-  /// support conversation is actually about, because it carries the rate inputs a buyer
-  /// is disputing.
+  /// ⚠️ **Owner-only, and a `query`, which is why the admin path is a separate method.**
+  /// See `admin_receipt`. Auditing writes state, so an audited read cannot be a query —
+  /// and folding the admin case in here would have made **every buyer's** receipt read
+  /// an update, putting the common path through consensus to serve the rare one.
+  /// The same receipt, for **any** order (admin, #38) — and **audited**, which is the
+  /// whole reason it is a separate method.
   ///
-  /// ⚠️ **Not audited, deliberately, and the difference from `admin_order` is the
-  /// point.** `admin_order` audits because it defeats §2's "existence is not revealed to
-  /// non-owners" — a bare id probe. A receipt read cannot reveal existence that
-  /// `admin_order` has not already revealed, so a second line per support conversation
-  /// would be noise in a log that #37 made permanent. The admission rule cuts the same
-  /// way: this is bounded by an authenticated admin, and it adds nothing the order read
-  /// did not already record.
+  /// ⚠️ **An earlier version folded this into `receipt` and argued the admin branch need
+  /// not be audited. That argument was wrong**, and the error is worth keeping: it
+  /// reasoned about *existence disclosure* — a receipt read cannot reveal existence
+  /// `admin_order` has not already revealed, which is true — but that is not what the
+  /// audit is for. `admin_order` audits because **an operator reading a buyer's order
+  /// should leave a record of having looked**, and `Receipt` embeds the whole `Order`. An
+  /// unaudited admin branch returns exactly the same data with no trace, so the audit on
+  /// `admin_order` becomes **bypassable by calling the other method** — a marker rather
+  /// than an accountability control.
+  ///
+  /// ⚠️ **A separate method rather than a branch, because auditing writes state.** An
+  /// audited read cannot be a `query`, and folding this into `receipt` would have made
+  /// **every buyer's** receipt read an update — putting the common path through consensus
+  /// to serve the rare one. Two methods, each with the call type its job needs.
+  ///
+  /// ⚠️ **This is also why the boundary could be lifted at all.** #38's stated gap is
+  /// "an operator cannot read any order but their own"; lifting it is deliberate and
+  /// **auditing is the mitigation**. A path that lifts it without the mitigation is not a
+  /// smaller version of the change — it is the change without its safeguard.
+  public shared ({ caller }) func admin_receipt(id : Types.OrderId) : async ?Receipt {
+    requireAdmin(caller);
+    let ?order = Orders.get(orderStore, id) else {
+      // Audited on a miss too, like `admin_order`: an id probe by an operator is exactly
+      // what §2 withholds from everyone else, so a miss must be as visible as a hit.
+      auditAdmin(caller, "order.adminRead", id # " (receipt; no such order)");
+      return null;
+    };
+    auditAdmin(caller, "order.adminRead", order.id # " (receipt)");
+    let journal = deliveryJournal.get(id);
+    ?{
+      order;
+      paidUsdCents = order.paidUsdCents;
+      deliveryBlockIndex = switch (journal) { case (?entry) entry.blockIndex; case null null };
+      cyclesDelivered = switch (journal) { case (?entry) entry.cyclesDelivered; case null null };
+      verification = {
+        netCents = Pricing.netCents(order.pricing, switch (order.paidUsdCents) {
+          case (?paid) paid;
+          case null order.pricing.usdCents;
+        });
+        usdPerIcpMicros = order.pricing.usdPerIcpMicros;
+        xdrPermyriadPerIcp = order.pricing.xdrPermyriadPerIcp;
+        rateReceivedRates = order.pricing.rateReceivedRates;
+        rateQueriedSources = order.pricing.rateQueriedSources;
+      };
+    };
+  };
+
   public shared query ({ caller }) func receipt(id : Types.OrderId) : async ?Receipt {
-    let ?order = (
-      if (Auth.checkAdmin(caller, Principal.isController).isOk()) Orders.get(orderStore, id)
-      else Orders.getOwned(orderStore, id, caller)
-    ) else return null;
+    let ?order = Orders.getOwned(orderStore, id, caller) else return null;
     let journal = deliveryJournal.get(id);
     ?{
       order;
