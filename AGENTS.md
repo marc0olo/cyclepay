@@ -141,7 +141,16 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
      have nothing to compare against.
   3. **The commit message carries the mapping** — what moved where. It is the only
      recoverable record if a judgement turns out wrong.
-  4. ⚠️ **Verify the `DESIGN.md` section against the CODE before the deletion, not
+  4. ⚠️ **When you DELETE a mechanism, grep its name and read every hit asking whether
+     it is cited as the JUSTIFICATION for unrelated behaviour.** A sweep aimed at
+     *usage* misses these — the code no longer uses the ring, but four comments still
+     cited it as the reason for something else, leaving a true conclusion propped up by
+     a false premise. Found this way after the fact: "or a refresh loop would fill the
+     ring buffer", "the audit log drops its oldest entries", `Orphans.mo`'s "Bounded
+     error queue" and a doc line still promising `AddResult.evicted`. The whole class
+     shares one shape — **the conclusion survived the change and its justification did
+     not** — so the grep is for the deleted *word*, not the deleted *call*.
+  5. ⚠️ **Verify the `DESIGN.md` section against the CODE before the deletion, not
      after.** A section transcribed from comments inherits the comments' errors, and once
      the comments are gone the original is no longer there to audit against. Three of
      three passes so far found a comment whose *conclusion* was right and whose *stated

@@ -586,7 +586,7 @@ module {
   /// `#needsReview` — the order still owes cycles, so its promise stays held.
   ///
   /// **The terminal set is `#delivered`, `#cancelled`, `#expired`, `#abandoned`.**
-  /// Resolving an error-queue *entry* is human and off-chain (§4.1) and never
+  /// Resolving an orphan *entry* is human and off-chain (§4.1) and never
   /// transitions an order; `abandon_order` is the only thing that ends one, and
   /// `#needsReview → #abandoned` is its single outgoing edge.
   ///
@@ -625,7 +625,7 @@ module {
       // is the double-delivery this status prevents.
       case (#needsReview, #delivered) true;
       // `abandon_order` — the operator ends it, having refunded by hand. The
-      // #needsReview edge is what the error-queue split made possible: an
+      // #needsReview edge is what the #37 split made possible: an
       // escalated order could not previously be abandoned, because one status
       // meant both "promise held" and "promise released".
       case (#paid, #abandoned) true;

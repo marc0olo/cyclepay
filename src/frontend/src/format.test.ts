@@ -14,7 +14,6 @@ import {
   minAcceptableCycles,
   nsToMillis,
   parseUsdAmount,
-  paymentLinkWithRef,
   rateSourceNote,
   shortPrincipal,
   statusInfo,
@@ -76,19 +75,6 @@ describe("statusInfo", () => {
     // and the union being exhaustive is now what makes a bar of the wrong length a
     // compile error rather than a test failure. Unrepresentability beats a check.
     expect(ALL).toHaveLength(7);
-  });
-});
-
-describe("paymentLinkWithRef", () => {
-  test("appends with ? on a bare link", () => {
-    expect(paymentLinkWithRef("https://buy.stripe.com/abc", "w7x7r-cok77-xa_deadbeef")).toBe(
-      "https://buy.stripe.com/abc?client_reference_id=w7x7r-cok77-xa_deadbeef",
-    );
-  });
-  test("appends with & when the link already has a query", () => {
-    expect(paymentLinkWithRef("https://buy.stripe.com/abc?locale=en", "p_o")).toBe(
-      "https://buy.stripe.com/abc?locale=en&client_reference_id=p_o",
-    );
   });
 });
 

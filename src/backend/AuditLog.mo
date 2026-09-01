@@ -3,12 +3,13 @@
 /// **Facts about money live on the objects, not here.** Where an order got to,
 /// what the buyer actually paid, why it expired, when its rates were read: all of
 /// that is on `Types.Order` (#34). The journal holds the delivery position and the
-/// error queue holds the open obligations. This is the *operational trail* —
-/// balance alerts (§5.3), dedup drops, error-queue evictions — and the place to
+/// order's own `problems` and the orphan list hold the open obligations. This is the
+/// *operational trail* —
+/// balance alerts (§5.3) and dedup drops — and the place to
 /// look for "what happened around then", never for "what happened to this order".
 ///
 /// That division is about **where a fact belongs**, not about this buffer being
-/// lossy. #37 removes the ring; the division survives it, because an order is
+/// lossy. #37 removed the ring; the division survives it, because an order is
 /// still the thing an order's facts are attached to.
 ///
 /// ## What may be written here
@@ -34,7 +35,7 @@
 ///
 /// What the rule excludes is the pre-commit refusal line #61 removed: refusals are
 /// free to attempt — `#amountBelowMin` needs no prior state, so one cent from any
-/// fresh principal reached it — and once #37 removes the ring, a log fed by a free
+/// fresh principal reached it — and with the ring gone, a log fed by a free
 /// caller is permanent stable-state growth at zero attacker cost. Every other
 /// structure here is attacker-priced. This one is not, so admission is the guard.
 ///
