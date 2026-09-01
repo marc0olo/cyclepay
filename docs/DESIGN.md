@@ -344,6 +344,21 @@ honest trust model is "trust the operator set; any one of them can upgrade and t
 drain". There is deliberately **no** method that moves money (§5). True M-of-N needs a
 multisig *canister* as controller, since IC controllers are OR-semantics.
 
+### §3.2 — Who owns which number
+
+⚠️ **The canister reports what only it knows; the ledger owns what it owns.** The reserve
+balance is a free query on the cycles ledger that anyone can call, so this canister never
+mirrors it — what it adds is the part nobody else can compute, how much of that balance is
+already promised. The same split decides what a quote discloses: the cycles-ledger transfer
+fee is the ledger's number and the *operator's* cost, so it is absorbed rather than shown
+as a line in the buyer's price, and the frontend reads it from the ledger directly.
+
+⚠️ **A stored copy of someone else's number is only acceptable where a wrong value is
+self-correcting and cheap.** The delivery path stores the ledger's fee because a wrong one
+costs exactly one rejected transfer and the rejection carries the correct value. A quote
+has no such correction — nothing checks the number a buyer was shown — so a stored fee
+there would buy only the staleness.
+
 ## §8 — Verifiability
 
 The thesis: **the number an operator monitors is the number a buyer can check.** The
