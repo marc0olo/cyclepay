@@ -8,32 +8,47 @@ fixtures while doing it.
 **Read §"What this cannot tell you" at the end before treating a green run as
 go-live approval.** It is not one.
 
-## Status: the good path has NOT been run on the current money-out path
+## Status: run against reserve delivery on 2026-08-28
 
-⚠️ **Read this before treating anything below as evidence.** The browser flow has been
-completed end to end once, on **2026-08-13** — but that run delivered by minting
-through the Cycles Minting Canister against an ICP float, and money-out is now a
-single `icrc1_transfer` out of a reserve the operator funds. The ICP machinery is
-deleted. So the run splits into a half that still counts and a half that does not:
+⚠️ **This section was itself stale until 2026-09-01, and the staleness caused a wrong
+conclusion — so read the dates before trusting any row.** It claimed reserve delivery
+had never been run in a browser. That was true when written and false by the time it
+was read: #36 deleted the mint path on **2026-08-27**, and the run below happened on
+**2026-08-28**. A reviewer reading the old table concluded #5's gate was unverified and
+recommended re-running the whole plan. The tracker was right and this file was wrong,
+which is the reverse of the usual failure and the reason the dates are now in the
+heading.
 
-| Still evidence | No longer evidence |
+**What the 2026-08-28 run recorded**, all of it against `icrc1_transfer` out of the
+reserve, with no ICP or CMC in the path:
+
+| Flow | Result |
 |---|---|
-| Real Internet Identity sign-in, the asset canister's `ic_env` cookie, the hosted Stripe Checkout page, a genuinely signed webhook reaching the canister, the frontend's 3 s poll reaching a delivered view, `cancel_order` | **Delivery itself** — every figure below came from a CMC mint against an ICP float. No cycles have been transferred out of a reserve in a manual browser run |
+| $20 → paid | delivered |
+| $13, custom amount → paid | delivered |
+| $10 → cancelled by the buyer | released; the **open-order cap of 1** refused a second order while one was open |
+| $10 → left to expire | expired **by Stripe** (`stripe.sessionExpired`), promise released **exactly**: `promisedTotal` 7,238,461,538,461 → 0 |
+| full refund of a delivered order | `#refundAfterDelivery`, `refundedCents = 1300`, `fullRefund = true`, correctly **not** auto-resolved |
 
-**What the 2026-08-13 run recorded** (kept because the Stripe-side figures are the
-only real-payload evidence there is, not because the delivery half still holds): two
-purchases, $5 and $20, both credited to the buyer's cycles-ledger account and
-spendable — `icp cycles balance --of-principal <buyer>` → **18,207,492,307,692**;
-error queue empty, so every dollar resolved to a delivery with no obligation left open; nothing stuck mid-pipeline; `cancel_order` exercised twice.
+Stripe fired `checkout.session.expired` within ~2 s of `expires_at`, and the session
+TTL is **35 minutes** (`Session.requestedLifetimeSeconds = 2_100`), not 30 — Stripe's
+floor is evaluated against *its* clock on arrival, so sitting exactly on it fails every
+session creation.
 
-**What is owed before go-live**, over and above the gaps that were already open:
+**What the 2026-08-13 run recorded** (kept only for the Stripe-side figures; its
+delivery half was a CMC mint against an ICP float and is no longer evidence): two
+purchases, $5 and $20, both credited to the buyer's cycles-ledger account and spendable
+— `icp cycles balance --of-principal <buyer>` → **18,207,492,307,692**.
+
+**What is owed before go-live:**
 
 | Gap | Where |
 |---|---|
-| ⚠️ **A fresh good-path run against reserve delivery** — pay, and watch cycles leave the reserve rather than come into existence. `reserve_status` before and after is the check the old run had no equivalent of | the procedure below, which is already written for this path |
+| ⚠️ **The buyer's cycles-ledger balance, read from the LEDGER, on a reserve delivery.** The 08-28 run confirmed the order view said `delivered` and an audit line recorded a block index — which is *the canister's own account* of the transfer, not an independent observation of the destination. The 08-13 run did read the balance directly, but under the mint path. **One command, not a re-run:** `icp cycles balance --of-principal <buyer>` before and after | group H below |
 | The CLI handoff — `icp identity link web` was never run, so "the cycles are reachable from the CLI" is still unproven | group H below |
-| Fixture capture — **3 of 8** real payloads are committed (`ab5281c`); the run added none, so five integration tests stay skipped | group I, #4 |
-| Refunds, async payment methods, disputes | groups E, F, G |
+| Fixture capture — real payloads committed by #4; the parity test in `test/integration/src/fixtures.spec.ts` compares them against the crafted builder | group I, #4 (closed) |
+| Async payment methods | ⚠️ **Not applicable** — `payment_method_types[]=card` is pinned, so a delayed method is unreachable |
+| Disputes | group G |
 | Anything live-mode | not local-testable by construction |
 
 ---
