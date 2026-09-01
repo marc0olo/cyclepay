@@ -359,8 +359,19 @@ else
   # `availableToSell = 0` with 675 T sitting in the account, and the die below then
   # blamed observation while this branch blamed funding. Neither was actionable.
   RESERVE_TOPPED_UP=0
-  if icp canister call backend refresh_reserve '()' >/dev/null 2>&1; then
+  RESERVE_OBSERVED=0
+  # ⚠️ **Capture this failure too — fourth instance of the swallowed-reason pattern in
+  # this file, and the one that invalidates the die below.** That die tells the operator
+  # the account "is empty or unreachable, not merely unobserved", which is only
+  # established if the observation actually ran. A stopped canister, a renamed method or a
+  # network blip means "merely unobserved" is exactly what is happening — and the reader
+  # has been told it is not, with no trace that we even tried.
+  if OBSERVE_OUT="$(icp canister call backend refresh_reserve '()' 2>&1)"; then
+    RESERVE_OBSERVED=1
     printf '    observed the account anyway — if it already held cycles, the floor is now set.\n'
+  else
+    printf '    \033[33mand refresh_reserve ALSO failed, so the floor is not observed either:\033[0m\n'
+    printf '      %s\n' "$OBSERVE_OUT"
   fi
   printf '    If the account really is empty, orders will be created and PAID and then\n'
   printf '    retry delivery forever. Fund it by hand, then observe:\n'
@@ -431,12 +442,22 @@ if [ -z "$AVAILABLE" ]; then
   die "reserve_status answered but had no availableToSell field — the response is above.
     The shape changed and this script did not."
 fi
+# ⚠️ **Three outcomes, not two, because the claim each makes is different.** Asserting
+# "not merely unobserved" is only sound when the observation ran; if it did not, that is
+# precisely what is happening.
+if [ "$AVAILABLE" -eq 0 ] && [ "$RESERVE_TOPPED_UP" -eq 0 ] && [ "$RESERVE_OBSERVED" -eq 0 ]; then
+  die "the gateway will sell 0 cycles, and BOTH the top-up and the observation failed —
+    so this says nothing about whether the account holds cycles. Both errors are printed
+    above; fix the reachable one first, then:
+      icp canister call backend refresh_reserve '()'
+      icp canister call backend reserve_status '()'"
+fi
 if [ "$AVAILABLE" -eq 0 ] && [ "$RESERVE_TOPPED_UP" -eq 0 ]; then
-  # ⚠️ Do not claim the reserve was funded when the top-up above failed. That message
-  # sent a reader to `refresh_reserve` for what was an empty account, and — when the
-  # account was NOT empty — hid that the seed had simply never observed it.
-  die "the gateway will sell 0 cycles, and the top-up above FAILED — so the account is
-    empty or unreachable, not merely unobserved. Read that error, fund the account, then:
+  # The observation DID run and still reports nothing to sell, so the account really is
+  # empty — not merely unobserved.
+  die "the gateway will sell 0 cycles. The top-up FAILED and the observation SUCCEEDED,
+    so the account is genuinely empty, not unobserved. Read the transfer error above
+    (⚠️ its \"balance:\" is the SENDER's), fund the account, then:
       icp cycles transfer $RESERVE_TOP_UP $BACKEND_ID
       icp canister call backend refresh_reserve '()'"
 fi

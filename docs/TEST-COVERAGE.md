@@ -191,6 +191,27 @@ invariant arguments — the category that *stays*) and the first two `Main.mo` b
 documenting deleted code) mislead in **opposite** directions. `Main.mo` alone has 53
 blocks of ≥12 comment lines; no rate should be projected from a handful.
 
+### 1d. ⚠️ Outcall CONSENSUS is not testable anywhere before mainnet
+
+Recorded because it was described in review as part of the manual sandbox run's residual,
+and that is wrong in a way that changes where you look for it.
+
+**A local network is a single replica.** HTTPS-outcall consensus is agreement between the
+replicas of a subnet on the transformed response — so with one replica there is nothing to
+agree, and the property is **never exercised locally, by any run, manual or automated**. No
+local procedure could ever have covered it, and a green local run is not weak evidence
+about it; it is *no* evidence.
+
+PocketIC does not cover it either: it mocks the outcall, so the transform runs but no
+consensus step exists.
+
+⚠️ **It is therefore first tested on the first mainnet outcall**, and the failure mode is
+`No consensus could be reached. Replicas had different responses.` What makes that
+survivable rather than a launch risk is that the transform strips every response header
+(`rails/Session.mo`), which is the only documented source of per-replica variation for this
+API — but "the transform is correct" is an argument, not a test result, and it should be
+read as such until a mainnet outcall has succeeded.
+
 ### 2. Structural limits in PocketIC — verified, not assumed
 
 | Not covered | Why |
