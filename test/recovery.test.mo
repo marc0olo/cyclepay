@@ -166,3 +166,79 @@ suite("stranded #created capacity (#52)", func() {
     assert Recovery.expiryScanDue(100, 100 + Recovery.expiryScanIntervalNs, Recovery.expiryScanIntervalNs);
   });
 });
+
+suite("#63 — the rotating scan's coverage window", func() {
+  // ⚠️ **The multiplier is what these exist for.** The integration suite pins
+  // `expectedFullCycleNs` against the live sweep interval, which is the right coupling
+  // to pin — but its store is far smaller than one chunk, so `chunks` is always 1 and a
+  // version that dropped the store-size factor entirely would pass. The assertion was
+  // right and blind to the part that makes the number mean anything.
+  let chunk = 2_000;
+  let interval = Recovery.defaultIntervalNs;
+
+  test("an empty store still costs one interval, never zero", func() {
+    // Zero would report an instantaneous cycle, which reads as "already verified" at
+    // exactly the moment nothing has been. `lastCompletedCycle` is compared against
+    // this figure, so a zero window makes every scan look overdue on a fresh install.
+    assert Recovery.indexScanCycleNs(0, chunk, interval) == interval;
+  });
+
+  test("anything up to one full chunk is one interval", func() {
+    assert Recovery.indexScanCycleNs(1, chunk, interval) == interval;
+    assert Recovery.indexScanCycleNs(chunk - 1, chunk, interval) == interval;
+    // Exactly one chunk is still ONE, not two: the boundary a ceiling-division
+    // off-by-one lands on.
+    assert Recovery.indexScanCycleNs(chunk, chunk, interval) == interval;
+  });
+
+  test("⚠️ one order past a chunk boundary costs a second interval", func() {
+    // The multiplier, at the smallest input that exercises it. `chunkSize + 1` is the
+    // whole of what the integration assertion cannot see.
+    assert Recovery.indexScanCycleNs(chunk + 1, chunk, interval) == 2 * interval;
+    assert Recovery.indexScanCycleNs(2 * chunk, chunk, interval) == 2 * interval;
+    assert Recovery.indexScanCycleNs(2 * chunk + 1, chunk, interval) == 3 * interval;
+  });
+
+  test("⚠️ the window grows linearly in stored orders — the latency #63 traded for", func() {
+    // 365k orders at 2,000 per chunk is 183 chunks; at the 15-minute default that is
+    // ~1.9 days. Ten times the store is ten times the window, and this is the assertion
+    // that makes "grows linearly" a checked claim rather than a comment.
+    let day = 24 * 3_600 * 1_000_000_000;
+    let small = Recovery.indexScanCycleNs(365_000, chunk, interval);
+    let large = Recovery.indexScanCycleNs(3_650_000, chunk, interval);
+    assert small > 1 * day and small < 2 * day;
+    assert large > 18 * day and large < 20 * day;
+    // ⚠️ **Linear to within NINE intervals, not one, and the derivation matters** — a
+    // hand-waved tolerance of one interval failed here, which is the useful kind of
+    // failure. `ceil(10n/c) ≤ 10·ceil(n/c)`, and it can fall short by up to 9 because
+    // ten separately-rounded-up chunks round up ten times while one tenfold store rounds
+    // up once. (Concretely: 10 × ⌈365000/2000⌉ = 1830 chunks, while ⌈3650000/2000⌉ =
+    // 1825 — five short.) So the bound is one-sided above and 9 below, and a tolerance
+    // picked to make the test pass would have hidden which side the error lives on.
+    assert large <= 10 * small;
+    assert large >= 10 * small - 9 * interval;
+  });
+
+  test("⚠️ the operator's cadence knob multiplies the window, and nothing else does", func() {
+    // `set_recovery_interval` validates only against the §5.1 ledger-dedup bound, so an
+    // operator can legally coarsen the sweep to the 6 h ceiling — 24× the default — and
+    // silently multiply the detection latency for `orders.unindexedHolders`, which is P1
+    // because it means the reserve was oversellable. That is why the function takes the
+    // interval as a parameter instead of reading a constant.
+    let ceiling = 6 * 3_600 * 1_000_000_000;
+    let atDefault = Recovery.indexScanCycleNs(365_000, chunk, interval);
+    let atCeiling = Recovery.indexScanCycleNs(365_000, chunk, ceiling);
+    assert atCeiling == 24 * atDefault;
+    // And the ceiling is genuinely reachable: `validateInterval` accepts it.
+    switch (Recovery.validateInterval(ceiling, 24 * 3_600 * 1_000_000_000)) {
+      case (#ok) {};
+      case (#err(_)) assert false;
+    };
+  });
+
+  test("a zero chunk size cannot divide by zero", func() {
+    // Unreachable today — the chunk size is a compile-time constant — so this guards a
+    // future edit. One interval is the answer that cannot understate the window.
+    assert Recovery.indexScanCycleNs(10_000, 0, interval) == interval;
+  });
+});

@@ -163,6 +163,45 @@ module {
 
   /// Has Stripe had long enough that a completed-but-uncredited session is now a
   /// standing obligation rather than an event in flight?
+  /// How long one full coverage cycle of the #63 rotating index scan is expected to
+  /// take: `⌈stored ÷ chunkSize⌉ × intervalNs`.
+  ///
+  /// ⚠️ **This is the detection latency for `orders.unindexedHolders`**, which is P1
+  /// because it means the reserve was oversellable. #63 converted unbounded *work* into
+  /// latency that still grows linearly in stored orders, and this is the number that
+  /// says how much — reported on `recovery_status` rather than documented, because a
+  /// documented window rots (the RUNBOOK claimed a 1 h sweep default for months while
+  /// the code said 15 min).
+  ///
+  /// ⚠️ **`intervalNs` is operator-tunable and its ceiling is 24× the default**, so this
+  /// takes the live cadence as a parameter rather than reading a constant. At 2,000 per
+  /// chunk and the 15-minute default a 365k store is one cycle in ~1.9 days; at the
+  /// §5.1 ceiling of 6 h the same store takes ~46 days.
+  ///
+  /// ⚠️ **Pure, and in this module, so the multiplier can be tested.** It was a private
+  /// `func` in `Main.mo` closing over state, and the only assertion on it compared the
+  /// result to the sweep interval on a store far smaller than one chunk — where `chunks`
+  /// is always 1, so a version that dropped the store-size factor entirely would have
+  /// passed. That is the degenerate-case member of the can-only-pass family: the
+  /// assertion was right, it pinned the coupling to the live interval, and it could not
+  /// see the part that makes the number mean anything.
+  ///
+  /// A store smaller than one chunk still costs one sweep, so the chunk count floors at
+  /// one — zero would report an instantaneous cycle for an empty store, which reads as
+  /// "already verified" at exactly the moment nothing has been.
+  public func indexScanCycleNs(stored : Nat, chunkSize : Nat, intervalNs : Nat) : Nat {
+    // A zero chunk size would divide by zero; it is a compile-time constant today, so
+    // this is a guard against a future edit rather than a reachable state, and one
+    // interval is the answer that cannot understate the window.
+    if (chunkSize == 0) return intervalNs;
+    // Ceiling division written without a subtraction: `a + b - 1` warns under M0155
+    // (`operator may trap for inferred type Nat`) and the gate runs -Werror, so the
+    // unreachable underflow has to be unwritten rather than argued about.
+    let whole = stored / chunkSize;
+    let chunks = if (stored % chunkSize == 0) whole else whole + 1;
+    if (chunks == 0) intervalNs else chunks * intervalNs;
+  };
+
   public func paidEscalationDue(createdAtNs : Int, nowNs : Int, horizonNs : Nat) : Bool {
     nowNs - createdAtNs >= horizonNs;
   };

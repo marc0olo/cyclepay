@@ -3503,21 +3503,15 @@ persistent actor CyclesGateway {
     repairs : Nat;
   } = null;
 
-  /// `⌈storedOrders ÷ chunkSize⌉ × sweepInterval` — the expected time for one full
-  /// coverage cycle, hence the detection latency for the outside direction.
-  ///
-  /// A store smaller than one chunk still costs one sweep, so the chunk count floors at
-  /// one: zero would report an instantaneous cycle for an empty store, which reads as
-  /// "already verified" at exactly the moment nothing has been.
+  /// The expected time for one full coverage cycle, hence the detection latency for the
+  /// outside direction. The arithmetic is `Recovery.indexScanCycleNs`, which is pure and
+  /// unit-tested — this only supplies the three live inputs.
   func expectedIndexScanCycleNs() : Nat {
-    let stored = Orders.storedCount(orderStore);
-    // Ceiling division written without a subtraction: `a + b - 1` warns under M0155
-    // (`operator may trap for inferred type Nat`) and the gate runs -Werror, so the
-    // unreachable underflow still has to be unwritten rather than argued about.
-    let whole = stored / Orders.scanChunkSize;
-    let chunks = if (stored % Orders.scanChunkSize == 0) whole else whole + 1;
-    if (chunks == 0) return recoverySweepIntervalNs;
-    chunks * recoverySweepIntervalNs;
+    Recovery.indexScanCycleNs(
+      Orders.storedCount(orderStore),
+      Orders.scanChunkSize,
+      recoverySweepIntervalNs,
+    );
   };
 
   /// One chunk of the rotating scan, on the sweep cadence.
