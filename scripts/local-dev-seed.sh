@@ -341,6 +341,17 @@ if RESERVE_OUT="$(icp cycles transfer "$RESERVE_TOP_UP" "$BACKEND_ID" 2>&1)"; th
 else
   printf '  \033[33m!\033[0m could not TOP UP the cycles reserve by %s:\n' "$RESERVE_TOP_UP"
   printf '    %s\n' "$RESERVE_OUT"
+  # ⚠️ **Name whose balance that is.** `icp cycles transfer` reports "insufficient
+  # funds. balance: N" for the SENDER — this identity's cycles-ledger account — but it
+  # prints under a heading about the reserve, so a reader takes N for the reserve's own
+  # balance. The two are wildly different (the reserve held 675 T while the sender had
+  # 53 T), and the confusion is structural: there are THREE balances here and the
+  # documentation names two.
+  printf '    ⚠️ that "balance:" is THIS IDENTITY'"'"'s cycles-ledger account (the sender),\n'
+  printf '       not the reserve and not the canister'"'"'s gas. Three balances:\n'
+  printf '         sender  : icp cycles balance\n'
+  printf '         reserve : icp cycles balance --of-principal %s\n' "$BACKEND_ID"
+  printf '         gas     : icp canister status backend\n'
   # ⚠️ **Observe anyway — a failed top-up does NOT mean the account is empty.** The
   # gateway's ledger account survives a canister reinstall (it is a separate canister),
   # so after the documented reinstall-and-reseed loop it usually still holds the whole

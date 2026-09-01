@@ -456,10 +456,28 @@ promise tally has no separate fee term.
 outside, and there is deliberately no `withdraw_reserve` (#30 rejected it: the app
 is not in production and an over-funded local reserve costs nothing).
 
-⚠️ **Two pots, and confusing them is the most common local-setup failure.**
-`icp canister top-up` funds the canister's **gas** (what it spends to run, gated
-by `minCanisterCycles`). `icp cycles transfer` funds the **reserve** (what it
-sells). An unfunded reserve looks like orders that pay and then never deliver.
+⚠️ **THREE balances, and confusing them is the most common local-setup failure.**
+The reserve is not special — it is just the backend canister's account on the cycles
+ledger, funded by a plain transfer to the canister's own principal.
+
+| balance | what it is | read it with | fund it with |
+|---|---|---|---|
+| **gas** | what the canister spends to *run*, gated by `minCanisterCycles` | `icp canister status backend` | `icp canister top-up` |
+| **the reserve** (stock) | what the canister *sells* — its cycles-ledger account | `reserve_status`, or `icp cycles balance --of-principal <backend-id>` | `icp cycles transfer <amt> <backend-id>` |
+| **your own account** | what funds both | `icp cycles balance` | mint from ICP |
+
+An unfunded reserve looks like orders that pay and then never deliver.
+
+⚠️ **A failed top-up reports the SENDER's balance, under a message about the reserve.**
+`icp cycles transfer` answers *"insufficient funds. balance: N"* where `N` is **your**
+cycles-ledger balance — not the reserve's. The two can differ by orders of magnitude
+(measured during a reinstall: reserve 675 T, sender 53 T), so reading `N` as the reserve's
+sends you to fund something that is already full.
+
+⚠️ **The reserve survives a canister reinstall; the floor does not.** The account belongs
+to the canister's principal and the cycles ledger is a different canister, so a
+`--mode reinstall` leaves the stock intact and resets `reserveFloor` to 0. The fix is
+`refresh_reserve`, not a transfer.
 
 ## 5a. Admission gate: who is allowed to start an order
 
