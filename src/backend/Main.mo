@@ -1163,8 +1163,23 @@ persistent actor CyclesGateway {
   };
 
   /// Order history for the caller (§2, fixes the lost-receipt problem).
-  public shared query ({ caller }) func list_orders() : async [Types.Order] {
-    Orders.ordersFor(orderStore, caller);
+  /// The caller's own orders, **paginated** (#38).
+  ///
+  /// ⚠️ **This was a latent trap on the BUYER path, not an ergonomic wart.** It returned
+  /// every order the caller owns, unbounded, and a query response is capped at ~2 MB —
+  /// so an oversized read does not degrade, it **traps**. The open-order cap of 1 means
+  /// a buyer accumulates them slowly, but nothing bounded it, and nothing drops orders
+  /// under #37.
+  ///
+  /// ⚠️ **Implemented through the same `Orders.page` the admin list uses**, with the
+  /// owner filter pinned to the caller. One traversal, one cursor semantics, one place
+  /// to get the "visits every match exactly once" property right — rather than a second
+  /// pager on the path where a mistake is a buyer's missing receipt.
+  public shared query ({ caller }) func list_orders(
+    afterId : ?Types.OrderId,
+    limit : Nat,
+  ) : async Orders.Page {
+    Orders.page(orderStore, { Orders.noFilter() with owner = ?caller }, afterId, limit);
   };
 
   /// Replace the card presets (§3/§7 — admin, validated atomically: a bad config
@@ -1702,9 +1717,21 @@ persistent actor CyclesGateway {
 
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
-  public shared query ({ caller }) func audit_log() : async [AuditLog.Event] {
+  /// The operational trail, **paginated** (#38).
+  ///
+  /// ⚠️ **Pagination became necessary the moment #37 removed the ring.** The bound used
+  /// to be the 4,096-entry ring, so the response size took care of itself; retention is
+  /// now total. Removing the cap moved the problem from *"history is lossy"* to *"the
+  /// query cannot answer"* — both real, and removing the ring only fixed the first.
+  ///
+  /// Cursor on `seq`, which now has **no gaps**: gaps used to be how a reader detected
+  /// drops, and there are no drops.
+  public shared query ({ caller }) func audit_log(
+    afterSeq : ?Nat,
+    limit : Nat,
+  ) : async AuditLog.Page {
     requireAdmin(caller);
-    AuditLog.events(auditLog);
+    AuditLog.page(auditLog, afterSeq, limit);
   };
 
   // ── Delivery from the reserve (§5/§5.1) ─────────────────────────────────
@@ -2507,7 +2534,14 @@ persistent actor CyclesGateway {
   /// anything. That is also why the old 2 h floor mattered less than it looked —
   /// lowering a *filter* costs nothing, whereas lowering a trigger filed worklist
   /// entries for orders that deliver themselves.
-  public shared query ({ caller }) func delayed_deliveries() : async [{
+  /// One delayed delivery, as `delayed_deliveries` reports it (#37, paginated by #38).
+  ///
+  /// ⚠️ **`pastMaxHold` is a transient window, at most one sweep interval wide** — past
+  /// `maxHoldNs` the next sweep escalates the order out of `#paid` and out of this set.
+  /// Useful to read; **do not assert it in an integration scenario**, because pinning
+  /// that window without ticking the clock is the shape that produces a flaky test. The
+  /// boundary is unit-pinned on `Delivery.waitStage`, which is where it belongs.
+  type DelayedDelivery = {
     orderId : Types.OrderId;
     status : Types.OrderStatus;
     /// `order.updatedAtNs` — retries deliberately do not move it, so the clock is
@@ -2516,49 +2550,41 @@ persistent actor CyclesGateway {
     waitedNs : Int;
     /// How many times delivery has already failed. `0` is an order simply waiting.
     retries : Nat;
-    /// True once the wait has also passed `maxHoldNs`, i.e. the next sweep
-    /// escalates it rather than retrying.
-    ///
-    /// ⚠️ **A transient window, at most one sweep interval wide** — past `maxHoldNs`
-    /// the next sweep escalates the order out of `#paid` and out of this set. Useful
-    /// to read ("about to escalate"), but **do not assert it in an integration
-    /// scenario**: pinning that window without ticking the clock is exactly the shape
-    /// that produces a flaky test. The boundary is already unit-pinned on
-    /// `Delivery.waitStage`, which is where it belongs.
     pastMaxHold : Bool;
-    /// When this order FIRST crossed the threshold, read off the order — the
-    /// permanent record, where every other field here is a live reading.
+    /// When it FIRST crossed the threshold, read off the order — the permanent record,
+    /// where every other field here is a live reading.
     delayedAtNs : ?Int;
-  }] {
+  };
+
+  public shared query ({ caller }) func delayed_deliveries(
+    afterId : ?Types.OrderId,
+    limit : Nat,
+  ) : async {
+    entries : [DelayedDelivery];
+    nextCursor : ?Types.OrderId;
+  } {
     requireAdmin(caller);
-    // ⚠️ **A full scan, and #37's status index is what makes that acceptable.**
-    // Under indefinite retention this walks every order ever created, which is the
-    // same growth the daily reconcile has — so this query is a second consumer of
-    // that index, not an independent problem. Do not lower `alertAfterNs` to
-    // compensate: the cost is the scan, not the threshold.
+    // ⚠️ **A full scan, and #63 owns bounding it.** Under indefinite retention this
+    // walks every order; the page bounds the RESPONSE, not the work. Those are two
+    // different limits — ~2 MB for the response, instructions per message for the scan
+    // — and paginating only fixes the first. Do not read this as bounded.
+    let capped = if (limit == 0 or limit > Orders.maxPageSize) Orders.maxPageSize else limit;
     let now = Time.now();
-    let out = List.empty<{
-      orderId : Types.OrderId;
-      status : Types.OrderStatus;
-      heldSinceNs : Int;
-      waitedNs : Int;
-      retries : Nat;
-      pastMaxHold : Bool;
-      delayedAtNs : ?Int;
-    }>();
-    for ((_, order) in orderStore.orders.entries()) {
-      // `#paid` is the only status that sits still waiting to deliver; every other
-      // in-flight position is either terminal or already escalated. If a second
-      // status can ever wait, this becomes a set membership rather than an equality
-      // — the same note `waitStage`'s caller carries.
-      if (order.status == #paid) {
+    let collected = List.empty<DelayedDelivery>();
+    var last : ?Types.OrderId = null;
+    for ((id, order) in orderStore.orders.entries()) {
+      let past = switch (afterId) { case (?cursor) id > cursor; case null true };
+      if (past and order.status == #paid) {
         let stage = Delivery.waitStage(order.updatedAtNs, now, deliveryConfig);
         let delayed = switch (stage) {
           case (#retry) false;
           case (#alert or #terminate) true;
         };
         if (delayed) {
-          out.add({
+          if (collected.size() == capped) {
+            return { entries = collected.toArray(); nextCursor = last };
+          };
+          collected.add({
             orderId = order.id;
             status = order.status;
             heldSinceNs = order.updatedAtNs;
@@ -2570,10 +2596,11 @@ persistent actor CyclesGateway {
             pastMaxHold = stage == #terminate;
             delayedAtNs = order.delayedAtNs;
           });
+          last := ?order.id;
         };
       };
     };
-    out.toArray();
+    { entries = collected.toArray(); nextCursor = null };
   };
 
   public shared query ({ caller }) func pending_deliveries() : async [Types.JournalEntry] {

@@ -27,6 +27,8 @@ import {
 
   orderProblems,
   unresolvedProblems,
+
+  allAuditEvents,
 } from './harness';
 import type { Destination, Order } from './types';
 
@@ -158,7 +160,7 @@ test('82 — a PAID session inside Stripe\'s retry window is not an obligation y
   expect((await openOrphans(gw)).length).toBe(openBefore);
   // The support signal is an audit line, because a buyer who paid sees their own page
   // render expired and calls the same hour.
-  expect((await gw.asAdmin.audit_log()).map((e) => e.tag)).toContain('stripe.paidAwaitingEvent');
+  expect((await allAuditEvents(gw)).map((e) => e.tag)).toContain('stripe.paidAwaitingEvent');
   await setCmcRate(gw);
   await ensureRates(gw);
 });

@@ -288,7 +288,8 @@ export interface HttpResponse {
 }
 
 export interface BackendService {
-  audit_log(): Promise<AuditEvent[]>;
+  /// Paginated since #38 — necessary the moment #37 removed the ring.
+  audit_log(afterSeq: Opt<bigint>, limit: bigint): Promise<{ events: AuditEvent[]; nextCursor: Opt<bigint> }>;
   card_tiers(): Promise<Tier[]>;
   create_order(amount: Amount, destination: Destination, minCycles: [] | [bigint]): Promise<Result<CreatedOrder, CreateOrderError>>;
   set_stripe_api_key(key: string): Promise<Result<null, { tooShort: { size: bigint; min: bigint } }>>;
@@ -325,7 +326,9 @@ export interface BackendService {
   /// Close ONE order-bound problem. `paymentRef` selects which, and omitting it is
   /// refused when more than one candidate exists (#37).
   resolve_problem(orderId: string, kindTag: string, paymentRef: Opt<string>): Promise<Result<bigint, string>>;
-  delayed_deliveries(): Promise<DelayedDelivery[]>;
+  /// ⚠️ Paginates the RESPONSE, not the work: the scan is still O(all orders) and #63
+  /// owns bounding it. Two different limits; this fixes one.
+  delayed_deliveries(afterId: Opt<string>, limit: bigint): Promise<{ entries: DelayedDelivery[]; nextCursor: Opt<string> }>;
   lifecycle_config(): Promise<{ gate: GateConfig }>;
   order_for_payment(paymentRef: string): Promise<Opt<string>>;
   abandon_order(id: string, reason: string): Promise<Result<Order, string>>;
@@ -382,7 +385,9 @@ export interface BackendService {
   health(): Promise<boolean>;
   http_request(req: HttpRequest): Promise<HttpResponse>;
   http_request_update(req: HttpRequest): Promise<HttpResponse>;
-  list_orders(): Promise<Order[]>;
+  /// Paginated since #38. Goes through the same pager as `admin_orders`, with the
+  /// owner filter pinned to the caller.
+  list_orders(afterId: Opt<string>, limit: bigint): Promise<{ orders: Order[]; nextCursor: Opt<string> }>;
   delivery_journal(id: string): Promise<Opt<JournalEntry>>;
   process_order(id: string): Promise<Result<Order, { notFound: null } | { inFlight: null }>>;
   recovery_status(): Promise<{

@@ -241,6 +241,11 @@ type Pricing =
    usdPerIcpMicros: nat;
    xdrPermyriadPerIcp: nat;
  };
+type Page__2 = 
+ record {
+   events: vec Event;
+   nextCursor: opt nat;
+ };
 type Page__1 = 
  record {
    nextCursor: opt OrderId;
@@ -370,6 +375,16 @@ type Drift =
    was: nat;
  };
 type Destination = variant {cyclesLedgerAccount: Account;};
+type DelayedDelivery = 
+ record {
+   delayedAtNs: opt int;
+   heldSinceNs: int;
+   orderId: OrderId;
+   pastMaxHold: bool;
+   retries: nat;
+   status: OrderStatus;
+   waitedNs: int;
+ };
 type CreatedOrder = record {order: Order;};
 type CreateOrderError = 
  variant {
@@ -520,7 +535,16 @@ service : {
    (Page__1) query;
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
-  audit_log: () -> (vec Event) query;
+  /// The operational trail, **paginated** (#38).
+  /// 
+  /// ⚠️ **Pagination became necessary the moment #37 removed the ring.** The bound used
+  /// to be the 4,096-entry ring, so the response size took care of itself; retention is
+  /// now total. Removing the cap moved the problem from *"history is lossy"* to *"the
+  /// query cannot answer"* — both real, and removing the ring only fixed the first.
+  /// 
+  /// Cursor on `seq`, which now has **no gaps**: gaps used to be how a reader detected
+  /// drops, and there are no drops.
+  audit_log: (afterSeq: opt nat, limit: nat) -> (Page__2) query;
   /// Admission preflight, public: lets the frontend disable the buy button with
   /// a real reason (and lets an operator ask "would a purchase go through right
   /// now?") without creating an order. `usdCents` is the gross amount to test.
@@ -574,65 +598,11 @@ service : {
                           balance: nat;
                           floor: nat;
                         }) query;
-  /// Every delivery with money-out work outstanding, right now (admin).
-  /// 
-  /// **The immediate answer to "is a delivery failing?", which nothing else gave.**
-  /// The error queue is the worklist and it self-clears correctly — a
-  /// `delayed_deliveries` self-clears on delivery *or* escalation — but it does not
-  /// open until the 2 h alert threshold, and a delivery taking a sweep or two is
-  /// normal, so lowering that threshold would file worklist entries for orders that
-  /// deliver themselves. This closes the two-hour blind window without touching the
-  /// queue's meaning.
-  /// 
-  /// **It self-clears by construction**, which is the property that makes it usable
-  /// as a dashboard: an entry leaves this set the moment delivery lands, because
-  /// landing records the block and moves the status. There is no "resolve" step to
-  /// forget, and a successful `process_order` empties it for that order immediately.
-  /// 
-  /// Read `retries` as "how many times this has already failed" — `0` is an order in
-  /// its first attempt, which is not a problem yet.
-  /// 
-  /// ⚠️ **Admin, and O(journal) — those two facts belong together.** It scans every
-  /// order ever created, so a public version would let an unauthenticated caller make
-  /// this canister scan its whole history for free. That is also why none of it went
-  /// into `reserve_status`, which is public and O(1) on purpose.
-  /// 
-  /// ⚠️ The subset with `status = #paid` is **exactly** the reconcile's in-flight
-  /// predicate (`unsettledDelivery`), so this is also how "the reserve reconcile keeps
-  /// skipping" gets diagnosed. `#needsReview` entries are included because an
-  /// operator asking "what is wrong right now" wants them, but they are deliberately
-  /// NOT in the reconcile's predicate — see `unsettledDeliveries`.
-  /// Deliveries outstanding past `alertAfterNs` — **the heir to the
-  /// `#deliveryDelayed` worklist entry** (#37).
-  /// 
-  /// ⚠️ **The alert it replaces stored nothing of its own.** It was raised as
-  /// `#deliveryDelayed({ orderId = order.id; stage = "deliveryDelayed"; sinceNs =
-  /// order.updatedAtNs })` with a fixed sentence for `detail` — every field copied
-  /// off the order, a constant stage, and no operator decision of its own. It
-  /// self-resolved on delivery or escalation, so its whole content was *"this order
-  /// is past the threshold"*, which is a **reading**, not an obligation.
-  /// 
-  /// ⚠️ **Self-clearing by construction**, which is the property that makes this
-  /// usable where the entry was not: an order leaves this set the moment it
-  /// delivers or escalates, because that moves its status. There is no resolve step
-  /// to forget and no `delayedAlerts` mapping to leak.
-  /// 
-  /// ⚠️ **`alertAfterNs` survives as this predicate's threshold, not as a trigger.**
-  /// The admin still tunes when a slow delivery *shows up*; it no longer files
-  /// anything. That is also why the old 2 h floor mattered less than it looked —
-  /// lowering a *filter* costs nothing, whereas lowering a trigger filed worklist
-  /// entries for orders that deliver themselves.
-  delayed_deliveries: () ->
-   (vec
-     record {
-       delayedAtNs: opt int;
-       heldSinceNs: int;
-       orderId: OrderId;
-       pastMaxHold: bool;
-       retries: nat;
-       status: OrderStatus;
-       waitedNs: int;
-     }) query;
+  delayed_deliveries: (afterId: opt OrderId, limit: nat) ->
+   (record {
+      entries: vec DelayedDelivery;
+      nextCursor: opt OrderId;
+    }) query;
   /// Money-out journal for one order (admin, §4.2) — intent, block_index, cycles
   /// delivered, retries.
   delivery_journal: (id: OrderId) -> (opt JournalEntry) query;
@@ -701,7 +671,19 @@ service : {
   /// than in config, so there is nothing global to report.
   lifecycle_config: () -> (record {gate: Config__1;}) query;
   /// Order history for the caller (§2, fixes the lost-receipt problem).
-  list_orders: () -> (vec Order) query;
+  /// The caller's own orders, **paginated** (#38).
+  /// 
+  /// ⚠️ **This was a latent trap on the BUYER path, not an ergonomic wart.** It returned
+  /// every order the caller owns, unbounded, and a query response is capped at ~2 MB —
+  /// so an oversized read does not degrade, it **traps**. The open-order cap of 1 means
+  /// a buyer accumulates them slowly, but nothing bounded it, and nothing drops orders
+  /// under #37.
+  /// 
+  /// ⚠️ **Implemented through the same `Orders.page` the admin list uses**, with the
+  /// owner filter pinned to the caller. One traversal, one cursor semantics, one place
+  /// to get the "visits every match exactly once" property right — rather than a second
+  /// pager on the path where a mistake is a buyer's missing receipt.
+  list_orders: (afterId: opt OrderId, limit: nat) -> (Page__1) query;
   /// Which order did this Stripe `payment_intent` pay for (admin, §4.2)? The
   /// reconciliation lookup: given a charge in the Stripe Dashboard, find the
   /// order it funded. Null means the payment was never attributed to an order

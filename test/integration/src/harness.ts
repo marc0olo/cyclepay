@@ -31,6 +31,11 @@ import type {
   BackendService, CmcService, OrphanEntry,
   Destination, HttpResponse, Icrc1Service, Order, OrderStatusKey, Result, StatusVariant,
   CreatedOrder, CreateOrderError, Amount, Problem,
+
+  AuditEvent,
+  Opt,
+
+  DelayedDelivery,
 } from './types';
 
 // Mainnet principals — identical on PocketIC's NNS subnet (Cmc.mo pins the
@@ -599,6 +604,52 @@ export function statusKey(holder: { status: StatusVariant }): OrderStatusKey {
 /// ⚠️ **Owner-scoped, like `orderStatus`.** Reading another principal's order needs
 /// #38's admin view, which does not exist yet — so scenarios asserting a problem must
 /// either own the order or read it off the mutating call's return value.
+/// Every delayed delivery, paged to exhaustion.
+///
+/// ⚠️ **Paging this exhausts the RESPONSE, not the scan.** `delayed_deliveries` still
+/// walks every order — #63 owns bounding that — so a full walk here is bounded by the
+/// number of delayed orders, not by the page size. Two different limits.
+export async function allDelayedDeliveries(gw: Gateway): Promise<DelayedDelivery[]> {
+  const out: DelayedDelivery[] = [];
+  let cursor: Opt<string> = [];
+  for (;;) {
+    const page = await gw.asAdmin.delayed_deliveries(cursor, 200n);
+    out.push(...page.entries);
+    if (page.nextCursor.length === 0) return out;
+    cursor = page.nextCursor;
+  }
+}
+
+/// Every audit event, paged.
+///
+/// ⚠️ **A helper rather than 23 edited call sites, and that is the right shape anyway.**
+/// `audit_log` is paginated since #38, and a scenario that reads only the first page
+/// asserts about a prefix while reading like it asserts about the log — the truncated-run
+/// fault in a new place. Paging to exhaustion here means no scenario can accidentally
+/// make that mistake.
+export async function allAuditEvents(gw: Gateway): Promise<AuditEvent[]> {
+  const out: AuditEvent[] = [];
+  let cursor: Opt<bigint> = [];
+  for (;;) {
+    const page = await gw.asAdmin.audit_log(cursor, 200n);
+    out.push(...page.events);
+    if (page.nextCursor.length === 0) return out;
+    cursor = page.nextCursor;
+  }
+}
+
+/// The caller's own orders, paged to exhaustion (same reasoning as above).
+export async function allOwnedOrders(gw: Gateway): Promise<Order[]> {
+  const out: Order[] = [];
+  let cursor: Opt<string> = [];
+  for (;;) {
+    const page = await gw.asUser.list_orders(cursor, 200n);
+    out.push(...page.orders);
+    if (page.nextCursor.length === 0) return out;
+    cursor = page.nextCursor;
+  }
+}
+
 export async function orderProblems(gw: Gateway, orderId: string): Promise<Problem[]> {
   const result = await gw.asUser.get_order(orderId);
   if (result.length === 0) throw new Error(`order ${orderId} not visible to user`);

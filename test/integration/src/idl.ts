@@ -264,7 +264,11 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   });
 
   return IDL.Service({
-    audit_log: IDL.Func([], [IDL.Vec(AuditEvent)], ['query']),
+    audit_log: IDL.Func(
+      [IDL.Opt(IDL.Nat), IDL.Nat],
+      [IDL.Record({ events: IDL.Vec(AuditEvent), nextCursor: IDL.Opt(IDL.Nat) })],
+      ['query'],
+    ),
     card_tiers: IDL.Func([], [IDL.Vec(Tier)], ['query']),
     create_order: IDL.Func(
       [Amount, Destination, IDL.Opt(IDL.Nat)],
@@ -316,8 +320,8 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       ['query'],
     ),
     delayed_deliveries: IDL.Func(
-      [],
-      [IDL.Vec(IDL.Record({
+      [IDL.Opt(IDL.Text), IDL.Nat],
+      [IDL.Record({ nextCursor: IDL.Opt(IDL.Text), entries: IDL.Vec(IDL.Record({
         delayedAtNs: IDL.Opt(IDL.Int),
         heldSinceNs: IDL.Int,
         orderId: IDL.Text,
@@ -325,7 +329,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
         retries: IDL.Nat,
         status: OrderStatus,
         waitedNs: IDL.Int,
-      }))],
+      })) })],
       ['query'],
     ),
     resolve_problem: IDL.Func(
@@ -452,7 +456,11 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     health: IDL.Func([], [IDL.Bool], ['query']),
     http_request: IDL.Func([HttpRequest], [HttpResponse], ['query']),
     http_request_update: IDL.Func([HttpRequest], [HttpResponse], []),
-    list_orders: IDL.Func([], [IDL.Vec(Order)], ['query']),
+    list_orders: IDL.Func(
+      [IDL.Opt(IDL.Text), IDL.Nat],
+      [IDL.Record({ nextCursor: IDL.Opt(IDL.Text), orders: IDL.Vec(Order) })],
+      ['query'],
+    ),
     delivery_journal: IDL.Func([IDL.Text], [IDL.Opt(JournalEntry)], ['query']),
     process_order: IDL.Func(
       [IDL.Text],

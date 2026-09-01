@@ -212,7 +212,7 @@ export function installFixtures(host: FixtureHost): void {
       }),
     }),
     get_order: async () => order,
-    list_orders: async () => (order ? [order] : []),
+    list_orders: async () => ({ orders: order ? [order] : [], nextCursor: null }),
     receipt: async () =>
       order === null || order.status !== "delivered"
         ? null

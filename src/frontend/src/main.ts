@@ -1286,9 +1286,27 @@ async function pollActiveOrder(): Promise<void> {
 
 async function refreshHistory(): Promise<void> {
   if (!identity) return;
+  // ⚠️ **Paged since #38, and the buyer's view wants ALL of them.** `list_orders` used
+  // to return every order unbounded, which is a trap rather than a convenience: a query
+  // response is capped at ~2 MB and an oversized read traps rather than truncating.
+  // Nothing drops orders under #37, so this only grows.
+  //
+  // ⚠️ **Paging to exhaustion here is deliberate, not lazy.** The history view sorts by
+  // time and shows a count, so a first page would silently mis-sort and undercount —
+  // the backend pages by order ID, which is NOT time order. If this list ever gets big
+  // enough for that to hurt, the fix is a paged UI, not a bigger first page.
   let orders: Order[];
   try {
-    orders = await backend.list_orders();
+    orders = [];
+    // The generated bindings use `T | null` for a Candid `opt`, not the tuple form the
+    // integration suite's hand-written IDL uses. Same wire type, two conventions.
+    let cursor: string | null = null;
+    for (;;) {
+      const page = await backend.list_orders(cursor, 200n);
+      orders.push(...page.orders);
+      if (page.nextCursor === null || page.nextCursor === undefined) break;
+      cursor = page.nextCursor;
+    }
   } catch {
     return;
   }
