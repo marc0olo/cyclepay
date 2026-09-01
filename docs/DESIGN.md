@@ -186,10 +186,18 @@ reserve is an account on the cycles ledger, so anyone can read its balance witho
 canister's cooperation. What the canister adds is the part only it knows — how much of
 that balance is already promised.
 
-## §9 — Layout
+## §9 — Layout and the test bar
 
-One Motoko backend canister plus a static asset canister. Modules take their dependencies
-as records, which is why the whole ingestion path is unit-testable with no IC environment.
+One Motoko backend canister plus a static asset canister, a hand-rolled `Http.mo` rather
+than a framework, and Candid bindings for the ledgers this canister actually calls.
+Modules take their dependencies as records, which is why the whole ingestion path is
+unit-testable with no IC environment.
+
+⚠️ **The go-live bar is PocketIC, not the unit suites.** Unit tests wherever logic is
+isolable — HMAC, fee and rate arithmetic, parsers, state-machine transitions, dedup — and
+a PocketIC scenario for everything that needs a replica: upgrades mid-delivery, ledger
+outages, real HTTP ingress, the §5.1 replay contract. A change is not done on a build or a
+unit pass alone. `test/integration/README.md` maps the scenarios to the items here.
 
 ## §11 — Deferred
 

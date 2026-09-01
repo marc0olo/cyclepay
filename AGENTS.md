@@ -200,13 +200,24 @@ scripts/test-all.sh          # everything, in dependency order, fail-fast
 scripts/test-all.sh --fast   # skips the PocketIC suite (see the host note below)
 ```
 
-It also asserts the committed `.did` is current, which a hand-run sequence
-silently skips. The individual steps, if you need to run one in isolation:
+⚠️ **Four of its fifteen steps are checks a hand-run sequence silently skips**, and each
+exists because the thing it checks had already drifted once:
+
+| step | asserts | why |
+|---|---|---|
+| `.did` is current | the committed interface matches the code | it is both the embedded `candid:service` metadata and the frontend's bindgen source |
+| `check-doc-surface.py` | the docs' method lists match the `.did` | `docs/STRIPE.md` claimed "the whole admin surface" while missing 11 of 29, and RUNBOOK named a method that never existed |
+| `check-design-sections.py` | every `§N` the code cites exists in `docs/DESIGN.md`, and every section is cited | the 697-line spec it replaced rotted by being updated less often than the code |
+| `check-heredocs.sh` | no unquoted heredoc runs its own body | one destroyed a GitHub issue body, one turned a script's notes into an `icp deploy` |
+
+The individual steps, if you need to run one in isolation:
 
 ```sh
 mops check                                   # lint + typecheck
 mops test                                    # Motoko unit suites
 mops build                                   # refreshes the committed .did
+scripts/check-doc-surface.py                 # docs' method lists vs the .did
+scripts/check-design-sections.py             # §N citations vs docs/DESIGN.md
 npm --prefix src/frontend run build          # regenerates bindings
 npm --prefix src/frontend run typecheck
 npm --prefix src/frontend run test           # pure functions + jsdom (main.ts)
