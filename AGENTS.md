@@ -148,6 +148,12 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
      premise. The class shares one shape: **the conclusion survived the change and its
      justification did not.**
 
+     ⚠️ **The term list is an artifact, not a memory: `docs/agents/deleted-vocabulary.md`.**
+     Add a mechanism's vocabulary there when you delete it; start a sweep from that file
+     and diff against its recorded dispositions, so `mint` and `retention` are not
+     re-adjudicated every time. Deliberately **not** a gate step — most hits are correct
+     prose, and a check that fires on correct code teaches people to ignore it.
+
      ⚠️ **Derive the term list from the deletion itself, not from the names you remember
      — and include the VERB for what the mechanism did.** The first attempt at this swept
      `ring`, `capacity`, `float`, `treasury`, `burn cap` and missed **`evict`/`eviction`**,

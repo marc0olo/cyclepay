@@ -647,7 +647,7 @@ is the signature of order-creation abuse, and the lever is
 `maxOpenOrdersPerPrincipal` (§5a). `totalOrders` and `paidIntentsIndexed` should
 grow together and never diverge.
 
-## 6. Error queue — triage (§4.1)
+## 6. Obligations — triage (§4.1)
 
 ```bash
 icp canister call backend orphans '()' -e ic --identity <operator>
@@ -1203,12 +1203,13 @@ release doc doesn't cover:
 - In-flight deliveries resume from the persisted journal via the re-armed timer
   (§5.1), so an interrupted money movement degrades to a recoverable stage,
   never a double-spend.
-- Persistent state (orders, journals, dedup sets, configs, secret, cap
-  consumption) survives upgrades via orthogonal persistence. **Transient
-  knobs reset on upgrade**: error-queue capacity (1,000), audit-log
-  capacity (4,096), HTTP body cap (64 KiB), and both single-flight guards
-  — that reset is deliberate (a guard stuck by an upgrade can't deadlock
-  anything).
+- Persistent state (orders, their problems, journals, dedup sets, configs,
+  secret) survives upgrades via orthogonal persistence. **Transient knobs reset
+  on upgrade**: the HTTP body cap (64 KiB), the single-flight guards, and the
+  index-scan cursor's in-flight cycle — that reset is deliberate (a guard stuck
+  by an upgrade cannot deadlock anything). ⚠️ **The two capacities this list used
+  to name are gone**: #37 removed both the error-queue capacity and the audit-log
+  ring, so neither is a knob to re-check after a deploy.
 - After every upgrade: `health`, `recovery_status` (timer re-armed),
   `webhook_secret_status.generation` unchanged, one test order end-to-end
   if the change touched money paths.
