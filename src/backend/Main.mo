@@ -3088,8 +3088,23 @@ persistent actor CyclesGateway {
   ///
   /// `delivery_journal` stays admin-only — it carries retries and raw transfer
   /// intents, which are operational rather than the buyer's business.
+  /// ⚠️ **Owner OR admin (#38).** An operator handed a Stripe receipt could read the
+  /// order through `admin_order` and still not the receipt — which is the artefact a
+  /// support conversation is actually about, because it carries the rate inputs a buyer
+  /// is disputing.
+  ///
+  /// ⚠️ **Not audited, deliberately, and the difference from `admin_order` is the
+  /// point.** `admin_order` audits because it defeats §2's "existence is not revealed to
+  /// non-owners" — a bare id probe. A receipt read cannot reveal existence that
+  /// `admin_order` has not already revealed, so a second line per support conversation
+  /// would be noise in a log that #37 made permanent. The admission rule cuts the same
+  /// way: this is bounded by an authenticated admin, and it adds nothing the order read
+  /// did not already record.
   public shared query ({ caller }) func receipt(id : Types.OrderId) : async ?Receipt {
-    let ?order = Orders.getOwned(orderStore, id, caller) else return null;
+    let ?order = (
+      if (Auth.checkAdmin(caller, Principal.isController).isOk()) Orders.get(orderStore, id)
+      else Orders.getOwned(orderStore, id, caller)
+    ) else return null;
     let journal = deliveryJournal.get(id);
     ?{
       order;
