@@ -505,7 +505,7 @@ module {
       if (open.size() > 0) {
         // Symmetric with the full-refund path: having reported the obligations
         // this refund does NOT settle, stop. Continuing would also audit
-        // "matched no queue entry", contradicting the line just written.
+        // "matched no obligation", contradicting the line just written.
         return ack(Http.text(200, "partial refund recorded; obligation left open"));
       };
       audit(deps, nowNs, "stripe.refundPartial", "partial refund of " # refund.paymentIntent # " (" # amounts # ") matched no open entry");
@@ -535,7 +535,7 @@ module {
     switch (deps.paidIntents.get(refund.paymentIntent)) {
       case null {
         // Genuinely unknown payment — never attributed to an order here.
-        audit(deps, nowNs, "stripe.refundUnmatched", "refund of " # refund.paymentIntent # " (" # amounts # ") matched no queue entry and no paid order");
+        audit(deps, nowNs, "stripe.refundUnmatched", "refund of " # refund.paymentIntent # " (" # amounts # ") matched no obligation and no paid order");
       };
       case (?orderId) {
         switch (Orders.get(deps.orders, orderId)) {
@@ -572,7 +572,7 @@ module {
                 // here is the *expected* resolution, not a race to investigate.
                 // Saying "the delivery may still be mid-flight" would send an
                 // operator looking for one that cannot exist.
-                audit(deps, nowNs, "stripe.refundOfEscalated", orderId # ": " # refund.paymentIntent # " refunded (" # amounts # ") — the expected resolution for an escalated order; resolve its queue entry once reconciled");
+                audit(deps, nowNs, "stripe.refundOfEscalated", orderId # ": " # refund.paymentIntent # " refunded (" # amounts # ") — the expected resolution for an escalated order; close its problem with resolve_problem once reconciled");
               };
               case (status) {
                 // Paid but not yet delivered — the money-out pipeline may
