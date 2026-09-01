@@ -247,7 +247,7 @@ suite("journal", func() {
     assert journal.get("nope") == null;
   });
 
-  test("§1b — patch records the last delivery error, and a success does not erase it", func() {
+  test("#37 §1b — patch records the last delivery error, and a success does not erase it", func() {
     let journal = Delivery.emptyJournal();
     let o = order();
     ignore Delivery.openEntry(journal, o, intentAt(42), 100);
@@ -265,7 +265,7 @@ suite("journal", func() {
     assert settled.blockIndex == ?7;
   });
 
-  test("§1b — a second failure overwrites rather than accumulating", func() {
+  test("#37 §1b — a second failure overwrites rather than accumulating", func() {
     let journal = Delivery.emptyJournal();
     let o = order();
     ignore Delivery.openEntry(journal, o, intentAt(42), 100);

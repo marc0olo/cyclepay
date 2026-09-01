@@ -35,7 +35,7 @@ Key documents:
 
 | Document | What it is |
 |----------|------------|
-| `design-docs/ONCHAIN_GATEWAY_SPEC.md` | The decision record — *why* it is built this way. Non-binding rationale; the implementation wins where they disagree |
+| `docs/DESIGN.md` | The decision record — *why* it is built this way. What the `§N` comments point at. Gate-enforced |
 | `docs/STRIPE.md` | **Start here.** The Card rail end to end, written from the code: ingress, session creation, signature verification, attribution, dedup, pricing, the order lifecycle, refunds, the two secrets, and the local Stripe-sandbox loop |
 | `docs/TEST-COVERAGE.md` | What is tested, how, and what is not — one place to answer "is X covered?" |
 | `docs/SANDBOX-TESTPLAN.md` | The manual Stripe-sandbox verification pass required before go-live, and an explicit statement of what a green run does not prove |
@@ -44,8 +44,8 @@ Key documents:
 | `AGENTS.md` | Agent instructions: ICP skills setup, conventions, the verification gate |
 
 Task and progress tracking lives in **GitHub Issues** (see
-`docs/agents/issue-tracker.md`). `PRD.md` and `progress.txt` are frozen
-historical artifacts and are not updated.
+`docs/agents/issue-tracker.md`). `PRD.md` is a frozen historical artifact and is
+not updated.
 
 ## Prerequisites
 

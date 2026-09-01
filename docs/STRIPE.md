@@ -2,8 +2,9 @@
 
 How fiat becomes cycles. Written from the code — every claim names the module it
 came from, so you can check it. (Module names, not line numbers: a stale line
-number is worse than no line number, and they drift on every edit.) The *why* behind the design decisions lives in
-`design-docs/ONCHAIN_GATEWAY_SPEC.md` (spec v2.1); this document is the *what*.
+number is worse than no line number, and they drift on every edit.) The *why* behind each
+decision — and what the `§N` shorthand in those comments points at — is
+`docs/DESIGN.md`.
 
 - [1. The one-sentence version](#1-the-one-sentence-version)
 - [2. What the canister calls Stripe for, and what it still cannot do](#2-what-the-canister-calls-stripe-for-and-what-it-still-cannot-do)

@@ -474,9 +474,9 @@ type Account =
  };
 /// Fully on-chain cycles gateway — composition root.
 /// 
-/// See design-docs/ONCHAIN_GATEWAY_SPEC.md (spec v2.1) and PRD.md for the
-/// module layout this actor grows into: Orders.mo wiring, rails/, Delivery.mo,
-/// Pricing.mo, Delivery.mo, Orphans.mo, Auth.mo.
+/// The module layout this actor composes: Orders.mo, Delivery.mo, Pricing.mo,
+/// Reserve.mo, Gate.mo, Problems.mo, Orphans.mo, Auth.mo, Card.mo, Http.mo.
+/// Decision record for the `§N` comments: `docs/DESIGN.md`.
 service : {
   /// Stop trying to deliver an order (admin, §7) — **the only path to a
   /// terminal non-delivered state.**

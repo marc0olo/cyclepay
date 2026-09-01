@@ -1,0 +1,215 @@
+# Design decisions — the `§N` record
+
+**The decision record for the cycles gateway.** Code comments say what the code *does*;
+this says *why it is that way*. When those disagree, the code is right and this file is a
+bug — fix it in the same change.
+
+⚠️ **This file is load-bearing and enforced.** `scripts/check-spec-glossary.py` runs in
+the verification gate and fails if a `§N` cited in the backend or the tests has no section
+here, or if a section here is cited by nothing. It cannot check whether a section is
+*true* — that is the obligation below.
+
+> ## The obligation, for agents and humans
+>
+> **Change the behaviour, change this file in the same commit.** Not afterwards.
+>
+> Its predecessor was a 697-line spec that accumulated **67** mentions of architecture
+> three issues had deleted, while `Main.mo` still cited it by section number. It was not
+> abandoned — it was updated less often than the code. The rule that would have saved it
+> is the one above.
+>
+> ⚠️ **Keep it lean, and delete rather than annotate.** A section describing something
+> that no longer exists must be *removed*, not marked historical. History belongs in
+> commit messages and GitHub issues, which are dated and attributable. Every paragraph
+> here must be a decision someone could otherwise get wrong.
+
+---
+
+## §1 — Scope and sequencing
+
+One rail: **Card, via Stripe**. Cycles are sold at cost from a pre-funded cycles reserve.
+The plan and its order live in GitHub issues (#12 is the index).
+
+## §2 — Identity and ownership
+
+**Internet Identity for every purchase.** It costs no anonymity: II is pseudonymous and
+issues a **per-origin principal** unlinkable to the same user elsewhere. Destinations are
+arbitrary — you may fund any canister — so sign-in governs *ownership and history*, not
+what you may buy. It exists to fix the lost-receipt problem.
+
+⚠️ **The origin is irreversible after the first real purchase.** II derives the principal
+*from* the origin, so changing it later gives every returning buyer a different principal:
+they cannot see their old orders, and the cycles behind them are unreachable.
+
+Authz is `caller == order.owner`. **Order ids are random (`raw_rand`), not a counter** —
+the id travels in the public `client_reference_id`, so randomness avoids enumeration and
+avoids leaking order volume. It is **not** a bearer secret; there are no secret order
+handles.
+
+## §3 — Economics
+
+**At cost, net of fees.** The rate applies to the **net** amount received (gross minus the
+Stripe fee, from a configurable formula), so there is no structural per-order loss. The
+operator absorbs the variance on international and FX cards, because reading Stripe's
+actual fee needs a key scope we refuse to hold (§7).
+
+⚠️ **What is locked at creation is the cycle QUANTITY, and it is immutable afterwards.**
+The reserve tally is `Σ lockedCycles` over non-terminal orders, so anything that rewrote
+that field would break the tally silently. This is what makes "no quote drift" literally
+rather than approximately true.
+
+⚠️ **Cycles are priced in XDR, not ICP.** Per-order ICP exposure cancels; the operator's
+ICP risk sits in topping up the reserve, not in any individual sale.
+
+### §3.1 — Rates
+
+Both inputs come from on-chain sources: **XRC** for USD/ICP and the **CMC** for
+XDR/cycles. A refresh that fails leaves the previous rates standing, and orders stop being
+quotable once the cache passes its staleness window — **refusing to sell is the safe
+direction**; selling at a stale rate is not.
+
+## §4 — One order, one state machine
+
+```
+Created ──▶ Cancelled                     the buyer gave up
+   │
+   ├──────▶ Expired                       Stripe's deadline passed; unpayable
+   │
+   └──────▶ Paid ──────▶ Delivered
+                │
+                ├──────▶ NeedsReview ──▶ Delivered    operator read the ledger
+                │              └───────▶ Abandoned    operator refunded by hand
+                └──────▶ Abandoned
+```
+
+⚠️ **Illegal transitions are ABSENT from the matrix, not guarded at runtime.**
+`Expired → Paid` and `Cancelled → Paid` do not exist, and that absence *is* the guarantee
+that a late payment cannot be honoured. A runtime check is something someone has to
+remember; a missing edge is not.
+
+⚠️ **Stripe owns the deadline.** The session expires, its webhook tells us, and `Expired`
+is terminal. An earlier design made expiry advisory — a late genuine payment was honoured
+— and that stopped being affordable once a `Created` order held reserve capacity.
+
+### §4.1 — Money positions needing a human
+
+Two structures, because they answer different questions:
+
+- **Problems live on the order** (`Order.problems`). A problem earns its place only if it
+  holds information that exists nowhere else **and** an action nobody has taken yet.
+- **Orphans** are payments that cannot be attributed to any order — there is nothing to
+  attach them to, so they keep a narrow list of their own.
+
+Nothing drops from either.
+
+### §4.2 — Data model
+
+One `persistent actor`. Orders are never deleted, which is what makes every index over
+them a projection that can be rebuilt rather than a second source of truth.
+
+## §5 — Money-out
+
+**One transfer from the cycles reserve**, and one transition (`Paid → Delivered`) that
+performs it. One edge means one place a double-spend could live.
+
+⚠️ **`icrc1_transfer` is the only declared way out**, enforced by a gate step that greps
+the whole backend for a second one. The reserve floor is a *lower bound* only while that
+holds: any other outflow makes the balance fall in a way the floor cannot see, and the
+gate would then admit sales against cycles that already left.
+
+### §5.1 — Ambiguous transfers
+
+The corner that makes a delivery retryable with no risk of paying twice:
+
+1. Persist the deterministic transfer arguments (`created_at_time`, amount, target, memo)
+   **before** transferring.
+2. Execute; on success persist the `block_index`.
+3. On recovery, **replay the identical transfer.** The ledger either performs it once or
+   answers `Duplicate { block_index }` — either way the block index is recovered.
+
+⚠️ **Bounded by the ledger's ~24 h dedup window**, so the recovery cadence must stay well
+inside it (enforced: cadence ≤ window ÷ 4). An intent older than the window with no known
+block index must **not** be auto-replayed — it escalates to `NeedsReview`, whose whole
+meaning is "the money position is unknown; a human must read the ledger".
+
+### §5.2 — Recovery
+
+A recurring timer sweeps orders with money-out work outstanding, single-flight, re-armed
+after upgrade. Bookkeeping checks run **detached in their own message**: a check must
+never be able to stop orders from delivering.
+
+### §5.3 — Delivery time bounds
+
+Two: an **alert** threshold (the delivery is late; a human should look) and a **max-wait**
+bound (the position is now unresolvable automatically, so it escalates). Both are operator
+configurable.
+
+## §6 — Rails
+
+### §6.0 — Ingress
+
+Two paths, and the webhook **cannot** be caller-authenticated: Stripe is the caller, and
+it authenticates by signing the payload. So exactly one anonymous, payload-authed HTTP
+route exists, and it verifies an HMAC before trusting anything in the body.
+
+### §6.1 — Card
+
+Inbound-only in the sense that matters: the canister holds a **restricted** key scoped to
+Checkout Sessions, never an `sk_`. It can create sessions and read them back; it cannot
+refund, read customers, or reach the account.
+
+## §7 — Security and trust
+
+⚠️ **The webhook secret is plaintext canister state.** HMAC is symmetric, so *verify =
+forge*: anything that can check a signature can forge one, and encrypting the stored blob
+would only move the problem to the key that decrypts it.
+
+⚠️ **The blast radius is the reserve balance, and sizing it is the control.** A forged
+"paid" webhook delivers from the reserve. An earlier design bounded this with a per-period
+ICP burn cap; there is no cap now, so the trade is "size the reserve to what a leak could
+cost", not "the cap bounds it". SEV-SNP is the intended confidentiality layer and launch
+does not block on it — `RUNBOOK.md` §9 is the verification checklist, hardest item first.
+
+⚠️ **A leaked API key can only create sessions that pay us.** That asymmetry is why the
+key's *scope* matters more than its storage.
+
+**Governance is a flat controller allowlist with equal privileges.** Any controller can
+upgrade, rotate either secret, resolve obligations, set tiers and adjust pricing. The
+honest trust model is "trust the operator set; any one of them can upgrade and then
+drain". There is deliberately **no** method that moves money (§5). True M-of-N needs a
+multisig *canister* as controller, since IC controllers are OR-semantics.
+
+## §8 — Verifiability
+
+The thesis: **the number an operator monitors is the number a buyer can check.** The
+reserve is an account on the cycles ledger, so anyone can read its balance without this
+canister's cooperation. What the canister adds is the part only it knows — how much of
+that balance is already promised.
+
+## §9 — Layout
+
+One Motoko backend canister plus a static asset canister. Modules take their dependencies
+as records, which is why the whole ingestion path is unit-testable with no IC environment.
+
+## §11 — Deferred
+
+A second rail, M-of-N or SNS governance, an external audit of the delivery and
+secret-handling paths, and archival once volume warrants. Events this gateway does not
+subscribe to (disputes, for instance) are acked rather than refused, so a Dashboard
+configuration cannot disable the endpoint.
+
+### §11.1 — Seams that are binding
+
+A second rail should *add* rather than force an unwind. Four seams are deliberate, and
+each is stated at the code it constrains:
+
+1. **`Owner` stays a one-case variant** (`{ #ii : Principal }`). Adding a case to a stable
+   variant is migration-free; widening a bare `Principal` is a stable-state migration plus
+   an audit of every authz site. The variant also makes the compiler force every authz
+   check to pattern-match.
+2. **HTTP dispatch goes through a route *table*.** "Exactly one route" is policy, not
+   architecture.
+3. **Ownership is captured at the API edge.** `Orders.create` takes the owner as a
+   parameter and never reads `msg.caller`.
+4. **Expiry is per-rail money-in policy, not core behaviour.** The state machine owns
+   transitions, not expiry policy — §4's reversal is why this seam matters.

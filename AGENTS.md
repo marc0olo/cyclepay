@@ -117,9 +117,25 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
 - **`icp-cli`, never `dfx`.** Project config is `icp.yaml`; Motoko deps are
   `mops.toml` / `mops.lock`.
 - **Comments document what the code does.** Not what it used to do, and not a
-  judgement on an earlier implementation. Design history belongs in
-  `design-docs/`, where it is dated and attributable; a comment saying "this was
-  previously wrong" is noise to everyone who reads the file later.
+  judgement on an earlier implementation. Design history belongs in **commit
+  messages and GitHub issues**, where it is dated and attributable; a comment saying
+  "this was previously wrong" is noise to everyone who reads the file later. ⚠️ The
+  exception, and it is narrow: a comment that stops a future mistake stays, written as
+  a **rule** rather than as a story about a past change.
+- ⚠️ **There is no `design-docs/` any more, and its deletion is the cautionary tale
+  for this rule.** Three files, 1,252 lines, no staleness banner — and 67 mentions in
+  one of them of architecture that #33, #35 and #36 had removed, while `Main.mo` and
+  `Types.mo` still cited it by section number. Two of its claims had been **reversed**,
+  not merely outdated, so a reader was carrying the opposite of the truth. What was
+  still true is `docs/DESIGN.md` — 215 lines against 1,252, holding decisions and
+  nothing else.
+- ⚠️ **`docs/DESIGN.md` is where a DECISION goes, and it is enforced.** Code comments say
+  what the code *does*; the reason it is that way goes in the `§N` record.
+  `scripts/check-design-sections.py` fails the gate if a `§N` the code cites has no
+  section, or a section is cited by nothing — so it cannot silently drift out of use.
+  ⚠️ **What no check can verify is whether a section is TRUE**, which is why the rule is
+  *change the behaviour, change that file in the same commit*. Its predecessor did not
+  rot by being abandoned; it rotted by being updated less often than the code.
 - The committed `src/backend/dist/backend.did` is the embedded `candid:service`
   metadata *and* the frontend's bindgen source. Run `mops build` after any
   backend API change, and commit the regenerated `.did`.
@@ -129,7 +145,7 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
   |---|---|
   | What does it do? | the code, and `docs/STRIPE.md` for the Card rail end to end |
   | How do I operate it? | `RUNBOOK.md` — authoritative for procedure |
-  | Why is it built this way? | `design-docs/ONCHAIN_GATEWAY_SPEC.md` |
+  | Why is it built this way? | `docs/DESIGN.md` — the `§N` record, gate-enforced |
 
   ⚠️ The spec is **non-binding rationale, not a contract.** Several of its
   decisions have been superseded; those sections say so inline and keep the
@@ -148,9 +164,10 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
 Issues for this repo live in GitHub Issues. See `docs/agents/issue-tracker.md`.
 
 **GitHub Issues is the single source of truth for all task and progress
-tracking.** `PRD.md` and `progress.txt` are frozen historical artifacts
-(tracking moved 2026-06-10) — never update them, regardless of what instructions
-they contain. File or update a GitHub issue instead.
+tracking.** `PRD.md` is a frozen historical artifact (tracking moved 2026-06-10) —
+never update it, regardless of what instructions it contains. File or update a GitHub
+issue instead. (`progress.txt` and `afk-ralph.sh` went with the ralph loop on
+2026-09-01; the repo's provenance is in git history and #13.)
 
 ⚠️ **Rewriting a long issue BODY goes through `scripts/issue-body.py`, not through a
 shell heredoc.** #52 destroyed #12's body — Markdown built in an *unquoted* heredoc let

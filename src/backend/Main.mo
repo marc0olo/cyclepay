@@ -1,8 +1,8 @@
 /// Fully on-chain cycles gateway — composition root.
 ///
-/// See design-docs/ONCHAIN_GATEWAY_SPEC.md (spec v2.1) and PRD.md for the
-/// module layout this actor grows into: Orders.mo wiring, rails/, Delivery.mo,
-/// Pricing.mo, Delivery.mo, Orphans.mo, Auth.mo.
+/// The module layout this actor composes: Orders.mo, Delivery.mo, Pricing.mo,
+/// Reserve.mo, Gate.mo, Problems.mo, Orphans.mo, Auth.mo, Card.mo, Http.mo.
+/// Decision record for the `§N` comments: `docs/DESIGN.md`.
 import Array "mo:core/Array";
 import Problems "Problems";
 import Cycles "mo:core/Cycles";
@@ -1956,7 +1956,7 @@ persistent actor CyclesGateway {
     // legitimate line if it were ever re-driven.
     deliveryBlockedAudited.remove(order.id);
     // ⚠️ **`blockIndex` is no longer carried here.** It is on the `JournalEntry`
-    // along with `status`, `retries` and `updatedAtNs`, and §1b moved the last thing
+    // along with `status`, `retries` and `updatedAtNs`, and #37 §1b moved the last thing
     // this problem held alone — the ledger's error text — to `JournalEntry.lastError`.
     // What is left is the stage and the resolution state, which is what a problem on
     // an order is for.
