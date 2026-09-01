@@ -1251,40 +1251,19 @@ persistent actor CyclesGateway {
 
   /// Batch pre-purchase quote, public.
   ///
-  /// This exists so the price a buyer is shown is **computed by the same code
-  /// that prices the order** — `quoteCents`, the identical function
-  /// `create_order` calls. A client reimplementing the
-  /// formula would be one refactor away from quoting a number the gateway does
-  /// not honour, and the buyer would have no way to tell which was wrong.
+  /// ⚠️ **The price a buyer is shown is computed by the SAME function that prices the
+  /// order.** A client reimplementing the formula would be one refactor away from quoting
+  /// a number the gateway does not honour, with no way for the buyer to tell which was
+  /// wrong. Batched because the tier grid needs every price in one round trip.
   ///
-  /// Batched because the tier grid needs every price in one round trip.
+  /// **Unbounded input on purpose**, unlike the paged queries. The work is constant
+  /// per element the caller already transmitted — no state scan, no amplification — so
+  /// the ingress size limit already bounds it. A cap would only buy **silent truncation**,
+  /// which is worse than what it prevents.
   ///
-  /// **Unbounded input on purpose**, unlike the paged queries. Those cap `limit`
-  /// because a tiny request makes them scan a large store — cheap to invoke,
-  /// expensive to serve. Here the work is constant per element the caller already
-  /// had to transmit, there is no state scan and no amplification, so the ingress
-  /// size limit already bounds it. A cap would only buy silent truncation, which
-  /// is a worse failure than the one it prevents: a caller passing more tiers
-  /// than the cap would get a short array back with no signal that anything was
-  /// dropped.
-  ///
-  /// There is one rail, so there is one fee formula and no `rail` parameter to
-  /// select it with (#35): a query that branches on nothing should not ask the
-  /// caller to pick. `Types.Rail` still exists on the order — the type names the
-  /// dimension, this query does not need to switch on it.
-  ///
-  /// ⚠️ **It no longer discloses the cycles-ledger fee** (#30 PR-A). The frontend
-  /// already queries the cycles ledger directly for the reserve balance, so it reads
-  /// `icrc1_fee` in the same breath. Same split as `available = balance -
-  /// promisedTotal`: **the canister owns what only it knows; the ledger owns what it
-  /// owns.**
-  ///
-  /// ⚠️ This said disclosing it would mean "storing a copy and correcting it on
-  /// `#BadFee`", as the argument against. #30 PR-B then stored exactly such a copy
-  /// for the delivery path, so read the objection precisely: a stored fee is fine
-  /// where a wrong value is **self-correcting and cheap** (one rejected transfer),
-  /// and wrong here, where nothing checks the number a buyer was shown. Delivery
-  /// gets a mechanism; a quote would get only the staleness.
+  /// Does not disclose the cycles-ledger fee: that is the ledger's number and the
+  /// operator's cost — `docs/DESIGN.md` §3.2 for the split and why a stored copy would
+  /// be wrong here.
   public query func quote_previews(amounts : [Nat]) : async QuotePreviews {
     let fee : { feeBps : Nat; feeFixedCents : Nat } = {
       feeBps = pricingConfig.feeBps;
@@ -1445,11 +1424,10 @@ persistent actor CyclesGateway {
 
   /// Open-obligation depth, public.
   ///
-  /// Unresolved entries are never evicted, so this number only ever comes down
-  /// by the operator working it. A climbing value means dollars are arriving
-  /// that nobody has dealt with — the single most important operational number
-  /// on the money path, and it is public because §9's transparency stance says
-  /// operational state is not secret.
+  /// Nothing is evicted, so this only comes down by the operator working it. A climbing
+  /// value means dollars are arriving that nobody has dealt with — the most important
+  /// operational number on the money path, and public because operational state is not
+  /// secret (§8).
   /// Refusal tallies, and whether the gate is refusing right now (#61).
   ///
   /// ⚠️ **Public, like every other monitoring surface here** — operational state
@@ -1462,11 +1440,10 @@ persistent actor CyclesGateway {
   /// `reserveShort` climbing is a refill. Same shape, opposite actions.
   /// Read **any** order by id (admin, #38).
   ///
-  /// ⚠️ **A deliberate exception to §2's "existence is not revealed to non-owners", so
-  /// it audits itself on every use.** `get_order` is owner-scoped with no admin bypass,
-  /// which meant an operator handed a Stripe receipt could determine *which* order it
-  /// was — `order_for_payment` is admin-gated — and then could not look at it. Support
-  /// meant asking the buyer to read their own screen.
+  /// ⚠️ **A deliberate exception to §2's "existence is not revealed to non-owners", so it
+  /// audits itself on every use.** `get_order` is owner-scoped with no admin bypass, so
+  /// without this an operator could identify *which* order a Stripe receipt named and
+  /// then not look at it.
   ///
   /// ⚠️ **The audit line is the price of the exception, not decoration.** It is an
   /// `auditAdmin` write, so it names *who* looked, and it fires on the read whether or
@@ -1485,37 +1462,20 @@ persistent actor CyclesGateway {
 
   /// Filtered, cursor-paginated order list (admin, #38).
   ///
-  /// ⚠️ **This is also #37's worklist.** `withUnresolvedProblems` is a *filter* here
-  /// rather than a query of its own, which is the whole thesis: "everything outstanding"
-  /// composes with status, owner and time range instead of being a parallel list that
-  /// answers a slightly different question. It replaced `orders_with_problems`.
+  /// ⚠️ **Do not sort by `createdAtNs`.** Ordering is by order id, which is arbitrary
+  /// because ids are random — and time-ordering would mean materialising the filtered set
+  /// first, which is the unbounded scan #63 removed. Narrow with `createdFromNs` instead.
   ///
-  /// ⚠️ **Ordered by order id, which is not time order.** See `Orders.page` — id order
-  /// is arbitrary because ids are random, and sorting by `createdAtNs` would mean
-  /// materialising the filtered set first, which is the unbounded scan #63 exists to
-  /// remove. Narrow with `createdFromNs` for recency.
-  ///
-  /// ⚠️ **Deliberately NOT audited, unlike `admin_order` and `admin_receipt`. Written
-  /// down because the difference otherwise reads as an oversight — which is exactly what
-  /// the `receipt` path looked like before review caught it.**
-  ///
-  /// The line those two write is *"an operator looked at THIS person's order"*, and that
-  /// targeted act is the accountable one. A filtered list is the operator doing their
-  /// job: triaging a worklist, checking what is outstanding, finding an order by time
-  /// range. Logging a line per page would record the work rather than the intrusion, and
-  /// bury the targeted reads it exists to make findable — in a log #37 made permanent.
-  ///
+  /// ⚠️ **Deliberately NOT audited, unlike `admin_order` and `admin_receipt` — do not
+  /// "fix" the inconsistency.** Their line records *"an operator looked at THIS person's
+  /// order"*, and that targeted act is the accountable one; a line per page would record
+  /// the work rather than the intrusion and bury the targeted reads. It would also make
+  /// this an update, since audits write state, on the call an operator makes repeatedly.
   /// Same reasoning keeps `orphans`, `orphan_depth` and `problem_depth` unaudited.
   ///
-  /// ⚠️ **And auditing it would cost what the `receipt` split just avoided:** audits
-  /// write state, so an audited list cannot be a `query`, and this is the call an
-  /// operator makes repeatedly while working.
-  ///
-  /// ⚠️ **What would change the answer:** if this ever returns something an operator
-  /// could not reach through `admin_order`, or if a filter narrows to a *single named
-  /// principal* as the normal way to use it — at that point the list becomes the
-  /// targeted act and inherits the audit. `owner : ?Principal` makes that possible
-  /// today; it is not how the query is meant to be driven.
+  /// ⚠️ **What would change that:** a filter narrowing to a *single named principal* as
+  /// the normal way to drive this. `owner : ?Principal` makes it possible today; it is not
+  /// the intended use, and if it becomes one the list inherits the audit.
   public shared query ({ caller }) func admin_orders(
     filter : Orders.Filter,
     afterId : ?Types.OrderId,
@@ -1590,27 +1550,21 @@ persistent actor CyclesGateway {
   /// acting off-chain: a refund issued in the Stripe Dashboard, or a delivery whose
   /// fate they established on the cycles ledger.
   ///
-  /// ⚠️ **This is the only path for everything a refund cannot resolve.** A
-  /// `charge.refunded` auto-resolves the refund-resolvable kinds, so those usually
-  /// close themselves; `#deliveryStuck`, `#refundAfterDelivery` and `#abandoned` carry
-  /// no `paymentRef` and can only be closed here. Resolving an entry never transitions
-  /// the order — see `Orphans`'s header.
+  /// ⚠️ **This closes ORPHAN entries only — `#unattributed` and `#unprocessable`.**
+  /// Everything order-bound moved onto the orders in #37 and is closed by
+  /// `resolve_problem`; pointing an operator here for those would be pointing them at the
+  /// wrong method. Resolving an entry never transitions the order — see `Orphans`'s
+  /// header.
   /// Close **one** order-bound problem an operator has dealt with (#37).
   ///
-  /// The order-shaped counterpart to `resolve_orphan`, which addresses entries by a
-  /// queue id that no longer exists for the kinds that moved.
+  /// ⚠️ **`paymentRef` is the selector, and dropping it over-resolves.** `sameShape`
+  /// deliberately allows two unresolved `#duplicate` problems on one order with different
+  /// payment references (a buyer who pays three times), so closing by tag alone marks an
+  /// obligation settled that nobody has settled.
   ///
-  /// ⚠️ **`paymentRef` is the selector, and omitting it is only safe when there is one
-  /// candidate.** An earlier version took the tag alone and closed *every* unresolved
-  /// problem of that kind — which over-resolves, because `Problems.sameShape`
-  /// deliberately allows two unresolved `#duplicate` problems on one order with
-  /// different payment references (a buyer who pays three times). An operator who
-  /// refunded one payment would have marked the other settled.
-  ///
-  /// ⚠️ **The root cause is structural, so the fix is a real selector rather than a
-  /// warning.** Queue entries had monotonic ids; problems in an array have no stable
-  /// handle, so **the dedup key is the handle** — `(kindTag, identifyingRef)`, the same
-  /// pair `sameShape` uses to decide identity. One definition, both users.
+  /// ⚠️ **Problems in an array have no stable handle, so the dedup key IS the handle** —
+  /// `(kindTag, identifyingRef)`, the same pair `sameShape` uses. One definition, both
+  /// users.
   ///
   /// ⚠️ **And it refuses rather than guesses when the selector is ambiguous**, which is
   /// this codebase's posture wherever a lever might act on the wrong thing — the
@@ -1736,15 +1690,12 @@ persistent actor CyclesGateway {
 
   /// The cycles ledger's transfer fee, as last learned from the ledger (#30 PR-B).
   ///
-  /// ⚠️ **Stored rather than awaited, and `#BadFee` is why that is safe.** Delivery
-  /// used to `await icrc1_fee()` before building the intent, on the stated grounds
-  /// that a stale copy "either shorts the buyer or makes every transfer answer
-  /// `#BadFee`". The second half is the mechanism, not the objection: an ICRC-1
-  /// ledger rejects a wrong fee **definitively and reports the expected one**, so a
-  /// stale value costs one rejected call, self-corrects in the same message, and is
-  /// persisted here for every later order. In exchange the delivery path loses an
-  /// await — and with it the `delivery.feeFetchFailed` failure mode, where a ledger
-  /// hiccup on a *read* stalled a delivery that was fully funded and ready.
+  /// ⚠️ **Stored rather than awaited, and `#BadFee` is why that is safe.** An ICRC-1
+  /// ledger rejects a wrong fee **definitively and reports the expected one**, so a stale
+  /// value costs one rejected call, self-corrects in the same message, and is persisted
+  /// for every later order. In exchange the delivery path loses an await — and with it
+  /// the failure mode where a ledger hiccup on a *read* stalled a delivery that was fully
+  /// funded and ready.
   ///
   /// ⚠️ **No admin lever writes this** — `#BadFee` is the only writer, which is what
   /// keeps it honest. See `delivery.feeExceedsOrder` for the one state that cannot
@@ -2356,52 +2307,27 @@ persistent actor CyclesGateway {
 
   /// Every delivery with money-out work outstanding, right now (admin).
   ///
-  /// **The immediate answer to "is a delivery failing?", which nothing else gave.**
-  /// The problem list is the worklist and it self-clears correctly — a
-  /// `delayed_deliveries` self-clears on delivery *or* escalation — but it does not
-  /// open until the 2 h alert threshold, and a delivery taking a sweep or two is
-  /// normal, so lowering that threshold would file worklist entries for orders that
-  /// deliver themselves. This closes the two-hour blind window without touching the
-  /// queue's meaning.
+  /// The immediate answer to "is a delivery failing?", and it **self-clears by
+  /// construction** — an entry leaves the moment delivery lands, because landing records
+  /// the block and moves the status. No resolve step to forget. Read `retries` as "how
+  /// many times this has already failed"; `0` is a first attempt, not a problem.
   ///
-  /// **It self-clears by construction**, which is the property that makes it usable
-  /// as a dashboard: an entry leaves this set the moment delivery lands, because
-  /// landing records the block and moves the status. There is no "resolve" step to
-  /// forget, and a successful `process_order` empties it for that order immediately.
-  ///
-  /// Read `retries` as "how many times this has already failed" — `0` is an order in
-  /// its first attempt, which is not a problem yet.
-  ///
-  /// ⚠️ **Admin, and O(journal) — those two facts belong together.** It scans every
-  /// order ever created, so a public version would let an unauthenticated caller make
-  /// this canister scan its whole history for free. That is also why none of it went
-  /// into `reserve_status`, which is public and O(1) on purpose.
+  /// ⚠️ **Admin, and O(journal) — those two facts belong together.** A public version
+  /// would let an unauthenticated caller make this canister scan its whole history for
+  /// free, which is why none of it went into `reserve_status` (public and O(1) on
+  /// purpose). #69 owns bounding the walk.
   ///
   /// ⚠️ The subset with `status = #paid` is **exactly** the reconcile's in-flight
   /// predicate (`unsettledDelivery`), so this is also how "the reserve reconcile keeps
   /// skipping" gets diagnosed. `#needsReview` entries are included because an
   /// operator asking "what is wrong right now" wants them, but they are deliberately
   /// NOT in the reconcile's predicate — see `unsettledDeliveries`.
-  /// Deliveries outstanding past `alertAfterNs` — **the heir to the
-  /// `#deliveryDelayed` worklist entry** (#37).
+  /// Deliveries outstanding past `alertAfterNs` — a **reading**, not an obligation, which
+  /// is why it is a query rather than a filed problem.
   ///
-  /// ⚠️ **The alert it replaces stored nothing of its own.** It was raised as
-  /// `#deliveryDelayed({ orderId = order.id; stage = "deliveryDelayed"; sinceNs =
-  /// order.updatedAtNs })` with a fixed sentence for `detail` — every field copied
-  /// off the order, a constant stage, and no operator decision of its own. It
-  /// self-resolved on delivery or escalation, so its whole content was *"this order
-  /// is past the threshold"*, which is a **reading**, not an obligation.
-  ///
-  /// ⚠️ **Self-clearing by construction**, which is the property that makes this
-  /// usable where the entry was not: an order leaves this set the moment it
-  /// delivers or escalates, because that moves its status. There is no resolve step
-  /// to forget and no `delayedAlerts` mapping to leak.
-  ///
-  /// ⚠️ **`alertAfterNs` survives as this predicate's threshold, not as a trigger.**
-  /// The admin still tunes when a slow delivery *shows up*; it no longer files
-  /// anything. That is also why the old 2 h floor mattered less than it looked —
-  /// lowering a *filter* costs nothing, whereas lowering a trigger filed worklist
-  /// entries for orders that deliver themselves.
+  /// ⚠️ **`alertAfterNs` is this predicate's THRESHOLD, not a trigger.** Lowering a
+  /// filter costs nothing; lowering a trigger would file worklist entries for orders that
+  /// deliver themselves.
   /// One delayed delivery, as `delayed_deliveries` reports it (#37, paginated by #38).
   ///
   /// ⚠️ **`pastMaxHold` is a transient window, at most one sweep interval wide** — past
@@ -2548,33 +2474,19 @@ persistent actor CyclesGateway {
 
   /// Reserve solvency and order counters, public (#30 PR-B).
   ///
-  /// **The three figures that decide whether a sale is admitted, in one answer**,
-  /// because "the ledger says 100 T and the gateway will sell 0" has to be
-  /// diagnosable at a glance rather than by inference:
+  /// `reserveFloor` − `promisedTotal` = `availableToSell`, in one answer, so "the ledger
+  /// says 100 T and the gateway will sell 0" is diagnosable at a glance (§3.2).
   ///
-  ///   `reserveFloor` − `promisedTotal` = `availableToSell`
+  /// ⚠️ **`reserveFloor` is a maintained lower BOUND, not the balance, and must not cache
+  /// one.** Caching invents a staleness class over a number the caller can read from the
+  /// source. A floor far below the ledger's balance means nothing has reconciled since the
+  /// last top-up — `reserveObservedAtNs` says when it last did, `refresh_reserve` is the
+  /// lever.
   ///
-  /// ⚠️ **`reserveFloor` is a maintained lower BOUND, not the balance.** The actual
-  /// reserve lives on the cycles ledger, where `icrc1_balance_of` is a free query
-  /// anyone can call — so this canister does not mirror it. What it reports is the
-  /// bound it will actually sell against, which is the number that explains a
-  /// refusal. A floor far below the ledger's balance means nothing has reconciled
-  /// since the last top-up: `reserveObservedAtNs` says when it last did, and
-  /// `refresh_reserve` is the lever. Two earlier drafts of #30 cached the balance
-  /// here instead and were superseded — caching it invents a staleness class over a
-  /// number the caller can read from the source.
-  ///
-  /// ⚠️ These are **uncertified query answers, and `create_order` does not consult
-  /// them.** The gate decides solvency from the same state synchronously, inside the
-  /// order-creating message. This surface is for operators, monitoring and the
-  /// frontend; nothing reads it to decide anything, so it cannot be raced into an
+  /// ⚠️ **Uncertified query answers, and nothing may be wired to decide on them.**
+  /// `create_order` decides solvency from the same state *synchronously*, inside the
+  /// order-creating message; that is what stops the decision being raced into an
   /// over-sale.
-  ///
-  /// The four order counters live here rather than in a surface of their own:
-  /// `openOrders` climbing while deliveries do not is the signature of order-creation
-  /// abuse, and its lever is `Gate.maxOpenOrdersPerPrincipal`; `totalOrders` and
-  /// `paidIntentsIndexed` should grow together, since a divergence means an index and
-  /// its records disagree.
   public query func reserve_status() : async {
     reserveFloor : Nat;
     promisedTotal : Nat;
@@ -2638,32 +2550,24 @@ persistent actor CyclesGateway {
 
   /// Let a buyer give up on their own unpaid order (owner-scoped).
   ///
-  /// `Gate.maxOpenOrdersPerPrincipal` counts `#created` orders, and its refusal
-  /// tells the user to pay or abandon one — advice they could not follow without
-  /// this: `abandon_order` is admin-only and only accepts *paid* orders. A buyer
-  /// who opened the cap's worth of checkouts and completed none would be locked
-  /// out until their sessions expired.
+  /// ⚠️ **Load-bearing on the open-order cap**, whose refusal tells the buyer to pay or
+  /// abandon one — advice they cannot follow without this, since `abandon_order` is
+  /// admin-only and takes *paid* orders. Remove it and a buyer who opened the cap's worth
+  /// of checkouts is locked out until their sessions expire.
   ///
-  /// ⚠️ This paragraph said the order is marked `#expired` and that a payment
-  /// arriving afterwards is **still honoured**, because `#expired` was payable.
-  /// Both halves stopped being true and the text did not follow: #34 gave the
-  /// buyer's own decision the distinct `#cancelled` state, and deleted
-  /// `#expired → #paid` along with it. Nothing is stranded, but the reason is
-  /// now the opposite one — the session is expired on Stripe BEFORE the order
-  /// moves, so an in-flight payment either wins that race and the order is not
-  /// cancelled at all, or it cannot start. See the ordering note in the body.
+  /// ⚠️ **Nothing is stranded, and the reason is the ORDERING**: the session is expired
+  /// on Stripe *before* the order moves, so an in-flight payment either wins that race
+  /// (and the order is not cancelled at all) or it cannot start. `#cancelled → #paid` is
+  /// absent from the matrix, so a cancelled order is unpayable by construction.
   ///
-  /// No problem filed: nothing is owed. The record and the audit line are the
-  /// trail, and queueing an obligation for an order where no money moved is
-  /// exactly the orphan state the queue must not accumulate.
+  /// No problem filed: nothing is owed, and filing an obligation for an order where no
+  /// money moved is exactly the noise the worklist must not accumulate.
   /// **Admin: expire one `#created` order, releasing its reserve capacity** (#52).
   ///
-  /// The lever for the class the sweep **structurally cannot see**: an order whose
-  /// session-create response was lost carries neither `expiresAtNs` (nothing to trigger
-  /// on) nor `stripeSessionId` (nothing to query with), and Stripe's session list cannot
-  /// be filtered by `client_reference_id`, so it cannot be looked up either. That state
-  /// needs a human anyway — reaching it means a trap in the create continuation or a
-  /// frozen canister, not an operating condition.
+  /// ⚠️ **The lever for the class the sweep structurally CANNOT see**, so do not delete it
+  /// as redundant with the sweep: an order whose session-create response was lost carries
+  /// neither `expiresAtNs` (nothing to trigger on) nor `stripeSessionId` (nothing to query
+  /// with), and Stripe's session list cannot be filtered by `client_reference_id`.
   ///
   /// ⚠️ **Expire-first, exactly as `cancel_order` does, and for exactly that reason.**
   /// Nothing is ever half-expired: if the session is still live on Stripe, the order does
@@ -2828,10 +2732,6 @@ persistent actor CyclesGateway {
     requireAdmin(caller);
     let ?order = Orders.get(orderStore, id) else return #err("no order " # id);
     switch (order.status) {
-      // `#needsReview` is newly accepted here, and it is the point of splitting
-      // `#orphanStore`: an escalated order could not previously be abandoned,
-      // because one status meant both "promise held" and "promise released" and
-      // the transition was to itself (#34).
       case (#paid or #needsReview) {};
       case (status) {
         return #err("order " # id # " is " # Types.statusToText(status) # "; only a paid or under-review order can be abandoned");
@@ -2960,13 +2860,8 @@ persistent actor CyclesGateway {
   /// Everything the **buyer** needs to verify their own purchase (§2 authz:
   /// `caller == order.owner`).
   ///
-  /// The order already carried enough to reproduce the price; nothing surfaced
-  /// it, and the delivery proof was admin-only. A buyer could see *that* we
-  /// claimed to deliver, never check it. Now they can: recompute the quote from
-  /// the two recorded rate inputs, and look up the block index on the ICP ledger.
-  ///
-  /// `delivery_journal` stays admin-only — it carries retries and raw transfer
-  /// intents, which are operational rather than the buyer's business.
+  /// The buyer can **check** the claim rather than take it: recompute the quote from the
+  /// two recorded rate inputs, and look up the block index on the ledger.
   /// ⚠️ **Owner-only, and a `query`, which is why the admin path is a separate method.**
   /// See `admin_receipt`. Auditing writes state, so an audited read cannot be a query —
   /// and folding the admin case in here would have made **every buyer's** receipt read
@@ -2974,25 +2869,20 @@ persistent actor CyclesGateway {
   /// The same receipt, for **any** order (admin, #38) — and **audited**, which is the
   /// whole reason it is a separate method.
   ///
-  /// ⚠️ **An earlier version folded this into `receipt` and argued the admin branch need
-  /// not be audited. That argument was wrong**, and the error is worth keeping: it
-  /// reasoned about *existence disclosure* — a receipt read cannot reveal existence
-  /// `admin_order` has not already revealed, which is true — but that is not what the
-  /// audit is for. `admin_order` audits because **an operator reading a buyer's order
-  /// should leave a record of having looked**, and `Receipt` embeds the whole `Order`. An
-  /// unaudited admin branch returns exactly the same data with no trace, so the audit on
-  /// `admin_order` becomes **bypassable by calling the other method** — a marker rather
-  /// than an accountability control.
+  /// ⚠️ **The audit is not about existence disclosure; it is about an operator leaving a
+  /// record of having looked.** `Receipt` embeds the whole `Order`, so an *unaudited*
+  /// admin path returns exactly what `admin_order` returns with no trace — which makes
+  /// `admin_order`'s audit **bypassable by calling the other method**. Reading an operator
+  /// read as harmless because the data is reachable elsewhere is the mistake to avoid.
   ///
   /// ⚠️ **A separate method rather than a branch, because auditing writes state.** An
-  /// audited read cannot be a `query`, and folding this into `receipt` would have made
-  /// **every buyer's** receipt read an update — putting the common path through consensus
-  /// to serve the rare one. Two methods, each with the call type its job needs.
+  /// audited read cannot be a `query`, and folding this into `receipt` would make **every
+  /// buyer's** receipt read an update — the common path through consensus to serve the
+  /// rare one.
   ///
-  /// ⚠️ **This is also why the boundary could be lifted at all.** #38's stated gap is
-  /// "an operator cannot read any order but their own"; lifting it is deliberate and
-  /// **auditing is the mitigation**. A path that lifts it without the mitigation is not a
-  /// smaller version of the change — it is the change without its safeguard.
+  /// ⚠️ **Auditing is the mitigation for lifting the owner boundary at all.** A path that
+  /// lifts it without the audit is not a smaller version of the change; it is the change
+  /// without its safeguard.
   public shared ({ caller }) func admin_receipt(id : Types.OrderId) : async ?Receipt {
     requireAdmin(caller);
     let ?order = Orders.get(orderStore, id) else {
@@ -3079,17 +2969,11 @@ persistent actor CyclesGateway {
   /// orders behind it are never reached at all. The bound has to come with a resume or it
   /// is a bound on *which* orders get looked at, not on how many.
   ///
-  /// Measured, not theorised: the integration suite carries dozens of lingering
-  /// `#created` orders, and two scenarios failed with "the sweep never retrieved
-  /// session …" because their order sat behind ten permanently-due neighbours.
+  /// Measured, not theorised: two integration scenarios failed with "the sweep never
+  /// retrieved session …" because their order sat behind ten permanently-due neighbours.
   ///
-  /// ⚠️ **An id, not an index — and this was known before and lost.** The deleted
-  /// retention sweep paged the store with exactly this shape and said why, verbatim:
-  /// *"An **id**, not an index: an index into a snapshot is meaningless across ticks,
-  /// because an insert shifts every later position."* It had `maxRetentionScanPerSweep`
-  /// **and** `Orders.idsFrom(store, cursor, limit)`; #33 PR-C deleted the module, the
-  /// cursor and the primitive together, so this issue rebuilt a bounded scan and
-  /// reintroduced the starvation the old one had already solved.
+  /// ⚠️ **An id, NOT an index.** An index into a snapshot is meaningless across ticks,
+  /// because an insert shifts every later position.
   ///
   /// The lesson belongs with the deletion discipline rather than here: **a disposal
   /// record has to carry the invariants the deleted code satisfied**, not only where its
@@ -3251,16 +3135,14 @@ persistent actor CyclesGateway {
   /// Runs in its own message (see the call site) and takes no `await`, so it sees a
   /// consistent snapshot of the order store.
   ///
-  /// ⚠️ **Its cost is now bounded by flow rather than by lifetime sales (#63)** — it
+  /// **Its cost is now bounded by flow rather than by lifetime sales (#63)** — it
   /// recounts over `Orders.promiseHolders`, whose size the reserve caps. The pass it
   /// replaced summed every order ever created in one message and was on a path to the
   /// instruction limit.
   ///
-  /// ⚠️ **Daily is now a sufficiency choice, not a cost one, and the old reason is
-  /// gone.** It used to be daily *because* it was O(every order); it is daily now
-  /// because drift can only come from a bookkeeping bug, which does not need a
-  /// 15-minute detection window. Do not restore the old justification — it would
-  /// describe a scan this function no longer performs.
+  /// ⚠️ **Daily is a SUFFICIENCY choice, not a cost one.** Drift can only come from a
+  /// bookkeeping bug, which does not need a 15-minute detection window. Do not justify
+  /// the cadence by cost — that would describe a scan this function no longer performs.
   ///
   /// ⚠️ **Still not chunked, and that is the same reason as before**: a global sum
   /// cannot be split across messages, because mutations between chunks manufacture
@@ -3337,26 +3219,17 @@ persistent actor CyclesGateway {
   /// from `promised` too — index and tally agree, both low, and the reserve reads as
   /// more available than it is.
   ///
-  /// ⚠️ **#63 turned unbounded WORK into unbounded LATENCY, and the honest claim is
-  /// "bounded per message", not "bounded".** The daily reconcile verifies only the
-  /// inside direction of each index; the outside direction is this scan, so detecting an
-  /// order that holds a promise and is not indexed takes up to **one full cycle**, and
-  /// the cycle grows **linearly in stored orders**:
+  /// ⚠️ **The honest claim is "bounded PER MESSAGE", not "bounded".** The daily reconcile
+  /// verifies only the inside direction of each index; the outside direction is this scan,
+  /// so detecting an unindexed promise-holder takes up to one full cycle — and the cycle
+  /// grows **linearly in stored orders** (`⌈stored ÷ chunk⌉ × interval`). The right trade
+  /// (work that traps is fatal; latency that grows is degradable and observable) but a
+  /// trade, so do not describe the reconcile as simply "bounded".
   ///
-  ///     cycle = ⌈storedOrders ÷ scanChunkSize⌉ × recoverySweepIntervalNs
-  ///
-  /// At the 15-minute default and 2,000 orders per chunk that is ~192,000 orders a day,
-  /// so 365k orders is covered in about two days and 3.65M in about nineteen. That is
-  /// the right trade — work that traps is fatal, latency that grows is degradable and
-  /// observable — but it is a trade, and a comment claiming the reconcile is simply
-  /// "bounded now" would hide the half that still grows.
-  ///
-  /// ⚠️ **`set_recovery_interval` is therefore a lever on this latency, and nothing
-  /// about its name says so.** The cadence is operator-tunable up to the §5.1 ceiling of
-  /// 6 h, which is **24× the default** — the same 365k store then takes ~46 days per
-  /// cycle. `recovery_status.indexScan.expectedFullCycleNs` is computed from the live
-  /// interval precisely so this is a number an operator reads rather than one they have
-  /// to know to derive.
+  /// ⚠️ **`set_recovery_interval` is a lever on this latency and its name does not say
+  /// so** — tunable to 24× the default. `recovery_status.indexScan.expectedFullCycleNs` is
+  /// computed from the live interval so an operator reads the window rather than deriving
+  /// it.
   ///
   /// ⚠️ **Detached into its own message by the caller, like the reconcile**, so a trap
   /// here cannot take the sweep — and therefore money-out — down with it. It takes no

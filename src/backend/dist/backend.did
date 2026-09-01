@@ -492,11 +492,10 @@ service : {
   abandon_order: (id: OrderId, reason: text) -> (Result_9);
   /// Open-obligation depth, public.
   /// 
-  /// Unresolved entries are never evicted, so this number only ever comes down
-  /// by the operator working it. A climbing value means dollars are arriving
-  /// that nobody has dealt with — the single most important operational number
-  /// on the money path, and it is public because §9's transparency stance says
-  /// operational state is not secret.
+  /// Nothing is evicted, so this only comes down by the operator working it. A climbing
+  /// value means dollars are arriving that nobody has dealt with — the most important
+  /// operational number on the money path, and public because operational state is not
+  /// secret (§8).
   /// Refusal tallies, and whether the gate is refusing right now (#61).
   /// 
   /// ⚠️ **Public, like every other monitoring surface here** — operational state
@@ -509,11 +508,10 @@ service : {
   /// `reserveShort` climbing is a refill. Same shape, opposite actions.
   /// Read **any** order by id (admin, #38).
   /// 
-  /// ⚠️ **A deliberate exception to §2's "existence is not revealed to non-owners", so
-  /// it audits itself on every use.** `get_order` is owner-scoped with no admin bypass,
-  /// which meant an operator handed a Stripe receipt could determine *which* order it
-  /// was — `order_for_payment` is admin-gated — and then could not look at it. Support
-  /// meant asking the buyer to read their own screen.
+  /// ⚠️ **A deliberate exception to §2's "existence is not revealed to non-owners", so it
+  /// audits itself on every use.** `get_order` is owner-scoped with no admin bypass, so
+  /// without this an operator could identify *which* order a Stripe receipt named and
+  /// then not look at it.
   /// 
   /// ⚠️ **The audit line is the price of the exception, not decoration.** It is an
   /// `auditAdmin` write, so it names *who* looked, and it fires on the read whether or
@@ -522,49 +520,27 @@ service : {
   admin_order: (id: OrderId) -> (opt Order);
   /// Filtered, cursor-paginated order list (admin, #38).
   /// 
-  /// ⚠️ **This is also #37's worklist.** `withUnresolvedProblems` is a *filter* here
-  /// rather than a query of its own, which is the whole thesis: "everything outstanding"
-  /// composes with status, owner and time range instead of being a parallel list that
-  /// answers a slightly different question. It replaced `orders_with_problems`.
+  /// ⚠️ **Do not sort by `createdAtNs`.** Ordering is by order id, which is arbitrary
+  /// because ids are random — and time-ordering would mean materialising the filtered set
+  /// first, which is the unbounded scan #63 removed. Narrow with `createdFromNs` instead.
   /// 
-  /// ⚠️ **Ordered by order id, which is not time order.** See `Orders.page` — id order
-  /// is arbitrary because ids are random, and sorting by `createdAtNs` would mean
-  /// materialising the filtered set first, which is the unbounded scan #63 exists to
-  /// remove. Narrow with `createdFromNs` for recency.
-  /// 
-  /// ⚠️ **Deliberately NOT audited, unlike `admin_order` and `admin_receipt`. Written
-  /// down because the difference otherwise reads as an oversight — which is exactly what
-  /// the `receipt` path looked like before review caught it.**
-  /// 
-  /// The line those two write is *"an operator looked at THIS person's order"*, and that
-  /// targeted act is the accountable one. A filtered list is the operator doing their
-  /// job: triaging a worklist, checking what is outstanding, finding an order by time
-  /// range. Logging a line per page would record the work rather than the intrusion, and
-  /// bury the targeted reads it exists to make findable — in a log #37 made permanent.
-  /// 
+  /// ⚠️ **Deliberately NOT audited, unlike `admin_order` and `admin_receipt` — do not
+  /// "fix" the inconsistency.** Their line records *"an operator looked at THIS person's
+  /// order"*, and that targeted act is the accountable one; a line per page would record
+  /// the work rather than the intrusion and bury the targeted reads. It would also make
+  /// this an update, since audits write state, on the call an operator makes repeatedly.
   /// Same reasoning keeps `orphans`, `orphan_depth` and `problem_depth` unaudited.
   /// 
-  /// ⚠️ **And auditing it would cost what the `receipt` split just avoided:** audits
-  /// write state, so an audited list cannot be a `query`, and this is the call an
-  /// operator makes repeatedly while working.
-  /// 
-  /// ⚠️ **What would change the answer:** if this ever returns something an operator
-  /// could not reach through `admin_order`, or if a filter narrows to a *single named
-  /// principal* as the normal way to use it — at that point the list becomes the
-  /// targeted act and inherits the audit. `owner : ?Principal` makes that possible
-  /// today; it is not how the query is meant to be driven.
+  /// ⚠️ **What would change that:** a filter narrowing to a *single named principal* as
+  /// the normal way to drive this. `owner : ?Principal` makes it possible today; it is not
+  /// the intended use, and if it becomes one the list inherits the audit.
   admin_orders: (filter: Filter, afterId: opt OrderId, limit: nat) ->
    (Page__1) query;
   /// Everything the **buyer** needs to verify their own purchase (§2 authz:
   /// `caller == order.owner`).
   /// 
-  /// The order already carried enough to reproduce the price; nothing surfaced
-  /// it, and the delivery proof was admin-only. A buyer could see *that* we
-  /// claimed to deliver, never check it. Now they can: recompute the quote from
-  /// the two recorded rate inputs, and look up the block index on the ICP ledger.
-  /// 
-  /// `delivery_journal` stays admin-only — it carries retries and raw transfer
-  /// intents, which are operational rather than the buyer's business.
+  /// The buyer can **check** the claim rather than take it: recompute the quote from the
+  /// two recorded rate inputs, and look up the block index on the ledger.
   /// ⚠️ **Owner-only, and a `query`, which is why the admin path is a separate method.**
   /// See `admin_receipt`. Auditing writes state, so an audited read cannot be a query —
   /// and folding the admin case in here would have made **every buyer's** receipt read
@@ -572,25 +548,20 @@ service : {
   /// The same receipt, for **any** order (admin, #38) — and **audited**, which is the
   /// whole reason it is a separate method.
   /// 
-  /// ⚠️ **An earlier version folded this into `receipt` and argued the admin branch need
-  /// not be audited. That argument was wrong**, and the error is worth keeping: it
-  /// reasoned about *existence disclosure* — a receipt read cannot reveal existence
-  /// `admin_order` has not already revealed, which is true — but that is not what the
-  /// audit is for. `admin_order` audits because **an operator reading a buyer's order
-  /// should leave a record of having looked**, and `Receipt` embeds the whole `Order`. An
-  /// unaudited admin branch returns exactly the same data with no trace, so the audit on
-  /// `admin_order` becomes **bypassable by calling the other method** — a marker rather
-  /// than an accountability control.
+  /// ⚠️ **The audit is not about existence disclosure; it is about an operator leaving a
+  /// record of having looked.** `Receipt` embeds the whole `Order`, so an *unaudited*
+  /// admin path returns exactly what `admin_order` returns with no trace — which makes
+  /// `admin_order`'s audit **bypassable by calling the other method**. Reading an operator
+  /// read as harmless because the data is reachable elsewhere is the mistake to avoid.
   /// 
   /// ⚠️ **A separate method rather than a branch, because auditing writes state.** An
-  /// audited read cannot be a `query`, and folding this into `receipt` would have made
-  /// **every buyer's** receipt read an update — putting the common path through consensus
-  /// to serve the rare one. Two methods, each with the call type its job needs.
+  /// audited read cannot be a `query`, and folding this into `receipt` would make **every
+  /// buyer's** receipt read an update — the common path through consensus to serve the
+  /// rare one.
   /// 
-  /// ⚠️ **This is also why the boundary could be lifted at all.** #38's stated gap is
-  /// "an operator cannot read any order but their own"; lifting it is deliberate and
-  /// **auditing is the mitigation**. A path that lifts it without the mitigation is not a
-  /// smaller version of the change — it is the change without its safeguard.
+  /// ⚠️ **Auditing is the mitigation for lifting the owner boundary at all.** A path that
+  /// lifts it without the audit is not a smaller version of the change; it is the change
+  /// without its safeguard.
   admin_receipt: (id: OrderId) -> (opt Receipt);
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
@@ -668,32 +639,24 @@ service : {
   expected_livemode: () -> (opt bool) query;
   /// Let a buyer give up on their own unpaid order (owner-scoped).
   /// 
-  /// `Gate.maxOpenOrdersPerPrincipal` counts `#created` orders, and its refusal
-  /// tells the user to pay or abandon one — advice they could not follow without
-  /// this: `abandon_order` is admin-only and only accepts *paid* orders. A buyer
-  /// who opened the cap's worth of checkouts and completed none would be locked
-  /// out until their sessions expired.
+  /// ⚠️ **Load-bearing on the open-order cap**, whose refusal tells the buyer to pay or
+  /// abandon one — advice they cannot follow without this, since `abandon_order` is
+  /// admin-only and takes *paid* orders. Remove it and a buyer who opened the cap's worth
+  /// of checkouts is locked out until their sessions expire.
   /// 
-  /// ⚠️ This paragraph said the order is marked `#expired` and that a payment
-  /// arriving afterwards is **still honoured**, because `#expired` was payable.
-  /// Both halves stopped being true and the text did not follow: #34 gave the
-  /// buyer's own decision the distinct `#cancelled` state, and deleted
-  /// `#expired → #paid` along with it. Nothing is stranded, but the reason is
-  /// now the opposite one — the session is expired on Stripe BEFORE the order
-  /// moves, so an in-flight payment either wins that race and the order is not
-  /// cancelled at all, or it cannot start. See the ordering note in the body.
+  /// ⚠️ **Nothing is stranded, and the reason is the ORDERING**: the session is expired
+  /// on Stripe *before* the order moves, so an in-flight payment either wins that race
+  /// (and the order is not cancelled at all) or it cannot start. `#cancelled → #paid` is
+  /// absent from the matrix, so a cancelled order is unpayable by construction.
   /// 
-  /// No problem filed: nothing is owed. The record and the audit line are the
-  /// trail, and queueing an obligation for an order where no money moved is
-  /// exactly the orphan state the queue must not accumulate.
+  /// No problem filed: nothing is owed, and filing an obligation for an order where no
+  /// money moved is exactly the noise the worklist must not accumulate.
   /// **Admin: expire one `#created` order, releasing its reserve capacity** (#52).
   /// 
-  /// The lever for the class the sweep **structurally cannot see**: an order whose
-  /// session-create response was lost carries neither `expiresAtNs` (nothing to trigger
-  /// on) nor `stripeSessionId` (nothing to query with), and Stripe's session list cannot
-  /// be filtered by `client_reference_id`, so it cannot be looked up either. That state
-  /// needs a human anyway — reaching it means a trap in the create continuation or a
-  /// frozen canister, not an operating condition.
+  /// ⚠️ **The lever for the class the sweep structurally CANNOT see**, so do not delete it
+  /// as redundant with the sweep: an order whose session-create response was lost carries
+  /// neither `expiresAtNs` (nothing to trigger on) nor `stripeSessionId` (nothing to query
+  /// with), and Stripe's session list cannot be filtered by `client_reference_id`.
   /// 
   /// ⚠️ **Expire-first, exactly as `cancel_order` does, and for exactly that reason.**
   /// Nothing is ever half-expired: if the session is still live on Stripe, the order does
@@ -817,40 +780,19 @@ service : {
   process_order: (id: OrderId) -> (Result_10);
   /// Batch pre-purchase quote, public.
   /// 
-  /// This exists so the price a buyer is shown is **computed by the same code
-  /// that prices the order** — `quoteCents`, the identical function
-  /// `create_order` calls. A client reimplementing the
-  /// formula would be one refactor away from quoting a number the gateway does
-  /// not honour, and the buyer would have no way to tell which was wrong.
+  /// ⚠️ **The price a buyer is shown is computed by the SAME function that prices the
+  /// order.** A client reimplementing the formula would be one refactor away from quoting
+  /// a number the gateway does not honour, with no way for the buyer to tell which was
+  /// wrong. Batched because the tier grid needs every price in one round trip.
   /// 
-  /// Batched because the tier grid needs every price in one round trip.
+  /// **Unbounded input on purpose**, unlike the paged queries. The work is constant
+  /// per element the caller already transmitted — no state scan, no amplification — so
+  /// the ingress size limit already bounds it. A cap would only buy **silent truncation**,
+  /// which is worse than what it prevents.
   /// 
-  /// **Unbounded input on purpose**, unlike the paged queries. Those cap `limit`
-  /// because a tiny request makes them scan a large store — cheap to invoke,
-  /// expensive to serve. Here the work is constant per element the caller already
-  /// had to transmit, there is no state scan and no amplification, so the ingress
-  /// size limit already bounds it. A cap would only buy silent truncation, which
-  /// is a worse failure than the one it prevents: a caller passing more tiers
-  /// than the cap would get a short array back with no signal that anything was
-  /// dropped.
-  /// 
-  /// There is one rail, so there is one fee formula and no `rail` parameter to
-  /// select it with (#35): a query that branches on nothing should not ask the
-  /// caller to pick. `Types.Rail` still exists on the order — the type names the
-  /// dimension, this query does not need to switch on it.
-  /// 
-  /// ⚠️ **It no longer discloses the cycles-ledger fee** (#30 PR-A). The frontend
-  /// already queries the cycles ledger directly for the reserve balance, so it reads
-  /// `icrc1_fee` in the same breath. Same split as `available = balance -
-  /// promisedTotal`: **the canister owns what only it knows; the ledger owns what it
-  /// owns.**
-  /// 
-  /// ⚠️ This said disclosing it would mean "storing a copy and correcting it on
-  /// `#BadFee`", as the argument against. #30 PR-B then stored exactly such a copy
-  /// for the delivery path, so read the objection precisely: a stored fee is fine
-  /// where a wrong value is **self-correcting and cheap** (one rejected transfer),
-  /// and wrong here, where nothing checks the number a buyer was shown. Delivery
-  /// gets a mechanism; a quote would get only the staleness.
+  /// Does not disclose the cycles-ledger fee: that is the ledger's number and the
+  /// operator's cost — `docs/DESIGN.md` §3.2 for the split and why a stored copy would
+  /// be wrong here.
   quote_previews: (amounts: vec nat) -> (QuotePreviews) query;
   receipt: (id: OrderId) -> (opt Receipt) query;
   /// Record that an escalated order's cycles **did** reach the buyer (admin, §7).
@@ -951,33 +893,19 @@ service : {
     }) query;
   /// Reserve solvency and order counters, public (#30 PR-B).
   /// 
-  /// **The three figures that decide whether a sale is admitted, in one answer**,
-  /// because "the ledger says 100 T and the gateway will sell 0" has to be
-  /// diagnosable at a glance rather than by inference:
+  /// `reserveFloor` − `promisedTotal` = `availableToSell`, in one answer, so "the ledger
+  /// says 100 T and the gateway will sell 0" is diagnosable at a glance (§3.2).
   /// 
-  ///   `reserveFloor` − `promisedTotal` = `availableToSell`
+  /// ⚠️ **`reserveFloor` is a maintained lower BOUND, not the balance, and must not cache
+  /// one.** Caching invents a staleness class over a number the caller can read from the
+  /// source. A floor far below the ledger's balance means nothing has reconciled since the
+  /// last top-up — `reserveObservedAtNs` says when it last did, `refresh_reserve` is the
+  /// lever.
   /// 
-  /// ⚠️ **`reserveFloor` is a maintained lower BOUND, not the balance.** The actual
-  /// reserve lives on the cycles ledger, where `icrc1_balance_of` is a free query
-  /// anyone can call — so this canister does not mirror it. What it reports is the
-  /// bound it will actually sell against, which is the number that explains a
-  /// refusal. A floor far below the ledger's balance means nothing has reconciled
-  /// since the last top-up: `reserveObservedAtNs` says when it last did, and
-  /// `refresh_reserve` is the lever. Two earlier drafts of #30 cached the balance
-  /// here instead and were superseded — caching it invents a staleness class over a
-  /// number the caller can read from the source.
-  /// 
-  /// ⚠️ These are **uncertified query answers, and `create_order` does not consult
-  /// them.** The gate decides solvency from the same state synchronously, inside the
-  /// order-creating message. This surface is for operators, monitoring and the
-  /// frontend; nothing reads it to decide anything, so it cannot be raced into an
+  /// ⚠️ **Uncertified query answers, and nothing may be wired to decide on them.**
+  /// `create_order` decides solvency from the same state *synchronously*, inside the
+  /// order-creating message; that is what stops the decision being raced into an
   /// over-sale.
-  /// 
-  /// The four order counters live here rather than in a surface of their own:
-  /// `openOrders` climbing while deliveries do not is the signature of order-creation
-  /// abuse, and its lever is `Gate.maxOpenOrdersPerPrincipal`; `totalOrders` and
-  /// `paidIntentsIndexed` should grow together, since a divergence means an index and
-  /// its records disagree.
   reserve_status: () ->
    (record {
       availableToSell: nat;
@@ -999,27 +927,21 @@ service : {
   /// acting off-chain: a refund issued in the Stripe Dashboard, or a delivery whose
   /// fate they established on the cycles ledger.
   /// 
-  /// ⚠️ **This is the only path for everything a refund cannot resolve.** A
-  /// `charge.refunded` auto-resolves the refund-resolvable kinds, so those usually
-  /// close themselves; `#deliveryStuck`, `#refundAfterDelivery` and `#abandoned` carry
-  /// no `paymentRef` and can only be closed here. Resolving an entry never transitions
-  /// the order — see `Orphans`'s header.
+  /// ⚠️ **This closes ORPHAN entries only — `#unattributed` and `#unprocessable`.**
+  /// Everything order-bound moved onto the orders in #37 and is closed by
+  /// `resolve_problem`; pointing an operator here for those would be pointing them at the
+  /// wrong method. Resolving an entry never transitions the order — see `Orphans`'s
+  /// header.
   /// Close **one** order-bound problem an operator has dealt with (#37).
   /// 
-  /// The order-shaped counterpart to `resolve_orphan`, which addresses entries by a
-  /// queue id that no longer exists for the kinds that moved.
+  /// ⚠️ **`paymentRef` is the selector, and dropping it over-resolves.** `sameShape`
+  /// deliberately allows two unresolved `#duplicate` problems on one order with different
+  /// payment references (a buyer who pays three times), so closing by tag alone marks an
+  /// obligation settled that nobody has settled.
   /// 
-  /// ⚠️ **`paymentRef` is the selector, and omitting it is only safe when there is one
-  /// candidate.** An earlier version took the tag alone and closed *every* unresolved
-  /// problem of that kind — which over-resolves, because `Problems.sameShape`
-  /// deliberately allows two unresolved `#duplicate` problems on one order with
-  /// different payment references (a buyer who pays three times). An operator who
-  /// refunded one payment would have marked the other settled.
-  /// 
-  /// ⚠️ **The root cause is structural, so the fix is a real selector rather than a
-  /// warning.** Queue entries had monotonic ids; problems in an array have no stable
-  /// handle, so **the dedup key is the handle** — `(kindTag, identifyingRef)`, the same
-  /// pair `sameShape` uses to decide identity. One definition, both users.
+  /// ⚠️ **Problems in an array have no stable handle, so the dedup key IS the handle** —
+  /// `(kindTag, identifyingRef)`, the same pair `sameShape` uses. One definition, both
+  /// users.
   /// 
   /// ⚠️ **And it refuses rather than guesses when the selector is ambiguous**, which is
   /// this codebase's posture wherever a lever might act on the wrong thing — the

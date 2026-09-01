@@ -1,37 +1,24 @@
 import Array "mo:core/Array";
 import Types "Types";
 
-/// Problems that belong to an order, and the resolution semantics that came with
-/// them from the queue that is now `Orphans` (#37).
+/// Problems that belong to an order, and the resolution semantics for them.
 ///
-/// **Problems that belong to an order live on the order. Nothing drops.** Four of
-/// the queue's six remaining kinds have an `orderId`, so "which order is this
-/// about" is always answerable — those live here, on `Types.Order.problems`. The
-/// two that have no order by definition (`#unattributed`, `#unprocessable`) keep a
-/// narrow list of their own, because a payment we cannot attribute has nothing to
-/// attach to.
+/// **A problem that belongs to an order lives on the order. Nothing drops.** Payments
+/// with no order to attach to keep a narrow list of their own (`Orphans.mo`).
 ///
-/// ## What a problem may be
+/// ## ⚠️ The admission rule
 ///
-/// ⚠️ **The admission rule, shared with `Orphans.mo` because it is the
-/// queue's definition restated:**
+/// > A problem earns its place only if it holds **information that exists nowhere else**,
+/// > AND **an action nobody has taken yet**.
 ///
-/// > A problem earns its place only if it holds **information that exists nowhere
-/// > else**, AND **an action nobody has taken yet**.
+/// Both halves are load-bearing. A reading that self-resolves fails the second (a delivery
+/// running late is `delayed_deliveries`, not a problem); a record whose every field is
+/// copied from the order fails the first.
 ///
-/// #37 dropped two kinds against it. `#deliveryDelayed` failed both halves — every
-/// field was copied off the order, the stage was a constant, and it self-resolved,
-/// so it was a *reading* and became `delayed_deliveries`. `#abandoned` failed both
-/// once review established the refund is tracked by `stripe.refundOfEscalated`: the
-/// status, the journal patch and an audit line already carried the decision, so it
-/// was *history* and became `Order.abandonedReason`.
-///
-/// ⚠️ **Identity fields are gone, and that is the point of moving.** The old kinds
-/// each carried an `orderId`; here it is structural. `#deliveryStuck` also carried a
-/// `blockIndex`, which is already on the `JournalEntry` along with `status`,
-/// `retries` and `updatedAtNs` — and #37 §1b moved the last thing it held alone, the
-/// ledger's error text, to `JournalEntry.lastError`. What survives per problem is
-/// **kind, detail, and resolution state**.
+/// ⚠️ **Identity fields are structural here, not carried.** The order supplies "which
+/// order this is about", so a kind carries only **what it says, plus resolution state** —
+/// anything already on the order or its journal entry is duplication that can disagree.
+
 module {
   /// The kinds and the record live in `Types.mo`, because `Types.Order` carries them
   /// and a module cannot import the module that imports it. This module owns the
@@ -85,22 +72,18 @@ module {
   /// File a problem — or **refresh** the unresolved one of the same shape that is
   /// already there.
   ///
-  /// ⚠️ **Dedup is by kind-shape, not by equality.** Re-filing on every sweep is the
-  /// flood that `#deliveryDelayed`'s `delayedAlerts` map existed to suppress; here the
-  /// order itself carries the answer, so the guard needs no second structure.
+  /// ⚠️ **Dedup is by kind-SHAPE, not by equality**, so re-filing on every sweep does not
+  /// flood — and the order itself carries the guard, so no second structure is needed.
   ///
-  /// ⚠️ **A match REFRESHES the payload and the detail, and suppressing instead would
-  /// be a regression.** The queue's `add` had no dedup at all, so a second partial
-  /// refund filed a second entry carrying the larger *cumulative* `refundedCents`.
-  /// Plain suppression would leave an operator reading the **stale, smaller** figure —
-  /// reconciling against Stripe by amount is the whole reason that field is sized.
-  /// The same applies to `#deliveryStuck`'s `stage`: it is the money position, and an
-  /// operator acts on the *current* one, not the first one observed.
+  /// ⚠️ **A match REFRESHES the payload; suppressing instead is a regression.**
+  /// `#refundAfterDelivery`'s `refundedCents` is *cumulative*, so suppression leaves an
+  /// operator reading the **stale, smaller** figure — and reconciling against Stripe by
+  /// amount is the whole reason that field is sized. Same for `#deliveryStuck`'s `stage`:
+  /// it is the money position, and an operator acts on the *current* one.
   ///
-  /// So the two halves are separate concerns: **shape** decides whether this is the
-  /// same problem, and a match then **updates** what the problem currently says.
-  /// `filedAtNs` is preserved, because when the trouble started is not something a
-  /// refresh may overwrite.
+  /// Two separate concerns, then: **shape** decides whether this is the same problem, and
+  /// a match **updates** what it says. `filedAtNs` is preserved — when the trouble started
+  /// is not something a refresh may overwrite.
   public func file(
     problems : [Problem],
     kind : Kind,
@@ -146,16 +129,14 @@ module {
 
   /// Two kinds describe the same problem for dedup purposes.
   ///
-  /// ⚠️ **Compared on the discriminator plus the identifying reference, not on every
-  /// field.** `#refundAfterDelivery`'s `refundedCents` is *cumulative*, so a second
-  /// partial refund arrives with a larger figure — comparing it would file a fresh
-  /// problem per partial, and comparing nothing at all would let a genuinely
-  /// different payment be swallowed.
-  /// ⚠️ **Expressed through `identifyingRef` so the dedup key and the operator's
-  /// selector cannot drift apart.** They were separate before and that is what let
-  /// `resolve_problem` be coarser than the dedup: the queue's monotonic entry ids gave
-  /// `resolve_orphan(id)` a stable handle, and problems in an array have none, so the
-  /// key IS the handle. One definition, both users.
+  /// ⚠️ **The discriminator plus the identifying reference, never every field.** Comparing
+  /// `#refundAfterDelivery`'s cumulative `refundedCents` would file a fresh problem per
+  /// partial refund; comparing nothing would swallow a genuinely different payment.
+  ///
+  /// ⚠️ **Expressed through `identifyingRef` so the dedup key and the operator's selector
+  /// cannot drift apart.** Problems in an array have no id, so **the key IS the handle** —
+  /// when they were separate, `resolve_problem` was coarser than the dedup and closed
+  /// every problem of a kind at once. One definition, both users.
   public func sameShape(a : Kind, b : Kind) : Bool {
     kindToText(a) == kindToText(b) and identifyingRef(a) == identifyingRef(b);
   };

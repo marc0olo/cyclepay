@@ -1,34 +1,25 @@
 /// Payments that cannot be attributed to any order (§4.1).
 ///
-/// ⚠️ **Not bounded and not a queue any more.** #37 removed the capacity and the
-/// eviction pass, and moved order-bound problems onto the orders themselves; what is
-/// left here has, by definition, no order to attach to.
+/// ⚠️ **Two kinds, and only two: `#unattributed` and `#unprocessable`.** Everything else
+/// moved onto the orders in #37 — what is left here has, by definition, no order to
+/// attach to. Do not re-add an order-bound kind; `Problems.mo` is where those live.
 ///
-/// Every dollar that arrives resolves to delivery, or to an obligation on this
-/// worklist. There is no third outcome and no silent one.
+/// **Not bounded and not a queue any more.** The capacity and the eviction pass are
+/// gone.
+///
+/// Every dollar that arrives resolves to delivery, or to an obligation — on the order, or
+/// on this list. There is no third outcome and no silent one.
 ///
 /// ⚠️ **Only fiat can be stranded, never cycles.** Delivery is one transfer out of a
-/// reserve the gateway already holds, so a failed delivery leaves the cycles exactly
-/// where they were and the order retries. That is what makes the taxonomy one-sided:
-/// every obligation here is *money we took and have not delivered against*, and the
-/// remedy is always either finishing the delivery or refunding in Stripe.
+/// reserve the gateway already holds, so a failed delivery leaves the cycles where they
+/// were and the order retries. That is what makes the taxonomy one-sided: every obligation
+/// is *money we took and have not delivered against*, and the remedy is either finishing
+/// the delivery or refunding in Stripe.
 ///
-/// Two shapes, and `refundResolvable` is the predicate that separates them:
-///
-///   - **Fiat with no order to credit** (`#duplicate`, `#unattributed`) — the remedy
-///     is a Stripe refund, and the `charge.refunded` webhook auto-resolves the entry
-///     through `resolveByPaymentRef`. Nothing on-chain is owed.
-///   - **Everything else** — a delivery a human must look at (`#deliveryStuck`), a
-///     refund that arrived after delivery (`#refundAfterDelivery`), an alert
-///     an operator's decision (`#abandoned`), or an event that
-///     could not be parsed (`#unprocessable`). A refund cannot resolve these: either
-///     the position is unknown, or money moved both ways, or nothing is owed yet.
-///
-/// ⚠️ **Resolution lives on the queue entry, never on the order.** Resolving here does
-/// not transition anything: an order's status says where the *order* got to, and a
-/// queue entry says what the *operator* still owes. One order can outlive several
-/// entries, and an entry can name no order at all (`#unattributed`). The two exits
-/// that do move an order are `abandon_order` and `record_delivered`, both explicit.
+/// ⚠️ **Resolution lives on the entry, never on the order.** Resolving here transitions
+/// nothing: an order's status says where the *order* got to, an entry says what the
+/// *operator* still owes, and an entry may name no order at all. The two exits that do
+/// move an order are `abandon_order` and `record_delivered`, both explicit.
 import Map "mo:core/Map";
 import Int "mo:core/Int";
 import List "mo:core/List";

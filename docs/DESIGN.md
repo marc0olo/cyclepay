@@ -63,6 +63,27 @@ ICP risk sits in topping up the reserve, not in any individual sale.
 
 ### §3.1 — Rates
 
+```
+cycles = netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros
+```
+
+⚠️ **ICP is an intermediate unit, not a position.** The gateway never holds, buys or
+spends ICP — it hands over cycles it already owns. ICP appears in the arithmetic only
+because both on-chain rate sources are denominated in it, and it **cancels**:
+`(USD/ICP) ÷ (XDR/ICP)` is USD/XDR. Do not read the formula as a purchase of ICP.
+
+⚠️ **Why derive rather than price off a market USD/XDR rate.** A cycle is *defined* in XDR
+by the protocol, so the only question is where USD/XDR comes from. There is no on-chain
+USD/XDR oracle, and the two rates used here are both on-chain, independently governed and
+time-aligned (read on the same tick, so no timestamp reconciliation is needed). A market
+USD/XDR rate would break even only when it happened to equal the protocol-implied one; any
+gap becomes a **systematic bias on every order**, priced against a number the protocol does
+not use.
+
+The operator's remaining exposure is **inventory**, not per-order: cycles are sold at
+today's implied USD/XDR and were funded into the reserve at whatever held when they were
+bought. When to refill is the operator's decision.
+
 Both inputs come from on-chain sources: **XRC** for USD/ICP and the **CMC** for
 XDR/cycles. A refresh that fails leaves the previous rates standing, and orders stop being
 quotable once the cache passes its staleness window — **refusing to sell is the safe
@@ -292,13 +313,51 @@ cost", not "the cap bounds it". SEV-SNP is the intended confidentiality layer an
 does not block on it — `RUNBOOK.md` §9 is the verification checklist, hardest item first.
 
 ⚠️ **A leaked API key can only create sessions that pay us.** That asymmetry is why the
-key's *scope* matters more than its storage.
+key's *scope* matters more than its storage. A restricted key scoped to Checkout Sessions
+= Write can create sessions and read them back (which the recovery sweep needs); an
+unrestricted key able to issue refunds would be materially worse to leak.
+
+⚠️ **The reserve is a STOCK, not a rate, and that is a better bound than a per-period cap
+in two ways** — worth stating because "no rate limit" reads as weaker. A cap resets, so a
+patient attacker drains it again every period and the operator's total loss is unbounded
+over time; the reserve, once empty, refuses further deliveries and cannot be drained again
+until a human funds it. And the drain is *visible* in a value the gateway already reports:
+the floor only moves down when this gateway issues a transfer, so cycles leaving faster
+than orders arrive is exactly the discrepancy `reserve_status` exposes.
+
+⚠️ **And the one way a stock is worse, stated because an argument that lists only its own
+advantages is advocacy.** A cap spreads a loss across periods and so bounds how *fast* it
+can happen; a stock can go in a single burst between the leak and its rotation. The design
+accepts that and controls it by **sizing** — keep in the account what you are willing to
+lose in one go — and by refunding the reserve only after the secret is dead. Both are
+procedure rather than mechanism, which is exactly why they are written down (RUNBOOK §1,
+§2).
+
+**Rotation needs no dual-secret window on our side.** While a rolled Stripe secret's
+predecessor is still live, Stripe sends one signature per active secret and verification
+accepts any single match, so swapping the stored blob at any point during the overlap
+never drops a delivery.
 
 **Governance is a flat controller allowlist with equal privileges.** Any controller can
 upgrade, rotate either secret, resolve obligations, set tiers and adjust pricing. The
 honest trust model is "trust the operator set; any one of them can upgrade and then
 drain". There is deliberately **no** method that moves money (§5). True M-of-N needs a
 multisig *canister* as controller, since IC controllers are OR-semantics.
+
+### §3.2 — Who owns which number
+
+⚠️ **The canister reports what only it knows; the ledger owns what it owns.** The reserve
+balance is a free query on the cycles ledger that anyone can call, so this canister never
+mirrors it — what it adds is the part nobody else can compute, how much of that balance is
+already promised. The same split decides what a quote discloses: the cycles-ledger transfer
+fee is the ledger's number and the *operator's* cost, so it is absorbed rather than shown
+as a line in the buyer's price, and the frontend reads it from the ledger directly.
+
+⚠️ **A stored copy of someone else's number is only acceptable where a wrong value is
+self-correcting and cheap.** The delivery path stores the ledger's fee because a wrong one
+costs exactly one rejected transfer and the rejection carries the correct value. A quote
+has no such correction — nothing checks the number a buyer was shown — so a stored fee
+there would buy only the staleness.
 
 ## §8 — Verifiability
 

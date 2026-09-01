@@ -133,8 +133,32 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
   failure signal.** No compiler error, no red test, and the diff shows what left but not
   what was lost. So three rules, front-loaded because nothing downstream can catch a bad
   call:
-  1. **Name the mistake the comment prevents.** If you cannot name one, it is not a
-     keeper.
+  1. **Name the mistake the comment prevents** — and the test is **"would the next
+     editor of THIS function get it wrong without this line?"**, not "is this true and
+     worth knowing". Almost all of this prose is true and worth knowing; that is why the
+     weaker reading keeps everything.
+     - ⚠️ **Keeper**, because a general rule would be misapplied here without it:
+       *"Unbounded input on purpose… a cap would only buy silent truncation."* The repo
+       has a paginate-everything rule, so the next person applying it uniformly would cap
+       this query and break it.
+     - ⚠️ **Not a keeper**, because nobody editing that function is about to undo it:
+       *"It no longer discloses the cycles-ledger fee."* The principle inside it — the
+       canister owns what only it knows, the ledger owns what it owns — belongs in
+       `docs/DESIGN.md`, where it applies to more than one function.
+  1b. ⚠️ **A comment is about the CODE, not about itself.** Technically covered by
+     "history belongs in commits", but the hazard is distinct and compounds: the comment
+     becomes about its own biography, a reader spends attention on the document rather
+     than the code, and the next correction adds a layer (*"an earlier version of this
+     note said…"*). Delete on sight: *"This paragraph said X and both halves stopped
+     being true"*, *"An earlier version argued Y. That argument was wrong."* Keep the
+     rule; drop the story.
+  1c. ⚠️ **Two opening sentences that both describe what the function does means one is
+     a leftover.** New line added, old one not deleted, both surviving as adjacent
+     summaries — found three times (`Orphans.add`, `Orphans:283`, `AuditLog.append`),
+     twice still promising a field that no longer exists. Deliberately **not** a gate
+     step: distinguishing a leftover from a legitimate two-sentence summary is fuzzy, and
+     a noisy check gets ignored. It is cheap for a human reading a doc block, so it is a
+     review-attention item.
   2. **Never delete without a destination.** Every removed comment either lands in
      `docs/DESIGN.md` or is rewritten as a **rule at the site**. A removal with no
      destination is what a reviewer should scrutinise — it is the only case where they
