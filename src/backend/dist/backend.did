@@ -241,6 +241,16 @@ type Pricing =
    usdPerIcpMicros: nat;
    xdrPermyriadPerIcp: nat;
  };
+type Page__2 = 
+ record {
+   events: vec Event;
+   nextCursor: opt nat;
+ };
+type Page__1 = 
+ record {
+   nextCursor: opt OrderId;
+   orders: vec Order;
+ };
 type Page = 
  record {
    entries: vec Entry;
@@ -329,6 +339,14 @@ type HeaderField =
    text;
    text;
  };
+type Filter = 
+ record {
+   createdFromNs: opt int;
+   createdToNs: opt int;
+   owner: opt principal;
+   status: opt OrderStatus;
+   withUnresolvedProblems: bool;
+ };
 type ExpiredBy = 
  variant {
    sessionExpired;
@@ -357,6 +375,16 @@ type Drift =
    was: nat;
  };
 type Destination = variant {cyclesLedgerAccount: Account;};
+type DelayedDelivery = 
+ record {
+   delayedAtNs: opt int;
+   heldSinceNs: int;
+   orderId: OrderId;
+   pastMaxHold: bool;
+   retries: nat;
+   status: OrderStatus;
+   waitedNs: int;
+ };
 type CreatedOrder = record {order: Order;};
 type CreateOrderError = 
  variant {
@@ -462,9 +490,120 @@ service : {
   /// Only reachable from a pre-delivery money-bearing state. A `#created` order
   /// has taken no money and needs no decision; a `#delivered` one is done.
   abandon_order: (id: OrderId, reason: text) -> (Result_9);
+  /// Open-obligation depth, public.
+  /// 
+  /// Unresolved entries are never evicted, so this number only ever comes down
+  /// by the operator working it. A climbing value means dollars are arriving
+  /// that nobody has dealt with — the single most important operational number
+  /// on the money path, and it is public because §9's transparency stance says
+  /// operational state is not secret.
+  /// Refusal tallies, and whether the gate is refusing right now (#61).
+  /// 
+  /// ⚠️ **Public, like every other monitoring surface here** — operational state
+  /// is public by design; the webhook secret is the only secret in the system.
+  /// 
+  /// ⚠️ **This query is the point of the counters.** A tally nobody reads is the
+  /// `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
+  /// per counter with the response — the counters mean different things:
+  /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
+  /// `reserveShort` climbing is a refill. Same shape, opposite actions.
+  /// Read **any** order by id (admin, #38).
+  /// 
+  /// ⚠️ **A deliberate exception to §2's "existence is not revealed to non-owners", so
+  /// it audits itself on every use.** `get_order` is owner-scoped with no admin bypass,
+  /// which meant an operator handed a Stripe receipt could determine *which* order it
+  /// was — `order_for_payment` is admin-gated — and then could not look at it. Support
+  /// meant asking the buyer to read their own screen.
+  /// 
+  /// ⚠️ **The audit line is the price of the exception, not decoration.** It is an
+  /// `auditAdmin` write, so it names *who* looked, and it fires on the read whether or
+  /// not the order exists — a probe for existence is exactly what §2 withholds from
+  /// everyone else, so a miss has to be as visible as a hit.
+  admin_order: (id: OrderId) -> (opt Order);
+  /// Filtered, cursor-paginated order list (admin, #38).
+  /// 
+  /// ⚠️ **This is also #37's worklist.** `withUnresolvedProblems` is a *filter* here
+  /// rather than a query of its own, which is the whole thesis: "everything outstanding"
+  /// composes with status, owner and time range instead of being a parallel list that
+  /// answers a slightly different question. It replaced `orders_with_problems`.
+  /// 
+  /// ⚠️ **Ordered by order id, which is not time order.** See `Orders.page` — id order
+  /// is arbitrary because ids are random, and sorting by `createdAtNs` would mean
+  /// materialising the filtered set first, which is the unbounded scan #63 exists to
+  /// remove. Narrow with `createdFromNs` for recency.
+  /// 
+  /// ⚠️ **Deliberately NOT audited, unlike `admin_order` and `admin_receipt`. Written
+  /// down because the difference otherwise reads as an oversight — which is exactly what
+  /// the `receipt` path looked like before review caught it.**
+  /// 
+  /// The line those two write is *"an operator looked at THIS person's order"*, and that
+  /// targeted act is the accountable one. A filtered list is the operator doing their
+  /// job: triaging a worklist, checking what is outstanding, finding an order by time
+  /// range. Logging a line per page would record the work rather than the intrusion, and
+  /// bury the targeted reads it exists to make findable — in a log #37 made permanent.
+  /// 
+  /// Same reasoning keeps `orphans`, `orphan_depth` and `problem_depth` unaudited.
+  /// 
+  /// ⚠️ **And auditing it would cost what the `receipt` split just avoided:** audits
+  /// write state, so an audited list cannot be a `query`, and this is the call an
+  /// operator makes repeatedly while working.
+  /// 
+  /// ⚠️ **What would change the answer:** if this ever returns something an operator
+  /// could not reach through `admin_order`, or if a filter narrows to a *single named
+  /// principal* as the normal way to use it — at that point the list becomes the
+  /// targeted act and inherits the audit. `owner : ?Principal` makes that possible
+  /// today; it is not how the query is meant to be driven.
+  admin_orders: (filter: Filter, afterId: opt OrderId, limit: nat) ->
+   (Page__1) query;
+  /// Everything the **buyer** needs to verify their own purchase (§2 authz:
+  /// `caller == order.owner`).
+  /// 
+  /// The order already carried enough to reproduce the price; nothing surfaced
+  /// it, and the delivery proof was admin-only. A buyer could see *that* we
+  /// claimed to deliver, never check it. Now they can: recompute the quote from
+  /// the two recorded rate inputs, and look up the block index on the ICP ledger.
+  /// 
+  /// `delivery_journal` stays admin-only — it carries retries and raw transfer
+  /// intents, which are operational rather than the buyer's business.
+  /// ⚠️ **Owner-only, and a `query`, which is why the admin path is a separate method.**
+  /// See `admin_receipt`. Auditing writes state, so an audited read cannot be a query —
+  /// and folding the admin case in here would have made **every buyer's** receipt read
+  /// an update, putting the common path through consensus to serve the rare one.
+  /// The same receipt, for **any** order (admin, #38) — and **audited**, which is the
+  /// whole reason it is a separate method.
+  /// 
+  /// ⚠️ **An earlier version folded this into `receipt` and argued the admin branch need
+  /// not be audited. That argument was wrong**, and the error is worth keeping: it
+  /// reasoned about *existence disclosure* — a receipt read cannot reveal existence
+  /// `admin_order` has not already revealed, which is true — but that is not what the
+  /// audit is for. `admin_order` audits because **an operator reading a buyer's order
+  /// should leave a record of having looked**, and `Receipt` embeds the whole `Order`. An
+  /// unaudited admin branch returns exactly the same data with no trace, so the audit on
+  /// `admin_order` becomes **bypassable by calling the other method** — a marker rather
+  /// than an accountability control.
+  /// 
+  /// ⚠️ **A separate method rather than a branch, because auditing writes state.** An
+  /// audited read cannot be a `query`, and folding this into `receipt` would have made
+  /// **every buyer's** receipt read an update — putting the common path through consensus
+  /// to serve the rare one. Two methods, each with the call type its job needs.
+  /// 
+  /// ⚠️ **This is also why the boundary could be lifted at all.** #38's stated gap is
+  /// "an operator cannot read any order but their own"; lifting it is deliberate and
+  /// **auditing is the mitigation**. A path that lifts it without the mitigation is not a
+  /// smaller version of the change — it is the change without its safeguard.
+  admin_receipt: (id: OrderId) -> (opt Receipt);
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
-  audit_log: () -> (vec Event) query;
+  /// The operational trail, **paginated** (#38).
+  /// 
+  /// ⚠️ **Pagination became necessary the moment #37 removed the ring.** The bound used
+  /// to be the 4,096-entry ring, so the response size took care of itself; retention is
+  /// now total. Removing the cap moved the problem from *"history is lossy"* to *"the
+  /// query cannot answer"* — both real, and removing the ring only fixed the first.
+  /// 
+  /// Cursor on `seq`, which now has **no gaps**: gaps used to be how a reader detected
+  /// drops, and there are no drops.
+  audit_log: (afterSeq: opt nat, limit: nat) -> (Page__2) query;
   /// Admission preflight, public: lets the frontend disable the buy button with
   /// a real reason (and lets an operator ask "would a purchase go through right
   /// now?") without creating an order. `usdCents` is the gross amount to test.
@@ -518,65 +657,11 @@ service : {
                           balance: nat;
                           floor: nat;
                         }) query;
-  /// Every delivery with money-out work outstanding, right now (admin).
-  /// 
-  /// **The immediate answer to "is a delivery failing?", which nothing else gave.**
-  /// The error queue is the worklist and it self-clears correctly — a
-  /// `delayed_deliveries` self-clears on delivery *or* escalation — but it does not
-  /// open until the 2 h alert threshold, and a delivery taking a sweep or two is
-  /// normal, so lowering that threshold would file worklist entries for orders that
-  /// deliver themselves. This closes the two-hour blind window without touching the
-  /// queue's meaning.
-  /// 
-  /// **It self-clears by construction**, which is the property that makes it usable
-  /// as a dashboard: an entry leaves this set the moment delivery lands, because
-  /// landing records the block and moves the status. There is no "resolve" step to
-  /// forget, and a successful `process_order` empties it for that order immediately.
-  /// 
-  /// Read `retries` as "how many times this has already failed" — `0` is an order in
-  /// its first attempt, which is not a problem yet.
-  /// 
-  /// ⚠️ **Admin, and O(journal) — those two facts belong together.** It scans every
-  /// order ever created, so a public version would let an unauthenticated caller make
-  /// this canister scan its whole history for free. That is also why none of it went
-  /// into `reserve_status`, which is public and O(1) on purpose.
-  /// 
-  /// ⚠️ The subset with `status = #paid` is **exactly** the reconcile's in-flight
-  /// predicate (`unsettledDelivery`), so this is also how "the reserve reconcile keeps
-  /// skipping" gets diagnosed. `#needsReview` entries are included because an
-  /// operator asking "what is wrong right now" wants them, but they are deliberately
-  /// NOT in the reconcile's predicate — see `unsettledDeliveries`.
-  /// Deliveries outstanding past `alertAfterNs` — **the heir to the
-  /// `#deliveryDelayed` worklist entry** (#37).
-  /// 
-  /// ⚠️ **The alert it replaces stored nothing of its own.** It was raised as
-  /// `#deliveryDelayed({ orderId = order.id; stage = "deliveryDelayed"; sinceNs =
-  /// order.updatedAtNs })` with a fixed sentence for `detail` — every field copied
-  /// off the order, a constant stage, and no operator decision of its own. It
-  /// self-resolved on delivery or escalation, so its whole content was *"this order
-  /// is past the threshold"*, which is a **reading**, not an obligation.
-  /// 
-  /// ⚠️ **Self-clearing by construction**, which is the property that makes this
-  /// usable where the entry was not: an order leaves this set the moment it
-  /// delivers or escalates, because that moves its status. There is no resolve step
-  /// to forget and no `delayedAlerts` mapping to leak.
-  /// 
-  /// ⚠️ **`alertAfterNs` survives as this predicate's threshold, not as a trigger.**
-  /// The admin still tunes when a slow delivery *shows up*; it no longer files
-  /// anything. That is also why the old 2 h floor mattered less than it looked —
-  /// lowering a *filter* costs nothing, whereas lowering a trigger filed worklist
-  /// entries for orders that deliver themselves.
-  delayed_deliveries: () ->
-   (vec
-     record {
-       delayedAtNs: opt int;
-       heldSinceNs: int;
-       orderId: OrderId;
-       pastMaxHold: bool;
-       retries: nat;
-       status: OrderStatus;
-       waitedNs: int;
-     }) query;
+  delayed_deliveries: (afterId: opt OrderId, limit: nat) ->
+   (record {
+      entries: vec DelayedDelivery;
+      nextCursor: opt OrderId;
+    }) query;
   /// Money-out journal for one order (admin, §4.2) — intent, block_index, cycles
   /// delivered, retries.
   delivery_journal: (id: OrderId) -> (opt JournalEntry) query;
@@ -645,51 +730,24 @@ service : {
   /// than in config, so there is nothing global to report.
   lifecycle_config: () -> (record {gate: Config__1;}) query;
   /// Order history for the caller (§2, fixes the lost-receipt problem).
-  list_orders: () -> (vec Order) query;
+  /// The caller's own orders, **paginated** (#38).
+  /// 
+  /// ⚠️ **This was a latent trap on the BUYER path, not an ergonomic wart.** It returned
+  /// every order the caller owns, unbounded, and a query response is capped at ~2 MB —
+  /// so an oversized read does not degrade, it **traps**. The open-order cap of 1 means
+  /// a buyer accumulates them slowly, but nothing bounded it, and nothing drops orders
+  /// under #37.
+  /// 
+  /// ⚠️ **Implemented through the same `Orders.page` the admin list uses**, with the
+  /// owner filter pinned to the caller. One traversal, one cursor semantics, one place
+  /// to get the "visits every match exactly once" property right — rather than a second
+  /// pager on the path where a mistake is a buyer's missing receipt.
+  list_orders: (afterId: opt OrderId, limit: nat) -> (Page__1) query;
   /// Which order did this Stripe `payment_intent` pay for (admin, §4.2)? The
   /// reconciliation lookup: given a charge in the Stripe Dashboard, find the
   /// order it funded. Null means the payment was never attributed to an order
   /// here — check the error queue for an obligation carrying it.
   order_for_payment: (paymentRef: text) -> (opt OrderId) query;
-  /// Open-obligation depth, public.
-  /// 
-  /// Unresolved entries are never evicted, so this number only ever comes down
-  /// by the operator working it. A climbing value means dollars are arriving
-  /// that nobody has dealt with — the single most important operational number
-  /// on the money path, and it is public because §9's transparency stance says
-  /// operational state is not secret.
-  /// Refusal tallies, and whether the gate is refusing right now (#61).
-  /// 
-  /// ⚠️ **Public, like every other monitoring surface here** — operational state
-  /// is public by design; the webhook secret is the only secret in the system.
-  /// 
-  /// ⚠️ **This query is the point of the counters.** A tally nobody reads is the
-  /// `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
-  /// per counter with the response — the counters mean different things:
-  /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
-  /// `reserveShort` climbing is a refill. Same shape, opposite actions.
-  /// **The worklist, as a filter over orders** (#37) — every order carrying at least
-  /// one unresolved problem, plus the count an operator watches.
-  /// 
-  /// ⚠️ **This is what replaced the error queue's worklist function**, and #37's
-  /// acceptance criterion is only evaluable because it exists: "everything
-  /// outstanding" is a query over orders with an unresolved problem rather than a
-  /// separate structure that can fall out of step with the orders it points at.
-  /// 
-  /// ⚠️ **It walks the `unresolvedProblems` index, not the store.** The set is small
-  /// and attacker-priced — every problem in it required a real payment event — and the
-  /// daily reconcile audits `orders.problemIndexDrift` if the projection ever
-  /// disagrees with the orders.
-  /// 
-  /// ⚠️ **Not the whole picture on its own.** `orphans_unresolved` holds the two
-  /// order-less kinds, which by definition cannot appear here: a payment we cannot
-  /// attribute has no order to hang off. An operator watching only one of the two
-  /// numbers is watching half the obligations.
-  orders_with_problems: () ->
-   (record {
-      orders: vec Order;
-      unresolved: nat;
-    }) query;
   orphan_depth: () -> (record {
                          retained: nat;
                          unresolved: nat;
@@ -722,6 +780,20 @@ service : {
       rates: opt Rates;
       xrcCanisterId: opt text;
     }) query;
+  /// How much is outstanding, as two numbers rather than a collection (#38).
+  /// 
+  /// ⚠️ **The shape to poll, and the reason it exists separately from the list.** A
+  /// paginated detail query needs a cheap total beside it or a monitor pages through
+  /// everything to learn one number — the same split `orphan_depth` already has, and
+  /// the same reason RUNBOOK says to alert on the depth and fetch details only when it
+  /// fires.
+  /// 
+  /// ⚠️ **`unresolved` is NOT `orders`.** One order can carry several problems, so a
+  /// caller reading the order count undercounts the work.
+  problem_depth: () -> (record {
+                          orders: nat;
+                          unresolved: nat;
+                        }) query;
   /// Manual delivery kick — **admin, or the order's own owner** (#30 PR-B).
   /// 
   /// Safe to spam by construction: every step is journalled, deduplicated,
@@ -785,16 +857,6 @@ service : {
   /// and wrong here, where nothing checks the number a buyer was shown. Delivery
   /// gets a mechanism; a quote would get only the staleness.
   quote_previews: (amounts: vec nat) -> (QuotePreviews) query;
-  /// Everything the **buyer** needs to verify their own purchase (§2 authz:
-  /// `caller == order.owner`).
-  /// 
-  /// The order already carried enough to reproduce the price; nothing surfaced
-  /// it, and the delivery proof was admin-only. A buyer could see *that* we
-  /// claimed to deliver, never check it. Now they can: recompute the quote from
-  /// the two recorded rate inputs, and look up the block index on the ICP ledger.
-  /// 
-  /// `delivery_journal` stays admin-only — it carries retries and raw transfer
-  /// intents, which are operational rather than the buyer's business.
   receipt: (id: OrderId) -> (opt Receipt) query;
   /// Record that an escalated order's cycles **did** reach the buyer (admin, §7).
   /// 

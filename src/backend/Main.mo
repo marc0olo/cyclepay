@@ -1163,8 +1163,23 @@ persistent actor CyclesGateway {
   };
 
   /// Order history for the caller (§2, fixes the lost-receipt problem).
-  public shared query ({ caller }) func list_orders() : async [Types.Order] {
-    Orders.ordersFor(orderStore, caller);
+  /// The caller's own orders, **paginated** (#38).
+  ///
+  /// ⚠️ **This was a latent trap on the BUYER path, not an ergonomic wart.** It returned
+  /// every order the caller owns, unbounded, and a query response is capped at ~2 MB —
+  /// so an oversized read does not degrade, it **traps**. The open-order cap of 1 means
+  /// a buyer accumulates them slowly, but nothing bounded it, and nothing drops orders
+  /// under #37.
+  ///
+  /// ⚠️ **Implemented through the same `Orders.page` the admin list uses**, with the
+  /// owner filter pinned to the caller. One traversal, one cursor semantics, one place
+  /// to get the "visits every match exactly once" property right — rather than a second
+  /// pager on the path where a mistake is a buyer's missing receipt.
+  public shared query ({ caller }) func list_orders(
+    afterId : ?Types.OrderId,
+    limit : Nat,
+  ) : async Orders.Page {
+    Orders.page(orderStore, { Orders.noFilter() with owner = ?caller }, afterId, limit);
   };
 
   /// Replace the card presets (§3/§7 — admin, validated atomically: a bad config
@@ -1495,33 +1510,85 @@ persistent actor CyclesGateway {
   /// per counter with the response — the counters mean different things:
   /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
   /// `reserveShort` climbing is a refill. Same shape, opposite actions.
-  /// **The worklist, as a filter over orders** (#37) — every order carrying at least
-  /// one unresolved problem, plus the count an operator watches.
+  /// Read **any** order by id (admin, #38).
   ///
-  /// ⚠️ **This is what replaced the error queue's worklist function**, and #37's
-  /// acceptance criterion is only evaluable because it exists: "everything
-  /// outstanding" is a query over orders with an unresolved problem rather than a
-  /// separate structure that can fall out of step with the orders it points at.
+  /// ⚠️ **A deliberate exception to §2's "existence is not revealed to non-owners", so
+  /// it audits itself on every use.** `get_order` is owner-scoped with no admin bypass,
+  /// which meant an operator handed a Stripe receipt could determine *which* order it
+  /// was — `order_for_payment` is admin-gated — and then could not look at it. Support
+  /// meant asking the buyer to read their own screen.
   ///
-  /// ⚠️ **It walks the `unresolvedProblems` index, not the store.** The set is small
-  /// and attacker-priced — every problem in it required a real payment event — and the
-  /// daily reconcile audits `orders.problemIndexDrift` if the projection ever
-  /// disagrees with the orders.
-  ///
-  /// ⚠️ **Not the whole picture on its own.** `orphans_unresolved` holds the two
-  /// order-less kinds, which by definition cannot appear here: a payment we cannot
-  /// attribute has no order to hang off. An operator watching only one of the two
-  /// numbers is watching half the obligations.
-  public shared query ({ caller }) func orders_with_problems() : async {
-    orders : [Types.Order];
-    /// Total unresolved problems, which is **not** `orders.size()` — one order can
-    /// carry several.
-    unresolved : Nat;
-  } {
+  /// ⚠️ **The audit line is the price of the exception, not decoration.** It is an
+  /// `auditAdmin` write, so it names *who* looked, and it fires on the read whether or
+  /// not the order exists — a probe for existence is exactly what §2 withholds from
+  /// everyone else, so a miss has to be as visible as a hit.
+  public shared ({ caller }) func admin_order(id : Types.OrderId) : async ?Types.Order {
     requireAdmin(caller);
+    let found = Orders.get(orderStore, id);
+    auditAdmin(
+      caller,
+      "order.adminRead",
+      id # (switch (found) { case (?_) ""; case null " (no such order)" }),
+    );
+    found;
+  };
+
+  /// Filtered, cursor-paginated order list (admin, #38).
+  ///
+  /// ⚠️ **This is also #37's worklist.** `withUnresolvedProblems` is a *filter* here
+  /// rather than a query of its own, which is the whole thesis: "everything outstanding"
+  /// composes with status, owner and time range instead of being a parallel list that
+  /// answers a slightly different question. It replaced `orders_with_problems`.
+  ///
+  /// ⚠️ **Ordered by order id, which is not time order.** See `Orders.page` — id order
+  /// is arbitrary because ids are random, and sorting by `createdAtNs` would mean
+  /// materialising the filtered set first, which is the unbounded scan #63 exists to
+  /// remove. Narrow with `createdFromNs` for recency.
+  ///
+  /// ⚠️ **Deliberately NOT audited, unlike `admin_order` and `admin_receipt`. Written
+  /// down because the difference otherwise reads as an oversight — which is exactly what
+  /// the `receipt` path looked like before review caught it.**
+  ///
+  /// The line those two write is *"an operator looked at THIS person's order"*, and that
+  /// targeted act is the accountable one. A filtered list is the operator doing their
+  /// job: triaging a worklist, checking what is outstanding, finding an order by time
+  /// range. Logging a line per page would record the work rather than the intrusion, and
+  /// bury the targeted reads it exists to make findable — in a log #37 made permanent.
+  ///
+  /// Same reasoning keeps `orphans`, `orphan_depth` and `problem_depth` unaudited.
+  ///
+  /// ⚠️ **And auditing it would cost what the `receipt` split just avoided:** audits
+  /// write state, so an audited list cannot be a `query`, and this is the call an
+  /// operator makes repeatedly while working.
+  ///
+  /// ⚠️ **What would change the answer:** if this ever returns something an operator
+  /// could not reach through `admin_order`, or if a filter narrows to a *single named
+  /// principal* as the normal way to use it — at that point the list becomes the
+  /// targeted act and inherits the audit. `owner : ?Principal` makes that possible
+  /// today; it is not how the query is meant to be driven.
+  public shared query ({ caller }) func admin_orders(
+    filter : Orders.Filter,
+    afterId : ?Types.OrderId,
+    limit : Nat,
+  ) : async Orders.Page {
+    requireAdmin(caller);
+    Orders.page(orderStore, filter, afterId, limit);
+  };
+
+  /// How much is outstanding, as two numbers rather than a collection (#38).
+  ///
+  /// ⚠️ **The shape to poll, and the reason it exists separately from the list.** A
+  /// paginated detail query needs a cheap total beside it or a monitor pages through
+  /// everything to learn one number — the same split `orphan_depth` already has, and
+  /// the same reason RUNBOOK says to alert on the depth and fetch details only when it
+  /// fires.
+  ///
+  /// ⚠️ **`unresolved` is NOT `orders`.** One order can carry several problems, so a
+  /// caller reading the order count undercounts the work.
+  public query func problem_depth() : async { unresolved : Nat; orders : Nat } {
     {
-      orders = Orders.withUnresolvedProblems(orderStore);
       unresolved = Orders.unresolvedProblemCount(orderStore);
+      orders = Orders.withUnresolvedProblems(orderStore).size();
     };
   };
 
@@ -1672,9 +1739,21 @@ persistent actor CyclesGateway {
 
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
-  public shared query ({ caller }) func audit_log() : async [AuditLog.Event] {
+  /// The operational trail, **paginated** (#38).
+  ///
+  /// ⚠️ **Pagination became necessary the moment #37 removed the ring.** The bound used
+  /// to be the 4,096-entry ring, so the response size took care of itself; retention is
+  /// now total. Removing the cap moved the problem from *"history is lossy"* to *"the
+  /// query cannot answer"* — both real, and removing the ring only fixed the first.
+  ///
+  /// Cursor on `seq`, which now has **no gaps**: gaps used to be how a reader detected
+  /// drops, and there are no drops.
+  public shared query ({ caller }) func audit_log(
+    afterSeq : ?Nat,
+    limit : Nat,
+  ) : async AuditLog.Page {
     requireAdmin(caller);
-    AuditLog.events(auditLog);
+    AuditLog.page(auditLog, afterSeq, limit);
   };
 
   // ── Delivery from the reserve (§5/§5.1) ─────────────────────────────────
@@ -2477,7 +2556,14 @@ persistent actor CyclesGateway {
   /// anything. That is also why the old 2 h floor mattered less than it looked —
   /// lowering a *filter* costs nothing, whereas lowering a trigger filed worklist
   /// entries for orders that deliver themselves.
-  public shared query ({ caller }) func delayed_deliveries() : async [{
+  /// One delayed delivery, as `delayed_deliveries` reports it (#37, paginated by #38).
+  ///
+  /// ⚠️ **`pastMaxHold` is a transient window, at most one sweep interval wide** — past
+  /// `maxHoldNs` the next sweep escalates the order out of `#paid` and out of this set.
+  /// Useful to read; **do not assert it in an integration scenario**, because pinning
+  /// that window without ticking the clock is the shape that produces a flaky test. The
+  /// boundary is unit-pinned on `Delivery.waitStage`, which is where it belongs.
+  type DelayedDelivery = {
     orderId : Types.OrderId;
     status : Types.OrderStatus;
     /// `order.updatedAtNs` — retries deliberately do not move it, so the clock is
@@ -2486,49 +2572,41 @@ persistent actor CyclesGateway {
     waitedNs : Int;
     /// How many times delivery has already failed. `0` is an order simply waiting.
     retries : Nat;
-    /// True once the wait has also passed `maxHoldNs`, i.e. the next sweep
-    /// escalates it rather than retrying.
-    ///
-    /// ⚠️ **A transient window, at most one sweep interval wide** — past `maxHoldNs`
-    /// the next sweep escalates the order out of `#paid` and out of this set. Useful
-    /// to read ("about to escalate"), but **do not assert it in an integration
-    /// scenario**: pinning that window without ticking the clock is exactly the shape
-    /// that produces a flaky test. The boundary is already unit-pinned on
-    /// `Delivery.waitStage`, which is where it belongs.
     pastMaxHold : Bool;
-    /// When this order FIRST crossed the threshold, read off the order — the
-    /// permanent record, where every other field here is a live reading.
+    /// When it FIRST crossed the threshold, read off the order — the permanent record,
+    /// where every other field here is a live reading.
     delayedAtNs : ?Int;
-  }] {
+  };
+
+  public shared query ({ caller }) func delayed_deliveries(
+    afterId : ?Types.OrderId,
+    limit : Nat,
+  ) : async {
+    entries : [DelayedDelivery];
+    nextCursor : ?Types.OrderId;
+  } {
     requireAdmin(caller);
-    // ⚠️ **A full scan, and #37's status index is what makes that acceptable.**
-    // Under indefinite retention this walks every order ever created, which is the
-    // same growth the daily reconcile has — so this query is a second consumer of
-    // that index, not an independent problem. Do not lower `alertAfterNs` to
-    // compensate: the cost is the scan, not the threshold.
+    // ⚠️ **A full scan, and #63 owns bounding it.** Under indefinite retention this
+    // walks every order; the page bounds the RESPONSE, not the work. Those are two
+    // different limits — ~2 MB for the response, instructions per message for the scan
+    // — and paginating only fixes the first. Do not read this as bounded.
+    let capped = if (limit == 0 or limit > Orders.maxPageSize) Orders.maxPageSize else limit;
     let now = Time.now();
-    let out = List.empty<{
-      orderId : Types.OrderId;
-      status : Types.OrderStatus;
-      heldSinceNs : Int;
-      waitedNs : Int;
-      retries : Nat;
-      pastMaxHold : Bool;
-      delayedAtNs : ?Int;
-    }>();
-    for ((_, order) in orderStore.orders.entries()) {
-      // `#paid` is the only status that sits still waiting to deliver; every other
-      // in-flight position is either terminal or already escalated. If a second
-      // status can ever wait, this becomes a set membership rather than an equality
-      // — the same note `waitStage`'s caller carries.
-      if (order.status == #paid) {
+    let collected = List.empty<DelayedDelivery>();
+    var last : ?Types.OrderId = null;
+    for ((id, order) in orderStore.orders.entries()) {
+      let past = switch (afterId) { case (?cursor) id > cursor; case null true };
+      if (past and order.status == #paid) {
         let stage = Delivery.waitStage(order.updatedAtNs, now, deliveryConfig);
         let delayed = switch (stage) {
           case (#retry) false;
           case (#alert or #terminate) true;
         };
         if (delayed) {
-          out.add({
+          if (collected.size() == capped) {
+            return { entries = collected.toArray(); nextCursor = last };
+          };
+          collected.add({
             orderId = order.id;
             status = order.status;
             heldSinceNs = order.updatedAtNs;
@@ -2540,10 +2618,11 @@ persistent actor CyclesGateway {
             pastMaxHold = stage == #terminate;
             delayedAtNs = order.delayedAtNs;
           });
+          last := ?order.id;
         };
       };
     };
-    out.toArray();
+    { entries = collected.toArray(); nextCursor = null };
   };
 
   public shared query ({ caller }) func pending_deliveries() : async [Types.JournalEntry] {
@@ -3031,6 +3110,60 @@ persistent actor CyclesGateway {
   ///
   /// `delivery_journal` stays admin-only — it carries retries and raw transfer
   /// intents, which are operational rather than the buyer's business.
+  /// ⚠️ **Owner-only, and a `query`, which is why the admin path is a separate method.**
+  /// See `admin_receipt`. Auditing writes state, so an audited read cannot be a query —
+  /// and folding the admin case in here would have made **every buyer's** receipt read
+  /// an update, putting the common path through consensus to serve the rare one.
+  /// The same receipt, for **any** order (admin, #38) — and **audited**, which is the
+  /// whole reason it is a separate method.
+  ///
+  /// ⚠️ **An earlier version folded this into `receipt` and argued the admin branch need
+  /// not be audited. That argument was wrong**, and the error is worth keeping: it
+  /// reasoned about *existence disclosure* — a receipt read cannot reveal existence
+  /// `admin_order` has not already revealed, which is true — but that is not what the
+  /// audit is for. `admin_order` audits because **an operator reading a buyer's order
+  /// should leave a record of having looked**, and `Receipt` embeds the whole `Order`. An
+  /// unaudited admin branch returns exactly the same data with no trace, so the audit on
+  /// `admin_order` becomes **bypassable by calling the other method** — a marker rather
+  /// than an accountability control.
+  ///
+  /// ⚠️ **A separate method rather than a branch, because auditing writes state.** An
+  /// audited read cannot be a `query`, and folding this into `receipt` would have made
+  /// **every buyer's** receipt read an update — putting the common path through consensus
+  /// to serve the rare one. Two methods, each with the call type its job needs.
+  ///
+  /// ⚠️ **This is also why the boundary could be lifted at all.** #38's stated gap is
+  /// "an operator cannot read any order but their own"; lifting it is deliberate and
+  /// **auditing is the mitigation**. A path that lifts it without the mitigation is not a
+  /// smaller version of the change — it is the change without its safeguard.
+  public shared ({ caller }) func admin_receipt(id : Types.OrderId) : async ?Receipt {
+    requireAdmin(caller);
+    let ?order = Orders.get(orderStore, id) else {
+      // Audited on a miss too, like `admin_order`: an id probe by an operator is exactly
+      // what §2 withholds from everyone else, so a miss must be as visible as a hit.
+      auditAdmin(caller, "order.adminRead", id # " (receipt; no such order)");
+      return null;
+    };
+    auditAdmin(caller, "order.adminRead", order.id # " (receipt)");
+    let journal = deliveryJournal.get(id);
+    ?{
+      order;
+      paidUsdCents = order.paidUsdCents;
+      deliveryBlockIndex = switch (journal) { case (?entry) entry.blockIndex; case null null };
+      cyclesDelivered = switch (journal) { case (?entry) entry.cyclesDelivered; case null null };
+      verification = {
+        netCents = Pricing.netCents(order.pricing, switch (order.paidUsdCents) {
+          case (?paid) paid;
+          case null order.pricing.usdCents;
+        });
+        usdPerIcpMicros = order.pricing.usdPerIcpMicros;
+        xdrPermyriadPerIcp = order.pricing.xdrPermyriadPerIcp;
+        rateReceivedRates = order.pricing.rateReceivedRates;
+        rateQueriedSources = order.pricing.rateQueriedSources;
+      };
+    };
+  };
+
   public shared query ({ caller }) func receipt(id : Types.OrderId) : async ?Receipt {
     let ?order = Orders.getOwned(orderStore, id, caller) else return null;
     let journal = deliveryJournal.get(id);

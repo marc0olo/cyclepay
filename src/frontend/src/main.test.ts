@@ -137,7 +137,7 @@ const backend = {
     return { __kind__: "ok", ok: { order: state.order } };
   },
   get_order: async () => state.order ?? null,
-  list_orders: async () => (state.order ? [state.order] : []),
+  list_orders: async () => ({ orders: state.order ? [state.order] : [], nextCursor: null }),
   cancel_order: async () => {
     state.order = anOrder("cancelled");
     return { __kind__: "ok", ok: state.order };

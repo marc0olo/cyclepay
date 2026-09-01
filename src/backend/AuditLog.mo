@@ -51,6 +51,7 @@
 /// so a reader holding the last seq it saw can tell new events from
 /// an empty interval.
 import Queue "mo:core/Queue";
+import List "mo:core/List";
 import Iter "mo:core/Iter";
 
 module {
@@ -91,6 +92,38 @@ module {
     log.nextSeq += 1;
     log.events.pushBack(event);
     event;
+  };
+
+  /// Cap on one page. Matches `Orders.maxPageSize` and `Orphans.maxPageSize` so an
+  /// operator learns one number rather than three.
+  public let maxPageSize : Nat = 200;
+
+  public type Page = { events : [Event]; nextCursor : ?Nat };
+
+  /// One page of events, oldest → newest, after `afterSeq` (#38).
+  ///
+  /// ⚠️ **This became necessary the moment #37 removed the ring.** The bound used to be
+  /// the ring itself, so nobody had to think about the response size; retention is now
+  /// total, and a query response is capped at ~2 MB. Removing the ring moved the problem
+  /// from *"history is lossy"* to *"the query cannot answer"* — both real, and only one
+  /// was fixed by removing the cap.
+  ///
+  /// Cursor on `seq`, which is monotonic and never reused, and now has **no gaps** since
+  /// nothing is dropped. `nextCursor` is set only when further events remain, so a caller
+  /// stops the moment it is null.
+  public func page(log : Log, afterSeq : ?Nat, limit : Nat) : Page {
+    let capped = if (limit == 0 or limit > maxPageSize) maxPageSize else limit;
+    let collected = List.empty<Event>();
+    var last : ?Nat = null;
+    for (event in log.events.values()) {
+      let past = switch (afterSeq) { case (?cursor) event.seq > cursor; case null true };
+      if (past) {
+        if (collected.size() == capped) return { events = collected.toArray(); nextCursor = last };
+        collected.add(event);
+        last := ?event.seq;
+      };
+    };
+    { events = collected.toArray(); nextCursor = null };
   };
 
   /// Retained events, oldest → newest.

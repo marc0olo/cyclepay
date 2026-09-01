@@ -74,6 +74,21 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     status: OrderStatus,
     updatedAtNs: IDL.Int,
   });
+  // ⚠️ Named so `receipt` and `admin_receipt` share ONE definition. Two inline copies
+  // is how shapes drift, which is exactly what #66 is about.
+  const ReceiptRecord = IDL.Record({
+        cyclesDelivered: IDL.Opt(IDL.Nat),
+        deliveryBlockIndex: IDL.Opt(IDL.Nat),
+        order: Order,
+        paidUsdCents: IDL.Opt(IDL.Nat),
+        verification: IDL.Record({
+          netCents: IDL.Opt(IDL.Nat),
+          rateQueriedSources: IDL.Nat,
+          rateReceivedRates: IDL.Nat,
+          usdPerIcpMicros: IDL.Nat,
+          xdrPermyriadPerIcp: IDL.Nat,
+        }),
+      });
   const CreatedOrder = IDL.Record({ order: Order });
   // Mirrors `Gate.Reason` exactly, all five arms. Nothing typechecks this against
   // the Motoko, so it drifts silently: it carried `burnCapExhausted` and `floatLow`
@@ -264,7 +279,11 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
   });
 
   return IDL.Service({
-    audit_log: IDL.Func([], [IDL.Vec(AuditEvent)], ['query']),
+    audit_log: IDL.Func(
+      [IDL.Opt(IDL.Nat), IDL.Nat],
+      [IDL.Record({ events: IDL.Vec(AuditEvent), nextCursor: IDL.Opt(IDL.Nat) })],
+      ['query'],
+    ),
     card_tiers: IDL.Func([], [IDL.Vec(Tier)], ['query']),
     create_order: IDL.Func(
       [Amount, Destination, IDL.Opt(IDL.Nat)],
@@ -316,8 +335,8 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       ['query'],
     ),
     delayed_deliveries: IDL.Func(
-      [],
-      [IDL.Vec(IDL.Record({
+      [IDL.Opt(IDL.Text), IDL.Nat],
+      [IDL.Record({ nextCursor: IDL.Opt(IDL.Text), entries: IDL.Vec(IDL.Record({
         delayedAtNs: IDL.Opt(IDL.Int),
         heldSinceNs: IDL.Int,
         orderId: IDL.Text,
@@ -325,7 +344,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
         retries: IDL.Nat,
         status: OrderStatus,
         waitedNs: IDL.Int,
-      }))],
+      })) })],
       ['query'],
     ),
     resolve_problem: IDL.Func(
@@ -333,11 +352,24 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [IDL.Variant({ err: IDL.Text, ok: IDL.Nat })],
       [],
     ),
-    orders_with_problems: IDL.Func(
-      [],
-      [IDL.Record({ orders: IDL.Vec(Order), unresolved: IDL.Nat })],
+    admin_order: IDL.Func([IDL.Text], [IDL.Opt(Order)], []),
+    admin_receipt: IDL.Func([IDL.Text], [IDL.Opt(ReceiptRecord)], []),
+    admin_orders: IDL.Func(
+      [
+        IDL.Record({
+          createdFromNs: IDL.Opt(IDL.Int),
+          createdToNs: IDL.Opt(IDL.Int),
+          owner: IDL.Opt(IDL.Principal),
+          status: IDL.Opt(OrderStatus),
+          withUnresolvedProblems: IDL.Bool,
+        }),
+        IDL.Opt(IDL.Text),
+        IDL.Nat,
+      ],
+      [IDL.Record({ nextCursor: IDL.Opt(IDL.Text), orders: IDL.Vec(Order) })],
       ['query'],
     ),
+    problem_depth: IDL.Func([], [IDL.Record({ orders: IDL.Nat, unresolved: IDL.Nat })], ['query']),
     refusal_counts: IDL.Func(
       [],
       [IDL.Record({ counts: RefusalCounts, refusingNow: RailStateLatch })],
@@ -400,19 +432,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     pending_deliveries: IDL.Func([], [IDL.Vec(JournalEntry)], ['query']),
     receipt: IDL.Func(
       [IDL.Text],
-      [IDL.Opt(IDL.Record({
-        cyclesDelivered: IDL.Opt(IDL.Nat),
-        deliveryBlockIndex: IDL.Opt(IDL.Nat),
-        order: Order,
-        paidUsdCents: IDL.Opt(IDL.Nat),
-        verification: IDL.Record({
-          netCents: IDL.Opt(IDL.Nat),
-          rateQueriedSources: IDL.Nat,
-          rateReceivedRates: IDL.Nat,
-          usdPerIcpMicros: IDL.Nat,
-          xdrPermyriadPerIcp: IDL.Nat,
-        }),
-      }))],
+      [IDL.Opt(ReceiptRecord)],
       ['query'],
     ),
     set_gate_config: IDL.Func(
@@ -440,7 +460,11 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
     health: IDL.Func([], [IDL.Bool], ['query']),
     http_request: IDL.Func([HttpRequest], [HttpResponse], ['query']),
     http_request_update: IDL.Func([HttpRequest], [HttpResponse], []),
-    list_orders: IDL.Func([], [IDL.Vec(Order)], ['query']),
+    list_orders: IDL.Func(
+      [IDL.Opt(IDL.Text), IDL.Nat],
+      [IDL.Record({ nextCursor: IDL.Opt(IDL.Text), orders: IDL.Vec(Order) })],
+      ['query'],
+    ),
     delivery_journal: IDL.Func([IDL.Text], [IDL.Opt(JournalEntry)], ['query']),
     process_order: IDL.Func(
       [IDL.Text],

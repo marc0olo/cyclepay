@@ -292,6 +292,15 @@
             <dt>Destination</dt><dd id="order-dest"></dd>
             <dt>Locked rate</dt><dd id="order-rate"></dd>
           </dl>
+        <!-- Problems attached to this order (#37/#38). Hidden when there are none,
+             which is the normal case. An empty panel headed "Problems" reads as a
+             fault on every healthy order. The buyer sees their own; an operator sees
+             the same thing through `admin_order`, which is the point of putting them
+             on the order rather than in a separate list. -->
+        <section id="order-problems" class="notice" hidden>
+          <h3>What happened to this order</h3>
+          <ul id="order-problem-list"></ul>
+        </section>
         <details id="receipt-area" hidden>
           <summary>Receipt and price verification</summary>
           <dl class="order-facts">

@@ -125,6 +125,30 @@ export interface Problem {
   resolvedAtNs: Opt<bigint>;
 }
 
+/// ⚠️ Named so `receipt` and `admin_receipt` share ONE definition. Two inline copies is
+/// how shapes drift, which is what #66 is about.
+export interface Receipt {
+  order: Order;
+  paidUsdCents: Opt<bigint>;
+  deliveryBlockIndex: Opt<bigint>;
+  cyclesDelivered: Opt<bigint>;
+  verification: {
+    netCents: Opt<bigint>;
+    usdPerIcpMicros: bigint;
+    xdrPermyriadPerIcp: bigint;
+    rateReceivedRates: bigint;
+    rateQueriedSources: bigint;
+  };
+}
+
+export interface OrderFilter {
+  status: Opt<StatusVariant>;
+  owner: Opt<Principal>;
+  createdFromNs: Opt<bigint>;
+  createdToNs: Opt<bigint>;
+  withUnresolvedProblems: boolean;
+}
+
 export interface RefusalCounts {
   amountAboveMax: bigint;
   amountBelowMin: bigint;
@@ -280,7 +304,8 @@ export interface HttpResponse {
 }
 
 export interface BackendService {
-  audit_log(): Promise<AuditEvent[]>;
+  /// Paginated since #38 — necessary the moment #37 removed the ring.
+  audit_log(afterSeq: Opt<bigint>, limit: bigint): Promise<{ events: AuditEvent[]; nextCursor: Opt<bigint> }>;
   card_tiers(): Promise<Tier[]>;
   create_order(amount: Amount, destination: Destination, minCycles: [] | [bigint]): Promise<Result<CreatedOrder, CreateOrderError>>;
   set_stripe_api_key(key: string): Promise<Result<null, { tooShort: { size: bigint; min: bigint } }>>;
@@ -299,11 +324,32 @@ export interface BackendService {
   refusal_counts(): Promise<{ counts: RefusalCounts; refusingNow: RailStateLatch }>;
   /// The worklist, as a filter over orders (#37). `unresolved` is NOT orders.length —
   /// one order can carry several problems.
-  orders_with_problems(): Promise<{ orders: Order[]; unresolved: bigint }>;
+  /// Read any order by id (admin, #38). Audited on every use, hit or miss.
+  admin_order(id: string): Promise<Opt<Order>>;
+  /// The same receipt for ANY order (admin, #38), and audited — which is why it is a
+  /// separate method rather than a branch in `receipt`: auditing writes state, so an
+  /// audited read cannot be a query, and folding it in would have made every BUYER's
+  /// receipt read an update.
+  admin_receipt(id: string): Promise<Opt<Receipt>>;
+  /// Filtered, cursor-paginated order list (admin, #38) — and #37's worklist, since
+  /// `withUnresolvedProblems` is a filter here rather than its own query.
+  ///
+  /// ⚠️ Ordered by order ID, which is NOT time order: ids are random. Narrow with
+  /// `createdFromNs` for recency.
+  admin_orders(
+    filter: OrderFilter,
+    afterId: Opt<string>,
+    limit: bigint,
+  ): Promise<{ orders: Order[]; nextCursor: Opt<string> }>;
+  /// Two numbers rather than a collection — the shape to poll. `unresolved` is NOT
+  /// `orders`: one order can carry several problems.
+  problem_depth(): Promise<{ unresolved: bigint; orders: bigint }>;
   /// Close ONE order-bound problem. `paymentRef` selects which, and omitting it is
   /// refused when more than one candidate exists (#37).
   resolve_problem(orderId: string, kindTag: string, paymentRef: Opt<string>): Promise<Result<bigint, string>>;
-  delayed_deliveries(): Promise<DelayedDelivery[]>;
+  /// ⚠️ Paginates the RESPONSE, not the work: the scan is still O(all orders) and #63
+  /// owns bounding it. Two different limits; this fixes one.
+  delayed_deliveries(afterId: Opt<string>, limit: bigint): Promise<{ entries: DelayedDelivery[]; nextCursor: Opt<string> }>;
   lifecycle_config(): Promise<{ gate: GateConfig }>;
   order_for_payment(paymentRef: string): Promise<Opt<string>>;
   abandon_order(id: string, reason: string): Promise<Result<Order, string>>;
@@ -334,19 +380,7 @@ export interface BackendService {
   /// Deliveries with work outstanding, right now (#30 PR-B). Self-clearing: an entry
   /// leaves the set the moment delivery lands. `retries` is how often it has failed.
   pending_deliveries(): Promise<JournalEntry[]>;
-  receipt(id: string): Promise<Opt<{
-    order: Order;
-    paidUsdCents: Opt<bigint>;
-    deliveryBlockIndex: Opt<bigint>;
-    cyclesDelivered: Opt<bigint>;
-    verification: {
-      netCents: Opt<bigint>;
-      usdPerIcpMicros: bigint;
-      xdrPermyriadPerIcp: bigint;
-      rateReceivedRates: bigint;
-      rateQueriedSources: bigint;
-    };
-  }>>;
+  receipt(id: string): Promise<Opt<Receipt>>;
   set_gate_config(config: GateConfig): Promise<Result<null, unknown>>;
   pricing_status(): Promise<{
     rates: Opt<PricingRates>;
@@ -360,7 +394,9 @@ export interface BackendService {
   health(): Promise<boolean>;
   http_request(req: HttpRequest): Promise<HttpResponse>;
   http_request_update(req: HttpRequest): Promise<HttpResponse>;
-  list_orders(): Promise<Order[]>;
+  /// Paginated since #38. Goes through the same pager as `admin_orders`, with the
+  /// owner filter pinned to the caller.
+  list_orders(afterId: Opt<string>, limit: bigint): Promise<{ orders: Order[]; nextCursor: Opt<string> }>;
   delivery_journal(id: string): Promise<Opt<JournalEntry>>;
   process_order(id: string): Promise<Result<Order, { notFound: null } | { inFlight: null }>>;
   recovery_status(): Promise<{

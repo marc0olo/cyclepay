@@ -687,6 +687,97 @@ module {
     closed;
   };
 
+  // ── Filtered, cursor-paginated reads (#38) ─────────────────────────────────
+
+  /// Cap on one page, matching `Orphans.maxPageSize` so an operator learns one number.
+  public let maxPageSize : Nat = 200;
+
+  /// What an operator narrows by. Every field is optional and they AND together.
+  ///
+  /// ⚠️ **`withUnresolvedProblems` is folded in here rather than living as its own
+  /// query.** That is #37's thesis carried through: "everything outstanding" is a
+  /// *filter* over orders, so it composes with status and time range instead of being a
+  /// parallel list that answers a different question.
+  public type Filter = {
+    status : ?Types.OrderStatus;
+    /// Matches `Owner`'s principal.
+    owner : ?Principal;
+    createdFromNs : ?Int;
+    createdToNs : ?Int;
+    withUnresolvedProblems : Bool;
+  };
+
+  public func noFilter() : Filter {
+    ({
+      status = null;
+      owner = null;
+      createdFromNs = null;
+      createdToNs = null;
+      withUnresolvedProblems = false;
+    });
+  };
+
+  /// ⚠️ **Ordered by order ID, which is NOT time order — and that is deliberate.**
+  /// Order ids are random hex, so id order is arbitrary. Sorting the filtered set by
+  /// `createdAtNs` would mean materialising it first, which is the unbounded scan #63
+  /// exists to remove; a secondary time index would be one more piece of derived state
+  /// needing adjudication. So the traversal is **stable and complete** rather than
+  /// recent-first, and an operator who wants recency narrows with `createdFromNs`
+  /// instead. Saying so here is the point: a caller that assumes newest-first gets a
+  /// wrong answer silently.
+  ///
+  /// Cursor-based, like `Orphans.page`, and for a stronger reason: ids are never reused
+  /// and orders are never deleted under #37, so a cursor cannot be invalidated at all.
+  ///
+  /// `nextCursor` is set **only when further matching orders remain**, so a caller
+  /// stops the moment it is null and never makes a wasted final request.
+  public type Page = { orders : [Types.Order]; nextCursor : ?Types.OrderId };
+
+  public func page(
+    store : Store,
+    filter : Filter,
+    afterId : ?Types.OrderId,
+    limit : Nat,
+  ) : Page {
+    let capped = if (limit == 0 or limit > maxPageSize) maxPageSize else limit;
+    let collected = List.empty<Types.Order>();
+    var last : ?Types.OrderId = null;
+    for ((id, order) in store.orders.entries()) {
+      let past = switch (afterId) { case (?cursor) id > cursor; case null true };
+      if (past and matchesFilter(order, filter)) {
+        if (collected.size() == capped) return { orders = collected.toArray(); nextCursor = last };
+        collected.add(order);
+        last := ?id;
+      };
+    };
+    { orders = collected.toArray(); nextCursor = null };
+  };
+
+  public func matchesFilter(order : Types.Order, filter : Filter) : Bool {
+    switch (filter.status) {
+      case (?want) if (order.status != want) return false;
+      case null {};
+    };
+    switch (filter.owner) {
+      case (?want) switch (order.owner) {
+        case (#ii(p)) if (p != want) return false;
+      };
+      case null {};
+    };
+    switch (filter.createdFromNs) {
+      case (?from) if (order.createdAtNs < from) return false;
+      case null {};
+    };
+    switch (filter.createdToNs) {
+      case (?to) if (order.createdAtNs > to) return false;
+      case null {};
+    };
+    if (filter.withUnresolvedProblems and Problems.unresolvedCount(order.problems) == 0) {
+      return false;
+    };
+    true;
+  };
+
   /// Every order carrying at least one unresolved problem — **the worklist, as a
   /// filter rather than a structure** (#37).
   public func withUnresolvedProblems(store : Store) : [Types.Order] {

@@ -844,3 +844,29 @@ code.flow-detail {
     gap: var(--space-6);
   }
 }
+
+/* Problems attached to an order (#37/#38). Reuses `.notice`'s frame, so it sits in the
+   same visual language as the lock notice rather than introducing a second warning
+   idiom. */
+#order-problems h3 {
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  margin: 0 0 0.5rem;
+}
+#order-problem-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+/* ⚠️ Resolved problems stay VISIBLE and struck through rather than being filtered out:
+   #37's premise is that nothing drops, so a buyer whose refund was reconciled should see
+   that it happened AND that it was dealt with. Colour alone would not carry that, so the
+   line-through does the work and the muted colour reinforces it. */
+#order-problem-list li.resolved {
+  text-decoration: line-through;
+  color: var(--icp-fg-muted);
+}

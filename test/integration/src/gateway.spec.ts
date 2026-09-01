@@ -24,6 +24,11 @@ import {
 
   orderProblems,
   unresolvedProblems,
+
+  allAuditEvents,
+  allOwnedOrders,
+
+  allDelayedDeliveries,
 } from './harness';
 import type { Destination, OrphanEntry, Order } from './types';
 
@@ -159,7 +164,7 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
   expect((await gw.asAdmin.stripe_api_key_status()).isSet).toBe(false);
   expect(await gw.asAdmin.stripe_origin()).toHaveLength(0);
   const ordersBefore = (await gw.asAdmin.reserve_status()).totalOrders;
-  const linesBefore = (await gw.asAdmin.audit_log()).length;
+  const linesBefore = (await allAuditEvents(gw)).length;
   const closedBefore = (await gw.asAnon.refusal_counts()).counts.railClosed;
   const noKey = expectErr(
     await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []),
@@ -175,7 +180,7 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
   for (let i = 0; i < 3; i += 1) {
     expectErr(await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []));
   }
-  const afterClosed = await gw.asAdmin.audit_log();
+  const afterClosed = await allAuditEvents(gw);
   // Exactly one new line: the transition in.
   expect(afterClosed.length).toBe(linesBefore + 1);
   expect(afterClosed[afterClosed.length - 1].tag).toBe('gate.startedRefusing');
@@ -235,7 +240,7 @@ test('01b — a dark gateway spends nothing on rates (#33: the switch is both se
   // ⚠️ Ordering note: scenario 01 provisions BOTH secrets, so by the time this
   // runs the rail is live and the timer ticks. The dark case is asserted through
   // the audit log, which records what happened while it was dark: nothing.
-  const log = await gw.asAdmin.audit_log();
+  const log = await allAuditEvents(gw);
   const beforeProvisioning = log.filter((e) => e.tag === 'rates.refreshFailed');
   // No refresh was even attempted before the secrets landed, so no failure was
   // recorded from that window.
@@ -331,7 +336,7 @@ test('04 — a healthy XRC + CMC pair prices the §3 vector exactly', async () =
   // §2 authz: non-owners (including admins) see nothing, not even existence.
   expect(await gw.asUser.get_order(orderA.id)).toHaveLength(1);
   expect(await gw.asAdmin.get_order(orderA.id)).toHaveLength(0);
-  expect((await gw.asUser.list_orders()).map((o) => o.id)).toContain(orderA.id);
+  expect((await allOwnedOrders(gw)).map((o) => o.id)).toContain(orderA.id);
 
   // Orders read the cache; nothing user-facing calls the XRC.
   const again = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
@@ -538,10 +543,33 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   // ⚠️ **The worklist filter sees it** (#37) — this is the query that replaced the
   // queue's worklist function, and the acceptance criterion "everything outstanding is
   // a filter over orders" is only checkable because it exists.
-  const worklist = await gw.asAdmin.orders_with_problems();
+  // ⚠️ **The worklist is a FILTER now (#38), not its own query** — which is #37's
+  // thesis made structural: it composes with owner, status and time range instead of
+  // being a parallel list that answers a slightly different question.
+  const worklist = await gw.asAdmin.admin_orders(
+    { status: [], owner: [], createdFromNs: [], createdToNs: [], withUnresolvedProblems: true },
+    [], 50n,
+  );
   expect(worklist.orders.some((o) => o.id === orderA.id)).toBe(true);
-  expect(worklist.unresolved).toBeGreaterThan(0n);
-  await expect(gw.asUser.orders_with_problems()).rejects.toThrow(/not a controller/);
+  // The cheap total lives beside it, so a monitor never pages to learn one number.
+  expect((await gw.asAnon.problem_depth()).unresolved).toBeGreaterThan(0n);
+  await expect(gw.asUser.admin_orders(
+    { status: [], owner: [], createdFromNs: [], createdToNs: [], withUnresolvedProblems: true },
+    [], 50n,
+  )).rejects.toThrow(/not a controller/);
+
+  // And the admin single-order read, which #38 exists for: an operator handed a Stripe
+  // receipt can now look at the order rather than asking the buyer to read their screen.
+  const adminView = await gw.asAdmin.admin_order(orderA.id);
+  expect(adminView).toHaveLength(1);
+  expect(adminView[0]!.id).toBe(orderA.id);
+  await expect(gw.asUser.admin_order(orderA.id)).rejects.toThrow(/not a controller/);
+  // ⚠️ The read is audited BOTH ways — a probe for existence is what §2 withholds from
+  // everyone else, so a miss has to be as visible as a hit.
+  expect(await gw.asAdmin.admin_order('00000000000000000000000000000000')).toHaveLength(0);
+  const reads = (await allAuditEvents(gw)).filter((e) => e.tag === 'order.adminRead');
+  expect(reads.length).toBeGreaterThanOrEqual(2);
+  expect(reads.some((e) => e.detail.includes('no such order'))).toBe(true);
 
   // charge.refunded auto-resolves it by payment_intent — and this is the assertion
   // that would catch the closer being wired to only one of the two stores, since
@@ -557,8 +585,10 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   expect(resolvedProblem!.resolvedAtNs.length).toBe(1);
   // And the order has left the worklist, because the filter reads UNRESOLVED problems
   // while the order keeps the resolved one forever.
-  expect((await gw.asAdmin.orders_with_problems()).orders.some((o) => o.id === orderA.id))
-    .toBe(false);
+  expect((await gw.asAdmin.admin_orders(
+    { status: [], owner: [], createdFromNs: [], createdToNs: [], withUnresolvedProblems: true },
+    [], 50n,
+  )).orders.some((o) => o.id === orderA.id)).toBe(false);
 
   await gw.pic.tick(5);
   expect(await reserveBalance(gw)).toBe(reserveBefore);
@@ -750,7 +780,7 @@ test('12 — an upgrade concurrent with delivery pays exactly once, and the time
 // Both are recorded on #36 so the deletion is not discovered as a gap.
 
 test('15 — operational trail is coherent end-to-end (§4.2)', async () => {
-  const audit = await gw.asAdmin.audit_log();
+  const audit = await allAuditEvents(gw);
   expect(audit.length).toBeGreaterThan(0);
   for (let i = 1; i < audit.length; i++) {
     expect(audit[i].seq).toBeGreaterThan(audit[i - 1].seq);
@@ -792,7 +822,7 @@ test('15 — operational trail is coherent end-to-end (§4.2)', async () => {
   expect((await gw.asAnon.orphan_depth()).unresolved).toBe(BigInt(open.length));
 
   // Admin gates on the trail itself.
-  await expect(gw.asUser.audit_log()).rejects.toThrow(/not a controller/);
+  await expect(gw.asUser.audit_log([], 10n)).rejects.toThrow(/not a controller/);
   await expect(gw.asUser.orphans([], 10n)).rejects.toThrow(/not a controller/);
   await expect(gw.asUser.orphans_unresolved([], 10n)).rejects.toThrow(/not a controller/);
   // Depth is public — it is the monitoring signal, not the payment references.
@@ -906,7 +936,7 @@ test('18 — an expired order is never deleted, and a late payment is refunded n
   await gw.pic.advanceTime(365 * 86_400_000);
   await gw.pic.tick();
   expect(await gw.asUser.get_order(lapsed.id)).toHaveLength(1);
-  expect((await gw.asUser.list_orders()).map((o) => o.id)).toContain(lapsed.id);
+  expect((await allOwnedOrders(gw)).map((o) => o.id)).toContain(lapsed.id);
 
   // §4's late-payment promise is GONE as of #34, which deleted `#expired →
   // #paid`. A payment arriving now is real money against an order that cannot
@@ -944,9 +974,45 @@ test('19 — a buyer can verify their own purchase from the receipt', async () =
   await ensureRates(gw);
   const receipt = (await gw.asUser.receipt(orderA.id))[0]!;
 
-  // Authz: only the owner. Not even an admin.
+  // Authz: the owner, and since #38 an admin too. Never anyone else.
+  //
+  // ⚠️ **This assertion used to read "not even an admin", and that boundary protected
+  // NOTHING — which is why it changed rather than the change being a relaxation.**
+  // `Receipt` is entirely derived: `order` (admin-readable via `admin_order`),
+  // `paidUsdCents` (on the order), `deliveryBlockIndex` and `cyclesDelivered` (on the
+  // `JournalEntry`, already `requireAdmin`), and `verification` (computed from
+  // `order.pricing`). An operator could already reconstruct every field from two calls;
+  // the old rule only forced them to assemble it by hand while a buyer waited.
+  //
+  // ⚠️ **Do not re-tighten this thinking it is a privacy boundary.** If `Receipt` ever
+  // gains a field that is NOT derivable from the order plus the journal, that is the
+  // moment to revisit — and the argument then is about the new field, not about receipts.
+  // ⚠️ **`receipt` stayed owner-only; the admin path is `admin_receipt`, and that split
+  // is the fix rather than a complication.** Auditing writes state, so an audited read
+  // cannot be a `query` — folding the admin case into `receipt` would have made EVERY
+  // buyer's receipt read an update, putting the common path through consensus to serve
+  // the rare one.
   expect(await gw.asAdmin.receipt(orderA.id)).toHaveLength(0);
   expect(await gw.asAnon.receipt(orderA.id)).toHaveLength(0);
+
+  const adminReceipt = await gw.asAdmin.admin_receipt(orderA.id);
+  expect(adminReceipt).toHaveLength(1);
+  expect(adminReceipt[0]!.order.id).toBe(orderA.id);
+  await expect(gw.asUser.admin_receipt(orderA.id)).rejects.toThrow(/not a controller/);
+
+  // ⚠️ **And it AUDITS, which is the whole point of the separate method.** An earlier
+  // version folded this into `receipt` unaudited, arguing it revealed no existence
+  // `admin_order` had not already revealed. True, and beside the point: the audit
+  // records that an operator LOOKED, and `Receipt` embeds the whole order — so an
+  // unaudited path made `admin_order`'s audit bypassable by calling the other method.
+  const receiptReads = (await allAuditEvents(gw))
+    .filter((e) => e.tag === 'order.adminRead' && e.detail.includes('(receipt)'));
+  expect(receiptReads.length).toBeGreaterThanOrEqual(1);
+  // A miss is audited too, so an id probe by an operator is as visible as a hit.
+  expect(await gw.asAdmin.admin_receipt('00000000000000000000000000000000')).toHaveLength(0);
+  expect((await allAuditEvents(gw)).some(
+    (e) => e.tag === 'order.adminRead' && e.detail.includes('receipt; no such order'),
+  )).toBe(true);
 
   expect(receipt.paidUsdCents).toEqual([TIER_USD_CENTS]);
   // The on-chain delivery proof: a real cycles-ledger block anyone can look up.
@@ -1437,7 +1503,7 @@ test('33 — an UNDELIVERED order alerts and waits, then delivers when the cause
   // string, a fixed sentence, and `sinceNs` copied off the order — so what it
   // actually asserted was "this order is past the threshold", which is what
   // `delayed_deliveries` reports.
-  const delayed = (await gw.asAdmin.delayed_deliveries()).find((d) => d.orderId === stuck.id);
+  const delayed = (await allDelayedDeliveries(gw)).find((d) => d.orderId === stuck.id);
   expect(delayed).toBeDefined();
   // Past the alert threshold, short of the terminal bound: still retrying.
   expect(delayed!.pastMaxHold).toBe(false);
@@ -1460,7 +1526,7 @@ test('33 — an UNDELIVERED order alerts and waits, then delivers when the cause
   // timestamp" would break.
   await gw.pic.advanceTime(3 * 3_600 * 1_000);
   await gw.pic.tick(5);
-  const stillDelayed = (await gw.asAdmin.delayed_deliveries()).filter((d) => d.orderId === stuck.id);
+  const stillDelayed = (await allDelayedDeliveries(gw)).filter((d) => d.orderId === stuck.id);
   expect(stillDelayed).toHaveLength(1);
   expect(stillDelayed[0]!.delayedAtNs).toEqual(firstCrossing);
   // And the wait keeps growing, so the reading is live rather than frozen.
@@ -1549,7 +1615,7 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
   ).some((e) => 'abandoned' in e.kind)).toBe(false);
 
   // The audit trail names WHO decided, not just that it happened.
-  const audit = await gw.asAdmin.audit_log();
+  const audit = await allAuditEvents(gw);
   const line = audit.find((e) => e.tag === 'order.abandoned' && e.detail.includes(doomed.id));
   expect(line).toBeDefined();
   expect(line!.detail).toContain('by ');
@@ -1625,7 +1691,7 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   // `#paid`, so the order leaves `delayed_deliveries` by construction — no resolve
   // step to forget and no `delayedAlerts` mapping to leak, which were the two ways
   // the old version could go wrong.
-  expect((await gw.asAdmin.delayed_deliveries()).filter((d) => d.orderId === doomed.id))
+  expect((await allDelayedDeliveries(gw)).filter((d) => d.orderId === doomed.id))
     .toHaveLength(0);
   // ⚠️ The permanent record of the delay survives on `Order.delayedAtNs` — the half
   // a live view cannot carry, since the delay HAPPENED and that stays true. Not
@@ -1655,7 +1721,7 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   // assertion.** `delayed_deliveries` filters on `status == #paid`, so this asks
   // whether the filter holds rather than whether an entry happens not to exist —
   // a stronger claim about a stronger mechanism.
-  expect((await gw.asAdmin.delayed_deliveries()).filter((d) => d.orderId === settled.order.id))
+  expect((await allDelayedDeliveries(gw)).filter((d) => d.orderId === settled.order.id))
     .toHaveLength(0);
   // Nor a stuck problem: a delivered order attracts neither tier.
   expect((await orderProblems(gw, settled.order.id)).filter((p) => 'deliveryStuck' in p.kind))
@@ -1759,7 +1825,7 @@ test('41 — an order can never lock fewer cycles than the buyer was shown', asy
 
   const shown = (await gw.asAnon.quote_previews([TIER_USD_CENTS]))
     .quotes[0]!.cycles[0]!;
-  const ordersBefore = (await gw.asUser.list_orders()).length;
+  const ordersBefore = (await allOwnedOrders(gw)).length;
 
   // ICP appreciates 40%, so the same dollars buy ~28.6% fewer cycles.
   //
@@ -1796,7 +1862,7 @@ test('41 — an order can never lock fewer cycles than the buyer was shown', asy
 
   // Nothing was created: a refused quote leaves no half-finished order behind,
   // so a buyer who declines the new rate has nothing to clean up.
-  expect(await gw.asUser.list_orders()).toHaveLength(ordersBefore);
+  expect(await allOwnedOrders(gw)).toHaveLength(ordersBefore);
 
   // Accepting the current figure goes through.
   const atNewRate = expectOk(
@@ -1892,7 +1958,7 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
     .toContain('cannot be cancelled');
 
   // The cancel is on the audit trail.
-  const log = await gw.asAdmin.audit_log();
+  const log = await allAuditEvents(gw);
   expect(log.some((e) => e.tag === 'order.cancelled' && e.detail.includes(mine.order.id))).toBe(true);
 
   // And CANCELLING ITSELF owes nothing: the only obligation against this order is
@@ -2083,7 +2149,7 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
     // the crossing is stamped on the order.
     await gw.pic.advanceTime(3 * 3_600 * 1_000);
     await gw.pic.tick(5);
-    alert = (await gw.asAdmin.delayed_deliveries()).find((d) => d.orderId === doomed.id)!;
+    alert = (await allDelayedDeliveries(gw)).find((d) => d.orderId === doomed.id)!;
     expect(alert).toBeDefined();
     expect(alert.delayedAtNs).toHaveLength(1);
   } finally {
@@ -2110,7 +2176,7 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
 
   // The delay alert's own audit tag exists — moved here from 15, which runs before
   // any delay has happened. The tag names what it reports: a delivery delay.
-  expect((await gw.asAdmin.audit_log()).map((e) => e.tag)).toContain('delivery.delayed');
+  expect((await allAuditEvents(gw)).map((e) => e.tag)).toContain('delivery.delayed');
 
   // ⚠️ **THE ASSERTION, and #37 turned it from a promise into a property.** It used
   // to read "the delay entry is *resolved*, not merely absent" — because an entry
@@ -2118,7 +2184,7 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
   // and its `delayedAlerts` mapping must not leak. Both failure modes are now
   // unrepresentable: escalation moves the status off `#paid`, so the order leaves the
   // reading by construction, and there is no mapping and no resolve step at all.
-  expect((await gw.asAdmin.delayed_deliveries()).filter((d) => d.orderId === doomed.id))
+  expect((await allDelayedDeliveries(gw)).filter((d) => d.orderId === doomed.id))
     .toHaveLength(0);
   // And exactly one entry for this order remains open — the escalation itself.
   // ⚠️ **Exactly one open problem, and it is the escalation.** Under #37 this is a
@@ -2282,7 +2348,7 @@ test('57 — an already-credited intent is caught before attribution, not after'
   await gw.pic.advanceTime(9 * 24 * 3_600 * 1_000);
   await gw.pic.tick(5);
 
-  const auditBefore = (await gw.asAdmin.audit_log()).length;
+  const auditBefore = (await allAuditEvents(gw)).length;
 
   // The same intent, a NEW event id, and a reference that cannot resolve — both
   // things wrong at once, which is the combination that used to slip through.
@@ -2291,7 +2357,7 @@ test('57 — an already-credited intent is caught before attribution, not after'
     clientReferenceId: 'total-garbage-not-a-reference', amountCents: TIER_USD_CENTS,
   }))).toMatchObject({ status_code: 200 });
 
-  const fresh = (await gw.asAdmin.audit_log()).slice(auditBefore);
+  const fresh = (await allAuditEvents(gw)).slice(auditBefore);
   // Recognised as already credited, and it names the order that actually holds the
   // money rather than the unusable reference.
   const elsewhere = fresh.find((e) => e.tag === 'stripe.creditedElsewhere');
@@ -2325,7 +2391,7 @@ test('58 — the sweep reconciles the status tallies on its own cadence and repo
   expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
 
   const before = (await gw.asAnon.recovery_status()).lastCountReconcile[0]?.atNs ?? -1n;
-  const auditBefore = (await gw.asAdmin.audit_log()).length;
+  const auditBefore = (await allAuditEvents(gw)).length;
 
   // Past the 24-hour cadence, so this proves the periodic path rather than a
   // one-off at boot (earlier scenarios in this file have already swept).
@@ -2340,7 +2406,7 @@ test('58 — the sweep reconciles the status tallies on its own cadence and repo
   expect(status.lastCountReconcile[0]!.drift).toEqual([]);
   // And nothing was audited, because a clean reconcile every day would bury the
   // one line that matters.
-  const fresh = (await gw.asAdmin.audit_log()).slice(auditBefore);
+  const fresh = (await allAuditEvents(gw)).slice(auditBefore);
   expect(fresh.some((e) => e.tag === 'orders.countDrift')).toBe(false);
 
   // The cadence holds in the other direction too: an hour of sweeps must not
@@ -2388,7 +2454,7 @@ test('59 — a Stripe resend past the dedup window does not file a second unproc
 
   expect(await deliverWebhook(gw, body)).toMatchObject({ status_code: 200 });
   expect(await matching()).toHaveLength(1);
-  const log = await gw.asAdmin.audit_log();
+  const log = await allAuditEvents(gw);
   expect(log.some((e) => e.tag === 'stripe.unprocessableResend')).toBe(true);
 
   // Once an operator closes it, a genuine re-report is allowed through: resolved
@@ -2433,7 +2499,7 @@ test('61 — cycles go to the caller and nowhere else, enforced by the canister 
   // does not ask — never that the canister refuses.
   await ensureRates(gw);
 
-  const ordersBefore = (await gw.asUser.list_orders()).length;
+  const ordersBefore = (await allOwnedOrders(gw)).length;
 
   // Someone else's account.
   expect(expectErr(await gw.asUser.create_order({ tier: 'tier5' }, {
@@ -2453,7 +2519,7 @@ test('61 — cycles go to the caller and nowhere else, enforced by the canister 
   // No order is left behind. An earlier version of this checked that every
   // stored order had a `cyclesLedgerAccount` destination, which is true of every
   // order BY TYPE now that the variant has one case — it asserted nothing.
-  expect((await gw.asUser.list_orders()).length).toBe(ordersBefore);
+  expect((await allOwnedOrders(gw)).length).toBe(ordersBefore);
 
   // And the refusal comes FIRST, pinned against the next check in the method: an
   // unknown tier *and* a bad destination returns the destination error, so
@@ -2624,7 +2690,7 @@ test('65 — a session that cannot be created fails the order in the same call (
 
   // The order exists, is #expired, and records WHY — so a support ticket is
   // answerable from the record rather than from the audit ring.
-  const mine = await gw.asUser.list_orders();
+  const mine = await allOwnedOrders(gw);
   const theOrder = mine.find((o) => statusKey(o) === 'expired' && 'sessionFailed' in (o.expiredBy[0] ?? {}));
   expect(theOrder).toBeDefined();
   expect(theOrder!.stripeSessionUrl).toHaveLength(0);
@@ -2731,7 +2797,7 @@ test('67 — checkout.session.expired is the only thing that expires an order (#
   }))).toMatchObject({ status_code: 200 });
   await gw.pic.tick(3);
   expect(await orderStatus(gw, bound.order.id)).toBe('created');
-  const mismatchLog = await gw.asAdmin.audit_log();
+  const mismatchLog = await allAuditEvents(gw);
   expect(mismatchLog.some((e) => e.tag === 'stripe.expiredSessionMismatch'
     && e.detail.includes('cs_the_real_one')
     && e.detail.includes('cs_some_other_session'))).toBe(true);
@@ -2754,7 +2820,7 @@ test('67 — checkout.session.expired is the only thing that expires an order (#
     livemode: false,
     data: { object: { id: 'dp_1', payment_intent: 'pi_disputed', amount: 500 } },
   }))).toMatchObject({ status_code: 200 });
-  const log = await gw.asAdmin.audit_log();
+  const log = await allAuditEvents(gw);
   expect(log.some((e) => e.tag === 'stripe.disputeCreated' && e.detail.includes('pi_disputed'))).toBe(true);
 });
 
@@ -2797,7 +2863,7 @@ test('68 — a cancel racing session creation cannot leave a payable URL behind 
   expect(raced.stripeSessionId).toHaveLength(0);
   // Audited, because a real session now exists at Stripe that nobody can reach.
   // It dies at its own `expires_at`; the URL never left the canister.
-  const log = await gw.asAdmin.audit_log();
+  const log = await allAuditEvents(gw);
   expect(log.some((e) => e.tag === 'stripe.sessionOrphaned' && e.detail.includes('cs_raced_creation'))).toBe(true);
 });
 
@@ -2841,7 +2907,7 @@ test('88 — refusals tally and never write a line per attempt (#61)', async () 
   await ensureRates(gw);
   const { gate } = await gw.asAnon.lifecycle_config();
 
-  const before = (await gw.asAdmin.audit_log()).length;
+  const before = (await allAuditEvents(gw)).length;
   const tallyBefore = (await gw.asAnon.refusal_counts()).counts.amountBelowMin;
 
   const ATTEMPTS = 5;
@@ -2854,7 +2920,7 @@ test('88 — refusals tally and never write a line per attempt (#61)', async () 
   }
 
   // The whole point: five refusals, zero new audit lines.
-  const after = await gw.asAdmin.audit_log();
+  const after = await allAuditEvents(gw);
   expect(after.length).toBe(before);
 
   // And nothing was lost that the old line carried. It was
@@ -3169,13 +3235,13 @@ test('75 — a buyer can heal their OWN stuck delivery, and only their own (#30 
   // while an ops action on someone else's order is exactly what the trail is for.
   const kickLines = (log: { tag: string; detail: string }[]) =>
     log.filter((e) => e.tag === 'delivery.manualKick' && e.detail.includes(stuck.id));
-  expect(kickLines(await gw.asAdmin.audit_log())).toHaveLength(0);
+  expect(kickLines(await allAuditEvents(gw))).toHaveLength(0);
 
   // And the admin lever still works — the widening is additive, not a handover.
   // Safe to spam by construction: the order is already delivered, so this is the
   // idempotent path.
   expect('ok' in (await gw.asAdmin.process_order(stuck.id))).toBe(true);
-  expect(kickLines(await gw.asAdmin.audit_log()).length).toBeGreaterThan(0);
+  expect(kickLines(await allAuditEvents(gw)).length).toBeGreaterThan(0);
   expect(await orderStatus(gw, stuck.id)).toBe('delivered');
   // The clock moved, so leave the rates fresh for what follows (see the README).
   await setCmcRate(gw);
@@ -3250,7 +3316,7 @@ test('77 — an escalated order whose cycles DID arrive can be recorded, not fil
   // holding capacity for it.
   expect((await gw.asAnon.reserve_status()).promisedTotal)
     .toBe(promisedBefore - target.lockedCycles);
-  expect((await gw.asAdmin.audit_log()).map((e) => e.tag)).toContain('order.recordedDelivered');
+  expect((await allAuditEvents(gw)).map((e) => e.tag)).toContain('order.recordedDelivered');
 
   // Idempotent, because an operator re-running a resolution step must not be a
   // failure — and re-recording cannot move money either way.

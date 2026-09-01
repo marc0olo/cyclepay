@@ -1043,6 +1043,57 @@ function isPastDeadline(order: Order): boolean {
   return Date.now() >= nsToMillis(deadline);
 }
 
+/// Render #37's attached problems, newest first, with their resolution state.
+///
+/// ⚠️ **Hidden when there are none, which is the normal case.** A panel headed "What
+/// happened to this order" showing nothing reads as a fault on every healthy order —
+/// the same reasoning as the lock notice above it.
+///
+/// ⚠️ **Resolved problems are SHOWN, struck through, not filtered out.** #37's whole
+/// premise is that nothing drops: a buyer whose refund was reconciled should see that it
+/// happened and was dealt with, and hiding it would make the record look like it never
+/// existed. The worklist filters by unresolved; a *view of one order* does not.
+function renderProblems(order: Order): void {
+  const list = el("order-problem-list");
+  list.textContent = "";
+  const problems = order.problems ?? [];
+  show("order-problems", problems.length > 0);
+  if (problems.length === 0) return;
+
+  // Newest first: the most recent trouble is what a reader is looking for. `filedAtNs`
+  // is when it FIRST happened, and a refresh does not move it (see `Problems.file`), so
+  // this ordering is stable across re-renders.
+  const ordered = [...problems].sort((a, b) => (b.filedAtNs > a.filedAtNs ? 1 : -1));
+  for (const problem of ordered) {
+    const item = document.createElement("li");
+    const resolved = problem.resolvedAtNs !== null && problem.resolvedAtNs !== undefined;
+    if (resolved) item.classList.add("resolved");
+    const label = document.createElement("strong");
+    label.textContent = problemLabel(problem);
+    item.append(label);
+    item.append(document.createTextNode(`: ${problem.detail}`));
+    if (resolved) item.append(document.createTextNode(" (resolved)"));
+    list.append(item);
+  }
+}
+
+/// A buyer-facing name for each problem kind.
+///
+/// ⚠️ **Named for what happened to the BUYER, not for the variant.** `paidNotCredited`
+/// is our word for our bug; "we took your payment and have not delivered yet" is what
+/// the person reading it needs. The variant name stays in the audit trail and the
+/// runbook, where the audience is different.
+function problemLabel(problem: Order["problems"][number]): string {
+  const kind = problem.kind;
+  if ("duplicate" in kind) return "A second payment arrived for this order";
+  if ("deliveryStuck" in kind) return "Delivery stopped and needs a human";
+  if ("refundAfterDelivery" in kind) return "Refunded after the cycles were delivered";
+  if ("paidNotCredited" in kind) return "Paid, and not yet credited";
+  // ⚠️ No default that invents a name: an unhandled kind should be visibly unhandled
+  // rather than quietly labelled "problem", which is how a new kind ships unnoticed.
+  return "Unrecognised problem (see the audit trail)";
+}
+
 function renderOrder(order: Order): void {
   // Writes into `#active-order`, which the order view owns and no other view
   // does. The poll ticks every 3 s regardless of where the visitor has since
@@ -1065,6 +1116,8 @@ function renderOrder(order: Order): void {
     `${(Number(order.pricing.xdrPermyriadPerIcp) / 1e4).toFixed(4)} XDR/ICP · locked at creation`;
   // XDR is the unit the CMC mints against, so it belongs in the verifiable
   // record — but the headline number a buyer recognises is the dollar rate.
+
+  renderProblems(order);
 
   const key = statusKeyOf(order);
   // ⚠️ **Expiry is rendered from the DEADLINE, not the status.** An order sits in
@@ -1286,9 +1339,27 @@ async function pollActiveOrder(): Promise<void> {
 
 async function refreshHistory(): Promise<void> {
   if (!identity) return;
+  // ⚠️ **Paged since #38, and the buyer's view wants ALL of them.** `list_orders` used
+  // to return every order unbounded, which is a trap rather than a convenience: a query
+  // response is capped at ~2 MB and an oversized read traps rather than truncating.
+  // Nothing drops orders under #37, so this only grows.
+  //
+  // ⚠️ **Paging to exhaustion here is deliberate, not lazy.** The history view sorts by
+  // time and shows a count, so a first page would silently mis-sort and undercount —
+  // the backend pages by order ID, which is NOT time order. If this list ever gets big
+  // enough for that to hurt, the fix is a paged UI, not a bigger first page.
   let orders: Order[];
   try {
-    orders = await backend.list_orders();
+    orders = [];
+    // The generated bindings use `T | null` for a Candid `opt`, not the tuple form the
+    // integration suite's hand-written IDL uses. Same wire type, two conventions.
+    let cursor: string | null = null;
+    for (;;) {
+      const page = await backend.list_orders(cursor, 200n);
+      orders.push(...page.orders);
+      if (page.nextCursor === null || page.nextCursor === undefined) break;
+      cursor = page.nextCursor;
+    }
   } catch {
     return;
   }
