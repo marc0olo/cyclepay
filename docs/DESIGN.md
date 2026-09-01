@@ -149,21 +149,35 @@ it can never admit one it cannot.
 ⚠️ **This replaced an awaited balance read on the order-creation path**, which is where a
 whole class of bug lived: the awaited value was correct when computed and historical when
 used, and pairing it with a live tally made the available figure optimistic by a full
-order. There is now nothing to pair — one number, moved only by us, read synchronously.
+order. The decision still reads **two** numbers — the floor and the promise tally — but
+both are now *maintained*, so what is gone is the awaited-versus-live pairing, not the
+second operand.
 
 **Three rules keep it a bound:**
 
-1. **A fresh observation is adopted, and a shortfall is shouted about.** The ledger
-   holding *less* than the floor means an outflow we did not cause, which the asymmetry
-   says is impossible.
-2. **A transfer decrements the floor when it is ISSUED, not when it settles.** The only
-   way the balance can surprise us downward is one of our own transfers landing without
-   our learning it did — our reply callback traps, so the debit stands while our
-   bookkeeping rolls back. Assuming the debit at issue time makes that case exact instead
-   of optimistic.
+1. **A fresh observation is adopted only in a quiet window, and a shortfall is shouted
+   about.** "Quiet" means nothing was in flight before the read, nothing after it, and
+   nothing was issued in between — see below for why that condition is the whole safety
+   property. The ledger holding *less* than the floor means an outflow we did not cause,
+   which the asymmetry says is impossible.
+2. **A transfer decrements the floor when it is ISSUED, not when it settles, by
+   `amount + the fee for this attempt`.** The only way the balance can surprise us
+   downward is one of our own transfers landing without our learning it did — our reply
+   callback traps, so the debit stands while our bookkeeping rolls back. Assuming the
+   debit at issue time makes that case exact instead of optimistic.
+
+   ⚠️ **The fee is in the FLOOR decrement but not in the promise tally**, and the
+   asymmetry is deliberate: the ledger charges its fee on top of the amount, so an
+   outflow moves the balance by `amount + fee` while what an order *promises* is the
+   amount alone (§3). Adding a fee term to the tally double-counts.
 3. **A definitively-failed transfer credits the floor back**, `#Duplicate` included — that
    answer says *this* call moved nothing, so its decrement was never a real debit even
-   though an earlier attempt's was.
+   though an earlier attempt's was. A `#BadFee` re-issue therefore credits back
+   `amount + fee` and decrements `amount + the corrected fee`; if the re-issue then fails
+   with no reply, the **larger** decrement stands, which is correctly pessimistic.
+
+   ⚠️ **A call that failed with no reply is NOT credited back.** It says nothing about
+   whether the ledger acted, and rule 2 exists for exactly that case.
 
 ⚠️ **Adoption is conditional, and the condition is the whole safety property.** Adopting a
 read that was taken before an outflow erases that outflow's decrement while the transfer

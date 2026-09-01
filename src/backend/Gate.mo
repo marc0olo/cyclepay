@@ -5,23 +5,18 @@
 /// balance too low to keep running, an amount outside the per-purchase bounds,
 /// or a principal holding too many open orders.
 ///
-/// ⚠️ **This gate is advisory about money and authoritative about abuse.** The
-/// binding money check happens at delivery, when the transfer either lands or
-/// does not; `solvent` is split out from `admit` precisely because a *query*
-/// cannot await a balance, so `can_purchase` answers from the last observation.
-/// The gate exists so a refusal reaches the buyer before they pay Stripe rather
-/// than after, which is a user-experience guarantee, not a solvency one.
+/// ⚠️ **Advisory about money, authoritative about abuse.** The binding money check is
+/// at delivery, when the transfer lands or does not. This gate exists so a refusal
+/// reaches the buyer *before* they pay Stripe — a user-experience guarantee, not a
+/// solvency one.
 ///
-/// This is an admission gate, not a capacity *reservation*. A reservation would
-/// need reserved-but-unpaid accounting plus a release path for abandoned orders,
-/// and it still could not guarantee delivery: the operator can move cycles out
-/// of the reserve account by hand, and the CMC rate can move between quote and
-/// delivery. Nothing is escrowed at creation — `lockedCycles` is a *price*, not
-/// a hold — so an order that lapses releases nothing, and an order that lapses
-/// is one whose Stripe session expired.
+/// An admission gate, **not** a capacity reservation: nothing is escrowed at creation,
+/// and `lockedCycles` is a price rather than a hold. A reservation would need
+/// reserved-but-unpaid accounting plus a release path, and still could not guarantee
+/// delivery.
 ///
-/// Every check here is pure arithmetic over values the caller reads, so the
-/// whole policy unit-tests without an IC environment.
+/// Every check is pure arithmetic over values the caller supplies, so the whole policy
+/// unit-tests with no IC environment.
 import Nat "mo:core/Nat";
 import Result "mo:core/Result";
 import Reserve "Reserve";
@@ -37,13 +32,11 @@ module {
     /// Not a money decision — an abuse bound. Raise it for legitimate power
     /// users; do not set it to 0, which would block the rail entirely.
     ///
-    /// ⚠️ **One, decided as a product call rather than a safety control.** A buyer who
-    /// wants another slot cancels the one they have, which is what makes `cancel_order`
-    /// load-bearing rather than a nicety. Abuse (trolling, a flood of identities) is
-    /// deliberately **not** pre-built for: a per-principal cap cannot bound an attacker
-    /// who rotates self-authenticating principals anyway, so the honest bound is the
-    /// cycles cost of the update calls plus `minCanisterCycles` failing the rail closed.
-    /// Mitigate if it happens; do not harden against it now.
+    /// One, as a product call rather than a safety control: a buyer who wants another
+    /// slot cancels the one they have, which is what makes `cancel_order` load-bearing.
+    /// **Do not harden this against identity flooding.** A per-principal cap cannot
+    /// bound an attacker who rotates self-authenticating principals, so the honest bound
+    /// is the cycles cost of the calls plus `minCanisterCycles` failing the rail closed.
     ///
     /// ⚠️ **Only safe because `Orders.openOrderCount` skips past-deadline orders.** At a
     /// cap of 1 without that check, one missed expiry webhook locks a buyer out forever.
@@ -213,27 +206,16 @@ module {
 
   /// Running tally of refusals, one counter per `Reason` (#61).
   ///
-  /// ⚠️ **This replaces a per-attempt audit line, and it replaces it without
-  /// losing anything.** The line it replaces was
-  /// `audit("order.notAdmitted", reasonToText(reason))` — no principal, no
-  /// amount. It could not attribute abuse to anyone and never could; its whole
-  /// content was *"a refusal of this kind happened at time T"*. A counter keeps
-  /// the kind and the volume; `RailStateLatch` below keeps the timestamp anyone
-  /// actually wants.
+  /// ⚠️ **A counter and not an audit line, because refusals are free to attempt.**
+  /// `#amountBelowMin` needs no prior state — one cent from any fresh principal
+  /// reaches it with no order, no payment and no setup — and principals are free. The
+  /// audit log drops nothing, so a line per attempt is permanent stable-state growth at
+  /// zero attacker cost. Every other structure here is attacker-priced: orders by the
+  /// open-order cap and the reserve, orphans by needing a real payment to exist.
   ///
-  /// ⚠️ **Why a counter and not a log line at all: refusals are free to
-  /// attempt.** `#amountBelowMin` needs no prior state — `create_order` with one
-  /// cent from any fresh principal reaches it, with no order, no payment and no
-  /// setup. Principals are free and there is no rate limit by decision. While the
-  /// audit log was a 4,096-entry ring that was harmless churn; #37 removes the
-  /// ring, and an unbounded log fed by a free caller is permanent stable-state
-  /// growth at zero attacker cost. Every other structure here is attacker-priced
-  /// — orders by the open-order cap and the reserve, error-queue entries by
-  /// needing a real payment to exist. Audit lines were the exception.
-  ///
-  /// **A record rather than a map, so a new `Reason` cannot be silently
-  /// untallied**: `countRefusal` switches exhaustively, so adding a variant is a
-  /// compile error here rather than a counter that stays at zero in production.
+  /// **A record rather than a map, so a new `Reason` cannot be silently untallied** —
+  /// `countRefusal` switches exhaustively, so adding a variant is a compile error here
+  /// rather than a counter that reads zero in production.
   public type RefusalCounts = {
     amountAboveMax : Nat;
     amountBelowMin : Nat;
@@ -297,7 +279,7 @@ module {
   /// A condition that is a fact about the **gateway**, so entering it is worth
   /// exactly one audit line and every later refusal under it is noise.
   ///
-  /// ⚠️ **Three, not two.** `#railClosed` belongs here for the same reason the
+  /// **Three, not two.** `#railClosed` belongs here for the same reason the
   /// other two do — either the API key and origin are provisioned or they are not
   /// — and it is refused on a path that never reaches `admit`, so it cannot be
   /// expressed as a `Reason`.
@@ -310,14 +292,14 @@ module {
     /// rotated or revoked at Stripe without updating the canister — which
     /// `sessionConfig` cannot detect, because the secret exists.
     ///
-    /// ⚠️ **One condition for BOTH session outcalls — create and expire — because they
+    /// **One condition for BOTH session outcalls — create and expire — because they
     /// share one diagnosis and one lever.** A revoked key fails both, and "rotate the
     /// key" is the answer to either. Splitting them would file two incidents for one
     /// cause and leave an operator wondering which to act on. Named for the API rather
     /// than for `create`, so the next outcall added here does not need a third
     /// condition.
     ///
-    /// ⚠️ **Different diagnosis, different lever, so not folded into `#railClosed`:**
+    /// **Different diagnosis, different lever, so not folded into `#railClosed`:**
     /// that one says *provision the key*, this one says *rotate it*. Folding them
     /// would file the wrong instruction.
     #stripeApiFailing;
@@ -483,22 +465,15 @@ module {
 
   /// Can the reserve cover this order, on top of everything already owed?
   ///
-  /// ⚠️ **Separate from `admit`, and that separation is structural rather than
-  /// stylistic.** Reading the reserve means awaiting the cycles ledger, and
-  /// `admit` is synchronous precisely so there is no TOCTOU window between
-  /// observing and deciding. Folding solvency into it would force every caller to
-  /// supply a balance — including `can_purchase`, which is a **query** and cannot
-  /// await one. #30 asks for `can_purchase`'s contract to be narrowed to "gas,
-  /// open-order cap, ceiling, floor"; splitting the functions makes that narrowing
-  /// a fact about the code rather than a sentence in a doc comment.
+  /// **Kept separate from `admit`, structurally.** `admit` is synchronous so there
+  /// is no TOCTOU window between observing and deciding; folding solvency in would force
+  /// every caller to supply a balance, including `can_purchase`, which is a **query**
+  /// and cannot await one.
   ///
-  /// ⚠️ **The caller must hold `lockedCycles` in the SAME synchronous block as
-  /// this check.** Two concurrent `create_order` calls that both pass here against
-  /// one `promisedTotal` and only then hold will together promise more than the
-  /// balance they checked — two honest buyers, no attacker. #30's own earlier
-  /// draft claimed interleaved creates were safe because "each resumes after the
-  /// other has recorded its promise", which is true only if the check and the hold
-  /// cannot be separated by an await.
+  /// ⚠️ **The caller must hold `lockedCycles` in the SAME synchronous block as this
+  /// check.** Two concurrent creates that both pass here against one `promisedTotal` and
+  /// only then hold will together promise more than the balance they checked — two
+  /// honest buyers, no attacker.
   public func solvent(reserveBalance : Nat, promisedTotal : Nat, lockedCycles : Nat) : Result.Result<(), Reason> {
     if (Reserve.canCover(reserveBalance, promisedTotal, lockedCycles)) return #ok;
     #err(#reserveShort({
