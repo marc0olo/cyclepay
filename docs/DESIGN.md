@@ -102,6 +102,43 @@ Two structures, because they answer different questions:
 
 Nothing drops from either.
 
+**`NeedsReview` — every route to it, because a census beats a claim.** The status means
+*"we can no longer ask safely"*, and it is reachable with the money position both unknown
+and known:
+
+*Unknown position* — a human must establish what happened:
+
+1. **A stale transfer intent**: the intent is past the ledger's ~24 h dedup window, so a
+   replay is no longer protected against double-paying. Reaching it takes a day-long
+   ledger outage with an hourly sweep hammering it throughout — **expected never**, and
+   documented as such rather than as a routine branch.
+2. **The ledger's own escalating answers.** ⚠️ Not a second cause: a too-old rejection *is*
+   case 1 told to us by the ledger instead of derived from our clock. Same position,
+   different messenger.
+
+*Known position* — nothing to establish, and this is the correction to a tidier claim of
+"one trigger":
+
+3. **The max-wait bound (§5.3)** fires on an order paid too long ago *whatever* the
+   reason, including one where **nothing was ever sent** — position certain, instruction
+   "refund in the Stripe Dashboard". So read any "one trigger" claim as scoped to the
+   *unknown-position* routes.
+
+*Unreachable guard*:
+
+4. **The intent's amount exceeding the order's locked quantity**, which cannot happen
+   because the amount was derived by subtracting a fee from that very quantity. ⚠️ If it
+   ever fires it is not a counter-example to the census — it means `lockedCycles` acquired
+   a second writer (§3), which is a much larger problem than one escalated order.
+
+⚠️ **An escalation records the CAUSE and the MONEY POSITION separately, because they can
+legitimately disagree.** The cause is why we stopped trying; the position is what a
+transfer did or did not do. A stale intent stops the driver for one reason while the
+position depends on whether a block was recorded — and *"establish its fate, never
+rebuild"* is the right action regardless of why we stopped. The runbook's triage is
+organised by position, because that is what determines the action; the cause is what
+identifies the incident.
+
 ### §4.2 — Data model
 
 One `persistent actor`. Orders are never deleted, which is what makes every index over
