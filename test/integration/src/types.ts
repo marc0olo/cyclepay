@@ -401,10 +401,37 @@ export interface BackendService {
   process_order(id: string): Promise<Result<Order, { notFound: null } | { inFlight: null }>>;
   recovery_status(): Promise<{
     intervalNs: bigint;
-    lastCountReconcile: Opt<{ atNs: bigint; drift: { status: string; was: bigint; is: bigint }[] }>;
+    /// `drift` was RAISED to the recount and is correct again; `refused` came out
+    /// lower than the maintained tally and was not adopted, so it is still suspect
+    /// (#63). Two verdicts, two responses — never read them as one number.
+    lastCountReconcile: Opt<{
+      atNs: bigint;
+      drift: { status: string; was: bigint; is: bigint }[];
+      refused: { status: string; was: bigint; is: bigint }[];
+      ordersRead: bigint;
+    }>;
     lastCountReconcileAttemptNs: bigint;
     lastSweep: Opt<{ atNs: bigint; pending: bigint }>;
     sweepInFlight: boolean;
+    /// ⚠️ Coverage for the rotating index scan (#63). A clean scan means nothing
+    /// without `lastCompletedCycle`: silence plus a recent `completedAtNs` is
+    /// *verified clean*, silence without one is *unverified*, and those two carry
+    /// opposite responses.
+    indexScan: {
+      chunkSize: bigint;
+      storedOrders: bigint;
+      /// ⚠️ Detection latency for `orders.unindexedHolders`, computed from the store
+      /// size AND the live sweep cadence — `set_recovery_interval` moves it by up to
+      /// 24× and its name does not say so (#63).
+      expectedFullCycleNs: bigint;
+      inFlightCycle: { startedAtNs: bigint; ordersRead: bigint; repairs: bigint };
+      lastCompletedCycle: Opt<{
+        startedAtNs: bigint;
+        completedAtNs: bigint;
+        ordersRead: bigint;
+        repairs: bigint;
+      }>;
+    };
   }>;
   /// ⚠️ Required after funding the reserve: the gate decides against a maintained
   /// lower bound that only rises by observation, so an unobserved top-up sells nothing.

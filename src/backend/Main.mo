@@ -2334,17 +2334,25 @@ persistent actor CyclesGateway {
   /// `#paid` is the only status with money-out work) through the driver. Kicked after webhook
   /// ingestion; the §5.2 recovery timer sweeps it on a cadence.
   func sweepDeliverable() : async* Nat {
-    // Answer "is there anything to do?" in O(1) before scanning.
+    // Answer "is there anything to do?" in O(1) before looking.
     //
-    // The scan below is O(total orders), and it ran every tick forever even with
-    // nothing sweepable — a cost that grows with lifetime sales and never comes
-    // back down. The maintained tallies cover exactly the sweepable statuses, so
-    // an idle sweep is now free, which is what makes a shorter cadence
-    // affordable.
+    // The maintained tally covers exactly the sweepable status, so an idle sweep is
+    // free — which is what makes a short cadence affordable.
     if (sweepableCount() == 0) return 0;
+    // ⚠️ **Over the non-terminal index, not the order store (#63).** `#paid` — the one
+    // sweepable status — holds its promise, so the index is a superset of the population
+    // and the filter is exact. This used to walk every order ever created on every tick
+    // that had work, a cost that grows with lifetime sales and never comes back down.
+    //
+    // ⚠️ **Collect first, then await.** `processDelivery` awaits, and iterating the
+    // index while a transition removes members from it would be a mutation during
+    // iteration. The list is bounded by the index, so materialising it is cheap.
     let pending = List.empty<Types.OrderId>();
-    for ((id, order) in orderStore.orders.entries()) {
-      if (Recovery.isSweepable(order.status)) pending.add(id);
+    for (id in Orders.promiseHolderIds(orderStore)) {
+      switch (Orders.get(orderStore, id)) {
+        case (?order) if (Recovery.isSweepable(order.status)) pending.add(id);
+        case null {};
+      };
     };
     for (id in pending.values()) {
       await* processDelivery(id);
@@ -2407,18 +2415,29 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Rebuild the per-status tallies from the order store (admin, §7).
+  /// Run the reconcile now rather than waiting for the daily one (admin, §7).
   ///
-  /// The tallies are maintained incrementally so the public status queries stay
-  /// O(1); this is the O(n) reconciliation lever for the case where they are
-  /// ever suspected of having drifted. Admin-only precisely because it is the
-  /// expensive path. Returns the rebuilt counts.
+  /// The tallies are maintained incrementally so the public status queries stay O(1);
+  /// this is the on-demand lever for the case where they are ever suspected of having
+  /// drifted. Returns the counts as they stand after the pass.
+  ///
+  /// ⚠️ **It is the same bounded pass the timer runs, with the same one-directional
+  /// rule — it is NOT a stronger repair, and an operator must not reach for it as one.**
+  /// `Orders.adoptOnlyIncreases` refuses a recount lower than the maintained tally,
+  /// here exactly as on the timer, because a lower recount is indistinguishable from an
+  /// incomplete index and adopting it is the only way an index bug could oversell the
+  /// reserve. There is deliberately **no** force flag and no full-scan rebuild: a lever
+  /// for adopting the unsafe direction would be a lever for the bug.
+  ///
+  /// ⚠️ **No longer the expensive path**, and it stays admin-only anyway — it writes
+  /// tallies the gate reads.
   public shared ({ caller }) func recount_orders() : async [(Text, Nat)] {
     requireAdmin(caller);
-    let rebuilt = Orders.recount(orderStore);
-    let rendered = rebuilt.map(func((status, n)) = status # "=" # n.toText());
+    let report = Orders.reconcileBounded(orderStore);
+    reportReconciliation(report);
+    let rendered = report.counts.map(func((status, n)) = status # "=" # n.toText());
     auditAdmin(caller, "orders.recounted", rendered.values().join(", "));
-    rebuilt;
+    report.counts;
   };
 
   /// Reconcile the floor against the ledger (#30 PR-B) — **rule 1 of three**.
@@ -2500,6 +2519,18 @@ persistent actor CyclesGateway {
     entry.status == #paid and entry.transferIntent != null and entry.blockIndex == null;
   };
 
+  /// ⚠️ **A walk over every journal entry ever written, and #69 owns bounding it.**
+  /// #63 bounded the order store's walks and this one is in the same class — the journal
+  /// gains an entry per `#paid` order and nothing removes them. It fails safe (a trap
+  /// means the floor is never adopted, so the gateway under-sells) which is why it is
+  /// sequenced rather than folded into #63.
+  ///
+  /// ⚠️ **Do not "fix" it with `Orders.promiseHolders`.** This reads the JOURNAL's status
+  /// copy, deliberately, and the two are allowed to disagree: `abandon_order` can take a
+  /// `#paid` order terminal while its transfer is still in flight, so the order leaves
+  /// the non-terminal index while its entry is still unsettled. Iterating that index
+  /// would return 0 here and make the floor adoptable across an in-flight transfer —
+  /// exactly the bug this predicate exists to prevent. See #69.
   func unsettledDeliveries() : Nat {
     var n = 0;
     for ((_, entry) in deliveryJournal.entries()) {
@@ -2586,15 +2617,26 @@ persistent actor CyclesGateway {
     nextCursor : ?Types.OrderId;
   } {
     requireAdmin(caller);
-    // ⚠️ **A full scan, and #63 owns bounding it.** Under indefinite retention this
-    // walks every order; the page bounds the RESPONSE, not the work. Those are two
-    // different limits — ~2 MB for the response, instructions per message for the scan
-    // — and paginating only fixes the first. Do not read this as bounded.
+    // ⚠️ **Bounded by the non-terminal index, not by lifetime sales (#63).** `#paid`
+    // holds its promise, so the index is a superset of the population and the filter is
+    // exact — and the index is capped by the reserve rather than growing with sales.
+    //
+    // ⚠️ **The page bounds the RESPONSE; the index bounds the WORK. Both are needed
+    // and they are different limits** — ~2 MB for the response, instructions per
+    // message for the walk — which is why paginating this in #38 did not make it
+    // bounded and the comment here said so until now.
     let capped = if (limit == 0 or limit > Orders.maxPageSize) Orders.maxPageSize else limit;
     let now = Time.now();
     let collected = List.empty<DelayedDelivery>();
     var last : ?Types.OrderId = null;
-    for ((id, order) in orderStore.orders.entries()) {
+    // Seek in O(log n); `valuesFrom` is inclusive, so the `id > cursor` test below is
+    // what skips the cursor itself.
+    let ids = switch (afterId) {
+      case (?cursor) Orders.promiseHolderIdsFrom(orderStore, cursor);
+      case null Orders.promiseHolderIds(orderStore);
+    };
+    label scan for (id in ids) {
+      let ?order = Orders.get(orderStore, id) else continue scan;
       let past = switch (afterId) { case (?cursor) id > cursor; case null true };
       if (past and order.status == #paid) {
         let stage = Delivery.waitStage(order.updatedAtNs, now, deliveryConfig);
@@ -3254,12 +3296,26 @@ persistent actor CyclesGateway {
   /// bookkeeping bug, which does not need a 15-minute detection window.
   let countReconcileIntervalNs : Nat = 24 * 3_600 * 1_000_000_000;
 
-  /// When the tallies were last **successfully** rebuilt, and what had to move.
-  /// Surfaced on `recovery_status` so "the counts are trustworthy" is an
-  /// observable fact rather than an assumption. Written only on success, so it
-  /// falling behind while `lastSweep` advances is the signal that the reconcile
-  /// itself is failing (RUNBOOK §8).
-  var lastCountReconcile : ?{ atNs : Int; drift : [Orders.Drift] } = null;
+  /// When the tallies were last **successfully** reconciled, and what the pass found.
+  /// Surfaced on `recovery_status` so "the counts are trustworthy" is an observable
+  /// fact rather than an assumption. Written only on success, so it falling behind
+  /// while `lastSweep` advances is the signal that the reconcile itself is failing
+  /// (RUNBOOK §8).
+  ///
+  /// ⚠️ **`drift` and `refused` are different verdicts and are reported separately**
+  /// (#63): `drift` is a tally that was raised to the recount and is now correct, while
+  /// `refused` is one the pass would not touch because the recount came out lower — see
+  /// `Orders.adoptOnlyIncreases`. A monitor that alerts on the pair as if they were one
+  /// number cannot tell "repaired" from "still suspect".
+  ///
+  /// `ordersRead` is how much work the pass did. It is bounded by the two index sizes,
+  /// so watching it grow with lifetime sales would mean the bound had broken.
+  var lastCountReconcile : ?{
+    atNs : Int;
+    drift : [Orders.Drift];
+    refused : [Orders.Drift];
+    ordersRead : Nat;
+  } = null;
 
   /// How often the sweep reconciles the reserve floor against the cycles ledger.
   ///
@@ -3285,42 +3341,260 @@ persistent actor CyclesGateway {
   /// message, which commits regardless of what the detached reconcile does.
   var lastCountReconcileAttemptNs : Int = 0;
 
-  /// Rebuild the tallies. Audits **only on drift**: a clean reconcile every day
-  /// would bury the one line that matters, and drift is a bug in the incremental
-  /// bookkeeping that an operator must see.
+  /// Report what a bounded reconcile pass found (#63), shared by the timer and the
+  /// admin lever so the two cannot report differently.
   ///
-  /// Runs in its own message (see the call site) and takes no `await`, so it
-  /// still sees a consistent snapshot of the order store — chunking it across
-  /// messages would admit mutations mid-scan and manufacture false drift, which
-  /// is why it is not paged. (The retention sweep WAS paged, for the opposite
-  /// reason — it mutated as it went and only had to visit everything eventually.
-  /// #33 deleted it; this one stays unpaged deliberately.)
-  func reconcileCounts() {
-    let { drift; counts = _ } = Orders.reconcile(orderStore);
-    // Stamped from inside, not handed the sweep's clock: this message runs after
-    // the one that scheduled it, and the two timestamps are compared against each
-    // other (attempt vs success) to tell a failing reconcile from a due one.
-    lastCountReconcile := ?{ atNs = Time.now(); drift };
-    if (drift.size() > 0) {
-      let rendered = drift.map(
+  /// ⚠️ **Every audit line here is a code bug, not an operational condition**, and each
+  /// is written only when it fires — a clean pass writes nothing, because a daily "all
+  /// well" line would bury the one that matters.
+  ///
+  /// ⚠️ **`adopted` and `refused` are separate tags on purpose.** They demand opposite
+  /// readings: an adopted drift means *the tallies are correct again and a writer lost
+  /// an adjustment*; a refused one means *the tallies are still suspect and the pass
+  /// would not touch them*. One tag covering both would be a row an operator cannot act
+  /// on, which is worse than no row.
+  func reportReconciliation(report : Orders.Reconciliation) {
+    if (report.adopted.size() > 0) {
+      let rendered = report.adopted.map(
         func(d : Orders.Drift) : Text = d.status # " " # d.was.toText() # "→" # d.is.toText()
       );
-      audit("orders.countDrift", rendered.values().join(", "));
+      audit(
+        "orders.countDrift",
+        "raised to the recount over the non-terminal index: " # rendered.values().join(", ")
+        # ". The counts are right again; the writer that lost the adjustment is not fixed.",
+      );
     };
-    // ⚠️ **The adjudicator for the unresolved-problems index, on the same cadence.**
-    // That index is derived state keyed by order id, which is only safe because the
-    // orders are the authority and this can rebuild it. A non-zero count does not mean
-    // bad data — it means **a writer of `order.problems` bypassed
-    // `Orders.fileProblem`/`resolveProblems`**, which is a bug in `Orders.mo` rather
-    // than a condition to tolerate. So it is audited as a breach, not as a repair.
-    let problemDrift = Orders.recountUnresolvedProblems(orderStore);
-    if (problemDrift > 0) {
+    if (report.refused.size() > 0) {
+      let rendered = report.refused.map(
+        func(d : Orders.Drift) : Text = d.status # " tally " # d.was.toText() # ", recount " # d.is.toText()
+      );
+      audit(
+        "orders.countRecountLow",
+        "the recount came out BELOW the maintained tally and was refused: " # rendered.values().join(", ")
+        # ". Two causes with one response: either the non-terminal index is missing a member or a tally"
+        # " gained an adjustment it should not have — both are bugs in Orders.mo. The maintained value"
+        # " stands, which over-refuses rather than overselling. orders.unindexedHolders from the rotating"
+        # " scan names the missing members if that is the cause.",
+      );
+    };
+    if (report.promisedWas != report.promisedIs) {
+      audit(
+        if (report.promisedAdopted) "reserve.promisedRaised" else "reserve.promisedRecountLow",
+        "promised tally " # report.promisedWas.toText() # ", recount over the non-terminal index "
+        # report.promisedIs.toText()
+        # (
+          if (report.promisedAdopted) ". Raised: the tally had lost a hold, so the reserve was reading"
+          # " as MORE available than it was. This is the direction that oversells, and it is now closed."
+          else ". Refused: a recount below the tally is indistinguishable from an incomplete index, so"
+          # " adopting it is the one move that could oversell the reserve. The maintained value stands and"
+          # " over-refuses."
+        ),
+      );
+    };
+    if (report.staleHolders.size() > 0) {
+      audit(
+        "orders.staleHolders",
+        report.staleHolders.size().toText() # " id(s) in the non-terminal index belonged to terminal orders"
+        # " and were dropped: " # report.staleHolders.values().join(", ")
+        # ". The order's own status is the authority, so this repair is sound — but the index is"
+        # " maintained only by Orders.create and Orders.commitTransition, so something else wrote a"
+        # " status. Find that writer; the drop is not the fix.",
+      );
+    };
+    if (report.staleProblemIds.size() > 0) {
       audit(
         "orders.problemIndexDrift",
-        problemDrift.toText() # " order id(s) disagreed with the unresolved-problems index and it was rebuilt."
-        # " The index is maintained only by Orders.fileProblem and Orders.resolveProblems, so a non-zero count means"
-        # " something else wrote order.problems directly — find that writer; the rebuild is not the fix.",
+        report.staleProblemIds.size().toText() # " id(s) in the unresolved-problems index had no unresolved"
+        # " problem and were dropped: " # report.staleProblemIds.values().join(", ")
+        # ". That index is maintained only by Orders.fileProblem and Orders.resolveProblems, so something"
+        # " else wrote order.problems. Find that writer; the drop is not the fix.",
       );
+    };
+    if (report.expiredIs < report.expiredWas) {
+      audit(
+        "orders.expiredWentBackwards",
+        "the Expired tally fell from " # report.expiredWas.toText() # " to " # report.expiredIs.toText()
+        # ", which the transition matrix makes impossible: #created → #expired is its only inbound edge"
+        # " and it has no outbound one. A bookkeeping breach in Orders.bump. Reported once per decrease,"
+        # " not daily, so a repeat means it fell again.",
+      );
+    };
+    if (report.expiredOverflow) {
+      audit(
+        "orders.expiredOverflow",
+        "Expired tally " # report.expiredIs.toText() # " plus " # Orders.promiseHolderCount(orderStore).toText()
+        # " non-terminal orders exceeds the " # Orders.storedCount(orderStore).toText() # " orders in the store."
+        # " The two sets are disjoint subsets of it, so this is arithmetically impossible and the Expired"
+        # " tally is over-counted. Observability only — nothing decides on it — but it is a real breach.",
+      );
+    };
+  };
+
+  /// Reconcile the maintained tallies against the orders. Audits **only on a finding**:
+  /// a clean pass every day would bury the one line that matters.
+  ///
+  /// Runs in its own message (see the call site) and takes no `await`, so it sees a
+  /// consistent snapshot of the order store.
+  ///
+  /// ⚠️ **Its cost is now bounded by flow rather than by lifetime sales (#63)** — it
+  /// recounts over `Orders.promiseHolders`, whose size the reserve caps. The pass it
+  /// replaced summed every order ever created in one message and was on a path to the
+  /// instruction limit.
+  ///
+  /// ⚠️ **Daily is now a sufficiency choice, not a cost one, and the old reason is
+  /// gone.** It used to be daily *because* it was O(every order); it is daily now
+  /// because drift can only come from a bookkeeping bug, which does not need a
+  /// 15-minute detection window. Do not restore the old justification — it would
+  /// describe a scan this function no longer performs.
+  ///
+  /// ⚠️ **Still not chunked, and that is the same reason as before**: a global sum
+  /// cannot be split across messages, because mutations between chunks manufacture
+  /// false drift. What changed is that the sums no longer need history. The check that
+  /// *does* need every order — the outside direction of both indexes — is
+  /// `scanIndexChunk`, which may be chunked precisely because it evaluates a per-order
+  /// predicate rather than a sum.
+  func reconcileCounts() {
+    let report = Orders.reconcileBounded(orderStore);
+    // Stamped from inside, not handed the sweep's clock: this message runs after the
+    // one that scheduled it, and the two timestamps are compared against each other
+    // (attempt vs success) to tell a failing reconcile from a due one.
+    lastCountReconcile := ?{
+      atNs = Time.now();
+      drift = report.adopted;
+      refused = report.refused;
+      ordersRead = report.ordersRead;
+    };
+    reportReconciliation(report);
+  };
+
+  // ── The rotating index scan (#63) ───────────────────────────────────────
+
+  /// Where the current coverage cycle has reached. `null` means a cycle is about to
+  /// start from the beginning of the store.
+  ///
+  /// ⚠️ **Persistent, because the coverage claim is what this state is for.** A
+  /// transient cursor would silently restart every cycle on every upgrade, so
+  /// `lastIndexScanCycle` would report a completed pass that an upgrade had truncated —
+  /// a green check that means nothing.
+  var indexScanCursor : ?Types.OrderId = null;
+
+  /// The cycle in progress: when it began, how many orders it has read, and how many
+  /// disagreements it has repaired so far.
+  var indexScanCycle : { startedAtNs : Int; ordersRead : Nat; repairs : Nat } = {
+    startedAtNs = 0;
+    ordersRead = 0;
+    repairs = 0;
+  };
+
+  /// The last **completed** cycle — the only thing that licenses reading a clean scan
+  /// as evidence about the whole store.
+  ///
+  /// ⚠️ **This field IS the third state.** `orders.problemIndexDrift` and
+  /// `orders.unindexedHolders` only mean "a writer bypassed the maintaining functions"
+  /// if the absence of those lines means "we looked". Without a completed-cycle stamp,
+  /// silence means either *verified clean* or *not yet visited*, which are two readings
+  /// with opposite responses — find the bug, versus wait for the next pass. So the three
+  /// states are: an audit line (verified, disagreed), silence with a recent
+  /// `completedAtNs` (verified, clean), and silence without one (unverified).
+  var lastIndexScanCycle : ?{
+    startedAtNs : Int;
+    completedAtNs : Int;
+    ordersRead : Nat;
+    repairs : Nat;
+  } = null;
+
+  /// The expected time for one full coverage cycle, hence the detection latency for the
+  /// outside direction. The arithmetic is `Recovery.indexScanCycleNs`, which is pure and
+  /// unit-tested — this only supplies the three live inputs.
+  func expectedIndexScanCycleNs() : Nat {
+    Recovery.indexScanCycleNs(
+      Orders.storedCount(orderStore),
+      Orders.scanChunkSize,
+      recoverySweepIntervalNs,
+    );
+  };
+
+  /// One chunk of the rotating scan, on the sweep cadence.
+  ///
+  /// ⚠️ **Sweep cadence rather than daily, because one of its findings is money.**
+  /// `unindexedHolders` is the one inconsistency the daily reconcile cannot see: an
+  /// order that holds a promise, is missing from the index, and whose cycles are missing
+  /// from `promised` too — index and tally agree, both low, and the reserve reads as
+  /// more available than it is.
+  ///
+  /// ⚠️ **#63 turned unbounded WORK into unbounded LATENCY, and the honest claim is
+  /// "bounded per message", not "bounded".** The daily reconcile verifies only the
+  /// inside direction of each index; the outside direction is this scan, so detecting an
+  /// order that holds a promise and is not indexed takes up to **one full cycle**, and
+  /// the cycle grows **linearly in stored orders**:
+  ///
+  ///     cycle = ⌈storedOrders ÷ scanChunkSize⌉ × recoverySweepIntervalNs
+  ///
+  /// At the 15-minute default and 2,000 orders per chunk that is ~192,000 orders a day,
+  /// so 365k orders is covered in about two days and 3.65M in about nineteen. That is
+  /// the right trade — work that traps is fatal, latency that grows is degradable and
+  /// observable — but it is a trade, and a comment claiming the reconcile is simply
+  /// "bounded now" would hide the half that still grows.
+  ///
+  /// ⚠️ **`set_recovery_interval` is therefore a lever on this latency, and nothing
+  /// about its name says so.** The cadence is operator-tunable up to the §5.1 ceiling of
+  /// 6 h, which is **24× the default** — the same 365k store then takes ~46 days per
+  /// cycle. `recovery_status.indexScan.expectedFullCycleNs` is computed from the live
+  /// interval precisely so this is a number an operator reads rather than one they have
+  /// to know to derive.
+  ///
+  /// ⚠️ **Detached into its own message by the caller, like the reconcile**, so a trap
+  /// here cannot take the sweep — and therefore money-out — down with it. It takes no
+  /// `await`, so its own state commits or rolls back as a unit.
+  func scanIndexChunk() {
+    let now = Time.now();
+    let starting = indexScanCursor == null;
+    if (starting) {
+      indexScanCycle := { startedAtNs = now; ordersRead = 0; repairs = 0 };
+    };
+    let chunk = Orders.scanChunk(orderStore, indexScanCursor, Orders.scanChunkSize);
+    let repairs = chunk.unindexedHolders.size() + chunk.unindexedProblems.size();
+    indexScanCycle := {
+      indexScanCycle with
+      ordersRead = indexScanCycle.ordersRead + chunk.visited;
+      repairs = indexScanCycle.repairs + repairs;
+    };
+    indexScanCursor := chunk.nextCursor;
+    if (chunk.unindexedHolders.size() > 0) {
+      audit(
+        "orders.unindexedHolders",
+        chunk.unindexedHolders.size().toText() # " order(s) hold a promise and were missing from the"
+        # " non-terminal index; they have been added: " # chunk.unindexedHolders.values().join(", ")
+        # ". ⚠️ This is the one bookkeeping error the daily reconcile cannot see — index and promise"
+        # " tally can be missing the same order and agree with each other, so the reserve reads as MORE"
+        # " available than it is and can be oversold. The next reconcile will raise `promised` to the"
+        # " larger index. Find the writer that set a status outside Orders.create and"
+        # " Orders.commitTransition; the repair is not the fix.",
+      );
+    };
+    if (chunk.unindexedProblems.size() > 0) {
+      audit(
+        "orders.unindexedProblems",
+        chunk.unindexedProblems.size().toText() # " order(s) carry an unresolved problem and were missing"
+        # " from the unresolved-problems index; they have been added: "
+        # chunk.unindexedProblems.values().join(", ")
+        # ". Until now the worklist did not show those obligations and resolveByPaymentRef could not"
+        # " reach them. Find the writer of order.problems outside Orders.fileProblem and"
+        # " Orders.resolveProblems.",
+      );
+    };
+    // ⚠️ **Only a null cursor licenses the coverage claim.** Every order that existed
+    // when the cycle began was ahead of a cursor that started at the beginning, so a
+    // cycle that ran to exhaustion visited all of them. Orders created mid-cycle may
+    // land behind the cursor and wait for the next one — which is why the claim is
+    // "every order that existed when this cycle began", and not "every order".
+    if (chunk.nextCursor == null) {
+      lastIndexScanCycle := ?{
+        startedAtNs = indexScanCycle.startedAtNs;
+        completedAtNs = Time.now();
+        ordersRead = indexScanCycle.ordersRead;
+        repairs = indexScanCycle.repairs;
+      };
     };
   };
 
@@ -3340,10 +3614,10 @@ persistent actor CyclesGateway {
   /// every order in that window at once — so "rare" describes incidents, not orders per
   /// incident. Uncapped, one incident becomes N outcalls an hour for as long as it lasts.
   ///
-  /// ⚠️ **Same scan exposure as `reconcileCounts`:** a whole-store read, so at enough
-  /// orders it meets the instruction limit. That is why it is detached into its own
-  /// message by the caller, and why #37's status index is the real fix. The
-  /// `countOf(#created)` gate below is a maintained tally, so an idle pass is free.
+  /// ⚠️ **Bounded by the non-terminal index (#63), not by lifetime sales.** It still
+  /// runs detached in its own message, because it makes outcalls and a release check
+  /// must not be able to stop money-out. The `countOf(#created)` gate below is a
+  /// maintained tally, so an idle pass is free.
   func sweepStrandedCreated() : async* Nat {
     if (expiryScanInFlight) return 0;
     if (Orders.countOf(orderStore, #created) == 0) return 0;
@@ -3353,14 +3627,24 @@ persistent actor CyclesGateway {
 
   func runStrandedPass() : async* Nat {
     let now = Time.now();
-    // Collect every due order first. This costs a store scan and **no outcalls**, so it is
-    // the cheap half; the cap applies to the expensive half below.
+    // Collect every due order first. This costs **no outcalls**, so it is the cheap
+    // half; the cap applies to the expensive half below.
+    //
+    // ⚠️ **Over the non-terminal index, not the order store (#63).**
+    // `Recovery.expiryCheckDue` matches `#created` alone, which holds its promise, so
+    // the index is a superset of the population and the filter is exact. This used to
+    // walk every order ever created on every hourly pass.
     let all = List.empty<Types.OrderId>();
-    for ((id, order) in orderStore.orders.entries()) {
-      if (
-        Recovery.expiryCheckDue(order.status, order.expiresAtNs, now, Recovery.expiryGraceNs)
-        and not expiryChecksInFlight.contains(id)
-      ) { all.add(id) };
+    for (id in Orders.promiseHolderIds(orderStore)) {
+      switch (Orders.get(orderStore, id)) {
+        case (?order) {
+          if (
+            Recovery.expiryCheckDue(order.status, order.expiresAtNs, now, Recovery.expiryGraceNs)
+            and not expiryChecksInFlight.contains(id)
+          ) { all.add(id) };
+        };
+        case null {};
+      };
     };
     let ids = all.toArray();
     if (ids.size() == 0) return 0;
@@ -3493,11 +3777,12 @@ persistent actor CyclesGateway {
     if (recoverySweepInFlight) return;
     recoverySweepInFlight := true;
     try {
-      // Detached into its own message rather than run inline. It reads the whole
-      // order store, so at enough orders it could hit the instruction limit — and
-      // inline that trap would take the entire sweep down with it, leaving
-      // money-out dead while the reconcile stayed due and trapped again on every
-      // tick. A bookkeeping *check* must not be able to stop orders from delivering.
+      // Detached into its own message rather than run inline, and it stays detached
+      // even though #63 bounded its cost. The reason was never only the instruction
+      // limit: **a bookkeeping check must not be able to stop orders from delivering**,
+      // whatever makes it trap. Inline, any trap in the reconcile takes the whole sweep
+      // down with it, leaving money-out dead while the reconcile stays due and traps
+      // again on every tick.
       //
       // Claiming the cadence here, in the sweep's own message, is what bounds the
       // damage: this write commits whatever the detached message does, so a
@@ -3509,6 +3794,19 @@ persistent actor CyclesGateway {
         lastCountReconcileAttemptNs := now;
         ignore async { reconcileCounts() };
       };
+      // ── One chunk of the rotating index scan (#63) ──────────────────────────
+      //
+      // Every tick, not on a cadence of its own: the chunk is what bounds it, and the
+      // coverage window is `stored orders ÷ (chunk × ticks per day)`, so a longer
+      // cadence buys nothing and lengthens the window on the one finding that can
+      // indicate an oversellable reserve. Detached for the same reason as the reconcile.
+      //
+      // ⚠️ **No cadence claim to make.** The cursor advances inside the detached
+      // message, so a chunk that traps simply leaves the cursor where it was and the
+      // next tick retries the same chunk — a permanently trapping chunk stalls coverage
+      // (visible as a frozen `indexScan.inFlightCycle.ordersRead`) rather than
+      // re-scanning from the start or skipping forward.
+      ignore async { scanIndexChunk() };
       let pending = await* sweepDeliverable();
       lastRecoverySweep := ?{ atNs = Time.now(); pending };
       // ── Stranded `#created` capacity (#52) ──────────────────────────────────
@@ -3564,7 +3862,20 @@ persistent actor CyclesGateway {
         recoverySweepIntervalNs := intervalNs;
         Timer.cancelTimer(recoveryTimerId);
         recoveryTimerId := Timer.recurringTimer<system>(#nanoseconds(intervalNs), recoverySweep);
-        auditAdmin(caller, "recovery.intervalSet", "sweep cadence set to " # intervalNs.toText() # " ns");
+        // ⚠️ **This knob also sets the index scan's coverage window (#63), which its
+        // name does not say.** The rotating scan runs one chunk per sweep, so coarsening
+        // the cadence multiplies the detection latency for `orders.unindexedHolders` —
+        // a finding that means the reserve was oversellable. Audited with the resulting
+        // window so the consequence is in the same line as the cause, rather than
+        // something an operator has to go and derive.
+        auditAdmin(
+          caller,
+          "recovery.intervalSet",
+          "sweep cadence set to " # intervalNs.toText() # " ns."
+          # " The #63 index scan rides this cadence, so a full coverage cycle now takes about "
+          # (expectedIndexScanCycleNs() / 1_000_000_000 / 3_600).toText()
+          # " h at the current store size — that is the detection latency for orders.unindexedHolders.",
+        );
         #ok;
       };
     };
@@ -3593,10 +3904,17 @@ persistent actor CyclesGateway {
     lastSweep : ?{ atNs : Int; pending : Nat };
     sweepInFlight : Bool;
     /// Last **successful** tally reconciliation. A non-empty `drift` means the
-    /// incremental counts had diverged from the orders and were repaired — the
-    /// tallies are correct again, but the bug that moved them is not fixed.
-    /// `recount_orders` is the on-demand form of the same repair.
-    lastCountReconcile : ?{ atNs : Int; drift : [Orders.Drift] };
+    /// incremental counts had diverged and were **raised** to the recount — the tallies
+    /// are correct again, but the bug that moved them is not fixed. A non-empty
+    /// `refused` means the recount came out **lower** and the pass would not adopt it,
+    /// so those tallies are still suspect (#63). `recount_orders` is the on-demand form
+    /// of the same pass, with the same rule.
+    lastCountReconcile : ?{
+      atNs : Int;
+      drift : [Orders.Drift];
+      refused : [Orders.Drift];
+      ordersRead : Nat;
+    };
     /// When one was last *attempted*. Reported alongside the success timestamp so
     /// "due tomorrow" and "attempted today and failed" are distinguishable without
     /// correlating against the sweep clock: an attempt materially newer than the
@@ -3609,6 +3927,41 @@ persistent actor CyclesGateway {
     /// rather than over-sell, so this is a P3 that explains refusals — not an
     /// incident.
     lastReserveReconcileAttemptNs : Int;
+    /// The rotating index scan's **coverage** (#63) — the reader without which a clean
+    /// scan says nothing.
+    ///
+    /// ⚠️ **Read `lastCompletedCycle` before reading the absence of an audit line as
+    /// "no drift".** The scan verifies the one property that needs every order — that
+    /// nothing *outside* an index satisfies the index's predicate — so it can only
+    /// speak for what it has visited. Silence plus a recent `completedAtNs` means
+    /// verified clean; silence with no completed cycle, or one much older than the
+    /// window below, means **unverified**, which is not the same thing and carries the
+    /// opposite response: wait for the pass rather than hunt for a writer.
+    ///
+    /// `inFlightCycle.ordersRead` against `storedOrders` is how far the current cycle
+    /// has walked. `chunkSize` and the sweep interval give the expected window:
+    /// `storedOrders ÷ (chunkSize × sweeps per day)` days per full cycle.
+    indexScan : {
+      chunkSize : Nat;
+      storedOrders : Nat;
+      /// How long a full coverage cycle is **expected** to take at the current store
+      /// size and the current sweep cadence.
+      ///
+      /// ⚠️ **Computed, not configured, so it moves when either input does** — and the
+      /// sweep cadence is one `set_recovery_interval` away from 24× the default. This is
+      /// the detection latency for `orders.unindexedHolders`, which is a money finding,
+      /// so it is reported rather than left as arithmetic an operator has to know to do.
+      /// Compare `lastCompletedCycle.completedAtNs` against this: much older means the
+      /// scan is behind its own expectation, not merely mid-cycle.
+      expectedFullCycleNs : Nat;
+      inFlightCycle : { startedAtNs : Int; ordersRead : Nat; repairs : Nat };
+      lastCompletedCycle : ?{
+        startedAtNs : Int;
+        completedAtNs : Int;
+        ordersRead : Nat;
+        repairs : Nat;
+      };
+    };
   } {
     {
       intervalNs = recoverySweepIntervalNs;
@@ -3617,6 +3970,13 @@ persistent actor CyclesGateway {
       lastCountReconcile;
       lastCountReconcileAttemptNs;
       lastReserveReconcileAttemptNs;
+      indexScan = {
+        chunkSize = Orders.scanChunkSize;
+        storedOrders = Orders.storedCount(orderStore);
+        expectedFullCycleNs = expectedIndexScanCycleNs();
+        inFlightCycle = indexScanCycle;
+        lastCompletedCycle = lastIndexScanCycle;
+      };
     };
   };
 

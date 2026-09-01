@@ -878,23 +878,57 @@ service : {
   /// transfer was issued (rule 2), and this call is the confirmation that the
   /// assumption was right.
   record_delivered: (id: OrderId, blockIndex: nat) -> (Result_9);
-  /// Rebuild the per-status tallies from the order store (admin, §7).
+  /// Run the reconcile now rather than waiting for the daily one (admin, §7).
   /// 
-  /// The tallies are maintained incrementally so the public status queries stay
-  /// O(1); this is the O(n) reconciliation lever for the case where they are
-  /// ever suspected of having drifted. Admin-only precisely because it is the
-  /// expensive path. Returns the rebuilt counts.
+  /// The tallies are maintained incrementally so the public status queries stay O(1);
+  /// this is the on-demand lever for the case where they are ever suspected of having
+  /// drifted. Returns the counts as they stand after the pass.
+  /// 
+  /// ⚠️ **It is the same bounded pass the timer runs, with the same one-directional
+  /// rule — it is NOT a stronger repair, and an operator must not reach for it as one.**
+  /// `Orders.adoptOnlyIncreases` refuses a recount lower than the maintained tally,
+  /// here exactly as on the timer, because a lower recount is indistinguishable from an
+  /// incomplete index and adopting it is the only way an index bug could oversell the
+  /// reserve. There is deliberately **no** force flag and no full-scan rebuild: a lever
+  /// for adopting the unsafe direction would be a lever for the bug.
+  /// 
+  /// ⚠️ **No longer the expensive path**, and it stays admin-only anyway — it writes
+  /// tallies the gate reads.
   recount_orders: () -> (vec record {
                                text;
                                nat;
                              });
   recovery_status: () ->
    (record {
+      indexScan:
+       record {
+         chunkSize: nat;
+         expectedFullCycleNs: nat;
+         inFlightCycle:
+          record {
+            ordersRead: nat;
+            repairs: nat;
+            startedAtNs: int;
+          };
+         lastCompletedCycle:
+          opt
+           record {
+             completedAtNs: int;
+             ordersRead: nat;
+             repairs: nat;
+             startedAtNs: int;
+           };
+         storedOrders: nat;
+       };
       intervalNs: nat;
-      lastCountReconcile: opt record {
-                                atNs: int;
-                                drift: vec Drift;
-                              };
+      lastCountReconcile:
+       opt
+        record {
+          atNs: int;
+          drift: vec Drift;
+          ordersRead: nat;
+          refused: vec Drift;
+        };
       lastCountReconcileAttemptNs: int;
       lastReserveReconcileAttemptNs: int;
       lastSweep: opt record {

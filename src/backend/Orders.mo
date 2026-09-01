@@ -115,17 +115,62 @@ module {
     /// non-terminal index narrows nothing. Check that the bound actually narrows the
     /// set before writing that it does.
     ///
-    /// ⚠️ **Derived state, and that is only safe with a rebuild.** This is the same
-    /// discipline `counts` and `promised` follow: maintained by the only two functions
-    /// that write `problems` — `fileProblem` and `resolveProblems`, both in this file —
-    /// and rebuildable by `recountUnresolvedProblems` if ever suspected wrong. It is
-    /// **not** the `delayedAlerts` mistake repeated: that map pointed at *entry ids in
-    /// another structure*, so the two could disagree with no way to tell which was
-    /// right. This is a projection of `orders`, recomputable at any time, and a test
-    /// pins it against a full scan.
+    /// ⚠️ **Derived state, and that is only safe because the orders can adjudicate
+    /// it.** This is the same discipline `counts` and `promised` follow: maintained by
+    /// the only two functions that write `problems` — `fileProblem` and
+    /// `resolveProblems`, both in this file — and checked from both directions, the
+    /// inside daily by `reconcileBounded` and the outside on a coverage window by
+    /// `scanChunk` (#63). It is **not** the `delayedAlerts` mistake repeated: that map
+    /// pointed at *entry ids in another structure*, so the two could disagree with no
+    /// way to tell which was right. This is a projection of `orders`, recomputable at
+    /// any time, and a test pins it against a full scan.
+    ///
+    /// ⚠️ **There is deliberately no wholesale rebuild lever.** The pass that used to
+    /// clear and refill this from every order in one message is gone: it grew with
+    /// lifetime sales, and its audit line said "the index was rebuilt", which reads as a
+    /// fix for what is actually a bug in this file.
     ///
     /// Growth is attacker-priced: every problem needs a real payment event to exist.
     unresolvedProblems : Set.Set<Types.OrderId>;
+    /// Orders whose promise is still held — i.e. **the non-terminal set** (#63).
+    ///
+    /// ⚠️ **Named for the predicate that defines it, not for what it is used for.**
+    /// `Reserve.holdsPromise` IS the membership rule, and it is the same predicate the
+    /// `promised` tally moves on, so the two cannot drift apart into two definitions of
+    /// "still live". ⚠️ Do not read this as `reserve_status.openOrders` — that figure is
+    /// the `#created` tally alone, a strict subset.
+    ///
+    /// ⚠️ **Bounded by the reserve, which is what makes it fit in one message.** Every
+    /// member holds its `lockedCycles` in `promised`, and admission refuses once
+    /// `promised` would exceed the reserve floor (`Reserve.canCover`), so
+    /// `|promiseHolders| ≤ reserveFloor / minimum order`. That bound is set by **flow**,
+    /// not by lifetime sales — which is precisely what the order store is not.
+    ///
+    /// ⚠️ **It is derived state trusted by the reconcile, so read `#63`'s circularity
+    /// argument before extending it.** The rule that makes it safe: iterating this and
+    /// reading each order's real status yields a tally that is **exact if the index is
+    /// complete and too LOW otherwise** — never too high, because a member whose order
+    /// turned out terminal is dropped on sight. So the reconcile adopts only
+    /// *increases*, and the one error direction this index can hide is the one direction
+    /// it refuses to adopt. The completeness half — nothing outside here holds a promise
+    /// — is not knowable from the index at all, and that is what the rotating
+    /// `scanChunk` is for.
+    promiseHolders : Set.Set<Types.OrderId>;
+    /// The highest `#expired` tally seen by a reconcile, for the monotonicity check
+    /// that replaces re-summing it (#63).
+    ///
+    /// ⚠️ **`#expired` is the only tracked status that is terminal**, so it is the only
+    /// one `promiseHolders` cannot recount — and it is also the only one that can be
+    /// checked without history: `#created → #expired` is its sole inbound edge and the
+    /// matrix has no outbound one, so the tally is **monotonically non-decreasing**. A
+    /// decrease is a bookkeeping breach.
+    ///
+    /// ⚠️ **It follows the count back DOWN once a decrease is reported**, so each
+    /// decrease is reported exactly once. Holding a true high-water mark would re-report
+    /// the same unfixed condition on every daily pass — our own cadence bounding a
+    /// *rate* against a persistent state, which is the fault #37 §2c removed from the
+    /// audit log.
+    var expiredHighWater : Nat;
   };
 
   public func emptyStore() : Store {
@@ -136,12 +181,44 @@ module {
       var promised = 0;
       var tallySaturations = 0;
       unresolvedProblems = Set.empty<Types.OrderId>();
+      promiseHolders = Set.empty<Types.OrderId>();
+      var expiredHighWater = 0;
     };
   };
 
   /// Cycles promised to unsettled orders (#30 PR-B). O(1).
   public func promised(store : Store) : Nat {
     store.promised;
+  };
+
+  /// How many orders still hold a promise. O(1) — `Set.size` is a stored field.
+  public func promiseHolderCount(store : Store) : Nat {
+    store.promiseHolders.size();
+  };
+
+  /// The ids of every order that still holds a promise, in id order.
+  ///
+  /// ⚠️ **This is the bounded stand-in for a store walk, and callers owe it two
+  /// disciplines.** *One*: look each id up rather than trusting the index for the
+  /// order's status — the index is derived state and the order is the record. *Two*:
+  /// materialise the ids before doing anything that can `await` or transition an order,
+  /// because a transition removes members and mutating a Set under iteration is not
+  /// safe. Both are cheap: the set is bounded by the reserve.
+  public func promiseHolderIds(store : Store) : Iter.Iter<Types.OrderId> {
+    store.promiseHolders.values();
+  };
+
+  /// Resume iterating the promise holders at or after `id` — the seek a paginated
+  /// admin query needs, in O(log n) rather than by re-walking.
+  public func promiseHolderIdsFrom(store : Store, id : Types.OrderId) : Iter.Iter<Types.OrderId> {
+    store.promiseHolders.valuesFrom(id);
+  };
+
+  /// How many orders the store holds in total. O(1), and the only figure derived from
+  /// lifetime sales that any reconcile path may read — it costs one field read, not a
+  /// walk.
+  public func storedCount(store : Store) : Nat {
+    store.orders.size();
   };
 
   /// Statuses whose live counts are maintained. Keyed by `statusToText` so the
@@ -210,35 +287,288 @@ module {
   /// the orders actually add up to.
   public type Drift = { status : Text; was : Nat; is : Nat };
 
-  /// Rebuild every tracked count from `orders` — the O(n) reconciliation path.
+  /// What one bounded reconcile pass found (#63).
   ///
-  /// Returns the rebuilt counts **and** every count that had to move. The drift
-  /// list is the point: `bump` clamps at zero and the counts feed the admission
-  /// gate, so a repair that silently succeeded would hide the very bug that made
-  /// it necessary. A caller that reports nothing on empty drift and reports the
-  /// deltas otherwise turns this from a repair into a detector.
-  public func reconcile(store : Store) : { counts : [(Text, Nat)]; drift : [Drift] } {
-    let before = snapshotCounts(store);
-    for (status in trackedStatuses.values()) {
-      store.counts.add(Types.statusToText(status), 0);
-    };
-    for ((_, order) in store.orders.entries()) {
-      bump(store, order.status, 1);
-    };
-    let counts = snapshotCounts(store);
-    let drift = List.empty<Drift>();
-    for (i in before.keys()) {
-      let (status, was) = before[i];
-      let (_, is_) = counts[i];
-      if (was != is_) drift.add({ status; was; is = is_ });
-    };
-    { counts; drift = drift.toArray() };
+  /// ⚠️ **Every field is either a repair that was applied or a breach that was
+  /// refused, and the caller must be able to tell which.** A report that collapsed the
+  /// two would leave an operator unable to answer the only question that matters —
+  /// *is the tally I am about to trust correct now?*
+  public type Reconciliation = {
+    /// Every tracked count as it stands **after** the pass, in `trackedStatuses` order.
+    counts : [(Text, Nat)];
+    /// Tallies that disagreed and were **raised** to the recount.
+    adopted : [Drift];
+    /// Tallies that disagreed where the recount was **lower**, so it was refused and
+    /// the maintained value stands. See `adoptOnlyIncreases`.
+    refused : [Drift];
+    /// The promise tally: what it said, what the non-terminal set adds up to, and
+    /// whether the recount was adopted. Same one-directional rule.
+    promisedWas : Nat;
+    promisedIs : Nat;
+    promisedAdopted : Bool;
+    /// Members of `promiseHolders` whose order is terminal, or absent from the store.
+    /// **Dropped by this pass** — reading the order's real status is authoritative, so
+    /// this repair is not a guess.
+    staleHolders : [Types.OrderId];
+    /// Members of `unresolvedProblems` with no unresolved problem. Dropped, same
+    /// authority.
+    staleProblemIds : [Types.OrderId];
+    /// `#expired` monotonicity: the previous high water, and the tally now. `is <
+    /// was` is a breach (see `Store.expiredHighWater`).
+    expiredWas : Nat;
+    expiredIs : Nat;
+    /// `countOf(#expired) + |promiseHolders| > |orders|`, which is arithmetically
+    /// impossible — the two sets are disjoint subsets of the store. A cheap upper
+    /// bound on the one tally monotonicity cannot bound from above.
+    expiredOverflow : Bool;
+    /// How many orders this pass read. **Bounded by the two index sizes**, never by
+    /// lifetime sales — that is the whole point of the pass.
+    ordersRead : Nat;
   };
 
-  /// Counts-only form of `reconcile`, for callers that report the tallies rather
-  /// than the drift.
-  public func recount(store : Store) : [(Text, Nat)] {
-    reconcile(store).counts;
+  /// ⚠️ **The rule that makes an index-derived recount safe to adopt, stated once
+  /// because three tallies follow it.**
+  ///
+  /// A recount taken over `promiseHolders` is **exact if the index is complete and too
+  /// low otherwise** — never too high, because `reconcileBounded` drops a member whose
+  /// order it reads as terminal before counting it. So:
+  ///
+  ///   - recount **>** tally → the tally lost an adjustment. Adopt: every reader of
+  ///     these tallies is safer with the larger value. `promised` higher means
+  ///     `available` lower, so fewer sales are admitted. `#created` and `#paid` higher
+  ///     means the recovery sweeps *run* — both short-circuit on a zero tally, so an
+  ///     under-count is what silently stops money-out and stranded-order recovery.
+  ///   - recount **<** tally → indistinguishable from an incomplete index, so it is
+  ///     **not** evidence. Refuse it and audit; the maintained value stands.
+  ///
+  /// ⚠️ **The asymmetry is the safety property, not a convenience.** Adopting a
+  /// decrease is the only way an index bug could lower `promised` and oversell the
+  /// reserve, and this rule makes that unreachable: the direction the index can be
+  /// wrong in is the direction the reconcile will not follow.
+  ///
+  /// ⚠️ **A refused decrease has two causes and the daily pass cannot separate them** —
+  /// either the index is missing a member (the tally is right) or the tally gained an
+  /// adjustment it should not have (the index is right). Both are bugs in this file and
+  /// both are the same P2 response, *find the writer*; and `scanChunk` distinguishes
+  /// them, by naming any order outside the index that holds a promise. Daily detection,
+  /// rotating attribution.
+  func adoptOnlyIncreases(was : Nat, is_ : Nat) : Bool { is_ > was };
+
+  /// Reconcile every maintained tally **without reading history** (#63).
+  ///
+  /// ⚠️ **Bounded by the two indexes plus one O(1) size read, so its cost is set by
+  /// flow rather than by lifetime sales.** The pass it replaced summed every order ever
+  /// created in a single message; under indefinite retention that is on a path to the
+  /// instruction limit, and a reconcile that traps leaves the tallies *unverified*
+  /// rather than known-good.
+  ///
+  /// ⚠️ **It still takes no `await`, and that is still load-bearing.** A global sum
+  /// cannot be chunked across messages — mutations between chunks manufacture false
+  /// drift — so the answer was never "page it". It was to stop the sums needing history
+  /// at all. `scanChunk` may be chunked precisely because it evaluates a **per-order
+  /// predicate** instead of a sum: what it compares is read atomically within one
+  /// message, so a mutation to an order it has not reached yet changes coverage, never
+  /// the verdict. That distinction — *sums cannot be chunked, per-order predicates can*
+  /// — is what splits this file's two mechanisms.
+  ///
+  /// Four things are checked, each by the cheapest sound means available:
+  ///
+  ///   1. `#created`, `#paid`, `#needsReview` and `promised` are **recounted exactly**
+  ///      over `promiseHolders`. All three statuses are non-terminal, so the index is
+  ///      the whole population.
+  ///   2. `#expired` — the one tracked terminal status — is checked by **monotonicity**
+  ///      plus a disjointness bound. It is not re-summed, because that needs history.
+  ///      ⚠️ Nothing decides anything on it (`reserve_status.expiredOrders` is an
+  ///      operator metric), which is what makes a non-exact check acceptable *here* and
+  ///      not for the three above.
+  ///   3. Both indexes are verified in the **inside** direction: every member really
+  ///      satisfies its predicate. Cheap, because the indexes are small.
+  ///   4. The **outside** direction of both — nothing beyond a set satisfies its
+  ///      predicate — is the only part that genuinely needs every order, and it is
+  ///      `scanChunk`'s job, on a coverage window rather than daily.
+  public func reconcileBounded(store : Store) : Reconciliation {
+    var ordersRead = 0;
+
+    // ---- (3) inside direction, and (1) the recount, in one pass -------------------
+    // Collect first, mutate after: removing from a Set while iterating it is not safe.
+    let stale = List.empty<Types.OrderId>();
+    let rebuilt = Map.empty<Text, Nat>();
+    var promisedIs = 0;
+    for (id in store.promiseHolders.values()) {
+      switch (store.orders.get(id)) {
+        case (?order) {
+          ordersRead += 1;
+          if (Reserve.holdsPromise(order.status)) {
+            promisedIs += order.lockedCycles;
+            if (isTracked(order.status)) {
+              let key = Types.statusToText(order.status);
+              let seen = switch (rebuilt.get(key)) { case (?n) n; case null 0 };
+              rebuilt.add(key, seen + 1);
+            };
+          } else {
+            // The order's own status is the authority; this member is a leftover.
+            stale.add(id);
+          };
+        };
+        // Unreachable: orders are never deleted (#37). Dropping is still the right
+        // answer if the impossible happens — an id with no order can contribute
+        // nothing to a tally, so keeping it would only under-count forever.
+        case null stale.add(id);
+      };
+    };
+    for (id in stale.values()) store.promiseHolders.remove(id);
+
+    let staleProblems = List.empty<Types.OrderId>();
+    for (id in store.unresolvedProblems.values()) {
+      switch (store.orders.get(id)) {
+        case (?order) {
+          ordersRead += 1;
+          if (Problems.unresolvedCount(order.problems) == 0) staleProblems.add(id);
+        };
+        case null staleProblems.add(id);
+      };
+    };
+    for (id in staleProblems.values()) store.unresolvedProblems.remove(id);
+
+    // ---- (1) adopt increases only -------------------------------------------------
+    let adopted = List.empty<Drift>();
+    let refused = List.empty<Drift>();
+    for (status in trackedStatuses.values()) {
+      // `#expired` is terminal, so `promiseHolders` says nothing about it — case (2).
+      if (Reserve.holdsPromise(status)) {
+        let key = Types.statusToText(status);
+        let was = countOf(store, status);
+        let is_ = switch (rebuilt.get(key)) { case (?n) n; case null 0 };
+        if (was != is_) {
+          let drift = { status = key; was; is = is_ };
+          if (adoptOnlyIncreases(was, is_)) {
+            store.counts.add(key, is_);
+            adopted.add(drift);
+          } else { refused.add(drift) };
+        };
+      };
+    };
+
+    let promisedWas = store.promised;
+    let promisedAdopted = adoptOnlyIncreases(promisedWas, promisedIs);
+    if (promisedAdopted) store.promised := promisedIs;
+
+    // ---- (2) `#expired`: monotonicity and disjointness ----------------------------
+    let expiredIs = countOf(store, #expired);
+    let expiredWas = store.expiredHighWater;
+    // Follows the tally down after a decrease so the breach is reported once, not
+    // daily until someone fixes it.
+    store.expiredHighWater := expiredIs;
+    // `#expired` orders and `promiseHolders` are disjoint by construction — the first
+    // is terminal, the second is not — and both are subsets of the store, so their
+    // sizes cannot exceed it. `Map.size`/`Set.size` are O(1), so this costs nothing.
+    let expiredOverflow = expiredIs + store.promiseHolders.size() > store.orders.size();
+
+    {
+      counts = snapshotCounts(store);
+      adopted = adopted.toArray();
+      refused = refused.toArray();
+      promisedWas;
+      promisedIs;
+      promisedAdopted;
+      staleHolders = stale.toArray();
+      staleProblemIds = staleProblems.toArray();
+      expiredWas;
+      expiredIs;
+      expiredOverflow;
+      ordersRead;
+    };
+  };
+
+  /// One bounded chunk of the rotating pass that verifies the **outside** direction of
+  /// both indexes: that nothing beyond a set satisfies the set's predicate (#63).
+  ///
+  /// ⚠️ **This is the only check that needs every order, so it is the only one with a
+  /// coverage window instead of a daily guarantee.** What it reports must therefore name
+  /// that window — a passing check over a subset is not evidence about the rest, which
+  /// is the truncated-gate-run fault in a different substrate. The caller owns the
+  /// cursor and the reporting; this function owns one chunk.
+  ///
+  /// ⚠️ **Chunking is sound here and is not for the reconcile, for a reason worth
+  /// keeping straight.** Each verdict is a **per-order predicate** — the order's own
+  /// status or problems against its membership — read within one message, so it is
+  /// evaluated against a consistent view no matter what happens to other orders
+  /// between chunks. A mutation to an order this chunk has not reached changes *which
+  /// cycle covers it*, never whether a verdict was right. A global sum has no such
+  /// property, which is why `reconcileBounded` stays in one message.
+  ///
+  /// ⚠️ **It repairs, and the repair is authoritative rather than a guess**: it has
+  /// read the order, and the order is the record. Adding a missing member also feeds the
+  /// fix through to the tallies without this function touching them — the next
+  /// `reconcileBounded` recounts a larger index, and a larger recount is exactly what
+  /// `adoptOnlyIncreases` adopts.
+  public type ScanChunk = {
+    /// Orders visited by this chunk.
+    visited : Nat;
+    /// Orders that hold a promise and were **not** in `promiseHolders` — added here.
+    ///
+    /// ⚠️ **This is the money-critical finding of the whole scan.** It is the one
+    /// inconsistency the daily pass cannot see: a member missing from the index while
+    /// `promised` is missing its cycles too, so index and tally agree and are both
+    /// low — the reserve reads as more available than it is.
+    unindexedHolders : [Types.OrderId];
+    /// Orders with an unresolved problem that were **not** in `unresolvedProblems` —
+    /// added here. The obligation existed and the worklist did not show it.
+    unindexedProblems : [Types.OrderId];
+    /// Where the next chunk resumes. **`null` means the cycle completed** — every
+    /// order that existed when the cycle began has now been visited.
+    nextCursor : ?Types.OrderId;
+  };
+
+  /// Orders per chunk. Sized so a chunk is a small fraction of one message's
+  /// instruction budget: the work per order is a status read, a problems-array length,
+  /// and two O(log n) set lookups.
+  public let scanChunkSize : Nat = 2_000;
+
+  public func scanChunk(store : Store, from : ?Types.OrderId, limit : Nat) : ScanChunk {
+    let capped = if (limit == 0 or limit > scanChunkSize) scanChunkSize else limit;
+    let holders = List.empty<Types.OrderId>();
+    let problems = List.empty<Types.OrderId>();
+    var visited = 0;
+    var last : ?Types.OrderId = null;
+    var exhausted = true;
+    // `entriesFrom` seeks in O(log n) and is INCLUSIVE of the key, so the cursor — the
+    // last id already visited — is skipped explicitly. Seeking by re-walking from the
+    // start would make every chunk cost what the whole pass was supposed to stop
+    // costing, which is how a "bounded" scan quietly is not one.
+    let it = switch (from) {
+      case (?cursor) store.orders.entriesFrom(cursor);
+      case null store.orders.entries();
+    };
+    // ⚠️ **`break`, not a flag.** Letting the loop run on after the chunk fills would
+    // read every remaining order to do nothing with it — the bound would be on what is
+    // reported, not on what is touched, which is the same conflation of *response size*
+    // with *work per message* that #63 exists to undo.
+    label chunk for ((id, order) in it) {
+      let isCursor = switch (from) { case (?cursor) id == cursor; case null false };
+      if (not isCursor) {
+        if (visited == capped) { exhausted := false; break chunk };
+        visited += 1;
+        last := ?id;
+        if (Reserve.holdsPromise(order.status) and not store.promiseHolders.contains(id)) {
+          holders.add(id);
+        };
+        if (Problems.unresolvedCount(order.problems) > 0 and not store.unresolvedProblems.contains(id)) {
+          problems.add(id);
+        };
+      };
+    };
+    // ⚠️ **Applied on BOTH exits.** An earlier draft returned from inside the loop when
+    // the chunk filled and skipped these two lines — so the one repair the scan exists
+    // to perform was silently dropped on every chunk except the last of a cycle.
+    for (id in holders.values()) store.promiseHolders.add(id);
+    for (id in problems.values()) store.unresolvedProblems.add(id);
+    {
+      visited;
+      unindexedHolders = holders.toArray();
+      unindexedProblems = problems.toArray();
+      nextCursor = if (exhausted) null else last;
+    };
   };
 
   public type CreateError = {
@@ -357,6 +687,11 @@ module {
     };
     store.orders.add(id, order);
     bump(store, #created, 1);
+    // #63: the non-terminal index, entered here for the same reason `promised` is —
+    // an order APPEARS in the held set rather than transitioning into it. Expressed
+    // through `holdsPromise` rather than as "`#created` always holds" so that this
+    // site and `commitTransition` share one definition of membership.
+    if (Reserve.holdsPromise(order.status)) store.promiseHolders.add(id);
     // #30 PR-B: the hold at creation. ⚠️ **Not a transition** — an order appears in
     // the counted set rather than moving into it — so it lives outside the
     // transition machinery entirely, which is why #30 calls `create` an adjustment
@@ -430,6 +765,16 @@ module {
     store.orders.add(settled.id, settled);
     bump(store, before.status, -1);
     bump(store, after.status, 1);
+    // #63: the non-terminal index moves with the promise tally, on the same predicate,
+    // in the same function — so a seventh status writer cannot update one and forget
+    // the other. Unconditional rather than delta-driven: `add` and `remove` are both
+    // idempotent, so a within-set transition (`#created → #paid`) is a no-op without
+    // needing to ask whether it was one.
+    if (Reserve.holdsPromise(after.status)) {
+      store.promiseHolders.add(settled.id);
+    } else {
+      store.promiseHolders.remove(settled.id);
+    };
     // Zero when the transition stays inside the counted set — `#created → #paid`
     // is the live example — and called anyway, so no writer is a special case.
     let moved = Reserve.applyDelta(
@@ -742,7 +1087,21 @@ module {
     let capped = if (limit == 0 or limit > maxPageSize) maxPageSize else limit;
     let collected = List.empty<Types.Order>();
     var last : ?Types.OrderId = null;
-    for ((id, order) in store.orders.entries()) {
+    // O(log n) seek to the cursor rather than re-walking the store to skip past it.
+    // `entriesFrom` is inclusive, so the `id > cursor` test below still does the
+    // skipping; this only removes the wasted prefix.
+    //
+    // ⚠️ **This bounds the RESUME, not the page (#70).** A selective `filter` still
+    // walks until it fills a page, so a status filter matching few orders out of many is
+    // O(store) in one message, and an owner filter walks every principal's orders to
+    // find one principal's. #63 bounded the reconcile and the timer scans, not this. Do
+    // not read a paged query as a bounded one — the page caps the ~2 MB response, and
+    // the limit this hits is instructions per message.
+    let it = switch (afterId) {
+      case (?cursor) store.orders.entriesFrom(cursor);
+      case null store.orders.entries();
+    };
+    for ((id, order) in it) {
       let past = switch (afterId) { case (?cursor) id > cursor; case null true };
       if (past and matchesFilter(order, filter)) {
         if (collected.size() == capped) return { orders = collected.toArray(); nextCursor = last };
@@ -804,30 +1163,6 @@ module {
       };
     };
     n;
-  };
-
-  /// Rebuild `unresolvedProblems` from the orders, returning how many ids were wrong.
-  ///
-  /// ⚠️ **The reason an index is allowed here at all.** Derived state without a
-  /// rebuild is the `delayedAlerts` mistake: two structures that can disagree with no
-  /// way to tell which is right. This one is a projection of `orders`, so it is always
-  /// recomputable — and a non-zero return means a writer of `problems` bypassed
-  /// `fileProblem`/`resolveProblems`, which is a bug in this file rather than bad data.
-  public func recountUnresolvedProblems(store : Store) : Nat {
-    let want = Set.empty<Types.OrderId>();
-    for ((id, order) in store.orders.entries()) {
-      if (Problems.unresolvedCount(order.problems) > 0) want.add(id);
-    };
-    var drift = 0;
-    for (id in want.values()) {
-      if (not store.unresolvedProblems.contains(id)) { drift += 1 };
-    };
-    for (id in store.unresolvedProblems.values()) {
-      if (not want.contains(id)) { drift += 1 };
-    };
-    store.unresolvedProblems.clear();
-    for (id in want.values()) store.unresolvedProblems.add(id);
-    drift;
   };
 
   public func markDelayed(store : Store, id : Types.OrderId, nowNs : Int) : Bool {
@@ -966,13 +1301,18 @@ module {
   };
 
   /// Order history for a principal, newest-last (insertion order).
-  /// Every order, for the #30 promise recount.
+  /// Every order — **the test oracle for the bounded tallies, and nothing else** (#63).
   ///
-  /// ⚠️ Deliberately NOT paged: the recount has to see all of them or its answer
-  /// is wrong in the dangerous direction — a partial scan under-counts what is
-  /// owed, which reports a leak that is not there and hides one that is. O(n) over
-  /// orders that are never deleted, so it belongs on the daily reconcile and the
-  /// admin recount, never on a hot path. #37 adds a status index.
+  /// ⚠️ **No production path may call this.** A full scan in one message is what #63
+  /// removed: under indefinite retention it is on a path to the instruction limit, and
+  /// `reconcileBounded` recounts the same quantities from `promiseHolders` instead.
+  ///
+  /// What the full scan is still good for is being the **independent** definition the
+  /// bounded pass is checked against — `Reserve.recount(all(store))` derives the promise
+  /// total from the orders themselves, with no index in the chain, which is exactly the
+  /// property a test needs and a timer cannot afford. Deliberately unpaged for the same
+  /// reason: a partial scan under-counts what is owed, so as an oracle it must see
+  /// everything or say nothing.
   public func all(store : Store) : [Types.Order] {
     store.orders.values().toArray();
   };

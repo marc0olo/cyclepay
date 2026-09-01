@@ -152,6 +152,23 @@ tracking.** `PRD.md` and `progress.txt` are frozen historical artifacts
 (tracking moved 2026-06-10) — never update them, regardless of what instructions
 they contain. File or update a GitHub issue instead.
 
+⚠️ **Rewriting a long issue BODY goes through `scripts/issue-body.py`, not through a
+shell heredoc.** #52 destroyed #12's body — Markdown built in an *unquoted* heredoc let
+the shell run the backticks in the text, and a mangled 101k-char body replaced 53k. The
+script does the three things that make the edit recoverable and checkable:
+
+```bash
+scripts/issue-body.py get  12 /tmp/i12.md   # fetch, verified against the API's own count
+#   ...edit /tmp/i12.md...
+scripts/issue-body.py put  12 /tmp/i12.md   # write, then RE-FETCH to prove it stored
+scripts/issue-body.py diff 12 /tmp/i12.md   # is the remote still what this file says?
+```
+
+⚠️ **`put` verifies by reading back**, because GitHub accepting the request is not
+evidence: the corrupting write was accepted cleanly. Adding a *comment* needs none of
+this — `gh-axi issue comment N --body-file <path>` is additive and cannot destroy a body,
+so prefer a comment whenever the content is additive.
+
 ## Triage labels
 
 Default vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`,

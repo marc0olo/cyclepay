@@ -871,15 +871,52 @@ icp canister call backend process_order '("<orderId>")' -e ic --identity <operat
 
 - Interval validation pins cadence ≤ 6 h (ledger dedup window ÷ 4 — a
   stuck transfer must get several replay attempts while its intent still
-  dedups). Default 1 h; re-arms immediately on change.
+  dedups). Default **15 min** (`Recovery.defaultIntervalNs`); re-arms immediately on
+  change.
 - `recovery_status.lastSweep` not advancing past ~2 intervals = the timer
   is wedged — an upgrade re-arms it, but investigate first.
 - The sweep also **reconciles the per-status tallies once a day** and reports the
   result on `recovery_status.lastCountReconcile`. The tallies are maintained
-  incrementally so the admission-gate queries stay O(1); the reconcile is the
-  O(orders) check that they still match. It audits `orders.countDrift` **only when
-  something moved** — a clean line every day would bury the one that matters.
-  `recount_orders` is the same repair on demand.
+  incrementally so the admission-gate queries stay O(1); the reconcile is the check
+  that they still match. It audits **only when something moved** — a clean line every
+  day would bury the one that matters. `recount_orders` runs the same pass on demand.
+- ⚠️ **Its cost is bounded by open orders, not by lifetime sales (#63)**, and that
+  changes what a stale reconcile means. It recounts over the non-terminal order set,
+  which the reserve caps, so `lastCountReconcile.ordersRead` should stay flat as sales
+  accumulate. If it starts tracking total orders, the bound has broken.
+- ⚠️ **`drift` and `refused` are two different verdicts and demand opposite readings.**
+  `drift` was **raised** to the recount, so those tallies are correct again. `refused`
+  came out **below** the maintained tally and was **not** adopted, so those tallies are
+  still suspect — a recount lower than the tally is indistinguishable from an index
+  missing a member, and adopting it is the only way a bookkeeping bug could lower
+  `promised` and oversell the reserve. `recount_orders` follows the same rule; there is
+  deliberately no force flag.
+- ⚠️ **One check cannot be daily, and it says so instead of pretending.** Whether
+  anything *outside* an index satisfies the index's predicate is the only question that
+  needs every order, so it runs as a rotating per-order scan, one chunk per sweep.
+  `recovery_status.indexScan` is its coverage: `lastCompletedCycle` is the only thing
+  that licenses reading a clean scan as evidence about the whole store, and
+  `inFlightCycle.ordersRead` against `storedOrders` says how far the current cycle has
+  walked. **Three states, not two** — an audit line is *verified and disagreed*, silence
+  with a recent `completedAtNs` is *verified clean*, and silence without one is
+  *unverified*, which carries the opposite response: wait for the pass rather than hunt
+  for a writer.
+- ⚠️ **So #63 converted unbounded WORK into unbounded LATENCY, and the honest claim is
+  "bounded per message" rather than "bounded".** The daily pass verifies only the inside
+  direction of each index. Detecting the outside direction — an order that holds a
+  promise and is not indexed — takes up to one full cycle, and the cycle grows
+  **linearly in stored orders**: `⌈storedOrders ÷ chunkSize⌉ × sweep interval`. At the
+  15-minute default and 2,000 per chunk that is ~192,000 orders a day, so 365k is
+  covered in about two days and 3.65M in about nineteen. This is the right trade — work
+  that traps is fatal, latency that grows is degradable **and observable** — but it is a
+  trade, and `indexScan.expectedFullCycleNs` is where you read the current value rather
+  than assume this paragraph is still accurate.
+- ⚠️ **`set_recovery_interval` is a lever on that latency, and its name does not say
+  so.** The scan rides the sweep, so coarsening the cadence to the §5.1 ceiling of 6 h —
+  **24× the default** — takes the same 365k store to ~46 days per cycle. The
+  `recovery.intervalSet` audit line now names the resulting window, so the consequence
+  is recorded next to the cause. Do not retune the cadence to save cycles without
+  reading it: the finding it delays is `orders.unindexedHolders`, which is **P1**.
 - The sweep also **reconciles the reserve floor against the cycles ledger once an
   hour**, which is how a top-up becomes sellable without an operator call.
   `recovery_status.lastReserveReconcileAttemptNs` is the attempt clock and
@@ -957,8 +994,14 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | `orphan_depth.unresolved` | `> 0` | **P2** | §6 triage. Depth climbing past 1,000 means work is accumulating faster than it clears |
 | `reserve_status.promisedTotal` | climbing while deliveries do not complete | **P2** | money in, nothing delivered — those orders are on the clock toward the 72 h bound. `pending_deliveries` says which and why |
 | `recovery_status.lastSweep.atNs` | older than 2 intervals | **P2** | the sweep timer is not running; nothing recovers while it is dead |
-| `recovery_status.lastCountReconcile.drift` | non-empty | **P2** | the per-status tallies had diverged from the order store and were repaired. The counts are correct again; the bookkeeping bug that moved them is not fixed. They gate admission, so a drifted count refuses or admits the wrong orders |
-| `orders.problemIndexDrift` in the audit log | any occurrence | **P2** | ⚠️ **Not a data problem — a code problem.** The unresolved-problems index (#37) is maintained by exactly two functions, `Orders.fileProblem` and `Orders.resolveProblems`. A non-zero drift means something else wrote `order.problems` directly, and the daily reconcile rebuilt the index. **The rebuild is not the fix**: find the writer. Until then the worklist filter and `resolveByPaymentRef` may have been walking a set that disagreed with the orders |
+| `recovery_status.lastCountReconcile.drift` | non-empty | **P2** | a per-status tally had diverged and was **raised** to the recount. The counts are correct again; the bookkeeping bug that moved them is not fixed. They gate admission and they short-circuit the sweeps, so an under-counted `Paid` reads as zero to the recovery sweep and money-out silently stops |
+| `recovery_status.lastCountReconcile.refused` | non-empty | **P2** | ⚠️ **The opposite reading to the row above, and the tallies are still suspect.** The recount came out **below** the maintained tally, which is indistinguishable from the non-terminal index missing a member — so it was refused and the maintained value stands. That over-refuses rather than overselling, which is why refusing is right. Two causes with one response, *find the writer*: either the index lost a member or a tally gained an adjustment. `orders.unindexedHolders` from the rotating scan tells you which |
+| `orders.unindexedHolders` in the audit log | any occurrence | **P1** | ⚠️ **The one bookkeeping error nothing else can see, and it is on the money side.** An order held a promise and was missing from the non-terminal index — and if `promised` was missing its cycles too, the two agreed with each other, so the daily reconcile reported nothing while `reserve_status.availableToSell` read HIGHER than the truth. The reserve was oversellable. The scan added the order and the next reconcile raises `promised`, so the exposure closes on its own; what does not close is the writer that set a status outside `Orders.create` and `Orders.commitTransition`. Find it. Then check `reserve_status.availableToSell` against the ledger before selling more |
+| `orders.staleHolders` in the audit log | any occurrence | **P2** | the reverse direction: a **terminal** order was still in the non-terminal index, so `promised` may have been holding cycles that were already released — over-refusing, not overselling. Dropped on sight, because the order's own status is the authority. Same writer to find as the row above |
+| `orders.problemIndexDrift` / `orders.unindexedProblems` in the audit log | any occurrence | **P2** | ⚠️ **Not a data problem — a code problem.** The unresolved-problems index (#37) is maintained by exactly two functions, `Orders.fileProblem` and `Orders.resolveProblems`. Either tag means something else wrote `order.problems` directly. **The repair is not the fix**: find the writer. `problemIndexDrift` is an id in the index with no unresolved problem — the worklist showed an obligation that was already closed. `unindexedProblems` is the worse direction: an order carried an unresolved obligation the worklist did **not** show and `resolveByPaymentRef` could not reach |
+| `orders.expiredWentBackwards` in the audit log | any occurrence | **P2** | the `Expired` tally fell, which the transition matrix makes impossible — `created → expired` is its only inbound edge and it has no outbound one. A bookkeeping breach in `Orders.bump`. ⚠️ **Reported once per decrease, not daily**, so a second occurrence means it fell again. `Expired` is an operator metric that nothing decides on, so this is a bug report rather than an exposure |
+| `orders.expiredOverflow` in the audit log | any occurrence | **P2** | the `Expired` tally plus the non-terminal order count exceeds the number of orders in the store. Those two sets are disjoint subsets of it, so this is arithmetically impossible and `Expired` is over-counted. Same class as the row above — observability, not money |
+| `recovery_status.indexScan.lastCompletedCycle` | empty, or `completedAtNs` older than a small multiple of `indexScan.expectedFullCycleNs` | **P2** | ⚠️ **Without this the clean-scan rows above mean nothing.** The rotating scan verifies the one property that needs every order, so it can only speak for what it has visited: silence plus a recent `completedAtNs` is *verified clean*, silence with no completed cycle is *unverified*. ⚠️ **Compare against `indexScan.expectedFullCycleNs`, not against a remembered number** — it is computed from the live store size and the live sweep cadence, and `set_recovery_interval` can move it by 24×. Empty long past that, with `inFlightCycle.ordersRead` frozen, means a chunk is trapping — the cursor does not advance, so the next sweep retries the same chunk rather than skipping forward |
 | `recovery_status.lastCountReconcile.atNs` | older than ~48 h while `lastSweep` advances, or materially older than `lastCountReconcileAttemptNs` | **P3** | the daily reconcile is failing. It runs in its own message, so it cannot take the sweep down with it — money-out is unaffected — but the tallies are now **unverified**, not known-good. Written only on success, and the cadence is claimed by the sweep, so a reconcile that traps retries daily rather than every tick. `recount_orders` is the on-demand repair and will show the same failure if it is a real one |
 | `reserve_status.openOrders` | climbing while `delivered` does not | **P3** | order-creation abuse; lever is `maxOpenOrdersPerPrincipal` (§5a) |
 | `refusal_counts.refusingNow.reserveShort` | true | **P1** | the rail is refusing sales for want of reserve. Exactly one `gate.startedRefusing` line marks when it began — the counter says how many buyers have been turned away since. Fund the reserve (§5); it clears on the next successful admission |
@@ -978,28 +1021,28 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | `stripe.paidNotCredited` in the audit log | any occurrence | **P1** | a buyer paid, Stripe has given up redelivering, and the obligation is now filed in the error queue. Follow the `#paidNotCredited` row in §6 — **resend first, always** |
 | `stripe.retrieveUnreadable` in the audit log | any occurrence | **P3** | Stripe answered the session read in a shape the classifier does not recognise, so the sweep did nothing (fail-safe). Capacity stays held until it is understood. Most likely an API-version change; §1 pins the version, so this points at an account-level change |
 | `reserve.unexplainedShortfall` in the audit log | any occurrence | **P1** | the ledger holds LESS than the floor's lower bound, which the design says is impossible — no allowance exists and `withdraw` is unused. Treat as a bookkeeping breach: stop selling (`set_gate_config` with a high `minPurchaseUsdCents`, or pause), reconcile the journal against the ledger, and find the outflow before funding anything |
-| an order still `created` past its own `expiresAtNs` | any | **P2** | a `checkout.session.expired` was missed. Nothing sweeps it (§5b, deliberately — a sweep would hide a held reserve): resend the event from the Stripe Dashboard. ⚠️ **You cannot query this today** — see the gap below |
+| an order still `created` past its own `expiresAtNs` | any | **P2** | a `checkout.session.expired` was missed. Nothing sweeps it (§5b, deliberately — a sweep would hide a held reserve): resend the event from the Stripe Dashboard. Query it with `admin_orders '(record { status = opt variant { created }; owner = null; createdFromNs = null; createdToNs = null; withUnresolvedProblems = false }, null, 200)'` and compare each `expiresAtNs` against now |
 | `pricing_status.xrcCanisterId` | anything other than `uf6dk-hyaaa-aaaaq-qaaaq-cai` | **P1** | **on mainnet this must be the real Exchange Rate Canister.** The id is resolved from a `PUBLIC_CANISTER_ID:xrc` canister environment variable so a local network can point at a mock; a mainnet canister reporting any other id is pricing real sales off something that is not the market. Only a controller can inject it, so this reads as either a misconfigured deploy or a compromised controller. Cap the burn to 0 (§2) before investigating. **`null` is not a pass** — it means no refresh has reached the XRC call at all (expected for seconds after an install or upgrade, since the value is transient). Do **not** wait on `lastAttempt` becoming non-null: that field is persistent, so it survives the upgrade and is already set while this one is still null. Re-read until `lastAttempt.atNs` post-dates the deploy. A *failing* refresh never shows null here — the id is recorded when the call is constructed, so a rejected call reads as a non-null id plus `lastAttempt.ok = false` |
 | `pricing_status.rates.quality.receivedRates` | drops to `minRateSources` | **P3** | thin market — a price from 2 sources is not one from 12 |
 | `health` | unreachable | **P1** | canister stopped, frozen, or out of cycles |
 
-⚠️ **One row above is not yet observable, and saying so is the point.** "An order
-still `created` past its own `expiresAtNs`" is #30's detection predicate 1 — the
-signal that exists *because* #33 refused to add a sweep that would have hidden a
-held reserve. Nothing exposes it:
+⚠️ **One row above needs a controller key and a comparison you make yourself, and
+saying so is the point.** "An order still `created` past its own `expiresAtNs`" is
+#30's detection predicate 1 — the signal that exists *because* #33 refused to add a
+sweep that would have hidden a held reserve.
 
-- `get_order` / `list_orders` / `receipt` are **owner-scoped**. Not even a
-  controller can read another principal's order.
-- `reserve_status` returns counts, not records — it cannot tell a fresh `created`
-  order from one that lapsed an hour ago.
-- An admin order listing is **#38**, not built yet.
+`admin_orders` (#38) answers it: filter on `created` and read each record's
+`expiresAtNs`. What it is **not** is a threshold something can alert on — the
+predicate is a comparison against the clock, so there is no field to watch. The
+public interim signal remains `reserve_status.openOrders` **staying non-zero and
+static well past ~40 minutes** (the session lifetime is ~35), cross-checked against
+expired sessions in Stripe; a cron that can hold the controller key should page the
+filtered listing and do the comparison itself.
 
-So today the predicate is reachable only through a buyer's complaint or the
-Stripe Dashboard's own event list. Until #38 lands, the interim signal is
-`reserve_status.openOrders` **staying non-zero and static well past ~40 minutes**
-(the session lifetime is ~35), cross-checked against expired sessions in Stripe.
-That is weaker than an alert and it is the honest state of it — a runbook that
-claims an alert nobody can wire is worse than a documented gap.
+⚠️ **`get_order` / `list_orders` / `receipt` stay owner-scoped**, and `admin_order` /
+`admin_orders` / `admin_receipt` are the controller-side reads that answer the same
+questions across principals. `reserve_status` returns counts, not records, so it can
+never tell a fresh `created` order from one that lapsed an hour ago.
 
 ### Needs a controller key
 
@@ -1007,7 +1050,9 @@ claims an alert nobody can wire is worse than a documented gap.
   be landing in the wrong Stripe account), `stripe.creditedElsewhere`,
   `stripe.unprocessable` / `stripe.unhandledType` (a Dashboard config producing
   events this gateway cannot use — it will recur until changed),
-  `orders.countDrift` (the status tallies were wrong; see the table above),
+  `orders.countDrift` and `orders.countRecountLow` (the status tallies were wrong, and
+  whether the pass could repair them; see the table above),
+  `orders.unindexedHolders` (**P1** — the reserve may have been oversellable),
   `stripe.refundPartial` (an obligation deliberately left open), and `delivery.stuck`.
 - **`orphans_unresolved`** for the entries themselves. `orphan_depth` is
   public, so **alert on the public depth and only fetch details when it fires** —
