@@ -477,8 +477,20 @@ if [ "$AVAILABLE" -eq 0 ] && [ "$RESERVE_TOPPED_UP" -eq 0 ] &&
       icp canister call backend pending_deliveries '()'
       icp canister call backend audit_log '(null, 50 : nat)'"
 fi
+if [ "$AVAILABLE" -eq 0 ] && [ "$RESERVE_TOPPED_UP" -eq 0 ] && [ -z "$RESERVE_OBSERVED_BALANCE" ]; then
+  # ⚠️ **The observation succeeded but its output carried no number, so it establishes
+  # nothing about the account.** Falling through to the "empty" message below would be the
+  # same claim-not-established defect this whole section exists to remove, in the sliver
+  # where the parse — not the call — is what failed.
+  die "the gateway will sell 0 cycles. The top-up failed and the observation SUCCEEDED but
+    printed no balance this script could read, so whether the account holds cycles is
+    UNKNOWN — do not act on either answer. Its output was:
+      $OBSERVE_OUT
+    Read the balance directly, then decide:
+      icp cycles balance --of-principal $BACKEND_ID"
+fi
 if [ "$AVAILABLE" -eq 0 ] && [ "$RESERVE_TOPPED_UP" -eq 0 ]; then
-  # The observation ran and reported zero, so the account really is empty.
+  # The observation ran and parsed a zero, so the account really is empty.
   die "the gateway will sell 0 cycles. The top-up FAILED and the observation read an EMPTY
     account, so it is genuinely empty rather than unobserved. Read the transfer error above
     (⚠️ its \"balance:\" is the SENDER's), fund the account, then:
