@@ -1071,7 +1071,7 @@ function renderProblems(order: Order): void {
     const label = document.createElement("strong");
     label.textContent = problemLabel(problem);
     item.append(label);
-    item.append(document.createTextNode(` — ${problem.detail}`));
+    item.append(document.createTextNode(`: ${problem.detail}`));
     if (resolved) item.append(document.createTextNode(" (resolved)"));
     list.append(item);
   }
@@ -1091,7 +1091,7 @@ function problemLabel(problem: Order["problems"][number]): string {
   if ("paidNotCredited" in kind) return "Paid, and not yet credited";
   // ⚠️ No default that invents a name: an unhandled kind should be visibly unhandled
   // rather than quietly labelled "problem", which is how a new kind ships unnoticed.
-  return "Unrecognised problem — see the audit trail";
+  return "Unrecognised problem (see the audit trail)";
 }
 
 function renderOrder(order: Order): void {

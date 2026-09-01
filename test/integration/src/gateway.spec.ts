@@ -974,8 +974,23 @@ test('19 — a buyer can verify their own purchase from the receipt', async () =
   await ensureRates(gw);
   const receipt = (await gw.asUser.receipt(orderA.id))[0]!;
 
-  // Authz: only the owner. Not even an admin.
-  expect(await gw.asAdmin.receipt(orderA.id)).toHaveLength(0);
+  // Authz: the owner, and since #38 an admin too. Never anyone else.
+  //
+  // ⚠️ **This assertion used to read "not even an admin", and that boundary protected
+  // NOTHING — which is why it changed rather than the change being a relaxation.**
+  // `Receipt` is entirely derived: `order` (admin-readable via `admin_order`),
+  // `paidUsdCents` (on the order), `deliveryBlockIndex` and `cyclesDelivered` (on the
+  // `JournalEntry`, already `requireAdmin`), and `verification` (computed from
+  // `order.pricing`). An operator could already reconstruct every field from two calls;
+  // the old rule only forced them to assemble it by hand while a buyer waited.
+  //
+  // ⚠️ **Do not re-tighten this thinking it is a privacy boundary.** If `Receipt` ever
+  // gains a field that is NOT derivable from the order plus the journal, that is the
+  // moment to revisit — and the argument then is about the new field, not about receipts.
+  const adminReceipt = await gw.asAdmin.receipt(orderA.id);
+  expect(adminReceipt).toHaveLength(1);
+  expect(adminReceipt[0]!.order.id).toBe(orderA.id);
+  // The anonymous principal owns nothing and is not an admin, so it still sees nothing.
   expect(await gw.asAnon.receipt(orderA.id)).toHaveLength(0);
 
   expect(receipt.paidUsdCents).toEqual([TIER_USD_CENTS]);
