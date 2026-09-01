@@ -1091,10 +1091,12 @@ module {
     // `entriesFrom` is inclusive, so the `id > cursor` test below still does the
     // skipping; this only removes the wasted prefix.
     //
-    // ⚠️ **This bounds the RESUME, not the page.** A selective `filter` still walks
-    // until it fills a page, so a status filter matching few orders out of many is
-    // O(store) in one message — see the issue tracker; #63 bounded the reconcile and
-    // the timer scans, not this. Do not read a paged query as a bounded one.
+    // ⚠️ **This bounds the RESUME, not the page (#70).** A selective `filter` still
+    // walks until it fills a page, so a status filter matching few orders out of many is
+    // O(store) in one message, and an owner filter walks every principal's orders to
+    // find one principal's. #63 bounded the reconcile and the timer scans, not this. Do
+    // not read a paged query as a bounded one — the page caps the ~2 MB response, and
+    // the limit this hits is instructions per message.
     let it = switch (afterId) {
       case (?cursor) store.orders.entriesFrom(cursor);
       case null store.orders.entries();

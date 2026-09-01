@@ -2519,6 +2519,18 @@ persistent actor CyclesGateway {
     entry.status == #paid and entry.transferIntent != null and entry.blockIndex == null;
   };
 
+  /// ⚠️ **A walk over every journal entry ever written, and #69 owns bounding it.**
+  /// #63 bounded the order store's walks and this one is in the same class — the journal
+  /// gains an entry per `#paid` order and nothing removes them. It fails safe (a trap
+  /// means the floor is never adopted, so the gateway under-sells) which is why it is
+  /// sequenced rather than folded into #63.
+  ///
+  /// ⚠️ **Do not "fix" it with `Orders.promiseHolders`.** This reads the JOURNAL's status
+  /// copy, deliberately, and the two are allowed to disagree: `abandon_order` can take a
+  /// `#paid` order terminal while its transfer is still in flight, so the order leaves
+  /// the non-terminal index while its entry is still unsettled. Iterating that index
+  /// would return 0 here and make the floor adoptable across an in-flight transfer —
+  /// exactly the bug this predicate exists to prevent. See #69.
   func unsettledDeliveries() : Nat {
     var n = 0;
     for ((_, entry) in deliveryJournal.entries()) {
