@@ -149,8 +149,9 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
      justification did not.**
 
      ⚠️ **The term list is an artifact, not a memory: `docs/agents/deleted-vocabulary.md`.**
-     Add a mechanism's vocabulary there when you delete it; start a sweep from that file
-     and diff against its recorded dispositions, so `mint` and `retention` are not
+     Add a mechanism's vocabulary there when you delete it; run
+     `scripts/sweep-vocabulary.py` (the command is the source of truth for the counts, the
+     table is a dated snapshot) and diff against its recorded dispositions, so `mint` and `retention` are not
      re-adjudicated every time. Deliberately **not** a gate step — most hits are correct
      prose, and a check that fires on correct code teaches people to ignore it.
 
