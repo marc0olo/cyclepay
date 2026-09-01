@@ -377,7 +377,7 @@ the buyer actually paid, why it expired (`expiredBy`), when its rates were read
 (`pricing.ratesFetchedAtNs`), and — once #33 lands — the Stripe session it is paid
 through and the deadline Stripe set for it.
 
-`audit_log` is the *operational trail*: alerts, dedup drops, evictions. It answers
+`audit_log` is the *operational trail*: alerts and dedup drops. It answers
 "what was happening around then", never "what happened to this order". That
 division is about where a fact belongs, not about the buffer being bounded — #37
 removes the ring and the division still holds.
@@ -659,7 +659,6 @@ rail-specific summary:
 | `#duplicate` | 200 | **fiat in ×2, delivered ×1** | refund the second charge |
 | `#deliveryStuck` | 200 | **uncertain** — see the stage | per-stage rules in RUNBOOK §6 |
 | `#refundAfterDelivery` | 200 | **fiat out, cycles out** — a loss | reconcile; consider restricting the payer |
-| `#deliveryDelayed` | 200 | **fiat in, delivery still retrying** — nothing lost | an alert at 2 h, not a failure: clear the cause (usually the cycles ledger) and it **self-resolves on delivery** |
 
 **The buyer is never left waiting indefinitely.** A paid order that cannot progress
 alerts the operator at 2 h, while the position is still fully recoverable, and

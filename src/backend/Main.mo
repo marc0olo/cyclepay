@@ -1315,13 +1315,13 @@ persistent actor CyclesGateway {
   /// webhook path (~7 days, Idempotency.mo).
   let dedup : Idempotency.Store = Idempotency.emptyStore();
 
-  /// §4.1 bounded error queue: every dollar that arrives resolves to a delivery or to
-  /// an obligation here, and `Orphans.refundResolvable` says which of the two
-  /// remedies an entry takes — a Stripe refund, or a human establishing the position.
+  /// §4.1 — payments that could not be attributed to any order. Every dollar that
+  /// arrives resolves to a delivery or to an obligation, and this list holds the ones
+  /// with no order to hang off; the rest live on their order's `problems`.
   let orphanStore : Orphans.Store = Orphans.emptyStore();
 
   /// §4.2 audit log, unbounded since #37 — operational trail, not a
-  /// financial record (orders/error queue are the records of money).
+  /// financial record (orders, their problems and the orphan list are the records of money).
   let auditLog : AuditLog.Log = AuditLog.emptyLog();
 
   /// Refusal tallies and the rail-state latch (#61).
@@ -1785,7 +1785,7 @@ persistent actor CyclesGateway {
 
   /// Orders already audited for a blocked delivery this session, so a stuck
   /// order contributes one audit line rather than one per sweep. Transient: the
-  /// durable record of a stuck order is its error-queue entry once the max-wait
+  /// durable record of a stuck order is the problem filed on it once the max-wait
   /// bound trips, not this.
   transient let deliveryBlockedAudited = Set.empty<Types.OrderId>();
 
@@ -2357,7 +2357,7 @@ persistent actor CyclesGateway {
   /// Every delivery with money-out work outstanding, right now (admin).
   ///
   /// **The immediate answer to "is a delivery failing?", which nothing else gave.**
-  /// The error queue is the worklist and it self-clears correctly — a
+  /// The problem list is the worklist and it self-clears correctly — a
   /// `delayed_deliveries` self-clears on delivery *or* escalation — but it does not
   /// open until the 2 h alert threshold, and a delivery taking a sweep or two is
   /// normal, so lowering that threshold would file worklist entries for orders that
@@ -2630,7 +2630,7 @@ persistent actor CyclesGateway {
   /// Which order did this Stripe `payment_intent` pay for (admin, §4.2)? The
   /// reconciliation lookup: given a charge in the Stripe Dashboard, find the
   /// order it funded. Null means the payment was never attributed to an order
-  /// here — check the error queue for an obligation carrying it.
+  /// here — check the order's problems and the orphan list for an obligation carrying it.
   public shared query ({ caller }) func order_for_payment(paymentRef : Text) : async ?Types.OrderId {
     requireAdmin(caller);
     paidIntents.get(paymentRef);
@@ -2653,7 +2653,7 @@ persistent actor CyclesGateway {
   /// moves, so an in-flight payment either wins that race and the order is not
   /// cancelled at all, or it cannot start. See the ordering note in the body.
   ///
-  /// No error-queue entry: nothing is owed. The record and the audit line are the
+  /// No problem filed: nothing is owed. The record and the audit line are the
   /// trail, and queueing an obligation for an order where no money moved is
   /// exactly the orphan state the queue must not accumulate.
   /// **Admin: expire one `#created` order, releasing its reserve capacity** (#52).
@@ -3554,8 +3554,9 @@ persistent actor CyclesGateway {
         //
         // Stripe redelivers for ~3 days (§4.2), so before the horizon the event is still
         // coming and the real credit path will handle it. Filing an obligation then would
-        // put a self-resolving item in a bounded, evicting queue — noise that can push
-        // real obligations out. The audit line is the support signal: a buyer who paid
+        // file a self-resolving obligation on the order — noise in a worklist that
+        // never drops anything, so it buries the real ones. The audit line is the
+        // support signal instead: a buyer who paid
         // sees their own page render expired from `expiresAtNs` and calls the same hour,
         // and this is how an operator confirms Stripe says the session completed.
         if (not Recovery.paidEscalationDue(fresh.createdAtNs, Time.now(), Recovery.paidRetryHorizonNs)) {

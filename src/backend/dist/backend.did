@@ -683,7 +683,7 @@ service : {
   /// moves, so an in-flight payment either wins that race and the order is not
   /// cancelled at all, or it cannot start. See the ordering note in the body.
   /// 
-  /// No error-queue entry: nothing is owed. The record and the audit line are the
+  /// No problem filed: nothing is owed. The record and the audit line are the
   /// trail, and queueing an obligation for an order where no money moved is
   /// exactly the orphan state the queue must not accumulate.
   /// **Admin: expire one `#created` order, releasing its reserve capacity** (#52).
@@ -746,7 +746,7 @@ service : {
   /// Which order did this Stripe `payment_intent` pay for (admin, §4.2)? The
   /// reconciliation lookup: given a charge in the Stripe Dashboard, find the
   /// order it funded. Null means the payment was never attributed to an order
-  /// here — check the error queue for an obligation carrying it.
+  /// here — check the order's problems and the orphan list for an obligation carrying it.
   order_for_payment: (paymentRef: text) -> (opt OrderId) query;
   orphan_depth: () -> (record {
                          retained: nat;

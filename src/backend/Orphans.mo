@@ -1,4 +1,8 @@
-/// Bounded error queue (§4.1).
+/// Payments that cannot be attributed to any order (§4.1).
+///
+/// ⚠️ **Not bounded and not a queue any more.** #37 removed the capacity and the
+/// eviction pass, and moved order-bound problems onto the orders themselves; what is
+/// left here has, by definition, no order to attach to.
 ///
 /// Every dollar that arrives resolves to delivery, or to an obligation on this
 /// worklist. There is no third outcome and no silent one.
@@ -37,7 +41,7 @@ import Types "Types";
 module {
 
   /// §4.1 — **`refundResolvable` and `paymentRefOf` are one property seen from two
-  /// sides**, and `test/errorqueue.test.mo` pins their agreement across all seven
+  /// sides**, and `test/orphans.test.mo` pins their agreement across all seven
   /// kinds: a refund can settle an entry exactly when `paymentRefOf` gives
   /// `resolveByPaymentRef` something to match on.
   ///
@@ -135,7 +139,7 @@ module {
   };
 
   public type Entry = {
-    /// Monotonic — doubles as arrival order for bounded eviction.
+    /// Monotonic, never reused — the stable handle `resolve_orphan` takes.
     id : Nat;
     rail : Types.Rail;
     kind : Kind;
@@ -158,7 +162,6 @@ module {
     entry : Entry;
   };
 
-  /// Append an entry, evicting past `capacity` (see `AddResult.evicted`).
   /// Append an entry. **Nothing is evicted** (#37).
   ///
   /// ⚠️ **The `capacity` parameter and the whole eviction pass are gone**, not raised
@@ -277,7 +280,7 @@ module {
 
   /// Hard cap on a page. Entries are a few hundred bytes, and a Candid message
   /// is capped at 2 MB — so an unpaginated read of a queue that is allowed to
-  /// grow (see `AddResult.evicted`) would eventually become unreturnable. This
+  /// grow without bound (#37) would eventually become unreturnable. This
   /// bounds the response instead of bounding the record.
   public let maxPageSize : Nat = 200;
 
@@ -336,7 +339,7 @@ module {
     store.entries.values().filter(func(e) = e.resolvedAtNs == null).toArray();
   };
 
-  /// Everything still retained (resolved entries stay until evicted), oldest
+  /// Everything retained — which is everything ever filed (#37) — oldest
   /// first.
   public func all(store : Store) : [Entry] {
     store.entries.values().toArray();

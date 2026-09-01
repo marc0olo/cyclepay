@@ -1,21 +1,5 @@
 /// Deployment-wide constants that must exist in exactly one place.
 
-/// The canonical origin this app is served from, scheme included.
-///
-/// **Load-bearing on money.** Internet Identity derives a principal per frontend
-/// origin, so this determines which account is credited and which balance the
-/// cycles land in. Serving the same app from a second origin gives the same human
-/// a second principal and a second balance, which surfaces as a support ticket
-/// that reads like theft.
-///
-/// Read from the live origin rather than hardcoded, so local, staging and
-/// production each print their own correct value and the still-open `build.` vs
-/// `cycles.` decision (issue #21) is a DNS change rather than a hunt through
-/// string literals.
-export function canonicalOrigin(): string {
-  return window.location.origin;
-}
-
 /// The value `icp identity link web --app` expects: a **bare domain**, no scheme.
 ///
 /// Verified against icp-cli 1.2.0 rather than assumed —

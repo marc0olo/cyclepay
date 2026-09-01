@@ -141,7 +141,23 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
      have nothing to compare against.
   3. **The commit message carries the mapping** — what moved where. It is the only
      recoverable record if a judgement turns out wrong.
-  4. ⚠️ **Verify the `DESIGN.md` section against the CODE before the deletion, not
+  4. ⚠️ **When you DELETE a mechanism, grep its vocabulary and read every hit asking
+     whether it is cited as the JUSTIFICATION for unrelated behaviour.** A sweep aimed at
+     *usage* misses these — the code no longer used the ring, but comments still cited it
+     as the reason for something else, leaving a true conclusion propped up by a false
+     premise. The class shares one shape: **the conclusion survived the change and its
+     justification did not.**
+
+     ⚠️ **Derive the term list from the deletion itself, not from the names you remember
+     — and include the VERB for what the mechanism did.** The first attempt at this swept
+     `ring`, `capacity`, `float`, `treasury`, `burn cap` and missed **`evict`/`eviction`**,
+     which is the verb #37's headline change removed — leaving five survivors including an
+     operator-facing RUNBOOK line stating a cap that no longer exists as a parameter, and
+     a second false `AddResult.evicted` reference 118 lines from the one that had just
+     been fixed. Also sweep the **names of deleted variants**: `#deliveryDelayed` and
+     `#abandoned` were still live rows in RUNBOOK §6's triage table, and the surviving
+     rows still carried the *old* field lists.
+  5. ⚠️ **Verify the `DESIGN.md` section against the CODE before the deletion, not
      after.** A section transcribed from comments inherits the comments' errors, and once
      the comments are gone the original is no longer there to audit against. Three of
      three passes so far found a comment whose *conclusion* was right and whose *stated

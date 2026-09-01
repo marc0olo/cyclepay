@@ -210,7 +210,7 @@ module {
   // ── Result interpretation ────────────────────────────────────────────────
 
   /// What the driver does next; `#retriable` leaves state untouched for the
-  /// recovery sweep, `#escalate` is terminal (error queue, §5.1).
+  /// recovery sweep, `#escalate` is terminal — it files a problem on the order (§4.1).
   public type TransferOutcome = {
     /// This call moved the money: the ledger accepted it and recorded a block.
     #delivered : Nat;

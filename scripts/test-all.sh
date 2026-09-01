@@ -151,6 +151,14 @@ step=$((step + 1))
 printf '\n\033[1m── %d. %s\033[0m\n' "$step" "docs/DESIGN.md covers every §N the code cites"
 scripts/check-design-sections.py
 
+# ⚠️ **A symbol whose only caller is its own test is neither used nor covered, and the
+# suite counts it as coverage.** `paymentLinkWithRef` survived past the PR that scheduled
+# its own deletion for exactly that reason; `canonicalOrigin` was referenced nowhere at
+# all. `noUnusedLocals` cannot see either — the symbol IS used, from a test.
+step=$((step + 1))
+printf '\n\033[1m── %d. %s\033[0m\n' "$step" "no frontend export is referenced only by tests"
+scripts/check-unused-exports.py
+
 # `npm run build` regenerates the bindings the typecheck needs; running the
 # typecheck first on a clean tree fails for the wrong reason.
 run "frontend build — regenerate bindings" npm --prefix src/frontend run build
