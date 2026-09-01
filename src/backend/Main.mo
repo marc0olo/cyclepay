@@ -1544,6 +1544,28 @@ persistent actor CyclesGateway {
   /// is arbitrary because ids are random, and sorting by `createdAtNs` would mean
   /// materialising the filtered set first, which is the unbounded scan #63 exists to
   /// remove. Narrow with `createdFromNs` for recency.
+  ///
+  /// ⚠️ **Deliberately NOT audited, unlike `admin_order` and `admin_receipt`. Written
+  /// down because the difference otherwise reads as an oversight — which is exactly what
+  /// the `receipt` path looked like before review caught it.**
+  ///
+  /// The line those two write is *"an operator looked at THIS person's order"*, and that
+  /// targeted act is the accountable one. A filtered list is the operator doing their
+  /// job: triaging a worklist, checking what is outstanding, finding an order by time
+  /// range. Logging a line per page would record the work rather than the intrusion, and
+  /// bury the targeted reads it exists to make findable — in a log #37 made permanent.
+  ///
+  /// Same reasoning keeps `orphans`, `orphan_depth` and `problem_depth` unaudited.
+  ///
+  /// ⚠️ **And auditing it would cost what the `receipt` split just avoided:** audits
+  /// write state, so an audited list cannot be a `query`, and this is the call an
+  /// operator makes repeatedly while working.
+  ///
+  /// ⚠️ **What would change the answer:** if this ever returns something an operator
+  /// could not reach through `admin_order`, or if a filter narrows to a *single named
+  /// principal* as the normal way to use it — at that point the list becomes the
+  /// targeted act and inherits the audit. `owner : ?Principal` makes that possible
+  /// today; it is not how the query is meant to be driven.
   public shared query ({ caller }) func admin_orders(
     filter : Orders.Filter,
     afterId : ?Types.OrderId,
