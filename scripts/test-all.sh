@@ -116,7 +116,18 @@ command -v mops >/dev/null 2>&1 || {
 # Fixed syntax, so it is enforceable here rather than written down again; see the script.
 run "shell — no unquoted heredoc runs its own body" scripts/check-heredocs.sh
 
-run "mops check — lint + typecheck (-Werror)" mops check -- -Werror
+# ⚠️ **This also runs the STABLE-COMPATIBILITY check now (#90), because mops.toml
+# configures `[canisters.backend.check-stable]`.** No separate step: `mops check` picks it
+# up, and CI runs the same command. Before that config, an incompatible stable shape
+# passed every one of these steps and was refused at DEPLOY time with an
+# `RTS error: Memory-incompatible program upgrade` trap — safe, but the wrong place to
+# learn it.
+#
+# ⚠️ **It fails when the baseline is MISSING**, which is the property that matters:
+# "Deployed file not found: deployed/backend.most". A promoted-but-uncommitted baseline,
+# or a fresh checkout without one, gives a check with nothing to compare against — and by
+# default that reads as a pass. Verified by deleting it.
+run "mops check — lint, typecheck, stable compatibility (-Werror)" mops check -- -Werror
 run "mops test — Motoko unit suites" mops test
 
 # Before the frontend: the committed .did is both the embedded candid:service

@@ -286,9 +286,45 @@ thing to expire.
 | `check-doc-surface.py` | the docs' method lists match the `.did` | `docs/STRIPE.md` claimed "the whole admin surface" while missing 11 of 29, and RUNBOOK named a method that never existed |
 | `check-design-sections.py` | every `§N` the code cites exists in `docs/DESIGN.md`, and every section is cited | the 697-line spec it replaced rotted by being updated less often than the code |
 | `check-heredocs.sh` | no unquoted heredoc runs its own body | one destroyed a GitHub issue body, one turned a script's notes into an `icp deploy` |
+| `mops check`'s stable check | the actor's stable shape is still compatible with `deployed/backend.most` | an incompatible shape passed every step and was refused at DEPLOY time instead; ⚠️ it also fails when the baseline is missing, which is what stops it self-certifying |
 | `check-bindings.sh` | the suite's committed Candid bindings match the `.did` | the integration CI job installs only that suite's deps and never builds the backend, so it typechecks against whatever is in the checkout |
 | `check-unused-exports.py` | no module exports something nothing calls | a deleted caller leaves an export that reads as live API |
 | `sweep-vocabulary.py` | prints added lines naming a deleted mechanism | ⚠️ **advisory — it passes on hits**; it fails only when it cannot determine a base ref, which is the didn't-run case |
+
+### The stable baseline, and the two compatibility checks that are NOT the same thing
+
+⚠️ **The gate reports two different kinds of incompatibility, and reading one as the other
+has cost a sibling project two wrong deploy instructions** — one of which, followed, would
+have destroyed a canister's whole event log. Keep them apart:
+
+⚠️ Named by the command that reports them, not by step number — a step number in prose
+goes stale the next time a step is inserted, and the script derives its own numbering.
+
+| what you see | it means | what to do |
+|---|---|---|
+| `mops build`: `.did is out of date` | the **committed Candid file** does not match the code | `mops build`, commit the `.did`, regenerate the suite's bindings. ⚠️ Says NOTHING about stable state — an added method trips this and is perfectly upgradable |
+| `mops check`: `Stable compatibility check failed` | the **stable shape** cannot be reinterpreted from the deployed one | locally reinstall and reseed; on mainnet this needs a migration (#32). ⚠️ This is the one where deployed data is at stake |
+
+**After a deliberate stable-shape change**, once you have reinstalled and reseeded:
+
+```sh
+mops build && mops deployed        # promotes dist/backend.most → deployed/backend.most
+git add deployed/backend.most      # committed in the SAME PR as the shape change
+```
+
+⚠️ **The baseline must be committed, and it must not be the build's own output.**
+`src/backend/dist/backend.most` is gitignored with the rest of `dist/`, so configuring the
+check against it compares an artifact to a fresh regeneration of itself — measured before
+this was wired: it PASSED on the very change the real baseline rejects. `mops check` fails
+when `deployed/backend.most` is absent (`Deployed file not found`), which is what stops a
+missing or uncommitted baseline from reading as a clean check.
+
+⚠️ **Do not annotate the `.most`.** It is parsed, and the check is an equality comparison
+against a build artifact — commit it verbatim. The commit message is where the reason goes.
+
+**A committed baseline does double duty:** the check answers *is this safe*, and the diff
+answers *did the stable shape change at all* — the second is the question a reviewer can
+act on without re-deriving the first.
 
 The individual steps, if you need to run one in isolation:
 
@@ -305,6 +341,7 @@ bash scripts/brand-lint.sh                   # banned characters, vocabulary, to
 npm --prefix test/browser test               # Chromium: cascade, layout, paint
 npm --prefix test/integration run typecheck   # vitest does not typecheck
 scripts/sweep-vocabulary.py                  # added lines vs the deleted-mechanism list
+mops deployed                                # promote the stable baseline after a shape change
 npm --prefix test/integration test           # PocketIC scenarios — the go-live bar
 ```
 

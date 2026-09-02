@@ -43,6 +43,19 @@ args = [ "-W=M0223,M0236,M0237" ]
 [canisters.backend]
 main = "src/backend/Main.mo"
 
+# ⚠️ **The baseline is COMMITTED, and it must not be the build's own output.**
+# `mops build` writes `src/backend/dist/backend.most`, which `.gitignore` excludes along
+# with the rest of `dist/` — so pointing this at that path compares an artifact against a
+# fresh regeneration of itself. Measured before configuring it: `mops check-stable
+# src/backend/dist/backend.most backend` PASSED on the very `List` → `Set` change that
+# this baseline rejects. A check that cannot fail.
+#
+# `deployed/backend.most` is promoted by `mops deployed` after a deliberate schema change
+# and committed in the same PR. See AGENTS.md for the procedure and for why the gate
+# aborts when it is missing rather than reporting a clean check.
+[canisters.backend.check-stable]
+path = "deployed/backend.most"
+
 [build]
 outputDir = "src/backend/dist"
 args = [ "--release" ]
