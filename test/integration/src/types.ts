@@ -24,6 +24,12 @@ import type { _SERVICE } from './generated/declarations/backend.did.js';
 /// scenarios were already written against tuples, so nothing in them changed shape.
 type Unopt<T> = T extends [infer U] ? U : never;
 
+/// The tags of a Candid variant, as a string union.
+///
+/// ⚠️ Distributive on purpose: a variant arrives as a union of single-key records, so a
+/// bare `keyof` would yield `never`.
+type Tags<T> = T extends object ? keyof T : never;
+
 // ── The canister, projected ─────────────────────────────────────────────────
 //
 // One definition each, taken from the method that carries it. A backend change to any of
@@ -40,6 +46,7 @@ export type ExpiredBy = Unopt<Order['expiredBy']>;
 export type Rail = Order['rail'];
 export type Problem = Order['problems'][number];
 export type ProblemKind = Problem['kind'];
+export type OrderStatusKey = Tags<Order['status']>;
 
 export type CreateOrderResult = Awaited<ReturnType<_SERVICE['create_order']>>;
 export type CreatedOrder = Extract<CreateOrderResult, { ok: unknown }>['ok'];
@@ -101,10 +108,9 @@ export type DeliveryStats = Awaited<ReturnType<_SERVICE['delivery_stats']>>;
 export type Opt<T> = [] | [T];
 export type Bytes = Uint8Array | number[];
 
-/// The status keys as the suite writes them, for building `StatusVariant` selectors.
-export type OrderStatusKey =
-  | 'created' | 'cancelled' | 'expired' | 'paid'
-  | 'delivered' | 'needsReview' | 'abandoned';
+/// A status selector: deliberately WIDER than the canister's `OrderStatus`, which carries
+/// exactly one tag. The harness reads `Object.keys(status)[0]`, so it accepts any
+/// status-shaped holder — `Order`, a journal entry, a delayed delivery.
 export type StatusVariant = Partial<Record<OrderStatusKey, null>>;
 
 export type Result<T, E> = { ok: T } | { err: E };
