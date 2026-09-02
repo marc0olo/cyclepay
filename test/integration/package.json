@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "PocketIC integration suite — the Card rail go-live bar (spec §9).",
+  "description": "PocketIC integration suite \u2014 the Card rail go-live bar (spec \u00a79).",
   "scripts": {
     "build:backend": "cd ../.. && mops build",
     "fetch:wasm": "node scripts/fetch-wasms.mjs",
@@ -11,10 +11,12 @@
     "test": "vitest run",
     "presandbox": "npm run fetch:wasm && npm run build:backend",
     "sandbox": "npx tsx src/sandbox.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bindings": "icp-bindgen --did-file ../../src/backend/dist/backend.did --out-dir src/generated --actor-disabled --force"
   },
   "devDependencies": {
     "@dfinity/pic": "^0.23.0",
+    "@icp-sdk/bindgen": "^0.4.0",
     "@types/node": "^26.2.0",
     "tsx": "^4.23.11",
     "typescript": "^6.0.3",
