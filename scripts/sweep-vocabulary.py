@@ -181,6 +181,12 @@ def main() -> int:
             "  cited as the JUSTIFICATION for behaviour that now has a different reason.\n"
             "  This step does not fail on these; a reviewer decides."
         )
+    elif deferred:
+        # ⚠️ Reachable, not hypothetical: #82's diff hits `\bmint` and nothing else. Falling
+        # to the line below would print "no added line names a deleted mechanism"
+        # immediately under a list of printed hits, and this step's entire value is a
+        # reader trusting that last line.
+        print("   nothing above the line — only the live-name collisions listed above")
     else:
         print("   no added line names a deleted mechanism")
     return 0
