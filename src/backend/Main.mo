@@ -1121,15 +1121,19 @@ persistent actor CyclesGateway {
   /// a buyer accumulates them slowly, but nothing bounded it, and nothing drops orders
   /// under #37.
   ///
-  /// ⚠️ **Implemented through the same `Orders.page` the admin list uses**, with the
-  /// owner filter pinned to the caller. One traversal, one cursor semantics, one place
-  /// to get the "visits every match exactly once" property right — rather than a second
-  /// pager on the path where a mistake is a buyer's missing receipt.
+  /// ⚠️ **Paging bounded the RESPONSE; `Orders.ownerPage` bounds the WORK (#70).** The
+  /// admin pager's owner filter walks every principal's orders to find one principal's,
+  /// so this used to cost O(all orders ever created) in a single message — a page cap on
+  /// a ~2 MB response, against a limit that is actually instructions. `ownerPage` walks
+  /// the caller's own index from the cursor instead, and its cost is that buyer's page.
   public shared query ({ caller }) func list_orders(
     afterId : ?Types.OrderId,
     limit : Nat,
   ) : async Orders.Page {
-    Orders.page(orderStore, { Orders.noFilter() with owner = ?caller }, afterId, limit);
+    // ⚠️ The SAME function the unit test's `scanned` bound is asserted on, with the
+    // count projected away here (#70). A separate uninstrumented path for production
+    // would put that bound on code nobody runs.
+    Orders.ownerPage(orderStore, caller, afterId, limit).page;
   };
 
   /// Replace the card presets (§3/§7 — admin, validated atomically: a bad config

@@ -82,10 +82,17 @@ def real_surface():
             l for l in body.split("\n") if not l.strip().startswith("//")
         )
         admin = "requireAdmin" in code
-        # `getOwned(store, id, caller)` IS the owner guard — a regex looking only for
-        # `order.owner` misses it and reports owner-scoped reads as public, which is
-        # the one wrong answer here that looks like a security finding.
-        owner = "getOwned" in code or "owner = ?caller" in code
+        # ⚠️ **Owner scope is detected by CONVENTION, and keeping the convention is the
+        # point: an owner-scoped read delegates to an `Orders` helper whose NAME says so
+        # — `getOwned`, `ownerPage`. If you add one, name it that way.**
+        #
+        # Enumerating literal call forms broke this TWICE, both times in the same
+        # direction. First a regex looked only for `order.owner` and missed
+        # `getOwned(store, id, caller)`. Then #70 replaced `owner = ?caller` with
+        # `ownerPage` and the third form was missing again. Both times an owner-scoped
+        # read was reported as PUBLIC — and since the .did is authoritative by then, the
+        # remedy on offer is to go and assert a false scope in the docs.
+        owner = re.search(r"Orders\.\w*(?:[Oo]wned|[Oo]wner)\w*\s*\(", code) is not None
         out[n] = "admin" if admin else "owner" if owner else "public"
     return out
 

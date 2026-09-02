@@ -69,7 +69,11 @@ module {
     /// §4.2 — `orders : Map<OrderId, Order>`.
     orders : Map.Map<Types.OrderId, Types.Order>;
     /// §4.2 — order history per principal (fixes the lost-receipt problem).
-    principalsToOrders : Map.Map<Principal, List.List<Types.OrderId>>;
+    ///
+    /// ⚠️ **A `Set`, so `ownerPage` can seek to a cursor in O(log n).** A `List` holds
+    /// insertion order, which has no relation to the `OrderId` order every cursor in this
+    /// codebase is expressed in — so paging it meant scanning the whole store instead.
+    principalsToOrders : Map.Map<Principal, Set.Set<Types.OrderId>>;
     /// Live per-status tallies, maintained by `create` / `applyTransition` /
     /// `markPaid` — the only three functions that write an order's status.
     ///
@@ -198,7 +202,7 @@ module {
   public func emptyStore() : Store {
     {
       orders = Map.empty<Types.OrderId, Types.Order>();
-      principalsToOrders = Map.empty<Principal, List.List<Types.OrderId>>();
+      principalsToOrders = Map.empty<Principal, Set.Set<Types.OrderId>>();
       counts = Map.empty<Text, Nat>();
       var promised = 0;
       var tallySaturations = 0;
@@ -738,7 +742,7 @@ module {
     switch (store.principalsToOrders.get(principal)) {
       case (?ids) ids.add(id);
       case null {
-        let ids = List.empty<Types.OrderId>();
+        let ids = Set.empty<Types.OrderId>();
         ids.add(id);
         store.principalsToOrders.add(principal, ids);
       };
@@ -1143,6 +1147,80 @@ module {
       };
     };
     { orders = collected.toArray(); nextCursor = null };
+  };
+
+  /// One buyer's own orders, paged, walking **their** index rather than the whole store.
+  ///
+  /// ⚠️ **`Orders.page` bounds the RESUME, not the work.** Its owner filter seeks to the
+  /// cursor in the global store and then walks every principal's orders looking for one
+  /// principal's, so a buyer's history page costs O(all orders ever created) in a single
+  /// message. A query's instruction budget is well below an update's, so that cliff
+  /// arrives sooner than the equivalent on an update path — and when it arrives, an
+  /// ordinary buyer's history page traps. The failure is availability on a routine
+  /// action, not a drain: both callers are queries, free to the caller and off consensus.
+  ///
+  /// ⚠️ **Returns `scanned` because there is no instruction counter a query can read.**
+  /// "The work does not grow with other principals' orders" is otherwise unassertable,
+  /// and the half that stays assertable — that the rows are right — passes for a
+  /// function returning nothing. `Main.list_orders` calls THIS and projects the page
+  /// out; a separate uninstrumented path would put the bound on code nobody runs.
+  ///
+  /// ⚠️ Two invariants live in the loop below, and they are what a cursor walk gets
+  /// wrong. Neither follows from the key type:
+  ///
+  ///   1. **The seek is inclusive**, so `id > cursor` still does the skipping.
+  ///   2. **`last` is the last id RETURNED, never one merely scanned past.** A cursor
+  ///      taken from a scanned id silently skips every id between it and the last row
+  ///      actually handed out — a buyer's missing orders, with no error anywhere.
+  ///
+  /// `scanned <= limit + 2`, and the three terms are: at most one id skipped by the
+  /// inclusive seek, `limit` rows collected, and one lookahead that finds the page full.
+  /// The lookahead is what makes `nextCursor = null` mean "no more" rather than "ask
+  /// again and get nothing", which is the semantics `admin_orders` already has.
+  public func ownerPage(
+    store : Store,
+    owner : Principal,
+    afterId : ?Types.OrderId,
+    limit : Nat,
+  ) : { page : Page; scanned : Nat } {
+    let capped = if (limit == 0 or limit > maxPageSize) maxPageSize else limit;
+    let ?ids = store.principalsToOrders.get(owner) else {
+      return { page = { orders = []; nextCursor = null }; scanned = 0 };
+    };
+    let collected = List.empty<Types.Order>();
+    var scanned = 0;
+    let it = switch (afterId) {
+      case (?cursor) ids.valuesFrom(cursor);
+      case null ids.values();
+    };
+    for (id in it) {
+      // Counted for every id the iterator yields, including the inclusive-seek skip and
+      // the lookahead — the honest measure of work, not of rows.
+      scanned += 1;
+      let past = switch (afterId) { case (?cursor) id > cursor; case null true };
+      if (past) {
+        if (collected.size() == capped) {
+          // ⚠️ **The cursor is read OFF the rows returned**, so "the cursor is an id we
+          // actually handed out" is unrepresentable rather than merely true. A separate
+          // `var last` assigned inside the loop is the same value in this function —
+          // every id in the owner index yields a row — which is exactly why it is the
+          // wrong shape: nothing could ever fail if it drifted. `capped >= 1`, since a
+          // zero or oversized limit becomes `maxPageSize`.
+          // `last()` rather than `get(size - 1)`: no Nat subtraction to trap on, and no
+          // index to get wrong.
+          let cursor = switch (collected.last()) { case (?row) ?row.id; case null null };
+          return { page = { orders = collected.toArray(); nextCursor = cursor }; scanned };
+        };
+        switch (store.orders.get(id)) {
+          case (?order) collected.add(order);
+          // Indexed without a record. Nothing removes from either structure, so this is
+          // unreachable; skipping rather than trapping keeps a bookkeeping fault off a
+          // buyer's read path.
+          case null {};
+        };
+      };
+    };
+    { page = { orders = collected.toArray(); nextCursor = null }; scanned };
   };
 
   public func matchesFilter(order : Types.Order, filter : Filter) : Bool {
