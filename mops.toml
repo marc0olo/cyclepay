@@ -1,11 +1,17 @@
 [dependencies]
 core = "2.5.0"
+# SHA-256 for the Stripe webhook signature — `Hmac.mo` imports `mo:sha2/Sha256`.
+# ⚠️ Named because the alias contains DIGITS: an import scan whose pattern was
+# `[A-Za-z]+` reported this dependency as unused, twice.
 sha2 = "0.2.1"
-# Nothing imports `mo:ic` right now: #29 removed the last use (`ic.deposit_cycles`,
-# the deleted `#canister` delivery branch). Kept rather than removed and re-added
-# because #33's Stripe outcall needs `Call.httpRequest` from it — that is the
-# function that attaches the exact `ic0.cost_http_request` price, so hand-attaching
-# cycles is never the answer.
+# `Call.httpRequest` for the Stripe session outcall — `Main.mo` and `rails/Session.mo`
+# import it. It attaches the exact `ic0.cost_http_request` price, which is why
+# hand-attaching cycles is never the answer here.
+#
+# (This comment said "nothing imports mo:ic right now" until 2026-09-02, kept from before
+# #33 shipped the outcall. The conclusion — keep the dependency — stayed correct while its
+# reason described a state that had ended, which is the shape that makes a stale
+# justification hard to notice.)
 ic = "4.2.0"
 
 [toolchain]

@@ -3604,10 +3604,15 @@ persistent actor CyclesGateway {
   /// cannot come out differently on two surfaces.
   ///
   /// ⚠️ **The counters read zero on a fresh install and that is correct, not a bug.**
-  /// Orders are never deleted but a reinstall replaces the state, so a launch-day figure
-  /// starts at zero whichever way it is built. A badge reading "0 orders delivered" is
-  /// worse than no badge, so the *renderer* owes a threshold — see #39. This query does
-  /// not lie about it by withholding the number.
+  /// Orders are never deleted, but a reinstall replaces the state, so a launch-day figure
+  /// starts at zero whichever way it is built.
+  ///
+  /// ⚠️ **The renderer must show that zero — do NOT add a threshold.** #39 first said "0
+  /// orders delivered is worse than no badge" and that was rejected: an absent number is
+  /// indistinguishable from a withheld one, and a rule that hides the figure exactly when
+  /// the news is bad is a misleading presentation rather than a neutral one. This comment
+  /// used to instruct the opposite, which would have had a future implementer build the
+  /// thing the decision removed.
   ///
   /// `nullPaid` should always be 0. It counts delivered orders whose `paidUsdCents` was
   /// unset, which `markPaid` makes unreachable — a non-zero value means the USD total is
