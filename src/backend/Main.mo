@@ -3590,10 +3590,14 @@ persistent actor CyclesGateway {
 
   /// The public trust figures (#39) — anonymous, safe on a landing page.
   ///
-  /// ⚠️ **Nothing here identifies a buyer, an order or a payment**, and that is the whole
-  /// admission test for this surface: cumulative totals plus the rail's own state. Do not
-  /// add a most-recent-order field, a largest-purchase field, or anything per-principal —
-  /// each of those re-identifies through timing or amount even without a name attached.
+  /// ⚠️ **The admission test is "what does a POLLER learn from the deltas?", not "does this
+  /// field name a buyer?"** Cumulative counters are differentiable: anyone sampling this
+  /// query recovers each delivery's cycles, USD and timing from the increments. That is
+  /// accepted here because it is not new — `reserve_status` is already public and its
+  /// `promisedTotal` leaks per-order amounts the same way, and USD is near-derivable from
+  /// the public `card_tiers`/`quote_previews` — but the field-level reading of the test is
+  /// what will wave through the field that *does* add something. Do not add a
+  /// most-recent-order field, a largest-purchase field, or anything per-principal.
   ///
   /// ⚠️ **`refusingNow` is REUSED, not re-derived.** It is the same `railStateLatch`
   /// `refusal_counts` reports, so "is the rail accepting orders" has one definition and

@@ -248,18 +248,22 @@ else
   # refusing to create orders at all, and the failure names itself.
   icp canister call backend set_stripe_api_key '("rk_test_PLACEHOLDER_set_STRIPE_API_KEY_to_create_sessions")' >/dev/null \
     || die "set_stripe_api_key was refused"
-  # ⚠️ **Do NOT tell the reader to `export` it.** The Stripe CLI prefers STRIPE_API_KEY
-  # over its own `stripe login`, and a restricted key cannot open a CLI session — so an
-  # exported key makes `stripe listen` die with "more_permissions_required", breaking the
-  # webhook forwarder this run needs. `docs/SANDBOX-TESTPLAN.md` §1 says so; this message
-  # said the opposite, which is guidance that runs and then breaks the next step.
+  # ⚠️ **Say the TRUE reason, and scope the hazard correctly.** An earlier version of this
+  # message asserted that exporting the key makes `stripe listen` die with
+  # "more_permissions_required". It does not: every `stripe` invocation in this repo's own
+  # scripts is wrapped `env -u STRIPE_API_KEY` (stripe-dev.sh:156/164/282,
+  # capture-stripe-fixtures.sh:78/112), so our forwarder is immune. The real exposure is a
+  # `stripe` command an operator types by hand — `capture-stripe-fixtures.sh` prints one
+  # for exactly that — and the durable reason for the file is the one below.
   printf '  \033[33m!\033[0m placeholder API key set — no real Checkout Session can be created.\n'
   printf '     Put it in the FILE, not your shell:\n'
   printf '       echo '"'"'STRIPE_API_KEY=rk_...'"'"' >> %s\n' "$DEV_ENV_FILE"
   printf '     Restricted key, Checkout Sessions = Write, everything else None.\n'
-  printf '     ⚠️ Do NOT export it: the Stripe CLI prefers it over `stripe login` and a\n'
-  printf '        restricted key cannot open a CLI session, so `stripe listen` would die\n'
-  printf '        with "more_permissions_required". See docs/SANDBOX-TESTPLAN.md §1.\n'
+  printf '     Why the file: it is sourced into this process, so the key stays out of your\n'
+  printf '     shell history, `ps` and any terminal transcript.\n'
+  printf '     ⚠️ If you DO export it, a `stripe` command you type yourself picks it up and\n'
+  printf '        fails 403 "more_permissions_required" — a restricted key cannot open a CLI\n'
+  printf '        session. This repo'"'"'s own scripts strip it and are unaffected.\n'
 fi
 
 # The origin Stripe returns the buyer to. The frontend canister's own URL, since

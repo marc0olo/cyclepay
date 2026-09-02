@@ -118,10 +118,16 @@ npm --prefix test/browser ci                    # only if you also want the suit
 #    placeholder: everything except paying works, and create_order fails with a
 #    real Stripe 401 rather than at a config check.
 #
-#    ⚠️ Keep it in that file rather than `export`ing it: the Stripe CLI prefers
-#    STRIPE_API_KEY over its own `stripe login`, and the restricted key cannot open a
-#    CLI session — `stripe listen` then dies with "more_permissions_required". The seed
-#    sources the file into its own process, so the variable never reaches your shell.
+#    ⚠️ Keep it in that file rather than `export`ing it. The durable reason: the seed
+#    sources the file into its own process, so the key never reaches your shell history,
+#    `ps` or a terminal transcript.
+#    ⚠️ The CLI hazard, stated precisely — this used to overclaim it. The Stripe CLI
+#    prefers STRIPE_API_KEY over its own `stripe login`, and a restricted key cannot open
+#    a CLI session, so a `stripe` command that sees it fails 403
+#    "more_permissions_required". **This repo's own scripts are immune** — every `stripe`
+#    invocation is wrapped `env -u STRIPE_API_KEY` (stripe-dev.sh, capture-stripe-fixtures.sh),
+#    so the forwarder is unaffected. What is exposed is a `stripe` command you type
+#    yourself; `capture-stripe-fixtures.sh` prints one for you to run.
 #    Nothing to configure in the Dashboard: the session carries inline price_data
 #    with a fixed unit_amount and quantity 1, and none of the settings that could
 #    move amount_total is enabled — src/backend/rails/Session.mo lists all eight

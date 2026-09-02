@@ -14,8 +14,9 @@ import Text "mo:core/Text";
 import Orders "../src/backend/Orders";
 
 // Unit suite for the §4 order state machine and the Orders store.
-// Exhaustive: every (from, to) pair of the 8 statuses is checked against the
-// spec's legal-transition table.
+// Exhaustive: every (from, to) pair of the SEVEN statuses is checked against the
+// legal-transition table. (It said "8" and there are seven — the same stale-count class
+// the comment purge removed ten of, and #84's double-count test leans on this array.)
 
 let allStatuses : [Types.OrderStatus] = [
   #created,
@@ -47,6 +48,37 @@ let legalTransitions : [(Types.OrderStatus, Types.OrderStatus)] = [
   // abandoned, auditing a refund that never happened.
   (#needsReview, #delivered),
 ];
+
+/// Partial tie between `allStatuses` and `Types.OrderStatus`. That array is hand-written,
+/// so without something here an eighth status goes untried by every test that iterates it
+/// — including #84's "double-counting is unrepresentable" test, whose whole value is
+/// trying *every* status as a follow-on transition.
+///
+/// ⚠️ **This is NOT a compile-time tie, and an earlier version of this comment claimed it
+/// was.** Measured: `mops check -- -Werror` does not compile `test/` at all (it reports
+/// `✓ backend` and nothing else), and `mops test` passes `--hide-warnings`, so a
+/// non-exhaustive match here is suppressed rather than fatal. `-Werror` never sees this
+/// file.
+///
+/// What it actually catches, at RUNTIME, via the test below:
+///   - `allStatuses` gaining a variant this switch lacks → the switch traps, test fails.
+///   - `allStatuses` omitting or duplicating one this switch knows → the bitmask fails.
+///
+/// ⚠️ **What nothing catches: a new variant omitted from BOTH.** The backend's own
+/// exhaustive switches do fail under `-Werror` when a status is added, so a new status
+/// cannot ship silently — but once those are fixed, this array can still be stale. Adding
+/// an `OrderStatus` means updating this switch and `allStatuses` by hand.
+func statusIndex(status : Types.OrderStatus) : Nat {
+  switch (status) {
+    case (#created) 0;
+    case (#cancelled) 1;
+    case (#expired) 2;
+    case (#paid) 3;
+    case (#delivered) 4;
+    case (#needsReview) 5;
+    case (#abandoned) 6;
+  };
+};
 
 func isExpectedLegal(from : Types.OrderStatus, to : Types.OrderStatus) : Bool {
   for ((f, t) in legalTransitions.values()) {
@@ -214,7 +246,24 @@ suite("the promise tally (#30 PR-B) — every writer moves it", func() {
   });
 });
 
-suite("legal-transition matrix (exhaustive, 8×8)", func() {
+suite("allStatuses is tied to the type", func() {
+  test("⚠️ every OrderStatus variant appears exactly once", func() {
+    // If this fails, `allStatuses` and `Types.OrderStatus` have diverged and every test
+    // that iterates the array is quietly testing less than it claims.
+    assert allStatuses.size() == 7;
+    // A bitmask, so a DUPLICATE is caught as well as an omission — a hand-written array
+    // can gain a repeat as easily as it can miss a variant.
+    var seen : Nat = 0;
+    for (status in allStatuses.values()) {
+      let bit = 2 ** statusIndex(status);
+      assert seen / bit % 2 == 0; // not already present
+      seen += bit;
+    };
+    assert seen == 127; // 2^7 − 1: all seven, each exactly once
+  });
+});
+
+suite("legal-transition matrix (exhaustive, 7×7)", func() {
   for (from in allStatuses.values()) {
     for (to in allStatuses.values()) {
       let expected = isExpectedLegal(from, to);
