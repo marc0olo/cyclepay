@@ -1201,10 +1201,17 @@ module {
       if (past) {
         if (collected.size() == capped) {
           // ⚠️ **The cursor is read OFF the rows returned**, so "the cursor is an id we
-          // actually handed out" is unrepresentable rather than merely true. A separate
-          // `var last` assigned inside the loop is the same value in this function —
-          // every id in the owner index yields a row — which is exactly why it is the
-          // wrong shape: nothing could ever fail if it drifted. `capped >= 1`, since a
+          // actually handed out" is unrepresentable rather than merely true.
+          //
+          // ⚠️ **Not because a `var last` assigned in the loop would differ today — but
+          // because if it ever DID differ, this is the correct one and that would be the
+          // bug.** The two coincide only while `case null` below is unreachable; a
+          // phantom index entry is exactly the state where a `last` captured in the
+          // `past` branch would name an id that produced no row, and the next page would
+          // silently skip everything between it and the last real row. So the reason
+          // holds after a change that makes that branch reachable — retention, deletion
+          // — where "they are identical" would read as invalidated while the code is
+          // still right. `capped >= 1`, since a
           // zero or oversized limit becomes `maxPageSize`.
           // `last()` rather than `get(size - 1)`: no Nat subtraction to trap on, and no
           // index to get wrong.

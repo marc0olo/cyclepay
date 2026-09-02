@@ -437,11 +437,16 @@ suite("store: ownership and history", func() {
     assert Orders.getOwned(store, "missing", alice) == null;
   });
 
-  test("ordersFor returns only the caller's orders, insertion order", func() {
+  test("ordersFor returns only the caller's orders, in ID order", func() {
     let store = Orders.emptyStore();
-    ignore newOrder(store, "a-1", alice);
-    ignore newOrder(store, "b-1", bob);
+    // ⚠️ **`a-2` is inserted FIRST, so insertion order and id order disagree.** With
+    // `a-1` first the two coincide and this test passes under either contract — which is
+    // what it did while the index was a `List` holding insertion order, and what it
+    // would still do now. The index is a `Set` (#70), so id order is the contract, and
+    // this fails if anyone puts a `List` back.
     ignore newOrder(store, "a-2", alice);
+    ignore newOrder(store, "b-1", bob);
+    ignore newOrder(store, "a-1", alice);
     let mine = Orders.ordersFor(store, alice);
     assert mine.size() == 2;
     assert mine[0].id == "a-1";

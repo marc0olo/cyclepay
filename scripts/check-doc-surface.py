@@ -55,6 +55,15 @@ PUBLIC_NOT_LISTED = {
     "cancel_order",            # owner-scoped in effect; listed under owner
 }
 
+# Public, and they legitimately read `caller`. ⚠️ **Explicit because the scope detection
+# below FAILS on any other method that takes the caller and does nothing it recognises
+# with it** — so a new caller-aware method has to be classified deliberately, rather than
+# defaulting to "public" and forcing the docs to assert it.
+PUBLIC_WITH_CALLER = {
+    "create_order",  # public update on the buyer path; the caller BECOMES the owner
+    "can_purchase",  # the admission gate's cap is per principal, so it must read caller
+}
+
 FAIL = []
 
 
@@ -93,7 +102,21 @@ def real_surface():
         # read was reported as PUBLIC — and since the .did is authoritative by then, the
         # remedy on offer is to go and assert a false scope in the docs.
         owner = re.search(r"Orders\.\w*(?:[Oo]wned|[Oo]wner)\w*\s*\(", code) is not None
-        out[n] = "admin" if admin else "owner" if owner else "public"
+        # ⚠️ **The DEFAULT was the defect, not the pattern.** Falling through to "public"
+        # is what let both earlier breaks offer "go assert a false scope in the docs" as
+        # the remedy. A method that destructures `{ caller }` and then calls neither
+        # `requireAdmin` nor a recognised owner helper has been handed the caller and
+        # done nothing this check understands with it — so say so and fail, rather than
+        # guessing the least safe answer. This alone would have caught #70's regression.
+        takes_caller = "{ caller }" in lines[i]
+        if admin:
+            out[n] = "admin"
+        elif owner:
+            out[n] = "owner"
+        elif takes_caller and n not in PUBLIC_WITH_CALLER:
+            out[n] = "unclassifiable"
+        else:
+            out[n] = "public"
     return out
 
 
@@ -127,6 +150,23 @@ def main() -> int:
         f"   canister surface: {len(real['public'])} public, "
         f"{len(real['owner'])} owner-scoped, {len(real['admin'])} admin"
     )
+
+    unclassifiable = sorted(n for n, v in surface.items() if v == "unclassifiable")
+    if unclassifiable:
+        print(
+            "\n\033[31m✗ cannot determine the scope of: "
+            + ", ".join(unclassifiable)
+            + "\033[0m",
+            file=sys.stderr,
+        )
+        print(
+            "  Each takes `{ caller }` and calls neither `requireAdmin` nor an `Orders`\n"
+            "  helper whose name says owner. Either route it through one, or add it to\n"
+            "  PUBLIC_WITH_CALLER with the reason. ⚠️ Do NOT resolve this by editing a\n"
+            "  doc: the scope is undetermined, so any block you put it in is a guess.",
+            file=sys.stderr,
+        )
+        return 1
 
     checked = 0
     for path in ("docs/STRIPE.md", "RUNBOOK.md"):
