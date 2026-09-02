@@ -108,7 +108,13 @@ def real_surface():
         # `requireAdmin` nor a recognised owner helper has been handed the caller and
         # done nothing this check understands with it — so say so and fail, rather than
         # guessing the least safe answer. This alone would have caught #70's regression.
-        takes_caller = "{ caller }" in lines[i]
+        # ⚠️ A PATTERN, not the literal `"{ caller }"`. All 36 caller-taking declarations
+        # use that exact spelling today, so the substring worked — and a formatter
+        # producing `({caller})`, or a declaration wrapped across lines, would fall
+        # through to `public`, which is the old bad default returning silently for the
+        # one case it cannot see. Enumerating a form is what this check keeps getting
+        # wrong.
+        takes_caller = re.search(r"\(\s*\{[^}]*\bcaller\b", lines[i]) is not None
         if admin:
             out[n] = "admin"
         elif owner:
