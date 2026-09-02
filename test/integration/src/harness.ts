@@ -28,6 +28,7 @@ import {
   icrc1IdlFactory, xrcMockIdlFactory,
 } from './idl';
 import type {
+  AuditPage, DelayedPage, OrdersPage, OrphanPage,
   BackendService, CmcService, OrphanEntry,
   Destination, HttpResponse, Icrc1Service, Order, OrderStatusKey, Result, StatusVariant,
   CreatedOrder, CreateOrderError, Amount, Problem,
@@ -574,7 +575,7 @@ export async function allOrphans(gw: Gateway): Promise<OrphanEntry[]> {
   const all: OrphanEntry[] = [];
   let cursor: [] | [bigint] = [];
   for (;;) {
-    const page = await gw.asAdmin.orphans(cursor, 200n);
+    const page: OrphanPage = await gw.asAdmin.orphans(cursor, 200n);
     all.push(...page.entries);
     if (page.nextCursor.length === 0) return all;
     cursor = page.nextCursor;
@@ -586,7 +587,7 @@ export async function openOrphans(gw: Gateway): Promise<OrphanEntry[]> {
   const open: OrphanEntry[] = [];
   let cursor: [] | [bigint] = [];
   for (;;) {
-    const page = await gw.asAdmin.orphans_unresolved(cursor, 200n);
+    const page: OrphanPage = await gw.asAdmin.orphans_unresolved(cursor, 200n);
     open.push(...page.entries);
     if (page.nextCursor.length === 0) return open;
     cursor = page.nextCursor;
@@ -613,7 +614,7 @@ export async function allDelayedDeliveries(gw: Gateway): Promise<DelayedDelivery
   const out: DelayedDelivery[] = [];
   let cursor: Opt<string> = [];
   for (;;) {
-    const page = await gw.asAdmin.delayed_deliveries(cursor, 200n);
+    const page: DelayedPage = await gw.asAdmin.delayed_deliveries(cursor, 200n);
     out.push(...page.entries);
     if (page.nextCursor.length === 0) return out;
     cursor = page.nextCursor;
@@ -631,7 +632,7 @@ export async function allAuditEvents(gw: Gateway): Promise<AuditEvent[]> {
   const out: AuditEvent[] = [];
   let cursor: Opt<bigint> = [];
   for (;;) {
-    const page = await gw.asAdmin.audit_log(cursor, 200n);
+    const page: AuditPage = await gw.asAdmin.audit_log(cursor, 200n);
     out.push(...page.events);
     if (page.nextCursor.length === 0) return out;
     cursor = page.nextCursor;
@@ -643,7 +644,7 @@ export async function allOwnedOrders(gw: Gateway): Promise<Order[]> {
   const out: Order[] = [];
   let cursor: Opt<string> = [];
   for (;;) {
-    const page = await gw.asUser.list_orders(cursor, 200n);
+    const page: OrdersPage = await gw.asUser.list_orders(cursor, 200n);
     out.push(...page.orders);
     if (page.nextCursor.length === 0) return out;
     cursor = page.nextCursor;

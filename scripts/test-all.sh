@@ -159,6 +159,11 @@ step=$((step + 1))
 printf '\n\033[1m── %d. %s\033[0m\n' "$step" "no frontend export is referenced only by tests"
 scripts/check-unused-exports.py
 
+# ⚠️ **After the .did check, and before the integration typecheck.** The suite's decoders
+# are generated FROM that file, so this only means anything once it is known current — and
+# the typecheck downstream is what turns a Motoko signature change into a failure.
+run "integration bindings match the canister" scripts/check-bindings.sh
+
 # `npm run build` regenerates the bindings the typecheck needs; running the
 # typecheck first on a clean tree fails for the wrong reason.
 run "frontend build — regenerate bindings" npm --prefix src/frontend run build
