@@ -175,11 +175,17 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
      justification did not.**
 
      ⚠️ **The term list is an artifact, not a memory: `docs/agents/deleted-vocabulary.md`.**
-     Add a mechanism's vocabulary there when you delete it; run
-     `scripts/sweep-vocabulary.py` (the command is the source of truth for the counts, the
-     table is a dated snapshot) and diff against its recorded dispositions, so `mint` and `retention` are not
-     re-adjudicated every time. Deliberately **not** a gate step — most hits are correct
-     prose, and a check that fires on correct code teaches people to ignore it.
+     Add a mechanism's vocabulary there when you delete it. `scripts/sweep-vocabulary.py`
+     is a gate step and scans the lines your change **adds**, printing each hit with its
+     recorded disposition — so the legitimate ones are not re-adjudicated every time.
+     ⚠️ It **prints and passes**: most hits are correct prose, and a check that fires on
+     correct code teaches people to ignore it. Read them; a reviewer decides.
+
+     ⚠️ **It keeps no counts, and that is the design.** A recorded population cannot tell
+     "removed two legitimate uses, added one stale claim" from "removed one", so a
+     prose-purging change that also adds a stale claim nets down and reads clean. A count
+     also needs globs, and a glob list goes stale in silence — the version that kept counts
+     covered 40 files and never saw `test/`, `src/backend/rails/` or `scripts/`.
 
      ⚠️ **Derive the term list from the deletion itself, not from the names you remember
      — and include the VERB for what the mechanism did.** The first attempt at this swept
@@ -269,8 +275,10 @@ scripts/test-all.sh          # everything, in dependency order, fail-fast
 scripts/test-all.sh --fast   # skips the PocketIC suite (see the host note below)
 ```
 
-⚠️ **Four of its fifteen steps are checks a hand-run sequence silently skips**, and each
-exists because the thing it checks had already drifted once:
+⚠️ **Several of its steps are checks a hand-run sequence silently skips**, and each exists
+because the thing it checks had already drifted once. No count here: the script derives its
+own total by counting its `run` invocations, and a number restated in prose is one more
+thing to expire.
 
 | step | asserts | why |
 |---|---|---|
@@ -278,6 +286,9 @@ exists because the thing it checks had already drifted once:
 | `check-doc-surface.py` | the docs' method lists match the `.did` | `docs/STRIPE.md` claimed "the whole admin surface" while missing 11 of 29, and RUNBOOK named a method that never existed |
 | `check-design-sections.py` | every `§N` the code cites exists in `docs/DESIGN.md`, and every section is cited | the 697-line spec it replaced rotted by being updated less often than the code |
 | `check-heredocs.sh` | no unquoted heredoc runs its own body | one destroyed a GitHub issue body, one turned a script's notes into an `icp deploy` |
+| `check-bindings.sh` | the suite's committed Candid bindings match the `.did` | the integration CI job installs only that suite's deps and never builds the backend, so it typechecks against whatever is in the checkout |
+| `check-unused-exports.py` | no module exports something nothing calls | a deleted caller leaves an export that reads as live API |
+| `sweep-vocabulary.py` | prints added lines naming a deleted mechanism | ⚠️ **advisory — it passes on hits**; it fails only when it cannot determine a base ref, which is the didn't-run case |
 
 The individual steps, if you need to run one in isolation:
 
@@ -293,6 +304,7 @@ npm --prefix src/frontend run test           # pure functions + jsdom (main.ts)
 bash scripts/brand-lint.sh                   # banned characters, vocabulary, tokens
 npm --prefix test/browser test               # Chromium: cascade, layout, paint
 npm --prefix test/integration run typecheck   # vitest does not typecheck
+scripts/sweep-vocabulary.py                  # added lines vs the deleted-mechanism list
 npm --prefix test/integration test           # PocketIC scenarios — the go-live bar
 ```
 

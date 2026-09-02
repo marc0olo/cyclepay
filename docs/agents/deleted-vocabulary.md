@@ -29,21 +29,33 @@ Three kinds of term, because missing any one of them has already cost a sweep:
    never reads — two of them were **live operator triage rows** for entries that can never
    appear.
 
-## Why this is NOT a gate step
+## Why it scans the DIFF, prints, and does not fail on a hit
 
-Deliberate, and by the same test this project uses everywhere: **a fixed target can be
-enforced; a judgement call can only be surfaced.** The outflow census is three method
-names, so it is a gate step. This list is different — every hit needs per-hit judgement,
-and most hits are *correct*:
+**A fixed target can be enforced; a judgement call can only be surfaced.** Most hits are
+*correct*:
 
 - `mint` is legitimate: the CMC is literally the Cycles **Minting** Canister.
 - `retention` is legitimate: `Idempotency.mo` has real dedup-key retention.
 - *"Nothing is ever evicted (#37)"* is legitimate — a statement of the end state.
 
-A standing gate over this list would fire on correct prose, and this project has already
-rejected that trade once: widening a lint pattern flagged a script's deliberate
-interpolation, and it was reverted, because **a check that fires on correct code teaches
-people to ignore it.**
+So the step prints its hits and exits zero. A check that fires on correct code teaches
+people to ignore it, and this project has rejected that trade before: widening a lint
+pattern flagged a script's deliberate interpolation, and it was reverted.
+
+⚠️ **What it DOES fail on is an undeterminable base ref**, because that is the didn't-run
+case. A scan that silently had nothing to scan reads exactly like a clean one.
+
+⚠️ **An empty diff is a pass, not an abort** — unlike every other gate step, where empty
+input means the step is aimed at nothing. Here it means the change added no lines, which
+is a true answer to the question asked.
+
+⚠️ **Scoped to added lines, and keeping no counts, for two reasons that are not
+convenience.** A count cannot distinguish "removed two legitimate uses, added one stale
+claim" from "removed one" — offsetting moves net out, so a prose-purging change that also
+introduces a stale claim reads clean. And a count needs a population, so it needs globs,
+and a glob list goes stale in silence. Added lines have neither hole: every added line in
+the tree is in scope, wherever it lives, and a stale claim is a stale claim regardless of
+what else the change did.
 
 ## ⚠️ Three row types, and they are cleared differently
 
@@ -60,47 +72,42 @@ when the check it needs is **whether anything now calls it**.
    **status**; only the queue *kind* of that name went. A bare count for this row is
    actively misleading, and high is normal.
 
-## The baseline
+## Running it
 
-⚠️ **The COMMAND is the source of truth; these numbers are a dated snapshot for
-diffing.** Run `scripts/sweep-vocabulary.py` (add `--hits` to adjudicate). The table used
-to say "update them when you sweep" — a rule requiring memory, which is what this artifact
-exists to remove, and a stale count reads exactly like a measured one.
+`scripts/sweep-vocabulary.py` scans the lines your change adds, against the terms below,
+and prints what it finds with the disposition alongside. It is gate step 18, so a normal
+run reports it for you; run it directly with `--base <ref>` to scan against something
+other than the default branch.
 
-⚠️ **The script excludes THIS file**, and its first run is why: every term appears here by
-construction, so including it drifted five counts the moment the file existed. Several
-remaining hits are `AGENTS.md`'s rule text quoting these very terms — documenting the rule
-adds occurrences of it.
+⚠️ **The script excludes THIS file.** Every term appears here by construction, so
+including it would report the question as the answer. That is not an exemption — it is the
+difference between scanning the corpus and scanning the list.
 
-⚠️ **Measured, not remembered — and that is the point of recording it.** The next sweep
-**diffs against this**, so a new hit stands out against a known-legitimate set instead of
-being re-adjudicated from scratch. Re-adjudicating is how "is `mint` a problem?" gets
-answered a fourth time, and occasionally answered wrongly.
+⚠️ **A disposition is durable; a count was not.** These rows say what the word meant, that
+the thing is gone, and what makes a new use wrong. That stays true as the code moves. The
+numbers that used to sit here did not, and nothing ran to catch them expiring.
 
-Counts cover `src/backend/*.mo`, `src/frontend/src/*.ts` and the root/`docs` Markdown,
-excluding this file. Snapshot taken 2026-09-01.
-
-| term | hits | disposition |
-|---|---|---|
-| `ring buffer` | 1 | AGENTS.md, describing this very failure class |
-| `\bring\b` | 23 | all end-state statements — "#37 removed the ring", "the capacity parameter and the eviction loop are gone" |
-| `4,?096` | 7 | all stating the ring is gone; one is PocketIC's 4096-**byte page** requirement, unrelated |
-| `\bfloat\b` | 4 | all "there is no float" statements |
-| `treasury` | 1 | AGENTS.md, listing what was deleted |
-| `burn cap` | 3 | DESIGN.md §7 contrasts the old cap against today's reserve-sizing argument; the others list it as deleted |
-| `ck-?USDC` | 1 | AGENTS.md scope statement |
-| `\bmint` | 20 | ⚠️ **all legitimate** — the Cycles **Minting** Canister is a live dependency, and `Cmc.mo` says "nothing here mints, and nothing may" |
-| `\bretention\b` | 15 | ⚠️ **all legitimate** — `Idempotency.mo` prunes dedup keys on a real retention window |
-| `\bevict` | 15 | all end-state statements after the #77 follow-up sweep |
-| `error.?queue` | 6 | historical references to a *status* split (#34) plus RUNBOOK's account of it; the structure references are cleared |
-| `Payment Link` | 13 | all "#33 deleted this" statements |
-| `attach_payment` | 8 | all "#33 deleted this" statements |
-| `Retention.mo` | 2 | both naming it as deleted |
-| `icrc1_fee` | 16 | ⚠️ **all "no longer awaits" / "never await" — none calls it.** Its absence from the ledger's service type is a load-bearing guard (§5.1); if a hit ever becomes a call, that guard is gone |
-| `delayedAlerts` | 5 | all "not the `delayedAlerts` map returning" prohibitions |
-| `#deliveryDelayed` | 5 | naming what replaced it (`delayed_deliveries`). ⚠️ Was a **live triage row** in RUNBOOK §6 until #77's follow-up |
-| `#abandoned` | 29 | ⚠️ **legitimate — this is a live order STATUS.** Only the deleted *queue kind* of the same name was removed, which is why a bare count is not evidence here |
-| `#icpAtCmc` | 0 | clean |
-| `AwaitingTreasury` | 0 | clean |
-| `promisedForDecision` | 1 | TEST-COVERAGE, recording the defect its deletion closed |
-| `order_stats` | 0 | clean |
+| term | disposition |
+|---|---|
+| `ring buffer` | AGENTS.md, describing this very failure class |
+| `\bring\b` | all end-state statements — "#37 removed the ring", "the capacity parameter and the eviction loop are gone" |
+| `4,?096` | all stating the ring is gone; one is PocketIC's 4096-**byte page** requirement, unrelated |
+| `\bfloat\b` | all "there is no float" statements |
+| `treasury` | AGENTS.md, listing what was deleted |
+| `burn cap` | DESIGN.md §7 contrasts the old cap against today's reserve-sizing argument; the others list it as deleted |
+| `ck-?USDC` | AGENTS.md scope statement |
+| `\bmint` | ⚠️ **all legitimate** — the Cycles **Minting** Canister is a live dependency, and `Cmc.mo` says "nothing here mints, and nothing may" |
+| `\bretention\b` | ⚠️ **all legitimate** — `Idempotency.mo` prunes dedup keys on a real retention window |
+| `\bevict` | all end-state statements after the #77 follow-up sweep |
+| `error.?queue` | historical references to a *status* split (#34) plus RUNBOOK's account of it; the structure references are cleared |
+| `Payment Link` | all "#33 deleted this" statements |
+| `attach_payment` | all "#33 deleted this" statements |
+| `Retention.mo` | both naming it as deleted |
+| `icrc1_fee` | ⚠️ **all "no longer awaits" / "never await" — none calls it.** Its absence from the ledger's service type is a load-bearing guard (§5.1); if a hit ever becomes a call, that guard is gone |
+| `delayedAlerts` | all "not the `delayedAlerts` map returning" prohibitions |
+| `#deliveryDelayed` | naming what replaced it (`delayed_deliveries`). ⚠️ Was a **live triage row** in RUNBOOK §6 until #77's follow-up |
+| `#abandoned` | ⚠️ **legitimate — this is a live order STATUS.** Only the deleted *queue kind* of the same name was removed, which is why a bare count is not evidence here |
+| `#icpAtCmc` | clean |
+| `AwaitingTreasury` | clean |
+| `promisedForDecision` | TEST-COVERAGE, recording the defect its deletion closed |
+| `order_stats` | clean |

@@ -251,6 +251,17 @@ else
     npm --prefix test/integration test
 fi
 
+# ⚠️ **Last, and advisory by design.** It PRINTS lines the change adds that name a
+# deleted mechanism, and exits zero on every one of them — most such lines are correct
+# prose, and a check that fires on correct code teaches people to route around it. Last
+# so its output sits immediately above the summary, where it gets read.
+#
+# ⚠️ It fails on exactly one thing: no determinable base ref. That is the didn't-run
+# case, and a scan with nothing to scan reads exactly like a clean one. An empty diff is
+# a genuine pass here, unlike every other step, where empty input means the step is
+# aimed at nothing.
+run "vocabulary the change ADDS (advisory — read the hits)" python3 scripts/sweep-vocabulary.py
+
 # One summary line, and it must not say "passed" when a suite did not run. --fast
 # is an explicit request so it still exits 0, but a green tick after an admitted
 # skip is the thing that lets "the gate is green" be quoted for a run that never

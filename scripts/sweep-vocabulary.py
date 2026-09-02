@@ -1,92 +1,155 @@
 #!/usr/bin/env python3
-"""Re-run the deleted-mechanism sweep from the term list, and diff against the recorded counts.
+"""Scan the lines a change ADDS for vocabulary that names a deleted mechanism.
 
-    scripts/sweep-vocabulary.py            # counts + drift against the table
-    scripts/sweep-vocabulary.py --hits     # also print every hit, for adjudication
+    scripts/sweep-vocabulary.py                  # added lines vs the merge base
+    scripts/sweep-vocabulary.py --base <ref>     # against an explicit base
 
-⚠️ **Not a gate step, deliberately** — most hits are correct prose (`mint` is the Cycles
-Minting Canister; "nothing is ever evicted" is an end-state statement), and a check that
-fires on correct code teaches people to ignore it. This is a tool you run when sweeping.
+⚠️ **Scoped to the diff, and it keeps no counts.** A recorded population is a measurement,
+and a measurement expires: it cannot tell "removed two legitimate uses, added one stale
+claim" from "removed one", so a prose-purging change that also introduces a stale claim
+nets downward and reads clean. That is a check whose negative result is indistinguishable
+from a passing one — the class this whole artifact exists to catch. Added lines have no
+such hole: a stale claim is a stale claim whatever else the change did.
 
-⚠️ **This script is the source of truth for the counts; the table is a dated snapshot.**
-The table used to say "update them when you sweep" — a rule requiring memory, which is
-precisely what the artifact exists to remove. A stale count reads exactly like a measured
-one, which is this project's most-repeated failure class. So the numbers in the file are
-for *diffing*, and this command is what produces them.
+⚠️ **It also removes the corpus question.** A count needs a population to count, so it
+needs globs, and globs go stale silently — the version that kept counts covered 40 files
+and missed `test/`, `src/backend/rails/` and `scripts/` entirely, which is where two stale
+claims were added and reviewed past it. A diff has no population to enumerate: every added
+line in the tree is in scope, wherever it lives.
 
-The term list is read FROM `docs/agents/deleted-vocabulary.md`, so there is one list, not
-two.
+⚠️ **It PRINTS; it does not fail on a hit.** Most hits are correct prose — this repo has
+~20 lines that correctly say a removed mechanism is gone — and a check that fires on
+correct code teaches people to route around it. Adjudication is a judgement call, and a
+judgement call can only be surfaced. The one failure is an **undeterminable base ref**,
+because that is the didn't-run case, which this project treats as failure everywhere.
+
+⚠️ **An empty diff is a genuine pass, not an abort.** Other steps abort when they find
+nothing to check, because for them empty input means the step is aimed at nothing. Here it
+means the change added no lines, which is a real and correct answer.
+
+The term list and its dispositions are read FROM `docs/agents/deleted-vocabulary.md`, so
+there is one list, not two.
 """
 
-import glob
 import re
+import subprocess
 import sys
 
 TABLE = "docs/agents/deleted-vocabulary.md"
+BASE_CANDIDATES = ("origin/main", "main")
 
 
-def files():
-    """The corpus a sweep adjudicates.
-
-    ⚠️ **`TABLE` itself is excluded, and the first run of this script is why.** Every term
-    appears in the table by construction, so including it made five counts drift the moment
-    the file existed — a self-reference that reads exactly like a real new hit. Excluding
-    the file that lists the terms is not an exemption; it is the difference between counting
-    the corpus and counting the question.
-    """
-    out = glob.glob("src/backend/*.mo") + glob.glob("src/frontend/src/*.ts")
-    out += ["RUNBOOK.md", "AGENTS.md", "README.md"] + glob.glob("docs/*.md")
-    return [f for f in out if "/bindings/" not in f and f != TABLE]
+def git(*args):
+    """Run git, returning (ok, stdout)."""
+    p = subprocess.run(("git",) + args, capture_output=True, text=True)
+    return p.returncode == 0, p.stdout
 
 
 def terms():
-    """Rows look like: | `term` | 12 | disposition |"""
+    """Rows look like: | `term` | disposition |
+
+    ⚠️ Aborts on an empty parse. A term list that silently came back empty would make this
+    scan every added line against nothing and print a clean result.
+    """
     rows = []
     for line in open(TABLE):
-        m = re.match(r"\|\s*`([^`]+)`\s*\|\s*(\d+)\s*\|", line)
+        m = re.match(r"\|\s*`([^`]+)`\s*\|\s*(?!-)(.+?)\s*\|?\s*$", line)
         if m:
-            rows.append((m.group(1), int(m.group(2))))
+            rows.append((m.group(1), m.group(2)))
+    if not rows:
+        sys.exit(f"ABORT: parsed no term rows out of {TABLE} — the scan would match nothing")
     return rows
+
+
+def base():
+    """The merge base to diff against, or exit non-zero naming why there is none."""
+    if "--base" in sys.argv:
+        wanted = [sys.argv[sys.argv.index("--base") + 1]]
+    else:
+        wanted = list(BASE_CANDIDATES)
+    tried = []
+    for ref in wanted:
+        ok, out = git("merge-base", "HEAD", ref)
+        if ok and out.strip():
+            return out.strip(), ref
+        tried.append(ref)
+    sys.exit(
+        "ABORT: no base ref to diff against (tried: "
+        + ", ".join(tried)
+        + ").\n  This is the DID-NOT-RUN case, so it fails rather than reporting a clean\n"
+        "  scan. Pass --base <ref> explicitly, or fetch the default branch."
+    )
+
+
+def added_lines(base_sha):
+    """(path, lineno, text) for every line this working tree adds over `base_sha`.
+
+    ⚠️ Untracked files are included whole. They are absent from `git diff`, so a brand-new
+    document would otherwise be scanned as zero added lines — invisible in exactly the way
+    a wrong answer is not.
+    """
+    out = []
+    ok, diff = git("diff", "--unified=0", "--no-color", base_sha, "--")
+    if not ok:
+        sys.exit(f"ABORT: could not diff against {base_sha}")
+    path, lineno = None, 0
+    for line in diff.split("\n"):
+        if line.startswith("+++ b/"):
+            path, lineno = line[6:], 0
+        elif line.startswith("@@"):
+            m = re.search(r"\+(\d+)", line)
+            lineno = int(m.group(1)) if m else 0
+        elif line.startswith("+") and path:
+            out.append((path, lineno, line[1:]))
+            lineno += 1
+    ok, untracked = git("ls-files", "--others", "--exclude-standard")
+    if ok:
+        for path in untracked.strip().split("\n"):
+            if not path:
+                continue
+            try:
+                for i, text in enumerate(open(path, errors="replace").read().split("\n"), 1):
+                    out.append((path, i, text))
+            except (IsADirectoryError, PermissionError):
+                continue
+    return [(p, n, t) for p, n, t in out if p != TABLE]
 
 
 def main() -> int:
     rows = terms()
-    if not rows:
-        sys.exit(f"ABORT: parsed no term rows out of {TABLE} — the sweep would cover nothing")
-    show_hits = "--hits" in sys.argv
-    corpus = {f: open(f, errors="replace").read().split("\n") for f in files()}
-    drift = []
-    print(f"{'term':<24}{'now':>5}{'was':>6}   {'':<4}")
-    for term, recorded in rows:
+    base_sha, base_name = base()
+    lines = added_lines(base_sha)
+    print(f"scanning {len(lines)} added lines against {len(rows)} terms (base: {base_name})")
+    if not lines:
+        print("   no added lines — nothing to scan, and that is a pass, not an abort")
+        return 0
+
+    total = 0
+    for term, disposition in rows:
         try:
             rx = re.compile(term, re.I)
         except re.error as e:
-            print(f"  {term:<24}  ⚠️ not a valid regex: {e}")
+            print(f"  ⚠️ `{term}` is not a valid regex: {e}")
             continue
-        hits = [
-            (f, i, l.strip())
-            for f, lines in corpus.items()
-            for i, l in enumerate(lines, 1)
-            if rx.search(l)
-        ]
-        flag = "" if len(hits) == recorded else ("  ↑ NEW" if len(hits) > recorded else "  ↓")
-        if flag:
-            drift.append((term, recorded, len(hits)))
-        print(f"`{term}`".ljust(24) + f"{len(hits):>5}{recorded:>6}{flag}")
-        if show_hits:
-            for f, i, l in hits:
-                print(f"      {f}:{i}  {l[:100]}")
+        hits = [(p, n, t) for p, n, t in lines if rx.search(t)]
+        if not hits:
+            continue
+        total += len(hits)
+        print(f"\n\033[33m`{term}`\033[0m — {disposition}")
+        for p, n, t in hits:
+            print(f"    {p}:{n}  {t.strip()[:110]}")
 
-    if drift:
-        print("\n\033[33m⚠️ counts moved — adjudicate each new hit, then update the table:\033[0m")
-        for term, was, now in drift:
-            print(f"    `{term}`: {was} → {now}")
+    if total:
         print(
-            "\n  A count going UP is the case to read: ask whether the term is cited as the\n"
-            "  JUSTIFICATION for unrelated behaviour, which is what a usage-aimed grep misses."
+            f"\n\033[33m⚠️ {total} added line(s) name a deleted mechanism — adjudicate each.\033[0m\n"
+            "  Most are legitimate: an end-state statement, a live name that collides with a\n"
+            "  deleted one, or the rule text quoting the term. What is NOT legitimate is a\n"
+            "  present-tense claim that the mechanism still exists, or a deleted mechanism\n"
+            "  cited as the JUSTIFICATION for behaviour that now has a different reason.\n"
+            "  This step does not fail on these; a reviewer decides."
         )
     else:
-        print("\n   every term matches its recorded count")
+        print("   no added line names a deleted mechanism")
     return 0
 
 
