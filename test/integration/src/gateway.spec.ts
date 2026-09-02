@@ -1590,12 +1590,22 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
     await gw.pic.tick(5);
     expect(await tickUntilStatus(gw, doomed.id, ['needsReview'])).toBe('needsReview');
 
+    // ⚠️ An escalated order stays on the worklist, and that arm reads the ORDER's status
+    // now (#69), not the journal's copy of it — so assert it rather than assuming the two
+    // still agree. It is deliberately NOT in the reconcile's quiet-window predicate,
+    // which is `#paid`-only: an escalated order keeps the intent-without-block shape
+    // forever, so counting it there would freeze the reserve permanently.
+    expect((await gw.asAdmin.pending_deliveries()).map((e) => e.orderId)).toContain(doomed.id);
+
     abandonedOrder = expectOk(await gw.asAdmin.abandon_order(doomed.id, 'buyer asked to cancel'));
     const abandoned = abandonedOrder;
     // `#abandoned`, the released half of the old `#errorQueue` (#34): the operator
     // ended it, so nothing is owed. ⚠️ #30 depends on this releasing the promise —
     // an abandoned order must not keep reserving cycles nobody will receive.
     expect(statusKey(abandoned)).toBe('abandoned');
+    // Off the worklist, because the order left `promiseHolders` — the same index that
+    // bounds the walk is what decides membership.
+    expect((await gw.asAdmin.pending_deliveries()).map((e) => e.orderId)).not.toContain(doomed.id);
   } finally {
     await startNns(gw, CYCLES_LEDGER_ID);
   }
@@ -3257,9 +3267,9 @@ test('75 — a buyer can heal their OWN stuck delivery, and only their own (#30 
   // in its first attempt.
   expect(mine.retries).toBeGreaterThan(0n);
   expect(mine.blockIndex).toHaveLength(0);
-  // Not public: it scans the whole journal, so an unauthenticated caller could make
-  // the canister walk its entire history for free. That is also why none of it went
-  // into `reserve_status`, which is public and O(1).
+  // Not public, and the reason is no longer cost (#69 bounded the walk to the orders
+  // holding a promise): this is the operator's in-flight worklist. `reserve_status` is
+  // the public answer, and O(1) on purpose.
   await expect(gw.asAnon.pending_deliveries()).rejects.toThrow(/anonymous/);
   await expect(gw.asUser.pending_deliveries()).rejects.toThrow(/not a controller/);
 
@@ -3282,9 +3292,10 @@ test('75 — a buyer can heal their OWN stuck delivery, and only their own (#30 
   // than as another queue somebody has to tidy.
   expect((await gw.asAdmin.pending_deliveries()).map((e) => e.orderId)).not.toContain(stuck.id);
 
-  // ⚠️ An owner kick is NOT audited and an admin kick is. A buyer refreshing a page
-  // must not be able to fill a 4,096-entry ring buffer with lines that say nothing,
-  // while an ops action on someone else's order is exactly what the trail is for.
+  // ⚠️ An owner kick is NOT audited and an admin kick is. #37 removed the ring, so
+  // retention is total: lines a buyer can emit by refreshing a page are permanent
+  // stable-state growth at zero cost to them. An ops action on someone else's order is
+  // exactly what the trail is for.
   const kickLines = (log: { tag: string; detail: string }[]) =>
     log.filter((e) => e.tag === 'delivery.manualKick' && e.detail.includes(stuck.id));
   expect(kickLines(await allAuditEvents(gw))).toHaveLength(0);
@@ -3656,4 +3667,76 @@ test('88 — one open order per principal, and its own deadline is what frees th
 
   await setCmcRate(gw);
   await ensureRates(gw);
+});
+
+test('89 — an OPEN transfer must block the reserve reconcile, and stop blocking it once settled (#69)', async () => {
+  // ⚠️ **The counting half of the quiet-window predicate, which nothing pinned.**
+  // Scenario 76 pins the EXCLUSION — an escalated order must not freeze adoption for
+  // the life of the canister. This is the other direction, and it is the one where
+  // being wrong OVERSELLS: adopting a balance read while a transfer is in flight erases
+  // §5.4 rule 2's decrement while the ledger still debits, so the same cycles are sold
+  // twice.
+  //
+  // ⚠️ **Measured, not assumed.** With `unsettledDeliveries` hardwired to `0` the entire
+  // suite passed — 94/94. That is what makes this scenario worth its runtime: it is the
+  // one that fails.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  const created = expectOk(await createOrderWithSession(
+    gw, { tier: 'tier5' }, USER_ACCOUNT, [], { sessionId: 'cs_quiet_89' },
+  ));
+  const target = created.order;
+
+  // Produce the state: an intent journalled against a dead ledger, so the money
+  // position is open. ⚠️ The ledger is restarted before any assertion, because
+  // `refresh_reserve` has to be able to READ a balance for this to test anything.
+  await stopNns(gw, CYCLES_LEDGER_ID);
+  try {
+    expect(await deliverWebhook(gw, checkoutSessionBody({
+      eventId: 'evt_quiet89', paymentIntent: 'pi_quiet89',
+      clientReferenceId: clientReferenceFor(target.id), amountCents: TIER_USD_CENTS,
+    }))).toMatchObject({ status_code: 200 });
+    await gw.pic.advanceTime(20 * 60 * 1_000);
+    await gw.pic.tick(10);
+  } finally {
+    await startNns(gw, CYCLES_LEDGER_ID);
+  }
+  // Asserted rather than assumed: if the setup above stops producing an open transfer,
+  // this fails here instead of passing vacuously further down.
+  const open = (await gw.asAdmin.delivery_journal(target.id))[0];
+  expect(open?.transferIntent).toHaveLength(1);
+  expect(open?.blockIndex).toHaveLength(0);
+  expect(await orderStatus(gw, target.id)).toBe('paid');
+
+  // Top up WITHOUT observing, so there is a real increase available to adopt.
+  const before = await gw.asAnon.reserve_status();
+  const skipsBefore = (await allAuditEvents(gw))
+    .filter((e) => e.tag === 'reserve.reconcileSkipped').length;
+  await fundReserve(gw, 5_000_000_000_000n, false);
+
+  // THE ASSERTION: the gateway reads a larger balance and refuses to count it.
+  const observedWhileOpen = await gw.asAdmin.refresh_reserve();
+  const during = await gw.asAnon.reserve_status();
+  expect(observedWhileOpen).toBeGreaterThan(before.reserveFloor);
+  expect(during.reserveFloor).toBe(before.reserveFloor);
+  expect(during.reserveObservedAtNs).toEqual(before.reserveObservedAtNs);
+  // ⚠️ A DELTA, not a presence check: the suite shares one canister, so an earlier
+  // scenario has already skipped a reconcile and `.some(...)` would pass without this
+  // call having done anything.
+  const skipsDuring = (await allAuditEvents(gw))
+    .filter((e) => e.tag === 'reserve.reconcileSkipped').length;
+  expect(skipsDuring).toBeGreaterThan(skipsBefore);
+
+  // ⚠️ **Non-vacuity, and the whole reason this scenario has a second half.** A floor
+  // that never moves satisfies the assertions above for any reason at all — a broken
+  // ledger read, a refusal on some unrelated ground. Settling the delivery must make
+  // the SAME top-up adoptable. `process_order` rather than a clock advance: the kick is
+  // deterministic, where advancing far enough to re-sweep risks crossing the dedup
+  // window and escalating the order instead.
+  expect('ok' in (await gw.asUser.process_order(target.id))).toBe(true);
+  expect(await tickUntilStatus(gw, target.id, ['delivered'])).toBe('delivered');
+  const observedAfter = await gw.asAdmin.refresh_reserve();
+  const after = await gw.asAnon.reserve_status();
+  expect(after.reserveFloor).toBe(observedAfter);
+  expect(after.reserveFloor).toBeGreaterThan(before.reserveFloor);
 });
