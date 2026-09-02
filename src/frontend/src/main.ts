@@ -475,9 +475,12 @@ function setIdentity(next: Identity | null): void {
 /// delivered totals are ours to report, so they are supporting evidence rather than the
 /// headline.
 ///
-/// ⚠️ **The delivered block is hidden until something has been delivered.** "0 orders
-/// delivered" is worse than no badge — it reads as a dead service — and a fresh install
-/// legitimately starts at zero, so the renderer owes the threshold rather than the query.
+/// ⚠️ **Always rendered, including at zero — do NOT add a threshold.** #39's body argued
+/// that "0 orders delivered" is worse than no badge, and that was rejected: an absent
+/// number is indistinguishable from a withheld one, and a rule that hides the figure
+/// exactly when the news is bad is a misleading presentation rather than a neutral one.
+/// Showing zero is honest and self-correcting; hiding it asks the reader to trust that
+/// nothing is being concealed.
 function renderTrustFigures(
   stats: Awaited<ReturnType<typeof backend.delivery_stats>>,
 ): void {
@@ -491,15 +494,11 @@ function renderTrustFigures(
   capLabel.textContent = "Available to buy right now";
   cap.textContent = `${formatCycles(stats.availableToSell)} cycles`;
 
-  if (stats.deliveredOrders > 0n) {
-    const orders = stats.deliveredOrders === 1n ? "1 order" : `${stats.deliveredOrders} orders`;
-    del.textContent =
-      `${orders} · ${formatCycles(stats.deliveredCycles)} cycles · ` +
-      formatUsdCents(stats.deliveredUsdCents);
-    delWrap.hidden = false;
-  } else {
-    delWrap.hidden = true;
-  }
+  const orders = stats.deliveredOrders === 1n ? "1 order" : `${stats.deliveredOrders} orders`;
+  del.textContent =
+    `${orders} · ${formatCycles(stats.deliveredCycles)} cycles · ` +
+    formatUsdCents(stats.deliveredUsdCents);
+  delWrap.hidden = false;
   wrap.hidden = false;
 }
 
