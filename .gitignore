@@ -57,3 +57,8 @@ test/integration/node_modules/
 # fetched by scripts/fetch-ledger-wasm.mjs, sha256-pinned there — the pin is
 # committed, the binary is not
 test/integration/wasm/
+
+# Python bytecode from the repo scripts (they are run directly, never imported
+# except by a one-off probe, which is how this got committed once).
+__pycache__/
+*.pyc
