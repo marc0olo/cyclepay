@@ -437,11 +437,16 @@ suite("store: ownership and history", func() {
     assert Orders.getOwned(store, "missing", alice) == null;
   });
 
-  test("ordersFor returns only the caller's orders, insertion order", func() {
+  test("ordersFor returns only the caller's orders, in ID order", func() {
     let store = Orders.emptyStore();
-    ignore newOrder(store, "a-1", alice);
-    ignore newOrder(store, "b-1", bob);
+    // ⚠️ **`a-2` is inserted FIRST, so insertion order and id order disagree.** With
+    // `a-1` first the two coincide and this test passes under either contract — which is
+    // what it did while the index was a `List` holding insertion order, and what it
+    // would still do now. The index is a `Set` (#70), so id order is the contract, and
+    // this fails if anyone puts a `List` back.
     ignore newOrder(store, "a-2", alice);
+    ignore newOrder(store, "b-1", bob);
+    ignore newOrder(store, "a-1", alice);
     let mine = Orders.ordersFor(store, alice);
     assert mine.size() == 2;
     assert mine[0].id == "a-1";
@@ -1478,5 +1483,94 @@ suite("#39 — cumulative delivery figures", func() {
     ignore Orders.reconcileBounded(store);
     let t = Orders.deliveryTotals(store);
     assert t.orders == 1 and t.cycles == 5_000 and t.usdCents == 4_200;
+  });
+});
+
+// ── #70: the buyer's page costs the buyer's page ────────────────────────────────────
+//
+// ⚠️ **`scanned` exists because a query has no readable instruction counter.** "The work
+// does not grow with other principals' orders" is otherwise unassertable, and the half
+// that stays assertable — that the rows are right — passes for a function returning
+// nothing. So both halves ride ONE call below: split across two calls, each could pass
+// for a different broken implementation.
+suite("ownerPage bounds the work, not just the response (#70)", func() {
+  // Foreign ids all begin `0`, ours all begin `f`, so every one of bob's orders sorts
+  // BEFORE every one of alice's — the worst case for a walk over the global store, which
+  // is what this replaced.
+  func seeded(foreign : Nat, mineIds : [Types.OrderId]) : Orders.Store {
+    let store = Orders.emptyStore();
+    var i = 0;
+    while (i < foreign) {
+      ignore newOrder(store, "0" # Nat.toText(i), bob);
+      i += 1;
+    };
+    for (id in mineIds.values()) ignore newOrder(store, id, alice);
+    store;
+  };
+
+  let mineIds : [Types.OrderId] = ["f00", "f01", "f02", "f03", "f04", "f05", "f06"];
+  let limit = 3;
+
+  test("the rows are right AND the work is bounded, on the same call", func() {
+    let store = seeded(2_000, mineIds);
+    let r = Orders.ownerPage(store, alice, null, limit);
+
+    // `scanned <= limit + 2`: one id skipped by the inclusive seek (none here, the
+    // cursor is null), `limit` rows, one lookahead that finds the page full.
+    assert r.scanned <= limit + 2;
+    // ⚠️ Non-vacuity: the bound above holds trivially for a function that returns
+    // nothing, which is exactly the mistake this assertion pairing exists to prevent.
+    assert r.page.orders.size() == limit;
+    assert r.page.orders[0].id == "f00";
+    assert r.page.orders[1].id == "f01";
+    assert r.page.orders[2].id == "f02";
+    assert r.page.nextCursor == ?"f02";
+
+    // ⚠️ Independence as an EQUALITY, not a bound: the identical call against a store
+    // holding none of bob's 2,000 orders scans exactly the same number of ids. A bound
+    // alone would still pass if the cost grew slowly.
+    let lean = seeded(0, mineIds);
+    assert Orders.ownerPage(lean, alice, null, limit).scanned == r.scanned;
+  });
+
+  test("paging visits every one of the buyer's orders exactly once, in id order", func() {
+    let store = seeded(2_000, mineIds);
+    let seen = List.empty<Types.OrderId>();
+    var cursor : ?Types.OrderId = null;
+    var more = true;
+    var pages = 0;
+    while (more) {
+      let p = Orders.ownerPage(store, alice, cursor, limit);
+      assert p.scanned <= limit + 2;
+      for (o in p.page.orders.values()) seen.add(o.id);
+      pages += 1;
+      // ⚠️ A cursor that fails to advance must FAIL, not hang. `nextCursor` is the last
+      // id RETURNED; taking it from an id merely scanned past would skip rows silently,
+      // and taking it from one already returned would loop here forever.
+      assert pages <= 10;
+      switch (p.page.nextCursor) {
+        case (?c) cursor := ?c;
+        case null more := false;
+      };
+    };
+    assert seen.size() == mineIds.size();
+    var k = 0;
+    while (k < mineIds.size()) {
+      assert seen.get(k) == mineIds[k];
+      k += 1;
+    };
+  });
+
+  test("a principal with no orders pages to an empty result, not a trap", func() {
+    let store = seeded(2_000, mineIds);
+    // ⚠️ A THIRD principal. `alice` is `aaaaa-aa` and `bob` is `2vxsx-fae` in these
+    // fixtures, so reaching for either would assert the absent case against a principal
+    // that owns 2,000 orders — a test that passes without testing anything.
+    let stranger = Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai");
+    let r = Orders.ownerPage(store, stranger, null, limit);
+    assert r.page.orders.size() == 0;
+    assert r.page.nextCursor == null;
+    // No index entry, so nothing is walked at all — not even the store's first id.
+    assert r.scanned == 0;
   });
 });
