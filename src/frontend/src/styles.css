@@ -592,6 +592,28 @@ tbody tr:hover {
   margin: 0;
 }
 
+/* The two trust figures. Laid out with grid + gap rather than per-element margins so
+   hiding the delivered block collapses cleanly instead of leaving a gap behind. */
+.trust-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: var(--space-4);
+  margin: var(--space-4) 0 0;
+}
+.trust-figures dt {
+  font-size: 0.8125rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--icp-fg-muted);
+}
+.trust-figures dd {
+  margin: var(--space-1) 0 0;
+  /* Digits line up between the two figures rather than drifting. */
+  font-variant-numeric: tabular-nums;
+  font-size: 1.125rem;
+  color: var(--icp-fg);
+}
+
 #auth-area {
   display: flex;
   align-items: center;

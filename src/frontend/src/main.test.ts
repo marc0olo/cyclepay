@@ -110,6 +110,19 @@ const backend = {
       maxPurchaseUsdCents: 10_000n,
     },
   }),
+  delivery_stats: async () => ({
+    availableToSell: 775_000_000_000_000n,
+    deliveredOrders: 0n,
+    deliveredCycles: 0n,
+    deliveredUsdCents: 0n,
+    nullPaid: 0n,
+    refusingNow: {
+      reserveShort: false,
+      canisterCyclesLow: false,
+      railClosed: false,
+      stripeApiFailing: false,
+    },
+  }),
   pricing_status: async () => ({
     rates: {
       usdPerIcpMicros: 4_550_000n,

@@ -963,7 +963,8 @@ key on a monitoring box:
 
 <!-- surface:public -->
 
-`can_purchase` · `card_tiers` · `cycles_status` · `expected_livemode` · `health` ·
+`can_purchase` · `card_tiers` · `cycles_status` · `delivery_stats` · `expected_livemode` ·
+`health` ·
 `lifecycle_config` · `orphan_depth` · `pricing_status` · `problem_depth` ·
 `quote_previews` · `recovery_status` · `refusal_counts` · `reserve_status` ·
 `stripe_origin`

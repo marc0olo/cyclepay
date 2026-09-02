@@ -468,13 +468,49 @@ function setIdentity(next: Identity | null): void {
   }
 }
 
+/// The two trust figures, and they are not the same kind of claim.
+///
+/// ⚠️ **Capacity is read from the cycles ledger, so a visitor can check it without
+/// trusting us** — that is why it leads and why it is shown even at zero deliveries. The
+/// delivered totals are ours to report, so they are supporting evidence rather than the
+/// headline.
+///
+/// ⚠️ **Always rendered, including at zero — do NOT add a threshold.** #39's body argued
+/// that "0 orders delivered" is worse than no badge, and that was rejected: an absent
+/// number is indistinguishable from a withheld one, and a rule that hides the figure
+/// exactly when the news is bad is a misleading presentation rather than a neutral one.
+/// Showing zero is honest and self-correcting; hiding it asks the reader to trust that
+/// nothing is being concealed.
+function renderTrustFigures(
+  stats: Awaited<ReturnType<typeof backend.delivery_stats>>,
+): void {
+  const wrap = document.getElementById("trust-figures");
+  const capLabel = document.getElementById("trust-capacity-label");
+  const cap = document.getElementById("trust-capacity");
+  const delWrap = document.getElementById("trust-delivered-wrap");
+  const del = document.getElementById("trust-delivered");
+  if (!wrap || !capLabel || !cap || !delWrap || !del) return;
+
+  capLabel.textContent = "Available to buy right now";
+  cap.textContent = `${formatCycles(stats.availableToSell)} cycles`;
+
+  const orders = stats.deliveredOrders === 1n ? "1 order" : `${stats.deliveredOrders} orders`;
+  del.textContent =
+    `${orders} · ${formatCycles(stats.deliveredCycles)} cycles · ` +
+    formatUsdCents(stats.deliveredUsdCents);
+  delWrap.hidden = false;
+  wrap.hidden = false;
+}
+
 // --- tiers + gates -------------------------------------------------------
 
 async function loadMarket(): Promise<void> {
-  const [tierList, pricing] = await Promise.all([
+  const [tierList, pricing, stats] = await Promise.all([
     backend.card_tiers(),
     backend.pricing_status(),
+    backend.delivery_stats(),
   ]);
+  renderTrustFigures(stats);
   tiers = tierList;
   cardFee = { feeBps: pricing.config.feeBps, feeFixedCents: pricing.config.feeFixedCents };
 

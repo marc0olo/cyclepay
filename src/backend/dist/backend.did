@@ -636,6 +636,54 @@ service : {
   /// Money-out journal for one order (admin, §4.2) — intent, block_index, cycles
   /// delivered, retries.
   delivery_journal: (id: OrderId) -> (opt JournalEntry) query;
+  /// The public trust figures (#39) — anonymous, safe on a landing page.
+  /// 
+  /// ⚠️ **The admission test is "what does a POLLER learn from the deltas?", not "does this
+  /// field name a buyer?"** Cumulative counters are differentiable: anyone sampling this
+  /// query recovers each delivery's cycles, USD and timing from the increments. That is
+  /// accepted here because it is not new — `reserve_status` is already public and its
+  /// `promisedTotal` leaks per-order amounts the same way, and USD is near-derivable from
+  /// the public `card_tiers`/`quote_previews` — but the field-level reading of the test is
+  /// what will wave through the field that *does* add something. Do not add a
+  /// most-recent-order field, a largest-purchase field, or anything per-principal.
+  /// 
+  /// ⚠️ **`refusingNow` is REUSED, not re-derived.** It is the same `railStateLatch`
+  /// `refusal_counts` reports, so "is the rail accepting orders" has one definition and
+  /// cannot come out differently on two surfaces.
+  /// 
+  /// ⚠️ **The counters read zero on a fresh install and that is correct, not a bug.**
+  /// Orders are never deleted, but a reinstall replaces the state, so a launch-day figure
+  /// starts at zero whichever way it is built.
+  /// 
+  /// ⚠️ **The renderer must show that zero — do NOT add a threshold.** #39 first said "0
+  /// orders delivered is worse than no badge" and that was rejected: an absent number is
+  /// indistinguishable from a withheld one, and a rule that hides the figure exactly when
+  /// the news is bad is a misleading presentation rather than a neutral one. This comment
+  /// used to instruct the opposite, which would have had a future implementer build the
+  /// thing the decision removed.
+  /// 
+  /// `nullPaid` should always be 0. It counts delivered orders whose `paidUsdCents` was
+  /// unset, which `markPaid` makes unreachable — a non-zero value means the USD total is
+  /// understated and the reason is a bug in this canister, not in the display.
+  /// ⚠️ **One call, because it is the landing page's whole backend.** `availableToSell`
+  /// and `refusingNow` also appear on `reserve_status` and `refusal_counts` — that is
+  /// duplication of the READER, not of the definition: both are read here from the same
+  /// state those queries read, never recomputed. Folding them in keeps a first paint to a
+  /// single round trip and a single mock in the test harness.
+  /// 
+  /// ⚠️ **`availableToSell` leads, and it is a different KIND of number from the
+  /// others.** It is derived from a balance on the cycles ledger that anyone can query
+  /// without this canister's cooperation, so a visitor can check it rather than believe
+  /// it. The delivered totals are ours to report. Do not present them as equivalent.
+  delivery_stats: () ->
+   (record {
+      availableToSell: nat;
+      deliveredCycles: nat;
+      deliveredOrders: nat;
+      deliveredUsdCents: nat;
+      nullPaid: nat;
+      refusingNow: RailStateLatch;
+    }) query;
   expected_livemode: () -> (opt bool) query;
   /// Let a buyer give up on their own unpaid order (owner-scoped).
   /// 

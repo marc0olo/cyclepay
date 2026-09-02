@@ -184,7 +184,20 @@ export function installFixtures(host: FixtureHost): void {
         maxPurchaseUsdCents: 10_000n,
       },
     }),
-    pricing_status: async () => ({
+    delivery_stats: async () => ({
+    availableToSell: 775_000_000_000_000n,
+    deliveredOrders: 0n,
+    deliveredCycles: 0n,
+    deliveredUsdCents: 0n,
+    nullPaid: 0n,
+    refusingNow: {
+      reserveShort: false,
+      canisterCyclesLow: false,
+      railClosed: false,
+      stripeApiFailing: false,
+    },
+  }),
+  pricing_status: async () => ({
       config: { feeBps: 290n, feeFixedCents: 30n },
       rates: {
         usdPerIcpMicros: USD_PER_ICP_MICROS,

@@ -127,6 +127,24 @@
           the code. Every order carries a receipt that recomputes its own price
           from two canisters you can query yourself.
         </p>
+        <!-- Filled by renderTrustFigures(). Two different kinds of number, and the
+             difference is the point: capacity is READ FROM THE CYCLES LEDGER, which
+             anyone can query without our cooperation, while the delivered totals are
+             ours to report. Kept in this section rather than the hero because it is a
+             trust block, not part of the purchase sequence.
+
+             Both are shown unconditionally, zero included: a figure that disappears when
+             the news is bad is worse than one that reads low. -->
+        <dl id="trust-figures" class="trust-figures" hidden>
+          <div>
+            <dt id="trust-capacity-label"></dt>
+            <dd id="trust-capacity"></dd>
+          </div>
+          <div id="trust-delivered-wrap">
+            <dt>Delivered so far</dt>
+            <dd id="trust-delivered"></dd>
+          </div>
+        </dl>
       </section>
       </div><!-- /view-landing -->
 

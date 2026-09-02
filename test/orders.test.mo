@@ -14,8 +14,9 @@ import Text "mo:core/Text";
 import Orders "../src/backend/Orders";
 
 // Unit suite for the §4 order state machine and the Orders store.
-// Exhaustive: every (from, to) pair of the 8 statuses is checked against the
-// spec's legal-transition table.
+// Exhaustive: every (from, to) pair of the SEVEN statuses is checked against the
+// legal-transition table. (It said "8" and there are seven — the same stale-count class
+// the comment purge removed ten of, and #84's double-count test leans on this array.)
 
 let allStatuses : [Types.OrderStatus] = [
   #created,
@@ -47,6 +48,37 @@ let legalTransitions : [(Types.OrderStatus, Types.OrderStatus)] = [
   // abandoned, auditing a refund that never happened.
   (#needsReview, #delivered),
 ];
+
+/// Partial tie between `allStatuses` and `Types.OrderStatus`. That array is hand-written,
+/// so without something here an eighth status goes untried by every test that iterates it
+/// — including #84's "double-counting is unrepresentable" test, whose whole value is
+/// trying *every* status as a follow-on transition.
+///
+/// ⚠️ **This is NOT a compile-time tie, and an earlier version of this comment claimed it
+/// was.** Measured: `mops check -- -Werror` does not compile `test/` at all (it reports
+/// `✓ backend` and nothing else), and `mops test` passes `--hide-warnings`, so a
+/// non-exhaustive match here is suppressed rather than fatal. `-Werror` never sees this
+/// file.
+///
+/// What it actually catches, at RUNTIME, via the test below:
+///   - `allStatuses` gaining a variant this switch lacks → the switch traps, test fails.
+///   - `allStatuses` omitting or duplicating one this switch knows → the bitmask fails.
+///
+/// ⚠️ **What nothing catches: a new variant omitted from BOTH.** The backend's own
+/// exhaustive switches do fail under `-Werror` when a status is added, so a new status
+/// cannot ship silently — but once those are fixed, this array can still be stale. Adding
+/// an `OrderStatus` means updating this switch and `allStatuses` by hand.
+func statusIndex(status : Types.OrderStatus) : Nat {
+  switch (status) {
+    case (#created) 0;
+    case (#cancelled) 1;
+    case (#expired) 2;
+    case (#paid) 3;
+    case (#delivered) 4;
+    case (#needsReview) 5;
+    case (#abandoned) 6;
+  };
+};
 
 func isExpectedLegal(from : Types.OrderStatus, to : Types.OrderStatus) : Bool {
   for ((f, t) in legalTransitions.values()) {
@@ -214,7 +246,24 @@ suite("the promise tally (#30 PR-B) — every writer moves it", func() {
   });
 });
 
-suite("legal-transition matrix (exhaustive, 8×8)", func() {
+suite("allStatuses is tied to the type", func() {
+  test("⚠️ every OrderStatus variant appears exactly once", func() {
+    // If this fails, `allStatuses` and `Types.OrderStatus` have diverged and every test
+    // that iterates the array is quietly testing less than it claims.
+    assert allStatuses.size() == 7;
+    // A bitmask, so a DUPLICATE is caught as well as an omission — a hand-written array
+    // can gain a repeat as easily as it can miss a variant.
+    var seen : Nat = 0;
+    for (status in allStatuses.values()) {
+      let bit = 2 ** statusIndex(status);
+      assert seen / bit % 2 == 0; // not already present
+      seen += bit;
+    };
+    assert seen == 127; // 2^7 − 1: all seven, each exactly once
+  });
+});
+
+suite("legal-transition matrix (exhaustive, 7×7)", func() {
   for (from in allStatuses.values()) {
     for (to in allStatuses.values()) {
       let expected = isExpectedLegal(from, to);
@@ -1344,5 +1393,90 @@ suite("#63 — the reconcile is bounded by flow, not by lifetime sales", func() 
     // would leave `lastCompletedCycle` null forever and make every clean scan read as
     // unverified.
     assert chunk.nextCursor == null;
+  });
+});
+
+suite("#39 — cumulative delivery figures", func() {
+  func mk(store : Orders.Store, id : Text, cycles : Nat) : Types.Order {
+    switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), cycles, pricing, 100)) {
+      case (#ok(o)) o;
+      case (#err(_)) { assert false; loop {} };
+    };
+  };
+  /// Pay at `cents`, then deliver — the ordinary route.
+  func payAndDeliver(store : Orders.Store, id : Text, cycles : Nat, cents : Nat) {
+    ignore mk(store, id, cycles);
+    switch (Orders.markPaid(store, id, cents, 200)) {
+      case (#ok(_)) {};
+      case (#err(_)) assert false;
+    };
+    ignore Orders.applyTransition(store, id, #delivered, 300);
+  };
+
+  test("delivered orders, cycles and USD accumulate", func() {
+    let store = Orders.emptyStore();
+    payAndDeliver(store, "d-1", 1_000, 1_000);
+    payAndDeliver(store, "d-2", 2_500, 2_000);
+    let t = Orders.deliveryTotals(store);
+    assert t.orders == 2;
+    assert t.cycles == 3_500;
+    assert t.usdCents == 3_000;
+    assert t.nullPaid == 0;
+  });
+
+  test("nothing that is not delivered is counted", func() {
+    let store = Orders.emptyStore();
+    ignore mk(store, "open", 1_000);
+    ignore mk(store, "gone", 2_000);
+    ignore Orders.applyTransition(store, "gone", #expired, 200);
+    ignore mk(store, "esc", 4_000);
+    switch (Orders.markPaid(store, "esc", 500, 200)) { case (#ok(_)) {}; case (#err(_)) assert false };
+    ignore Orders.applyTransition(store, "esc", #needsReview, 300);
+    let t = Orders.deliveryTotals(store);
+    assert t.orders == 0 and t.cycles == 0 and t.usdCents == 0;
+  });
+
+  test("⚠️ the OPERATOR path counts too — the undercount this would otherwise ship", func() {
+    // `record_delivered` drives `#needsReview → #delivered` and writes the journal's
+    // `cyclesDelivered` as **null**, so a counter maintained at the sites that write that
+    // field would miss exactly these — the rare, high-touch orders most likely to be
+    // asked about. Counting in `commitTransition` covers the route for free.
+    let store = Orders.emptyStore();
+    ignore mk(store, "esc-1", 9_000);
+    switch (Orders.markPaid(store, "esc-1", 7_500, 200)) { case (#ok(_)) {}; case (#err(_)) assert false };
+    ignore Orders.applyTransition(store, "esc-1", #needsReview, 300);
+    assert Orders.deliveryTotals(store).orders == 0;
+    ignore Orders.applyTransition(store, "esc-1", #delivered, 400);
+    let t = Orders.deliveryTotals(store);
+    assert t.orders == 1;
+    assert t.cycles == 9_000;
+    assert t.usdCents == 7_500;
+  });
+
+  test("⚠️ double-counting is unrepresentable, not merely guarded", func() {
+    // `#delivered` has no outbound edge, so `commitTransition` cannot run twice for a
+    // delivered order. Pinned by trying every status as a follow-on transition: all must
+    // be refused, and the totals must not move.
+    let store = Orders.emptyStore();
+    payAndDeliver(store, "once", 1_000, 900);
+    assert Orders.deliveryTotals(store).orders == 1;
+    for (to in allStatuses.values()) {
+      switch (Orders.applyTransition(store, "once", to, 500)) {
+        case (#err(_)) {};
+        case (#ok(_)) assert false; // any legal exit from #delivered breaks the counter
+      };
+    };
+    let t = Orders.deliveryTotals(store);
+    assert t.orders == 1 and t.cycles == 1_000 and t.usdCents == 900;
+  });
+
+  test("the figures survive the bounded reconcile untouched", func() {
+    // They are cumulative, not derived from live state, so nothing may rebuild them —
+    // a reconcile that "repaired" them would erase history.
+    let store = Orders.emptyStore();
+    payAndDeliver(store, "keep", 5_000, 4_200);
+    ignore Orders.reconcileBounded(store);
+    let t = Orders.deliveryTotals(store);
+    assert t.orders == 1 and t.cycles == 5_000 and t.usdCents == 4_200;
   });
 });

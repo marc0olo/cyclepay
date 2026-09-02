@@ -435,6 +435,22 @@ export interface BackendService {
   }>;
   /// ⚠️ Required after funding the reserve: the gate decides against a maintained
   /// lower bound that only rises by observation, so an unobserved top-up sells nothing.
+  /// ⚠️ Public and anonymous (#39). Nothing here identifies a buyer, an order or a
+  /// payment — do not add a most-recent-order or largest-purchase field, each of which
+  /// re-identifies through timing or amount. `nullPaid` should always be 0.
+  delivery_stats(): Promise<{
+    availableToSell: bigint;
+    deliveredOrders: bigint;
+    deliveredCycles: bigint;
+    deliveredUsdCents: bigint;
+    nullPaid: bigint;
+    refusingNow: {
+      reserveShort: boolean;
+      canisterCyclesLow: boolean;
+      railClosed: boolean;
+      stripeApiFailing: boolean;
+    };
+  }>;
   refresh_reserve(): Promise<bigint>;
   resolve_orphan(id: bigint): Promise<Result<OrphanEntry, { notFound: bigint } | { alreadyResolved: bigint }>>;
   set_card_tiers(tiers: Tier[]): Promise<Result<null, unknown>>;

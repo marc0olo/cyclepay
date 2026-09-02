@@ -176,14 +176,17 @@ fi
 # `scripts/.local-dev.env` is gitignored, so a value set there is set once instead
 # of exported into every new shell — and it stays out of shell history, `ps` and
 # any terminal transcript, which matters for `STRIPE_API_KEY`.
-LINKS_FILE="scripts/.local-dev.env"
-if [ -f "$LINKS_FILE" ]; then
+# ⚠️ Named for what it IS, not what it was. It held `STRIPE_LINK_*` values until #33
+# deleted the Payment Link mechanism; it is now the local dev config, and the only
+# variable anything reads from it is STRIPE_API_KEY.
+DEV_ENV_FILE="scripts/.local-dev.env"
+if [ -f "$DEV_ENV_FILE" ]; then
   BEFORE_KEY="${STRIPE_API_KEY:-}"
   # shellcheck disable=SC1090
-  . "$LINKS_FILE"
+  . "$DEV_ENV_FILE"
   # The environment wins over the file, so a one-off export still overrides it.
   [ -z "$BEFORE_KEY" ] || STRIPE_API_KEY="$BEFORE_KEY"
-  ok "read local dev config from $LINKS_FILE"
+  ok "read local dev config from $DEV_ENV_FILE"
 fi
 
 # ── presets ──────────────────────────────────────────────────────────────────
@@ -245,7 +248,22 @@ else
   # refusing to create orders at all, and the failure names itself.
   icp canister call backend set_stripe_api_key '("rk_test_PLACEHOLDER_set_STRIPE_API_KEY_to_create_sessions")' >/dev/null \
     || die "set_stripe_api_key was refused"
-  printf '  \033[33m!\033[0m placeholder API key set — export STRIPE_API_KEY=rk_... to create real sessions\n'
+  # ⚠️ **Say the TRUE reason, and scope the hazard correctly.** An earlier version of this
+  # message asserted that exporting the key makes `stripe listen` die with
+  # "more_permissions_required". It does not: every `stripe` invocation in this repo's own
+  # scripts is wrapped `env -u STRIPE_API_KEY` (stripe-dev.sh:156/164/282,
+  # capture-stripe-fixtures.sh:78/112), so our forwarder is immune. The real exposure is a
+  # `stripe` command an operator types by hand — `capture-stripe-fixtures.sh` prints one
+  # for exactly that — and the durable reason for the file is the one below.
+  printf '  \033[33m!\033[0m placeholder API key set — no real Checkout Session can be created.\n'
+  printf '     Put it in the FILE, not your shell:\n'
+  printf '       echo '"'"'STRIPE_API_KEY=rk_...'"'"' >> %s\n' "$DEV_ENV_FILE"
+  printf '     Restricted key, Checkout Sessions = Write, everything else None.\n'
+  printf '     Why the file: it is sourced into this process, so the key stays out of your\n'
+  printf '     shell history, `ps` and any terminal transcript.\n'
+  printf '     ⚠️ If you DO export it, a `stripe` command you type yourself picks it up and\n'
+  printf '        fails 403 "more_permissions_required" — a restricted key cannot open a CLI\n'
+  printf '        session. This repo'"'"'s own scripts strip it and are unaffected.\n'
 fi
 
 # The origin Stripe returns the buyer to. The frontend canister's own URL, since
