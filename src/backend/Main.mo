@@ -2257,71 +2257,68 @@ persistent actor CyclesGateway {
     report.counts;
   };
 
-  /// Deliveries that may still respond: a journalled intent, no recorded block, on an
-  /// order that is still `#paid`. The quiet-window predicate — why it is a superset of
-  /// "in flight", and why the cost is not a deadlock: `docs/DESIGN.md` §5.4.
-  ///
-  /// ⚠️ **The `#paid` clause is load-bearing, and leaving it out froze the reserve.** An
-  /// escalated order keeps the intent-without-block shape *forever*, so without it one
-  /// escalation makes the quiet window unsatisfiable for the life of the canister: every
-  /// reconcile skips, every `refresh_reserve` skips, and top-ups stop registering.
-  ///
-  /// ⚠️ **`entry.status` is the JOURNAL's copy of the order's status, and this predicate is
-  /// the only thing that reads it.** `Delivery.openEntry` once wrote a hardcoded status,
-  /// which made this match nothing and quietly disabled the quiet window. If it stops
-  /// recording the order's real status this silently returns 0 and the floor becomes
-  /// adoptable across an in-flight transfer. `test/cmc.test.mo` pins the coupling.
+  /// The journal half of the quiet-window predicate: a transfer issued and no block
+  /// recorded. Says nothing about status on purpose — the ORDER supplies that, and
+  /// `unsettledDeliveries` is the one place the two meet.
   ///
   /// ⚠️ **Soundness requires NO AWAIT between the intent write and the transfer issue, and
   /// nothing in the type system enforces it.** The one await that used to sit in that
   /// stretch (`icrc1_fee`) became a stored value, which is why the two are adjacent today.
   /// Reintroduce an await there and a reconcile can adopt a balance while a transfer it
   /// cannot see is in flight. This comment is the guard.
+  func openTransfer(entry : Types.JournalEntry) : Bool {
+    entry.transferIntent != null and entry.blockIndex == null;
+  };
+
+  /// Every promise-holding order paired with its journal entry — **the only route either
+  /// reader takes to the journal**, so neither can be bounded and the other not.
+  ///
+  /// ⚠️ Bounded by `promiseHolders`, which is bounded by flow (§5.4), NOT by the journal,
+  /// which gains an entry per `#paid` order and never loses one.
+  func forEachPromisedDelivery(f : (Types.Order, Types.JournalEntry) -> ()) {
+    for (id in Orders.promiseHolderIds(orderStore)) {
+      switch (Orders.get(orderStore, id), deliveryJournal.get(id)) {
+        case (?order, ?entry) f(order, entry);
+        case _ {};
+      };
+    };
+  };
+
+  /// Deliveries that may still respond: a transfer issued, no recorded block, on an order
+  /// that is still `#paid`. The quiet-window predicate — why it is a superset of "in
+  /// flight", and why the cost is not a deadlock: `docs/DESIGN.md` §5.4.
+  ///
+  /// ⚠️ **The `#paid` clause is load-bearing, and leaving it out froze the reserve.** An
+  /// escalated order keeps the intent-without-block shape *forever*, so without it one
+  /// escalation makes the quiet window unsatisfiable for the life of the canister: every
+  /// reconcile skips, every `refresh_reserve` skips, and top-ups stop registering.
+  ///
+  /// ⚠️ **This count going LOW is the oversell direction** — a quiet window that reads
+  /// quiet while a transfer is in flight lets the floor adopt a balance the transfer has
+  /// already left. So completeness is the property to protect, and it is by construction
+  /// rather than by recount: a transfer is only ever issued from `#paid`, `#paid` holds
+  /// the promise, and `promiseHolders` is maintained on that same `Reserve.holdsPromise`
+  /// predicate inside `Orders.commitTransition`. Every order with a transfer in flight is
+  /// therefore in the index. Its three exits keep it that way — `#delivered` records the
+  /// block in the same patch, `#needsReview` is still non-terminal and still indexed, and
+  /// `#abandoned` is **refused while a transfer is open** (`abandon_order`).
+  ///
+  /// ⚠️ A stale index member is harmless here and does not need dropping: its order reads
+  /// non-`#paid`, so it simply does not count.
   ///
   /// ⚠️ **Do not add a force flag to `refresh_reserve`.** Adopting across an unsettled
   /// delivery is the exact bug this predicate prevents, so a lever for it is a lever for
   /// the bug.
-  func unsettledDelivery(entry : Types.JournalEntry) : Bool {
-    entry.status == #paid and entry.transferIntent != null and entry.blockIndex == null;
-  };
-
-  /// ⚠️ **A walk over every journal entry ever written, and #69 owns bounding it.**
-  /// #63 bounded the order store's walks and this one is in the same class — the journal
-  /// gains an entry per `#paid` order and nothing removes them. It fails safe (a trap
-  /// means the floor is never adopted, so the gateway under-sells) which is why it is
-  /// sequenced rather than folded into #63.
-  ///
-  /// ⚠️ **Do not "fix" it with `Orders.promiseHolders`.** This reads the JOURNAL's status
-  /// copy, deliberately, and the two are allowed to disagree: `abandon_order` can take a
-  /// `#paid` order terminal while its transfer is still in flight, so the order leaves
-  /// the non-terminal index while its entry is still unsettled. Iterating that index
-  /// would return 0 here and make the floor adoptable across an in-flight transfer —
-  /// exactly the bug this predicate exists to prevent. See #69.
   func unsettledDeliveries() : Nat {
     var n = 0;
-    for ((_, entry) in deliveryJournal.entries()) {
-      if (unsettledDelivery(entry)) n += 1;
-    };
+    forEachPromisedDelivery(
+      func(order, entry) {
+        if (order.status == #paid and openTransfer(entry)) n += 1;
+      }
+    );
     n;
   };
 
-  /// Every delivery with money-out work outstanding, right now (admin).
-  ///
-  /// The immediate answer to "is a delivery failing?", and it **self-clears by
-  /// construction** — an entry leaves the moment delivery lands, because landing records
-  /// the block and moves the status. No resolve step to forget. Read `retries` as "how
-  /// many times this has already failed"; `0` is a first attempt, not a problem.
-  ///
-  /// ⚠️ **Admin, and O(journal) — those two facts belong together.** A public version
-  /// would let an unauthenticated caller make this canister scan its whole history for
-  /// free, which is why none of it went into `reserve_status` (public and O(1) on
-  /// purpose). #69 owns bounding the walk.
-  ///
-  /// ⚠️ The subset with `status = #paid` is **exactly** the reconcile's in-flight
-  /// predicate (`unsettledDelivery`), so this is also how "the reserve reconcile keeps
-  /// skipping" gets diagnosed. `#needsReview` entries are included because an
-  /// operator asking "what is wrong right now" wants them, but they are deliberately
-  /// NOT in the reconcile's predicate — see `unsettledDeliveries`.
   /// Deliveries outstanding past `alertAfterNs` — a **reading**, not an obligation, which
   /// is why it is a query rather than a filed problem.
   ///
@@ -2408,14 +2405,33 @@ persistent actor CyclesGateway {
     { entries = collected.toArray(); nextCursor = null };
   };
 
+  /// Every delivery with money-out work outstanding, right now (admin).
+  ///
+  /// The immediate answer to "is a delivery failing?", and it **self-clears by
+  /// construction** — an entry leaves the moment delivery lands, because landing records
+  /// the block and moves the status. No resolve step to forget. Read `retries` as "how
+  /// many times this has already failed"; `0` is a first attempt, not a problem.
+  ///
+  /// ⚠️ **Admin even now that it is bounded.** A public version would hand an
+  /// unauthenticated caller the operator's in-flight worklist; `reserve_status` is the
+  /// public answer, and O(1) on purpose.
+  ///
+  /// ⚠️ The `#paid` subset is **exactly** the reconcile's quiet-window predicate, so this
+  /// is also how "the reserve reconcile keeps skipping" gets diagnosed. `#needsReview`
+  /// orders are included because an operator asking "what is wrong right now" wants them,
+  /// and they are deliberately NOT in that predicate — see `unsettledDeliveries`.
   public shared query ({ caller }) func pending_deliveries() : async [Types.JournalEntry] {
     requireAdmin(caller);
     let out = List.empty<Types.JournalEntry>();
-    for ((_, entry) in deliveryJournal.entries()) {
-      if (entry.blockIndex == null and (unsettledDelivery(entry) or entry.status == #needsReview)) {
-        out.add(entry);
-      };
-    };
+    forEachPromisedDelivery(
+      func(order, entry) {
+        switch (order.status) {
+          case (#paid) { if (openTransfer(entry)) out.add(entry) };
+          case (#needsReview) { if (entry.blockIndex == null) out.add(entry) };
+          case (_) {};
+        };
+      }
+    );
     out.toArray();
   };
 
@@ -2761,10 +2777,16 @@ persistent actor CyclesGateway {
     // such an order to `#needsReview` on its own, where abandonment is allowed and
     // the documented procedure is establish-the-fate-first. `#needsReview` is
     // therefore untouched by this guard — escalation implies no outstanding call.
+    //
+    // ⚠️ **`unsettledDeliveries` now depends on this refusal for its completeness**, so
+    // this guard holds up more than the double-payout it was added for (#69). It is what
+    // keeps a transfer-in-flight order inside `promiseHolders`; relaxing it for operator
+    // ergonomics would let the quiet window read quiet across an in-flight transfer,
+    // which is the oversell direction. Integration scenario 78 owns it.
     if (order.status == #paid) {
       switch (deliveryJournal.get(id)) {
         case (?entry) {
-          if (unsettledDelivery(entry)) {
+          if (openTransfer(entry)) {
             return #err(
               "order " # id # " has a delivery outstanding, so whether its cycles moved is not yet known — abandoning it now would refund a buyer who may already hold them. "
               # "Check `pending_deliveries` for its state. Either it settles (and needs no refund), or the ~24 h dedup window escalates it to needsReview, where the ledger is the source of truth and the order id is in the transfer's memo."

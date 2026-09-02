@@ -673,6 +673,23 @@ export interface _SERVICE {
    * / the dollars that still need an answer.
    */
   'orphans_unresolved' : ActorMethod<[[] | [bigint], bigint], Page>,
+  /**
+   * / Every delivery with money-out work outstanding, right now (admin).
+   * /
+   * / The immediate answer to "is a delivery failing?", and it **self-clears by
+   * / construction** — an entry leaves the moment delivery lands, because landing records
+   * / the block and moves the status. No resolve step to forget. Read `retries` as "how
+   * / many times this has already failed"; `0` is a first attempt, not a problem.
+   * /
+   * / ⚠️ **Admin even now that it is bounded.** A public version would hand an
+   * / unauthenticated caller the operator's in-flight worklist; `reserve_status` is the
+   * / public answer, and O(1) on purpose.
+   * /
+   * / ⚠️ The `#paid` subset is **exactly** the reconcile's quiet-window predicate, so this
+   * / is also how "the reserve reconcile keeps skipping" gets diagnosed. `#needsReview`
+   * / orders are included because an operator asking "what is wrong right now" wants them,
+   * / and they are deliberately NOT in that predicate — see `unsettledDeliveries`.
+   */
   'pending_deliveries' : ActorMethod<[], Array<JournalEntry>>,
   /**
    * / Rates + params + refresh liveness, public: both rates are market data any

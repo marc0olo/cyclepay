@@ -251,6 +251,27 @@ distinguish "awaiting a reply" from "failed, waiting for the next sweep". Tracki
 in-flight state would need a counter incremented before the await, which leaks upward
 permanently if a reply callback traps — trading bounded pessimism for unbounded.
 
+**It is evaluated over the promise index, never over the journal.** The journal gains an
+entry per paid order and loses none, so a walk over it costs whatever the gateway has ever
+sold; the orders holding a promise are bounded by flow — at most `floor / smallest
+order` can hold one at a time, whatever the gateway's history. Reading the index is
+*complete*, not merely cheaper: a transfer is only ever issued from `Paid`, `Paid` holds
+the promise, and the index is maintained on that same promise predicate at the one site
+that writes a status. The three exits from `Paid` preserve it — `Delivered` records the
+block in the same patch, `NeedsReview` is still non-terminal and still indexed, and
+abandonment is **refused while a transfer is open**. That refusal therefore holds up the
+quiet window as well as the double-payout it was added to prevent.
+
+⚠️ The direction of error matters here and it is not the usual one: this count coming out
+**low** means the window reads quiet while a transfer is in flight, which is the
+*oversell* direction. Completeness is the property to protect, which is why it is argued
+from construction above rather than repaired by a recount. A **stale** index member is
+harmless by contrast — its order no longer reads `Paid`, so it does not count.
+
+**The status comes from the order, not from the journal's copy of it.** The two are
+allowed to disagree, and a predicate that mixes them is a predicate with two sources of
+truth; the journal entry supplies only the transfer intent and the block index.
+
 ⚠️ **Escalated orders must be excluded from it, or one escalation freezes the reserve for
 the life of the canister.** An escalated order keeps the intent-without-block shape
 *forever*, so without the `Paid` clause every reconcile skips, every manual refresh skips,
