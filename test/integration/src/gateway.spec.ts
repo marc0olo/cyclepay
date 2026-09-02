@@ -3292,9 +3292,10 @@ test('75 — a buyer can heal their OWN stuck delivery, and only their own (#30 
   // than as another queue somebody has to tidy.
   expect((await gw.asAdmin.pending_deliveries()).map((e) => e.orderId)).not.toContain(stuck.id);
 
-  // ⚠️ An owner kick is NOT audited and an admin kick is. A buyer refreshing a page
-  // must not be able to fill a 4,096-entry ring buffer with lines that say nothing,
-  // while an ops action on someone else's order is exactly what the trail is for.
+  // ⚠️ An owner kick is NOT audited and an admin kick is. #37 removed the ring, so
+  // retention is total: lines a buyer can emit by refreshing a page are permanent
+  // stable-state growth at zero cost to them. An ops action on someone else's order is
+  // exactly what the trail is for.
   const kickLines = (log: { tag: string; detail: string }[]) =>
     log.filter((e) => e.tag === 'delivery.manualKick' && e.detail.includes(stuck.id));
   expect(kickLines(await allAuditEvents(gw))).toHaveLength(0);
@@ -3719,9 +3720,9 @@ test('89 — an OPEN transfer must block the reserve reconcile, and stop blockin
   expect(observedWhileOpen).toBeGreaterThan(before.reserveFloor);
   expect(during.reserveFloor).toBe(before.reserveFloor);
   expect(during.reserveObservedAtNs).toEqual(before.reserveObservedAtNs);
-  // ⚠️ A DELTA, not a presence check: the audit log is a shared 4,096-entry ring and an
-  // earlier scenario may already have skipped a reconcile, which would make
-  // `.some(...)` pass without this call having done anything.
+  // ⚠️ A DELTA, not a presence check: the suite shares one canister, so an earlier
+  // scenario has already skipped a reconcile and `.some(...)` would pass without this
+  // call having done anything.
   const skipsDuring = (await allAuditEvents(gw))
     .filter((e) => e.tag === 'reserve.reconcileSkipped').length;
   expect(skipsDuring).toBeGreaterThan(skipsBefore);
