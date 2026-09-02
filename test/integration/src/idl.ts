@@ -509,6 +509,7 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       [],
       [
         IDL.Record({
+          availableToSell: IDL.Nat,
           deliveredOrders: IDL.Nat,
           deliveredCycles: IDL.Nat,
           deliveredUsdCents: IDL.Nat,

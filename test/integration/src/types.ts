@@ -439,6 +439,7 @@ export interface BackendService {
   /// payment — do not add a most-recent-order or largest-purchase field, each of which
   /// re-identifies through timing or amount. `nullPaid` should always be 0.
   delivery_stats(): Promise<{
+    availableToSell: bigint;
     deliveredOrders: bigint;
     deliveredCycles: bigint;
     deliveredUsdCents: bigint;

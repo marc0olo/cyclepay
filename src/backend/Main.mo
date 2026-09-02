@@ -3608,7 +3608,18 @@ persistent actor CyclesGateway {
   /// `nullPaid` should always be 0. It counts delivered orders whose `paidUsdCents` was
   /// unset, which `markPaid` makes unreachable — a non-zero value means the USD total is
   /// understated and the reason is a bug in this canister, not in the display.
+  /// ⚠️ **One call, because it is the landing page's whole backend.** `availableToSell`
+  /// and `refusingNow` also appear on `reserve_status` and `refusal_counts` — that is
+  /// duplication of the READER, not of the definition: both are read here from the same
+  /// state those queries read, never recomputed. Folding them in keeps a first paint to a
+  /// single round trip and a single mock in the test harness.
+  ///
+  /// ⚠️ **`availableToSell` leads, and it is a different KIND of number from the
+  /// others.** It is derived from a balance on the cycles ledger that anyone can query
+  /// without this canister's cooperation, so a visitor can check it rather than believe
+  /// it. The delivered totals are ours to report. Do not present them as equivalent.
   public query func delivery_stats() : async {
+    availableToSell : Nat;
     deliveredOrders : Nat;
     deliveredCycles : Nat;
     deliveredUsdCents : Nat;
@@ -3617,6 +3628,7 @@ persistent actor CyclesGateway {
   } {
     let totals = Orders.deliveryTotals(orderStore);
     {
+      availableToSell = Reserve.available(reserveFloor, Orders.promised(orderStore));
       deliveredOrders = totals.orders;
       deliveredCycles = totals.cycles;
       deliveredUsdCents = totals.usdCents;

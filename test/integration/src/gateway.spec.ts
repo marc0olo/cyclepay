@@ -2406,6 +2406,9 @@ test('58 — the sweep reconciles the status tallies on its own cadence and repo
   // ⚠️ Must be 0: it counts delivered orders whose paidUsdCents was unset, which
   // markPaid makes unreachable. Non-zero means the USD total is understated by a bug.
   expect(stats.nullPaid).toBe(0n);
+  // ⚠️ Both duplicated fields must AGREE with the query that owns them — that is the
+  // whole justification for folding them into one landing-page call, so it is pinned.
+  expect(stats.availableToSell).toBe((await gw.asAnon.reserve_status()).availableToSell);
   // Reused from the same latch refusal_counts reports, so the two cannot disagree.
   expect(stats.refusingNow).toEqual((await gw.asAnon.refusal_counts()).refusingNow);
 
