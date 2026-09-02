@@ -2380,6 +2380,12 @@ test('58 — the sweep reconciles the status tallies on its own cadence and repo
   await setCmcRate(gw);
   await ensureRates(gw);
 
+  // ⚠️ **#39's figures are CUMULATIVE, so they must be asserted as a delta.** This suite
+  // shares one canister across scenarios in file order, so by the time this runs, earlier
+  // scenarios have already delivered orders — an absolute assertion here read `18n` where
+  // it expected `1n`. Snapshot before, compare after.
+  const statsBefore = await gw.asAnon.delivery_stats();
+
   // Orders across several tracked statuses, so a reconcile has something to
   // disagree with if `bump` were wrong.
   const paid = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
@@ -2389,6 +2395,19 @@ test('58 — the sweep reconciles the status tallies on its own cadence and repo
   }))).toMatchObject({ status_code: 200 });
   expect(await tickUntilStatus(gw, paid.order.id, ['delivered'])).toBe('delivered');
   expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
+
+  // ⚠️ **#39's figures, read by an ANONYMOUS caller** — that is the acceptance criterion,
+  // since a landing page cannot ask for a login. Asserted as the DELTA across the one
+  // delivery this scenario performed, which pins the amounts rather than mere non-zero.
+  const stats = await gw.asAnon.delivery_stats();
+  expect(stats.deliveredOrders - statsBefore.deliveredOrders).toBe(1n);
+  expect(stats.deliveredCycles - statsBefore.deliveredCycles).toBe(paid.order.lockedCycles);
+  expect(stats.deliveredUsdCents - statsBefore.deliveredUsdCents).toBe(BigInt(TIER_USD_CENTS));
+  // ⚠️ Must be 0: it counts delivered orders whose paidUsdCents was unset, which
+  // markPaid makes unreachable. Non-zero means the USD total is understated by a bug.
+  expect(stats.nullPaid).toBe(0n);
+  // Reused from the same latch refusal_counts reports, so the two cannot disagree.
+  expect(stats.refusingNow).toEqual((await gw.asAnon.refusal_counts()).refusingNow);
 
   const before = (await gw.asAnon.recovery_status()).lastCountReconcile[0]?.atNs ?? -1n;
   const auditBefore = (await allAuditEvents(gw)).length;

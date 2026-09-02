@@ -150,6 +150,34 @@ module {
     /// — is not knowable from the index at all, and that is what the rotating
     /// `scanChunk` is for.
     promiseHolders : Set.Set<Types.OrderId>;
+    /// Cumulative deliveries, for the public trust figures (#39).
+    ///
+    /// ⚠️ **Counted in `commitTransition` on the transition INTO `#delivered`, which is
+    /// the only place it can be counted exactly.** Six call sites move an order to
+    /// `#delivered`, so a per-site counter would be six chances to forget — and this file
+    /// already carries the scar of a comment that named "the only three writers" and was
+    /// false in the same file. Here it is structural: writing a status *is* calling that
+    /// function.
+    ///
+    /// ⚠️ **Double-counting is unrepresentable, not merely unlikely.** `#delivered` has no
+    /// outbound edge in `isLegalTransition`, so once an order is delivered
+    /// `commitTransition` is never called for it again. There is no idempotency guard here
+    /// because none is reachable.
+    ///
+    /// ⚠️ **`cycles` is what was SOLD (`lockedCycles`), not what landed** (`lockedCycles −
+    /// the ledger fee, which the reserve absorbs). The difference is one transfer fee per
+    /// order — around 0.0014% at the smallest tier — and buying exactness would mean
+    /// threading the delivered amount through six sites for a figure that is displayed
+    /// rounded to two significant figures. Say "sold" if the wording ever has to be
+    /// precise.
+    var deliveredOrders : Nat;
+    var deliveredCycles : Nat;
+    /// ⚠️ Cumulative gross USD cents actually PAID (`paidUsdCents`), not quoted. Null
+    /// cannot happen on a delivered order — `markPaid` sets it before any delivery — so a
+    /// null contributes zero and `deliveredNullPaid` records that the impossible happened
+    /// rather than silently understating the total.
+    var deliveredUsdCents : Nat;
+    var deliveredNullPaid : Nat;
     /// The highest `#expired` tally seen by a reconcile, for the monotonicity check
     /// that replaces re-summing it (#63).
     ///
@@ -176,6 +204,10 @@ module {
       var tallySaturations = 0;
       unresolvedProblems = Set.empty<Types.OrderId>();
       promiseHolders = Set.empty<Types.OrderId>();
+      var deliveredOrders = 0;
+      var deliveredCycles = 0;
+      var deliveredUsdCents = 0;
+      var deliveredNullPaid = 0;
       var expiredHighWater = 0;
     };
   };
@@ -206,6 +238,21 @@ module {
   /// admin query needs, in O(log n) rather than by re-walking.
   public func promiseHolderIdsFrom(store : Store, id : Types.OrderId) : Iter.Iter<Types.OrderId> {
     store.promiseHolders.valuesFrom(id);
+  };
+
+  /// The cumulative delivery figures (#39). O(1) — maintained, never scanned.
+  public func deliveryTotals(store : Store) : {
+    orders : Nat;
+    cycles : Nat;
+    usdCents : Nat;
+    nullPaid : Nat;
+  } {
+    {
+      orders = store.deliveredOrders;
+      cycles = store.deliveredCycles;
+      usdCents = store.deliveredUsdCents;
+      nullPaid = store.deliveredNullPaid;
+    };
   };
 
   /// How many orders the store holds in total. O(1), and the only figure derived from
@@ -761,6 +808,19 @@ module {
     // an exact release — the first evidence would otherwise be the daily recount,
     // up to 24 h of a wrong tally gating real sales. `Main` audits this.
     if (moved.saturated) store.tallySaturations += 1;
+    // #39 — the cumulative delivery figures, counted HERE for the reason at the fields:
+    // six sites move an order to `#delivered`, and `#delivered` has no outbound edge, so
+    // this is the only place the count is both unforgettable and unable to double.
+    if (after.status == #delivered) {
+      store.deliveredOrders += 1;
+      store.deliveredCycles += before.lockedCycles;
+      switch (before.paidUsdCents) {
+        case (?cents) store.deliveredUsdCents += cents;
+        // Unreachable: `markPaid` sets this before any delivery. Recorded rather than
+        // ignored, so an understated public total has a matching counter to explain it.
+        case null store.deliveredNullPaid += 1;
+      };
+    };
     settled;
   };
 

@@ -1346,3 +1346,88 @@ suite("#63 — the reconcile is bounded by flow, not by lifetime sales", func() 
     assert chunk.nextCursor == null;
   });
 });
+
+suite("#39 — cumulative delivery figures", func() {
+  func mk(store : Orders.Store, id : Text, cycles : Nat) : Types.Order {
+    switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), cycles, pricing, 100)) {
+      case (#ok(o)) o;
+      case (#err(_)) { assert false; loop {} };
+    };
+  };
+  /// Pay at `cents`, then deliver — the ordinary route.
+  func payAndDeliver(store : Orders.Store, id : Text, cycles : Nat, cents : Nat) {
+    ignore mk(store, id, cycles);
+    switch (Orders.markPaid(store, id, cents, 200)) {
+      case (#ok(_)) {};
+      case (#err(_)) assert false;
+    };
+    ignore Orders.applyTransition(store, id, #delivered, 300);
+  };
+
+  test("delivered orders, cycles and USD accumulate", func() {
+    let store = Orders.emptyStore();
+    payAndDeliver(store, "d-1", 1_000, 1_000);
+    payAndDeliver(store, "d-2", 2_500, 2_000);
+    let t = Orders.deliveryTotals(store);
+    assert t.orders == 2;
+    assert t.cycles == 3_500;
+    assert t.usdCents == 3_000;
+    assert t.nullPaid == 0;
+  });
+
+  test("nothing that is not delivered is counted", func() {
+    let store = Orders.emptyStore();
+    ignore mk(store, "open", 1_000);
+    ignore mk(store, "gone", 2_000);
+    ignore Orders.applyTransition(store, "gone", #expired, 200);
+    ignore mk(store, "esc", 4_000);
+    switch (Orders.markPaid(store, "esc", 500, 200)) { case (#ok(_)) {}; case (#err(_)) assert false };
+    ignore Orders.applyTransition(store, "esc", #needsReview, 300);
+    let t = Orders.deliveryTotals(store);
+    assert t.orders == 0 and t.cycles == 0 and t.usdCents == 0;
+  });
+
+  test("⚠️ the OPERATOR path counts too — the undercount this would otherwise ship", func() {
+    // `record_delivered` drives `#needsReview → #delivered` and writes the journal's
+    // `cyclesDelivered` as **null**, so a counter maintained at the sites that write that
+    // field would miss exactly these — the rare, high-touch orders most likely to be
+    // asked about. Counting in `commitTransition` covers the route for free.
+    let store = Orders.emptyStore();
+    ignore mk(store, "esc-1", 9_000);
+    switch (Orders.markPaid(store, "esc-1", 7_500, 200)) { case (#ok(_)) {}; case (#err(_)) assert false };
+    ignore Orders.applyTransition(store, "esc-1", #needsReview, 300);
+    assert Orders.deliveryTotals(store).orders == 0;
+    ignore Orders.applyTransition(store, "esc-1", #delivered, 400);
+    let t = Orders.deliveryTotals(store);
+    assert t.orders == 1;
+    assert t.cycles == 9_000;
+    assert t.usdCents == 7_500;
+  });
+
+  test("⚠️ double-counting is unrepresentable, not merely guarded", func() {
+    // `#delivered` has no outbound edge, so `commitTransition` cannot run twice for a
+    // delivered order. Pinned by trying every status as a follow-on transition: all must
+    // be refused, and the totals must not move.
+    let store = Orders.emptyStore();
+    payAndDeliver(store, "once", 1_000, 900);
+    assert Orders.deliveryTotals(store).orders == 1;
+    for (to in allStatuses.values()) {
+      switch (Orders.applyTransition(store, "once", to, 500)) {
+        case (#err(_)) {};
+        case (#ok(_)) assert false; // any legal exit from #delivered breaks the counter
+      };
+    };
+    let t = Orders.deliveryTotals(store);
+    assert t.orders == 1 and t.cycles == 1_000 and t.usdCents == 900;
+  });
+
+  test("the figures survive the bounded reconcile untouched", func() {
+    // They are cumulative, not derived from live state, so nothing may rebuild them —
+    // a reconcile that "repaired" them would erase history.
+    let store = Orders.emptyStore();
+    payAndDeliver(store, "keep", 5_000, 4_200);
+    ignore Orders.reconcileBounded(store);
+    let t = Orders.deliveryTotals(store);
+    assert t.orders == 1 and t.cycles == 5_000 and t.usdCents == 4_200;
+  });
+});

@@ -3588,6 +3588,43 @@ persistent actor CyclesGateway {
     { balance = Cycles.balance(); floor = gateConfig.minCanisterCycles };
   };
 
+  /// The public trust figures (#39) — anonymous, safe on a landing page.
+  ///
+  /// ⚠️ **Nothing here identifies a buyer, an order or a payment**, and that is the whole
+  /// admission test for this surface: cumulative totals plus the rail's own state. Do not
+  /// add a most-recent-order field, a largest-purchase field, or anything per-principal —
+  /// each of those re-identifies through timing or amount even without a name attached.
+  ///
+  /// ⚠️ **`refusingNow` is REUSED, not re-derived.** It is the same `railStateLatch`
+  /// `refusal_counts` reports, so "is the rail accepting orders" has one definition and
+  /// cannot come out differently on two surfaces.
+  ///
+  /// ⚠️ **The counters read zero on a fresh install and that is correct, not a bug.**
+  /// Orders are never deleted but a reinstall replaces the state, so a launch-day figure
+  /// starts at zero whichever way it is built. A badge reading "0 orders delivered" is
+  /// worse than no badge, so the *renderer* owes a threshold — see #39. This query does
+  /// not lie about it by withholding the number.
+  ///
+  /// `nullPaid` should always be 0. It counts delivered orders whose `paidUsdCents` was
+  /// unset, which `markPaid` makes unreachable — a non-zero value means the USD total is
+  /// understated and the reason is a bug in this canister, not in the display.
+  public query func delivery_stats() : async {
+    deliveredOrders : Nat;
+    deliveredCycles : Nat;
+    deliveredUsdCents : Nat;
+    nullPaid : Nat;
+    refusingNow : Gate.RailStateLatch;
+  } {
+    let totals = Orders.deliveryTotals(orderStore);
+    {
+      deliveredOrders = totals.orders;
+      deliveredCycles = totals.cycles;
+      deliveredUsdCents = totals.usdCents;
+      nullPaid = totals.nullPaid;
+      refusingNow = railStateLatch;
+    };
+  };
+
   public query func recovery_status() : async {
     intervalNs : Nat;
     lastSweep : ?{ atNs : Int; pending : Nat };

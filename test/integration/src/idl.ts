@@ -505,6 +505,24 @@ export const backendIdlFactory: IDLNamespace.InterfaceFactory = ({ IDL }) => {
       ],
       ['query'],
     ),
+    delivery_stats: IDL.Func(
+      [],
+      [
+        IDL.Record({
+          deliveredOrders: IDL.Nat,
+          deliveredCycles: IDL.Nat,
+          deliveredUsdCents: IDL.Nat,
+          nullPaid: IDL.Nat,
+          refusingNow: IDL.Record({
+            reserveShort: IDL.Bool,
+            canisterCyclesLow: IDL.Bool,
+            railClosed: IDL.Bool,
+            stripeApiFailing: IDL.Bool,
+          }),
+        }),
+      ],
+      ['query'],
+    ),
     refresh_reserve: IDL.Func([], [IDL.Nat], []),
     resolve_orphan: IDL.Func(
       [IDL.Nat],

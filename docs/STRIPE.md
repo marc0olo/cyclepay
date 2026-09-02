@@ -823,11 +823,19 @@ runs in the gate and diffs the marked blocks here against the committed `.did` p
 `Main.mo`'s guards. ⚠️ It compares **names only** — a stale *description* is still on a
 human, which is how `recount_orders` kept describing the pass #63 deleted.
 
+⚠️ **`delivery_stats` (#39) is public and anonymous** — cumulative delivered orders,
+cycles and USD, plus the rail's current refusal state, for a landing page that cannot ask
+for a login. Nothing in it identifies a buyer, an order or a payment, and that is its
+admission test: **do not add a most-recent-order or largest-purchase field**, each of which
+re-identifies through timing or amount even with no name attached. Its `refusingNow` is the
+same latch `refusal_counts` reports, reused rather than re-derived.
+
 Public queries (transparency is the product thesis):
 
 <!-- surface:public -->
 
-`can_purchase` · `card_tiers` · `cycles_status` · `expected_livemode` · `health` ·
+`can_purchase` · `card_tiers` · `cycles_status` · `delivery_stats` · `expected_livemode` ·
+`health` ·
 `lifecycle_config` · `orphan_depth` · `pricing_status` · `problem_depth` ·
 `quote_previews` · `recovery_status` · `refusal_counts` · `reserve_status` ·
 `stripe_origin`
