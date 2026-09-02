@@ -72,6 +72,24 @@ when the check it needs is **whether anything now calls it**.
    **status**; only the queue *kind* of that name went. A bare count for this row is
    actively misleading, and high is normal.
 
+## Known-collision terms
+
+⚠️ **These four are live names, and their hits are almost always correct.** The scan prints
+them in a separate section BELOW its main list, because the value of a print-only step is
+entirely a reader's willingness to look at it — and a real hit buried among three
+predictable ones is something to triage rather than something to see.
+
+Measured on #86: of four hits, three were these and the fourth was the defect.
+
+- `\bmint` — the CMC is the Cycles **Minting** Canister, a live dependency.
+- `\bretention\b` — `Idempotency.mo` prunes dedup keys on a real retention window.
+- `#abandoned` — a live order **status**; only the deleted queue *kind* shared the name.
+- `icrc1_fee` — a live ledger method. Row type 2: the hit is fine, a *call* is not.
+
+⚠️ **A term listed here is de-emphasised, never skipped.** If this section is renamed or
+emptied, every term prints in the main list — the failure direction is more prominence,
+not less.
+
 ## Running it
 
 `scripts/sweep-vocabulary.py` scans the lines your change adds, against the terms below,

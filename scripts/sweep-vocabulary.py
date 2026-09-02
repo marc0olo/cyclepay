@@ -61,10 +61,30 @@ def terms():
     return rows
 
 
+def collisions():
+    """Terms whose hits are almost always correct, from the table's own section.
+
+    ⚠️ Returns an empty set if the section is renamed or emptied, which prints EVERY term
+    in the main list. The failure direction is more prominence, not less.
+    """
+    out, inside = set(), False
+    for line in open(TABLE):
+        if line.startswith("## "):
+            inside = line.strip() == "## Known-collision terms"
+        elif inside:
+            m = re.match(r"-\s*`([^`]+)`", line)
+            if m:
+                out.add(m.group(1))
+    return out
+
+
 def base():
     """The merge base to diff against, or exit non-zero naming why there is none."""
     if "--base" in sys.argv:
-        wanted = [sys.argv[sys.argv.index("--base") + 1]]
+        i = sys.argv.index("--base") + 1
+        if i >= len(sys.argv):
+            sys.exit("ABORT: --base needs a ref after it")
+        wanted = [sys.argv[i]]
     else:
         wanted = list(BASE_CANDIDATES)
     tried = []
@@ -124,7 +144,8 @@ def main() -> int:
         print("   no added lines — nothing to scan, and that is a pass, not an abort")
         return 0
 
-    total = 0
+    known = collisions()
+    total, deferred = 0, []
     for term, disposition in rows:
         try:
             rx = re.compile(term, re.I)
@@ -134,16 +155,28 @@ def main() -> int:
         hits = [(p, n, t) for p, n, t in lines if rx.search(t)]
         if not hits:
             continue
+        if term in known:
+            deferred.append((term, disposition, hits))
+            continue
         total += len(hits)
         print(f"\n\033[33m`{term}`\033[0m — {disposition}")
         for p, n, t in hits:
             print(f"    {p}:{n}  {t.strip()[:110]}")
 
+    if deferred:
+        n = sum(len(h) for _, _, h in deferred)
+        print(f"\n  ── below the line: {n} hit(s) on live names, almost always correct ──")
+        for term, disposition, hits in deferred:
+            print(f"  `{term}` — {disposition}")
+            for p, ln, t in hits:
+                print(f"      {p}:{ln}  {t.strip()[:110]}")
+
     if total:
         print(
             f"\n\033[33m⚠️ {total} added line(s) name a deleted mechanism — adjudicate each.\033[0m\n"
-            "  Most are legitimate: an end-state statement, a live name that collides with a\n"
-            "  deleted one, or the rule text quoting the term. What is NOT legitimate is a\n"
+            "  Many are still legitimate: an end-state statement, or the rule text quoting the\n"
+            "  term. Live-name collisions are below the line, not here. What is NOT legitimate\n"
+            "  is a\n"
             "  present-tense claim that the mechanism still exists, or a deleted mechanism\n"
             "  cited as the JUSTIFICATION for behaviour that now has a different reason.\n"
             "  This step does not fail on these; a reviewer decides."
