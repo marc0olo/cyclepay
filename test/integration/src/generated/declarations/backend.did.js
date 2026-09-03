@@ -204,6 +204,10 @@ export const idlFactory = ({ IDL }) => {
     'minCanisterCycles' : IDL.Nat,
     'maxOpenOrdersPerPrincipal' : IDL.Nat,
   });
+  const Config__2 = IDL.Record({
+    'alertAfterNs' : IDL.Int,
+    'maxHoldNs' : IDL.Int,
+  });
   const Kind = IDL.Variant({
     'unattributed' : IDL.Record({
       'claimedRef' : IDL.Text,
@@ -292,10 +296,6 @@ export const idlFactory = ({ IDL }) => {
     'emptyTierId' : IDL.Null,
   });
   const Result_6 = IDL.Variant({ 'ok' : IDL.Null, 'err' : ValidateError });
-  const Config__2 = IDL.Record({
-    'alertAfterNs' : IDL.Int,
-    'maxHoldNs' : IDL.Int,
-  });
   const ConfigError__2 = IDL.Variant({
     'nonPositiveMaxHold' : IDL.Null,
     'alertNotBeforeMaxHold' : IDL.Record({
@@ -422,7 +422,7 @@ export const idlFactory = ({ IDL }) => {
     'http_request_update' : IDL.Func([Request], [Response], []),
     'lifecycle_config' : IDL.Func(
         [],
-        [IDL.Record({ 'gate' : Config__1 })],
+        [IDL.Record({ 'gate' : Config__1, 'delivery' : Config__2 })],
         ['query'],
       ),
     'list_orders' : IDL.Func([IDL.Opt(OrderId), IDL.Nat], [Page__1], ['query']),
