@@ -56,8 +56,17 @@ const POLL_MS = 3_000;
 
 // The bindgen wrapper surfaces OrderStatus as a string enum whose values are
 // exactly the variant labels format.ts keys on.
+/// ⚠️ **No cast.** A string enum member IS assignable to its template-literal value
+/// union, so `as unknown as StatusKey` was residue from when `StatusKey` was a
+/// hand-written union of seven strings.
+///
+/// Removing it is the point rather than tidiness: bindgen has three renderings for a
+/// Candid variant, and the defect this week was not knowing one of them. If an upgrade or
+/// a Candid change alters how `status` is rendered, a double cast still compiles and the
+/// failure lands at runtime on a buyer's order page. A plain return makes it a compile
+/// error, which is the whole asymmetry the derived type was introduced to close.
 function statusKeyOf(order: Order): StatusKey {
-  return order.status as unknown as StatusKey;
+  return order.status;
 }
 
 // --- state ---------------------------------------------------------------

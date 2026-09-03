@@ -111,6 +111,17 @@ hits="$( { grep -nEi "$BANNED" "$FE/index.html"; literals | grep -Ei "$BANNED"; 
 # CSS with /* comments */ stripped. Without this, a comment explaining one of
 # these rules trips the rule it explains — which is exactly what happened the
 # first time this script ran.
+#
+# ⚠️ **`index.html` is deliberately NOT treated the same way: it is read whole,
+# comments included.** So an HTML comment mentioning a banned glyph fails the
+# pictograph check while a CSS comment doing the same does not. That asymmetry is
+# intentional and it has caught a real comment (#68's summary-strip markup), but
+# it reads as a bug when you hit it, so: the CSS stripping exists because CSS
+# comments are where the RULES get explained, next to the properties they
+# constrain. HTML comments sit inside the document a visitor is served, and
+# narrowing this to "outside comments only" would need an HTML parser to be
+# correct rather than a regex that can be defeated by a comment inside a string
+# attribute. Reword the comment.
 css_code() {
   perl -0777 -pe 's{/\*.*?\*/}{}gs' "$1" | grep -n '' | sed "s|^|$1:|"
 }
