@@ -382,6 +382,36 @@
             <p class="muted" id="admin-link-note"></p>
           </div>
         </section>
+
+        <!-- The wait-versus-work distinction is carried by ORDER, HEADINGS and a token
+             colour, not by symbols: brand-lint bans pictographs in user-facing copy, and
+             the warning and tick glyphs that would otherwise do this job are pictographs.
+             So the groups say it in words, and the act group comes first.
+
+             Whether an operator can actually TELL THEM APART is a cascade-and-layout
+             property, so it is asserted in the Chromium suite. Note this comment itself
+             tripped the pictograph check: it reads all of index.html, comments included,
+             unlike the CSS check which strips them. -->
+        <section id="admin-summary">
+          <h3 class="section-h">Right now</h3>
+          <p id="summary-headline"></p>
+
+          <div class="summary-groups">
+            <section id="summary-act" class="summary-group">
+              <h4 class="summary-h">Needs a person</h4>
+              <p class="muted">Nothing in this group clears itself.</p>
+              <dl id="summary-act-figures" class="figures"></dl>
+            </section>
+
+            <section id="summary-wait" class="summary-group">
+              <h4 class="summary-h">In progress</h4>
+              <p class="muted">These clear on their own. Reading them is enough.</p>
+              <dl id="summary-wait-figures" class="figures"></dl>
+            </section>
+          </div>
+
+          <p id="summary-reserve" class="muted"></p>
+        </section>
       </section>
 
     </main>

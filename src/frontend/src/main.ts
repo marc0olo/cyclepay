@@ -29,6 +29,7 @@ import {
 import { type View, type Route, parseRoute, routeHash, TOUR_STEPS, stepStates } from "./view";
 import {
   RATE_LOCK_NOTE,
+  formatAgo,
   STEPS,
   checkReceipt,
   createOrderErrorMessage,
@@ -313,7 +314,10 @@ function renderView(): void {
   show("order-missing", onOrder && !ready);
   show("history", effective === "history");
   show("admin", effective === "admin");
-  if (effective === "admin") renderAdminIdentity();
+  if (effective === "admin") {
+    renderAdminIdentity();
+    renderOperatorSummary();
+  }
   show("history-link", orderCount > 0 && identity !== null);
   if (onOrder && !ready) renderOrderMissing();
 
@@ -378,6 +382,84 @@ function renderAdminIdentity(): void {
     "derived from the auth domain's default, which is a different identity than the one above.";
 }
 
+/// The operator summary: nine counts, one public query (#68).
+let operatorSummary: Awaited<ReturnType<typeof backend.operator_summary>> | null = null;
+
+async function loadOperatorSummary(): Promise<void> {
+  try {
+    operatorSummary = await backend.operator_summary();
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("could not read the operator summary", error);
+    operatorSummary = null;
+  }
+  if (currentView === "admin") renderOperatorSummary();
+}
+
+/// One figure row. Kept as a helper so the two groups cannot drift in shape.
+function figureRow(into: HTMLElement, label: string, value: bigint): void {
+  const dt = document.createElement("dt");
+  dt.textContent = label;
+  const dd = document.createElement("dd");
+  dd.textContent = value.toString();
+  // ⚠️ A DATA attribute, not a class name, and the styling hangs off it: this is the
+  // hook the Chromium suite reads to check that a non-zero count in the act group is
+  // visually distinguishable from a zero. A class alone is what jsdom can confirm and an
+  // operator cannot see.
+  dd.dataset.zero = value === 0n ? "true" : "false";
+  into.append(dt, dd);
+}
+
+function renderOperatorSummary(): void {
+  const headline = document.getElementById("summary-headline");
+  const act = document.getElementById("summary-act-figures");
+  const wait = document.getElementById("summary-wait-figures");
+  const reserve = document.getElementById("summary-reserve");
+  if (!headline || !act || !wait || !reserve) return;
+
+  if (operatorSummary === null) {
+    headline.textContent = "The summary could not be read. The canister may be unreachable.";
+    act.replaceChildren();
+    wait.replaceChildren();
+    reserve.textContent = "";
+    return;
+  }
+  const s = operatorSummary;
+
+  // ⚠️ Split by whether a human is required, NOT by severity. A self-clearing retry
+  // ranked next to an unattributed payment is the mistake this grouping exists to
+  // prevent: one is waiting, the other is owed an answer.
+  act.replaceChildren();
+  figureRow(act, "Orders under review", s.ordersNeedingReview);
+  figureRow(act, "Payments not attributed", s.orphansUnresolved);
+  figureRow(act, "Open problems", s.problemsUnresolved);
+  figureRow(act, "Orders carrying a problem", s.ordersWithProblems);
+
+  wait.replaceChildren();
+  figureRow(wait, "Deliveries outstanding", s.deliveriesOutstanding);
+  figureRow(wait, "Deliveries past the alert threshold", s.deliveriesDelayed);
+
+  const owed =
+    s.ordersNeedingReview + s.orphansUnresolved + s.problemsUnresolved;
+  // Said in words, because the whole point of the grouping is answerable at a glance.
+  headline.textContent =
+    owed === 0n
+      ? "Nothing needs a person right now."
+      : owed === 1n
+        ? "One thing needs a person."
+        : `${owed} things need a person.`;
+
+  // ⚠️ The two delivery numbers are measured over DIFFERENT populations and neither
+  // contains the other, so the UI must not present one as a subset of the other. See
+  // `operator_summary` in Main.mo.
+  const observed =
+    s.reserveObservedAtNs === undefined
+      ? "never observed"
+      : `observed ${formatAgo(nsToMillis(s.reserveObservedAtNs), Date.now())}`;
+  reserve.textContent =
+    `Reserve available to sell: ${formatCycles(s.availableToSell)} cycles (${observed}).`;
+}
+
 function renderOrderMissing(): void {
   const node = document.getElementById("order-missing-detail");
   if (!node) return;
@@ -414,7 +496,10 @@ function applyRoute(route: Route): void {
   if (route.view !== "order" && pollOrderId !== null) stopPolling();
 
   currentView = route.view;
-  if (route.view === "admin") void loadAdminStatus();
+  if (route.view === "admin") {
+    void loadAdminStatus();
+    void loadOperatorSummary();
+  }
   if (route.view === "order" && activeOrder?.id !== route.orderId) {
     // Deep link or Back into an order we are not currently holding.
     orderLoad = "loading";

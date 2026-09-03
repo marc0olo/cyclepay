@@ -44,6 +44,23 @@ const state = {
   /// What `admin_status` answers. ⚠️ Three states, not two: a controller is not on the
   /// granted list and does not need to be, so "granted" and "isController" are
   /// independent.
+  /// The nine counts. ⚠️ Split by whether a human is required, not by severity.
+  operatorSummary: {
+    deliveriesOutstanding: 0n,
+    deliveriesDelayed: 0n,
+    ordersNeedingReview: 0n,
+    orphansUnresolved: 0n,
+    problemsUnresolved: 0n,
+    ordersWithProblems: 0n,
+    refusingNow: {
+      reserveShort: false,
+      canisterCyclesLow: false,
+      railClosed: false,
+      stripeApiFailed: false,
+    },
+    availableToSell: 775_000_000_000_000n,
+    reserveObservedAtNs: undefined as bigint | undefined,
+  },
   adminStatus: {
     // Duck-typed, like `identity` below: these tests never build a real Principal.
     caller: { toText: () => "ryjl3-tyaaa-aaaaa-aaaba-cai" },
@@ -120,6 +137,7 @@ const backend = {
     },
   }),
   admin_status: async () => state.adminStatus,
+  operator_summary: async () => state.operatorSummary,
   delivery_stats: async () => ({
     availableToSell: 775_000_000_000_000n,
     deliveredOrders: 0n,
@@ -279,6 +297,30 @@ beforeEach(() => {
   state.order = undefined;
   state.receipt = undefined;
   state.signInError = undefined;
+  // ⚠️ Reset here, not spread from the previous test. Leaving these out let one test's
+  // `ordersWithProblems` leak into the next and made a data-hook assertion fail for a
+  // reason that had nothing to do with the code under test.
+  state.adminStatus = {
+    caller: { toText: () => "ryjl3-tyaaa-aaaaa-aaaba-cai" },
+    granted: false,
+    isController: false,
+  };
+  state.operatorSummary = {
+    deliveriesOutstanding: 0n,
+    deliveriesDelayed: 0n,
+    ordersNeedingReview: 0n,
+    orphansUnresolved: 0n,
+    problemsUnresolved: 0n,
+    ordersWithProblems: 0n,
+    refusingNow: {
+      reserveShort: false,
+      canisterCyclesLow: false,
+      railClosed: false,
+      stripeApiFailed: false,
+    },
+    availableToSell: 775_000_000_000_000n,
+    reserveObservedAtNs: undefined,
+  };
 });
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -1086,5 +1128,85 @@ describe("operator console (#68)", () => {
     expect(command).toContain("icp identity link web");
     expect(command).toContain(`--app ${window.location.host}`);
     expect(el("admin-link-note").textContent).toMatch(/must be this page's own domain/);
+  });
+});
+
+describe("operator summary: wait versus work (#68)", () => {
+  const figures = (id: string): Record<string, string> => {
+    const out: Record<string, string> = {};
+    const dl = el(id);
+    const dts = [...dl.querySelectorAll("dt")];
+    const dds = [...dl.querySelectorAll("dd")];
+    dts.forEach((dt, i) => (out[dt.textContent ?? ""] = dds[i]?.textContent ?? ""));
+    return out;
+  };
+
+  test("⚠️ the two groups are split by whether a human is required, not by severity", async () => {
+    state.operatorSummary = {
+      ...state.operatorSummary,
+      ordersNeedingReview: 2n,
+      orphansUnresolved: 1n,
+      problemsUnresolved: 3n,
+      ordersWithProblems: 2n,
+      deliveriesOutstanding: 7n,
+      deliveriesDelayed: 4n,
+    };
+    await mount("landing", "#/admin");
+
+    const act = figures("summary-act-figures");
+    const wait = figures("summary-wait-figures");
+    // A self-clearing retry ranked beside an unattributed payment is the mistake the
+    // grouping exists to prevent: one is waiting, the other is owed an answer.
+    expect(act["Orders under review"]).toBe("2");
+    expect(act["Payments not attributed"]).toBe("1");
+    expect(act["Open problems"]).toBe("3");
+    expect(wait["Deliveries outstanding"]).toBe("7");
+    expect(wait["Deliveries past the alert threshold"]).toBe("4");
+    // And neither group carries the other's figures.
+    expect(act["Deliveries outstanding"]).toBeUndefined();
+    expect(wait["Orders under review"]).toBeUndefined();
+  });
+
+  test("the headline answers the question in words", async () => {
+    state.operatorSummary = {
+      ...state.operatorSummary,
+      ordersNeedingReview: 0n,
+      orphansUnresolved: 0n,
+      problemsUnresolved: 0n,
+      deliveriesOutstanding: 9n,
+    };
+    await mount("landing", "#/admin");
+    // ⚠️ Nine deliveries in flight and nothing owed: the headline must not read as work.
+    expect(el("summary-headline").textContent).toBe("Nothing needs a person right now.");
+
+    state.operatorSummary = { ...state.operatorSummary, orphansUnresolved: 1n };
+    await mount("landing", "#/admin");
+    expect(el("summary-headline").textContent).toBe("One thing needs a person.");
+
+    state.operatorSummary = { ...state.operatorSummary, problemsUnresolved: 2n };
+    await mount("landing", "#/admin");
+    expect(el("summary-headline").textContent).toBe("3 things need a person.");
+  });
+
+  test("zero and non-zero carry a data hook, which is what the browser suite reads", async () => {
+    state.operatorSummary = {
+      ...state.operatorSummary,
+      ordersNeedingReview: 0n,
+      orphansUnresolved: 5n,
+      problemsUnresolved: 0n,
+    };
+    await mount("landing", "#/admin");
+    const dds = [...el("summary-act-figures").querySelectorAll("dd")];
+    expect(dds.map((d) => (d as HTMLElement).dataset.zero)).toEqual([
+      "true", "false", "true", "true",
+    ]);
+    // ⚠️ This is a DATA attribute, not evidence an operator can see a difference. That
+    // claim needs cascade and layout, so it is asserted in the Chromium suite.
+  });
+
+  test("an unobserved reserve says so rather than printing a time", async () => {
+    state.operatorSummary = { ...state.operatorSummary, reserveObservedAtNs: undefined };
+    await mount("landing", "#/admin");
+    expect(el("summary-reserve").textContent).toMatch(/never observed/);
   });
 });
