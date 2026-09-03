@@ -308,11 +308,18 @@ goes stale the next time a step is inserted, and the script derives its own numb
 **After ANY change that moves the stable shape — compatible or not** — once it is deployed
 (reinstalled and reseeded if it had to be):
 
-⚠️ **"Compatible" does not mean "no promotion".** Adding a stable field with an initializer
-upgrades cleanly and needs no reinstall, and the baseline still has to move: leave it
-describing the older shape and a later change that REMOVES that field passes the check
-against a baseline that never had it, while the real canister does. A false pass in the
-direction that loses data.
+⚠️ **"Compatible" does not mean "no promotion", and the failure is a genuinely
+incompatible change PASSING.** Measured, in two steps:
+
+1. Add `probeF : Nat` with an initializer. Upgrade-compatible, no reinstall needed —
+   `mops check-stable` passes, correctly. Skip the promotion.
+2. Change `probeF` to `Text`. Against the **stale** baseline, which has no `probeF` at all,
+   that reads as "adding `probeF : Text`" and `mops check-stable` **passes again**. The
+   deployed canister holds `probeF : Nat`, so the real upgrade is incompatible and traps in
+   `post_upgrade`.
+
+So the baseline moves whenever the shape moves. One un-promoted compatible change is
+enough to blind the check to the next incompatible one.
 
 ```sh
 mops build && mops deployed        # promotes dist/backend.most → deployed/backend.most

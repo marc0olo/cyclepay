@@ -118,6 +118,12 @@ def real_surface():
         # read was reported as PUBLIC — and since the .did is authoritative by then, the
         # remedy on offer is to go and assert a false scope in the docs.
         owner = re.search(r"Orders\.\w*(?:[Oo]wned|[Oo]wner)\w*\s*\(", code) is not None
+        # ⚠️ **`unclassifiable` is load-bearing for a DIFFERENT check — do not relax it.**
+        # `check-admin-tiers.py` derives its population from the guards, so a method MEANT
+        # to be admin-gated that forgot the guard entirely is invisible there: it just
+        # looks public. This outcome is what names it. The two checks compose, and neither
+        # covers that gap alone.
+        #
         # ⚠️ **The DEFAULT was the defect, not the pattern.** Falling through to "public"
         # is what let both earlier breaks offer "go assert a false scope in the docs" as
         # the remedy. A method that destructures `{ caller }` and then calls neither

@@ -14,6 +14,13 @@ if its body calls one of the guards, so a new one that is in neither tier fails 
 hand-written population would let a new method be admin-gated and unlisted at the same
 time, which is the state this exists to make impossible.
 
+⚠️ **This check and `check-doc-surface.py` COMPOSE, and neither covers the gap alone.** The
+population here is guard-derived, so a method MEANT to be admin-gated that forgot the guard
+entirely is invisible here — it simply looks public. What catches that is the
+`unclassifiable` outcome in `check-doc-surface.py`: a method taking `{ caller }` calling
+neither guard nor an owner helper fails there by name. **Relaxing `unclassifiable` when it
+gets noisy reopens an authz hole this file cannot see.**
+
 The tiers, and the line between them: **an admin resolves individual cases; a controller
 changes the rules.** Anything that moves secrets, pricing, the gate, the mode, the
 delivery bounds or the admin list itself is the RULES tier — a controller can already
@@ -85,7 +92,15 @@ def guarded_methods(text):
         for i, l in enumerate(lines)
         if (m := re.search(r"\bpublic\b.*\bfunc\s+([a-z_][A-Za-z0-9_]*)\s*[(<]", l))
     ]
-    bounds = sorted(i for i, _ in starts)
+    # ⚠️ **Bodies end at the next TOP-LEVEL declaration, not the next PUBLIC one.** A
+    # private helper between two public methods would otherwise be folded into the
+    # preceding body, so a helper calling a guard would misattribute it to its neighbour.
+    # Two-space indentation is the actor's top level; a closure inside a body is indented
+    # further and so is not a boundary — which matters, because several bodies pass a
+    # `func(order, entry) { … }` to a fold.
+    bounds = sorted(
+        i for i, l in enumerate(lines) if re.match(r"^  \S.*\bfunc\s+[A-Za-z_]", l)
+    )
     out = {}
     for i, name in starts:
         nxt = [b for b in bounds if b > i]
