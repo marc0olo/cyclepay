@@ -1,0 +1,256 @@
+// Version: 1.0.0
+type Account__101895817 = {owner : Principal; subaccount : ?Blob};
+type Data__628993992<T> = {var count : Nat__1040412405; elements : [var ?T]};
+type Data__80296667<K, V> =
+  {var count : Nat__1040412405; kvs : [var ?(K, V)]};
+type Destination__693442483 = {#cyclesLedgerAccount : Account__101895817};
+type Drift__505569657 = {is : Nat; status : Text; was : Nat};
+type Entry__161555541 =
+  {
+    createdAtNs : Int;
+    detail : Text;
+    id : Nat;
+    kind : Kind__893817772;
+    rail : Rail__555097943;
+    resolvedAtNs : ?Int
+  };
+type Event__282987190 = {atNs : Int; detail : Text; seq : Nat; tag : Text};
+type ExpiredBy__606996773 = {#sessionExpired; #sessionFailed};
+type Internal__1007892817<T> =
+  {children : [var ?Node__918630472<T>]; data : Data__628993992<T>};
+type Internal__41346355<K, V> =
+  {children : [var ?Node__1000929467<K, V>]; data : Data__80296667<K, V>};
+type JournalEntry__248943069 =
+  {
+    blockIndex : ?Nat;
+    createdAtNs : Int;
+    cyclesDelivered : ?Nat;
+    destination : Destination__693442483;
+    lastError : ?Text;
+    orderId : OrderId__370787278;
+    retries : Nat;
+    status : OrderStatus__644516197;
+    transferIntent : ?TransferIntent__612776172;
+    updatedAtNs : Int
+  };
+type Kind__893817772 =
+  {
+    #unattributed : {claimedRef : Text; paymentRef : Text};
+    #unprocessable : {eventId : Text; field : Text}
+  };
+type Leaf__693487502<T> = {data : Data__628993992<T>};
+type Leaf__712614010<K, V> = {data : Data__80296667<K, V>};
+type Map__222667396<K, V> = Map__912772452<K, V>;
+type Map__709709801<K, V> =
+  {var root : Node__1000929467<K, V>; var size : Nat__1040412405};
+type Map__912772452<K, V> = Map__709709801<K, V>;
+type Nat__1040412405 = Nat__920180692;
+type Nat__920180692 = Nat;
+type Node__1000929467<K, V> =
+  {#internal : Internal__41346355<K, V>; #leaf : Leaf__712614010<K, V>};
+type Node__402002734<T> =
+  {
+    var next : ?Node__402002734<T>;
+    var previous : ?Node__402002734<T>;
+    value : T
+  };
+type Node__918630472<T> =
+  {#internal : Internal__1007892817<T>; #leaf : Leaf__693487502<T>};
+type OrderId__370787278 = Text;
+type OrderStatus__644516197 =
+  {
+    #abandoned;
+    #cancelled;
+    #created;
+    #delivered;
+    #expired;
+    #needsReview;
+    #paid
+  };
+type Order__859278382 =
+  {
+    abandonedReason : ?Text;
+    createdAtNs : Int;
+    delayedAtNs : ?Int;
+    destination : Destination__693442483;
+    expiredBy : ?ExpiredBy__606996773;
+    expiresAtNs : ?Int;
+    id : OrderId__370787278;
+    lockedCycles : Nat;
+    owner : Owner__1066618498;
+    paidUsdCents : ?Nat;
+    pricing : Pricing__738330320;
+    problems : [Problem__103489883];
+    rail : Rail__555097943;
+    status : OrderStatus__644516197;
+    stripeSessionId : ?Text;
+    stripeSessionUrl : ?Text;
+    updatedAtNs : Int
+  };
+type Owner__1066618498 = {#ii : Principal};
+type Pricing__738330320 =
+  {
+    feeBps : Nat;
+    feeFixedCents : Nat;
+    rateQueriedSources : Nat;
+    rateReceivedRates : Nat;
+    rateStandardDeviation : Nat;
+    ratesFetchedAtNs : Int;
+    usdCents : Nat;
+    usdPerIcpMicros : Nat;
+    xdrPermyriadPerIcp : Nat
+  };
+type ProblemKind__103121566 =
+  {
+    #deliveryStuck : {stage : Text};
+    #duplicate : {paymentRef : Text};
+    #paidNotCredited : {paymentRef : Text; sessionId : Text};
+    #refundAfterDelivery :
+      {
+        cycles : Nat;
+        fullRefund : Bool;
+        paymentRef : Text;
+        refundedCents : Nat
+      }
+  };
+type Problem__103489883 =
+  {
+    detail : Text;
+    filedAtNs : Int;
+    kind : ProblemKind__103121566;
+    resolvedAtNs : ?Int
+  };
+type Quality__631647963 =
+  {queriedSources : Nat; receivedRates : Nat; standardDeviation : Nat};
+type Queue__403054774<T> = Queue__49211481<T>;
+type Queue__49211481<T> =
+  {
+    var back : ?Node__402002734<T>;
+    var front : ?Node__402002734<T>;
+    var size : Nat__1040412405
+  };
+type Rail__555097943 = {#card};
+type Rates__1063802498 =
+  {
+    fetchedAtNs : Int;
+    quality : Quality__631647963;
+    usdPerIcpMicros : Nat;
+    xdrPermyriadPerIcp : Nat
+  };
+type Set__1052415927<T> = Set__310360741<T>;
+type Set__310360741<T> =
+  {var root : Node__918630472<T>; var size : Nat__1040412405};
+type Tier__1004729360 = {id : Text; usdCents : Nat};
+type TransferIntent__612776172 =
+  {
+    amountCycles : Nat;
+    createdAtTimeNs : Nat64;
+    memo : Blob;
+    to : Account__101895817
+  };
+actor {
+  stable auditLog :
+    {events : Queue__403054774<Event__282987190>; var nextSeq : Nat};
+  stable var cardTiers : [Tier__1004729360];
+  stable countReconcileIntervalNs : Nat;
+  stable var cyclesLedgerFee : Nat;
+  stable dedup :
+    {
+      stripeEvents : Map__222667396<Text, Int>;
+      stripeIntents : Map__222667396<Text, Int>
+    };
+  stable var deliveryConfig : {alertAfterNs : Int; maxHoldNs : Int};
+  stable deliveryJournal :
+    {
+      var root : Node__1000929467<OrderId__370787278, JournalEntry__248943069>;
+      var size : Nat__1040412405
+    };
+  stable var expectLivemode : ?Bool;
+  stable var gateConfig :
+    {
+      maxOpenOrdersPerPrincipal : Nat;
+      maxPurchaseUsdCents : Nat;
+      minCanisterCycles : Nat;
+      minPurchaseUsdCents : Nat
+    };
+  stable var indexScanCursor : ?OrderId__370787278;
+  stable var indexScanCycle :
+    {ordersRead : Nat; repairs : Nat; startedAtNs : Int};
+  stable var lastCountReconcile :
+    ?{
+       atNs : Int;
+       drift : [Drift__505569657];
+       ordersRead : Nat;
+       refused : [Drift__505569657]
+     };
+  stable var lastCountReconcileAttemptNs : Int;
+  stable var lastIndexScanCycle :
+    ?{
+       completedAtNs : Int;
+       ordersRead : Nat;
+       repairs : Nat;
+       startedAtNs : Int
+     };
+  stable var lastRateAttempt : ?{atNs : Int; detail : Text; ok : Bool};
+  stable var lastRecoverySweep : ?{atNs : Int; pending : Nat};
+  stable var lastReserveReconcileAttemptNs : Int;
+  stable orderStore :
+    {
+      counts : Map__222667396<Text, Nat>;
+      var deliveredCycles : Nat;
+      var deliveredNullPaid : Nat;
+      var deliveredOrders : Nat;
+      var deliveredUsdCents : Nat;
+      var expiredHighWater : Nat;
+      orders : Map__222667396<OrderId__370787278, Order__859278382>;
+      principalsToOrders :
+        Map__222667396<Principal, Set__1052415927<OrderId__370787278>>;
+      promiseHolders : Set__1052415927<OrderId__370787278>;
+      var promised : Nat;
+      var tallySaturations : Nat;
+      unresolvedProblems : Set__1052415927<OrderId__370787278>
+    };
+  stable orphanStore :
+    {entries : Map__222667396<Nat, Entry__161555541>; var nextId : Nat};
+  stable var outflowsIssued : Nat;
+  stable paidIntents :
+    {
+      var root : Node__1000929467<Text, OrderId__370787278>;
+      var size : Nat__1040412405
+    };
+  stable var pricingConfig :
+    {
+      feeBps : Nat;
+      feeFixedCents : Nat;
+      maxAgeNs : Int;
+      maxRateDeltaBps : Nat;
+      minRateSources : Nat
+    };
+  stable var railStateLatch :
+    {
+      canisterCyclesLow : Bool;
+      railClosed : Bool;
+      reserveShort : Bool;
+      stripeApiFailing : Bool
+    };
+  stable rateCache : {var rates : ?Rates__1063802498};
+  stable var recoverySweepIntervalNs : Nat;
+  stable var refusalCounts :
+    {
+      amountAboveMax : Nat;
+      amountBelowMin : Nat;
+      canisterCyclesLow : Nat;
+      railClosed : Nat;
+      reserveShort : Nat;
+      stripeApiFailed : Nat;
+      tooManyOpenOrders : Nat
+    };
+  stable var reserveFloor : Nat;
+  stable var reserveObservedAtNs : ?Int;
+  stable reserveReconcileIntervalNs : Nat;
+  stable stripeApiKey :
+    {var generation : Nat; var secret : ?Blob; var setAtNs : ?Int};
+  stable var stripeOrigin : ?Text;
+  stable webhookSecret :
+    {var generation : Nat; var secret : ?Blob; var setAtNs : ?Int}
+};

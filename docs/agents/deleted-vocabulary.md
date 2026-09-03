@@ -93,9 +93,10 @@ not less.
 ## Running it
 
 `scripts/sweep-vocabulary.py` scans the lines your change adds, against the terms below,
-and prints what it finds with the disposition alongside. It is gate step 18, so a normal
-run reports it for you; run it directly with `--base <ref>` to scan against something
-other than the default branch.
+and prints what it finds with the disposition alongside. It is the LAST gate step — placed
+there deliberately, so its output sits immediately above the summary, where it gets read —
+so a normal run reports it for you. Run it directly with `--base <ref>` to scan against
+something other than the default branch.
 
 ⚠️ **The script excludes THIS file.** Every term appears here by construction, so
 including it would report the question as the answer. That is not an exemption — it is the
