@@ -62,6 +62,12 @@ PUBLIC_NOT_LISTED = {
 PUBLIC_WITH_CALLER = {
     "create_order",  # public update on the buyer path; the caller BECOMES the owner
     "can_purchase",  # the admission gate's cap is per principal, so it must read caller
+    # ⚠️ Ungated ON PURPOSE (#68): an admin who is NOT yet granted has to be able to read
+    # their own principal and see that it is not granted. A guarded version would reject
+    # exactly the caller who needs the answer, and a UI could not tell "not granted" from
+    # "not reachable". It discloses nothing about anyone else — the answer is about
+    # `caller`.
+    "admin_status",
 }
 
 FAIL = []
@@ -90,7 +96,17 @@ def real_surface():
         code = "\n".join(
             l for l in body.split("\n") if not l.strip().startswith("//")
         )
-        admin = "requireAdmin" in code
+        # ⚠️ **Both guards mean admin scope here.** #68 split authz into two tiers —
+        # `requireController` (the rules) and `requireAdmin` (individual cases) — and the
+        # docs' vocabulary has three blocks, public/owner/admin, which is coarser. The
+        # tier a method sits in is enforced by `check-admin-tiers.py`; this check only
+        # cares that the method is not reachable by a buyer.
+        #
+        # When the split landed, this line said `"requireAdmin" in code` and the nine
+        # rewired setters came out as `unclassifiable` — which is the fourth outcome doing
+        # its job: it failed naming them, rather than quietly filing canister-control
+        # methods as public.
+        admin = re.search(r"\brequire(?:Admin|Controller)\s*\(", code) is not None
         # ⚠️ **Owner scope is detected by CONVENTION, and keeping the convention is the
         # point: an owner-scoped read delegates to an `Orders` helper whose NAME says so
         # — `getOwned`, `ownerPage`. If you add one, name it that way.**
@@ -102,6 +118,12 @@ def real_surface():
         # read was reported as PUBLIC — and since the .did is authoritative by then, the
         # remedy on offer is to go and assert a false scope in the docs.
         owner = re.search(r"Orders\.\w*(?:[Oo]wned|[Oo]wner)\w*\s*\(", code) is not None
+        # ⚠️ **`unclassifiable` is load-bearing for a DIFFERENT check — do not relax it.**
+        # `check-admin-tiers.py` derives its population from the guards, so a method MEANT
+        # to be admin-gated that forgot the guard entirely is invisible there: it just
+        # looks public. This outcome is what names it. The two checks compose, and neither
+        # covers that gap alone.
+        #
         # ⚠️ **The DEFAULT was the defect, not the pattern.** Falling through to "public"
         # is what let both earlier breaks offer "go assert a false scope in the docs" as
         # the remedy. A method that destructures `{ caller }` and then calls neither

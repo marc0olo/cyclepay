@@ -149,6 +149,8 @@ type TransferIntent__612776172 =
     to : Account__101895817
   };
 actor {
+  stable adminPrincipals :
+    {var root : Node__918630472<Principal>; var size : Nat__1040412405};
   stable auditLog :
     {events : Queue__403054774<Event__282987190>; var nextSeq : Nat};
   stable var cardTiers : [Tier__1004729360];
