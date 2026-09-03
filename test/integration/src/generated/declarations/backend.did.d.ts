@@ -673,9 +673,16 @@ export interface _SERVICE {
    * /
    * / Both directions are reachable, so `deliveriesDelayed` is **not** a subset:
    * /   - outstanding, not delayed: a transfer issued seconds ago.
-   * /   - delayed, not outstanding: a delivery that bailed before issuing (short reserve,
-   * /     stale rate, gas floor), or one whose transfer landed without the block being
-   * /     recorded — both leave a `#paid` order the clock has run out on.
+   * /   - delayed, not outstanding: a delivery that bailed before issuing — short reserve,
+   * /     stale rate, gas floor — so there is no intent to be outstanding about.
+   * /   - both: a transfer issued long enough ago that the clock ran out, including one that
+   * /     landed without its block recorded.
+   * /
+   * / ⚠️ That last case is the CANONICAL outstanding shape (`intent` set, `blockIndex`
+   * / null), not a delayed-only one — it is what `unsettledDeliveries` exists to detect and
+   * / what freezes the reconcile's quiet window. Filing it under "delayed, not outstanding"
+   * / would tell an operator that `outstanding = 0` means no transfer is in flight, when a
+   * / transfer of unknown fate is exactly what it means.
    * /
    * / ⚠️ So `outstanding = 0, delayed = 1` is a real state, not the summary contradicting
    * / itself — and a UI that presented one as a subset of the other would be wrong exactly
