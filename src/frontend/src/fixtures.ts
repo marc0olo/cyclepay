@@ -238,6 +238,137 @@ export function installFixtures(host: FixtureHost): void {
         };
       }),
     }),
+    // ── the operator console (#68) ────────────────────────────────────────────────
+    //
+    // ⚠️ Timestamps are NOW-relative, unlike the buyer fixtures' fixed `CREATED_AT_NS`.
+    // With the fixed value every figure rendered as "213 days ago", which made the console
+    // read as a dead deployment: the staleness of the reserve observation and the age of a
+    // delayed delivery are exactly the numbers an operator judges, so a screenshot of them
+    // frozen in the past shows the layout and none of the judgement.
+    //
+    // Populated on purpose: a console screenshot with every list empty shows the layout
+    // and none of the judgement the design is about. These figures are shaped to show
+    // both halves of the wait-versus-work split at once.
+    admin_status: async () => ({
+      caller: BUYER,
+      granted: true,
+      isController: false,
+    }),
+    operator_summary: async () => ({
+      deliveriesOutstanding: 3n,
+      deliveriesDelayed: 1n,
+      ordersNeedingReview: 1n,
+      orphansUnresolved: 2n,
+      problemsUnresolved: 2n,
+      ordersWithProblems: 1n,
+      refusingNow: {
+        stripeApiFailing: false,
+        canisterCyclesLow: false,
+        reserveShort: false,
+        railClosed: false,
+      },
+      availableToSell: 775_000_000_000_000n,
+      reserveObservedAtNs: BigInt(Date.now() - 4 * 60_000) * 1_000_000n,
+    }),
+    refusal_counts: async () => ({
+      counts: {
+        amountAboveMax: 1n,
+        stripeApiFailed: 0n,
+        canisterCyclesLow: 0n,
+        amountBelowMin: 6n,
+        reserveShort: 2n,
+        railClosed: 0n,
+        tooManyOpenOrders: 3n,
+      },
+      refusingNow: {
+        stripeApiFailing: false,
+        canisterCyclesLow: false,
+        reserveShort: false,
+        railClosed: false,
+      },
+    }),
+    orphans_unresolved: async () => ({
+      entries: [
+        {
+          id: 12n,
+          kind: {
+            __kind__: "unattributed" as const,
+            unattributed: { claimedRef: "aaaaa-aa_deadbeef", paymentRef: "pi_3Qx1" },
+          },
+          rail: "card" as Order["rail"],
+          createdAtNs: BigInt(Date.now() - 90 * 60_000) * 1_000_000n,
+          resolvedAtNs: undefined,
+          detail: "client_reference_id resolved to no order",
+        },
+        {
+          id: 13n,
+          kind: {
+            __kind__: "unprocessable" as const,
+            unprocessable: { field: "payment_intent", eventId: "evt_1Qx7" },
+          },
+          rail: "card" as Order["rail"],
+          createdAtNs: BigInt(Date.now() - 20 * 60_000) * 1_000_000n,
+          resolvedAtNs: undefined,
+          detail: "checkout.session.completed with no payment_intent",
+        },
+      ],
+      nextCursor: undefined,
+    }),
+    delayed_deliveries: async () => ({
+      entries: [
+        {
+          orderId: "9f3a0000000000000000000000000000",
+          status: "paid" as Order["status"],
+          heldSinceNs: BigInt(Date.now() - 3 * 3_600_000) * 1_000_000n,
+          waitedNs: 10_800_000_000_000n,
+          retries: 4n,
+          pastMaxHold: false,
+          delayedAtNs: CREATED_AT_NS,
+        },
+      ],
+      nextCursor: undefined,
+    }),
+    pending_deliveries: async () => [
+      {
+        orderId: "9f3a0000000000000000000000000000",
+        status: "paid" as Order["status"],
+        updatedAtNs: BigInt(Date.now() - 3 * 3_600_000) * 1_000_000n,
+        createdAtNs: BigInt(Date.now() - 3 * 3_600_000) * 1_000_000n,
+        destination: { __kind__: "cyclesLedgerAccount" as const, cyclesLedgerAccount: { owner: BUYER, subaccount: undefined } },
+        retries: 4n,
+        blockIndex: undefined,
+        lastError: "cycles ledger did not answer",
+        cyclesDelivered: undefined,
+        transferIntent: undefined,
+      },
+    ],
+    // ⚠️ Returns an order carrying an UNRESOLVED problem, matching the summary's count.
+    // The first version returned the buyer's order or nothing, so the summary said "1
+    // order carrying a problem" while the worklist said "None." and the history said "No
+    // orders match" — three panels disagreeing in a screenshot meant to show how they
+    // agree. In production all three read the same store.
+    admin_orders: async () => ({
+      orders: [
+        {
+          // Reuses the canned buyer order rather than a second hand-written one, so the
+          // console cannot depict an order shape the app never sees.
+          ...cannedOrder({ status: "needsReview" }),
+          id: "9f3a0000000000000000000000000000",
+          problems: [
+            {
+              filedAtNs: BigInt(Date.now() - 40 * 60_000) * 1_000_000n,
+              kind: {
+                __kind__: "deliveryStuck" as const,
+                deliveryStuck: { stage: "transfer issued, no block recorded" },
+              },
+              detail: "cycles ledger did not answer; money position unknown",
+              resolvedAtNs: undefined,
+            },
+          ],
+        },
+      ],
+      nextCursor: undefined,
+    }),
     get_order: async () => order,
     // ⚠️ Two arguments, and `nextCursor` ABSENT rather than null. The wrapper renders a
     // Candid `opt` as `?: T`, so `undefined` means absent and `null` is a value of the

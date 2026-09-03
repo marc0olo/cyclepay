@@ -219,19 +219,27 @@ export function timeUntil(deadlineMs: number, nowMs: number): string | null {
 /// reserve that was observed a minute ago: the one number this line exists to report.
 ///
 /// Coarse on purpose. An operator asks "is this stale", not "how many seconds".
+export function formatDuration(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "under a minute";
+  if (minutes === 1) return "1 minute";
+  if (minutes < 60) return `${minutes} minutes`;
+  const hours = Math.floor(minutes / 60);
+  if (hours === 1) return "1 hour";
+  if (hours < 24) return `${hours} hours`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "1 day" : `${days} days`;
+}
+
+/// ⚠️ **Split from `formatDuration` because "ago" is not always the right suffix.** A
+/// delayed delivery has WAITED three hours; it did not start waiting "3 hours ago" as a
+/// separate fact. The first version of the worklist row rendered "waiting 213 days ago",
+/// which a screenshot caught and no assertion would have.
 export function formatAgo(pastMs: number, nowMs: number): string {
   const elapsed = nowMs - pastMs;
   // A clock that is behind reads as the future. Say so rather than printing a negative.
   if (elapsed < 0) return "in the future (check the clock)";
-  const minutes = Math.floor(elapsed / 60_000);
-  if (minutes < 1) return "under a minute ago";
-  if (minutes === 1) return "1 minute ago";
-  if (minutes < 60) return `${minutes} minutes ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours === 1) return "1 hour ago";
-  if (hours < 24) return `${hours} hours ago`;
-  const days = Math.floor(hours / 24);
-  return days === 1 ? "1 day ago" : `${days} days ago`;
+  return `${formatDuration(elapsed)} ago`;
 }
 
 /// Tolerance the UI allows between the figure a buyer was shown and the one the

@@ -21,6 +21,7 @@ import {
   STEPS,
   formatAgo,
   timeUntil,
+  formatDuration,
 } from "./format";
 
 describe("statusInfo", () => {
@@ -409,6 +410,18 @@ describe("rateSourceNote", () => {
 
   test("says nothing when no sources were recorded", () => {
     expect(rateSourceNote(0n, 0n)).toBe("");
+  });
+});
+
+describe("formatDuration", () => {
+  test("a duration, with no suffix", () => {
+    // ⚠️ Split out because "ago" is not always right: a delayed delivery has WAITED three
+    // hours. The worklist row rendered "waiting 213 days ago" before this existed, and a
+    // screenshot is what caught it.
+    expect(formatDuration(30_000)).toBe("under a minute");
+    expect(formatDuration(60_000)).toBe("1 minute");
+    expect(formatDuration(3 * 3_600_000)).toBe("3 hours");
+    expect(formatDuration(2 * 86_400_000)).toBe("2 days");
   });
 });
 

@@ -38,6 +38,7 @@ import { type View, type Route, parseRoute, routeHash, TOUR_STEPS, stepStates } 
 import {
   RATE_LOCK_NOTE,
   formatAgo,
+  formatDuration,
   STEPS,
   checkReceipt,
   createOrderErrorMessage,
@@ -604,7 +605,7 @@ async function loadWorklists(): Promise<void> {
         worklistRow(
           into,
           shortPrincipal(entry.orderId),
-          `waiting ${formatAgo(nsToMillis(entry.heldSinceNs), Date.now())}` +
+          `waiting ${formatDuration(nsToMillis(entry.waitedNs))}` +
             `, ${entry.retries} attempt(s)` +
             (entry.pastMaxHold ? ", past the max hold" : ""),
           ORDER_STATUS_HINTS[entry.status],
