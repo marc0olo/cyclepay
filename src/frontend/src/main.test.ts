@@ -60,6 +60,9 @@ const state = {
   delayed: { entries: [], nextCursor: undefined } as DelayedPage,
   pending: [] as PendingDeliveries,
   problemOrders: { orders: [], nextCursor: undefined } as AdminOrdersPage,
+  /// Captures the cursor `admin_orders` was called with, so a test can assert the pager
+  /// restarts on a filter change.
+  onAdminOrders: undefined as ((filter: unknown, after: string | null) => void) | undefined,
   refusals: {
     counts: {
       amountAboveMax: 0n,
@@ -218,7 +221,10 @@ const typedStubs = {
   delayed_deliveries: async (_after: string | null, _limit: bigint) => state.delayed,
   pending_deliveries: async () => state.pending,
   refusal_counts: async () => state.refusals,
-  admin_orders: async (_f: unknown, _a: string | null, _l: bigint) => state.problemOrders,
+  admin_orders: async (_f: unknown, _a: string | null, _l: bigint) => {
+    state.onAdminOrders?.(_f, _a);
+    return state.problemOrders;
+  },
   operator_summary: async () => state.operatorSummary,
   delivery_stats: async () => ({
     availableToSell: 775_000_000_000_000n,
@@ -382,6 +388,7 @@ beforeEach(() => {
   state.delayed = { entries: [], nextCursor: undefined };
   state.pending = [];
   state.problemOrders = { orders: [], nextCursor: undefined };
+  state.onAdminOrders = undefined;
   state.refusals = {
     counts: {
       amountAboveMax: 0n, stripeApiFailed: 0n, canisterCyclesLow: 0n, amountBelowMin: 0n,
@@ -1434,5 +1441,87 @@ describe("worklists (#68)", () => {
     expect(text).not.toContain("railClosed");
     // ⚠️ reserveShort's hint names the step that actually gets forgotten.
     expect(text).toMatch(/refresh_reserve/);
+  });
+});
+
+describe("order history (#68)", () => {
+  const rows = () => [...el("admin-history-rows").querySelectorAll("li")];
+  const granted = {
+    caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+    granted: true,
+    isController: false,
+  };
+
+  const anOrder = (id: string, status: string) => ({
+    id,
+    status,
+    lockedCycles: 3_500_000_000_000n,
+    paidUsdCents: 1_000n,
+    createdAtNs: 1_700_000_000_000_000_000n,
+    problems: [],
+  });
+
+  test("rows carry the status and what it means", async () => {
+    state.adminStatus = granted;
+    state.problemOrders = {
+      orders: [anOrder("aaa111", "needsReview")],
+      nextCursor: undefined,
+    } as never;
+    await mount("landing", "#/admin");
+    expect(rows()).toHaveLength(1);
+    const text = rows()[0]!.textContent ?? "";
+    expect(text).toContain("needsReview");
+    // ⚠️ The status hint, inline: needsReview is the one where acting on the wrong
+    // assumption costs money, so the row says establish the fate first.
+    expect(text).toMatch(/money position is unknown/);
+    expect(text).toMatch(/record_delivered with the block/);
+    expect((rows()[0] as HTMLElement).dataset.urgency).toBe("act");
+  });
+
+  test("a self-clearing status is not dressed as work", async () => {
+    state.adminStatus = granted;
+    state.problemOrders = { orders: [anOrder("bbb222", "paid")], nextCursor: undefined } as never;
+    await mount("landing", "#/admin");
+    expect((rows()[0] as HTMLElement).dataset.urgency).toBe("wait");
+  });
+
+  test("⚠️ after a filter change, Load more pages the NEW filter, not the old one", async () => {
+    // Paging the new filter from the old filter's position skips rows silently rather
+    // than erroring, which is the worst shape for a history someone is auditing.
+    //
+    // ⚠️ My first version of this asserted that changing a filter passes a null cursor.
+    // That passes unconditionally: a non-append load always passes null. Removing the
+    // `historyCursor = null` it was "guarding" changed no test, which is how the dead
+    // code and the vacuous assertion were both found. This asserts the step that can
+    // actually be wrong.
+    state.adminStatus = granted;
+    state.problemOrders = {
+      orders: [anOrder("aaa111", "delivered")],
+      nextCursor: "CURSOR_FROM_FILTER_A",
+    } as never;
+    await mount("landing", "#/admin");
+    expect(el("admin-history-more").hidden).toBe(false);
+
+    // Switch filters; the new filter's first page carries its own cursor.
+    state.problemOrders = {
+      orders: [anOrder("bbb222", "paid")],
+      nextCursor: "CURSOR_FROM_FILTER_B",
+    } as never;
+    (el("filter-status") as HTMLSelectElement).value = "paid";
+    el("filter-status").dispatchEvent(new Event("change"));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const seen: Array<string | null> = [];
+    state.onAdminOrders = (_f, after) => seen.push(after);
+    el("admin-history-more").click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen).toEqual(["CURSOR_FROM_FILTER_B"]);
+  });
+
+  test("an ungranted identity is told, rather than shown an empty history", async () => {
+    await mount("landing", "#/admin");
+    expect(el("admin-history-locked").hidden).toBe(false);
+    expect(el("admin-history-locked").textContent).toMatch(/needs operator access/);
+    expect(rows()).toHaveLength(0);
   });
 });

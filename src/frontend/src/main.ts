@@ -657,6 +657,72 @@ async function loadRefusals(): Promise<void> {
   }
 }
 
+/// The order-history filter, as the operator has set it.
+let historyFilterStatus = "";
+let historyFilterProblems = false;
+/// Cursor for the next page; `null` means "from the start".
+let historyCursor: string | null = null;
+
+/// The whole order history, filtered, paged.
+///
+/// ⚠️ **`admin_orders` returns full `Order` records, so a row needs no follow-up read.**
+/// `admin_order` audits itself on every use, deliberately, and calling it per row would
+/// put a line in the trail for every page render.
+async function loadAdminOrders(append = false): Promise<void> {
+  const locked = document.getElementById("admin-history-locked");
+  const rows = document.getElementById("admin-history-rows");
+  const empty = document.getElementById("admin-history-empty");
+  const more = document.getElementById("admin-history-more");
+  if (!locked || !rows || !empty || !more) return;
+
+  const allowed = adminStatus !== null && (adminStatus.granted || adminStatus.isController);
+  locked.hidden = allowed;
+  if (!allowed) {
+    locked.textContent = "The order history needs operator access. This identity does not have it.";
+    rows.replaceChildren();
+    empty.hidden = true;
+    more.hidden = true;
+    return;
+  }
+
+  try {
+    const page = await backend.admin_orders(
+      {
+        withUnresolvedProblems: historyFilterProblems,
+        // ⚠️ `undefined`, never `null`: the wrapper renders a Candid `opt` as `?: T`, so
+        // absent is undefined. `null` is a value of the wrong shape, which is one of the
+        // four defects the fixtures were hiding earlier in this PR.
+        status: historyFilterStatus === "" ? undefined : (historyFilterStatus as never),
+        owner: undefined,
+        createdFromNs: undefined,
+        createdToNs: undefined,
+      },
+      append ? historyCursor : null,
+      25n,
+    );
+    if (!append) rows.replaceChildren();
+    for (const order of page.orders) {
+      const hint = ORDER_STATUS_HINTS[order.status];
+      worklistRow(
+        rows,
+        `${shortPrincipal(order.id)}: ${order.status}`,
+        `${formatCycles(order.lockedCycles)} cycles` +
+          (order.paidUsdCents === undefined ? "" : `, ${formatUsdCents(order.paidUsdCents)}`) +
+          `, created ${formatAgo(nsToMillis(order.createdAtNs), Date.now())}`,
+        hint,
+      );
+    }
+    historyCursor = page.nextCursor ?? null;
+    more.hidden = page.nextCursor === undefined;
+    empty.hidden = rows.children.length > 0;
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("could not read the order history", error);
+    locked.hidden = false;
+    locked.textContent = "The order history could not be read. The canister may be unreachable.";
+  }
+}
+
 function renderOrderMissing(): void {
   const node = document.getElementById("order-missing-detail");
   if (!node) return;
@@ -695,7 +761,10 @@ function applyRoute(route: Route): void {
   currentView = route.view;
   if (route.view === "admin") {
     // Worklists depend on the grant, so they follow the status read rather than racing it.
-    void loadAdminStatus().then(() => loadWorklists());
+    void loadAdminStatus().then(async () => {
+      await loadWorklists();
+      await loadAdminOrders();
+    });
     void loadOperatorSummary();
     void loadRefusals();
   }
@@ -1946,6 +2015,29 @@ async function init(): Promise<void> {
   // Hash routing so Back works. An asset canister would need SPA rewrites for
   // real paths; a hash cannot 404 on reload.
   window.addEventListener("hashchange", () => applyRoute(parseRoute(window.location.hash)));
+  // ⚠️ **No cursor reset here, and that is not an omission.** `loadAdminOrders()` with
+  // `append` false passes `null` and then overwrites `historyCursor` from the response, so
+  // the cursor is read ONLY when appending. An explicit reset alongside these handlers
+  // looked prudent and was dead code: removing it changed no test, which is how it was
+  // found. The property that matters is one step later, and it is pinned: after a filter
+  // change, "Load more" pages the NEW filter's cursor.
+  const status = document.getElementById("filter-status") as HTMLSelectElement | null;
+  if (status) {
+    status.onchange = () => {
+      historyFilterStatus = status.value;
+      void loadAdminOrders();
+    };
+  }
+  const onlyProblems = document.getElementById("filter-problems") as HTMLInputElement | null;
+  if (onlyProblems) {
+    onlyProblems.onchange = () => {
+      historyFilterProblems = onlyProblems.checked;
+      void loadAdminOrders();
+    };
+  }
+  const more = document.getElementById("admin-history-more");
+  if (more) more.onclick = () => void loadAdminOrders(true);
+
   el("history-link").onclick = () => {
     // The anchor already sets the hash; this only stops a same-hash click from
     // being a no-op after the view moved on.

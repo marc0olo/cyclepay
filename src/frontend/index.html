@@ -459,6 +459,37 @@
           <h3 class="section-h">Refusals since deploy</h3>
           <ul class="worklist-rows" id="refusal-rows"></ul>
         </section>
+
+        <!-- The whole order history, with the filters `admin_orders` already accepts.
+             Full Order records come back from that one call, so a row needs no follow-up
+             read: `admin_order` audits itself on every use and would flood the trail with
+             a line per page render. -->
+        <section id="admin-history">
+          <h3 class="section-h">Order history</h3>
+
+          <div id="history-filters">
+            <label for="filter-status">Status</label>
+            <select id="filter-status">
+              <option value="">Any</option>
+              <option value="created">created</option>
+              <option value="paid">paid</option>
+              <option value="delivered">delivered</option>
+              <option value="needsReview">needsReview</option>
+              <option value="abandoned">abandoned</option>
+              <option value="cancelled">cancelled</option>
+              <option value="expired">expired</option>
+            </select>
+            <label for="filter-problems">
+              <input type="checkbox" id="filter-problems" />
+              Only orders carrying an unresolved problem
+            </label>
+          </div>
+
+          <p id="admin-history-locked" class="muted" hidden></p>
+          <p id="admin-history-empty" class="muted" hidden>No orders match.</p>
+          <ul class="worklist-rows" id="admin-history-rows"></ul>
+          <button type="button" id="admin-history-more" hidden>Load more</button>
+        </section>
       </section>
 
     </main>
