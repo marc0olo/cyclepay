@@ -312,6 +312,8 @@ function renderView(): void {
   show("active-order", onOrder && ready);
   show("order-missing", onOrder && !ready);
   show("history", effective === "history");
+  show("admin", effective === "admin");
+  if (effective === "admin") renderAdminIdentity();
   show("history-link", orderCount > 0 && identity !== null);
   if (onOrder && !ready) renderOrderMissing();
 
@@ -322,6 +324,58 @@ function renderView(): void {
   const details = document.getElementById("order-details") as HTMLDetailsElement | null;
   if (details) details.open = !delivered;
   renderTour(order, delivered);
+}
+
+/// What the operator console knows about the caller's own identity.
+///
+/// ⚠️ `admin_status` is a PUBLIC query on purpose, and this is the reason: an operator who
+/// has not been granted yet must be able to read their own principal and see that it is
+/// not granted. A guarded version would reject exactly the caller who needs the answer,
+/// and this panel could not tell "not granted" from "not reachable".
+let adminStatus: Awaited<ReturnType<typeof backend.admin_status>> | null = null;
+
+async function loadAdminStatus(): Promise<void> {
+  try {
+    adminStatus = await backend.admin_status();
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("could not read admin status", error);
+    adminStatus = null;
+  }
+  if (currentView === "admin") renderAdminIdentity();
+}
+
+function renderAdminIdentity(): void {
+  const who = document.getElementById("admin-principal");
+  const state = document.getElementById("admin-grant-state");
+  const link = document.getElementById("admin-link");
+  const command = document.getElementById("admin-link-command");
+  const note = document.getElementById("admin-link-note");
+  if (!who || !state || !link || !command || !note) return;
+
+  if (adminStatus === null) {
+    who.textContent = "";
+    state.textContent = "Reading this identity failed. The canister may be unreachable.";
+    link.hidden = true;
+    return;
+  }
+
+  who.textContent = adminStatus.caller.toText();
+  // Three states, three sentences. ⚠️ A controller is NOT on the granted list and does not
+  // need to be: it passes the admin guard anyway, so reporting "not granted" for one would
+  // be true and useless. The tiers are nested, not exclusive.
+  state.textContent = adminStatus.isController
+    ? "A controller of this canister. Every operator command is available to this identity."
+    : adminStatus.granted
+      ? "Granted operator access. Case decisions and operator reads are available; changing configuration or secrets is not."
+      : "Not granted. Send the principal above to a controller, who can grant it.";
+
+  link.hidden = false;
+  command.textContent = linkIdentityCommand("operator");
+  // The reason the flag is printed rather than left to the reader.
+  note.textContent =
+    "The --app value must be this page's own domain. Without it the CLI links a principal " +
+    "derived from the auth domain's default, which is a different identity than the one above.";
 }
 
 function renderOrderMissing(): void {
@@ -360,6 +414,7 @@ function applyRoute(route: Route): void {
   if (route.view !== "order" && pollOrderId !== null) stopPolling();
 
   currentView = route.view;
+  if (route.view === "admin") void loadAdminStatus();
   if (route.view === "order" && activeOrder?.id !== route.orderId) {
     // Deep link or Back into an order we are not currently holding.
     orderLoad = "loading";

@@ -363,6 +363,27 @@
         </table>
       </section>
 
+      <!-- The operator console (#68). Reached at #/admin only: no nav link, because a
+           console entry point on a purchase page is noise for everyone who is not an
+           operator. -->
+      <section id="admin" class="view" hidden>
+        <h2 class="section-h">Operator console</h2>
+
+        <section id="admin-identity">
+          <h3 class="section-h">This browser identity</h3>
+          <p id="admin-principal" class="mono"></p>
+          <p id="admin-grant-state"></p>
+          <div id="admin-link" hidden>
+            <p class="muted">
+              To run operator commands as this identity, link it to the CLI and use that
+              identity for the calls.
+            </p>
+            <pre id="admin-link-command" class="mono"></pre>
+            <p class="muted" id="admin-link-note"></p>
+          </div>
+        </section>
+      </section>
+
     </main>
 
     <footer class="site-footer">

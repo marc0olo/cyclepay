@@ -8,14 +8,22 @@
 /// `delivered` is not a separate route. It is the `order` route rendered for an
 /// order that has arrived, because that is a property of the order rather than of
 /// where the visitor navigated.
-export type View = "landing" | "buy" | "order" | "delivered" | "history";
+///
+/// `admin` is the operator console (#68). It is a view rather than a separate page for
+/// the same reason as the others: one owner of the screen, and hash routing that cannot
+/// 404 on reload from an asset canister.
+///
+/// ⚠️ Deliberately NOT linked from the buyer-facing nav. An operator navigates to it; a
+/// console link on a purchase page is noise for every visitor who is not one.
+export type View = "landing" | "buy" | "order" | "delivered" | "history" | "admin";
 
 /// A parsed location hash.
 export type Route =
   | { view: "landing" }
   | { view: "buy" }
   | { view: "order"; orderId: string }
-  | { view: "history" };
+  | { view: "history" }
+  | { view: "admin" };
 
 /// Parse `window.location.hash`.
 ///
@@ -29,6 +37,7 @@ export function parseRoute(hash: string): Route {
   const clean = hash.replace(/^#\/?/, "");
   if (clean === "buy") return { view: "buy" };
   if (clean === "history") return { view: "history" };
+  if (clean === "admin") return { view: "admin" };
   const order = /^order\/([a-zA-Z0-9-]+)$/.exec(clean);
   if (order) return { view: "order", orderId: order[1]! };
   return { view: "landing" };
@@ -42,6 +51,8 @@ export function routeHash(route: Route): string {
       return "#/buy";
     case "history":
       return "#/history";
+    case "admin":
+      return "#/admin";
     case "order":
       return `#/order/${route.orderId}`;
     case "landing":

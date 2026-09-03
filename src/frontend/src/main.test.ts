@@ -41,6 +41,15 @@ const state = {
     netCents: 455n,
     cycles: TIER_CYCLES,
   } as Quote,
+  /// What `admin_status` answers. ⚠️ Three states, not two: a controller is not on the
+  /// granted list and does not need to be, so "granted" and "isController" are
+  /// independent.
+  adminStatus: {
+    // Duck-typed, like `identity` below: these tests never build a real Principal.
+    caller: { toText: () => "ryjl3-tyaaa-aaaaa-aaaba-cai" },
+    granted: false,
+    isController: false,
+  },
   transferFee: 100_000_000n,
   transferFeeError: false,
   ckMaxUsdCents: 0n,
@@ -110,6 +119,7 @@ const backend = {
       maxPurchaseUsdCents: 10_000n,
     },
   }),
+  admin_status: async () => state.adminStatus,
   delivery_stats: async () => ({
     availableToSell: 775_000_000_000_000n,
     deliveredOrders: 0n,
@@ -1013,5 +1023,68 @@ describe("the deadline is a countdown, not a timestamp", () => {
     await mount();
     await openFromHistory();
     expect(el("order-deadline").hidden).toBe(true);
+  });
+});
+
+describe("operator console (#68)", () => {
+  test("#/admin owns the screen, and the buyer views are not on it", async () => {
+    await mount("landing", "#/admin");
+    expect(el("admin").hidden).toBe(false);
+    // ⚠️ One view owns the screen. This is the property #24 broke by hiding with
+    // `hidden` and un-hiding with a class; the browser suite is what can see that,
+    // and this only says the attribute is right.
+    expect(el("view-landing").hidden).toBe(true);
+    expect(el("history").hidden).toBe(true);
+    expect(el("buy-flow").hidden).toBe(true);
+  });
+
+  test("an ungranted identity is told its own principal and what to do with it", async () => {
+    state.adminStatus = {
+      caller: { toText: () => "ryjl3-tyaaa-aaaaa-aaaba-cai" },
+      granted: false,
+      isController: false,
+    };
+    await mount("landing", "#/admin");
+    expect(el("admin-principal").textContent).toBe("ryjl3-tyaaa-aaaaa-aaaba-cai");
+    expect(el("admin-grant-state").textContent).toMatch(/Not granted/);
+    expect(el("admin-grant-state").textContent).toMatch(/controller, who can grant it/);
+  });
+
+  test("a granted identity is told what it can and cannot do", async () => {
+    state.adminStatus = {
+      caller: { toText: () => "ryjl3-tyaaa-aaaaa-aaaba-cai" },
+      granted: true,
+      isController: false,
+    };
+    await mount("landing", "#/admin");
+    const text = el("admin-grant-state").textContent ?? "";
+    expect(text).toMatch(/Granted operator access/);
+    // The tier split, in the operator's words: cases yes, rules no.
+    expect(text).toMatch(/changing configuration or secrets is not/);
+  });
+
+  test("⚠️ a controller is NOT reported as ungranted", async () => {
+    // The tiers are nested. A controller passes the admin guard without being on the
+    // list, so "not granted" would be true and useless.
+    state.adminStatus = {
+      caller: { toText: () => "ryjl3-tyaaa-aaaaa-aaaba-cai" },
+      granted: false,
+      isController: true,
+    };
+    await mount("landing", "#/admin");
+    const text = el("admin-grant-state").textContent ?? "";
+    expect(text).toMatch(/A controller of this canister/);
+    expect(text).not.toMatch(/Not granted/);
+  });
+
+  test("⚠️ the link command carries --app with THIS page's domain", async () => {
+    // #83: Internet Identity derives a principal per origin, and without `--app` the
+    // CLI links one derived from the auth domain's own default. That principal is not
+    // the one shown above it, so the grant would land on the wrong identity.
+    await mount("landing", "#/admin");
+    const command = el("admin-link-command").textContent ?? "";
+    expect(command).toContain("icp identity link web");
+    expect(command).toContain(`--app ${window.location.host}`);
+    expect(el("admin-link-note").textContent).toMatch(/must be this page's own domain/);
   });
 });
