@@ -275,14 +275,27 @@ export function installFixtures(host: FixtureHost): void {
     // annotation would be worse than the cast. What `satisfies` buys is that every stub
     // that IS here is checked, and a stub name the service does not have is an error.
     // The one remaining assertion is at the boundary, where the partiality is the point.
+    // ⚠️ **`Partial` checks SHAPES, not completeness.** A method the app calls and this
+    // object lacks compiles fine and fails at runtime with "not a function". That is the
+    // right trade, because that failure is loud, whereas the wrong-shape class this
+    // replaced was silent: four wrong shapes sat here through three commits with every
+    // suite green. Do not read `satisfies Partial<Backend>` as full coverage.
   } satisfies Partial<Backend>;
 
-  // ⚠️ **`as unknown as` is still needed HERE, and now it does no checking.** A partial
-  // object is not assignable to `Backend` however it is asserted, so the boundary needs
-  // one deliberate step. The difference from before is where the check lives: `satisfies
-  // Partial<Backend>` above verifies every stub's signature, so this assertion covers
-  // only the PARTIALITY. It used to cover everything, which is why five wrong shapes sat
-  // in this object.
+  // ⚠️ **The `unknown` hop is required HERE, and that was measured rather than assumed
+  // in either direction.** A one-step `stub as Backend` is what you want, and for a small
+  // interface it compiles: a 1-of-3 partial asserts to the full type fine, because the
+  // full type is comparable to the stub's inferred type. It does NOT compile against this
+  // type. `Backend` is `ActorSubclass<_SERVICE>` with roughly forty members and this stub
+  // has eight, which fails TypeScript's comparability heuristic outright:
+  //
+  //   TS2352: Conversion of type '{ card_tiers: … }' to type 'Backend' may be a mistake
+  //   because neither type sufficiently overlaps with the other.
+  //
+  // So the hop stays, and the reason it is now acceptable is that it no longer does any
+  // checking: `satisfies Partial<Backend>` above verifies every stub's signature, and this
+  // assertion covers only the partiality. Before, it covered everything, which is how four
+  // wrong shapes survived three commits with every suite green.
   const fixtureBackend = stub as unknown as Backend;
 
   // NOT installed here. Most specs are about what renders while the gateway is

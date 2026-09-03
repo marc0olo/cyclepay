@@ -18,6 +18,10 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+// Type-only: `vi.mock` replaces the module's VALUES at runtime, so the real module's
+// types are still what the stub is checked against.
+import { Principal } from "@icp-sdk/core/principal";
+import type { Backend } from "./actor";
 
 // ── stub state, reconfigured per test ──────────────────────────────────────────
 
@@ -62,8 +66,10 @@ const state = {
     reserveObservedAtNs: undefined as bigint | undefined,
   },
   adminStatus: {
-    // Duck-typed, like `identity` below: these tests never build a real Principal.
-    caller: { toText: () => "ryjl3-tyaaa-aaaaa-aaaba-cai" },
+    // ⚠️ A REAL Principal. I duck-typed this in commit 1 and the untyped `vi.mock`
+    // factory accepted it, so the panel was driven by an object the canister cannot
+    // return.
+    caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
     granted: false,
     isController: false,
   },
@@ -125,7 +131,45 @@ function anOrder(status: string, lockedCycles = TIER_CYCLES) {
   };
 }
 
-const backend = {
+/// ⚠️ **The order-shaped stubs, kept SEPARATE because they cannot be checked yet.**
+/// They build `Record<string, unknown>` orders, so typing them needs real `Order`
+/// fixtures: substantial, and pre-existing debt rather than anything this PR added.
+///
+/// The point of separating them is that everything else is checked BY DEFAULT. A new
+/// stub added to `backend` below is verified against the real service; adding one here
+/// is a deliberate, visible exception. This list should only ever shrink.
+const untypedOrderStubs = {
+  create_order: async (amount: unknown, dest: unknown, minCycles: bigint | null) => {
+    state.lastMinCycles = minCycles;
+    state.lastDestination = dest;
+    state.lastAmount = amount;
+    if (state.quoteChangedTo !== undefined) {
+      const quoted = state.quoteChangedTo;
+      state.quoteChangedTo = undefined;
+      return { __kind__: "err", err: { __kind__: "quoteChanged", quoteChanged: { quoted, minimum: minCycles ?? 0n } } };
+    }
+    state.order = anOrder("created");
+    return { __kind__: "ok", ok: { order: state.order } };
+  },
+  get_order: async () => state.order ?? null,
+  list_orders: async () => ({ orders: state.order ? [state.order] : [], nextCursor: null }),
+  cancel_order: async () => {
+    state.order = anOrder("cancelled");
+    return { __kind__: "ok", ok: state.order };
+  },
+  receipt: async () => state.receipt ?? null,
+  // ⚠️ **`satisfies Partial<Backend>`: `vi.mock`'s factory is UNTYPED, which is exactly
+  // how `refusingNow.stripeApiFailed` survived here in two places.** The real field on
+  // `RailStateLatch` is `stripeApiFailing`; `stripeApiFailed` belongs to `RefusalCounts`,
+  // a different type. The fixtures produced four silent wrong shapes from precisely this
+  // cause, so this file gets the same treatment before the worklists grow it.
+  //
+  // `Partial` checks SHAPES, not completeness: a method the app calls and this object
+  // lacks fails at runtime with "not a function", which is loud. The wrong-shape class is
+  // the silent one.
+};
+
+const typedStubs = {
   card_tiers: async () => state.tiers,
   lifecycle_config: async () => ({
     gate: {
@@ -135,6 +179,10 @@ const backend = {
       minPurchaseUsdCents: 1_000n,
       maxPurchaseUsdCents: 10_000n,
     },
+    // ⚠️ Added by the `satisfies`, not by anyone noticing. THIRD location with this same
+    // gap: `lifecycle_config` gained `delivery` in #68 step 1, and neither the fixtures
+    // nor this stub was updated. Both suites stayed green.
+    delivery: { alertAfterNs: 7_200_000_000_000n, maxHoldNs: 259_200_000_000_000n },
   }),
   admin_status: async () => state.adminStatus,
   operator_summary: async () => state.operatorSummary,
@@ -158,33 +206,32 @@ const backend = {
       fetchedAtNs: 1n,
       quality: { standardDeviation: 0n, receivedRates: 5n, queriedSources: 6n },
     },
-    config: { feeBps: 290n, feeFixedCents: 30n },
+    // Five fields, not two: the staleness window, the delta bound and the minimum rate
+    // sources are part of the pricing config too.
+    config: {
+      feeBps: 290n,
+      feeFixedCents: 30n,
+      maxAgeNs: 900_000_000_000n,
+      maxRateDeltaBps: 500n,
+      minRateSources: 3n,
+    },
     lastAttempt: undefined,
   }),
   quote_previews: async (amounts: bigint[]) => ({
     quotes: amounts.map(() => state.quote),
     rates: undefined,
   }),
-  create_order: async (amount: unknown, dest: unknown, minCycles: bigint | null) => {
-    state.lastMinCycles = minCycles;
-    state.lastDestination = dest;
-    state.lastAmount = amount;
-    if (state.quoteChangedTo !== undefined) {
-      const quoted = state.quoteChangedTo;
-      state.quoteChangedTo = undefined;
-      return { __kind__: "err", err: { __kind__: "quoteChanged", quoteChanged: { quoted, minimum: minCycles ?? 0n } } };
-    }
-    state.order = anOrder("created");
-    return { __kind__: "ok", ok: { order: state.order } };
-  },
-  get_order: async () => state.order ?? null,
-  list_orders: async () => ({ orders: state.order ? [state.order] : [], nextCursor: null }),
-  cancel_order: async () => {
-    state.order = anOrder("cancelled");
-    return { __kind__: "ok", ok: state.order };
-  },
-  receipt: async () => state.receipt ?? null,
-};
+  // ⚠️ **`vi.mock`'s factory is UNTYPED, which is how `refusingNow.stripeApiFailed`
+  // survived here in two places.** The real field on `RailStateLatch` is
+  // `stripeApiFailing`; `stripeApiFailed` belongs to `RefusalCounts`, a different type.
+  // The fixtures produced four silent wrong shapes from exactly this cause.
+  //
+  // `Partial` checks SHAPES, not completeness: a method the app calls and this object
+  // lacks fails at runtime with "not a function", which is loud. The wrong-shape class is
+  // the silent one, and it is the one this closes.
+} satisfies Partial<Backend>;
+
+const backend = { ...typedStubs, ...untypedOrderStubs };
 
 const identity = { getPrincipal: () => ({ toText: () => "aaaaa-aa" }) };
 
@@ -301,7 +348,7 @@ beforeEach(() => {
   // `ordersWithProblems` leak into the next and made a data-hook assertion fail for a
   // reason that had nothing to do with the code under test.
   state.adminStatus = {
-    caller: { toText: () => "ryjl3-tyaaa-aaaaa-aaaba-cai" },
+    caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
     granted: false,
     isController: false,
   };
@@ -1082,7 +1129,7 @@ describe("operator console (#68)", () => {
 
   test("an ungranted identity is told its own principal and what to do with it", async () => {
     state.adminStatus = {
-      caller: { toText: () => "ryjl3-tyaaa-aaaaa-aaaba-cai" },
+      caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
       granted: false,
       isController: false,
     };
@@ -1094,7 +1141,7 @@ describe("operator console (#68)", () => {
 
   test("a granted identity is told what it can and cannot do", async () => {
     state.adminStatus = {
-      caller: { toText: () => "ryjl3-tyaaa-aaaaa-aaaba-cai" },
+      caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
       granted: true,
       isController: false,
     };
@@ -1109,7 +1156,7 @@ describe("operator console (#68)", () => {
     // The tiers are nested. A controller passes the admin guard without being on the
     // list, so "not granted" would be true and useless.
     state.adminStatus = {
-      caller: { toText: () => "ryjl3-tyaaa-aaaaa-aaaba-cai" },
+      caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
       granted: false,
       isController: true,
     };
