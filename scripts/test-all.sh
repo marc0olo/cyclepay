@@ -160,6 +160,13 @@ scripts/check-doc-surface.py
 # that — through five PRs touching this surface, because nothing was looking.
 run "every config setter has a reader" scripts/check-config-readers.py
 
+# ⚠️ **Reads the SOURCE, not the interface, so it does not depend on the `.did` step** —
+# but it is next to the other authz-shaped check for discoverability. It asserts each
+# admin-gated method calls the guard its tier declares: a table alone would prove the list
+# complete and say nothing about whether the code honours it, and a method filed
+# controller-only whose body calls the delegable guard would pass such a table.
+run "admin tiers are enforced, not just listed" scripts/check-admin-tiers.py
+
 # ⚠️ **The decision record is enforced, not trusted.** Its predecessor was a 697-line
 # spec that rotted by being updated less often than the code — 67 mentions of deleted
 # architecture while Main.mo still cited it by section number. This cannot check whether

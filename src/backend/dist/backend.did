@@ -39,7 +39,7 @@ type SetError = variant {tooShort: record {
 type Result_9 = 
  variant {
    err: text;
-   ok: Order;
+   ok;
  };
 type Result_8 = 
  variant {
@@ -76,19 +76,24 @@ type Result_2 =
    err: IntervalError;
    ok;
  };
-type Result_12 = 
+type Result_13 = 
  variant {
    err: Reason;
    ok;
  };
-type Result_11 = 
+type Result_12 = 
  variant {
    err: CreateOrderError;
    ok: CreatedOrder;
  };
-type Result_10 = 
+type Result_11 = 
  variant {
    err: ProcessOrderError;
+   ok: Order;
+ };
+type Result_10 = 
+ variant {
+   err: text;
    ok: Order;
  };
 type Result_1 = 
@@ -489,7 +494,17 @@ service : {
   /// 
   /// Only reachable from a pre-delivery money-bearing state. A `#created` order
   /// has taken no money and needs no decision; a `#delivered` one is done.
-  abandon_order: (id: OrderId, reason: text) -> (Result_9);
+  abandon_order: (id: OrderId, reason: text) -> (Result_10);
+  /// Grant the CASES tier to a principal (controller only, audited).
+  /// 
+  /// ⚠️ **The grant is on a PRINCIPAL, and an admin's principal comes from the origin
+  /// they signed in at.** The flow is: the admin reads their own principal from
+  /// `admin_status`, gives it to a controller, and then acts from a CLI identity linked to
+  /// the same Internet Identity — `icp identity link web <name> --app <origin>`. ⚠️ Without
+  /// `--app` the CLI links a principal derived from the auth domain's own default
+  /// (`cli.id.ai`), which is not this app, so the grant would sit on a principal the
+  /// admin never sees.
+  add_admin: (p: principal) -> (Result_9);
   /// Open-obligation depth, public.
   /// 
   /// Nothing is evicted, so this only comes down by the operator working it. A climbing
@@ -563,6 +578,23 @@ service : {
   /// lifts it without the audit is not a smaller version of the change; it is the change
   /// without its safeguard.
   admin_receipt: (id: OrderId) -> (opt Receipt);
+  /// "Is MY principal granted?" — public and caller-scoped.
+  /// 
+  /// ⚠️ **Deliberately ungated.** An admin who is NOT yet granted has to be able to read
+  /// their own principal and see that it is not granted; a guarded version would reject
+  /// exactly the caller who needs the answer, and the UI could not tell "not granted" from
+  /// "not reachable". It discloses nothing about anyone else: the answer is about `caller`.
+  admin_status: () ->
+   (record {
+      caller: principal;
+      granted: bool;
+      isController: bool;
+    }) query;
+  /// Who holds the CASES tier (controller only).
+  /// 
+  /// ⚠️ Controllers are NOT listed — they pass `checkAdmin` without being granted, so an
+  /// empty list does not mean nobody can act.
+  admins: () -> (vec principal) query;
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
   /// The operational trail, **paginated** (#38).
@@ -584,8 +616,8 @@ service : {
   /// anonymous callers may ask: it reveals only operational state that
   /// `reserve_status` already publishes. Answered for the *calling* principal,
   /// so the open-order cap it reports is the caller's own.
-  can_purchase: (usdCents: nat) -> (Result_12) query;
-  cancel_order: (id: OrderId) -> (Result_9);
+  can_purchase: (usdCents: nat) -> (Result_13) query;
+  cancel_order: (id: OrderId) -> (Result_10);
   /// Public — the frontend renders the amount tiles from this. There is no link
   /// to render: the canister creates a session per order (#33).
   card_tiers: () -> (vec Tier) query;
@@ -609,7 +641,7 @@ service : {
   /// favour passes through and they keep the extra cycles. The guard can only
   /// ever protect the buyer. `null` opts out entirely.
   create_order: (amount: Amount, destination: Destination, minCycles:
-   opt nat) -> (Result_11);
+   opt nat) -> (Result_12);
   /// §5.2 liveness observability, public (operational transparency, same stance as
   /// `reserve_status`): cadence + last completed timer sweep. A null or stale
   /// `lastSweep` means recovery is not running.
@@ -716,7 +748,7 @@ service : {
   /// completed or already expired, and those demand opposite actions — expiring an order
   /// whose buyer just paid would strand a real payment. Let the webhook (or the sweep)
   /// settle it on Stripe's answer.
-  expire_order: (id: OrderId) -> (Result_9);
+  expire_order: (id: OrderId) -> (Result_10);
   /// §2 query authz: `caller == order.owner`, null otherwise — existence is
   /// not revealed to non-owners. Anonymous callers own nothing by
   /// construction (create_order rejects them), so they always get null.
@@ -913,7 +945,7 @@ service : {
   /// ⚠️ **An owner kicking their own order is NOT audited**, because the log drops
   /// nothing (#37) and a refresh loop would be permanent state growth driven by a
   /// caller. An admin kick is audited — it is an ops action on someone else's order.
-  process_order: (id: OrderId) -> (Result_10);
+  process_order: (id: OrderId) -> (Result_11);
   /// Batch pre-purchase quote, public.
   /// 
   /// ⚠️ **The price a buyer is shown is computed by the SAME function that prices the
@@ -950,7 +982,7 @@ service : {
   /// credit the reserve floor back — the floor already assumed the debit when the
   /// transfer was issued (rule 2), and this call is the confirmation that the
   /// assumption was right.
-  record_delivered: (id: OrderId, blockIndex: nat) -> (Result_9);
+  record_delivered: (id: OrderId, blockIndex: nat) -> (Result_10);
   /// Run the reconcile now rather than waiting for the daily one (admin, §7).
   /// 
   /// The tallies are maintained incrementally so the public status queries stay O(1);
@@ -1027,6 +1059,8 @@ service : {
       counts: RefusalCounts;
       refusingNow: RailStateLatch;
     }) query;
+  /// Revoke the CASES tier (controller only, audited).
+  remove_admin: (p: principal) -> (Result_9);
   /// Reserve solvency and order counters, public (#30 PR-B).
   /// 
   /// `reserveFloor` − `promisedTotal` = `availableToSell`, in one answer, so "the ledger

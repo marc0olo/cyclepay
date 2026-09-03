@@ -791,6 +791,7 @@ privileges — any controller can do any of this):
 | `set_delivery_config` | the two delivery time bounds: alert-after (2 h) and max hold (72 h). Read them back with `lifecycle_config` |
 | `orphans` / `resolve_orphan` | the operator worklist |
 | `order_for_payment` | reconciliation: Stripe charge → order it funded |
+| `add_admin` / `remove_admin` / `admins` | grant, revoke and list the CASES tier (#68). ⚠️ Controller only, and controllers are not listed — they pass the admin guard without being granted, so an empty list does not mean nobody can act |
 | `delivery_journal` | money-out record for one order |
 | `audit_log` | operational trail, **paginated** (`afterSeq`, `limit`). ⚠️ Nothing drops since #37 — it was a 4,096-entry ring and gaps in `seq` were how you spotted drops; **there are no gaps now**, and `seq` is only a never-reused ordering |
 | `abandon_order` | void an unpaid order, with the reason recorded in the audit trail |
@@ -836,8 +837,8 @@ Public queries (transparency is the product thesis):
 
 `can_purchase` · `card_tiers` · `cycles_status` · `delivery_stats` · `expected_livemode` ·
 `health` ·
-`lifecycle_config` · `operator_summary` · `orphan_depth` · `pricing_status` ·
-`problem_depth` ·
+`admin_status` · `lifecycle_config` · `operator_summary` · `orphan_depth` ·
+`pricing_status` · `problem_depth` ·
 `quote_previews` · `recovery_status` · `refusal_counts` · `reserve_status` ·
 `stripe_origin`
 

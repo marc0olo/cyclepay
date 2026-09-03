@@ -295,7 +295,7 @@ test('86 — expire_order is admin-only and refuses anything but a #created orde
   const target = created.order;
   const promisedBefore = (await gw.asAnon.reserve_status()).promisedTotal;
 
-  await expect(gw.asUser.expire_order(target.id)).rejects.toThrow(/not a controller/);
+  await expect(gw.asUser.expire_order(target.id)).rejects.toThrow(/not an admin/);
 
   // The admin path expires the Stripe session FIRST — nothing is ever half-expired.
   //

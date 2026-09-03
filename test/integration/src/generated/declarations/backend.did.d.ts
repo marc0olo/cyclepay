@@ -278,10 +278,12 @@ export type Result = { 'ok' : null } |
 export type Result_1 = { 'ok' : null } |
   { 'err' : OriginError };
 export type Result_10 = { 'ok' : Order } |
+  { 'err' : string };
+export type Result_11 = { 'ok' : Order } |
   { 'err' : ProcessOrderError };
-export type Result_11 = { 'ok' : CreatedOrder } |
+export type Result_12 = { 'ok' : CreatedOrder } |
   { 'err' : CreateOrderError };
-export type Result_12 = { 'ok' : null } |
+export type Result_13 = { 'ok' : null } |
   { 'err' : Reason };
 export type Result_2 = { 'ok' : null } |
   { 'err' : IntervalError };
@@ -297,7 +299,7 @@ export type Result_7 = { 'ok' : bigint } |
   { 'err' : string };
 export type Result_8 = { 'ok' : Entry } |
   { 'err' : ResolveError };
-export type Result_9 = { 'ok' : Order } |
+export type Result_9 = { 'ok' : null } |
   { 'err' : string };
 export type SetError = { 'tooShort' : { 'min' : bigint, 'size' : bigint } };
 export interface Status {
@@ -350,7 +352,19 @@ export interface _SERVICE {
    * / Only reachable from a pre-delivery money-bearing state. A `#created` order
    * / has taken no money and needs no decision; a `#delivered` one is done.
    */
-  'abandon_order' : ActorMethod<[OrderId, string], Result_9>,
+  'abandon_order' : ActorMethod<[OrderId, string], Result_10>,
+  /**
+   * / Grant the CASES tier to a principal (controller only, audited).
+   * /
+   * / ⚠️ **The grant is on a PRINCIPAL, and an admin's principal comes from the origin
+   * / they signed in at.** The flow is: the admin reads their own principal from
+   * / `admin_status`, gives it to a controller, and then acts from a CLI identity linked to
+   * / the same Internet Identity — `icp identity link web <name> --app <origin>`. ⚠️ Without
+   * / `--app` the CLI links a principal derived from the auth domain's own default
+   * / (`cli.id.ai`), which is not this app, so the grant would sit on a principal the
+   * / admin never sees.
+   */
+  'add_admin' : ActorMethod<[Principal], Result_9>,
   /**
    * / Open-obligation depth, public.
    * /
@@ -430,6 +444,25 @@ export interface _SERVICE {
    */
   'admin_receipt' : ActorMethod<[OrderId], [] | [Receipt]>,
   /**
+   * / "Is MY principal granted?" — public and caller-scoped.
+   * /
+   * / ⚠️ **Deliberately ungated.** An admin who is NOT yet granted has to be able to read
+   * / their own principal and see that it is not granted; a guarded version would reject
+   * / exactly the caller who needs the answer, and the UI could not tell "not granted" from
+   * / "not reachable". It discloses nothing about anyone else: the answer is about `caller`.
+   */
+  'admin_status' : ActorMethod<
+    [],
+    { 'granted' : boolean, 'caller' : Principal, 'isController' : boolean }
+  >,
+  /**
+   * / Who holds the CASES tier (controller only).
+   * /
+   * / ⚠️ Controllers are NOT listed — they pass `checkAdmin` without being granted, so an
+   * / empty list does not mean nobody can act.
+   */
+  'admins' : ActorMethod<[], Array<Principal>>,
+  /**
    * / §4.2 operational trail, newest-last. Admin: details reference payment
    * / intents. Readers detect ring-buffer drops via gaps in `seq`.
    * / The operational trail, **paginated** (#38).
@@ -454,8 +487,8 @@ export interface _SERVICE {
    * / `reserve_status` already publishes. Answered for the *calling* principal,
    * / so the open-order cap it reports is the caller's own.
    */
-  'can_purchase' : ActorMethod<[bigint], Result_12>,
-  'cancel_order' : ActorMethod<[OrderId], Result_9>,
+  'can_purchase' : ActorMethod<[bigint], Result_13>,
+  'cancel_order' : ActorMethod<[OrderId], Result_10>,
   /**
    * / Public — the frontend renders the amount tiles from this. There is no link
    * / to render: the canister creates a session per order (#33).
@@ -482,7 +515,7 @@ export interface _SERVICE {
    * / favour passes through and they keep the extra cycles. The guard can only
    * / ever protect the buyer. `null` opts out entirely.
    */
-  'create_order' : ActorMethod<[Amount, Destination, [] | [bigint]], Result_11>,
+  'create_order' : ActorMethod<[Amount, Destination, [] | [bigint]], Result_12>,
   /**
    * / §5.2 liveness observability, public (operational transparency, same stance as
    * / `reserve_status`): cadence + last completed timer sweep. A null or stale
@@ -595,7 +628,7 @@ export interface _SERVICE {
    * / whose buyer just paid would strand a real payment. Let the webhook (or the sweep)
    * / settle it on Stripe's answer.
    */
-  'expire_order' : ActorMethod<[OrderId], Result_9>,
+  'expire_order' : ActorMethod<[OrderId], Result_10>,
   /**
    * / §2 query authz: `caller == order.owner`, null otherwise — existence is
    * / not revealed to non-owners. Anonymous callers own nothing by
@@ -821,7 +854,7 @@ export interface _SERVICE {
    * / nothing (#37) and a refresh loop would be permanent state growth driven by a
    * / caller. An admin kick is audited — it is an ops action on someone else's order.
    */
-  'process_order' : ActorMethod<[OrderId], Result_10>,
+  'process_order' : ActorMethod<[OrderId], Result_11>,
   /**
    * / Batch pre-purchase quote, public.
    * /
@@ -862,7 +895,7 @@ export interface _SERVICE {
    * / transfer was issued (rule 2), and this call is the confirmation that the
    * / assumption was right.
    */
-  'record_delivered' : ActorMethod<[OrderId, bigint], Result_9>,
+  'record_delivered' : ActorMethod<[OrderId, bigint], Result_10>,
   /**
    * / Run the reconcile now rather than waiting for the daily one (admin, §7).
    * /
@@ -938,6 +971,10 @@ export interface _SERVICE {
     [],
     { 'refusingNow' : RailStateLatch, 'counts' : RefusalCounts }
   >,
+  /**
+   * / Revoke the CASES tier (controller only, audited).
+   */
+  'remove_admin' : ActorMethod<[Principal], Result_9>,
   /**
    * / Reserve solvency and order counters, public (#30 PR-B).
    * /

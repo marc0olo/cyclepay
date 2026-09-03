@@ -7,6 +7,10 @@ import Array "mo:core/Array";
 import Problems "Problems";
 import Cycles "mo:core/Cycles";
 import Error "mo:core/Error";
+// ⚠️ Referenced only through dot-notation sugar (`someIter.toArray()`), which resolves
+// via the imported module — so this reads as an unused import and is not. Removing it
+// fails with M0072 "field toArray does not exist", nowhere near the import.
+import Iter "mo:core/Iter";
 import Int "mo:core/Int";
 import List "mo:core/List";
 import Map "mo:core/Map";
@@ -76,14 +80,100 @@ persistent actor CyclesGateway {
   /// cannot see their old orders. Choose it once (#40/#23).
   var stripeOrigin : ?Text = null;
 
-  /// §7 admin authz: caller ∈ controllers (flat allowlist, equal
-  /// privileges — see Auth.mo). Traps rather than returning an error so an
+  /// Principals granted the CASES tier (#68). Controllers are not listed here and do not
+  /// need to be — `Auth.checkAdmin` passes them anyway.
+  ///
+  /// ⚠️ **A principal here is derived from the origin the admin signed in at**, because
+  /// Internet Identity derives per origin. Naming a canonical origin is owner-owned and
+  /// lands before production; until it is pinned, grants made now may need re-granting by
+  /// a controller. Alternative origins let a second origin obtain the canonical origin's
+  /// principal — they do not retroactively fix principals derived before one was declared.
+  let adminPrincipals = Set.empty<Principal>();
+
+  /// The RULES tier: controller only. Traps rather than returning an error so an
   /// unauthorized call can never be mistaken for a handled outcome.
-  func requireAdmin(caller : Principal) {
-    switch (Auth.checkAdmin(caller, Principal.isController)) {
+  ///
+  /// ⚠️ **Everything that changes the rules is here, and `scripts/check-admin-tiers.py`
+  /// is what keeps it that way** — it reads each method's body and fails when the guard it
+  /// calls is not the one its tier declares. A table alone would prove the list complete
+  /// and say nothing about whether the code honours it.
+  func requireController(caller : Principal) {
+    switch (Auth.checkController(caller, Principal.isController)) {
       case (#ok) {};
       case (#err(#anonymous)) Runtime.trap("admin API: anonymous caller rejected");
-      case (#err(#notController)) Runtime.trap("admin API: caller is not a controller");
+      case (#err(_)) Runtime.trap("admin API: caller is not a controller");
+    };
+  };
+
+  /// The CASES tier: a controller, or a principal a controller has granted.
+  func requireAdmin(caller : Principal) {
+    switch (Auth.checkAdmin(caller, Principal.isController, isGrantedAdmin)) {
+      case (#ok) {};
+      case (#err(#anonymous)) Runtime.trap("admin API: anonymous caller rejected");
+      case (#err(_)) Runtime.trap("admin API: caller is not an admin");
+    };
+  };
+
+  func isGrantedAdmin(p : Principal) : Bool {
+    adminPrincipals.contains(p);
+  };
+
+  /// Grant the CASES tier to a principal (controller only, audited).
+  ///
+  /// ⚠️ **The grant is on a PRINCIPAL, and an admin's principal comes from the origin
+  /// they signed in at.** The flow is: the admin reads their own principal from
+  /// `admin_status`, gives it to a controller, and then acts from a CLI identity linked to
+  /// the same Internet Identity — `icp identity link web <name> --app <origin>`. ⚠️ Without
+  /// `--app` the CLI links a principal derived from the auth domain's own default
+  /// (`cli.id.ai`), which is not this app, so the grant would sit on a principal the
+  /// admin never sees.
+  public shared ({ caller }) func add_admin(p : Principal) : async Result.Result<(), Text> {
+    requireController(caller);
+    // Belt and braces: `Auth.checkAdmin` rejects anonymous before consulting either
+    // predicate, so a granted `2vxsx-fae` would be inert — but a list that contains it
+    // reads as though it were not.
+    if (p.isAnonymous()) return #err("the anonymous principal cannot be an admin");
+    if (adminPrincipals.contains(p)) return #err("already an admin: " # p.toText());
+    adminPrincipals.add(p);
+    auditAdmin(caller, "admin.granted", p.toText());
+    #ok;
+  };
+
+  /// Revoke the CASES tier (controller only, audited).
+  public shared ({ caller }) func remove_admin(p : Principal) : async Result.Result<(), Text> {
+    requireController(caller);
+    // ⚠️ Not "not an admin": that is the authz trap's wording, and an operator reading it
+    // back cannot tell whether THEY were refused or the target simply was not listed.
+    if (not adminPrincipals.contains(p)) return #err(p.toText() # " is not on the admin list");
+    adminPrincipals.remove(p);
+    auditAdmin(caller, "admin.revoked", p.toText());
+    #ok;
+  };
+
+  /// Who holds the CASES tier (controller only).
+  ///
+  /// ⚠️ Controllers are NOT listed — they pass `checkAdmin` without being granted, so an
+  /// empty list does not mean nobody can act.
+  public shared query ({ caller }) func admins() : async [Principal] {
+    requireController(caller);
+    adminPrincipals.values().toArray();
+  };
+
+  /// "Is MY principal granted?" — public and caller-scoped.
+  ///
+  /// ⚠️ **Deliberately ungated.** An admin who is NOT yet granted has to be able to read
+  /// their own principal and see that it is not granted; a guarded version would reject
+  /// exactly the caller who needs the answer, and the UI could not tell "not granted" from
+  /// "not reachable". It discloses nothing about anyone else: the answer is about `caller`.
+  public shared query ({ caller }) func admin_status() : async {
+    caller : Principal;
+    granted : Bool;
+    isController : Bool;
+  } {
+    {
+      caller;
+      granted = isGrantedAdmin(caller);
+      isController = caller.isController();
     };
   };
 
@@ -93,7 +183,7 @@ persistent actor CyclesGateway {
   /// TLS-terminating boundary node as plain ingress (§7 provisioning
   /// exposure); rotate after provisioning over an untrusted path.
   public shared ({ caller }) func set_webhook_secret(secret : Text) : async Result.Result<(), Secret.SetError> {
-    requireAdmin(caller);
+    requireController(caller);
     let result = Secret.set(webhookSecret, secret.encodeUtf8(), Time.now());
     switch (result) {
       case (#ok) {
@@ -118,7 +208,7 @@ persistent actor CyclesGateway {
   /// the argument transits the TLS-terminating boundary node as plain ingress.
   /// #11 covers vetKeys for encrypted delivery, and now applies to two secrets.
   public shared ({ caller }) func set_stripe_api_key(key : Text) : async Result.Result<(), Secret.SetError> {
-    requireAdmin(caller);
+    requireController(caller);
     let result = Secret.set(stripeApiKey, key.encodeUtf8(), Time.now());
     switch (result) {
       case (#ok) auditAdmin(caller, "stripe.apiKeySet", "generation " # Secret.status(stripeApiKey).generation.toText());
@@ -149,7 +239,7 @@ persistent actor CyclesGateway {
   /// purchase later. Until a domain is chosen (#40/#23) this is the canister's
   /// own asset origin.
   public shared ({ caller }) func set_stripe_origin(origin : Text) : async Result.Result<(), OriginError> {
-    requireAdmin(caller);
+    requireController(caller);
     if (origin.size() == 0) return #err(#empty);
     if (not origin.startsWith(#text "https://")) return #err(#notHttps);
     if (origin.contains(#char '?') or origin.contains(#char '#')) return #err(#hasQueryOrFragment);
@@ -445,7 +535,7 @@ persistent actor CyclesGateway {
   /// Adjust pricing params (§7): fee formula, staleness window, delta guard.
   /// Validated atomically — a bad config never partially applies.
   public shared ({ caller }) func set_pricing_config(config : Pricing.Config) : async Result.Result<(), Pricing.ConfigError> {
-    requireAdmin(caller);
+    requireController(caller);
     switch (Pricing.validateConfig(config)) {
       case (#ok) {
         pricingConfig := config;
@@ -1145,7 +1235,7 @@ persistent actor CyclesGateway {
   /// nothing — it just shows no tiles. The switch is both Stripe secrets being
   /// provisioned; `railsLive` is where that lives.
   public shared ({ caller }) func set_card_tiers(tiers : [Tiers.Tier]) : async Result.Result<(), Tiers.ValidateError> {
-    requireAdmin(caller);
+    requireController(caller);
     switch (Tiers.validate(tiers, gateConfig.minPurchaseUsdCents, gateConfig.maxPurchaseUsdCents)) {
       case (#ok) {
         cardTiers := tiers;
@@ -1168,7 +1258,7 @@ persistent actor CyclesGateway {
   /// deployment. `null` restores "accept either", which only makes sense while
   /// nothing of value is at stake.
   public shared ({ caller }) func set_expected_livemode(expected : ?Bool) : async () {
-    requireAdmin(caller);
+    requireController(caller);
     expectLivemode := expected;
     auditAdmin(
       caller,
@@ -1186,7 +1276,7 @@ persistent actor CyclesGateway {
   };
 
   public shared ({ caller }) func set_gate_config(config : Gate.Config) : async Result.Result<(), Gate.ConfigError> {
-    requireAdmin(caller);
+    requireController(caller);
     // Cross-check against live tiers: lowering the ceiling under a registered tier
     // would leave it sellable but unpayable (see Gate.ConfigError.tierAboveCeiling).
     let tierPrices = cardTiers.map(func(t) = (t.id, t.usdCents));
@@ -1779,7 +1869,7 @@ persistent actor CyclesGateway {
   /// tell the operator at the moment the decision was already taken, and a
   /// non-positive bound would escalate every order instantly.
   public shared ({ caller }) func set_delivery_config(config : Delivery.Config) : async Result.Result<(), Delivery.ConfigError> {
-    requireAdmin(caller);
+    requireController(caller);
     switch (Delivery.validateConfig(config)) {
       case (#err(e)) return #err(e);
       case (#ok) {};
@@ -2228,7 +2318,7 @@ persistent actor CyclesGateway {
   /// nothing (#37) and a refresh loop would be permanent state growth driven by a
   /// caller. An admin kick is audited — it is an ops action on someone else's order.
   public shared ({ caller }) func process_order(id : Types.OrderId) : async Result.Result<Types.Order, ProcessOrderError> {
-    let isAdmin = Auth.checkAdmin(caller, Principal.isController).isOk();
+    let isAdmin = Auth.checkAdmin(caller, Principal.isController, isGrantedAdmin).isOk();
     if (isAdmin) {
       auditAdmin(caller, "delivery.manualKick", id);
     } else {
@@ -3635,7 +3725,7 @@ persistent actor CyclesGateway {
   /// Validated against the §5.1 bound: the cadence must stay well inside
   /// the ledger dedup window or replay loses its safety margin.
   public shared ({ caller }) func set_recovery_interval(intervalNs : Nat) : async Result.Result<(), Recovery.IntervalError> {
-    requireAdmin(caller);
+    requireController(caller);
     switch (Recovery.validateInterval(intervalNs, Delivery.ledgerDedupWindowNs)) {
       case (#err(e)) #err(e);
       case (#ok) {

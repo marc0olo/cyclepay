@@ -305,7 +305,14 @@ goes stale the next time a step is inserted, and the script derives its own numb
 | `mops build`: `.did is out of date` | the **committed Candid file** does not match the code | `mops build`, commit the `.did`, regenerate the suite's bindings. ⚠️ Says NOTHING about stable state — an added method trips this and is perfectly upgradable |
 | `mops check`: `Stable compatibility check failed` | the **stable shape** cannot be reinterpreted from the deployed one | locally reinstall and reseed; on mainnet this needs a migration (#32). ⚠️ This is the one where deployed data is at stake |
 
-**After a deliberate stable-shape change**, once you have reinstalled and reseeded:
+**After ANY change that moves the stable shape — compatible or not** — once it is deployed
+(reinstalled and reseeded if it had to be):
+
+⚠️ **"Compatible" does not mean "no promotion".** Adding a stable field with an initializer
+upgrades cleanly and needs no reinstall, and the baseline still has to move: leave it
+describing the older shape and a later change that REMOVES that field passes the check
+against a baseline that never had it, while the real canister does. A false pass in the
+direction that loses data.
 
 ```sh
 mops build && mops deployed        # promotes dist/backend.most → deployed/backend.most

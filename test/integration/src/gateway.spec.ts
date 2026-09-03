@@ -30,6 +30,7 @@ import {
 
   allDelayedDeliveries,
 } from './harness';
+import { Principal } from '@icp-sdk/core/principal';
 import type { Destination, OrphanEntry, Order } from './types';
 
 let gw: Gateway;
@@ -556,14 +557,14 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   await expect(gw.asUser.admin_orders(
     { status: [], owner: [], createdFromNs: [], createdToNs: [], withUnresolvedProblems: true },
     [], 50n,
-  )).rejects.toThrow(/not a controller/);
+  )).rejects.toThrow(/not an admin/);
 
   // And the admin single-order read, which #38 exists for: an operator handed a Stripe
   // receipt can now look at the order rather than asking the buyer to read their screen.
   const adminView = await gw.asAdmin.admin_order(orderA.id);
   expect(adminView).toHaveLength(1);
   expect(adminView[0]!.id).toBe(orderA.id);
-  await expect(gw.asUser.admin_order(orderA.id)).rejects.toThrow(/not a controller/);
+  await expect(gw.asUser.admin_order(orderA.id)).rejects.toThrow(/not an admin/);
   // ⚠️ The read is audited BOTH ways — a probe for existence is what §2 withholds from
   // everyone else, so a miss has to be as visible as a hit.
   expect(await gw.asAdmin.admin_order('00000000000000000000000000000000')).toHaveLength(0);
@@ -609,7 +610,7 @@ test('09 — unattributed: claimed-not-trusted reference resolution (§6.1)', as
   expect(entry).toBeDefined();
 
   // Manual operator resolution (§4.1) — admin-gated.
-  await expect(gw.asUser.resolve_orphan(entry.id)).rejects.toThrow(/not a controller/);
+  await expect(gw.asUser.resolve_orphan(entry.id)).rejects.toThrow(/not an admin/);
   const resolved = expectOk(await gw.asAdmin.resolve_orphan(entry.id));
   expect(resolved.resolvedAtNs.length).toBe(1);
 });
@@ -822,9 +823,9 @@ test('15 — operational trail is coherent end-to-end (§4.2)', async () => {
   expect((await gw.asAnon.orphan_depth()).unresolved).toBe(BigInt(open.length));
 
   // Admin gates on the trail itself.
-  await expect(gw.asUser.audit_log([], 10n)).rejects.toThrow(/not a controller/);
-  await expect(gw.asUser.orphans([], 10n)).rejects.toThrow(/not a controller/);
-  await expect(gw.asUser.orphans_unresolved([], 10n)).rejects.toThrow(/not a controller/);
+  await expect(gw.asUser.audit_log([], 10n)).rejects.toThrow(/not an admin/);
+  await expect(gw.asUser.orphans([], 10n)).rejects.toThrow(/not an admin/);
+  await expect(gw.asUser.orphans_unresolved([], 10n)).rejects.toThrow(/not an admin/);
   // Depth is public — it is the monitoring signal, not the payment references.
   expect((await gw.asAnon.orphan_depth()).retained).toBeGreaterThan(0n);
 });
@@ -998,7 +999,7 @@ test('19 — a buyer can verify their own purchase from the receipt', async () =
   const adminReceipt = await gw.asAdmin.admin_receipt(orderA.id);
   expect(adminReceipt).toHaveLength(1);
   expect(adminReceipt[0]!.order.id).toBe(orderA.id);
-  await expect(gw.asUser.admin_receipt(orderA.id)).rejects.toThrow(/not a controller/);
+  await expect(gw.asUser.admin_receipt(orderA.id)).rejects.toThrow(/not an admin/);
 
   // ⚠️ **And it AUDITS, which is the whole point of the separate method.** An earlier
   // version folded this into `receipt` unaudited, arguing it revealed no existence
@@ -1118,7 +1119,7 @@ test('21 — status counters are O(1) and reconcile against a full recount', asy
   expect(asMap.size).toBe(4);
 
   // Recount is admin-only: it is the expensive O(n) path.
-  await expect(gw.asUser.recount_orders()).rejects.toThrow(/not a controller/);
+  await expect(gw.asUser.recount_orders()).rejects.toThrow(/not an admin/);
 
   // And the canister's own gas is observable, distinct from the cycles it sells.
   const cycles = await gw.asAnon.cycles_status();
@@ -1566,7 +1567,7 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
     expect(await orderStatus(gw, doomed.id)).toBe('paid');
 
     // Admin-gated, and a reason is mandatory so the trail records why.
-    await expect(gw.asUser.abandon_order(doomed.id, 'nope')).rejects.toThrow(/not a controller/);
+    await expect(gw.asUser.abandon_order(doomed.id, 'nope')).rejects.toThrow(/not an admin/);
     expectErr(await gw.asAdmin.abandon_order(doomed.id, ''));
 
     // ⚠️ **This scenario used to abandon the order HERE, and that was the unsafe
@@ -3271,7 +3272,7 @@ test('75 — a buyer can heal their OWN stuck delivery, and only their own (#30 
   // holding a promise): this is the operator's in-flight worklist. `reserve_status` is
   // the public answer, and O(1) on purpose.
   await expect(gw.asAnon.pending_deliveries()).rejects.toThrow(/anonymous/);
-  await expect(gw.asUser.pending_deliveries()).rejects.toThrow(/not a controller/);
+  await expect(gw.asUser.pending_deliveries()).rejects.toThrow(/not an admin/);
 
   // A stranger cannot kick it. ⚠️ `notFound`, not a distinct "not yours": whether an
   // order id exists is not a stranger's business, and `getOwned` is what answers.
@@ -3364,7 +3365,7 @@ test('77 — an escalated order whose cycles DID arrive can be recorded, not fil
 
   // Not a buyer's decision, and not a guess: admin-only, and the ledger block is
   // required as the evidence that someone actually looked.
-  await expect(gw.asUser.record_delivered(target.id, 12_345n)).rejects.toThrow(/not a controller/);
+  await expect(gw.asUser.record_delivered(target.id, 12_345n)).rejects.toThrow(/not an admin/);
   expect(await orderStatus(gw, target.id)).toBe('needsReview');
 
   const LEDGER_BLOCK = 424_242n;
@@ -3836,4 +3837,62 @@ test('90 — operator_summary is public, and cannot disagree with the surfaces i
   expect(after.orphansUnresolved).toBe(before + 1n);
   expect(after.orphansUnresolved).toBe((await gw.asAnon.orphan_depth()).unresolved);
   expect(after.orphansUnresolved).toBe(BigInt((await openOrphans(gw)).length));
+});
+
+test('91 — a granted admin can end one order and cannot change the rules (#68)', async () => {
+  // ⚠️ **This is the assertion a tier TABLE cannot make.** A list of methods plus a check
+  // that the list is complete proves the list is complete; it says nothing about whether
+  // the code honours it. `scripts/check-admin-tiers.py` reads each body and asserts the
+  // guard matches the declared tier — and this asserts the same thing from outside, over
+  // ingress, with a real principal.
+  const stranger = await gw.asStranger.admin_status();
+
+  // `admin_status` is ungated on purpose: an admin who is not yet granted has to be able
+  // to read their own principal and see that it is not granted. A guarded version would
+  // reject exactly the caller who needs the answer.
+  expect(stranger.granted).toBe(false);
+  expect(stranger.isController).toBe(false);
+  expect((await gw.asAdmin.admin_status()).isController).toBe(true);
+  // ⚠️ Controllers are NOT on the list — they pass the admin guard without being granted,
+  // so an empty list does not mean nobody can act.
+  expect((await gw.asAdmin.admin_status()).granted).toBe(false);
+
+  // Granting is controller-only.
+  await expect(gw.asStranger.add_admin(stranger.caller)).rejects.toThrow(/not a controller/);
+  await expect(gw.asStranger.admins()).rejects.toThrow(/not a controller/);
+
+  // Before the grant: BOTH tiers refuse the stranger, and the message names the right fix.
+  await expect(gw.asStranger.recount_orders()).rejects.toThrow(/not an admin/);
+  await expect(gw.asStranger.set_recovery_interval(3_600_000_000_000n)).rejects.toThrow(/not a controller/);
+
+  expectOk(await gw.asAdmin.add_admin(stranger.caller));
+  try {
+    expect((await gw.asStranger.admin_status()).granted).toBe(true);
+    expect((await gw.asAdmin.admins()).map((p) => p.toText())).toContain(stranger.caller.toText());
+
+    // ⚠️ **THE POINT.** The same principal can now resolve a case and still cannot change
+    // a rule. If the second line ever passed, a granted admin could rotate the webhook
+    // secret — which is mint authority, since HMAC verification is the trust root.
+    expect(Array.isArray(await gw.asStranger.recount_orders())).toBe(true);
+    await expect(gw.asStranger.set_recovery_interval(3_600_000_000_000n)).rejects.toThrow(/not a controller/);
+    await expect(gw.asStranger.set_webhook_secret('whsec_should_never_land_here')).rejects.toThrow(/not a controller/);
+
+    // Granting twice is refused rather than silently idempotent, so a controller cannot
+    // mistake "already granted" for "granted now".
+    expect(expectErr(await gw.asAdmin.add_admin(stranger.caller))).toMatch(/already an admin/);
+    // The anonymous principal can never hold the tier. `Auth.checkAdmin` rejects it before
+    // consulting either predicate, so a granted `2vxsx-fae` would be inert — but a list
+    // that contains it reads as though it were not.
+    expect(expectErr(await gw.asAdmin.add_admin(Principal.anonymous()))).toMatch(/anonymous/);
+  } finally {
+    expectOk(await gw.asAdmin.remove_admin(stranger.caller));
+  }
+
+  // Revocation takes effect immediately, and the state is left as it was found.
+  expect((await gw.asStranger.admin_status()).granted).toBe(false);
+  await expect(gw.asStranger.recount_orders()).rejects.toThrow(/not an admin/);
+  expect((await gw.asAdmin.admins()).map((p) => p.toText())).not.toContain(stranger.caller.toText());
+  // ⚠️ Distinct from the authz trap's "caller is not an admin" on purpose — this is about
+  // the TARGET not being listed, and one wording for both would be unreadable in a log.
+  expect(expectErr(await gw.asAdmin.remove_admin(stranger.caller))).toMatch(/is not on the admin list/);
 });
