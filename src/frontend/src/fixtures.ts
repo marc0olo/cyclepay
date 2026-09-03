@@ -282,20 +282,32 @@ export function installFixtures(host: FixtureHost): void {
     // suite green. Do not read `satisfies Partial<Backend>` as full coverage.
   } satisfies Partial<Backend>;
 
-  // ⚠️ **The `unknown` hop is required HERE, and that was measured rather than assumed
-  // in either direction.** A one-step `stub as Backend` is what you want, and for a small
-  // interface it compiles: a 1-of-3 partial asserts to the full type fine, because the
-  // full type is comparable to the stub's inferred type. It does NOT compile against this
-  // type. `Backend` is `ActorSubclass<_SERVICE>` with roughly forty members and this stub
-  // has eight, which fails TypeScript's comparability heuristic outright:
+  // ⚠️ **The `unknown` hop is required here, and the reason is NEITHER of the two I first
+  // wrote.** An assertion is legal when either type is assignable to the other. Here
+  // neither is, and three probes pin which:
   //
-  //   TS2352: Conversion of type '{ card_tiers: … }' to type 'Backend' may be a mistake
-  //   because neither type sufficiently overlaps with the other.
+  //   stub as Pick<Backend, 'card_tiers' | 'get_order'>   compiles
+  //   stub as Pick<Backend, keyof Backend>                TS2352
+  //   stub as Backend                                     TS2352
   //
-  // So the hop stays, and the reason it is now acceptable is that it no longer does any
-  // checking: `satisfies Partial<Backend>` above verifies every stub's signature, and this
-  // assertion covers only the partiality. Before, it covered everything, which is how four
-  // wrong shapes survived three commits with every suite green.
+  // So it is not member COUNT (a 1-of-40 partial asserts to a plain 40-member interface
+  // fine), and not `ActorSubclass`'s own structure (`Pick<..., keyof Backend>` strips index
+  // and call signatures and still fails). It is that neither direction holds: the stub is
+  // missing about thirty members, so stub to Backend fails; and the stub's members have
+  // NARROWER inferred types than the service's (`get_order` returns one specific order
+  // object, not `Order | null`), so Backend to stub fails too. Picking only the stubbed
+  // keys restores one direction, which is why that probe compiles.
+  //
+  // ⚠️ **The probe that mattered is the one distinguishing this from a real defect.**
+  // `satisfies Partial<Backend>` checks stub against Backend, and TypeScript's method
+  // parameters are bivariant, so a stub can satisfy it while the service's member is NOT
+  // assignable to the stub's: a fifth wrong shape `satisfies` is structurally unable to
+  // catch. The Pick-of-stubbed-keys probe compiling is what rules that out.
+  //
+  // The hop is acceptable because it no longer does any checking: `satisfies` above
+  // verifies every stub's signature, and this covers only the partiality. It used to cover
+  // everything, which is how four wrong shapes survived three commits with every suite
+  // green.
   const fixtureBackend = stub as unknown as Backend;
 
   // NOT installed here. Most specs are about what renders while the gateway is
