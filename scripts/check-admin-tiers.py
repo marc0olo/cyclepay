@@ -35,6 +35,17 @@ import sys
 MAIN = "src/backend/Main.mo"
 GUARDS = {"requireController": "controller", "requireAdmin": "admin"}
 
+# A top-level declaration in the actor: two-space indent, `func` anywhere after it.
+#
+# ⚠️ `.*?` may be EMPTY, so a line beginning `  func …` matches. The lookahead keeps
+# deeper-indented closures out — several bodies pass a `func(order, entry) { … }` to a
+# fold, and treating those as boundaries would truncate the body before its guard.
+#
+# ⚠️ Named once so `_self_test` cannot drift from the parser it is testing. The first
+# version of this fix was verified against a string literal typed into the test rather
+# than against the file, and the file kept the broken pattern.
+BOUNDARY = r"^  (?=\S).*?\bfunc\s+[A-Za-z_]"
+
 # method -> tier. ⚠️ Absent = FAILURE, never a skip.
 TIERS = {
     # ── RULES: a controller changes the rules ───────────────────────────────────────────
@@ -99,7 +110,11 @@ def guarded_methods(text):
     # further and so is not a boundary — which matters, because several bodies pass a
     # `func(order, entry) { … }` to a fold.
     bounds = sorted(
-        i for i, l in enumerate(lines) if re.match(r"^  \S.*\bfunc\s+[A-Za-z_]", l)
+        # `.*?` may be EMPTY so a line starting `  func …` matches — `\S.*` consumed the
+        # `f` and then needed a SECOND `func`, which is why the first attempt at this was
+        # behaviourally identical to having no fix. The lookahead still excludes closures,
+        # which matters: several bodies pass a `func(order, entry) { … }` to a fold.
+        i for i, l in enumerate(lines) if re.match(BOUNDARY, l)
     )
     out = {}
     for i, name in starts:
@@ -114,7 +129,50 @@ def guarded_methods(text):
     return out
 
 
+def _self_test():
+    r"""The boundary logic, checked against a synthetic source on every run.
+
+    ⚠️ **This exists because the boundary silently no-opped once.** The first attempt at it
+    was `^  \S.*\bfunc\s+` — which cannot match a line beginning `  func …`, because `\S`
+    consumes the `f` and then a second `func` is required. It was committed with a comment
+    asserting the protection, and the check stayed green **by an accident of file
+    ordering**: the only private top-level funcs calling a guard are the guard definitions
+    themselves, and no public method precedes them.
+
+    ⚠️ It runs unconditionally rather than behind a flag, because a self-test you have to
+    remember to run is the thing it is guarding against.
+    """
+    for line, want in [
+        ("  func requireAdmin(caller : Principal) {", True),
+        ("  public shared query ({ caller }) func admin_orders(", True),
+        ("  public query func delivery_stats() : async {", True),
+        ("      func(order, entry) {", False),          # a closure passed to a fold
+        ("        case (?order) { n += 1 };", False),
+    ]:
+        if (re.match(BOUNDARY, line) is not None) != want:
+            sys.exit(f"ABORT: the body boundary is broken — {line.strip()!r} should "
+                     f"{'' if want else 'not '}be a boundary")
+
+    # The dangerous fold, end to end: an UNGUARDED public method followed by a private
+    # helper that calls a guard must NOT inherit it. With the broken boundary this
+    # returned {"unguarded": "admin"} — an authz hole reading as a correctly tiered method.
+    synthetic = "\n".join([
+        "  public shared ({ caller }) func unguarded() : async () {",
+        "    ();",
+        "  };",
+        "  func helper(caller : Principal) { requireAdmin(caller) };",
+        "  public shared ({ caller }) func guarded() : async () {",
+        "    requireAdmin(caller);",
+        "  };",
+    ])
+    got = guarded_methods(synthetic)
+    if got != {"guarded": "admin"}:
+        sys.exit(f"ABORT: the body boundary folds a neighbouring helper's guard in — "
+                 f"expected {{'guarded': 'admin'}}, got {got}")
+
+
 def main() -> int:
+    _self_test()
     text = open(MAIN).read()
     actual = guarded_methods(text)
     if not actual:
