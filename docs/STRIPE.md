@@ -788,7 +788,7 @@ privileges — any controller can do any of this):
 | `set_gate_config` | open-order cap, own-cycles floor, per-purchase ceiling |
 | `set_pricing_config` | fee formula, staleness window (capped at 1 h), delta bound, minimum rate sources |
 | `refresh_rates` | force a rate tick now instead of waiting for the timer |
-| `set_delivery_config` | the two delivery time bounds: alert-after (2 h) and max hold (72 h) |
+| `set_delivery_config` | the two delivery time bounds: alert-after (2 h) and max hold (72 h). Read them back with `lifecycle_config` |
 | `orphans` / `resolve_orphan` | the operator worklist |
 | `order_for_payment` | reconciliation: Stripe charge → order it funded |
 | `delivery_journal` | money-out record for one order |

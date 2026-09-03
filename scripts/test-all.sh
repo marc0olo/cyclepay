@@ -154,6 +154,12 @@ step=$((step + 1))
 printf '\n\033[1m── %d. %s\033[0m\n' "$step" "docs match the canister's actual surface"
 scripts/check-doc-surface.py
 
+# ⚠️ **After the `.did` regeneration too, and for the same reason as the step above:** it
+# reads the interface, so it must read the current one. A config parameter with no reader
+# cannot be checked by an operator or shown by a UI, and `set_delivery_config` was exactly
+# that — through five PRs touching this surface, because nothing was looking.
+run "every config setter has a reader" scripts/check-config-readers.py
+
 # ⚠️ **The decision record is enforced, not trusted.** Its predecessor was a 697-line
 # spec that rotted by being updated less often than the code — 67 mentions of deleted
 # architecture while Main.mo still cited it by section number. This cannot check whether

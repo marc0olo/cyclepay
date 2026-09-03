@@ -1207,11 +1207,21 @@ persistent actor CyclesGateway {
   /// `pricing_status` and `reserve_status` — these are the rules users are held
   /// to, not secrets.
   ///
-  /// ⚠️ **One field, and no lifecycle *policy* of ours to add to it.** An order's
-  /// deadline is the Stripe session's `expires_at`, which lives on the order rather
-  /// than in config, so there is nothing global to report.
-  public query func lifecycle_config() : async { gate : Gate.Config } {
-    { gate = gateConfig };
+  /// ⚠️ **`delivery` is here because `set_delivery_config` had NO reader at all.**
+  /// `maxHoldNs` decides when a paid order escalates to `#needsReview` and `alertAfterNs`
+  /// is the delay-alert threshold — both global policy of ours, and both write-only until
+  /// now: they appeared in the setter's argument and its error variant and in no return
+  /// type anywhere, so an operator could set them and never read them back.
+  ///
+  /// The comment this replaces said there was "no lifecycle *policy* of ours to add" —
+  /// true of an order's DEADLINE, which is the Stripe session's `expires_at` and lives on
+  /// the order, and untrue as the general claim it had become. `scripts/check-config-readers.py`
+  /// is what stops the next write-only parameter, rather than this comment.
+  public query func lifecycle_config() : async {
+    gate : Gate.Config;
+    delivery : Delivery.Config;
+  } {
+    { gate = gateConfig; delivery = deliveryConfig };
   };
 
   /// Admission preflight, public: lets the frontend disable the buy button with

@@ -486,7 +486,7 @@ impossible. This is separate from, and in addition to, the solvency check in
 §5 — the point is to refuse *before* the customer pays Stripe.
 
 ```bash
-icp canister call backend lifecycle_config '()' -e ic     # public: current bounds
+icp canister call backend lifecycle_config '()' -e ic     # public: gate AND delivery bounds
 icp canister call backend can_purchase '(500 : nat)' -e ic  # public: would this be admitted?
 icp canister call backend set_gate_config \
   '(record { maxOpenOrdersPerPrincipal = 20 : nat; minCanisterCycles = 5_000_000_000_000 : nat; maxPurchaseUsdCents = 100_000 : nat })' \
