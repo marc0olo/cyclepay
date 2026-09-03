@@ -65,7 +65,7 @@ def main() -> int:
     if not setters:
         sys.exit(f"ABORT: found no set_* methods in {DID} — the parser is wrong")
 
-    fail = []
+    fail, traced = [], []
     for s in setters:
         if s not in READERS:
             fail.append(
@@ -87,10 +87,15 @@ def main() -> int:
         args, _ = m[s]
         ret = m[reader][1]
         # Derived requirement: a single NAMED argument type must come back out.
-        named = re.search(r"\(\s*[a-zA-Z_]+:\s*([A-Z][A-Za-z0-9_]*)\s*\)", args)
+        # `(?:vec\s+)?` so `(tiers: vec Tier)` is traced too — `Tier` gaining a field is a
+        # plausible change. Primitives (`opt bool`, `text`, `nat`) have no capital and do
+        # not match, which is correct: there is no type to trace.
+        named = re.search(r"\(\s*[a-zA-Z_]+:\s*(?:vec\s+)?([A-Z][A-Za-z0-9_]*)\s*\)", args)
         if named:
             t = named.group(1)
-            if not re.search(r"\b%s\b" % t, ret):
+            if re.search(r"\b%s\b" % t, ret):
+                traced.append(s)
+            else:
                 fail.append(
                     f"{s} takes `{t}` and `{reader}` does not return it — the parameter is "
                     f"WRITE-ONLY"
@@ -108,7 +113,15 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"   {len(setters)} config setter(s), each with a reader")
+    # ⚠️ **Says what was actually verified.** For a setter taking a named type the check
+    # traces that type through the reader's return; for a primitive or a status-only
+    # secret it can only confirm the reader exists. One number covering both would
+    # overstate six of nine — and the value of this step is a reader trusting its last
+    # line.
+    print(
+        f"   {len(setters)} config setter(s): {len(traced)} type-traced, "
+        f"{len(setters) - len(traced)} reader-exists"
+    )
     return 0
 
 
