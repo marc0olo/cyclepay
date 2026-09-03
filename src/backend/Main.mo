@@ -1512,7 +1512,9 @@ persistent actor CyclesGateway {
   public query func problem_depth() : async { unresolved : Nat; orders : Nat } {
     {
       unresolved = Orders.unresolvedProblemCount(orderStore);
-      orders = Orders.withUnresolvedProblems(orderStore).size();
+      // ⚠️ O(1) — the index's size. This built the whole worklist as an array to read its
+      // length, on a query anyone can call.
+      orders = Orders.unresolvedProblemOrderCount(orderStore);
     };
   };
 
@@ -2361,6 +2363,39 @@ persistent actor CyclesGateway {
     delayedAtNs : ?Int;
   };
 
+  /// Is this order's delivery late enough to be worth an operator's attention?
+  ///
+  /// ⚠️ **One definition, shared by `delayed_deliveries` and `operator_summary`.** Two
+  /// copies of this predicate would let the paged list and the summary count disagree, and
+  /// the summary is the number someone acts on.
+  ///
+  /// ⚠️ **`#paid` only, and NOT gated on a journal entry existing.** A payment that has
+  /// landed but whose first sweep has not run yet has no journal entry, and it is exactly
+  /// the case an operator wants to see — so this reads the ORDER's clock. Counting through
+  /// the order↔journal join instead would silently under-report it.
+  func deliveryDelayed(order : Types.Order, nowNs : Int) : Bool {
+    if (order.status != #paid) return false;
+    switch (Delivery.waitStage(order.updatedAtNs, nowNs, deliveryConfig)) {
+      case (#retry) false;
+      case (#alert or #terminate) true;
+    };
+  };
+
+  /// How many deliveries are late — the count behind `delayed_deliveries`' page.
+  ///
+  /// ⚠️ Bounded by `promiseHolders`, which is bounded by flow (§5.4), not by lifetime
+  /// sales.
+  func delayedDeliveryCount(nowNs : Int) : Nat {
+    var n = 0;
+    for (id in Orders.promiseHolderIds(orderStore)) {
+      switch (Orders.get(orderStore, id)) {
+        case (?order) { if (deliveryDelayed(order, nowNs)) n += 1 };
+        case null {};
+      };
+    };
+    n;
+  };
+
   public shared query ({ caller }) func delayed_deliveries(
     afterId : ?Types.OrderId,
     limit : Nat,
@@ -2390,30 +2425,27 @@ persistent actor CyclesGateway {
     label scan for (id in ids) {
       let ?order = Orders.get(orderStore, id) else continue scan;
       let past = switch (afterId) { case (?cursor) id > cursor; case null true };
-      if (past and order.status == #paid) {
-        let stage = Delivery.waitStage(order.updatedAtNs, now, deliveryConfig);
-        let delayed = switch (stage) {
-          case (#retry) false;
-          case (#alert or #terminate) true;
+      // ⚠️ `deliveryDelayed` is the ONLY status gate here. An outer `order.status == #paid`
+      // survived alongside it and made the claim of one shared definition false: widening
+      // the predicate changed this page and the summary's count differently, so the two
+      // could disagree while both were "using the predicate".
+      if (past and deliveryDelayed(order, now)) {
+        if (collected.size() == capped) {
+          return { entries = collected.toArray(); nextCursor = last };
         };
-        if (delayed) {
-          if (collected.size() == capped) {
-            return { entries = collected.toArray(); nextCursor = last };
+        collected.add({
+          orderId = order.id;
+          status = order.status;
+          heldSinceNs = order.updatedAtNs;
+          waitedNs = now - order.updatedAtNs;
+          retries = switch (deliveryJournal.get(order.id)) {
+            case (?entry) entry.retries;
+            case null 0;
           };
-          collected.add({
-            orderId = order.id;
-            status = order.status;
-            heldSinceNs = order.updatedAtNs;
-            waitedNs = now - order.updatedAtNs;
-            retries = switch (deliveryJournal.get(order.id)) {
-              case (?entry) entry.retries;
-              case null 0;
-            };
-            pastMaxHold = stage == #terminate;
-            delayedAtNs = order.delayedAtNs;
-          });
-          last := ?order.id;
-        };
+          pastMaxHold = Delivery.waitStage(order.updatedAtNs, now, deliveryConfig) == #terminate;
+          delayedAtNs = order.delayedAtNs;
+        });
+        last := ?order.id;
       };
     };
     { entries = collected.toArray(); nextCursor = null };
@@ -3679,6 +3711,59 @@ persistent actor CyclesGateway {
       deliveredUsdCents = totals.usdCents;
       nullPaid = totals.nullPaid;
       refusingNow = railStateLatch;
+    };
+  };
+
+  /// "Is anything wrong right now" in ONE call (#68).
+  ///
+  /// ⚠️ **Public is a decision, not a default: #3's alerting needs no credentials.** What
+  /// reaches a human at 03:00 is a cron on the public queries, and an admin-gated summary
+  /// would put that back on a credentialed cron. Everything here is a COUNT, never an
+  /// entry, and `reserve_status` already publishes `totalOrders`, `openOrders`,
+  /// `expiredOrders`, `promisedTotal` and `availableToSell` — so there is no new exposure
+  /// class, only one fewer round trip.
+  ///
+  /// ⚠️ **Read the two delivery numbers as different KINDS of thing.**
+  /// `deliveriesOutstanding` self-clears: it is money-out in flight, and the answer is
+  /// wait. `deliveriesDelayed` is the subset late enough to be worth attention.
+  /// `ordersNeedingReview`, `orphansUnresolved` and `problemsUnresolved` are the three
+  /// that mean a human is needed. A summary that flattened them would make waiting look
+  /// like work.
+  ///
+  /// ⚠️ **`deliveriesOutstanding` is exactly the reserve reconcile's quiet-window
+  /// predicate**, deliberately: it is also the answer to "why does the reconcile keep
+  /// skipping", and sharing the definition means the number an operator reads cannot
+  /// disagree with the number the reconcile acted on.
+  ///
+  /// **What bounds each number, stated because "bounded" alone would hide a difference:**
+  /// `ordersNeedingReview`, `ordersWithProblems` and `availableToSell` are O(1) tallies.
+  /// `deliveriesOutstanding` and `deliveriesDelayed` are bounded by `promiseHolders`, i.e.
+  /// by flow (§5.4). ⚠️ `problemsUnresolved` is bounded by the unresolved-problem index and
+  /// `orphansUnresolved` walks retained orphan history — both grow only while obligations
+  /// go uncleared, and an orphan costs a real payment or the signing secret to create
+  /// (`Orphans.add`), so neither is attacker-inflatable. Not O(1), and not the
+  /// grows-with-successful-business shape #69 and #70 removed.
+  public query func operator_summary() : async {
+    deliveriesOutstanding : Nat;
+    deliveriesDelayed : Nat;
+    ordersNeedingReview : Nat;
+    orphansUnresolved : Nat;
+    problemsUnresolved : Nat;
+    ordersWithProblems : Nat;
+    refusingNow : Gate.RailStateLatch;
+    availableToSell : Nat;
+    reserveObservedAtNs : ?Int;
+  } {
+    {
+      deliveriesOutstanding = unsettledDeliveries();
+      deliveriesDelayed = delayedDeliveryCount(Time.now());
+      ordersNeedingReview = Orders.countOf(orderStore, #needsReview);
+      orphansUnresolved = Orphans.unresolvedCount(orphanStore);
+      problemsUnresolved = Orders.unresolvedProblemCount(orderStore);
+      ordersWithProblems = Orders.unresolvedProblemOrderCount(orderStore);
+      refusingNow = railStateLatch;
+      availableToSell = Reserve.available(reserveFloor, Orders.promised(orderStore));
+      reserveObservedAtNs;
     };
   };
 

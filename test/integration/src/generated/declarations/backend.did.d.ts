@@ -657,6 +657,51 @@ export interface _SERVICE {
    */
   'list_orders' : ActorMethod<[[] | [OrderId], bigint], Page__1>,
   /**
+   * / "Is anything wrong right now" in ONE call (#68).
+   * /
+   * / ⚠️ **Public is a decision, not a default: #3's alerting needs no credentials.** What
+   * / reaches a human at 03:00 is a cron on the public queries, and an admin-gated summary
+   * / would put that back on a credentialed cron. Everything here is a COUNT, never an
+   * / entry, and `reserve_status` already publishes `totalOrders`, `openOrders`,
+   * / `expiredOrders`, `promisedTotal` and `availableToSell` — so there is no new exposure
+   * / class, only one fewer round trip.
+   * /
+   * / ⚠️ **Read the two delivery numbers as different KINDS of thing.**
+   * / `deliveriesOutstanding` self-clears: it is money-out in flight, and the answer is
+   * / wait. `deliveriesDelayed` is the subset late enough to be worth attention.
+   * / `ordersNeedingReview`, `orphansUnresolved` and `problemsUnresolved` are the three
+   * / that mean a human is needed. A summary that flattened them would make waiting look
+   * / like work.
+   * /
+   * / ⚠️ **`deliveriesOutstanding` is exactly the reserve reconcile's quiet-window
+   * / predicate**, deliberately: it is also the answer to "why does the reconcile keep
+   * / skipping", and sharing the definition means the number an operator reads cannot
+   * / disagree with the number the reconcile acted on.
+   * /
+   * / **What bounds each number, stated because "bounded" alone would hide a difference:**
+   * / `ordersNeedingReview`, `ordersWithProblems` and `availableToSell` are O(1) tallies.
+   * / `deliveriesOutstanding` and `deliveriesDelayed` are bounded by `promiseHolders`, i.e.
+   * / by flow (§5.4). ⚠️ `problemsUnresolved` is bounded by the unresolved-problem index and
+   * / `orphansUnresolved` walks retained orphan history — both grow only while obligations
+   * / go uncleared, and an orphan costs a real payment or the signing secret to create
+   * / (`Orphans.add`), so neither is attacker-inflatable. Not O(1), and not the
+   * / grows-with-successful-business shape #69 and #70 removed.
+   */
+  'operator_summary' : ActorMethod<
+    [],
+    {
+      'ordersNeedingReview' : bigint,
+      'ordersWithProblems' : bigint,
+      'reserveObservedAtNs' : [] | [bigint],
+      'deliveriesDelayed' : bigint,
+      'refusingNow' : RailStateLatch,
+      'availableToSell' : bigint,
+      'deliveriesOutstanding' : bigint,
+      'problemsUnresolved' : bigint,
+      'orphansUnresolved' : bigint,
+    }
+  >,
+  /**
    * / Which order did this Stripe `payment_intent` pay for (admin, §4.2)? The
    * / reconciliation lookup: given a charge in the Stripe Dashboard, find the
    * / order it funded. Null means the payment was never attributed to an order

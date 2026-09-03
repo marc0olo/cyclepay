@@ -426,6 +426,23 @@ export const idlFactory = ({ IDL }) => {
         ['query'],
       ),
     'list_orders' : IDL.Func([IDL.Opt(OrderId), IDL.Nat], [Page__1], ['query']),
+    'operator_summary' : IDL.Func(
+        [],
+        [
+          IDL.Record({
+            'ordersNeedingReview' : IDL.Nat,
+            'ordersWithProblems' : IDL.Nat,
+            'reserveObservedAtNs' : IDL.Opt(IDL.Int),
+            'deliveriesDelayed' : IDL.Nat,
+            'refusingNow' : RailStateLatch,
+            'availableToSell' : IDL.Nat,
+            'deliveriesOutstanding' : IDL.Nat,
+            'problemsUnresolved' : IDL.Nat,
+            'orphansUnresolved' : IDL.Nat,
+          }),
+        ],
+        ['query'],
+      ),
     'order_for_payment' : IDL.Func([IDL.Text], [IDL.Opt(OrderId)], ['query']),
     'orphan_depth' : IDL.Func(
         [],
