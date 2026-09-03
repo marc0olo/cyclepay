@@ -412,6 +412,53 @@
 
           <p id="summary-reserve" class="muted"></p>
         </section>
+
+        <!-- The four worklists, in the order an operator should read them: the two that
+             need a person first, then the two that clear themselves. Each carries its
+             state's meaning inline, from the hint tables in operator.ts, so the console
+             does not send anyone to RUNBOOK mid-incident. -->
+        <section id="admin-worklists">
+          <h3 class="section-h">Worklists</h3>
+          <p id="worklists-locked" class="muted" hidden></p>
+
+          <div id="worklists" hidden>
+            <section class="worklist" id="wl-orphans">
+              <h4 class="summary-h">Payments not attributed</h4>
+              <p class="muted">Needs a person: money we took and cannot attribute.</p>
+              <p class="muted" id="wl-orphans-empty" hidden>None.</p>
+              <ul class="worklist-rows" id="wl-orphans-rows"></ul>
+            </section>
+
+            <section class="worklist" id="wl-problems">
+              <h4 class="summary-h">Orders carrying a problem</h4>
+              <p class="muted">Needs a person: each is a named obligation on one order.</p>
+              <p class="muted" id="wl-problems-empty" hidden>None.</p>
+              <ul class="worklist-rows" id="wl-problems-rows"></ul>
+            </section>
+
+            <section class="worklist wait" id="wl-delayed">
+              <h4 class="summary-h">Deliveries past the alert threshold</h4>
+              <p class="muted" id="wl-delayed-note"></p>
+              <p class="muted" id="wl-delayed-empty" hidden>None.</p>
+              <ul class="worklist-rows" id="wl-delayed-rows"></ul>
+            </section>
+
+            <section class="worklist wait" id="wl-pending">
+              <h4 class="summary-h">Deliveries outstanding</h4>
+              <p class="muted" id="wl-pending-note"></p>
+              <p class="muted" id="wl-pending-empty" hidden>None.</p>
+              <ul class="worklist-rows" id="wl-pending-rows"></ul>
+            </section>
+          </div>
+        </section>
+
+        <!-- Refusal counts are public and cheap, and they answer "is the gate turning
+             people away, and why". Seven counts against the gate's five reasons: railClosed
+             and stripeApiFailed refuse before an amount is considered. -->
+        <section id="admin-refusals">
+          <h3 class="section-h">Refusals since deploy</h3>
+          <ul class="worklist-rows" id="refusal-rows"></ul>
+        </section>
       </section>
 
     </main>

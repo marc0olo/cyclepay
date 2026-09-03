@@ -19,6 +19,14 @@ import {
 import { currentIdentity, signIn, signOut } from "./auth";
 import { linkIdentityCommand, verifyIdentityCommand } from "./config";
 import {
+  ORDER_STATUS_HINTS,
+  ORPHAN_KIND_HINTS,
+  PROBLEM_KIND_HINTS,
+  REFUSAL_HINTS,
+  type Hint,
+  type RefusalTag,
+} from "./operator";
+import {
   clearIcEnvCookies,
   distinctBackendIds,
   hasConflictingIcEnv,
@@ -469,6 +477,186 @@ function renderOperatorSummary(): void {
     `Reserve available to sell: ${formatCycles(s.availableToSell)} cycles (${observed}).`;
 }
 
+/// One worklist row: what it is, and what its state means.
+///
+/// ⚠️ **The hint is rendered per ROW where the kind varies** (orphans have two kinds,
+/// problems four) and per SECTION where it does not (both delivery lists are one state).
+/// A single section-level hint on a mixed list would describe the first row and mislead
+/// about the rest.
+function worklistRow(into: HTMLElement, title: string, detail: string, hint: Hint): void {
+  const li = document.createElement("li");
+  li.className = "worklist-row";
+  li.dataset.urgency = hint.urgency;
+
+  const head = document.createElement("p");
+  head.className = "worklist-title";
+  head.textContent = title;
+
+  const sub = document.createElement("p");
+  sub.className = "muted worklist-detail";
+  sub.textContent = detail;
+
+  // Collapsed, so a list of twenty stays scannable and the meaning is one click away
+  // rather than in another window.
+  const why = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = "What this means";
+  const means = document.createElement("p");
+  means.textContent = hint.means;
+  const then = document.createElement("p");
+  then.className = "worklist-then";
+  then.textContent = hint.then;
+  why.append(summary, means, then);
+
+  li.append(head, sub, why);
+  into.append(li);
+}
+
+function fillWorklist(rowsId: string, emptyId: string, fill: (into: HTMLElement) => number): void {
+  const rows = document.getElementById(rowsId);
+  const empty = document.getElementById(emptyId);
+  if (!rows || !empty) return;
+  rows.replaceChildren();
+  const n = fill(rows);
+  empty.hidden = n > 0;
+}
+
+/// The four worklists. All admin-gated, so nothing here renders for a caller the canister
+/// will refuse: the panel says so instead of showing four empty lists, which would read as
+/// "nothing to do".
+async function loadWorklists(): Promise<void> {
+  const locked = document.getElementById("worklists-locked");
+  const wrap = document.getElementById("worklists");
+  if (!locked || !wrap) return;
+
+  // The two self-clearing lists carry their meaning at the SECTION level, because every
+  // row in them is the same state. Taken from the same table the rows use, so the console
+  // cannot say two different things about `#paid`.
+  const paid = document.getElementById("wl-pending-note");
+  const delayedNote = document.getElementById("wl-delayed-note");
+  if (paid) paid.textContent = `Clears itself. ${ORDER_STATUS_HINTS.paid.then}`;
+  if (delayedNote) {
+    delayedNote.textContent =
+      "Clears itself, and late enough to be worth reading. " + ORDER_STATUS_HINTS.paid.then;
+  }
+
+  const allowed = adminStatus !== null && (adminStatus.granted || adminStatus.isController);
+  locked.hidden = allowed;
+  wrap.hidden = !allowed;
+  if (!allowed) {
+    locked.textContent =
+      "The worklists need operator access. This identity does not have it, so they are not shown: " +
+      "four empty lists would read as nothing to do.";
+    return;
+  }
+
+  try {
+    const [orphans, problems, delayed, pending] = await Promise.all([
+      backend.orphans_unresolved(null, 50n),
+      backend.admin_orders(
+        {
+          withUnresolvedProblems: true,
+          status: undefined,
+          owner: undefined,
+          createdFromNs: undefined,
+          createdToNs: undefined,
+        },
+        null,
+        50n,
+      ),
+      backend.delayed_deliveries(null, 50n),
+      backend.pending_deliveries(),
+    ]);
+
+    fillWorklist("wl-orphans-rows", "wl-orphans-empty", (into) => {
+      for (const entry of orphans.entries) {
+        worklistRow(
+          into,
+          `Payment ${entry.id}`,
+          entry.detail,
+          ORPHAN_KIND_HINTS[entry.kind.__kind__],
+        );
+      }
+      return orphans.entries.length;
+    });
+
+    fillWorklist("wl-problems-rows", "wl-problems-empty", (into) => {
+      let n = 0;
+      for (const order of problems.orders) {
+        // One row per unresolved PROBLEM, not per order: `resolve_problem` takes a kind,
+        // so an order with two open problems is two obligations.
+        for (const problem of order.problems) {
+          if (problem.resolvedAtNs !== undefined) continue;
+          worklistRow(
+            into,
+            `${shortPrincipal(order.id)}: ${problem.kind.__kind__}`,
+            problem.detail,
+            PROBLEM_KIND_HINTS[problem.kind.__kind__],
+          );
+          n += 1;
+        }
+      }
+      return n;
+    });
+
+    fillWorklist("wl-delayed-rows", "wl-delayed-empty", (into) => {
+      for (const entry of delayed.entries) {
+        worklistRow(
+          into,
+          shortPrincipal(entry.orderId),
+          `waiting ${formatAgo(nsToMillis(entry.heldSinceNs), Date.now())}` +
+            `, ${entry.retries} attempt(s)` +
+            (entry.pastMaxHold ? ", past the max hold" : ""),
+          ORDER_STATUS_HINTS[entry.status],
+        );
+      }
+      return delayed.entries.length;
+    });
+
+    fillWorklist("wl-pending-rows", "wl-pending-empty", (into) => {
+      for (const entry of pending) {
+        worklistRow(
+          into,
+          shortPrincipal(entry.orderId),
+          `${entry.retries} attempt(s)` +
+            (entry.lastError === undefined ? "" : `, last error: ${entry.lastError}`),
+          ORDER_STATUS_HINTS[entry.status],
+        );
+      }
+      return pending.length;
+    });
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("could not read the worklists", error);
+    locked.hidden = false;
+    wrap.hidden = true;
+    locked.textContent = "The worklists could not be read. The canister may be unreachable.";
+  }
+}
+
+/// Refusal counts, public. Seven counts against the gate's five reasons.
+async function loadRefusals(): Promise<void> {
+  const rows = document.getElementById("refusal-rows");
+  if (!rows) return;
+  let counts: Awaited<ReturnType<typeof backend.refusal_counts>>;
+  try {
+    counts = await backend.refusal_counts();
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("could not read refusal counts", error);
+    return;
+  }
+  rows.replaceChildren();
+  // ⚠️ Iterate the HINT table, not the response: the table is exhaustive over
+  // `keyof RefusalCounts` by type, so every count has a meaning and a new one is a
+  // compile error rather than a row with no explanation.
+  for (const tag of Object.keys(REFUSAL_HINTS) as RefusalTag[]) {
+    const n = counts.counts[tag];
+    if (n === 0n) continue;
+    worklistRow(rows, `${tag}: ${n}`, "", REFUSAL_HINTS[tag]);
+  }
+}
+
 function renderOrderMissing(): void {
   const node = document.getElementById("order-missing-detail");
   if (!node) return;
@@ -506,8 +694,10 @@ function applyRoute(route: Route): void {
 
   currentView = route.view;
   if (route.view === "admin") {
-    void loadAdminStatus();
+    // Worklists depend on the grant, so they follow the status read rather than racing it.
+    void loadAdminStatus().then(() => loadWorklists());
     void loadOperatorSummary();
+    void loadRefusals();
   }
   if (route.view === "order" && activeOrder?.id !== route.orderId) {
     // Deep link or Back into an order we are not currently holding.

@@ -964,3 +964,47 @@ code.flow-detail {
 #admin-link-command {
   overflow-x: auto;
 }
+
+/* Worklists. The two that need a person come first and carry the warm edge; the two
+   that clear themselves are visually quieter. Same device as the summary groups, for
+   the same reason: the distinction cannot be a glyph. */
+.worklist {
+  border-left: 3px solid var(--icp-warn);
+  padding-left: var(--space-3, 0.75rem);
+  margin-block: var(--space-4, 1rem);
+}
+
+.worklist.wait {
+  border-left-color: var(--icp-rule);
+}
+
+.worklist-rows {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.worklist-row {
+  border-top: 1px solid var(--icp-rule);
+  padding-block: var(--space-2, 0.5rem);
+}
+
+.worklist-title {
+  font-family: var(--font-mono);
+  margin: 0;
+}
+
+.worklist-detail {
+  margin: 0.1rem 0 0.25rem;
+}
+
+/* What to do is the operative half of a hint, so it does not read as more prose. */
+.worklist-then {
+  border-left: 2px solid var(--icp-rule);
+  padding-left: var(--space-2, 0.5rem);
+  color: var(--icp-fg-secondary);
+}
+
+#admin-refusals .worklist-row[data-urgency="wait"] .worklist-title {
+  color: var(--icp-fg-muted);
+}

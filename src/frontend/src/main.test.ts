@@ -23,6 +23,12 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { Principal } from "@icp-sdk/core/principal";
 import type { Backend } from "./actor";
 
+type OrphanPage = Awaited<ReturnType<Backend["orphans_unresolved"]>>;
+type DelayedPage = Awaited<ReturnType<Backend["delayed_deliveries"]>>;
+type PendingDeliveries = Awaited<ReturnType<Backend["pending_deliveries"]>>;
+type Refusals = Awaited<ReturnType<Backend["refusal_counts"]>>;
+type AdminOrdersPage = Awaited<ReturnType<Backend["admin_orders"]>>;
+
 // ── stub state, reconfigured per test ──────────────────────────────────────────
 
 type Quote = {
@@ -48,6 +54,29 @@ const state = {
   /// What `admin_status` answers. ⚠️ Three states, not two: a controller is not on the
   /// granted list and does not need to be, so "granted" and "isController" are
   /// independent.
+  // ⚠️ **Derived from the actor, not restated.** I first hand-wrote these row shapes,
+  // which is the same mirror this PR spent four commits removing.
+  orphans: { entries: [], nextCursor: undefined } as OrphanPage,
+  delayed: { entries: [], nextCursor: undefined } as DelayedPage,
+  pending: [] as PendingDeliveries,
+  problemOrders: { orders: [], nextCursor: undefined } as AdminOrdersPage,
+  refusals: {
+    counts: {
+      amountAboveMax: 0n,
+      stripeApiFailed: 0n,
+      canisterCyclesLow: 0n,
+      amountBelowMin: 0n,
+      reserveShort: 0n,
+      railClosed: 0n,
+      tooManyOpenOrders: 0n,
+    },
+    refusingNow: {
+      stripeApiFailing: false,
+      canisterCyclesLow: false,
+      reserveShort: false,
+      railClosed: false,
+    },
+  } as Refusals,
   /// The nine counts. ⚠️ Split by whether a human is required, not by severity.
   operatorSummary: {
     deliveriesOutstanding: 0n,
@@ -185,6 +214,11 @@ const typedStubs = {
     delivery: { alertAfterNs: 7_200_000_000_000n, maxHoldNs: 259_200_000_000_000n },
   }),
   admin_status: async () => state.adminStatus,
+  orphans_unresolved: async (_after: bigint | null, _limit: bigint) => state.orphans,
+  delayed_deliveries: async (_after: string | null, _limit: bigint) => state.delayed,
+  pending_deliveries: async () => state.pending,
+  refusal_counts: async () => state.refusals,
+  admin_orders: async (_f: unknown, _a: string | null, _l: bigint) => state.problemOrders,
   operator_summary: async () => state.operatorSummary,
   delivery_stats: async () => ({
     availableToSell: 775_000_000_000_000n,
@@ -344,6 +378,19 @@ beforeEach(() => {
   state.order = undefined;
   state.receipt = undefined;
   state.signInError = undefined;
+  state.orphans = { entries: [], nextCursor: undefined };
+  state.delayed = { entries: [], nextCursor: undefined };
+  state.pending = [];
+  state.problemOrders = { orders: [], nextCursor: undefined };
+  state.refusals = {
+    counts: {
+      amountAboveMax: 0n, stripeApiFailed: 0n, canisterCyclesLow: 0n, amountBelowMin: 0n,
+      reserveShort: 0n, railClosed: 0n, tooManyOpenOrders: 0n,
+    },
+    refusingNow: {
+      stripeApiFailing: false, canisterCyclesLow: false, reserveShort: false, railClosed: false,
+    },
+  };
   // ⚠️ Reset here, not spread from the previous test. Leaving these out let one test's
   // `ordersWithProblems` leak into the next and made a data-hook assertion fail for a
   // reason that had nothing to do with the code under test.
@@ -1255,5 +1302,137 @@ describe("operator summary: wait versus work (#68)", () => {
     state.operatorSummary = { ...state.operatorSummary, reserveObservedAtNs: undefined };
     await mount("landing", "#/admin");
     expect(el("summary-reserve").textContent).toMatch(/never observed/);
+  });
+});
+
+describe("worklists (#68)", () => {
+  const rows = (id: string) => [...el(id).querySelectorAll("li")];
+  const granted = {
+    caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+    granted: true,
+    isController: false,
+  };
+
+  test("⚠️ an ungranted identity is told WHY the lists are absent", async () => {
+    // Four empty lists would read as "nothing to do", which is the opposite of the truth
+    // for a caller the canister refuses.
+    await mount("landing", "#/admin");
+    expect(el("worklists").hidden).toBe(true);
+    expect(el("worklists-locked").hidden).toBe(false);
+    expect(el("worklists-locked").textContent).toMatch(/would read as nothing to do/);
+  });
+
+  test("a granted identity gets the lists, and each row carries what its state means", async () => {
+    state.adminStatus = granted;
+    state.orphans = {
+      entries: [
+        {
+          id: 7n,
+          kind: {
+            __kind__: "unattributed",
+            unattributed: { claimedRef: "bogus", paymentRef: "pi_x" },
+          },
+          rail: "card",
+          createdAtNs: 1n,
+          resolvedAtNs: undefined,
+          detail: "no order for pi_x",
+        },
+      ],
+      nextCursor: undefined,
+    } as never;
+    await mount("landing", "#/admin");
+
+    expect(el("worklists").hidden).toBe(false);
+    const orphanRows = rows("wl-orphans-rows");
+    expect(orphanRows).toHaveLength(1);
+    expect(orphanRows[0]!.textContent).toContain("Payment 7");
+    // ⚠️ The hint is INLINE: the console must not send anyone to RUNBOOK mid-incident.
+    expect(orphanRows[0]!.textContent).toMatch(/could not be attributed/);
+    expect(orphanRows[0]!.textContent).toMatch(/Refund it/);
+    // Needs a person, carried as data for the stylesheet to key off.
+    expect((orphanRows[0] as HTMLElement).dataset.urgency).toBe("act");
+  });
+
+  test("⚠️ one row per unresolved PROBLEM, not per order", async () => {
+    // `resolve_problem` takes a kind, so an order with two open problems is two
+    // obligations. Collapsing them to one row would hide one.
+    state.adminStatus = granted;
+    state.problemOrders = {
+      orders: [
+        {
+          id: "abc123",
+          problems: [
+            {
+              filedAtNs: 1n,
+              kind: { __kind__: "duplicate", duplicate: { paymentRef: "pi_a" } },
+              detail: "second charge",
+              resolvedAtNs: undefined,
+            },
+            {
+              filedAtNs: 2n,
+              kind: { __kind__: "deliveryStuck", deliveryStuck: { stage: "transfer" } },
+              detail: "stuck mid transfer",
+              resolvedAtNs: undefined,
+            },
+            {
+              filedAtNs: 3n,
+              kind: { __kind__: "duplicate", duplicate: { paymentRef: "pi_b" } },
+              detail: "RESOLVED_ROW_MARKER",
+              resolvedAtNs: 9n,
+            },
+          ],
+        },
+      ],
+      nextCursor: undefined,
+    } as never;
+    await mount("landing", "#/admin");
+
+    expect(rows("wl-problems-rows")).toHaveLength(2);
+    const text = el("wl-problems-rows").textContent ?? "";
+    expect(text).toContain("duplicate");
+    expect(text).toContain("deliveryStuck");
+    // The resolved one is absent, so a cleared obligation does not read as outstanding.
+    // ⚠️ A deliberately unmistakable marker: my first version asserted the absence of
+    // "already handled", which is also a phrase inside the `duplicate` HINT, so the test
+    // failed on its own copy rather than on the behaviour.
+    expect(text).not.toContain("RESOLVED_ROW_MARKER");
+  });
+
+  test("the self-clearing lists say so at the section level", async () => {
+    state.adminStatus = granted;
+    await mount("landing", "#/admin");
+    // ⚠️ Section-level because every row in these two is the same state. A per-row hint
+    // would repeat identically; a section hint on the MIXED lists would describe the first
+    // row and mislead about the rest, which is why those are per-row.
+    expect(el("wl-pending-note").textContent).toMatch(/Clears itself/);
+    expect(el("wl-delayed-note").textContent).toMatch(/worth reading/);
+  });
+
+  test("refusal counts render only what has happened, each with its meaning", async () => {
+    state.refusals = {
+      counts: {
+        amountAboveMax: 0n,
+        stripeApiFailed: 0n,
+        canisterCyclesLow: 0n,
+        amountBelowMin: 4n,
+        reserveShort: 2n,
+        railClosed: 0n,
+        tooManyOpenOrders: 0n,
+      },
+      refusingNow: {
+        stripeApiFailing: false,
+        canisterCyclesLow: false,
+        reserveShort: false,
+        railClosed: false,
+      },
+    };
+    await mount("landing", "#/admin");
+    const text = el("refusal-rows").textContent ?? "";
+    expect(text).toContain("amountBelowMin: 4");
+    expect(text).toContain("reserveShort: 2");
+    // Zeroes are not news, so they are not rows.
+    expect(text).not.toContain("railClosed");
+    // ⚠️ reserveShort's hint names the step that actually gets forgotten.
+    expect(text).toMatch(/refresh_reserve/);
   });
 });
