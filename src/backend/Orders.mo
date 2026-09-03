@@ -276,10 +276,12 @@ module {
   ///   - `#paid` → `Main.sweepableCount`, which short-circuits the recovery sweep at 0.
   ///     The only tally on a money path.
   ///   - `#created`, `#expired` → `reserve_status`. Operator metrics, not decisions.
-  ///   - `#needsReview` → nothing reads it, and it stays tracked on purpose: being here
-  ///     is what puts escalated orders under `reconcileBounded`'s drift detection, and an
-  ///     order whose money position a human is establishing is the last one whose
-  ///     bookkeeping should go unchecked.
+  ///   - `#needsReview` → `Main.operator_summary`, the one number on that summary that
+  ///     means a human is needed rather than that something is in flight. It was tracked
+  ///     with no reader before that, deliberately: being here is what puts escalated
+  ///     orders under `reconcileBounded`'s drift detection, and an order whose money
+  ///     position a human is establishing is the last one whose bookkeeping should go
+  ///     unchecked.
   ///
   /// ⚠️ **The admission gate reads NONE of these**, and must not be "optimised" onto
   /// `countOf`: its cap is per principal, so a global tally cannot answer it, and
@@ -1269,6 +1271,15 @@ module {
       };
     };
     out.toArray();
+  };
+
+  /// How many ORDERS carry at least one unresolved problem. O(1).
+  ///
+  /// ⚠️ The index's size IS that number, so this replaces
+  /// `withUnresolvedProblems(store).size()` — which materialised the entire worklist as an
+  /// array to read its length, on a query anyone can call.
+  public func unresolvedProblemOrderCount(store : Store) : Nat {
+    store.unresolvedProblems.size();
   };
 
   /// Total unresolved problems across all orders — the number an operator watches.

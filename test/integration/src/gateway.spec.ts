@@ -3740,3 +3740,100 @@ test('89 — an OPEN transfer must block the reserve reconcile, and stop blockin
   expect(after.reserveFloor).toBe(observedAfter);
   expect(after.reserveFloor).toBeGreaterThan(before.reserveFloor);
 });
+
+test('90 — operator_summary is public, and cannot disagree with the surfaces it summarises (#68)', async () => {
+  // ⚠️ **What a summary gets wrong is DIVERGENCE.** Every number has an authoritative
+  // source already, so the risk is not a bad count — it is a second definition that
+  // drifts from the first while both look plausible. So this asserts agreement with each
+  // source rather than against literals.
+  const summary = await gw.asAnon.operator_summary();
+  const reserve = await gw.asAnon.reserve_status();
+  const refusals = await gw.asAnon.refusal_counts();
+  const orphanD = await gw.asAnon.orphan_depth();
+  const problemD = await gw.asAnon.problem_depth();
+
+  // Public on purpose: #3's alerting needs no credentials, so a cron can read this.
+  expect(summary.orphansUnresolved).toBe(orphanD.unresolved);
+  expect(summary.problemsUnresolved).toBe(problemD.unresolved);
+  expect(summary.ordersWithProblems).toBe(problemD.orders);
+  expect(summary.availableToSell).toBe(reserve.availableToSell);
+  expect(summary.reserveObservedAtNs).toEqual(reserve.reserveObservedAtNs);
+  expect(summary.refusingNow).toEqual(refusals.refusingNow);
+  expect(summary.orphansUnresolved).toBe(BigInt((await openOrphans(gw)).length));
+
+  // ── deliveriesDelayed, against a delay this scenario CREATES ────────────────────────
+  //
+  // ⚠️ **Measured, not assumed: comparing it to the page here passed with the field
+  // hardwired to 0**, because nothing before this point leaves a delayed delivery. An
+  // agreement between two zeros is not an agreement. So the delay is produced.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+  const created = expectOk(await createOrderWithSession(
+    gw, { tier: 'tier5' }, USER_ACCOUNT, [], { sessionId: 'cs_summary_90' },
+  ));
+  const target = created.order;
+  await stopNns(gw, CYCLES_LEDGER_ID);
+  try {
+    expect(await deliverWebhook(gw, checkoutSessionBody({
+      eventId: 'evt_summary90paid', paymentIntent: 'pi_summary90paid',
+      clientReferenceId: clientReferenceFor(target.id), amountCents: TIER_USD_CENTS,
+    }))).toMatchObject({ status_code: 200 });
+    // Past `alertAfterNs` (2 h) and far under `maxHoldNs` (72 h), so it is delayed rather
+    // than escalated. ⚠️ A failed retry patches the JOURNAL, not the order, so
+    // `updatedAtNs` — the held-since clock `waitStage` reads — stays at the payment.
+    // ⚠️ **One direction of "neither number contains the other", pinned here.** The
+    // webhook drives delivery itself, so the intent is journalled and the transfer issued
+    // before this line — `deliveriesOutstanding` counts the order already, while
+    // `deliveriesDelayed` cannot, because it has waited seconds rather than hours.
+    //
+    // ⚠️ I first wrote this assertion the other way round, claiming a paid order has no
+    // journal entry until a sweep runs. It has one: `Delivery.openEntry` is called inside
+    // `driveDelivery`, which the webhook invokes. The no-intent case is real but arrives
+    // differently — a delivery that BAILS before issuing (short reserve, stale rate, gas
+    // floor) leaves a `#paid` order with no intent, so `deliveriesDelayed` sees it and
+    // `deliveriesOutstanding` does not. That direction is not pinned here; producing it
+    // needs a drained reserve.
+    expect(await gw.asAdmin.delivery_journal(target.id)).toHaveLength(1);
+    const fresh = await gw.asAnon.operator_summary();
+    expect(fresh.deliveriesOutstanding).toBeGreaterThan(0n);
+
+    await gw.pic.advanceTime(3 * 3_600 * 1_000);
+    await gw.pic.tick(10);
+    expect(await orderStatus(gw, target.id)).toBe('paid');
+
+    const delayed = await allDelayedDeliveries(gw);
+    // The assertion that makes the next line mean something.
+    expect(delayed.length).toBeGreaterThan(0);
+    // ⚠️ **`#paid` only.** An escalated order keeps the intent-without-block shape
+    // forever, so if `#needsReview` ever entered this list it would sit there permanently
+    // as noise beside the real delays. Pinned here because the predicate is now the only
+    // status gate — widening it changes the page and the summary identically, so the
+    // agreement below could no longer catch it.
+    expect(delayed.map((d) => statusKey(d))).toEqual(delayed.map(() => 'paid'));
+    expect(delayed.map((d) => d.orderId)).toContain(target.id);
+    const withDelay = await gw.asAnon.operator_summary();
+    expect(withDelay.deliveriesDelayed).toBe(BigInt(delayed.length));
+    // ⚠️ `deliveriesOutstanding` is the reconcile's own quiet-window predicate, so an
+    // order with an issued transfer and no block must appear in it — this is also the
+    // answer to "why does the reconcile keep skipping".
+    expect(withDelay.deliveriesOutstanding).toBeGreaterThan(0n);
+  } finally {
+    await startNns(gw, CYCLES_LEDGER_ID);
+  }
+
+  // ── orphansUnresolved, against a delta ──────────────────────────────────────────────
+  //
+  // A signed payment naming an order that does not exist is unattributable, which is
+  // exactly an orphan — so the count moves by one and the agreement holds ACROSS the
+  // change, which comparing two already-equal numbers would not have shown.
+  const before = (await gw.asAnon.operator_summary()).orphansUnresolved;
+  expect(await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_summary90', paymentIntent: 'pi_summary90',
+    clientReferenceId: clientReferenceFor('00000000000000000000000000000090'),
+    amountCents: TIER_USD_CENTS,
+  }))).toMatchObject({ status_code: 200 });
+  const after = await gw.asAnon.operator_summary();
+  expect(after.orphansUnresolved).toBe(before + 1n);
+  expect(after.orphansUnresolved).toBe((await gw.asAnon.orphan_depth()).unresolved);
+  expect(after.orphansUnresolved).toBe(BigInt((await openOrphans(gw)).length));
+});

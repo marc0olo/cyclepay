@@ -125,6 +125,22 @@ jobs:
       - name: install integration deps
         run: npm --prefix test/integration ci
 
+      # ⚠️ **CI ran a SUBSET of the gate's steps, and this is the gap that mattered
+      # twice.** The committed bindings can be stale while every CI job passes: this job
+      # typechecks against whatever is in the checkout, so a stale binding is invisible to
+      # it — and a comment-only Motoko edit moves both generated artifacts, because moc
+      # emits doc comments into the `.did`.
+      #
+      # It belongs in THIS job and needs no backend build: it regenerates from the
+      # committed `.did` (present in the checkout) using this suite's own
+      # `@icp-sdk/bindgen` devDependency, installed above. Paired with the motoko job's
+      # "committed .did is current", the two together mean the bindings match the code.
+      #
+      # Before the typecheck, because a typecheck against stale declarations is checking
+      # the wrong interface.
+      - name: committed bindings match the .did
+        run: bash scripts/check-bindings.sh
+
       - name: typecheck
         run: npm --prefix test/integration run typecheck
 

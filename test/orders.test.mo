@@ -1493,6 +1493,27 @@ suite("#39 — cumulative delivery figures", func() {
 // that stays assertable — that the rows are right — passes for a function returning
 // nothing. So both halves ride ONE call below: split across two calls, each could pass
 // for a different broken implementation.
+suite("unresolvedProblemOrderCount is the index size (#68)", func() {
+  test("it equals what materialising the worklist would have returned", func() {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "p-1", alice);
+    ignore newOrder(store, "p-2", alice);
+    ignore newOrder(store, "p-3", bob);
+    // ⚠️ Asserted as an EQUIVALENCE to the implementation it replaced, not against a
+    // literal. `problem_depth` built the whole worklist as an array to read its length on
+    // a query anyone can call; the index's size is the same number, and this is what says
+    // so rather than assuming it.
+    assert Orders.unresolvedProblemOrderCount(store) == Orders.withUnresolvedProblems(store).size();
+    ignore Orders.fileProblem(store, "p-1", #duplicate({ paymentRef = "pi_a" }), "a", 100);
+    ignore Orders.fileProblem(store, "p-1", #deliveryStuck({ stage = "transfer" }), "b", 100);
+    ignore Orders.fileProblem(store, "p-3", #duplicate({ paymentRef = "pi_c" }), "c", 100);
+    // Two ORDERS, three problems — the two numbers `problem_depth` reports.
+    assert Orders.unresolvedProblemOrderCount(store) == 2;
+    assert Orders.unresolvedProblemCount(store) == 3;
+    assert Orders.unresolvedProblemOrderCount(store) == Orders.withUnresolvedProblems(store).size();
+  });
+});
+
 suite("ownerPage bounds the work, not just the response (#70)", func() {
   // Foreign ids all begin `0`, ours all begin `f`, so every one of bob's orders sorts
   // BEFORE every one of alice's — the worst case for a walk over the global store, which

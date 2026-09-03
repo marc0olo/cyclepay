@@ -836,7 +836,8 @@ Public queries (transparency is the product thesis):
 
 `can_purchase` · `card_tiers` · `cycles_status` · `delivery_stats` · `expected_livemode` ·
 `health` ·
-`lifecycle_config` · `orphan_depth` · `pricing_status` · `problem_depth` ·
+`lifecycle_config` · `operator_summary` · `orphan_depth` · `pricing_status` ·
+`problem_depth` ·
 `quote_previews` · `recovery_status` · `refusal_counts` · `reserve_status` ·
 `stripe_origin`
 

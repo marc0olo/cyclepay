@@ -766,6 +766,67 @@ service : {
   /// a ~2 MB response, against a limit that is actually instructions. `ownerPage` walks
   /// the caller's own index from the cursor instead, and its cost is that buyer's page.
   list_orders: (afterId: opt OrderId, limit: nat) -> (Page__1) query;
+  /// "Is anything wrong right now" in ONE call (#68).
+  /// 
+  /// ⚠️ **Public is a decision, not a default: #3's alerting needs no credentials.** What
+  /// reaches a human at 03:00 is a cron on the public queries, and an admin-gated summary
+  /// would put that back on a credentialed cron. Everything here is a COUNT, never an
+  /// entry, and `reserve_status` already publishes `totalOrders`, `openOrders`,
+  /// `expiredOrders`, `promisedTotal` and `availableToSell` — so there is no new exposure
+  /// class, only one fewer round trip.
+  /// 
+  /// ⚠️ **The two delivery numbers are measured over DIFFERENT populations, and neither
+  /// contains the other.** `deliveriesOutstanding` means a transfer has been ISSUED, so it
+  /// needs the journal entry that records the intent. `deliveriesDelayed` reads the
+  /// ORDER's own clock and needs neither.
+  /// 
+  /// Both directions are reachable, so `deliveriesDelayed` is **not** a subset:
+  ///   - outstanding, not delayed: a transfer issued seconds ago.
+  ///   - delayed, not outstanding: a delivery that bailed before issuing — short reserve,
+  ///     stale rate, gas floor — so there is no intent to be outstanding about.
+  ///   - both: a transfer issued long enough ago that the clock ran out, including one that
+  ///     landed without its block recorded.
+  /// 
+  /// ⚠️ That last case is the CANONICAL outstanding shape (`intent` set, `blockIndex`
+  /// null), not a delayed-only one — it is what `unsettledDeliveries` exists to detect and
+  /// what freezes the reconcile's quiet window. Filing it under "delayed, not outstanding"
+  /// would tell an operator that `outstanding = 0` means no transfer is in flight, when a
+  /// transfer of unknown fate is exactly what it means.
+  /// 
+  /// ⚠️ So `outstanding = 0, delayed = 1` is a real state, not the summary contradicting
+  /// itself — and a UI that presented one as a subset of the other would be wrong exactly
+  /// where it matters.
+  /// 
+  /// They also differ in what they ask of a human: `deliveriesOutstanding` self-clears —
+  /// it is money-out in flight and the answer is wait — while `ordersNeedingReview`,
+  /// `orphansUnresolved` and `problemsUnresolved` are the three that mean a human is
+  /// needed. A summary that flattened those would make waiting look like work.
+  /// 
+  /// ⚠️ **`deliveriesOutstanding` is exactly the reserve reconcile's quiet-window
+  /// predicate**, deliberately: it is also the answer to "why does the reconcile keep
+  /// skipping", and sharing the definition means the number an operator reads cannot
+  /// disagree with the number the reconcile acted on.
+  /// 
+  /// **What bounds each number, stated because "bounded" alone would hide a difference:**
+  /// `ordersNeedingReview`, `ordersWithProblems` and `availableToSell` are O(1) tallies.
+  /// `deliveriesOutstanding` and `deliveriesDelayed` are bounded by `promiseHolders`, i.e.
+  /// by flow (§5.4). ⚠️ `problemsUnresolved` is bounded by the unresolved-problem index and
+  /// `orphansUnresolved` walks retained orphan history — both grow only while obligations
+  /// go uncleared, and an orphan costs a real payment or the signing secret to create
+  /// (`Orphans.add`), so neither is attacker-inflatable. Not O(1), and not the
+  /// grows-with-successful-business shape #69 and #70 removed.
+  operator_summary: () ->
+   (record {
+      availableToSell: nat;
+      deliveriesDelayed: nat;
+      deliveriesOutstanding: nat;
+      ordersNeedingReview: nat;
+      ordersWithProblems: nat;
+      orphansUnresolved: nat;
+      problemsUnresolved: nat;
+      refusingNow: RailStateLatch;
+      reserveObservedAtNs: opt int;
+    }) query;
   /// Which order did this Stripe `payment_intent` pay for (admin, §4.2)? The
   /// reconciliation lookup: given a charge in the Stripe Dashboard, find the
   /// order it funded. Null means the payment was never attributed to an order
