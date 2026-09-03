@@ -166,7 +166,7 @@ export function installFixtures(host: FixtureHost): void {
     icrc1_balance_of: async () => 0n,
   };
 
-  const backend = {
+  const stub = {
     card_tiers: async () => [
       // The #33 presets: $10 / $20 / $50. `paymentLinkUrl` went with the links.
       { id: "t10", usdCents: 1_000n },
@@ -183,6 +183,11 @@ export function installFixtures(host: FixtureHost): void {
         minPurchaseUsdCents: 1_000n,
         maxPurchaseUsdCents: 10_000n,
       },
+      // ⚠️ Added by the `satisfies` below, not by anyone noticing. `lifecycle_config`
+      // gained `delivery` earlier in this same PR (#68 step 1) and this fixture kept
+      // returning `{gate}` alone: the cast accepted it, so the specs drove the app with
+      // a shape the canister no longer returns.
+      delivery: { alertAfterNs: 7_200_000_000_000n, maxHoldNs: 259_200_000_000_000n },
     }),
     delivery_stats: async () => ({
     availableToSell: 775_000_000_000_000n,
@@ -198,7 +203,16 @@ export function installFixtures(host: FixtureHost): void {
     },
   }),
   pricing_status: async () => ({
-      config: { feeBps: 290n, feeFixedCents: 30n },
+      // ⚠️ Five fields, not two. The pricing `Config` carries the staleness window, the
+      // delta bound and the minimum rate sources as well as the fee, and this stub had
+      // only the fee: another shape the cast accepted.
+      config: {
+        feeBps: 290n,
+        feeFixedCents: 30n,
+        maxAgeNs: 900_000_000_000n,
+        maxRateDeltaBps: 500n,
+        minRateSources: 3n,
+      },
       rates: {
         usdPerIcpMicros: USD_PER_ICP_MICROS,
         xdrPermyriadPerIcp: XDR_PERMYRIAD_PER_ICP,
@@ -225,7 +239,15 @@ export function installFixtures(host: FixtureHost): void {
       }),
     }),
     get_order: async () => order,
-    list_orders: async () => ({ orders: order ? [order] : [], nextCursor: null }),
+    // ⚠️ Two arguments, and `nextCursor` ABSENT rather than null. The wrapper renders a
+    // Candid `opt` as `?: T`, so `undefined` means absent and `null` is a value of the
+    // wrong shape. This stub had `nextCursor: null` with no parameters at all, which is
+    // the inconsistency the cast was hiding: `quote_previews` next to it already used
+    // `undefined` for the same thing.
+    list_orders: async (_afterId: string | null, _limit: bigint) => ({
+      orders: order ? [order] : [],
+      nextCursor: undefined,
+    }),
     receipt: async () =>
       order === null || order.status !== "delivered"
         ? null
@@ -242,19 +264,38 @@ export function installFixtures(host: FixtureHost): void {
               rateQueriedSources: 6n,
             },
           },
-  } as unknown as Backend;
+    // ⚠️ **`satisfies Partial<Backend>`, then ONE narrow assertion.** This was
+    // `as unknown as Backend`, which checked not a single stub signature against the
+    // real service: the same hand-written-mirror-with-the-check-laundered-away that
+    // #66/#85 removed from the integration suite, where a missing method fails loudly
+    // and a CHANGED shape silently feeds the app the old one.
+    //
+    // `Partial` because the fixture is genuinely partial and must stay so: the specs
+    // exercise a handful of paths, and implementing forty methods to satisfy an
+    // annotation would be worse than the cast. What `satisfies` buys is that every stub
+    // that IS here is checked, and a stub name the service does not have is an error.
+    // The one remaining assertion is at the boundary, where the partiality is the point.
+  } satisfies Partial<Backend>;
+
+  // ⚠️ **`as unknown as` is still needed HERE, and now it does no checking.** A partial
+  // object is not assignable to `Backend` however it is asserted, so the boundary needs
+  // one deliberate step. The difference from before is where the check lives: `satisfies
+  // Partial<Backend>` above verifies every stub's signature, so this assertion covers
+  // only the PARTIALITY. It used to cover everything, which is why five wrong shapes sat
+  // in this object.
+  const fixtureBackend = stub as unknown as Backend;
 
   // NOT installed here. Most specs are about what renders while the gateway is
   // unreachable, which is the app's error path and worth keeping as the default;
   // a fixture that took over at load would quietly delete that coverage.
   const api: FixtureApi = {
     async useBackend() {
-      host.useBackend(() => backend);
+      host.useBackend(() => fixtureBackend);
       host.useCyclesLedger(() => cyclesLedger);
       await host.reloadMarket();
     },
     async signIn() {
-      host.useBackend(() => backend);
+      host.useBackend(() => fixtureBackend);
       host.useCyclesLedger(() => cyclesLedger);
       host.signIn(identity);
       await host.reloadMarket();
