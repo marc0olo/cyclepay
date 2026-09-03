@@ -19,6 +19,9 @@ import {
   statusInfo,
   type StatusKey,
   STEPS,
+  formatAgo,
+  timeUntil,
+  formatDuration,
 } from "./format";
 
 describe("statusInfo", () => {
@@ -407,5 +410,60 @@ describe("rateSourceNote", () => {
 
   test("says nothing when no sources were recorded", () => {
     expect(rateSourceNote(0n, 0n)).toBe("");
+  });
+});
+
+describe("formatDuration", () => {
+  test("a duration, with no suffix", () => {
+    // ⚠️ Split out because "ago" is not always right: a delayed delivery has WAITED three
+    // hours. The worklist row rendered "waiting 213 days ago" before this existed, and a
+    // screenshot is what caught it.
+    expect(formatDuration(30_000)).toBe("under a minute");
+    expect(formatDuration(60_000)).toBe("1 minute");
+    expect(formatDuration(3 * 3_600_000)).toBe("3 hours");
+    expect(formatDuration(2 * 86_400_000)).toBe("2 days");
+  });
+});
+
+describe("formatAgo", () => {
+  const now = 1_700_000_000_000;
+  test("coarse buckets, because the question is whether it is stale", () => {
+    expect(formatAgo(now - 30_000, now)).toBe("under a minute ago");
+    expect(formatAgo(now - 60_000, now)).toBe("1 minute ago");
+    expect(formatAgo(now - 42 * 60_000, now)).toBe("42 minutes ago");
+    expect(formatAgo(now - 60 * 60_000, now)).toBe("1 hour ago");
+    expect(formatAgo(now - 5 * 3_600_000, now)).toBe("5 hours ago");
+    expect(formatAgo(now - 24 * 3_600_000, now)).toBe("1 day ago");
+    expect(formatAgo(now - 9 * 86_400_000, now)).toBe("9 days ago");
+  });
+
+  test("a clock that is behind reads as the future, and says so", () => {
+    // Rather than printing a negative interval, which reads as a bug in the figure
+    // rather than in the clock.
+    expect(formatAgo(now + 60_000, now)).toBe("in the future (check the clock)");
+  });
+
+  test("⚠️ NOT timeUntil: that returns null for anything past", () => {
+    // Reusing it here would render every observation as absent, i.e. "never observed"
+    // for a reserve observed a minute ago, which is the one number the line reports.
+    expect(timeUntil(now - 60_000, now)).toBeNull();
+    expect(formatAgo(now - 60_000, now)).toBe("1 minute ago");
+  });
+});
+
+describe("StatusKey is derived from the generated enum (#68)", () => {
+  test("statusInfo answers for every status the canister has", () => {
+    // ⚠️ The point is not this list: it is that `StatusKey` is `${OrderStatus}`, so a
+    // status added to the canister makes `statusInfo`'s switch non-exhaustive and fails
+    // the typecheck. It used to be a hand-written union reached through
+    // `order.status as unknown as StatusKey` — a double cast, so a new status compiled
+    // fine, fell off the end of the switch, and threw on `.label`.
+    const keys: StatusKey[] = [
+      "created", "cancelled", "expired", "paid", "delivered", "needsReview", "abandoned",
+    ];
+    for (const key of keys) {
+      expect(typeof statusInfo(key).label).toBe("string");
+      expect(statusInfo(key).label.length).toBeGreaterThan(0);
+    }
   });
 });

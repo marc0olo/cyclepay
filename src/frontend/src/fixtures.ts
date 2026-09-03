@@ -166,7 +166,7 @@ export function installFixtures(host: FixtureHost): void {
     icrc1_balance_of: async () => 0n,
   };
 
-  const backend = {
+  const stub = {
     card_tiers: async () => [
       // The #33 presets: $10 / $20 / $50. `paymentLinkUrl` went with the links.
       { id: "t10", usdCents: 1_000n },
@@ -183,6 +183,11 @@ export function installFixtures(host: FixtureHost): void {
         minPurchaseUsdCents: 1_000n,
         maxPurchaseUsdCents: 10_000n,
       },
+      // ⚠️ Added by the `satisfies` below, not by anyone noticing. `lifecycle_config`
+      // gained `delivery` earlier in this same PR (#68 step 1) and this fixture kept
+      // returning `{gate}` alone: the cast accepted it, so the specs drove the app with
+      // a shape the canister no longer returns.
+      delivery: { alertAfterNs: 7_200_000_000_000n, maxHoldNs: 259_200_000_000_000n },
     }),
     delivery_stats: async () => ({
     availableToSell: 775_000_000_000_000n,
@@ -198,7 +203,16 @@ export function installFixtures(host: FixtureHost): void {
     },
   }),
   pricing_status: async () => ({
-      config: { feeBps: 290n, feeFixedCents: 30n },
+      // ⚠️ Five fields, not two. The pricing `Config` carries the staleness window, the
+      // delta bound and the minimum rate sources as well as the fee, and this stub had
+      // only the fee: another shape the cast accepted.
+      config: {
+        feeBps: 290n,
+        feeFixedCents: 30n,
+        maxAgeNs: 900_000_000_000n,
+        maxRateDeltaBps: 500n,
+        minRateSources: 3n,
+      },
       rates: {
         usdPerIcpMicros: USD_PER_ICP_MICROS,
         xdrPermyriadPerIcp: XDR_PERMYRIAD_PER_ICP,
@@ -224,8 +238,147 @@ export function installFixtures(host: FixtureHost): void {
         };
       }),
     }),
+    // ── the operator console (#68) ────────────────────────────────────────────────
+    //
+    // ⚠️ Timestamps are NOW-relative, unlike the buyer fixtures' fixed `CREATED_AT_NS`.
+    // With the fixed value every figure rendered as "213 days ago", which made the console
+    // read as a dead deployment: the staleness of the reserve observation and the age of a
+    // delayed delivery are exactly the numbers an operator judges, so a screenshot of them
+    // frozen in the past shows the layout and none of the judgement.
+    //
+    // Populated on purpose: a console screenshot with every list empty shows the layout
+    // and none of the judgement the design is about. These figures are shaped to show
+    // both halves of the wait-versus-work split at once.
+    admin_status: async () => ({
+      caller: BUYER,
+      granted: true,
+      isController: false,
+    }),
+    operator_summary: async () => ({
+      deliveriesOutstanding: 3n,
+      deliveriesDelayed: 1n,
+      ordersNeedingReview: 1n,
+      orphansUnresolved: 2n,
+      problemsUnresolved: 2n,
+      ordersWithProblems: 1n,
+      refusingNow: {
+        stripeApiFailing: false,
+        canisterCyclesLow: false,
+        reserveShort: false,
+        railClosed: false,
+      },
+      availableToSell: 775_000_000_000_000n,
+      reserveObservedAtNs: BigInt(Date.now() - 4 * 60_000) * 1_000_000n,
+    }),
+    refusal_counts: async () => ({
+      counts: {
+        amountAboveMax: 1n,
+        stripeApiFailed: 0n,
+        canisterCyclesLow: 0n,
+        amountBelowMin: 6n,
+        reserveShort: 2n,
+        railClosed: 0n,
+        tooManyOpenOrders: 3n,
+      },
+      refusingNow: {
+        stripeApiFailing: false,
+        canisterCyclesLow: false,
+        reserveShort: false,
+        railClosed: false,
+      },
+    }),
+    orphans_unresolved: async () => ({
+      entries: [
+        {
+          id: 12n,
+          kind: {
+            __kind__: "unattributed" as const,
+            unattributed: { claimedRef: "aaaaa-aa_deadbeef", paymentRef: "pi_3Qx1" },
+          },
+          rail: "card" as Order["rail"],
+          createdAtNs: BigInt(Date.now() - 90 * 60_000) * 1_000_000n,
+          resolvedAtNs: undefined,
+          detail: "client_reference_id resolved to no order",
+        },
+        {
+          id: 13n,
+          kind: {
+            __kind__: "unprocessable" as const,
+            unprocessable: { field: "payment_intent", eventId: "evt_1Qx7" },
+          },
+          rail: "card" as Order["rail"],
+          createdAtNs: BigInt(Date.now() - 20 * 60_000) * 1_000_000n,
+          resolvedAtNs: undefined,
+          detail: "checkout.session.completed with no payment_intent",
+        },
+      ],
+      nextCursor: undefined,
+    }),
+    delayed_deliveries: async () => ({
+      entries: [
+        {
+          orderId: "9f3a0000000000000000000000000000",
+          status: "paid" as Order["status"],
+          heldSinceNs: BigInt(Date.now() - 3 * 3_600_000) * 1_000_000n,
+          waitedNs: 10_800_000_000_000n,
+          retries: 4n,
+          pastMaxHold: false,
+          delayedAtNs: CREATED_AT_NS,
+        },
+      ],
+      nextCursor: undefined,
+    }),
+    pending_deliveries: async () => [
+      {
+        orderId: "9f3a0000000000000000000000000000",
+        status: "paid" as Order["status"],
+        updatedAtNs: BigInt(Date.now() - 3 * 3_600_000) * 1_000_000n,
+        createdAtNs: BigInt(Date.now() - 3 * 3_600_000) * 1_000_000n,
+        destination: { __kind__: "cyclesLedgerAccount" as const, cyclesLedgerAccount: { owner: BUYER, subaccount: undefined } },
+        retries: 4n,
+        blockIndex: undefined,
+        lastError: "cycles ledger did not answer",
+        cyclesDelivered: undefined,
+        transferIntent: undefined,
+      },
+    ],
+    // ⚠️ Returns an order carrying an UNRESOLVED problem, matching the summary's count.
+    // The first version returned the buyer's order or nothing, so the summary said "1
+    // order carrying a problem" while the worklist said "None." and the history said "No
+    // orders match" — three panels disagreeing in a screenshot meant to show how they
+    // agree. In production all three read the same store.
+    admin_orders: async () => ({
+      orders: [
+        {
+          // Reuses the canned buyer order rather than a second hand-written one, so the
+          // console cannot depict an order shape the app never sees.
+          ...cannedOrder({ status: "needsReview" }),
+          id: "9f3a0000000000000000000000000000",
+          problems: [
+            {
+              filedAtNs: BigInt(Date.now() - 40 * 60_000) * 1_000_000n,
+              kind: {
+                __kind__: "deliveryStuck" as const,
+                deliveryStuck: { stage: "transfer issued, no block recorded" },
+              },
+              detail: "cycles ledger did not answer; money position unknown",
+              resolvedAtNs: undefined,
+            },
+          ],
+        },
+      ],
+      nextCursor: undefined,
+    }),
     get_order: async () => order,
-    list_orders: async () => ({ orders: order ? [order] : [], nextCursor: null }),
+    // ⚠️ Two arguments, and `nextCursor` ABSENT rather than null. The wrapper renders a
+    // Candid `opt` as `?: T`, so `undefined` means absent and `null` is a value of the
+    // wrong shape. This stub had `nextCursor: null` with no parameters at all, which is
+    // the inconsistency the cast was hiding: `quote_previews` next to it already used
+    // `undefined` for the same thing.
+    list_orders: async (_afterId: string | null, _limit: bigint) => ({
+      orders: order ? [order] : [],
+      nextCursor: undefined,
+    }),
     receipt: async () =>
       order === null || order.status !== "delivered"
         ? null
@@ -242,19 +395,63 @@ export function installFixtures(host: FixtureHost): void {
               rateQueriedSources: 6n,
             },
           },
-  } as unknown as Backend;
+    // ⚠️ **`satisfies Partial<Backend>`, then ONE narrow assertion.** This was
+    // `as unknown as Backend`, which checked not a single stub signature against the
+    // real service: the same hand-written-mirror-with-the-check-laundered-away that
+    // #66/#85 removed from the integration suite, where a missing method fails loudly
+    // and a CHANGED shape silently feeds the app the old one.
+    //
+    // `Partial` because the fixture is genuinely partial and must stay so: the specs
+    // exercise a handful of paths, and implementing forty methods to satisfy an
+    // annotation would be worse than the cast. What `satisfies` buys is that every stub
+    // that IS here is checked, and a stub name the service does not have is an error.
+    // The one remaining assertion is at the boundary, where the partiality is the point.
+    // ⚠️ **`Partial` checks SHAPES, not completeness.** A method the app calls and this
+    // object lacks compiles fine and fails at runtime with "not a function". That is the
+    // right trade, because that failure is loud, whereas the wrong-shape class this
+    // replaced was silent: four wrong shapes sat here through three commits with every
+    // suite green. Do not read `satisfies Partial<Backend>` as full coverage.
+  } satisfies Partial<Backend>;
+
+  // ⚠️ **The `unknown` hop is required here, and the reason is NEITHER of the two I first
+  // wrote.** An assertion is legal when either type is assignable to the other. Here
+  // neither is, and three probes pin which:
+  //
+  //   stub as Pick<Backend, 'card_tiers' | 'get_order'>   compiles
+  //   stub as Pick<Backend, keyof Backend>                TS2352
+  //   stub as Backend                                     TS2352
+  //
+  // So it is not member COUNT (a 1-of-40 partial asserts to a plain 40-member interface
+  // fine), and not `ActorSubclass`'s own structure (`Pick<..., keyof Backend>` strips index
+  // and call signatures and still fails). It is that neither direction holds: the stub is
+  // missing about thirty members, so stub to Backend fails; and the stub's members have
+  // NARROWER inferred types than the service's (`get_order` returns one specific order
+  // object, not `Order | null`), so Backend to stub fails too. Picking only the stubbed
+  // keys restores one direction, which is why that probe compiles.
+  //
+  // ⚠️ **The probe that mattered is the one distinguishing this from a real defect.**
+  // `satisfies Partial<Backend>` checks stub against Backend, and TypeScript's method
+  // parameters are bivariant, so a stub can satisfy it while the service's member is NOT
+  // assignable to the stub's: a fifth wrong shape `satisfies` is structurally unable to
+  // catch. The Pick-of-stubbed-keys probe compiling is what rules that out.
+  //
+  // The hop is acceptable because it no longer does any checking: `satisfies` above
+  // verifies every stub's signature, and this covers only the partiality. It used to cover
+  // everything, which is how four wrong shapes survived three commits with every suite
+  // green.
+  const fixtureBackend = stub as unknown as Backend;
 
   // NOT installed here. Most specs are about what renders while the gateway is
   // unreachable, which is the app's error path and worth keeping as the default;
   // a fixture that took over at load would quietly delete that coverage.
   const api: FixtureApi = {
     async useBackend() {
-      host.useBackend(() => backend);
+      host.useBackend(() => fixtureBackend);
       host.useCyclesLedger(() => cyclesLedger);
       await host.reloadMarket();
     },
     async signIn() {
-      host.useBackend(() => backend);
+      host.useBackend(() => fixtureBackend);
       host.useCyclesLedger(() => cyclesLedger);
       host.signIn(identity);
       await host.reloadMarket();

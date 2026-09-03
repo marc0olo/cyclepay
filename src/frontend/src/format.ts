@@ -1,16 +1,21 @@
 // Pure presentation/encoding helpers. No DOM, no agent, unit-tested.
 
-import type { Reason } from "./bindings/backend";
+import type { OrderStatus, Reason } from "./bindings/backend";
 
-/// OrderStatus variant keys as the Candid wrapper surfaces them.
-export type StatusKey =
-  | "created"
-  | "cancelled"
-  | "expired"
-  | "paid"
-  | "delivered"
-  | "needsReview"
-  | "abandoned";
+/// OrderStatus variant keys, DERIVED from the generated enum.
+///
+/// ⚠️ **This was a hand-written union of seven strings, and `main.ts` reached it through
+/// `order.status as unknown as StatusKey`.** A double cast launders the real type away: add
+/// a status to the canister and the cast still compiles, `statusInfo`'s switch falls off
+/// the end returning `undefined`, and `.label` throws on the buyer's order page. The
+/// interface grew a status and the mirror did not.
+///
+/// The template literal is what makes an enum usable as a plain string union: bindgen
+/// renders an all-empty Candid variant as a TypeScript `enum`, whose members are nominal,
+/// so `"delivered"` is not assignable to `OrderStatus` and every comparison against a
+/// literal would break. `${OrderStatus}` yields the VALUES as a union, so the comparisons
+/// keep working and a new status becomes a non-exhaustive-switch compile error instead.
+export type StatusKey = `${OrderStatus}`;
 
 export interface StatusInfo {
   label: string;
@@ -205,6 +210,36 @@ export function timeUntil(deadlineMs: number, nowMs: number): string | null {
     return `${totalMinutes} min ${String(seconds).padStart(2, "0")} s`;
   }
   return `${Math.max(1, Math.ceil(remainingMs / 1_000))} s`;
+}
+
+/// How long ago something happened, for an operator reading a staleness figure.
+///
+/// ⚠️ **Separate from `timeUntil`, which returns null for anything in the past.** Reusing
+/// it here would render every observation as absent, which reads as "never observed" for a
+/// reserve that was observed a minute ago: the one number this line exists to report.
+///
+/// Coarse on purpose. An operator asks "is this stale", not "how many seconds".
+export function formatDuration(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "under a minute";
+  if (minutes === 1) return "1 minute";
+  if (minutes < 60) return `${minutes} minutes`;
+  const hours = Math.floor(minutes / 60);
+  if (hours === 1) return "1 hour";
+  if (hours < 24) return `${hours} hours`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "1 day" : `${days} days`;
+}
+
+/// ⚠️ **Split from `formatDuration` because "ago" is not always the right suffix.** A
+/// delayed delivery has WAITED three hours; it did not start waiting "3 hours ago" as a
+/// separate fact. The first version of the worklist row rendered "waiting 213 days ago",
+/// which a screenshot caught and no assertion would have.
+export function formatAgo(pastMs: number, nowMs: number): string {
+  const elapsed = nowMs - pastMs;
+  // A clock that is behind reads as the future. Say so rather than printing a negative.
+  if (elapsed < 0) return "in the future (check the clock)";
+  return `${formatDuration(elapsed)} ago`;
 }
 
 /// Tolerance the UI allows between the figure a buyer was shown and the one the

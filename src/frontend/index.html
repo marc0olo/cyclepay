@@ -363,6 +363,135 @@
         </table>
       </section>
 
+      <!-- The operator console (#68). Reached at #/admin only: no nav link, because a
+           console entry point on a purchase page is noise for everyone who is not an
+           operator. -->
+      <section id="admin" class="view" hidden>
+        <h2 class="section-h">Operator console</h2>
+
+        <section id="admin-identity">
+          <h3 class="section-h">This browser identity</h3>
+          <p id="admin-principal" class="mono"></p>
+          <p id="admin-grant-state"></p>
+          <div id="admin-link" hidden>
+            <p class="muted">
+              To run operator commands as this identity, link it to the CLI and use that
+              identity for the calls.
+            </p>
+            <pre id="admin-link-command" class="mono"></pre>
+            <p class="muted" id="admin-link-note"></p>
+          </div>
+        </section>
+
+        <!-- The wait-versus-work distinction is carried by ORDER, HEADINGS and a token
+             colour, not by symbols: brand-lint bans pictographs in user-facing copy, and
+             the warning and tick glyphs that would otherwise do this job are pictographs.
+             So the groups say it in words, and the act group comes first.
+
+             Whether an operator can actually TELL THEM APART is a cascade-and-layout
+             property, so it is asserted in the Chromium suite. Note this comment itself
+             tripped the pictograph check: it reads all of index.html, comments included,
+             unlike the CSS check which strips them. -->
+        <section id="admin-summary">
+          <h3 class="section-h">Right now</h3>
+          <p id="summary-headline"></p>
+
+          <div class="summary-groups">
+            <section id="summary-act" class="summary-group">
+              <h4 class="summary-h">Needs a person</h4>
+              <p class="muted">Nothing in this group clears itself.</p>
+              <dl id="summary-act-figures" class="figures"></dl>
+            </section>
+
+            <section id="summary-wait" class="summary-group">
+              <h4 class="summary-h">In progress</h4>
+              <p class="muted">These clear on their own. Reading them is enough.</p>
+              <dl id="summary-wait-figures" class="figures"></dl>
+            </section>
+          </div>
+
+          <p id="summary-reserve" class="muted"></p>
+        </section>
+
+        <!-- The four worklists, in the order an operator should read them: the two that
+             need a person first, then the two that clear themselves. Each carries its
+             state's meaning inline, from the hint tables in operator.ts, so the console
+             does not send anyone to RUNBOOK mid-incident. -->
+        <section id="admin-worklists">
+          <h3 class="section-h">Worklists</h3>
+          <p id="worklists-locked" class="muted" hidden></p>
+
+          <div id="worklists" hidden>
+            <section class="worklist" id="wl-orphans">
+              <h4 class="summary-h">Payments not attributed</h4>
+              <p class="muted">Needs a person: money we took and cannot attribute.</p>
+              <p class="muted" id="wl-orphans-empty" hidden>None.</p>
+              <ul class="worklist-rows" id="wl-orphans-rows"></ul>
+            </section>
+
+            <section class="worklist" id="wl-problems">
+              <h4 class="summary-h">Orders carrying a problem</h4>
+              <p class="muted">Needs a person: each is a named obligation on one order.</p>
+              <p class="muted" id="wl-problems-empty" hidden>None.</p>
+              <ul class="worklist-rows" id="wl-problems-rows"></ul>
+            </section>
+
+            <section class="worklist wait" id="wl-delayed">
+              <h4 class="summary-h">Deliveries past the alert threshold</h4>
+              <p class="muted" id="wl-delayed-note"></p>
+              <p class="muted" id="wl-delayed-empty" hidden>None.</p>
+              <ul class="worklist-rows" id="wl-delayed-rows"></ul>
+            </section>
+
+            <section class="worklist wait" id="wl-pending">
+              <h4 class="summary-h">Deliveries outstanding</h4>
+              <p class="muted" id="wl-pending-note"></p>
+              <p class="muted" id="wl-pending-empty" hidden>None.</p>
+              <ul class="worklist-rows" id="wl-pending-rows"></ul>
+            </section>
+          </div>
+        </section>
+
+        <!-- Refusal counts are public and cheap, and they answer "is the gate turning
+             people away, and why". Seven counts against the gate's five reasons: railClosed
+             and stripeApiFailed refuse before an amount is considered. -->
+        <section id="admin-refusals">
+          <h3 class="section-h">Refusals since deploy</h3>
+          <ul class="worklist-rows" id="refusal-rows"></ul>
+        </section>
+
+        <!-- The whole order history, with the filters `admin_orders` already accepts.
+             Full Order records come back from that one call, so a row needs no follow-up
+             read: `admin_order` audits itself on every use and would flood the trail with
+             a line per page render. -->
+        <section id="admin-history">
+          <h3 class="section-h">Order history</h3>
+
+          <div id="history-filters">
+            <label for="filter-status">Status</label>
+            <select id="filter-status">
+              <option value="">Any</option>
+              <option value="created">created</option>
+              <option value="paid">paid</option>
+              <option value="delivered">delivered</option>
+              <option value="needsReview">needsReview</option>
+              <option value="abandoned">abandoned</option>
+              <option value="cancelled">cancelled</option>
+              <option value="expired">expired</option>
+            </select>
+            <label for="filter-problems">
+              <input type="checkbox" id="filter-problems" />
+              Only orders carrying an unresolved problem
+            </label>
+          </div>
+
+          <p id="admin-history-locked" class="muted" hidden></p>
+          <p id="admin-history-empty" class="muted" hidden>No orders match.</p>
+          <ul class="worklist-rows" id="admin-history-rows"></ul>
+          <button type="button" id="admin-history-more" hidden>Load more</button>
+        </section>
+      </section>
+
     </main>
 
     <footer class="site-footer">

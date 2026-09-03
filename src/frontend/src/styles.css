@@ -892,3 +892,119 @@ code.flow-detail {
   text-decoration: line-through;
   color: var(--icp-fg-muted);
 }
+
+/* ── operator console (#68) ──────────────────────────────────────────────────
+   The wait-versus-work distinction is carried by ORDER, HEADING and a token
+   colour. Not by symbols: brand-lint bans pictographs in user-facing copy, and
+   the warning and tick glyphs that would otherwise do this job are pictographs.
+
+   Whether an operator can actually tell the groups apart is a cascade-and-layout
+   property, so it is asserted in the Chromium suite. jsdom would confirm the
+   class was applied to something invisible, which is how #24's chooser shipped
+   on screen under 109 passing tests. */
+.summary-groups {
+  display: grid;
+  gap: var(--space-4, 1rem);
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 48rem) {
+  .summary-groups {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.summary-group {
+  border-left: 3px solid var(--icp-rule);
+  padding-left: var(--space-3, 0.75rem);
+}
+
+/* The act group is first in the DOM and carries the only non-neutral edge on the
+   panel, so the eye reaches it before the other. */
+#summary-act {
+  border-left-color: var(--icp-warn);
+}
+
+.summary-h {
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--icp-fg-secondary);
+}
+
+.figures {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.15rem 1rem;
+}
+
+.figures dt {
+  color: var(--icp-fg-secondary);
+}
+
+.figures dd {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* A count that is zero is not news. One that is not zero, in the group that
+   needs a person, is the whole point of the panel. */
+#summary-act .figures dd[data-zero="false"] {
+  color: var(--icp-err);
+  font-weight: 600;
+}
+
+#summary-act .figures dd[data-zero="true"],
+#summary-wait .figures dd {
+  color: var(--icp-fg-muted);
+}
+
+#admin-link-command {
+  overflow-x: auto;
+}
+
+/* Worklists. The two that need a person come first and carry the warm edge; the two
+   that clear themselves are visually quieter. Same device as the summary groups, for
+   the same reason: the distinction cannot be a glyph. */
+.worklist {
+  border-left: 3px solid var(--icp-warn);
+  padding-left: var(--space-3, 0.75rem);
+  margin-block: var(--space-4, 1rem);
+}
+
+.worklist.wait {
+  border-left-color: var(--icp-rule);
+}
+
+.worklist-rows {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.worklist-row {
+  border-top: 1px solid var(--icp-rule);
+  padding-block: var(--space-2, 0.5rem);
+}
+
+.worklist-title {
+  font-family: var(--font-mono);
+  margin: 0;
+}
+
+.worklist-detail {
+  margin: 0.1rem 0 0.25rem;
+}
+
+/* What to do is the operative half of a hint, so it does not read as more prose. */
+.worklist-then {
+  border-left: 2px solid var(--icp-rule);
+  padding-left: var(--space-2, 0.5rem);
+  color: var(--icp-fg-secondary);
+}
+
+#admin-refusals .worklist-row[data-urgency="wait"] .worklist-title {
+  color: var(--icp-fg-muted);
+}

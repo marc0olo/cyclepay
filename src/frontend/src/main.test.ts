@@ -18,6 +18,16 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+// Type-only: `vi.mock` replaces the module's VALUES at runtime, so the real module's
+// types are still what the stub is checked against.
+import { Principal } from "@icp-sdk/core/principal";
+import type { Backend } from "./actor";
+
+type OrphanPage = Awaited<ReturnType<Backend["orphans_unresolved"]>>;
+type DelayedPage = Awaited<ReturnType<Backend["delayed_deliveries"]>>;
+type PendingDeliveries = Awaited<ReturnType<Backend["pending_deliveries"]>>;
+type Refusals = Awaited<ReturnType<Backend["refusal_counts"]>>;
+type AdminOrdersPage = Awaited<ReturnType<Backend["admin_orders"]>>;
 
 // ── stub state, reconfigured per test ──────────────────────────────────────────
 
@@ -41,6 +51,60 @@ const state = {
     netCents: 455n,
     cycles: TIER_CYCLES,
   } as Quote,
+  /// What `admin_status` answers. ⚠️ Three states, not two: a controller is not on the
+  /// granted list and does not need to be, so "granted" and "isController" are
+  /// independent.
+  // ⚠️ **Derived from the actor, not restated.** I first hand-wrote these row shapes,
+  // which is the same mirror this PR spent four commits removing.
+  orphans: { entries: [], nextCursor: undefined } as OrphanPage,
+  delayed: { entries: [], nextCursor: undefined } as DelayedPage,
+  pending: [] as PendingDeliveries,
+  problemOrders: { orders: [], nextCursor: undefined } as AdminOrdersPage,
+  /// Captures the cursor `admin_orders` was called with, so a test can assert the pager
+  /// restarts on a filter change.
+  onAdminOrders: undefined as ((filter: unknown, after: string | null) => void) | undefined,
+  refusals: {
+    counts: {
+      amountAboveMax: 0n,
+      stripeApiFailed: 0n,
+      canisterCyclesLow: 0n,
+      amountBelowMin: 0n,
+      reserveShort: 0n,
+      railClosed: 0n,
+      tooManyOpenOrders: 0n,
+    },
+    refusingNow: {
+      stripeApiFailing: false,
+      canisterCyclesLow: false,
+      reserveShort: false,
+      railClosed: false,
+    },
+  } as Refusals,
+  /// The nine counts. ⚠️ Split by whether a human is required, not by severity.
+  operatorSummary: {
+    deliveriesOutstanding: 0n,
+    deliveriesDelayed: 0n,
+    ordersNeedingReview: 0n,
+    orphansUnresolved: 0n,
+    problemsUnresolved: 0n,
+    ordersWithProblems: 0n,
+    refusingNow: {
+      reserveShort: false,
+      canisterCyclesLow: false,
+      railClosed: false,
+      stripeApiFailing: false,
+    },
+    availableToSell: 775_000_000_000_000n,
+    reserveObservedAtNs: undefined as bigint | undefined,
+  },
+  adminStatus: {
+    // ⚠️ A REAL Principal. I duck-typed this in commit 1 and the untyped `vi.mock`
+    // factory accepted it, so the panel was driven by an object the canister cannot
+    // return.
+    caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+    granted: false,
+    isController: false,
+  },
   transferFee: 100_000_000n,
   transferFeeError: false,
   ckMaxUsdCents: 0n,
@@ -99,7 +163,45 @@ function anOrder(status: string, lockedCycles = TIER_CYCLES) {
   };
 }
 
-const backend = {
+/// ⚠️ **The order-shaped stubs, kept SEPARATE because they cannot be checked yet.**
+/// They build `Record<string, unknown>` orders, so typing them needs real `Order`
+/// fixtures: substantial, and pre-existing debt rather than anything this PR added.
+///
+/// The point of separating them is that everything else is checked BY DEFAULT. A new
+/// stub added to `backend` below is verified against the real service; adding one here
+/// is a deliberate, visible exception. This list should only ever shrink.
+const untypedOrderStubs = {
+  create_order: async (amount: unknown, dest: unknown, minCycles: bigint | null) => {
+    state.lastMinCycles = minCycles;
+    state.lastDestination = dest;
+    state.lastAmount = amount;
+    if (state.quoteChangedTo !== undefined) {
+      const quoted = state.quoteChangedTo;
+      state.quoteChangedTo = undefined;
+      return { __kind__: "err", err: { __kind__: "quoteChanged", quoteChanged: { quoted, minimum: minCycles ?? 0n } } };
+    }
+    state.order = anOrder("created");
+    return { __kind__: "ok", ok: { order: state.order } };
+  },
+  get_order: async () => state.order ?? null,
+  list_orders: async () => ({ orders: state.order ? [state.order] : [], nextCursor: null }),
+  cancel_order: async () => {
+    state.order = anOrder("cancelled");
+    return { __kind__: "ok", ok: state.order };
+  },
+  receipt: async () => state.receipt ?? null,
+  // ⚠️ **`satisfies Partial<Backend>`: `vi.mock`'s factory is UNTYPED, which is exactly
+  // how `refusingNow.stripeApiFailed` survived here in two places.** The real field on
+  // `RailStateLatch` is `stripeApiFailing`; `stripeApiFailed` belongs to `RefusalCounts`,
+  // a different type. The fixtures produced four silent wrong shapes from precisely this
+  // cause, so this file gets the same treatment before the worklists grow it.
+  //
+  // `Partial` checks SHAPES, not completeness: a method the app calls and this object
+  // lacks fails at runtime with "not a function", which is loud. The wrong-shape class is
+  // the silent one.
+};
+
+const typedStubs = {
   card_tiers: async () => state.tiers,
   lifecycle_config: async () => ({
     gate: {
@@ -109,7 +211,21 @@ const backend = {
       minPurchaseUsdCents: 1_000n,
       maxPurchaseUsdCents: 10_000n,
     },
+    // ⚠️ Added by the `satisfies`, not by anyone noticing. THIRD location with this same
+    // gap: `lifecycle_config` gained `delivery` in #68 step 1, and neither the fixtures
+    // nor this stub was updated. Both suites stayed green.
+    delivery: { alertAfterNs: 7_200_000_000_000n, maxHoldNs: 259_200_000_000_000n },
   }),
+  admin_status: async () => state.adminStatus,
+  orphans_unresolved: async (_after: bigint | null, _limit: bigint) => state.orphans,
+  delayed_deliveries: async (_after: string | null, _limit: bigint) => state.delayed,
+  pending_deliveries: async () => state.pending,
+  refusal_counts: async () => state.refusals,
+  admin_orders: async (_f: unknown, _a: string | null, _l: bigint) => {
+    state.onAdminOrders?.(_f, _a);
+    return state.problemOrders;
+  },
+  operator_summary: async () => state.operatorSummary,
   delivery_stats: async () => ({
     availableToSell: 775_000_000_000_000n,
     deliveredOrders: 0n,
@@ -130,33 +246,32 @@ const backend = {
       fetchedAtNs: 1n,
       quality: { standardDeviation: 0n, receivedRates: 5n, queriedSources: 6n },
     },
-    config: { feeBps: 290n, feeFixedCents: 30n },
+    // Five fields, not two: the staleness window, the delta bound and the minimum rate
+    // sources are part of the pricing config too.
+    config: {
+      feeBps: 290n,
+      feeFixedCents: 30n,
+      maxAgeNs: 900_000_000_000n,
+      maxRateDeltaBps: 500n,
+      minRateSources: 3n,
+    },
     lastAttempt: undefined,
   }),
   quote_previews: async (amounts: bigint[]) => ({
     quotes: amounts.map(() => state.quote),
     rates: undefined,
   }),
-  create_order: async (amount: unknown, dest: unknown, minCycles: bigint | null) => {
-    state.lastMinCycles = minCycles;
-    state.lastDestination = dest;
-    state.lastAmount = amount;
-    if (state.quoteChangedTo !== undefined) {
-      const quoted = state.quoteChangedTo;
-      state.quoteChangedTo = undefined;
-      return { __kind__: "err", err: { __kind__: "quoteChanged", quoteChanged: { quoted, minimum: minCycles ?? 0n } } };
-    }
-    state.order = anOrder("created");
-    return { __kind__: "ok", ok: { order: state.order } };
-  },
-  get_order: async () => state.order ?? null,
-  list_orders: async () => ({ orders: state.order ? [state.order] : [], nextCursor: null }),
-  cancel_order: async () => {
-    state.order = anOrder("cancelled");
-    return { __kind__: "ok", ok: state.order };
-  },
-  receipt: async () => state.receipt ?? null,
-};
+  // ⚠️ **`vi.mock`'s factory is UNTYPED, which is how `refusingNow.stripeApiFailed`
+  // survived here in two places.** The real field on `RailStateLatch` is
+  // `stripeApiFailing`; `stripeApiFailed` belongs to `RefusalCounts`, a different type.
+  // The fixtures produced four silent wrong shapes from exactly this cause.
+  //
+  // `Partial` checks SHAPES, not completeness: a method the app calls and this object
+  // lacks fails at runtime with "not a function", which is loud. The wrong-shape class is
+  // the silent one, and it is the one this closes.
+} satisfies Partial<Backend>;
+
+const backend = { ...typedStubs, ...untypedOrderStubs };
 
 const identity = { getPrincipal: () => ({ toText: () => "aaaaa-aa" }) };
 
@@ -269,6 +384,44 @@ beforeEach(() => {
   state.order = undefined;
   state.receipt = undefined;
   state.signInError = undefined;
+  state.orphans = { entries: [], nextCursor: undefined };
+  state.delayed = { entries: [], nextCursor: undefined };
+  state.pending = [];
+  state.problemOrders = { orders: [], nextCursor: undefined };
+  state.onAdminOrders = undefined;
+  state.refusals = {
+    counts: {
+      amountAboveMax: 0n, stripeApiFailed: 0n, canisterCyclesLow: 0n, amountBelowMin: 0n,
+      reserveShort: 0n, railClosed: 0n, tooManyOpenOrders: 0n,
+    },
+    refusingNow: {
+      stripeApiFailing: false, canisterCyclesLow: false, reserveShort: false, railClosed: false,
+    },
+  };
+  // ⚠️ Reset here, not spread from the previous test. Leaving these out let one test's
+  // `ordersWithProblems` leak into the next and made a data-hook assertion fail for a
+  // reason that had nothing to do with the code under test.
+  state.adminStatus = {
+    caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+    granted: false,
+    isController: false,
+  };
+  state.operatorSummary = {
+    deliveriesOutstanding: 0n,
+    deliveriesDelayed: 0n,
+    ordersNeedingReview: 0n,
+    orphansUnresolved: 0n,
+    problemsUnresolved: 0n,
+    ordersWithProblems: 0n,
+    refusingNow: {
+      reserveShort: false,
+      canisterCyclesLow: false,
+      railClosed: false,
+      stripeApiFailing: false,
+    },
+    availableToSell: 775_000_000_000_000n,
+    reserveObservedAtNs: undefined,
+  };
 });
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -1013,5 +1166,362 @@ describe("the deadline is a countdown, not a timestamp", () => {
     await mount();
     await openFromHistory();
     expect(el("order-deadline").hidden).toBe(true);
+  });
+});
+
+describe("operator console (#68)", () => {
+  test("#/admin owns the screen, and the buyer views are not on it", async () => {
+    await mount("landing", "#/admin");
+    expect(el("admin").hidden).toBe(false);
+    // ⚠️ One view owns the screen. This is the property #24 broke by hiding with
+    // `hidden` and un-hiding with a class; the browser suite is what can see that,
+    // and this only says the attribute is right.
+    expect(el("view-landing").hidden).toBe(true);
+    expect(el("history").hidden).toBe(true);
+    expect(el("buy-flow").hidden).toBe(true);
+  });
+
+  test("an ungranted identity is told its own principal and what to do with it", async () => {
+    state.adminStatus = {
+      caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+      granted: false,
+      isController: false,
+    };
+    await mount("landing", "#/admin");
+    expect(el("admin-principal").textContent).toBe("ryjl3-tyaaa-aaaaa-aaaba-cai");
+    expect(el("admin-grant-state").textContent).toMatch(/Not granted/);
+    expect(el("admin-grant-state").textContent).toMatch(/controller, who can grant it/);
+  });
+
+  test("a granted identity is told what it can and cannot do", async () => {
+    state.adminStatus = {
+      caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+      granted: true,
+      isController: false,
+    };
+    await mount("landing", "#/admin");
+    const text = el("admin-grant-state").textContent ?? "";
+    expect(text).toMatch(/Granted operator access/);
+    // The tier split, in the operator's words: cases yes, rules no.
+    expect(text).toMatch(/changing configuration or secrets is not/);
+  });
+
+  test("⚠️ a controller is NOT reported as ungranted", async () => {
+    // The tiers are nested. A controller passes the admin guard without being on the
+    // list, so "not granted" would be true and useless.
+    state.adminStatus = {
+      caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+      granted: false,
+      isController: true,
+    };
+    await mount("landing", "#/admin");
+    const text = el("admin-grant-state").textContent ?? "";
+    expect(text).toMatch(/A controller of this canister/);
+    expect(text).not.toMatch(/Not granted/);
+  });
+
+  test("⚠️ the link command carries --app with THIS page's domain", async () => {
+    // #83: Internet Identity derives a principal per origin, and without `--app` the
+    // CLI links one derived from the auth domain's own default. That principal is not
+    // the one shown above it, so the grant would land on the wrong identity.
+    await mount("landing", "#/admin");
+    const command = el("admin-link-command").textContent ?? "";
+    expect(command).toContain("icp identity link web");
+    expect(command).toContain(`--app ${window.location.host}`);
+    expect(el("admin-link-note").textContent).toMatch(/must be this page's own domain/);
+  });
+});
+
+describe("operator summary: wait versus work (#68)", () => {
+  const figures = (id: string): Record<string, string> => {
+    const out: Record<string, string> = {};
+    const dl = el(id);
+    const dts = [...dl.querySelectorAll("dt")];
+    const dds = [...dl.querySelectorAll("dd")];
+    dts.forEach((dt, i) => (out[dt.textContent ?? ""] = dds[i]?.textContent ?? ""));
+    return out;
+  };
+
+  test("⚠️ the two groups are split by whether a human is required, not by severity", async () => {
+    state.operatorSummary = {
+      ...state.operatorSummary,
+      ordersNeedingReview: 2n,
+      orphansUnresolved: 1n,
+      problemsUnresolved: 3n,
+      ordersWithProblems: 2n,
+      deliveriesOutstanding: 7n,
+      deliveriesDelayed: 4n,
+    };
+    await mount("landing", "#/admin");
+
+    const act = figures("summary-act-figures");
+    const wait = figures("summary-wait-figures");
+    // A self-clearing retry ranked beside an unattributed payment is the mistake the
+    // grouping exists to prevent: one is waiting, the other is owed an answer.
+    expect(act["Orders under review"]).toBe("2");
+    expect(act["Payments not attributed"]).toBe("1");
+    expect(act["Open problems"]).toBe("3");
+    expect(wait["Deliveries outstanding"]).toBe("7");
+    expect(wait["Deliveries past the alert threshold"]).toBe("4");
+    // And neither group carries the other's figures.
+    expect(act["Deliveries outstanding"]).toBeUndefined();
+    expect(wait["Orders under review"]).toBeUndefined();
+  });
+
+  test("the headline answers the question in words", async () => {
+    state.operatorSummary = {
+      ...state.operatorSummary,
+      ordersNeedingReview: 0n,
+      orphansUnresolved: 0n,
+      problemsUnresolved: 0n,
+      deliveriesOutstanding: 9n,
+    };
+    await mount("landing", "#/admin");
+    // ⚠️ Nine deliveries in flight and nothing owed: the headline must not read as work.
+    expect(el("summary-headline").textContent).toBe("Nothing needs a person right now.");
+
+    state.operatorSummary = { ...state.operatorSummary, orphansUnresolved: 1n };
+    await mount("landing", "#/admin");
+    expect(el("summary-headline").textContent).toBe("One thing needs a person.");
+
+    state.operatorSummary = { ...state.operatorSummary, problemsUnresolved: 2n };
+    await mount("landing", "#/admin");
+    expect(el("summary-headline").textContent).toBe("3 things need a person.");
+  });
+
+  test("zero and non-zero carry a data hook, which is what the browser suite reads", async () => {
+    state.operatorSummary = {
+      ...state.operatorSummary,
+      ordersNeedingReview: 0n,
+      orphansUnresolved: 5n,
+      problemsUnresolved: 0n,
+    };
+    await mount("landing", "#/admin");
+    const dds = [...el("summary-act-figures").querySelectorAll("dd")];
+    expect(dds.map((d) => (d as HTMLElement).dataset.zero)).toEqual([
+      "true", "false", "true", "true",
+    ]);
+    // ⚠️ This is a DATA attribute, not evidence an operator can see a difference. That
+    // claim needs cascade and layout, so it is asserted in the Chromium suite.
+  });
+
+  test("an unobserved reserve says so rather than printing a time", async () => {
+    state.operatorSummary = { ...state.operatorSummary, reserveObservedAtNs: undefined };
+    await mount("landing", "#/admin");
+    expect(el("summary-reserve").textContent).toMatch(/never observed/);
+  });
+});
+
+describe("worklists (#68)", () => {
+  const rows = (id: string) => [...el(id).querySelectorAll("li")];
+  const granted = {
+    caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+    granted: true,
+    isController: false,
+  };
+
+  test("⚠️ an ungranted identity is told WHY the lists are absent", async () => {
+    // Four empty lists would read as "nothing to do", which is the opposite of the truth
+    // for a caller the canister refuses.
+    await mount("landing", "#/admin");
+    expect(el("worklists").hidden).toBe(true);
+    expect(el("worklists-locked").hidden).toBe(false);
+    expect(el("worklists-locked").textContent).toMatch(/would read as nothing to do/);
+  });
+
+  test("a granted identity gets the lists, and each row carries what its state means", async () => {
+    state.adminStatus = granted;
+    state.orphans = {
+      entries: [
+        {
+          id: 7n,
+          kind: {
+            __kind__: "unattributed",
+            unattributed: { claimedRef: "bogus", paymentRef: "pi_x" },
+          },
+          rail: "card",
+          createdAtNs: 1n,
+          resolvedAtNs: undefined,
+          detail: "no order for pi_x",
+        },
+      ],
+      nextCursor: undefined,
+    } as never;
+    await mount("landing", "#/admin");
+
+    expect(el("worklists").hidden).toBe(false);
+    const orphanRows = rows("wl-orphans-rows");
+    expect(orphanRows).toHaveLength(1);
+    expect(orphanRows[0]!.textContent).toContain("Payment 7");
+    // ⚠️ The hint is INLINE: the console must not send anyone to RUNBOOK mid-incident.
+    expect(orphanRows[0]!.textContent).toMatch(/could not be attributed/);
+    expect(orphanRows[0]!.textContent).toMatch(/Refund it/);
+    // Needs a person, carried as data for the stylesheet to key off.
+    expect((orphanRows[0] as HTMLElement).dataset.urgency).toBe("act");
+  });
+
+  test("⚠️ one row per unresolved PROBLEM, not per order", async () => {
+    // `resolve_problem` takes a kind, so an order with two open problems is two
+    // obligations. Collapsing them to one row would hide one.
+    state.adminStatus = granted;
+    state.problemOrders = {
+      orders: [
+        {
+          id: "abc123",
+          problems: [
+            {
+              filedAtNs: 1n,
+              kind: { __kind__: "duplicate", duplicate: { paymentRef: "pi_a" } },
+              detail: "second charge",
+              resolvedAtNs: undefined,
+            },
+            {
+              filedAtNs: 2n,
+              kind: { __kind__: "deliveryStuck", deliveryStuck: { stage: "transfer" } },
+              detail: "stuck mid transfer",
+              resolvedAtNs: undefined,
+            },
+            {
+              filedAtNs: 3n,
+              kind: { __kind__: "duplicate", duplicate: { paymentRef: "pi_b" } },
+              detail: "RESOLVED_ROW_MARKER",
+              resolvedAtNs: 9n,
+            },
+          ],
+        },
+      ],
+      nextCursor: undefined,
+    } as never;
+    await mount("landing", "#/admin");
+
+    expect(rows("wl-problems-rows")).toHaveLength(2);
+    const text = el("wl-problems-rows").textContent ?? "";
+    expect(text).toContain("duplicate");
+    expect(text).toContain("deliveryStuck");
+    // The resolved one is absent, so a cleared obligation does not read as outstanding.
+    // ⚠️ A deliberately unmistakable marker: my first version asserted the absence of
+    // "already handled", which is also a phrase inside the `duplicate` HINT, so the test
+    // failed on its own copy rather than on the behaviour.
+    expect(text).not.toContain("RESOLVED_ROW_MARKER");
+  });
+
+  test("the self-clearing lists say so at the section level", async () => {
+    state.adminStatus = granted;
+    await mount("landing", "#/admin");
+    // ⚠️ Section-level because every row in these two is the same state. A per-row hint
+    // would repeat identically; a section hint on the MIXED lists would describe the first
+    // row and mislead about the rest, which is why those are per-row.
+    expect(el("wl-pending-note").textContent).toMatch(/Clears itself/);
+    expect(el("wl-delayed-note").textContent).toMatch(/worth reading/);
+  });
+
+  test("refusal counts render only what has happened, each with its meaning", async () => {
+    state.refusals = {
+      counts: {
+        amountAboveMax: 0n,
+        stripeApiFailed: 0n,
+        canisterCyclesLow: 0n,
+        amountBelowMin: 4n,
+        reserveShort: 2n,
+        railClosed: 0n,
+        tooManyOpenOrders: 0n,
+      },
+      refusingNow: {
+        stripeApiFailing: false,
+        canisterCyclesLow: false,
+        reserveShort: false,
+        railClosed: false,
+      },
+    };
+    await mount("landing", "#/admin");
+    const text = el("refusal-rows").textContent ?? "";
+    expect(text).toContain("amountBelowMin: 4");
+    expect(text).toContain("reserveShort: 2");
+    // Zeroes are not news, so they are not rows.
+    expect(text).not.toContain("railClosed");
+    // ⚠️ reserveShort's hint names the step that actually gets forgotten.
+    expect(text).toMatch(/refresh_reserve/);
+  });
+});
+
+describe("order history (#68)", () => {
+  const rows = () => [...el("admin-history-rows").querySelectorAll("li")];
+  const granted = {
+    caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+    granted: true,
+    isController: false,
+  };
+
+  const anOrder = (id: string, status: string) => ({
+    id,
+    status,
+    lockedCycles: 3_500_000_000_000n,
+    paidUsdCents: 1_000n,
+    createdAtNs: 1_700_000_000_000_000_000n,
+    problems: [],
+  });
+
+  test("rows carry the status and what it means", async () => {
+    state.adminStatus = granted;
+    state.problemOrders = {
+      orders: [anOrder("aaa111", "needsReview")],
+      nextCursor: undefined,
+    } as never;
+    await mount("landing", "#/admin");
+    expect(rows()).toHaveLength(1);
+    const text = rows()[0]!.textContent ?? "";
+    expect(text).toContain("needsReview");
+    // ⚠️ The status hint, inline: needsReview is the one where acting on the wrong
+    // assumption costs money, so the row says establish the fate first.
+    expect(text).toMatch(/money position is unknown/);
+    expect(text).toMatch(/record_delivered with the block/);
+    expect((rows()[0] as HTMLElement).dataset.urgency).toBe("act");
+  });
+
+  test("a self-clearing status is not dressed as work", async () => {
+    state.adminStatus = granted;
+    state.problemOrders = { orders: [anOrder("bbb222", "paid")], nextCursor: undefined } as never;
+    await mount("landing", "#/admin");
+    expect((rows()[0] as HTMLElement).dataset.urgency).toBe("wait");
+  });
+
+  test("⚠️ after a filter change, Load more pages the NEW filter, not the old one", async () => {
+    // Paging the new filter from the old filter's position skips rows silently rather
+    // than erroring, which is the worst shape for a history someone is auditing.
+    //
+    // ⚠️ My first version of this asserted that changing a filter passes a null cursor.
+    // That passes unconditionally: a non-append load always passes null. Removing the
+    // `historyCursor = null` it was "guarding" changed no test, which is how the dead
+    // code and the vacuous assertion were both found. This asserts the step that can
+    // actually be wrong.
+    state.adminStatus = granted;
+    state.problemOrders = {
+      orders: [anOrder("aaa111", "delivered")],
+      nextCursor: "CURSOR_FROM_FILTER_A",
+    } as never;
+    await mount("landing", "#/admin");
+    expect(el("admin-history-more").hidden).toBe(false);
+
+    // Switch filters; the new filter's first page carries its own cursor.
+    state.problemOrders = {
+      orders: [anOrder("bbb222", "paid")],
+      nextCursor: "CURSOR_FROM_FILTER_B",
+    } as never;
+    (el("filter-status") as HTMLSelectElement).value = "paid";
+    el("filter-status").dispatchEvent(new Event("change"));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const seen: Array<string | null> = [];
+    state.onAdminOrders = (_f, after) => seen.push(after);
+    el("admin-history-more").click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen).toEqual(["CURSOR_FROM_FILTER_B"]);
+  });
+
+  test("an ungranted identity is told, rather than shown an empty history", async () => {
+    await mount("landing", "#/admin");
+    expect(el("admin-history-locked").hidden).toBe(false);
+    expect(el("admin-history-locked").textContent).toMatch(/needs operator access/);
+    expect(rows()).toHaveLength(0);
   });
 });

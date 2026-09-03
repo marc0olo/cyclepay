@@ -19,6 +19,14 @@ import {
 import { currentIdentity, signIn, signOut } from "./auth";
 import { linkIdentityCommand, verifyIdentityCommand } from "./config";
 import {
+  ORDER_STATUS_HINTS,
+  ORPHAN_KIND_HINTS,
+  PROBLEM_KIND_HINTS,
+  REFUSAL_HINTS,
+  type Hint,
+  type RefusalTag,
+} from "./operator";
+import {
   clearIcEnvCookies,
   distinctBackendIds,
   hasConflictingIcEnv,
@@ -29,6 +37,8 @@ import {
 import { type View, type Route, parseRoute, routeHash, TOUR_STEPS, stepStates } from "./view";
 import {
   RATE_LOCK_NOTE,
+  formatAgo,
+  formatDuration,
   STEPS,
   checkReceipt,
   createOrderErrorMessage,
@@ -55,8 +65,17 @@ const POLL_MS = 3_000;
 
 // The bindgen wrapper surfaces OrderStatus as a string enum whose values are
 // exactly the variant labels format.ts keys on.
+/// ⚠️ **No cast.** A string enum member IS assignable to its template-literal value
+/// union, so `as unknown as StatusKey` was residue from when `StatusKey` was a
+/// hand-written union of seven strings.
+///
+/// Removing it is the point rather than tidiness: bindgen has three renderings for a
+/// Candid variant, and the defect this week was not knowing one of them. If an upgrade or
+/// a Candid change alters how `status` is rendered, a double cast still compiles and the
+/// failure lands at runtime on a buyer's order page. A plain return makes it a compile
+/// error, which is the whole asymmetry the derived type was introduced to close.
 function statusKeyOf(order: Order): StatusKey {
-  return order.status as unknown as StatusKey;
+  return order.status;
 }
 
 // --- state ---------------------------------------------------------------
@@ -312,6 +331,11 @@ function renderView(): void {
   show("active-order", onOrder && ready);
   show("order-missing", onOrder && !ready);
   show("history", effective === "history");
+  show("admin", effective === "admin");
+  if (effective === "admin") {
+    renderAdminIdentity();
+    renderOperatorSummary();
+  }
   show("history-link", orderCount > 0 && identity !== null);
   if (onOrder && !ready) renderOrderMissing();
 
@@ -322,6 +346,382 @@ function renderView(): void {
   const details = document.getElementById("order-details") as HTMLDetailsElement | null;
   if (details) details.open = !delivered;
   renderTour(order, delivered);
+}
+
+/// What the operator console knows about the caller's own identity.
+///
+/// ⚠️ `admin_status` is a PUBLIC query on purpose, and this is the reason: an operator who
+/// has not been granted yet must be able to read their own principal and see that it is
+/// not granted. A guarded version would reject exactly the caller who needs the answer,
+/// and this panel could not tell "not granted" from "not reachable".
+let adminStatus: Awaited<ReturnType<typeof backend.admin_status>> | null = null;
+
+async function loadAdminStatus(): Promise<void> {
+  try {
+    adminStatus = await backend.admin_status();
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("could not read admin status", error);
+    adminStatus = null;
+  }
+  if (currentView === "admin") renderAdminIdentity();
+}
+
+function renderAdminIdentity(): void {
+  const who = document.getElementById("admin-principal");
+  const state = document.getElementById("admin-grant-state");
+  const link = document.getElementById("admin-link");
+  const command = document.getElementById("admin-link-command");
+  const note = document.getElementById("admin-link-note");
+  if (!who || !state || !link || !command || !note) return;
+
+  if (adminStatus === null) {
+    who.textContent = "";
+    state.textContent = "Reading this identity failed. The canister may be unreachable.";
+    link.hidden = true;
+    return;
+  }
+
+  who.textContent = adminStatus.caller.toText();
+  // Three states, three sentences. ⚠️ A controller is NOT on the granted list and does not
+  // need to be: it passes the admin guard anyway, so reporting "not granted" for one would
+  // be true and useless. The tiers are nested, not exclusive.
+  state.textContent = adminStatus.isController
+    ? "A controller of this canister. Every operator command is available to this identity."
+    : adminStatus.granted
+      ? "Granted operator access. Case decisions and operator reads are available; changing configuration or secrets is not."
+      : "Not granted. Send the principal above to a controller, who can grant it.";
+
+  link.hidden = false;
+  command.textContent = linkIdentityCommand("operator");
+  // The reason the flag is printed rather than left to the reader.
+  note.textContent =
+    "The --app value must be this page's own domain. Without it the CLI links a principal " +
+    "derived from the auth domain's default, which is a different identity than the one above.";
+}
+
+/// The operator summary: nine counts, one public query (#68).
+let operatorSummary: Awaited<ReturnType<typeof backend.operator_summary>> | null = null;
+
+async function loadOperatorSummary(): Promise<void> {
+  try {
+    operatorSummary = await backend.operator_summary();
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("could not read the operator summary", error);
+    operatorSummary = null;
+  }
+  if (currentView === "admin") renderOperatorSummary();
+}
+
+/// One figure row. Kept as a helper so the two groups cannot drift in shape.
+function figureRow(into: HTMLElement, label: string, value: bigint): void {
+  const dt = document.createElement("dt");
+  dt.textContent = label;
+  const dd = document.createElement("dd");
+  dd.textContent = value.toString();
+  // ⚠️ A DATA attribute, not a class name, and the styling hangs off it: this is the
+  // hook the Chromium suite reads to check that a non-zero count in the act group is
+  // visually distinguishable from a zero. A class alone is what jsdom can confirm and an
+  // operator cannot see.
+  dd.dataset.zero = value === 0n ? "true" : "false";
+  into.append(dt, dd);
+}
+
+function renderOperatorSummary(): void {
+  const headline = document.getElementById("summary-headline");
+  const act = document.getElementById("summary-act-figures");
+  const wait = document.getElementById("summary-wait-figures");
+  const reserve = document.getElementById("summary-reserve");
+  if (!headline || !act || !wait || !reserve) return;
+
+  if (operatorSummary === null) {
+    headline.textContent = "The summary could not be read. The canister may be unreachable.";
+    act.replaceChildren();
+    wait.replaceChildren();
+    reserve.textContent = "";
+    return;
+  }
+  const s = operatorSummary;
+
+  // ⚠️ Split by whether a human is required, NOT by severity. A self-clearing retry
+  // ranked next to an unattributed payment is the mistake this grouping exists to
+  // prevent: one is waiting, the other is owed an answer.
+  act.replaceChildren();
+  figureRow(act, "Orders under review", s.ordersNeedingReview);
+  figureRow(act, "Payments not attributed", s.orphansUnresolved);
+  figureRow(act, "Open problems", s.problemsUnresolved);
+  figureRow(act, "Orders carrying a problem", s.ordersWithProblems);
+
+  wait.replaceChildren();
+  figureRow(wait, "Deliveries outstanding", s.deliveriesOutstanding);
+  figureRow(wait, "Deliveries past the alert threshold", s.deliveriesDelayed);
+
+  const owed =
+    s.ordersNeedingReview + s.orphansUnresolved + s.problemsUnresolved;
+  // Said in words, because the whole point of the grouping is answerable at a glance.
+  headline.textContent =
+    owed === 0n
+      ? "Nothing needs a person right now."
+      : owed === 1n
+        ? "One thing needs a person."
+        : `${owed} things need a person.`;
+
+  // ⚠️ The two delivery numbers are measured over DIFFERENT populations and neither
+  // contains the other, so the UI must not present one as a subset of the other. See
+  // `operator_summary` in Main.mo.
+  const observed =
+    s.reserveObservedAtNs === undefined
+      ? "never observed"
+      : `observed ${formatAgo(nsToMillis(s.reserveObservedAtNs), Date.now())}`;
+  reserve.textContent =
+    `Reserve available to sell: ${formatCycles(s.availableToSell)} cycles (${observed}).`;
+}
+
+/// One worklist row: what it is, and what its state means.
+///
+/// ⚠️ **The hint is rendered per ROW where the kind varies** (orphans have two kinds,
+/// problems four) and per SECTION where it does not (both delivery lists are one state).
+/// A single section-level hint on a mixed list would describe the first row and mislead
+/// about the rest.
+function worklistRow(into: HTMLElement, title: string, detail: string, hint: Hint): void {
+  const li = document.createElement("li");
+  li.className = "worklist-row";
+  li.dataset.urgency = hint.urgency;
+
+  const head = document.createElement("p");
+  head.className = "worklist-title";
+  head.textContent = title;
+
+  const sub = document.createElement("p");
+  sub.className = "muted worklist-detail";
+  sub.textContent = detail;
+
+  // Collapsed, so a list of twenty stays scannable and the meaning is one click away
+  // rather than in another window.
+  const why = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = "What this means";
+  const means = document.createElement("p");
+  means.textContent = hint.means;
+  const then = document.createElement("p");
+  then.className = "worklist-then";
+  then.textContent = hint.then;
+  why.append(summary, means, then);
+
+  li.append(head, sub, why);
+  into.append(li);
+}
+
+function fillWorklist(rowsId: string, emptyId: string, fill: (into: HTMLElement) => number): void {
+  const rows = document.getElementById(rowsId);
+  const empty = document.getElementById(emptyId);
+  if (!rows || !empty) return;
+  rows.replaceChildren();
+  const n = fill(rows);
+  empty.hidden = n > 0;
+}
+
+/// The four worklists. All admin-gated, so nothing here renders for a caller the canister
+/// will refuse: the panel says so instead of showing four empty lists, which would read as
+/// "nothing to do".
+async function loadWorklists(): Promise<void> {
+  const locked = document.getElementById("worklists-locked");
+  const wrap = document.getElementById("worklists");
+  if (!locked || !wrap) return;
+
+  // The two self-clearing lists carry their meaning at the SECTION level, because every
+  // row in them is the same state. Taken from the same table the rows use, so the console
+  // cannot say two different things about `#paid`.
+  const paid = document.getElementById("wl-pending-note");
+  const delayedNote = document.getElementById("wl-delayed-note");
+  if (paid) paid.textContent = `Clears itself. ${ORDER_STATUS_HINTS.paid.then}`;
+  if (delayedNote) {
+    delayedNote.textContent =
+      "Clears itself, and late enough to be worth reading. " + ORDER_STATUS_HINTS.paid.then;
+  }
+
+  const allowed = adminStatus !== null && (adminStatus.granted || adminStatus.isController);
+  locked.hidden = allowed;
+  wrap.hidden = !allowed;
+  if (!allowed) {
+    locked.textContent =
+      "The worklists need operator access. This identity does not have it, so they are not shown: " +
+      "four empty lists would read as nothing to do.";
+    return;
+  }
+
+  try {
+    const [orphans, problems, delayed, pending] = await Promise.all([
+      backend.orphans_unresolved(null, 50n),
+      backend.admin_orders(
+        {
+          withUnresolvedProblems: true,
+          status: undefined,
+          owner: undefined,
+          createdFromNs: undefined,
+          createdToNs: undefined,
+        },
+        null,
+        50n,
+      ),
+      backend.delayed_deliveries(null, 50n),
+      backend.pending_deliveries(),
+    ]);
+
+    fillWorklist("wl-orphans-rows", "wl-orphans-empty", (into) => {
+      for (const entry of orphans.entries) {
+        worklistRow(
+          into,
+          `Payment ${entry.id}`,
+          entry.detail,
+          ORPHAN_KIND_HINTS[entry.kind.__kind__],
+        );
+      }
+      return orphans.entries.length;
+    });
+
+    fillWorklist("wl-problems-rows", "wl-problems-empty", (into) => {
+      let n = 0;
+      for (const order of problems.orders) {
+        // One row per unresolved PROBLEM, not per order: `resolve_problem` takes a kind,
+        // so an order with two open problems is two obligations.
+        for (const problem of order.problems) {
+          if (problem.resolvedAtNs !== undefined) continue;
+          worklistRow(
+            into,
+            `${shortPrincipal(order.id)}: ${problem.kind.__kind__}`,
+            problem.detail,
+            PROBLEM_KIND_HINTS[problem.kind.__kind__],
+          );
+          n += 1;
+        }
+      }
+      return n;
+    });
+
+    fillWorklist("wl-delayed-rows", "wl-delayed-empty", (into) => {
+      for (const entry of delayed.entries) {
+        worklistRow(
+          into,
+          shortPrincipal(entry.orderId),
+          `waiting ${formatDuration(nsToMillis(entry.waitedNs))}` +
+            `, ${entry.retries} attempt(s)` +
+            (entry.pastMaxHold ? ", past the max hold" : ""),
+          ORDER_STATUS_HINTS[entry.status],
+        );
+      }
+      return delayed.entries.length;
+    });
+
+    fillWorklist("wl-pending-rows", "wl-pending-empty", (into) => {
+      for (const entry of pending) {
+        worklistRow(
+          into,
+          shortPrincipal(entry.orderId),
+          `${entry.retries} attempt(s)` +
+            (entry.lastError === undefined ? "" : `, last error: ${entry.lastError}`),
+          ORDER_STATUS_HINTS[entry.status],
+        );
+      }
+      return pending.length;
+    });
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("could not read the worklists", error);
+    locked.hidden = false;
+    wrap.hidden = true;
+    locked.textContent = "The worklists could not be read. The canister may be unreachable.";
+  }
+}
+
+/// Refusal counts, public. Seven counts against the gate's five reasons.
+async function loadRefusals(): Promise<void> {
+  const rows = document.getElementById("refusal-rows");
+  if (!rows) return;
+  let counts: Awaited<ReturnType<typeof backend.refusal_counts>>;
+  try {
+    counts = await backend.refusal_counts();
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("could not read refusal counts", error);
+    return;
+  }
+  rows.replaceChildren();
+  // ⚠️ Iterate the HINT table, not the response: the table is exhaustive over
+  // `keyof RefusalCounts` by type, so every count has a meaning and a new one is a
+  // compile error rather than a row with no explanation.
+  for (const tag of Object.keys(REFUSAL_HINTS) as RefusalTag[]) {
+    const n = counts.counts[tag];
+    if (n === 0n) continue;
+    worklistRow(rows, `${tag}: ${n}`, "", REFUSAL_HINTS[tag]);
+  }
+}
+
+/// The order-history filter, as the operator has set it.
+let historyFilterStatus = "";
+let historyFilterProblems = false;
+/// Cursor for the next page; `null` means "from the start".
+let historyCursor: string | null = null;
+
+/// The whole order history, filtered, paged.
+///
+/// ⚠️ **`admin_orders` returns full `Order` records, so a row needs no follow-up read.**
+/// `admin_order` audits itself on every use, deliberately, and calling it per row would
+/// put a line in the trail for every page render.
+async function loadAdminOrders(append = false): Promise<void> {
+  const locked = document.getElementById("admin-history-locked");
+  const rows = document.getElementById("admin-history-rows");
+  const empty = document.getElementById("admin-history-empty");
+  const more = document.getElementById("admin-history-more");
+  if (!locked || !rows || !empty || !more) return;
+
+  const allowed = adminStatus !== null && (adminStatus.granted || adminStatus.isController);
+  locked.hidden = allowed;
+  if (!allowed) {
+    locked.textContent = "The order history needs operator access. This identity does not have it.";
+    rows.replaceChildren();
+    empty.hidden = true;
+    more.hidden = true;
+    return;
+  }
+
+  try {
+    const page = await backend.admin_orders(
+      {
+        withUnresolvedProblems: historyFilterProblems,
+        // ⚠️ `undefined`, never `null`: the wrapper renders a Candid `opt` as `?: T`, so
+        // absent is undefined. `null` is a value of the wrong shape, which is one of the
+        // four defects the fixtures were hiding earlier in this PR.
+        status: historyFilterStatus === "" ? undefined : (historyFilterStatus as never),
+        owner: undefined,
+        createdFromNs: undefined,
+        createdToNs: undefined,
+      },
+      append ? historyCursor : null,
+      25n,
+    );
+    if (!append) rows.replaceChildren();
+    for (const order of page.orders) {
+      const hint = ORDER_STATUS_HINTS[order.status];
+      worklistRow(
+        rows,
+        `${shortPrincipal(order.id)}: ${order.status}`,
+        `${formatCycles(order.lockedCycles)} cycles` +
+          (order.paidUsdCents === undefined ? "" : `, ${formatUsdCents(order.paidUsdCents)}`) +
+          `, created ${formatAgo(nsToMillis(order.createdAtNs), Date.now())}`,
+        hint,
+      );
+    }
+    historyCursor = page.nextCursor ?? null;
+    more.hidden = page.nextCursor === undefined;
+    empty.hidden = rows.children.length > 0;
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("could not read the order history", error);
+    locked.hidden = false;
+    locked.textContent = "The order history could not be read. The canister may be unreachable.";
+  }
 }
 
 function renderOrderMissing(): void {
@@ -360,6 +760,15 @@ function applyRoute(route: Route): void {
   if (route.view !== "order" && pollOrderId !== null) stopPolling();
 
   currentView = route.view;
+  if (route.view === "admin") {
+    // Worklists depend on the grant, so they follow the status read rather than racing it.
+    void loadAdminStatus().then(async () => {
+      await loadWorklists();
+      await loadAdminOrders();
+    });
+    void loadOperatorSummary();
+    void loadRefusals();
+  }
   if (route.view === "order" && activeOrder?.id !== route.orderId) {
     // Deep link or Back into an order we are not currently holding.
     orderLoad = "loading";
@@ -1607,6 +2016,29 @@ async function init(): Promise<void> {
   // Hash routing so Back works. An asset canister would need SPA rewrites for
   // real paths; a hash cannot 404 on reload.
   window.addEventListener("hashchange", () => applyRoute(parseRoute(window.location.hash)));
+  // ⚠️ **No cursor reset here, and that is not an omission.** `loadAdminOrders()` with
+  // `append` false passes `null` and then overwrites `historyCursor` from the response, so
+  // the cursor is read ONLY when appending. An explicit reset alongside these handlers
+  // looked prudent and was dead code: removing it changed no test, which is how it was
+  // found. The property that matters is one step later, and it is pinned: after a filter
+  // change, "Load more" pages the NEW filter's cursor.
+  const status = document.getElementById("filter-status") as HTMLSelectElement | null;
+  if (status) {
+    status.onchange = () => {
+      historyFilterStatus = status.value;
+      void loadAdminOrders();
+    };
+  }
+  const onlyProblems = document.getElementById("filter-problems") as HTMLInputElement | null;
+  if (onlyProblems) {
+    onlyProblems.onchange = () => {
+      historyFilterProblems = onlyProblems.checked;
+      void loadAdminOrders();
+    };
+  }
+  const more = document.getElementById("admin-history-more");
+  if (more) more.onclick = () => void loadAdminOrders(true);
+
   el("history-link").onclick = () => {
     // The anchor already sets the hash; this only stops a same-hash click from
     // being a no-op after the view moved on.
