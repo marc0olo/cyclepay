@@ -312,6 +312,18 @@ mops build && mops deployed        # promotes dist/backend.most → deployed/bac
 git add deployed/backend.most      # committed in the SAME PR as the shape change
 ```
 
+⚠️ **This is correct ONLY while the shape change is accompanied by a reinstall — and
+nothing in the toolchain will tell you when that stops being true.** Pre-launch,
+re-promoting is the right answer to a failed check every single time, which is exactly how
+it becomes a reflex. Once the canister holds data that cannot be recreated, the command
+still succeeds, the check goes green, and the incompatibility is blessed against real data.
+**The remedy for the failure is the command that erases the evidence of it.**
+
+After that point a failed check means *write a migration* (#32). ⚠️ **The trigger is a
+state, not a date:** the first mainnet deploy you intend to keep, or the first real buyer's
+order. Until then reinstall is free and the chain buys nothing; after then `mops deployed`
+is silently the wrong answer.
+
 ⚠️ **The baseline must be committed, and it must not be the build's own output.**
 `src/backend/dist/backend.most` is gitignored with the rest of `dist/`, so configuring the
 check against it compares an artifact to a fresh regeneration of itself — measured before
