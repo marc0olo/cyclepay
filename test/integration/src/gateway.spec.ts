@@ -3781,6 +3781,22 @@ test('90 — operator_summary is public, and cannot disagree with the surfaces i
     // Past `alertAfterNs` (2 h) and far under `maxHoldNs` (72 h), so it is delayed rather
     // than escalated. ⚠️ A failed retry patches the JOURNAL, not the order, so
     // `updatedAtNs` — the held-since clock `waitStage` reads — stays at the payment.
+    // ⚠️ **One direction of "neither number contains the other", pinned here.** The
+    // webhook drives delivery itself, so the intent is journalled and the transfer issued
+    // before this line — `deliveriesOutstanding` counts the order already, while
+    // `deliveriesDelayed` cannot, because it has waited seconds rather than hours.
+    //
+    // ⚠️ I first wrote this assertion the other way round, claiming a paid order has no
+    // journal entry until a sweep runs. It has one: `Delivery.openEntry` is called inside
+    // `driveDelivery`, which the webhook invokes. The no-intent case is real but arrives
+    // differently — a delivery that BAILS before issuing (short reserve, stale rate, gas
+    // floor) leaves a `#paid` order with no intent, so `deliveriesDelayed` sees it and
+    // `deliveriesOutstanding` does not. That direction is not pinned here; producing it
+    // needs a drained reserve.
+    expect(await gw.asAdmin.delivery_journal(target.id)).toHaveLength(1);
+    const fresh = await gw.asAnon.operator_summary();
+    expect(fresh.deliveriesOutstanding).toBeGreaterThan(0n);
+
     await gw.pic.advanceTime(3 * 3_600 * 1_000);
     await gw.pic.tick(10);
     expect(await orderStatus(gw, target.id)).toBe('paid');

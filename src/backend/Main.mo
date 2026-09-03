@@ -2363,21 +2363,42 @@ persistent actor CyclesGateway {
     delayedAtNs : ?Int;
   };
 
-  /// Is this order's delivery late enough to be worth an operator's attention?
+  /// How long a `#paid` order has waited, as a stage; `null` for any other status.
   ///
-  /// ⚠️ **One definition, shared by `delayed_deliveries` and `operator_summary`.** Two
-  /// copies of this predicate would let the paged list and the summary count disagree, and
-  /// the summary is the number someone acts on.
+  /// ⚠️ **ONE read of the clock per order.** "Is it delayed" and "is it past max hold" are
+  /// both answered off this single value. Calling `waitStage` twice worked — it is
+  /// deterministic — but it put a second call site of the same computation in the code
+  /// whose point is one definition, and `pastMaxHold` would have diverged silently if this
+  /// predicate's clock or config source ever changed.
   ///
-  /// ⚠️ **`#paid` only, and NOT gated on a journal entry existing.** A payment that has
-  /// landed but whose first sweep has not run yet has no journal entry, and it is exactly
-  /// the case an operator wants to see — so this reads the ORDER's clock. Counting through
-  /// the order↔journal join instead would silently under-report it.
-  func deliveryDelayed(order : Types.Order, nowNs : Int) : Bool {
-    if (order.status != #paid) return false;
-    switch (Delivery.waitStage(order.updatedAtNs, nowNs, deliveryConfig)) {
+  /// ⚠️ **`#paid` only, and NOT gated on a journal entry or an intent existing.** A
+  /// delivery that BAILS before issuing a transfer — a short reserve, a stale rate, the gas
+  /// floor — leaves a `#paid` order with no intent, and that is exactly the order an
+  /// operator must see, because nothing else will surface it. So this reads the ORDER's
+  /// clock. Going through the order↔journal join, as `deliveriesOutstanding` does, would
+  /// silently under-report it.
+  ///
+  /// (Not "before the first sweep runs": the webhook drives delivery itself, so a paid
+  /// order normally has its entry and intent immediately.)
+  func deliveryStage(order : Types.Order, nowNs : Int) : ?{ #retry; #alert; #terminate } {
+    if (order.status != #paid) return null;
+    ?Delivery.waitStage(order.updatedAtNs, nowNs, deliveryConfig);
+  };
+
+  /// Which stages are worth an operator's attention — **the one definition**, shared by
+  /// `delayed_deliveries` and `operator_summary`. Two copies would let the paged list and
+  /// the summary count disagree, and the summary is the number someone acts on.
+  func stageIsDelayed(stage : { #retry; #alert; #terminate }) : Bool {
+    switch (stage) {
       case (#retry) false;
       case (#alert or #terminate) true;
+    };
+  };
+
+  func deliveryDelayed(order : Types.Order, nowNs : Int) : Bool {
+    switch (deliveryStage(order, nowNs)) {
+      case (?stage) stageIsDelayed(stage);
+      case null false;
     };
   };
 
@@ -2429,7 +2450,9 @@ persistent actor CyclesGateway {
       // survived alongside it and made the claim of one shared definition false: widening
       // the predicate changed this page and the summary's count differently, so the two
       // could disagree while both were "using the predicate".
-      if (past and deliveryDelayed(order, now)) {
+      if (not past) continue scan;
+      let ?stage = deliveryStage(order, now) else continue scan;
+      if (stageIsDelayed(stage)) {
         if (collected.size() == capped) {
           return { entries = collected.toArray(); nextCursor = last };
         };
@@ -2442,7 +2465,7 @@ persistent actor CyclesGateway {
             case (?entry) entry.retries;
             case null 0;
           };
-          pastMaxHold = Delivery.waitStage(order.updatedAtNs, now, deliveryConfig) == #terminate;
+          pastMaxHold = stage == #terminate;
           delayedAtNs = order.delayedAtNs;
         });
         last := ?order.id;
@@ -3723,12 +3746,25 @@ persistent actor CyclesGateway {
   /// `expiredOrders`, `promisedTotal` and `availableToSell` — so there is no new exposure
   /// class, only one fewer round trip.
   ///
-  /// ⚠️ **Read the two delivery numbers as different KINDS of thing.**
-  /// `deliveriesOutstanding` self-clears: it is money-out in flight, and the answer is
-  /// wait. `deliveriesDelayed` is the subset late enough to be worth attention.
-  /// `ordersNeedingReview`, `orphansUnresolved` and `problemsUnresolved` are the three
-  /// that mean a human is needed. A summary that flattened them would make waiting look
-  /// like work.
+  /// ⚠️ **The two delivery numbers are measured over DIFFERENT populations, and neither
+  /// contains the other.** `deliveriesOutstanding` means a transfer has been ISSUED, so it
+  /// needs the journal entry that records the intent. `deliveriesDelayed` reads the
+  /// ORDER's own clock and needs neither.
+  ///
+  /// Both directions are reachable, so `deliveriesDelayed` is **not** a subset:
+  ///   - outstanding, not delayed: a transfer issued seconds ago.
+  ///   - delayed, not outstanding: a delivery that bailed before issuing (short reserve,
+  ///     stale rate, gas floor), or one whose transfer landed without the block being
+  ///     recorded — both leave a `#paid` order the clock has run out on.
+  ///
+  /// ⚠️ So `outstanding = 0, delayed = 1` is a real state, not the summary contradicting
+  /// itself — and a UI that presented one as a subset of the other would be wrong exactly
+  /// where it matters.
+  ///
+  /// They also differ in what they ask of a human: `deliveriesOutstanding` self-clears —
+  /// it is money-out in flight and the answer is wait — while `ordersNeedingReview`,
+  /// `orphansUnresolved` and `problemsUnresolved` are the three that mean a human is
+  /// needed. A summary that flattened those would make waiting look like work.
   ///
   /// ⚠️ **`deliveriesOutstanding` is exactly the reserve reconcile's quiet-window
   /// predicate**, deliberately: it is also the answer to "why does the reconcile keep

@@ -775,12 +775,25 @@ service : {
   /// `expiredOrders`, `promisedTotal` and `availableToSell` — so there is no new exposure
   /// class, only one fewer round trip.
   /// 
-  /// ⚠️ **Read the two delivery numbers as different KINDS of thing.**
-  /// `deliveriesOutstanding` self-clears: it is money-out in flight, and the answer is
-  /// wait. `deliveriesDelayed` is the subset late enough to be worth attention.
-  /// `ordersNeedingReview`, `orphansUnresolved` and `problemsUnresolved` are the three
-  /// that mean a human is needed. A summary that flattened them would make waiting look
-  /// like work.
+  /// ⚠️ **The two delivery numbers are measured over DIFFERENT populations, and neither
+  /// contains the other.** `deliveriesOutstanding` means a transfer has been ISSUED, so it
+  /// needs the journal entry that records the intent. `deliveriesDelayed` reads the
+  /// ORDER's own clock and needs neither.
+  /// 
+  /// Both directions are reachable, so `deliveriesDelayed` is **not** a subset:
+  ///   - outstanding, not delayed: a transfer issued seconds ago.
+  ///   - delayed, not outstanding: a delivery that bailed before issuing (short reserve,
+  ///     stale rate, gas floor), or one whose transfer landed without the block being
+  ///     recorded — both leave a `#paid` order the clock has run out on.
+  /// 
+  /// ⚠️ So `outstanding = 0, delayed = 1` is a real state, not the summary contradicting
+  /// itself — and a UI that presented one as a subset of the other would be wrong exactly
+  /// where it matters.
+  /// 
+  /// They also differ in what they ask of a human: `deliveriesOutstanding` self-clears —
+  /// it is money-out in flight and the answer is wait — while `ordersNeedingReview`,
+  /// `orphansUnresolved` and `problemsUnresolved` are the three that mean a human is
+  /// needed. A summary that flattened those would make waiting look like work.
   /// 
   /// ⚠️ **`deliveriesOutstanding` is exactly the reserve reconcile's quiet-window
   /// predicate**, deliberately: it is also the answer to "why does the reconcile keep
