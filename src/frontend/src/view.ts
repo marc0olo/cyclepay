@@ -13,8 +13,13 @@
 /// the same reason as the others: one owner of the screen, and hash routing that cannot
 /// 404 on reload from an asset canister.
 ///
-/// ⚠️ Deliberately NOT linked from the buyer-facing nav. An operator navigates to it; a
-/// console link on a purchase page is noise for every visitor who is not one.
+/// ⚠️ Deliberately not ADVERTISED: a console link on a purchase page is noise for every
+/// visitor who is not an operator.
+///
+/// Since the header gained `#admin-nav` that rule is implemented rather than abandoned —
+/// the link renders only when `admin_status` says the caller is granted or is a
+/// controller, so the visitors it would be noise for never see it. What changed is that
+/// an operator no longer has to know to type `#/admin`.
 export type View = "landing" | "buy" | "order" | "delivered" | "history" | "admin";
 
 /// A parsed location hash.

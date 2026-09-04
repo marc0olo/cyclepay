@@ -367,6 +367,24 @@ async function loadAdminStatus(): Promise<void> {
     adminStatus = null;
   }
   if (currentView === "admin") renderAdminIdentity();
+  renderAdminNav();
+}
+
+/// Show the console link only to someone who can use it.
+///
+/// ⚠️ **This does not contradict `view.ts`'s "not advertised" rule, it implements
+/// it.** The rule's reason is that a console link is noise for every visitor who is
+/// not an operator — and one that appears only for a granted admin or a controller
+/// is invisible to exactly those visitors. What it replaces is an operator having to
+/// know to type `#/admin`.
+///
+/// Both tiers, because they are nested rather than exclusive: a controller passes the
+/// admin guard without being granted.
+function renderAdminNav(): void {
+  const link = document.getElementById("admin-nav");
+  if (!link) return;
+  const operator = adminStatus !== null && (adminStatus.granted || adminStatus.isController);
+  link.hidden = !operator;
 }
 
 function renderAdminIdentity(): void {
@@ -886,11 +904,20 @@ function setIdentity(next: Identity | null): void {
   // reveals the header link, not the table.
   renderView();
   if (identity) {
+    // ⚠️ Read the grant HERE, not only on the `#/admin` route: the header link has
+    // to know before the operator navigates, which was the whole gap. `admin_status`
+    // is a public caller-scoped query, so this costs one cheap read per sign-in and
+    // discloses nothing about anyone else.
+    void loadAdminStatus();
     // No field to prefill any more: the destination is the caller's own account
     // and `readDestination` reads it from the session (#29), so signing in has
     // nothing to write into the form.
     void refreshHistory();
   } else {
+    // Signed out: the grant is not ours to remember, and a stale link would offer a
+    // console the caller can no longer reach.
+    adminStatus = null;
+    renderAdminNav();
     stopPolling();
     orderCount = 0;
     activeOrder = null;
@@ -978,10 +1005,14 @@ function renderTrustFigures(
     capNote.hidden = divisor === 1n;
   }
 
+  // ⚠️ One quantity at figure size. Three of them wrapped mid-number at the promoted
+  // scale, and none of the three read as the headline.
   const orders = stats.deliveredOrders === 1n ? "1 order" : `${stats.deliveredOrders} orders`;
-  del.textContent =
-    `${orders} · ${formatCycles(stats.deliveredCycles)} cycles · ` +
-    formatUsdCents(stats.deliveredUsdCents);
+  del.textContent = `${formatCycles(stats.deliveredCycles)} cycles`;
+  const delNote = document.getElementById("trust-delivered-note");
+  if (delNote) {
+    delNote.textContent = `across ${orders} · ${formatUsdCents(stats.deliveredUsdCents)}`;
+  }
   delWrap.hidden = false;
   wrap.hidden = false;
 }
@@ -2150,13 +2181,37 @@ function wireCopyButtons(): void {
 /// persists because a visitor who picked dark meant it.
 const THEME_KEY = "icp.theme";
 
+/// The two theme glyphs: a moon to go dark, a sun to come back.
+///
+/// ⚠️ **Inline SVG, not an emoji** — `brand-lint` bans pictographs in user-facing
+/// copy, and rightly: a platform that renders these as boxes puts a box in the
+/// header. `aria-hidden` because the accessible name is on the button's
+/// `aria-label`, which says which direction the click goes.
+const MOON_ICON =
+  '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">'
+  + '<path d="M13.5 10.2A5.8 5.8 0 0 1 5.8 2.5 5.8 5.8 0 1 0 13.5 10.2Z"'
+  + ' fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
+
+const SUN_ICON =
+  '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">'
+  + '<circle cx="8" cy="8" r="3.1" fill="none" stroke="currentColor" stroke-width="1.4"/>'
+  + '<path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3.1 3.1l1.1 1.1M11.8 11.8l1.1 1.1'
+  + 'M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1" stroke="currentColor" stroke-width="1.4"'
+  + ' stroke-linecap="round"/></svg>';
+
 function applyTheme(dark: boolean): void {
   document.documentElement.toggleAttribute("data-theme", false);
   if (dark) document.documentElement.setAttribute("data-theme", "dark");
   else document.documentElement.removeAttribute("data-theme");
   const btn = el("theme-toggle");
-  btn.textContent = dark ? "Light" : "Dark";
-  btn.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
+  // ⚠️ The glyph shows the DESTINATION, not the current state: in light mode you
+  // see a moon, because the button's job is "click for dark". Showing the current
+  // theme instead reads as a status light and makes the click a guess. The label
+  // and the `title` say the same thing in words.
+  btn.innerHTML = dark ? SUN_ICON : MOON_ICON;
+  const label = dark ? "Switch to light theme" : "Switch to dark theme";
+  btn.setAttribute("aria-label", label);
+  btn.title = label;
 }
 
 function wireThemeToggle(): void {

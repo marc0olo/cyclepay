@@ -21,28 +21,60 @@
       </a>
       <div class="header-actions">
         <a id="history-link" class="header-link" href="#/history" hidden>Your orders</a>
-        <button id="theme-toggle" type="button" class="ghost" aria-label="Switch to dark theme">
-          Dark
-        </button>
+        <!-- NOTE: Shown ONLY to a granted admin or a controller, from `admin_status` -
+             which is a public, caller-scoped query, so asking costs nothing and
+             reveals nothing about anyone else. That conditionality is what makes the
+             link compatible with `view.ts`'s rule that the console is not advertised:
+             a visitor who is not an operator never sees it, so it is not noise for
+             them. Before this, an operator had to know to type `#/admin`. -->
+        <a id="admin-nav" class="header-link" href="#/admin" hidden>Admin</a>
+        <!-- Icon, and the glyph is set by `renderTheme` because it depends on which
+             theme is active. NOTE: "Your orders" and "Sign out" stay as WORDS: this
+             audience is buying cycles with a card for the first time, and an all-icon
+             header makes them guess. Icons where the meaning is universal, words
+             where it is not. -->
+        <button id="theme-toggle" type="button" class="ghost icon-only"></button>
         <div id="auth-area"></div>
       </div>
     </header>
 
     <main>
+      <!-- ── Banners: above every view, because they are about the whole page ──
+           NOTE: **These used to sit AFTER `#view-landing` in the document**, so on the
+           landing view they rendered below the entire page: a notice saying "you
+           cannot buy here" arriving under the fold, after the thing it is about.
+           Nothing hid them; the DOM order did.
+
+           They belong above the views because none of them is view-specific: a
+           blocked sign-in, a gateway refusing every buyer, and a scaled simulation
+           are all facts about the visit, not about the screen. -->
+      <div id="banners">
+        <!-- Sign-in started from the HEADER has no form beneath it to report into,
+             and the header itself is too small for a sentence. -->
+        <p id="auth-error" class="error" hidden></p>
+        <!-- The gate refusing every buyer (#99 2b): not on the allow-list, or the
+             gateway is unbounded and refusing everyone. -->
+        <div id="gate-notice" class="notice" hidden></div>
+        <!-- Simulation mode (#99), in words rather than as a badge: a badge tells
+             you a state exists, a sentence tells you what it means for the purchase
+             you are about to make. Hidden entirely at divisor 1, so a production
+             page reads exactly as it did before this existed. -->
+        <p id="simulation-note" class="notice" hidden></p>
+      </div>
+
       <div id="view-landing" class="view">
       <!-- Hero. The sequence is the product, not the purchase. -->
       <section class="hero">
         <div class="hero-copy">
-          <p class="eyebrow">Cycles</p>
+          <!-- The eyebrow said "CYCLES" above a heading that already says what this
+               is. And the lede restated all four steps in prose, immediately beside a
+               figure of the same four steps: so it is a claim now, not a summary. -->
           <h1>From zero to deployed on the <em>Internet Computer</em>.</h1>
           <p class="lede">
-            Get cycles with a card, link your identity to the CLI, and deploy, in
-            a few minutes.
+            Your canisters live on mainnet in a few minutes, paid for with a card.
           </p>
           <p class="meta-strip">
-            Operated by the DFINITY Foundation
-            <span class="dot">·</span>
-            <span id="rate-claim">at the protocol exchange rate, plus card processing</span>
+            <span id="rate-claim">At the protocol exchange rate, plus card processing.</span>
           </p>
         </div>
 
@@ -61,7 +93,7 @@
           <li class="flow-step" style="--i: 1">
             <span class="flow-node"><span class="flow-n">2</span></span>
             <span class="flow-body">
-              <span class="flow-label">Pay with a card</span>
+              <span class="flow-label">Pay with credit card</span>
               <span class="flow-detail">No exchange account needed</span>
             </span>
           </li>
@@ -76,7 +108,7 @@
             <span class="flow-node"><span class="flow-n">4</span></span>
             <span class="flow-body">
               <span class="flow-label">Deploy</span>
-              <code class="flow-detail">icp canister create</code>
+              <code class="flow-detail">icp deploy -e ic</code>
             </span>
           </li>
         </ol>
@@ -85,60 +117,30 @@
       <!-- One route in. There is one thing to buy, delivered to one place, so
            the page does not ask the visitor to classify themselves before it
            (#29). -->
-      <p class="start-row">
-        <button id="start-buy" type="button" class="cta">Get cycles</button>
+      <!-- The one thing this page is for. `cta-hero` is the only place that size
+           is used, deliberately: a second one would make neither prominent. -->
+      <p class="start-row start-row-hero">
+        <button id="start-buy" type="button" class="cta cta-hero">Buy cycles</button>
       </p>
 
-      <!-- Explainers. One idea each, below the flow, for the reader who scrolls
-           rather than the one who came to buy. -->
-      <section class="explainer sunk">
-        <h2 class="section-h">What cycles are</h2>
-        <p>
-          Cycles are prepaid credits that pay for your app's computation and
-          storage. Buy them here, spend them as you build. No exchange account,
-          no separate token to manage.
-        </p>
-      </section>
+      <!-- ── The stats, promoted ────────────────────────────────────────────────
+           Moved up from the bottom and given the page's largest numerals, because
+           they are the only thing here a visitor can check without trusting us.
 
-      <section class="explainer">
-        <h2 class="section-h">Nothing to run but your <em>code</em></h2>
-        <p>
-          No servers to provision or patch, no database to host, no CDN or load
-          balancer. Your code runs replicated across independent data centres and
-          you pay for what it uses.
-          <a href="https://internetcomputer.org" target="_blank" rel="noopener noreferrer">How it works ↗</a>
-        </p>
-      </section>
+           NOTE: **The framing line stays.** These are TWO DIFFERENT KINDS of number
+           and the difference is the whole point: available capacity is read from
+           the cycles ledger, which anyone can query without our cooperation, while
+           the delivered totals are ours to report. Bare numbers are decoration;
+           one line of frame makes them evidence. That is why the "Checkable by
+           anyone" prose could go and this sentence could not.
 
-      <section class="explainer sunk">
-        <h2 class="section-h">Build with an <em>agent</em></h2>
-        <p>
-          Point your coding agent at the
-          <a href="https://mcp.internetcomputer.org" target="_blank" rel="noopener noreferrer">MCP server ↗</a>
-          and the
-          <a href="https://skills.internetcomputer.org" target="_blank" rel="noopener noreferrer">skills library ↗</a>.
-        </p>
-      </section>
-
-      <section class="explainer">
-        <h2 class="section-h">Checkable by <em>anyone</em></h2>
-        <p>
-          Pricing and delivery run in a single audited program, and you can check
-          the code. Every order carries a receipt that recomputes its own price
-          from two canisters you can query yourself.
-        </p>
-        <!-- Filled by renderTrustFigures(). Two different kinds of number, and the
-             difference is the point: capacity is READ FROM THE CYCLES LEDGER, which
-             anyone can query without our cooperation, while the delivered totals are
-             ours to report. Kept in this section rather than the hero because it is a
-             trust block, not part of the purchase sequence.
-
-             Both are shown unconditionally, zero included: a figure that disappears when
-             the news is bad is worse than one that reads low. -->
+           Both are shown unconditionally, zero included: a figure that disappears
+           when the news is bad is worse than one that reads low. -->
+      <section class="trust-block">
         <dl id="trust-figures" class="trust-figures" hidden>
           <div>
             <dt id="trust-capacity-label"></dt>
-            <dd id="trust-capacity"></dd>
+            <dd id="trust-capacity" class="figure"></dd>
             <!-- NOTE: in simulation mode this figure is REAL reserve cycles
                  while quotes are scaled, so the ratio between them is startling
                  and correct. One sentence, or it reads as a bug. -->
@@ -146,19 +148,35 @@
           </div>
           <div id="trust-delivered-wrap">
             <dt>Delivered so far</dt>
-            <dd id="trust-delivered"></dd>
+            <!-- NOTE: ONE number at figure size, not three. This read
+                 "N orders · X cycles · $Y" and at the promoted size it wrapped
+                 mid-figure: three quantities competing at the scale meant for one.
+                 The cycles delivered is the product's number; the count and the
+                 revenue are context and sit small beneath it. -->
+            <dd id="trust-delivered" class="figure"></dd>
+            <dd id="trust-delivered-note" class="muted"></dd>
           </div>
         </dl>
+        <p class="muted trust-frame">
+          Capacity is read from the cycles ledger, which anyone can query without
+          us. Delivered totals are ours to report.
+        </p>
       </section>
-      </div><!-- /view-landing -->
 
-      <!-- Sign-in started from the HEADER has no form beneath it to report into,
-           and the header itself is too small for a sentence. It lands here, at the
-           top of whatever view is on screen, because the header button is
-           available from every one of them. -->
-      <p id="auth-error" class="error" hidden></p>
-
-      <div id="gate-notice" class="notice" hidden></div>
+      <!-- One explainer, for the reader who does not know what they are buying.
+           NOTE: "Nothing to run but your code" was Internet Computer marketing rather
+           than this product's job, and "Build with an agent" moves to the
+           next-steps page: it is guidance for after the purchase, not a reason to
+           make one. Neither is deleted from the product; one is deleted from HERE. -->
+      <section class="explainer sunk">
+        <h2 class="section-h">What cycles are</h2>
+        <p>
+          Cycles are prepaid credits that pay for your app's computation and
+          storage on the
+          <a href="https://internetcomputer.org" target="_blank" rel="noopener noreferrer">Internet&nbsp;Computer&nbsp;↗</a>.
+        </p>
+      </section>
+</div><!-- /view-landing -->
 
 
       <!-- The four steps the product is sold as, carried across buy, order and
@@ -168,11 +186,6 @@
       <div id="buy-flow" class="view" hidden>
         <section id="card-panel">
           <h2 class="section-h">Pick an amount</h2>
-          <!-- Simulation mode (#99), in words rather than as a badge: a badge
-               tells you a state exists, a sentence tells you what it means for the
-               purchase you are about to make. Hidden entirely at divisor 1, so a
-               production page reads exactly as it did before this existed. -->
-          <p id="simulation-note" class="notice" hidden></p>
           <div id="tiers" class="tiers">
             <p class="muted">Loading amounts…</p>
           </div>
@@ -308,7 +321,7 @@
             <p class="eyebrow">Step 4 of 4</p>
             <h3 class="section-h">Deploy</h3>
             <div class="cmd">
-              <code id="cmd-create" class="mono">icp canister create hello</code>
+              <code id="cmd-create" class="mono">icp deploy -e ic</code>
               <button type="button" class="copy" data-copy="cmd-create"
                       aria-label="Copy the canister create command"></button>
             </div>
@@ -529,6 +542,8 @@
     <footer class="site-footer">
       <p class="muted">
         Pricing, payment, and delivery all run in one audited canister.
+        <span class="dot">·</span>
+        Operated by the DFINITY Foundation.
       </p>
       <!-- TODO(#21): imprint, terms, privacy, status, and contact are required
            for a Foundation-operated property. Deliberately not stubbed with

@@ -215,6 +215,25 @@ test.describe("the four-step hero figure", () => {
     expect(flow.image).toContain("linear-gradient");
   });
 
+  test("⚠️ the landing CTA is actually bigger, not just declared bigger", async ({ page }) => {
+    // A CASCADE test, which is what this file is for. `.cta-hero` first sat ABOVE
+    // `.cta` in the stylesheet, where `.cta`'s own `padding: 0.5rem 1.15rem` came
+    // later at equal specificity and silently won: the button grew by 2px and read as
+    // an ordinary pill. Every DOM assertion passed, the class was on the element, and
+    // `getComputedStyle` for anything nobody thought to check looked fine.
+    //
+    // ⚠️ Asserted as a RELATION rather than a pixel count, so it survives a type-scale
+    // change: the page's one call to action must be visibly larger than an ordinary
+    // button, and the header's Sign out is the ordinary one.
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto("/");
+    await useFixtureBackend(page);
+    const cta = (await page.locator("#start-buy").boundingBox())!;
+    const ordinary = (await page.locator("#theme-toggle").boundingBox())!;
+    expect(cta.height).toBeGreaterThan(ordinary.height * 1.5);
+    expect(cta.width).toBeGreaterThan(ordinary.width * 2);
+  });
+
   test("the hero is two columns on desktop and one on a phone", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto("/");

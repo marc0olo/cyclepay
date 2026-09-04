@@ -231,6 +231,57 @@ a:hover {
   margin-block: var(--space-6);
 }
 
+/* The row it sits in carried the emptiness that made the button look small. */
+.start-row.start-row-hero {
+  margin-block: var(--space-5) var(--space-6);
+}
+
+/* ── the stats, promoted out of the old trust block ───────────────────────── */
+
+.trust-block {
+  padding-block: var(--space-6);
+  border-bottom: 1px solid var(--icp-rule);
+}
+/* The page's largest numerals, because these are the only figures on it a
+   visitor can check without trusting us. `tabular-nums` so a poll tick that
+   changes a digit does not shift the layout. */
+.trust-figures .figure {
+  font-size: clamp(2rem, 5vw, 3.25rem);
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+  color: var(--icp-fg);
+}
+.trust-frame {
+  max-width: 46ch;
+  margin-top: var(--space-3);
+}
+
+/* The banner region sits above every view, so it needs its own rhythm rather than
+   inheriting a view's. Empty of visible children it collapses to nothing, which is
+   the normal case. */
+#banners {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+#banners:not(:empty) > *:not([hidden]) {
+  margin-block: 0;
+}
+
+/* An icon-only button: square, so the glyph is centred rather than sitting in a
+   pill sized for a word. */
+.icon-only {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.1rem;
+  min-height: 2rem;
+  padding: 0;
+}
+.icon-only svg {
+  display: block;
+}
+
 /* ── buttons ──────────────────────────────────────────────────────────────── */
 
 button,
@@ -268,6 +319,22 @@ button,
 }
 .cta-secondary:hover:not(:disabled) {
   background: var(--icp-accent-dim);
+}
+
+/* The landing CTA, and the ONLY place this size is used — a second oversized button
+   would make neither of them prominent.
+   ⚠️ **Declared AFTER `.cta`, and that is the whole reason it works.** It first sat
+   in the "way in" section above, where `.cta`'s own `padding: 0.5rem 1.15rem` came
+   LATER at equal specificity and silently won: the button grew by 2px and read as an
+   ordinary pill. Caught by looking at a screenshot, because the visual baselines that
+   would have caught it are suspended for this phase (#107). A `.cta.cta-hero`
+   selector would also work; declaration order is the smaller change and keeps every
+   button rule at one class. */
+.cta-hero {
+  font-size: 1.25rem;
+  padding: 1.05rem 2.75rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 .cta:disabled,
 .cta-secondary:disabled,
