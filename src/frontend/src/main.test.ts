@@ -1666,47 +1666,97 @@ describe("the gate notice: refusals no amount can fix (#99 2b)", () => {
 });
 
 describe("the signed-in principal is copyable", () => {
-  /// Captures what `navigator.clipboard.writeText` was handed.
-  function captureClipboard(): { last: () => string | undefined } {
+  /// Captures what `navigator.clipboard.writeText` was handed, or makes it reject.
+  function stubClipboard(mode: "ok" | "reject" | "absent"): { last: () => string | undefined } {
     let last: string | undefined;
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
-      value: { writeText: async (text: string) => { last = text; } },
+      value: mode === "absent"
+        ? undefined
+        : {
+          writeText: async (text: string) => {
+            if (mode === "reject") throw new Error("denied");
+            last = text;
+          },
+        },
     });
+    // `execCommand` is the synchronous fallback and jsdom has no implementation, so
+    // it is stubbed to report failure — which is what forces the reject and absent
+    // cases down to the selection path and lets the failure state be observed.
+    (document as unknown as { execCommand: () => boolean }).execCommand = () => false;
     return { last: () => last };
   }
 
-  test("⚠️ the header copies the FULL principal, not the truncated display text", async () => {
-    // The whole point. The header shows `eoyfw…4qe` for width; copying that hands over
-    // something useless in `add_allowed_buyer` or `add_admin`.
-    const clip = captureClipboard();
+  function headerCopy(): HTMLButtonElement {
+    return document.querySelector<HTMLButtonElement>("#auth-area button.copy")!;
+  }
+
+  test("⚠️ it copies the FULL principal, not the truncated display text", async () => {
+    // The whole point. The header shows `eoyfw…4qe` for width; copying that hands
+    // over something useless in `add_allowed_buyer` or `add_admin`.
+    const clip = stubClipboard("ok");
     await mount();
     const shown = document.querySelector("#auth-area .principal")!;
     expect(shown.textContent).not.toBe(FULL_PRINCIPAL);
     expect(shown.textContent).toContain("…");
 
-    const btn = document.querySelector<HTMLButtonElement>("#auth-area button.copy")!;
-    btn.click();
+    headerCopy().click();
     await Promise.resolve();
     expect(clip.last()).toBe(FULL_PRINCIPAL);
   });
 
-  test("the copy button reports back, so a click is not silent", async () => {
-    const clip = captureClipboard();
+  test("it is an icon with an accessible name, not a text button", async () => {
     await mount();
-    const btn = document.querySelector<HTMLButtonElement>("#auth-area button.copy")!;
-    expect(btn.textContent).toBe("Copy");
-    btn.click();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(btn.textContent).toBe("Copied");
-    expect(clip.last()).toBe(FULL_PRINCIPAL);
-  });
-
-  test("it carries an aria-label, since \"Copy\" alone is ambiguous with several on a page", async () => {
-    await mount();
-    const btn = document.querySelector<HTMLButtonElement>("#auth-area button.copy")!;
+    const btn = headerCopy();
+    // No visible text, so the name has to come from `aria-label` — and "Copy" alone
+    // would be ambiguous with four copy buttons on the delivered view.
+    expect(btn.textContent?.trim()).toBe("");
+    expect(btn.querySelector("svg")).not.toBeNull();
     expect(btn.getAttribute("aria-label")).toMatch(/principal/i);
+    expect(btn.title).toMatch(/principal/i);
+    // ⚠️ The icon is hidden from assistive tech, or it gets read alongside the label.
+    expect(btn.querySelector("svg")!.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  test("success reports back through the button's state", async () => {
+    const clip = stubClipboard("ok");
+    await mount();
+    const btn = headerCopy();
+    expect(btn.dataset.state).toBe("idle");
+    btn.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(btn.dataset.state).toBe("copied");
+    expect(btn.title).toMatch(/copied/i);
+    expect(clip.last()).toBe(FULL_PRINCIPAL);
+  });
+
+  test("⚠️ a REJECTED write reports failure rather than going quiet", async () => {
+    // The bug this replaced: the catch ran, the header had no node to select, and it
+    // returned having done nothing visible. A button that speaks only on success is
+    // indistinguishable from one that ignored the click.
+    stubClipboard("reject");
+    await mount();
+    const btn = headerCopy();
+    btn.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(btn.dataset.state).toBe("failed");
+    expect(btn.title).toMatch(/C to copy/i);
+  });
+
+  test("⚠️ NO async clipboard at all still reports, rather than doing nothing", async () => {
+    // `navigator.clipboard` is absent on any non-secure origin — a LAN IP, a plain
+    // http host. The old code optional-chained the whole promise chain, so
+    // `writeText` was never called, `then` never ran (no feedback) and `catch` never
+    // ran (no fallback). The click did nothing whatsoever.
+    stubClipboard("absent");
+    await mount();
+    const btn = headerCopy();
+    btn.click();
+    await Promise.resolve();
+    expect(btn.dataset.state).toBe("failed");
   });
 
   test("signed out, there is no principal and no copy button", async () => {
@@ -1715,7 +1765,6 @@ describe("the signed-in principal is copyable", () => {
     // default state would have passed while testing nothing about signing out.
     el<HTMLButtonElement>("sign-out").click();
     await Promise.resolve();
-    // Nothing to copy, and a Copy button beside a Sign in prompt would be nonsense.
     expect(document.querySelector("#auth-area .principal")).toBeNull();
     expect(document.querySelector("#auth-area button.copy")).toBeNull();
     expect(document.getElementById("sign-in")).not.toBeNull();

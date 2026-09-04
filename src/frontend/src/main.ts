@@ -2013,41 +2013,116 @@ function repeatOrder(order: Order): void {
 /// Copy-to-clipboard for the CLI commands. Falls back to selecting the text:
 /// clipboard access is refused in some browsers and over plain HTTP, and a
 /// button that silently does nothing is worse than one that selects for you.
-/// Copy `text` and flash the button, with a selection fallback where the clipboard
-/// is unavailable (an insecure origin, or a browser that refuses without a gesture).
+/// The copy glyph, and the tick that replaces it on success.
 ///
-/// ⚠️ **`text` is passed in rather than read off the button's target**, because the
-/// thing shown and the thing worth copying are not always the same string: the header
-/// renders a TRUNCATED principal, and copying what is displayed would hand over
-/// `abcde…vwxyz`, which is useless in a command. The fallback selects `fallbackNode`
-/// when there is one — a truncated node is not worth selecting either, so the header
-/// passes none.
+/// ⚠️ **Inline SVG, not an emoji.** `scripts/brand-lint.sh` bans pictographs in
+/// user-facing copy, and it is right to: clipboard emoji render differently on every
+/// platform and some fonts have no glyph at all, which shows as a box.
+///
+/// `aria-hidden` on the SVG because the accessible name lives on the button's
+/// `aria-label` — otherwise a screen reader reads the icon and the label.
+const COPY_ICON =
+  '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">'
+  + '<rect x="5.5" y="5.5" width="8" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/>'
+  + '<path d="M10.5 3.5V2.75A1.25 1.25 0 0 0 9.25 1.5H3.75A1.25 1.25 0 0 0 2.5 2.75v7.5A1.25 1.25 0 0 0 3.75 11.5H4.5"'
+  + ' fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+
+const DONE_ICON =
+  '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">'
+  + '<path d="M3 8.5l3.2 3.2L13 5" fill="none" stroke="currentColor" stroke-width="1.8"'
+  + ' stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+/// Copy `text`, and **report the outcome whichever way it goes** (#106 follow-up).
+///
+/// ⚠️ **Three ways this used to fail silently, and all three read to a user as "the
+/// button does nothing".**
+///
+/// 1. `navigator.clipboard?.writeText(t).then(…).catch(…)` — optional chaining
+///    short-circuits the WHOLE chain, so where `navigator.clipboard` is absent
+///    (any non-secure origin: a LAN IP, a plain-http host) `writeText` was never
+///    called, `then` never ran so there was no feedback, and `catch` never ran so
+///    there was no fallback either. Nothing happened at all.
+/// 2. When `writeText` REJECTED — permission denied, or a browser that wants the
+///    write closer to the gesture — the catch ran, and for the header button there
+///    was no node to select, so it returned having done nothing visible.
+/// 3. Success flashed a label; failure flashed nothing. A user cannot tell "copied"
+///    from "ignored me" if only one of them speaks.
+///
+/// So: a synchronous `execCommand` fallback that works without the async API, and a
+/// state on the button for every outcome including failure.
 function copyWithFeedback(btn: HTMLButtonElement, text: string, fallbackNode?: Element): void {
-  const done = () => {
-    const original = btn.textContent;
-    btn.textContent = "Copied";
-    setTimeout(() => { btn.textContent = original; }, 1_500);
+  const settle = (state: "copied" | "failed") => {
+    btn.dataset.state = state;
+    btn.innerHTML = state === "copied" ? DONE_ICON : COPY_ICON;
+    // Announced, not just drawn: the icon swap is invisible to a screen reader.
+    btn.setAttribute("aria-live", "polite");
+    const label = btn.dataset.label ?? "Copy";
+    btn.title = state === "copied" ? "Copied" : "Press Ctrl/Cmd+C to copy";
+    setTimeout(() => {
+      btn.dataset.state = "idle";
+      btn.innerHTML = COPY_ICON;
+      btn.title = label;
+    }, 1_600);
   };
-  void navigator.clipboard?.writeText(text).then(done).catch(() => {
-    if (!fallbackNode) return;
+
+  /// Select the value so Ctrl/Cmd+C works, which is the honest last resort: it puts
+  /// the user one keystroke from the thing they asked for instead of nowhere.
+  const selectIt = (): boolean => {
+    if (!fallbackNode) return false;
     const range = document.createRange();
     range.selectNodeContents(fallbackNode);
     const sel = window.getSelection();
-    sel?.removeAllRanges();
-    sel?.addRange(range);
-  });
+    if (!sel) return false;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return true;
+  };
+
+  /// The pre-`navigator.clipboard` path. Synchronous, so it works in the places the
+  /// async API is unavailable — and it needs a node in the document, hence the
+  /// off-screen textarea rather than a detached one.
+  const execCopy = (): boolean => {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.top = "-1000px";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    area.remove();
+    return ok;
+  };
+
+  const write = navigator.clipboard?.writeText;
+  if (typeof write !== "function") {
+    // ⚠️ Not an optional-chained no-op any more. No async clipboard means go
+    // straight to the synchronous path, and report either way.
+    settle(execCopy() || selectIt() ? "copied" : "failed");
+    return;
+  }
+  void navigator.clipboard.writeText(text).then(
+    () => settle("copied"),
+    () => settle(execCopy() || selectIt() ? "copied" : "failed"),
+  );
 }
 
 /// A copy button for a value rendered by JS rather than sitting in the markup.
-///
-/// `label` is short because these sit inline beside the value, not under a command
-/// block. `aria-label` carries what is being copied, since "Copy" alone is ambiguous
-/// to a screen reader when several are on the page.
 function copyButton(text: string, ariaLabel: string): HTMLButtonElement {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "copy copy-inline";
-  btn.textContent = "Copy";
+  btn.innerHTML = COPY_ICON;
+  btn.dataset.state = "idle";
+  btn.dataset.label = ariaLabel;
+  btn.title = ariaLabel;
+  // The accessible name, because the button has no text of its own now.
   btn.setAttribute("aria-label", ariaLabel);
   btn.onclick = () => copyWithFeedback(btn, text);
   return btn;
@@ -2055,6 +2130,13 @@ function copyButton(text: string, ariaLabel: string): HTMLButtonElement {
 
 function wireCopyButtons(): void {
   for (const btn of document.querySelectorAll<HTMLButtonElement>("button.copy")) {
+    // The markup carries the label; the glyph is installed here so there is ONE
+    // definition of what a copy button looks like.
+    const label = btn.getAttribute("aria-label") ?? "Copy";
+    btn.dataset.label = label;
+    btn.dataset.state = "idle";
+    btn.title = label;
+    btn.innerHTML = COPY_ICON;
     btn.onclick = () => {
       const target = document.getElementById(btn.dataset.copy ?? "");
       if (!target) return;

@@ -634,9 +634,34 @@ tbody tr:hover {
 /* A copy button beside an inline value, not under a command block: the standard
    `.copy` padding is sized for the latter and overwhelms a header row. */
 .copy-inline {
-  padding: 0.1rem 0.45rem;
-  font-size: 0.75rem;
-  line-height: 1.4;
+  padding: 0.15rem 0.3rem;
+}
+
+/* ── Copy buttons are an ICON, and the state is an attribute ────────────────── */
+/* One definition of what copying looks like, so the header, the operator console
+   and the three command blocks cannot drift apart. `data-state` rather than the
+   button's text: the label is gone, and CSS reading a state attribute is also what
+   the tests assert on, so there is one source for both. */
+.copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2rem;
+  min-height: 1.9rem;
+}
+.copy svg {
+  display: block;
+}
+.copy[data-state="copied"] {
+  color: var(--icp-ok);
+  border-color: currentColor;
+}
+/* ⚠️ Failure is VISIBLE. A button that reports success and stays silent on failure
+   is indistinguishable from one that ignored the click, which is exactly the bug
+   this replaced. */
+.copy[data-state="failed"] {
+  color: var(--icp-err);
+  border-color: currentColor;
 }
 
 .site-footer {
