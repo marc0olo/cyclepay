@@ -2923,6 +2923,30 @@ persistent actor CyclesGateway {
     // The withdraw guard and the observation guard are the same structure, so they
     // cannot disagree.
     ignore await* observeReserve();
+    // ⚠️ **RE-CHECK, because `observeReserve` contains an await and the floor is still
+    // FULL across it.** The decrement below is what refuses a concurrent create, and it
+    // has not happened yet — so a `create_order` queued during the balance read sees a
+    // full reserve, `Gate.solvent` admits it, and the buyer walks away with a payable
+    // session against a reserve that is about to leave. If they pay, they have paid for
+    // cycles that are gone.
+    //
+    // This is the same hazard the decrement-before-transfer rule exists for, one await
+    // earlier — and the fix is the pattern inside the function being called:
+    // `observeReserve` captures `unsettledBefore` and `outflowsIssued` and re-checks
+    // both after its own await, for exactly this reason.
+    //
+    // ⚠️ **NEITHER this re-read nor the decrement below is verified by a test, and that
+    // was measured rather than assumed**: deleting either one leaves the whole
+    // `withdraw.spec.ts` suite green. A PocketIC tick drains a message including its
+    // inter-canister awaits, so an ingress call cannot be landed inside one. Both rules
+    // rest on review — do not "simplify" either on the strength of a green suite.
+    let holdersAfter = Orders.promiseHolderCount(orderStore);
+    if (holdersAfter > 0) {
+      return #err(#ordersOutstanding({
+        holders = holdersAfter;
+        promised = Orders.promised(orderStore);
+      }));
+    };
     let debited = reserveFloor;
     let fee = cyclesLedgerFee;
     if (debited == 0) return #err(#nothingToWithdraw);
@@ -2973,6 +2997,12 @@ persistent actor CyclesGateway {
         #ok({ withdrawn = amount; debited = amount + fee; to });
       };
       case (#Err(e)) {
+        // ⚠️ **The floor stays decremented here, and that is safe and self-correcting
+        // rather than a bookkeeping hole.** Understating the floor only ever sells
+        // *less*, and adoption is increase-only, so the next quiet observation raises it
+        // back to the real balance. Crediting it back would be the unsafe direction: a
+        // refusal we misread as definitive would leave the floor optimistic with nothing
+        // left to re-decrement it.
         let detail = Delivery.transferErrorToText(e);
         auditAdmin(caller, "reserve.withdrawRefused", "to " # to.owner.toText() # ": " # detail);
         #err(#transferFailed(detail));

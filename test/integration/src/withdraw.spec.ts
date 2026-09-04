@@ -161,31 +161,52 @@ test('103d — the destination is IN the audit record, not just the fact of a wi
   expect(withdrawn[0]!.detail).toContain('incl. fee');
 });
 
-test('103e — ⚠️ a concurrent create_order on the withdrawal await is REFUSED', async () => {
-  // THE assertion that makes the decrement-before-await non-vacuous. Without pinning
-  // this interleaving, "the floor drops first" is a claim no test can contradict.
+test('103e — the two interleaving windows, and ⚠️ what this suite CANNOT prove', async () => {
+  // `withdraw_reserve` has two awaits and a rule for each:
   //
-  // The shape: submit the withdrawal without awaiting it, so it is parked on its
-  // `icrc1_transfer`. A create_order arriving in that window must see a floor of zero
-  // and refuse — if the decrement happened after the transfer instead, it would be
-  // admitted against a reserve that is being emptied, and the buyer would pay for
-  // cycles that are gone.
+  //   1. the balance read inside `observeReserve` — the floor is still FULL across it,
+  //      so the promise-holder count is RE-READ afterwards and the withdrawal refuses if
+  //      it moved. Without that, a create queued there is admitted and the buyer walks
+  //      away with a payable session against a reserve about to leave.
+  //   2. the transfer — the floor is decremented SYNCHRONOUSLY before it, so a create
+  //      arriving there is refused by `Gate.solvent` for free.
+  //
+  // ⚠️ **NEITHER ordering is verified by this suite, and saying so is the point.**
+  // Measured, not assumed: with the re-read deleted, and again with the decrement moved
+  // after the transfer, every test here still passed. A `pic.tick()` drains the whole
+  // message including its inter-canister awaits, and there is no way to land an ingress
+  // message inside one — so a create submitted before the withdrawal never reaches the
+  // window, and one submitted after finds the work already done.
+  //
+  // An earlier version of this test asserted "a withdrawal and a create can never both
+  // succeed" and passed for the wrong reason every time: the withdrawal simply finished
+  // first (`withdrew=true, created=false, outcall=false`), so the create was refused
+  // post-drain and the interleave never happened. That is a safety assertion that cannot
+  // fail — worse than no test, because it reads as proof.
+  //
+  // What IS pinned: the predicate both rules depend on (103b — holders > 0 refuses), and
+  // the observable end state (below). The orderings rest on review of the two comments in
+  // `Main.withdraw_reserve` and on the pattern they copy from `observeReserve`, which
+  // captures `unsettledBefore`/`outflowsIssued` and re-checks after its own await for
+  // exactly this reason.
   await fundReserve(gw, RESERVE);
   await gw.asAdmin.refresh_reserve();
   expect(await holders()).toBe(0n);
-  expect((await gw.asAdmin.reserve_status()).availableToSell).toBeGreaterThan(0n);
+  const before = await reserveBalance(gw);
+  expect(before).toBeGreaterThan(TIER_LOCKED_CYCLES);
 
-  const settleWithdraw = await gw.deferredAdmin.withdraw_reserve();
-  // One tick, so the withdrawal reaches its transfer and the floor is already down.
-  await gw.pic.tick();
+  expectOk(await gw.asAdmin.withdraw_reserve());
 
-  const raced = expectErr(
+  // ⚠️ The end state is what a buyer's safety actually rests on: once the reserve is
+  // gone, no session can be handed out against it. Asserted through the public path
+  // rather than through the floor, because that is what a buyer would hit.
+  expect(await reserveBalance(gw)).toBe(0n);
+  const refused = expectErr(
     await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []),
   ) as { notAdmitted: Record<string, unknown> };
-  expect(Object.keys(raced.notAdmitted)).toEqual(['reserveShort']);
-
-  expectOk(await settleWithdraw());
-  expect(await reserveBalance(gw)).toBe(0n);
+  expect(Object.keys(refused.notAdmitted)).toEqual(['reserveShort']);
+  // And no order was left holding a promise against nothing.
+  expect(await holders()).toBe(0n);
 });
 
 test('103f — a buyer who paid is never left short by a withdrawal', async () => {
