@@ -18,6 +18,7 @@ export type Amount = { 'custom' : bigint } |
   { 'tier' : string };
 export interface Config {
   'feeBps' : bigint,
+  'divisor' : bigint,
   'minRateSources' : bigint,
   'feeFixedCents' : bigint,
   'maxAgeNs' : bigint,
@@ -25,10 +26,24 @@ export interface Config {
 }
 export type ConfigError = { 'zeroRateSources' : null } |
   { 'feeBpsTooHigh' : null } |
+  { 'zeroDivisor' : null } |
+  { 'divisorChangeWithOrders' : { 'stored' : bigint } } |
   { 'maxAgeTooLong' : { 'allowedNs' : bigint, 'maxAgeNs' : bigint } } |
   { 'nonPositiveMaxAge' : null } |
+  {
+    'divisorUndeliverable' : { 'ledgerFee' : bigint, 'scaledCycles' : bigint }
+  } |
+  { 'divisorNeedsSandbox' : { 'expectLivemode' : [] | [boolean] } } |
   { 'zeroRateDelta' : null };
 export type ConfigError__1 = {
+    'floorUndeliverableAtDivisor' : {
+      'ledgerFee' : bigint,
+      'divisor' : bigint,
+      'scaledCycles' : bigint,
+      'minUsdCents' : bigint,
+    }
+  } |
+  {
     'tierBelowFloor' : {
       'tierId' : string,
       'usdCents' : bigint,
@@ -59,6 +74,12 @@ export interface Config__1 {
 export interface Config__2 { 'alertAfterNs' : bigint, 'maxHoldNs' : bigint }
 export type CreateOrderError = {
     'quoteChanged' : { 'minimum' : bigint, 'quoted' : bigint }
+  } |
+  {
+    'simulationScaleTooSmall' : {
+      'ledgerFee' : bigint,
+      'scaledCycles' : bigint,
+    }
   } |
   { 'cancelledDuringCreation' : null } |
   { 'unknownTier' : string } |
@@ -219,6 +240,7 @@ export interface QuotePreviews {
 }
 export type Rail = { 'card' : null };
 export interface RailStateLatch {
+  'unboundedGiveaway' : boolean,
   'stripeApiFailing' : boolean,
   'canisterCyclesLow' : boolean,
   'reserveShort' : boolean,
@@ -233,6 +255,8 @@ export interface Rates {
 export type Reason = {
     'amountAboveMax' : { 'maxUsdCents' : bigint, 'usdCents' : bigint }
   } |
+  { 'unboundedGiveaway' : { 'reserveFloor' : bigint } } |
+  { 'buyerNotAllowed' : null } |
   { 'canisterCyclesLow' : { 'min' : bigint, 'balance' : bigint } } |
   { 'amountBelowMin' : { 'usdCents' : bigint, 'minUsdCents' : bigint } } |
   { 'reserveShort' : { 'requested' : bigint, 'available' : bigint } } |
@@ -252,7 +276,9 @@ export interface Receipt {
 }
 export interface RefusalCounts {
   'amountAboveMax' : bigint,
+  'unboundedGiveaway' : bigint,
   'stripeApiFailed' : bigint,
+  'buyerNotAllowed' : bigint,
   'canisterCyclesLow' : bigint,
   'amountBelowMin' : bigint,
   'reserveShort' : bigint,
@@ -292,15 +318,15 @@ export type Result_3 = { 'ok' : null } |
 export type Result_4 = { 'ok' : null } |
   { 'err' : ConfigError__1 };
 export type Result_5 = { 'ok' : null } |
-  { 'err' : ConfigError__2 };
+  { 'err' : string };
 export type Result_6 = { 'ok' : null } |
+  { 'err' : ConfigError__2 };
+export type Result_7 = { 'ok' : null } |
   { 'err' : ValidateError };
-export type Result_7 = { 'ok' : bigint } |
+export type Result_8 = { 'ok' : bigint } |
   { 'err' : string };
-export type Result_8 = { 'ok' : Entry } |
+export type Result_9 = { 'ok' : Entry } |
   { 'err' : ResolveError };
-export type Result_9 = { 'ok' : null } |
-  { 'err' : string };
 export type SetError = { 'tooShort' : { 'min' : bigint, 'size' : bigint } };
 export interface Status {
   'setAtNs' : [] | [bigint],
@@ -364,7 +390,12 @@ export interface _SERVICE {
    * / (`cli.id.ai`), which is not this app, so the grant would sit on a principal the
    * / admin never sees.
    */
-  'add_admin' : ActorMethod<[Principal], Result_9>,
+  'add_admin' : ActorMethod<[Principal], Result_5>,
+  /**
+   * / Allow a principal to buy while this gateway accepts free test payments
+   * / (controller only, audited).
+   */
+  'add_allowed_buyer' : ActorMethod<[Principal], Result_5>,
   /**
    * / Open-obligation depth, public.
    * /
@@ -462,6 +493,12 @@ export interface _SERVICE {
    * / empty list does not mean nobody can act.
    */
   'admins' : ActorMethod<[], Array<Principal>>,
+  /**
+   * / Who may buy while test payments are accepted (controller only).
+   * /
+   * / ⚠️ An empty list does not mean "everyone" — see `allowedBuyers`.
+   */
+  'allowed_buyers' : ActorMethod<[], Array<Principal>>,
   /**
    * / §4.2 operational trail, newest-last. Admin: details reference payment
    * / intents. Readers detect ring-buffer drops via gaps in `seq`.
@@ -974,7 +1011,17 @@ export interface _SERVICE {
   /**
    * / Revoke the CASES tier (controller only, audited).
    */
-  'remove_admin' : ActorMethod<[Principal], Result_9>,
+  'remove_admin' : ActorMethod<[Principal], Result_5>,
+  /**
+   * / Revoke a buyer's allowance (controller only, audited).
+   * /
+   * / ⚠️ **Removing the LAST entry does not open the gateway up — it closes it.**
+   * / An empty list plus a funded reserve plus test payments is
+   * / `Gate.Reason.unboundedGiveaway`, which refuses everyone. The audit line says
+   * / so, because "revoked the last buyer" and "the gateway stopped selling" are
+   * / the same event and an operator should not have to connect them later.
+   */
+  'remove_allowed_buyer' : ActorMethod<[Principal], Result_5>,
   /**
    * / Reserve solvency and order counters, public (#30 PR-B).
    * /
@@ -1010,7 +1057,7 @@ export interface _SERVICE {
       'expiredOrders' : bigint,
     }
   >,
-  'resolve_orphan' : ActorMethod<[bigint], Result_8>,
+  'resolve_orphan' : ActorMethod<[bigint], Result_9>,
   /**
    * / Manual resolution (§4.1/§7) — the operator marking an obligation settled after
    * / acting off-chain: a refund issued in the Stripe Dashboard, or a delivery whose
@@ -1038,7 +1085,7 @@ export interface _SERVICE {
    * / references so the operator can disambiguate, because declining without a way
    * / through is a dead end rather than a safeguard.
    */
-  'resolve_problem' : ActorMethod<[OrderId, string, [] | [string]], Result_7>,
+  'resolve_problem' : ActorMethod<[OrderId, string, [] | [string]], Result_8>,
   /**
    * / Replace the card presets (§3/§7 — admin, validated atomically: a bad config
    * / never partially applies).
@@ -1049,7 +1096,7 @@ export interface _SERVICE {
    * / nothing — it just shows no tiles. The switch is both Stripe secrets being
    * / provisioned; `railsLive` is where that lives.
    */
-  'set_card_tiers' : ActorMethod<[Array<Tier>], Result_6>,
+  'set_card_tiers' : ActorMethod<[Array<Tier>], Result_7>,
   /**
    * / Tune the delivery timeline (admin, §7).
    * /
@@ -1057,7 +1104,22 @@ export interface _SERVICE {
    * / tell the operator at the moment the decision was already taken, and a
    * / non-positive bound would escalate every order instantly.
    */
-  'set_delivery_config' : ActorMethod<[Config__2], Result_5>,
+  'set_delivery_config' : ActorMethod<[Config__2], Result_6>,
+  /**
+   * / Declare which Stripe mode this gateway serves (controller only).
+   * /
+   * / Set it to `?true` before taking real payments and `?false` on a sandbox
+   * / deployment. `null` restores "accept either", which only makes sense while
+   * / nothing of value is at stake — and it is the default, so a fresh canister
+   * / starts there.
+   * /
+   * / ⚠️ **The other half of the divisor's mutual refusal (#99 2a).** While a
+   * / simulation divisor is set, this refuses anything but `?false`: live mode
+   * / takes real money and delivers scaled cycles, and `null` accepts live
+   * / payments too. Mutual, so **neither order of operations** reaches the state
+   * / that shorts a paying buyer — it is unrepresentable rather than discouraged.
+   */
+  'set_expected_livemode' : ActorMethod<[[] | [boolean]], Result_5>,
   /**
    * / Adjust the admission gate (§7): open-order cap, own-cycles floor,
    * / per-purchase ceiling. Validated atomically — a bad config never partially
@@ -1065,17 +1127,14 @@ export interface _SERVICE {
    * / retroactively invalidate that tier's registration, but the next
    * / `set_card_tiers` will reject it and the webhook will refuse to deliver a
    * / payment above the new ceiling.
-   * / Declare which Stripe mode this gateway serves (admin).
-   * /
-   * / Set it to `?true` before taking real payments and `?false` on a sandbox
-   * / deployment. `null` restores "accept either", which only makes sense while
-   * / nothing of value is at stake.
    */
-  'set_expected_livemode' : ActorMethod<[[] | [boolean]], undefined>,
   'set_gate_config' : ActorMethod<[Config__1], Result_4>,
   /**
    * / Adjust pricing params (§7): fee formula, staleness window, delta guard.
    * / Validated atomically — a bad config never partially applies.
+   * / ⚠️ **Three divisor guards live here rather than in `Pricing.validateConfig`,
+   * / because each needs context that module cannot see** (#99). All three are
+   * / checked before anything is written, so a bad config never partially applies.
    */
   'set_pricing_config' : ActorMethod<[Config], Result_3>,
   /**

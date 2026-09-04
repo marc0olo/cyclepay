@@ -20,8 +20,7 @@
 import {
   TIER_USD_CENTS, WEBHOOK_SECRET,
   ensureRates, expectOk, setCmcRate, setXrcRate, setupGateway, user,
-  clientReferenceFor,
-} from './harness';
+  clientReferenceFor, allowTestBuyers } from './harness';
 
 const SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? WEBHOOK_SECRET;
 
@@ -141,6 +140,9 @@ async function main(): Promise<void> {
   const apiKey = process.env.STRIPE_API_KEY;
   if (apiKey && apiKey.length > 0) {
     expectOk(await gw.asAdmin.set_stripe_api_key(apiKey));
+    // #99: these suites fund a reserve and accept test payments, so without an
+    // allow-list every create_order refuses as the faucet state.
+    await allowTestBuyers(gw);
     const created = expectOk(
       // One destination, and the gateway refuses any other (#29): the caller's own
       // cycles-ledger account, default subaccount.

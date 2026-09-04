@@ -139,6 +139,10 @@
           <div>
             <dt id="trust-capacity-label"></dt>
             <dd id="trust-capacity"></dd>
+            <!-- NOTE: in simulation mode this figure is REAL reserve cycles
+                 while quotes are scaled, so the ratio between them is startling
+                 and correct. One sentence, or it reads as a bug. -->
+            <dd id="trust-capacity-note" class="muted" hidden></dd>
           </div>
           <div id="trust-delivered-wrap">
             <dt>Delivered so far</dt>
@@ -164,6 +168,11 @@
       <div id="buy-flow" class="view" hidden>
         <section id="card-panel">
           <h2 class="section-h">Pick an amount</h2>
+          <!-- Simulation mode (#99), in words rather than as a badge: a badge
+               tells you a state exists, a sentence tells you what it means for the
+               purchase you are about to make. Hidden entirely at divisor 1, so a
+               production page reads exactly as it did before this existed. -->
+          <p id="simulation-note" class="notice" hidden></p>
           <div id="tiers" class="tiers">
             <p class="muted">Loading amounts…</p>
           </div>
@@ -329,6 +338,7 @@
           </dl>
           <p id="receipt-formula" class="mono"></p>
           <p id="receipt-verdict"></p>
+          <p id="receipt-simulation-note" class="notice" hidden></p>
           <p class="muted">
             Both rates come from canisters you can query yourself: the
             <a href="https://dashboard.internetcomputer.org/canister/uf6dk-hyaaa-aaaaq-qaaaq-cai"

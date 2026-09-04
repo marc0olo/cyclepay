@@ -4,8 +4,7 @@ import {
   checkoutSessionBody, ensureRates, expectOk, fundReserve, setCmcRate,
   setupGateway, setXrcRate, stripeSignature, teardownGateway, tickUntilStatus, user,
   clientReferenceFor, createOrderWithSession,
-  type Gateway,
-} from './harness';
+  type Gateway, allowTestBuyers } from './harness';
 
 let gw: Gateway;
 beforeAll(async () => { gw = await setupGateway(); }, 180_000);
@@ -39,6 +38,9 @@ test('55 — the webhook route serves real HTTP end to end, and delivers', async
   expectOk(await gw.asAdmin.set_webhook_secret(WEBHOOK_SECRET));
   // #33: both secrets, or `create_order` cannot produce a payable session.
   expectOk(await gw.asAdmin.set_stripe_api_key('rk_test_live_gateway_spec'));
+  // #99: these suites fund a reserve and accept test payments, so without an
+  // allow-list every create_order refuses as the faucet state.
+  await allowTestBuyers(gw);
   expectOk(await gw.asAdmin.set_stripe_origin('https://live.example'));
   // Same reason as the main suite: the §3 vector is a $5 tier, and #33's shipped
   // floor is $10. Lowering it here keeps the vector exact; the shipped default is

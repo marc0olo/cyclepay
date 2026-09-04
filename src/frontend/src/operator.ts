@@ -184,4 +184,14 @@ export const REFUSAL_HINTS: Record<RefusalTag, Hint> = {
     then: "Check the Stripe status page and the key's permissions: a restricted key needs Checkout Sessions write. Repeated failures with a healthy Stripe mean the key.",
     urgency: "act",
   },
+  unboundedGiveaway: {
+    means: "This gateway would be a cycles faucet, so it refuses every buyer. Stripe test payments are accepted, the buyer allow-list is empty, and the reserve is funded. Test payments are free and unlimited, so anyone reaching the page could take cycles.",
+    then: "Add the testers with add_allowed_buyer, or go live with set_expected_livemode(?true). A funded reserve behind an empty allow-list is the state to get out of. The order to configure in: allow-list first, fund the reserve second.",
+    urgency: "act",
+  },
+  buyerNotAllowed: {
+    means: "A buyer who is not on the allow-list tried to purchase while test payments are accepted. This is the allow-list doing its job, not a fault.",
+    then: "Nothing, unless that buyer should be a tester: then add_allowed_buyer. Distinct from unboundedGiveaway on purpose: that one means the list is missing, this one means it is working.",
+    urgency: "wait",
+  },
 };

@@ -128,6 +128,28 @@ export const user = createIdentity('cyclepay integration user');
 /// by the ownership check). Added for #30 PR-B's owner-scoped `process_order`.
 export const stranger = createIdentity('cyclepay integration stranger');
 
+/// Allow-list every identity that buys in these suites (#99 2b).
+///
+/// ⚠️ **Required, not hygiene.** These suites fund a reserve and accept test-mode
+/// payments, which is exactly `Gate.Reason.unboundedGiveaway` — the faucet state —
+/// so without this `create_order` refuses before it ever reaches a Stripe outcall.
+/// 68 of 97 tests failed that way when the refusal first landed, which is the
+/// check being non-vacuous: a guard no test ever trips is a green check pointed at
+/// an untaken path.
+///
+/// All three, including `admin`: a controller is not exempt, because the gate
+/// decides admission and knows nothing about controllers.
+export async function allowTestBuyers(gw: Gateway): Promise<void> {
+  for (const identity of [user, stranger, admin]) {
+    const result = await gw.asAdmin.add_allowed_buyer(identity.getPrincipal());
+    // Idempotent by intent: a suite that provisions twice must not fail on
+    // "already an allowed buyer".
+    if ('err' in result && !result.err.includes('already an allowed buyer')) {
+      throw new Error(`add_allowed_buyer failed: ${result.err}`);
+    }
+  }
+}
+
 export interface Gateway {
   server: PocketIcServer;
   pic: PocketIc;

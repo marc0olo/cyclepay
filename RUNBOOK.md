@@ -412,6 +412,24 @@ stuck buyer, and there is no longer a rate-move-mid-delivery exposure to bound.
 
 ### Funding the reserve
 
+⚠️ **On a gateway that accepts Stripe TEST payments, populate the buyer allow-list
+BEFORE you fund the reserve** (#99). Test payments are free and unlimited, so test mode
+plus an empty allow-list plus a funded reserve is a cycles faucet, and the gateway
+refuses every buyer in that state rather than giving cycles away
+(`refusal_counts.refusingNow.unboundedGiveaway`). Funding first is not dangerous — it
+is simply the order that produces a deployment that refuses to sell until someone
+notices why.
+
+```bash
+# Who may buy while test payments are accepted. Controller only.
+icp canister call backend add_allowed_buyer '(principal "<tester>")'
+icp canister call backend allowed_buyers '()'
+```
+
+An **unfunded** reserve refuses every order at `Gate.solvent` anyway, before a Stripe
+session is even created — so a sandbox deployment is safe to explore before either the
+allow-list or the reserve exists. Only paying needs both.
+
 ```bash
 # The reserve IS the gateway's own cycles-ledger account.
 icp cycles transfer 100t <backend-principal>

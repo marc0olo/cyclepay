@@ -200,6 +200,7 @@ export function installFixtures(host: FixtureHost): void {
       canisterCyclesLow: false,
       railClosed: false,
       stripeApiFailing: false,
+      unboundedGiveaway: false,
     },
   }),
   pricing_status: async () => ({
@@ -212,6 +213,7 @@ export function installFixtures(host: FixtureHost): void {
         maxAgeNs: 900_000_000_000n,
         maxRateDeltaBps: 500n,
         minRateSources: 3n,
+        divisor: 1n,
       },
       rates: {
         usdPerIcpMicros: USD_PER_ICP_MICROS,
@@ -263,6 +265,7 @@ export function installFixtures(host: FixtureHost): void {
       ordersWithProblems: 1n,
       refusingNow: {
         stripeApiFailing: false,
+        unboundedGiveaway: false,
         canisterCyclesLow: false,
         reserveShort: false,
         railClosed: false,
@@ -274,6 +277,8 @@ export function installFixtures(host: FixtureHost): void {
       counts: {
         amountAboveMax: 1n,
         stripeApiFailed: 0n,
+        unboundedGiveaway: 0n,
+        buyerNotAllowed: 0n,
         canisterCyclesLow: 0n,
         amountBelowMin: 6n,
         reserveShort: 2n,
@@ -282,6 +287,7 @@ export function installFixtures(host: FixtureHost): void {
       },
       refusingNow: {
         stripeApiFailing: false,
+        unboundedGiveaway: false,
         canisterCyclesLow: false,
         reserveShort: false,
         railClosed: false,

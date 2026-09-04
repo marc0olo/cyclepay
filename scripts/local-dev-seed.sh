@@ -314,6 +314,43 @@ if ! TOP_UP_OUT="$(icp canister top-up backend --amount "$CYCLES_TOP_UP" 2>&1)";
     (reinstall a few times and they are), or icp-cli predates \`icp canister top-up\` (1.2.0)."
 fi
 
+step "buyer allow-list (#99)"
+# ⚠️ **A local gateway with a funded reserve and no allow-list REFUSES every
+# buyer**, and the reason is not obvious from the refusal alone. The gate calls
+# that state `unboundedGiveaway`: Stripe test payments are free and unlimited, so
+# accepting them against a funded reserve with nobody listed is a cycles faucet.
+# The canister refuses rather than warns.
+#
+# The catch locally: the buyer is a browser identity from the local Internet
+# Identity, and its principal does not exist until someone signs in — so this
+# script cannot know it. Two ways through:
+#
+#   1. Pass it in:  BUYER_PRINCIPAL=<principal> scripts/local-dev-seed.sh
+#   2. Sign in first, then run the command this step prints.
+#
+# Declaring the sandbox mode is separate and unconditional: a local deployment
+# uses a Stripe TEST key, so `?false` is simply true here. It is also what makes a
+# simulation divisor settable at all (`set_pricing_config` refuses one unless the
+# mode is exactly `?false`), and it turns the webhook's livemode gate from
+# "accept either" into a real check.
+icp canister call backend set_expected_livemode '(opt false)' >/dev/null \
+  || die "set_expected_livemode was refused"
+ok "declared test mode (expect_livemode = ?false)"
+
+if [ -n "${BUYER_PRINCIPAL:-}" ]; then
+  ALLOW_OUT="$(icp canister call backend add_allowed_buyer "(principal \"${BUYER_PRINCIPAL}\")" 2>&1)" || true
+  case "$ALLOW_OUT" in
+    *already*) ok "buyer already allow-listed: $BUYER_PRINCIPAL" ;;
+    *ok*)      ok "allow-listed buyer $BUYER_PRINCIPAL" ;;
+    *)         printf '  \033[33m!\033[0m add_allowed_buyer was refused: %s\n' "$ALLOW_OUT" ;;
+  esac
+else
+  printf '  \033[33m!\033[0m no BUYER_PRINCIPAL given, so NOBODY can buy yet.\n'
+  printf '      Sign in at the local frontend, copy the principal it shows, then:\n'
+  printf '        icp canister call backend add_allowed_buyer %s\n' "'(principal \"<your-principal>\")'"
+  printf '      Until then every create_order refuses with unboundedGiveaway.\n'
+fi
+
 step "cycles reserve"
 # Delivery is a TRANSFER out of the gateway's own cycles-ledger account. So the
 # gateway needs cycles in that account, and it is a different pot from the gas balance
@@ -535,7 +572,13 @@ cat <<NOTES
   Open http://frontend.local.localhost:${GATEWAY_PORT}/
 
   What works now, and what needs Stripe:
-    - Browsing amounts, signing in, creating an order, cancelling: all work.
+    - Browsing amounts, signing in, creating an order, cancelling: all work
+      — but CREATING an order needs your principal on the buyer allow-list
+      first (#99). Sign in, copy the principal, then:
+        icp canister call backend add_allowed_buyer '(principal "<yours>")'
+      Or re-run this script with BUYER_PRINCIPAL=<principal>. Without it the
+      gateway refuses every buyer with unboundedGiveaway, because a funded
+      reserve plus free Stripe test payments plus an empty list is a faucet.
     - PAYING needs BOTH Stripe secrets. There are no Payment Links any more:
       the canister creates a Checkout Session per order and sets
       client_reference_id on it through the API, so nothing has to be

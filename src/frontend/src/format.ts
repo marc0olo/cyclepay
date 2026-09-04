@@ -1,6 +1,6 @@
 // Pure presentation/encoding helpers. No DOM, no agent, unit-tested.
 
-import type { OrderStatus, Reason } from "./bindings/backend";
+import type { CreateOrderError, OrderStatus, Reason } from "./bindings/backend";
 
 /// OrderStatus variant keys, DERIVED from the generated enum.
 ///
@@ -312,7 +312,18 @@ export interface ReceiptCheck {
 /// The point is that this runs on the buyer's machine from values they can fetch
 /// from the XRC and the CMC themselves. So "you were charged correctly" is
 /// something they check, not something the operator asserts.
-export function checkReceipt(v: ReceiptVerification, lockedCycles: bigint): ReceiptCheck {
+export function checkReceipt(
+  v: ReceiptVerification,
+  lockedCycles: bigint,
+  /// The simulation divisor from `pricing_status().config` (#99). `1n` in
+  /// production, where every term below is unchanged.
+  ///
+  /// ⚠️ **Read from config rather than from the order.** The divisor is expected
+  /// constant for the life of the data — `set_pricing_config` refuses to change it
+  /// while orders exist — so reading it here gives the same answer storing it on
+  /// the order would have, without a stable-shape change for a test-phase feature.
+  divisor: bigint = 1n,
+): ReceiptCheck {
   const net = v.netCents;
   if (net === undefined) {
     return {
@@ -321,15 +332,26 @@ export function checkReceipt(v: ReceiptVerification, lockedCycles: bigint): Rece
       formula: "This order has no net amount: the fee formula would have consumed it.",
     };
   }
+  // ⚠️ **`recomputed` stays the UNSCALED quantity, and that is the point.** It is
+  // what production would have locked for this purchase, recomputed here from the
+  // two rate inputs the order carries — so in simulation mode the receipt shows
+  // both legs: what production would send, and what this gateway actually did.
   const recomputed = cyclesForCents(net, v.xdrPermyriadPerIcp, v.usdPerIcpMicros);
+  const scaled = recomputed === null ? null : recomputed / divisor;
   const usdPerIcp = (Number(v.usdPerIcpMicros) / 1e6).toFixed(2);
   const xdrPerIcp = (Number(v.xdrPermyriadPerIcp) / 1e4).toFixed(4);
+  const base =
+    `${formatUsdCents(net)} net × ${xdrPerIcp} XDR/ICP ÷ $${usdPerIcp}/ICP × 10¹² = ` +
+    `${recomputed === null ? "not yet" : formatCycles(recomputed)}`;
   return {
     recomputed,
-    matches: recomputed !== null && recomputed === lockedCycles,
+    matches: scaled !== null && scaled === lockedCycles,
+    // The divisor appears as a term only when there is one, so a production
+    // receipt reads exactly as it did before this feature existed.
     formula:
-      `${formatUsdCents(net)} net × ${xdrPerIcp} XDR/ICP ÷ $${usdPerIcp}/ICP × 10¹² = ` +
-      `${recomputed === null ? "not yet" : formatCycles(recomputed)}`,
+      divisor === 1n || scaled === null
+        ? base
+        : `${base}, ÷ ${divisor} simulation divisor = ${formatCycles(scaled)}`,
   };
 }
 
@@ -389,8 +411,44 @@ export function gateReasonMessage(reason: GateReason): string {
       );
     case "canisterCyclesLow":
       return "Purchases are temporarily unavailable while the gateway is topped up. Nothing was charged; please try again later.";
+    case "unboundedGiveaway":
+      // ⚠️ Says nothing about an allow-list, deliberately. This refusal means the
+      // OPERATOR has a funded reserve behind an empty allow-list, and every buyer
+      // is refused — so telling this buyer they are "not authorized" would name
+      // the wrong problem and send them asking for access that would not help.
+      return "Purchases are not open on this gateway yet. Nothing was charged.";
+    case "buyerNotAllowed":
+      // The list IS populated, so this really is about this buyer, and the fix is
+      // something they can act on.
+      return "This gateway is in testing and only invited testers can buy. Nothing was charged.";
   }
 }
+
+/// The same two refusals, worded for a buyer who has **not attempted anything yet**
+/// (#99 2b).
+///
+/// ⚠️ **Why a second table rather than reusing `gateReasonMessage`: "Nothing was
+/// charged" is true after an attempt and misleading before one.** In a pre-emptive
+/// notice it implies a purchase was tried and reversed, which is confusing at exactly
+/// the moment the page is trying to be clear. Everything else about the copy is
+/// unchanged — neither message names an allow-list to a buyer who cannot act on it,
+/// and neither describes the gateway's misconfiguration in operator vocabulary.
+///
+/// ⚠️ **This table IS the filter.** A key present here means "invariant for this
+/// caller until an operator acts, so pre-announcing it cannot go stale"; absent means
+/// the refusal belongs at the moment of the attempt. `Partial<Record<GateReasonTag,
+/// …>>` keys it on the real Candid tag union, so there is no second hand-written list
+/// of tags for the caller to drift from — the mistake this repo has now removed four
+/// times.
+///
+/// ⚠️ Deliberately NOT extended to `#reserveShort` or `#canisterCyclesLow`: both are
+/// volatile and amount-dependent (a smaller amount may work), so a banner rendered
+/// from them is stale by construction. That is the rule `main.ts`'s `loadMarket`
+/// documents, and this table is the narrow exception to it, not its replacement.
+export const PRE_ANNOUNCED_GATE_REASONS: Partial<Record<GateReason["__kind__"], string>> = {
+  unboundedGiveaway: "This gateway is not accepting purchases right now.",
+  buyerNotAllowed: "This gateway is in testing, and only invited testers can buy.",
+};
 
 /// The `#quoteChanged` refusal, in the buyer's terms. Leads with "nothing was
 /// charged" because that is the first thing someone wants to know when a payment
@@ -433,7 +491,55 @@ export function createOrderErrorMessage(key: string): string {
       // way to see it is a page running against a gateway that disagrees with
       // it about who the caller is.
       return "Cycles can only be delivered to your own account. Nothing was charged. Reload the page and try again.";
+    case "simulationScaleTooSmall":
+      // ⚠️ Names the SIMULATION as the cause, not payment processing (#99 review
+      // finding 2). `tierBelowFees` above says fees would exceed the amount, which
+      // is true for its own cause and false for this one: here the amount is fine
+      // and the operator's divisor scaled the cycles below what the cycles ledger
+      // charges to accept a deposit. A larger amount can still help, so it says so.
+      return (
+        "This gateway is running a scaled-down simulation, and at that scale this amount " +
+        "delivers too few cycles to cover the ledger's deposit fee. Nothing was charged. " +
+        "Try a larger amount."
+      );
+    case "reserveUnavailable":
+      // #30 PR-B fails closed: selling against an unknown balance is what the
+      // check exists to prevent.
+      return "The gateway could not confirm its cycle reserve. Nothing was charged. Try again in a minute.";
+    case "sessionUnavailable":
+      return "Card payments are unavailable right now. Nothing was charged. Please try again later.";
+    case "cancelledDuringCreation":
+      return "This order was cancelled while it was being created. Nothing was charged. Start a new order if you still want it.";
     default:
+      // ⚠️ **Kept as a runtime escape hatch, NOT as the place a missing variant
+      // lands.** A canister upgraded ahead of the frontend can send a tag this
+      // build has never heard of, and showing its name beats showing nothing. An
+      // omission for a variant this build DOES know about is a compile error in
+      // `CREATE_ORDER_ERROR_KEYS` below.
       return `Order creation failed: ${key}`;
   }
 }
+
+/// Every `create_order` variant this build knows about.
+///
+/// ⚠️ **This exists because the switch above takes a `string`, so a new backend
+/// variant cannot be a compile error there.** Three variants —
+/// `reserveUnavailable`, `sessionUnavailable` and `cancelledDuringCreation` —
+/// silently rendered as `"Order creation failed: reserveUnavailable"` for exactly
+/// that reason, and the test meant to catch it iterated a **hand-written** list of
+/// five keys, so it passed while three cases were missing. The list is derived
+/// from the type now, and `format.test.ts` iterates *this* rather than its own copy.
+export const CREATE_ORDER_ERROR_KEYS: Record<CreateOrderError["__kind__"], true> = {
+  anonymous: true,
+  cancelledDuringCreation: true,
+  destinationNotOwned: true,
+  idGeneration: true,
+  notAdmitted: true,
+  quoteChanged: true,
+  rateUnavailable: true,
+  reserveUnavailable: true,
+  sessionUnavailable: true,
+  simulationScaleTooSmall: true,
+  tierBelowFees: true,
+  unknownTier: true,
+};

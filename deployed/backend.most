@@ -151,6 +151,8 @@ type TransferIntent__612776172 =
 actor {
   stable adminPrincipals :
     {var root : Node__918630472<Principal>; var size : Nat__1040412405};
+  stable allowedBuyers :
+    {var root : Node__918630472<Principal>; var size : Nat__1040412405};
   stable auditLog :
     {events : Queue__403054774<Event__282987190>; var nextSeq : Nat};
   stable var cardTiers : [Tier__1004729360];
@@ -222,6 +224,7 @@ actor {
     };
   stable var pricingConfig :
     {
+      divisor : Nat;
       feeBps : Nat;
       feeFixedCents : Nat;
       maxAgeNs : Int;
@@ -233,7 +236,8 @@ actor {
       canisterCyclesLow : Bool;
       railClosed : Bool;
       reserveShort : Bool;
-      stripeApiFailing : Bool
+      stripeApiFailing : Bool;
+      unboundedGiveaway : Bool
     };
   stable rateCache : {var rates : ?Rates__1063802498};
   stable var recoverySweepIntervalNs : Nat;
@@ -241,11 +245,13 @@ actor {
     {
       amountAboveMax : Nat;
       amountBelowMin : Nat;
+      buyerNotAllowed : Nat;
       canisterCyclesLow : Nat;
       railClosed : Nat;
       reserveShort : Nat;
       stripeApiFailed : Nat;
-      tooManyOpenOrders : Nat
+      tooManyOpenOrders : Nat;
+      unboundedGiveaway : Nat
     };
   stable var reserveFloor : Nat;
   stable var reserveObservedAtNs : ?Int;

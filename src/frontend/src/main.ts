@@ -42,6 +42,8 @@ import {
   STEPS,
   checkReceipt,
   createOrderErrorMessage,
+  PRE_ANNOUNCED_GATE_REASONS,
+  type GateReason,
   estimateLine,
   type FeeConfig,
   feeBreakdown,
@@ -856,6 +858,10 @@ function setIdentity(next: Identity | null): void {
   showAuthError(null);
   renderAuth();
   renderSubmitGate();
+  // ⚠️ Re-probed on every identity change, because the allow-list is per PRINCIPAL:
+  // the answer at load was about the anonymous caller (exempt from the list), and it
+  // is only after signing in that "may this buyer buy" has a subject.
+  void refreshEligibility();
   // Visibility belongs to renderView, which is what makes history a VIEW rather
   // than a section pinned to the bottom of whatever else is on screen. Signing in
   // reveals the header link, not the table.
@@ -875,6 +881,43 @@ function setIdentity(next: Identity | null): void {
     // screen because the order view no longer owns anything to show.
     renderView();
   }
+}
+
+/// Ask the gate whether this caller can buy AT ALL, and say so before they pick an
+/// amount (#99 2b).
+///
+/// ⚠️ **Probed at the gate's own minimum, not at a chosen amount**, because the point
+/// is to catch refusals that no amount can fix. That is also why only two reasons are
+/// rendered: `#buyerNotAllowed` and `#unboundedGiveaway` are invariant for this caller
+/// until an operator acts, while `#reserveShort`, `#canisterCyclesLow` and the amount
+/// bounds are volatile or amount-dependent and belong at the moment of the attempt —
+/// see `loadMarket`.
+///
+/// ⚠️ **Failures leave the notice hidden.** A network error is not evidence that this
+/// buyer is barred, and a banner saying so would be worse than the refusal it guesses at.
+async function refreshEligibility(): Promise<void> {
+  const bounds = amountBounds;
+  if (bounds === null) return;
+  let reason: GateReason | null = null;
+  try {
+    const answer = await backend.can_purchase(bounds.min);
+    reason = "err" in answer ? answer.err : null;
+  } catch {
+    show("gate-notice", false);
+    return;
+  }
+  // ⚠️ **The table is the filter.** Not a hand-written `||` over two tag names beside
+  // a second copy of the same two names in `format.ts` — that pair is the mirror this
+  // repo has removed four times. A key present means the refusal is invariant for this
+  // caller until an operator acts; absent means it belongs at the moment of the
+  // attempt, and this stays silent.
+  const notice = reason === null ? undefined : PRE_ANNOUNCED_GATE_REASONS[reason.__kind__];
+  if (notice === undefined) {
+    show("gate-notice", false);
+    return;
+  }
+  el("gate-notice").textContent = notice;
+  show("gate-notice", true);
 }
 
 /// The two trust figures, and they are not the same kind of claim.
@@ -903,6 +946,19 @@ function renderTrustFigures(
   capLabel.textContent = "Available to buy right now";
   cap.textContent = `${formatCycles(stats.availableToSell)} cycles`;
 
+  // ⚠️ **This figure stays in REAL cycles while quotes are scaled**, because
+  // `availableToSell` is `reserveFloor - promised` and only `promised` is scaled.
+  // So it can read 775 T while $10 buys 7 G — arithmetically right, and a
+  // startling ratio that reads as a bug without a word of explanation.
+  const capNote = document.getElementById("trust-capacity-note");
+  if (capNote) {
+    const divisor = simulationDivisor();
+    capNote.textContent =
+      `This is the real reserve. In simulation mode each purchase is scaled down ` +
+      `by ${divisor}, so this figure covers far more orders than its size suggests.`;
+    capNote.hidden = divisor === 1n;
+  }
+
   const orders = stats.deliveredOrders === 1n ? "1 order" : `${stats.deliveredOrders} orders`;
   del.textContent =
     `${orders} · ${formatCycles(stats.deliveredCycles)} cycles · ` +
@@ -919,21 +975,31 @@ async function loadMarket(): Promise<void> {
     backend.pricing_status(),
     backend.delivery_stats(),
   ]);
+  // ⚠️ Before `renderTrustFigures`, which reads the divisor for its note.
+  lastPricing = pricing;
   renderTrustFigures(stats);
+  renderSimulationNote();
   tiers = tierList;
   cardFee = { feeBps: pricing.config.feeBps, feeFixedCents: pricing.config.feeFixedCents };
 
   // Both rate inputs are shown, because both are needed to reproduce a quote —
   // the ICP price from the Exchange Rate Canister and the XDR/ICP rate the CMC
   // will actually price at. A buyer can query either canister and check us.
-  lastPricing = pricing;
   renderRateLine();
 
-  // ⚠️ **No pre-emptive "we might not be able to serve you" banner.** The gateway
-  // either admits an order or refuses it with a reason the buyer can act on
-  // (`#reserveShort` names how much is available, so a smaller amount may work), and
-  // that refusal arrives at the moment it is true. A banner rendered from a
-  // separately-polled figure would be stale by construction.
+  // ⚠️ **No pre-emptive "we might not be able to serve you" banner, and that rule
+  // still stands** for every VOLATILE, amount-dependent refusal: the gateway either
+  // admits an order or refuses it with a reason the buyer can act on (`#reserveShort`
+  // names how much is available, so a smaller amount may work), and that refusal
+  // arrives at the moment it is true. A banner rendered from a separately-polled
+  // figure would be stale by construction.
+  //
+  // ⚠️ **`#buyerNotAllowed` and `#unboundedGiveaway` are the exception, because they
+  // are neither volatile nor amount-dependent** (#99). An uninvited tester is refused
+  // for EVERY amount, always, until an operator acts — so there is no fresher moment
+  // for that refusal to arrive at, and letting them pick an amount, sign in and press
+  // Buy to discover it is the outcome the pre-emptive rule was never about.
+  // `refreshEligibility` renders those two and stays silent on everything else.
   show("gate-notice", false);
 
   // The gate's own bounds, so the custom-amount field can say "between $10 and
@@ -953,7 +1019,11 @@ async function loadMarket(): Promise<void> {
   // Concurrent, and deliberately so: they hit different canisters and neither
   // reads the other's answer. Sequencing them would add a round trip to the
   // first paint of the only screen a visitor sees.
-  await Promise.all([refreshTierQuotes(), refreshDepositFee()]);
+  //
+  // ⚠️ `refreshEligibility` joins the group rather than running before it: it reads
+  // `amountBounds`, which is only set above. Called earlier it read `null` and
+  // returned without probing — which is how it silently did nothing.
+  await Promise.all([refreshTierQuotes(), refreshDepositFee(), refreshEligibility()]);
   renderTiers();
   renderDestinationNote();
   renderSubmitGate();
@@ -1054,6 +1124,35 @@ function renderRateLine(): void {
 /// The last `pricing_status`, so the rate strip can be re-rendered when quotes
 /// arrive rather than only at load.
 let lastPricing: PricingStatus | null = null;
+
+/// The simulation divisor (#99), read from the config `pricing_status` already
+/// returns — **no new endpoint**, and one place that answers "are we simulating".
+///
+/// `1n` when the gateway has not answered yet, which is the production value: a
+/// page that has not loaded its config must not claim a simulation.
+function simulationDivisor(): bigint {
+  return lastPricing?.config.divisor ?? 1n;
+}
+
+/// Say it plainly on the buy view and on the receipt: a real charge in Stripe's
+/// sandbox, and a fraction of the cycles.
+///
+/// ⚠️ **A sentence, not a badge.** A badge announces that a state exists; a buyer
+/// needs to know what it means for the purchase in front of them. At divisor 1
+/// both elements stay hidden, so a production page is unchanged.
+function renderSimulationNote(): void {
+  const divisor = simulationDivisor();
+  const text =
+    `Simulation mode: this gateway is running against Stripe's test environment, ` +
+    `and it delivers 1/${divisor} of the cycles a purchase would buy in production. ` +
+    `The card charge is real inside the sandbox; no money moves.`;
+  for (const id of ["simulation-note", "receipt-simulation-note"]) {
+    const node = document.getElementById(id);
+    if (!node) continue;
+    node.textContent = text;
+    node.hidden = divisor === 1n;
+  }
+}
 
 function renderTiers(): void {
   const container = el("tiers");
@@ -1686,7 +1785,11 @@ async function renderReceipt(order: Order): Promise<void> {
   el("receipt-sources").textContent =
     rateSourceNote(v.rateReceivedRates, v.rateQueriedSources) || "not yet";
 
-  const check = checkReceipt(v, receipt.order.lockedCycles);
+  // ⚠️ The divisor comes from config, not the order — see `checkReceipt`. In
+  // simulation mode `check.recomputed` is what PRODUCTION would have locked, which
+  // is the more interesting of the two numbers and is already on screen.
+  const check = checkReceipt(v, receipt.order.lockedCycles, simulationDivisor());
+  renderSimulationNote();
   el("receipt-formula").textContent = check.formula;
   const verdict = el("receipt-verdict");
   verdict.textContent = check.matches

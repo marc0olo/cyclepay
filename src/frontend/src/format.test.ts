@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   checkReceipt,
+  CREATE_ORDER_ERROR_KEYS,
   createOrderErrorMessage,
   cyclesCredited,
   cyclesForCents,
@@ -127,11 +128,18 @@ describe("nsToMillis", () => {
 });
 
 describe("createOrderErrorMessage", () => {
-  test("every backend variant maps to a specific message", () => {
-    const keys = ["rateUnavailable", "tierBelowFees", "unknownTier", "anonymous", "idGeneration"];
-    const msgs = keys.map(createOrderErrorMessage);
-    expect(new Set(msgs).size).toBe(keys.length);
-    for (const m of msgs) expect(m).not.toMatch(/failed: /);
+  test("⚠️ EVERY backend variant maps to a written message, not the fallback", () => {
+    // ⚠️ The keys come from `CREATE_ORDER_ERROR_KEYS`, which is typed
+    // `Record<CreateOrderError["__kind__"], true>` — so a new backend variant is a
+    // compile error there and lands here automatically. An earlier version of
+    // this test listed five keys by hand and passed while THREE variants
+    // (`reserveUnavailable`, `sessionUnavailable`, `cancelledDuringCreation`)
+    // rendered as "Order creation failed: <rawName>".
+    const keys = Object.keys(CREATE_ORDER_ERROR_KEYS);
+    expect(keys.length).toBeGreaterThan(5);
+    for (const k of keys) {
+      expect(createOrderErrorMessage(k), `no message for ${k}`).not.toMatch(/^Order creation failed: /);
+    }
   });
   test("unknown variants still produce something", () => {
     expect(createOrderErrorMessage("somethingNew")).toContain("somethingNew");
@@ -238,6 +246,61 @@ describe("gateReasonMessage", () => {
       expect(msg, reason.__kind__).toBeTypeOf("string");
       expect(msg.length, reason.__kind__).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("the two-cause #unpriceable split (#99 review finding 2)", () => {
+  test("⚠️ the simulation cause does NOT blame payment processing", () => {
+    // The defect this split exists to fix: rendered as `tierBelowFees`, a buyer
+    // refused by the operator's divisor is told the processing fee is too large.
+    const msg = createOrderErrorMessage("simulationScaleTooSmall");
+    expect(msg).toMatch(/simulation/i);
+    expect(msg).not.toMatch(/processing|misconfigured/i);
+    expect(msg).toMatch(/nothing was charged/i);
+  });
+
+  test("the Stripe-fee cause still says what it always said", () => {
+    expect(createOrderErrorMessage("tierBelowFees")).toMatch(/fees would exceed/i);
+  });
+
+  test("the two causes do not share a message", () => {
+    expect(createOrderErrorMessage("simulationScaleTooSmall"))
+      .not.toBe(createOrderErrorMessage("tierBelowFees"));
+  });
+});
+
+describe("the faucet and allow-list refusals (#99 2b)", () => {
+  test("⚠️ the faucet refusal tells the buyer nothing about an allow-list", () => {
+    // It is the operator's state, not this buyer's: every buyer is refused. Saying
+    // "you are not authorized" would send them asking for access that would not
+    // help.
+    const msg = gateReasonMessage({
+      __kind__: "unboundedGiveaway",
+      unboundedGiveaway: { reserveFloor: 1n },
+    } as never);
+    expect(msg).not.toMatch(/allow|invited|tester|authoriz/i);
+    expect(msg).toMatch(/nothing was charged/i);
+  });
+
+  test("the unlisted-buyer refusal IS about this buyer, and says so", () => {
+    const msg = gateReasonMessage({
+      __kind__: "buyerNotAllowed",
+      buyerNotAllowed: null,
+    } as never);
+    expect(msg).toMatch(/testers/i);
+    expect(msg).toMatch(/nothing was charged/i);
+  });
+
+  test("the two refusals do not share a message", () => {
+    const faucet = gateReasonMessage({
+      __kind__: "unboundedGiveaway",
+      unboundedGiveaway: { reserveFloor: 1n },
+    } as never);
+    const unlisted = gateReasonMessage({
+      __kind__: "buyerNotAllowed",
+      buyerNotAllowed: null,
+    } as never);
+    expect(faucet).not.toBe(unlisted);
   });
 });
 
@@ -400,6 +463,44 @@ describe("checkReceipt", () => {
     const check = checkReceipt({ ...verification, netCents: undefined }, 1n);
     expect(check.matches).toBe(false);
     expect(check.recomputed).toBeNull();
+  });
+});
+
+describe("checkReceipt: the simulation divisor (#99)", () => {
+  const verification = {
+    netCents: 455n,
+    usdPerIcpMicros: 4_550_000n,
+    xdrPermyriadPerIcp: 35_000n,
+    rateReceivedRates: 5n,
+    rateQueriedSources: 6n,
+  };
+  const PRODUCTION = 3_500_000_000_000n;
+
+  test("⚠️ divisor 1 is byte-identical to the pre-#99 receipt", () => {
+    // Including the formula string: a production receipt must not gain a term.
+    const before = checkReceipt(verification, PRODUCTION);
+    const explicit = checkReceipt(verification, PRODUCTION, 1n);
+    expect(explicit).toEqual(before);
+    expect(explicit.formula).not.toContain("divisor");
+  });
+
+  test("a scaled order verifies against the scaled quantity", () => {
+    const check = checkReceipt(verification, PRODUCTION / 1_000n, 1_000n);
+    expect(check.matches).toBe(true);
+  });
+
+  test("⚠️ recomputed stays the PRODUCTION quantity — the receipt shows both legs", () => {
+    // The whole value of a global divisor: what production would have locked is
+    // recomputed here from the order's own rate inputs, not stored and trusted.
+    const check = checkReceipt(verification, PRODUCTION / 1_000n, 1_000n);
+    expect(check.recomputed).toBe(PRODUCTION);
+    expect(check.formula).toContain("÷ 1000 simulation divisor");
+  });
+
+  test("the unscaled quantity does NOT verify under a divisor", () => {
+    // If it did, the check would be blind to the divisor and could not catch a
+    // gateway delivering production quantities while claiming to simulate.
+    expect(checkReceipt(verification, PRODUCTION, 1_000n).matches).toBe(false);
   });
 });
 

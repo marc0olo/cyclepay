@@ -38,27 +38,27 @@ type SetError = variant {tooShort: record {
                                    };};
 type Result_9 = 
  variant {
-   err: text;
-   ok;
- };
-type Result_8 = 
- variant {
    err: ResolveError;
    ok: Entry;
  };
-type Result_7 = 
+type Result_8 = 
  variant {
    err: text;
    ok: nat;
  };
-type Result_6 = 
+type Result_7 = 
  variant {
    err: ValidateError;
    ok;
  };
-type Result_5 = 
+type Result_6 = 
  variant {
    err: ConfigError__2;
+   ok;
+ };
+type Result_5 = 
+ variant {
+   err: text;
    ok;
  };
 type Result_4 = 
@@ -129,11 +129,13 @@ type RefusalCounts =
  record {
    amountAboveMax: nat;
    amountBelowMin: nat;
+   buyerNotAllowed: nat;
    canisterCyclesLow: nat;
    railClosed: nat;
    reserveShort: nat;
    stripeApiFailed: nat;
    tooManyOpenOrders: nat;
+   unboundedGiveaway: nat;
  };
 type Receipt = 
  record {
@@ -160,6 +162,7 @@ type Reason =
                      minUsdCents: nat;
                      usdCents: nat;
                    };
+   buyerNotAllowed;
    canisterCyclesLow: record {
                         balance: nat;
                         min: nat;
@@ -172,6 +175,7 @@ type Reason =
                         max: nat;
                         open: nat;
                       };
+   unboundedGiveaway: record {reserveFloor: nat;};
  };
 type Rates = 
  record {
@@ -186,6 +190,7 @@ type RailStateLatch =
    railClosed: bool;
    reserveShort: bool;
    stripeApiFailing: bool;
+   unboundedGiveaway: bool;
  };
 type Rail = variant {card;};
 type QuotePreviews = 
@@ -405,6 +410,10 @@ type CreateOrderError =
    rateUnavailable;
    reserveUnavailable;
    sessionUnavailable: text;
+   simulationScaleTooSmall: record {
+                              ledgerFee: nat;
+                              scaledCycles: nat;
+                            };
    tierBelowFees: text;
    unknownTier: text;
  };
@@ -435,6 +444,13 @@ type ConfigError__1 =
                         maxUsdCents: nat;
                         minUsdCents: nat;
                       };
+   floorUndeliverableAtDivisor:
+    record {
+      divisor: nat;
+      ledgerFee: nat;
+      minUsdCents: nat;
+      scaledCycles: nat;
+    };
    tierAboveCeiling: record {
                        maxUsdCents: nat;
                        tierId: text;
@@ -450,17 +466,25 @@ type ConfigError__1 =
  };
 type ConfigError = 
  variant {
+   divisorChangeWithOrders: record {stored: nat;};
+   divisorNeedsSandbox: record {expectLivemode: opt bool;};
+   divisorUndeliverable: record {
+                           ledgerFee: nat;
+                           scaledCycles: nat;
+                         };
    feeBpsTooHigh;
    maxAgeTooLong: record {
                     allowedNs: int;
                     maxAgeNs: int;
                   };
    nonPositiveMaxAge;
+   zeroDivisor;
    zeroRateDelta;
    zeroRateSources;
  };
 type Config = 
  record {
+   divisor: nat;
    feeBps: nat;
    feeFixedCents: nat;
    maxAgeNs: int;
@@ -504,7 +528,10 @@ service : {
   /// `--app` the CLI links a principal derived from the auth domain's own default
   /// (`cli.id.ai`), which is not this app, so the grant would sit on a principal the
   /// admin never sees.
-  add_admin: (p: principal) -> (Result_9);
+  add_admin: (p: principal) -> (Result_5);
+  /// Allow a principal to buy while this gateway accepts free test payments
+  /// (controller only, audited).
+  add_allowed_buyer: (p: principal) -> (Result_5);
   /// Open-obligation depth, public.
   /// 
   /// Nothing is evicted, so this only comes down by the operator working it. A climbing
@@ -595,6 +622,10 @@ service : {
   /// ⚠️ Controllers are NOT listed — they pass `checkAdmin` without being granted, so an
   /// empty list does not mean nobody can act.
   admins: () -> (vec principal) query;
+  /// Who may buy while test payments are accepted (controller only).
+  /// 
+  /// ⚠️ An empty list does not mean "everyone" — see `allowedBuyers`.
+  allowed_buyers: () -> (vec principal) query;
   /// §4.2 operational trail, newest-last. Admin: details reference payment
   /// intents. Readers detect ring-buffer drops via gaps in `seq`.
   /// The operational trail, **paginated** (#38).
@@ -1060,7 +1091,15 @@ service : {
       refusingNow: RailStateLatch;
     }) query;
   /// Revoke the CASES tier (controller only, audited).
-  remove_admin: (p: principal) -> (Result_9);
+  remove_admin: (p: principal) -> (Result_5);
+  /// Revoke a buyer's allowance (controller only, audited).
+  /// 
+  /// ⚠️ **Removing the LAST entry does not open the gateway up — it closes it.**
+  /// An empty list plus a funded reserve plus test payments is
+  /// `Gate.Reason.unboundedGiveaway`, which refuses everyone. The audit line says
+  /// so, because "revoked the last buyer" and "the gateway stopped selling" are
+  /// the same event and an operator should not have to connect them later.
+  remove_allowed_buyer: (p: principal) -> (Result_5);
   /// Reserve solvency and order counters, public (#30 PR-B).
   /// 
   /// `reserveFloor` − `promisedTotal` = `availableToSell`, in one answer, so "the ledger
@@ -1092,7 +1131,7 @@ service : {
       tallySaturations: nat;
       totalOrders: nat;
     }) query;
-  resolve_orphan: (id: nat) -> (Result_8);
+  resolve_orphan: (id: nat) -> (Result_9);
   /// Manual resolution (§4.1/§7) — the operator marking an obligation settled after
   /// acting off-chain: a refund issued in the Stripe Dashboard, or a delivery whose
   /// fate they established on the cycles ledger.
@@ -1119,7 +1158,7 @@ service : {
   /// references so the operator can disambiguate, because declining without a way
   /// through is a dead end rather than a safeguard.
   resolve_problem: (orderId: OrderId, kindTag: text, paymentRef: opt text) ->
-   (Result_7);
+   (Result_8);
   /// Replace the card presets (§3/§7 — admin, validated atomically: a bad config
   /// never partially applies).
   /// 
@@ -1128,28 +1167,38 @@ service : {
   /// amounts (#33) a buyer can order without any preset, so an empty list stops
   /// nothing — it just shows no tiles. The switch is both Stripe secrets being
   /// provisioned; `railsLive` is where that lives.
-  set_card_tiers: (tiers: vec Tier) -> (Result_6);
+  set_card_tiers: (tiers: vec Tier) -> (Result_7);
   /// Tune the delivery timeline (admin, §7).
   /// 
   /// ⚠️ Validated rather than trusted: an alert at or after the terminal bound would
   /// tell the operator at the moment the decision was already taken, and a
   /// non-positive bound would escalate every order instantly.
-  set_delivery_config: (config: Config__2) -> (Result_5);
+  set_delivery_config: (config: Config__2) -> (Result_6);
+  /// Declare which Stripe mode this gateway serves (controller only).
+  /// 
+  /// Set it to `?true` before taking real payments and `?false` on a sandbox
+  /// deployment. `null` restores "accept either", which only makes sense while
+  /// nothing of value is at stake — and it is the default, so a fresh canister
+  /// starts there.
+  /// 
+  /// ⚠️ **The other half of the divisor's mutual refusal (#99 2a).** While a
+  /// simulation divisor is set, this refuses anything but `?false`: live mode
+  /// takes real money and delivers scaled cycles, and `null` accepts live
+  /// payments too. Mutual, so **neither order of operations** reaches the state
+  /// that shorts a paying buyer — it is unrepresentable rather than discouraged.
+  set_expected_livemode: (expected: opt bool) -> (Result_5);
   /// Adjust the admission gate (§7): open-order cap, own-cycles floor,
   /// per-purchase ceiling. Validated atomically — a bad config never partially
   /// applies. Lowering `maxPurchaseUsdCents` below an existing tier does NOT
   /// retroactively invalidate that tier's registration, but the next
   /// `set_card_tiers` will reject it and the webhook will refuse to deliver a
   /// payment above the new ceiling.
-  /// Declare which Stripe mode this gateway serves (admin).
-  /// 
-  /// Set it to `?true` before taking real payments and `?false` on a sandbox
-  /// deployment. `null` restores "accept either", which only makes sense while
-  /// nothing of value is at stake.
-  set_expected_livemode: (expected: opt bool) -> ();
   set_gate_config: (config: Config__1) -> (Result_4);
   /// Adjust pricing params (§7): fee formula, staleness window, delta guard.
   /// Validated atomically — a bad config never partially applies.
+  /// ⚠️ **Three divisor guards live here rather than in `Pricing.validateConfig`,
+  /// because each needs context that module cannot see** (#99). All three are
+  /// checked before anything is written, so a bad config never partially applies.
   set_pricing_config: (config: Config) -> (Result_3);
   /// Tune the sweep cadence (admin, §7) — re-arms immediately, no redeploy.
   /// Validated against the §5.1 bound: the cadence must stay well inside
