@@ -28,8 +28,7 @@ import {
   allAuditEvents,
   allOwnedOrders,
 
-  allDelayedDeliveries,
-} from './harness';
+  allDelayedDeliveries, allowTestBuyers } from './harness';
 import { Principal } from '@icp-sdk/core/principal';
 import type { Destination, OrphanEntry, Order } from './types';
 
@@ -197,6 +196,9 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
   // The key alone is not enough: without a return origin there is no URL to send
   // the buyer back to, and the same no-record rule applies.
   expectOk(await gw.asAdmin.set_stripe_api_key('rk_test_integration_suite_key'));
+  // #99: these suites fund a reserve and accept test payments, so without an
+  // allow-list every create_order refuses as the faucet state.
+  await allowTestBuyers(gw);
   const noOrigin = expectErr(
     await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []),
   ) as { sessionUnavailable: string };

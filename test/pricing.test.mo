@@ -26,6 +26,13 @@ let VECTOR_CYCLES : Nat = 3_500_000_000_000;
 let fee = { feeBps = 290; feeFixedCents = 30 };
 let config = Pricing.defaultConfig();
 
+/// Production scale: no divisor. Every pre-#99 quote assertion keeps its exact
+/// expected value with these, which is the point — see the bit-identical suite.
+let PROD : Nat = 1;
+/// The cycles ledger's flat deposit fee, as `Delivery.cyclesLedgerDefaultFee`.
+/// Inlined rather than imported so this suite stays pure arithmetic.
+let LEDGER_FEE : Nat = 100_000_000;
+
 func ratesAt(nowNs : Int) : Pricing.Rates {
   {
     usdPerIcpMicros = USD_PER_ICP_MICROS;
@@ -223,7 +230,7 @@ suite("delta guard", func() {
 suite("quote (the composed path)", func() {
   test("the vector quotes end to end and carries the rates it used", func() {
     let cache = cacheAt(1_000);
-    switch (Pricing.quote(cache, fee, config.maxAgeNs, 500, 1_100)) {
+    switch (Pricing.quote(cache, fee, config.maxAgeNs, 500, 1_100, PROD, LEDGER_FEE)) {
       case (#ok({ cycles; rates })) {
         assert cycles == VECTOR_CYCLES;
         // The snapshot carries both inputs, so the quote is reproducible.
@@ -237,22 +244,230 @@ suite("quote (the composed path)", func() {
 
   test("a stale cache is #stale, distinct from unpriceable", func() {
     let cache = cacheAt(1_000);
-    assert Pricing.quote(cache, fee, config.maxAgeNs, 500, 1_000 + config.maxAgeNs) == #stale;
+    assert Pricing.quote(cache, fee, config.maxAgeNs, 500, 1_000 + config.maxAgeNs, PROD, LEDGER_FEE) == #stale;
   });
 
   test("an empty cache is #stale — never priced on a guess", func() {
-    assert Pricing.quote(Pricing.emptyCache(), fee, config.maxAgeNs, 500, 1_000) == #stale;
+    assert Pricing.quote(Pricing.emptyCache(), fee, config.maxAgeNs, 500, 1_000, PROD, LEDGER_FEE) == #stale;
   });
 
   test("an amount below the fee floor is #unpriceable, even with fresh rates", func() {
     let cache = cacheAt(1_000);
-    assert Pricing.quote(cache, fee, config.maxAgeNs, 30, 1_100) == #unpriceable;
+    // ⚠️ `#stripeFee`, not the simulation cause: the gross never cleared Stripe's
+    // cut, so "pick a larger amount" IS the right advice here.
+    assert Pricing.quote(cache, fee, config.maxAgeNs, 30, 1_100, PROD, LEDGER_FEE) == #unpriceable(#stripeFee);
   });
 
   test("a zero ICP price in the cache is #unpriceable, not a trap", func() {
     let cache = Pricing.emptyCache();
     Pricing.record(cache, { ratesAt(1_000) with usdPerIcpMicros = 0 });
-    assert Pricing.quote(cache, fee, config.maxAgeNs, 500, 1_100) == #unpriceable;
+    assert Pricing.quote(cache, fee, config.maxAgeNs, 500, 1_100, PROD, LEDGER_FEE) == #unpriceable(#stripeFee);
+  });
+});
+
+// ── The simulation divisor (#99) ────────────────────────────────────────────
+
+/// $10, the gate's minimum purchase — every figure below is at that amount.
+let TEN_DOLLARS : Nat = 1_000;
+/// The unscaled quantity $10 buys at the vector rates. 7.238 T.
+let TEN_DOLLARS_CYCLES : Nat = 7_238_461_538_461;
+
+func quoteAt(divisor : Nat, gross : Nat) : { #ok : { cycles : Nat; rates : Pricing.Rates }; #stale; #unpriceable : Pricing.Unpriceable } {
+  Pricing.quote(cacheAt(1_000), fee, config.maxAgeNs, gross, 1_100, divisor, LEDGER_FEE);
+};
+
+suite("divisor: production is bit-identical", func() {
+  test("⚠️ THE test that matters most: divisor 1 equals the independent formula", func() {
+    // Not "equals a hardcoded number I read off the implementation" — equals
+    // `netCents` composed with `cyclesForCents`, i.e. the pre-#99 derivation
+    // spelled out separately. Enabling this feature must not be ABLE to change
+    // production pricing, so the check is against the formula, not a snapshot.
+    for (gross in [TEN_DOLLARS, 1_500, 2_000, 5_000, 10_000].values()) {
+      let ?net = Pricing.netCents(fee, gross) else { assert false; return };
+      let ?expected = Pricing.cyclesForCents(net, XDR_PERMYRIAD, USD_PER_ICP_MICROS) else {
+        assert false;
+        return;
+      };
+      switch (quoteAt(PROD, gross)) {
+        case (#ok({ cycles })) assert cycles == expected;
+        case (_) assert false;
+      };
+    };
+  });
+
+  test("the $10 figure is the one the design documents", func() {
+    switch (quoteAt(PROD, TEN_DOLLARS)) {
+      case (#ok({ cycles })) assert cycles == TEN_DOLLARS_CYCLES;
+      case (_) assert false;
+    };
+  });
+});
+
+suite("divisor: scaling", func() {
+  test("a scaled quote is the unscaled one divided, at every divisor in the band", func() {
+    for (d in [(1, TEN_DOLLARS_CYCLES), (100, 72_384_615_384), (1_000, 7_238_461_538), (5_000, 1_447_692_307)].values()) {
+      let (divisor, expected) = d;
+      switch (quoteAt(divisor, TEN_DOLLARS)) {
+        case (#ok({ cycles })) assert cycles == expected;
+        case (_) assert false;
+      };
+    };
+  });
+
+  test("⚠️ the STRIPE fee is taken BEFORE the divisor — the buyer pays a real fee", func() {
+    // If the fee were scaled too, a divisor-1000 quote of $10 would be
+    // (1000/1000 = 1c gross, which nets nothing) — or, scaling the other way,
+    // the buyer would appear to pay 0.059c of processing on a real $10 charge.
+    // The check: the scaled quote equals `net(gross)` scaled, NOT `net(gross/d)`.
+    let ?netOfWhole = Pricing.netCents(fee, TEN_DOLLARS) else { assert false; return };
+    let ?fromWhole = Pricing.cyclesForCents(netOfWhole, XDR_PERMYRIAD, USD_PER_ICP_MICROS) else {
+      assert false;
+      return;
+    };
+    switch (quoteAt(1_000, TEN_DOLLARS)) {
+      case (#ok({ cycles })) assert cycles == fromWhole / 1_000;
+      case (_) assert false;
+    };
+    // And the fee on the whole amount is a real 59c, unscaled.
+    assert Pricing.feeCents(fee, TEN_DOLLARS) == 59;
+  });
+
+  test("the rate snapshot is unchanged by scaling — only the quantity moves", func() {
+    switch (quoteAt(1_000, TEN_DOLLARS)) {
+      case (#ok({ rates })) {
+        assert rates.usdPerIcpMicros == USD_PER_ICP_MICROS;
+        assert rates.xdrPermyriadPerIcp == XDR_PERMYRIAD;
+      };
+      case (_) assert false;
+    };
+  });
+
+  test("rounding order cannot matter: floor(floor(a/b)/d) == floor(a/(b*d))", func() {
+    // The design rests on this, and the opposite was nearly written in as a
+    // constraint. Checked across the whole accepted divisor band rather than at
+    // one convenient value, because a single point proves nothing about rounding.
+    let ?net = Pricing.netCents(fee, TEN_DOLLARS) else { assert false; return };
+    var d = 1;
+    while (d <= 5_000) {
+      let ?once = Pricing.cyclesForCents(net, XDR_PERMYRIAD, USD_PER_ICP_MICROS) else {
+        assert false;
+        return;
+      };
+      assert once / d == net * XDR_PERMYRIAD * 1_000_000_000_000 / (USD_PER_ICP_MICROS * d);
+      d += 1;
+    };
+  });
+});
+
+suite("divisor: the cycles-ledger fee is the ceiling", func() {
+  test("an over-scaled quote is #simulationScale, NOT #stripeFee", func() {
+    // ⚠️ The whole point of the two-cause split. Reported as `#stripeFee` a buyer
+    // would be told to pick a larger amount when the cause is the operator's
+    // divisor.
+    assert quoteAt(100_000, TEN_DOLLARS)
+    == #unpriceable(#simulationScale({ scaledCycles = 72_384_615; ledgerFee = LEDGER_FEE }));
+  });
+
+  test("⚠️ it is HEADROOM that refuses, not a bare comparison with the fee", func() {
+    // 500,031,883 cycles clears the 100 M fee five times over, so a bare `>=`
+    // would admit it — and the next ICP move would walk it into the stall the
+    // stored fee cannot correct itself out of. Ten times over is the bound.
+    let scaled = 500_031_883;
+    assert scaled > LEDGER_FEE;
+    assert not Pricing.clearsLedgerFee(scaled, LEDGER_FEE);
+    assert quoteAt(14_476, TEN_DOLLARS)
+    == #unpriceable(#simulationScale({ scaledCycles = scaled; ledgerFee = LEDGER_FEE }));
+  });
+
+  test("the recommended divisor and the ceiling both clear it, with room", func() {
+    assert Pricing.clearsLedgerFee(7_238_461_538, LEDGER_FEE); // 1,000 — 72x
+    assert Pricing.clearsLedgerFee(1_447_692_307, LEDGER_FEE); // 5,000 — 14x
+  });
+
+  test("⚠️ the guard applies at divisor 1 too, and that is an improvement", func() {
+    // Unreachable under the $10 floor in production (7.238 T against a 1 G
+    // bound), but if the ledger fee ever rose that far the order now REFUSES
+    // rather than stalling in the one state with no recovery lever.
+    assert not Pricing.clearsLedgerFee(TEN_DOLLARS_CYCLES, TEN_DOLLARS_CYCLES);
+    assert quoteAt(PROD, TEN_DOLLARS) != #unpriceable(#stripeFee);
+  });
+});
+
+suite("divisor: config validation", func() {
+  test("zero is refused — it would divide the whole quote away", func() {
+    assert Pricing.validateConfig({ config with divisor = 0 }) == #err(#zeroDivisor);
+  });
+
+  test("1 and a divisor in the band both validate", func() {
+    assert Pricing.validateConfig({ config with divisor = 1 }) == #ok;
+    assert Pricing.validateConfig({ config with divisor = 1_000 }) == #ok;
+  });
+
+  test("⚠️ validateConfig does NOT catch an undeliverable divisor — by design", func() {
+    // It cannot: the answer needs rates and the live ledger fee. The pure check
+    // passing is exactly why `divisorDeliverable` and `quote` both exist.
+    assert Pricing.validateConfig({ config with divisor = 1_000_000 }) == #ok;
+  });
+
+  test("divisorDeliverable refuses one the minimum purchase cannot survive", func() {
+    assert Pricing.divisorDeliverable(cacheAt(1_000), fee, TEN_DOLLARS, 100_000, LEDGER_FEE)
+    == #err(#divisorUndeliverable({ scaledCycles = 72_384_615; ledgerFee = LEDGER_FEE }));
+  });
+
+  test("divisorDeliverable admits the recommended value", func() {
+    assert Pricing.divisorDeliverable(cacheAt(1_000), fee, TEN_DOLLARS, 1_000, LEDGER_FEE) == #ok;
+  });
+
+  test("⚠️ absent rates ADMIT rather than refuse — cannot-tell must not block setup", func() {
+    // On a cold canister the refresh timer may not have run. Refusing here would
+    // make the divisor unsettable exactly while the gateway is being configured,
+    // and `quote` is the authoritative guard anyway.
+    assert Pricing.divisorDeliverable(Pricing.emptyCache(), fee, TEN_DOLLARS, 1_000_000, LEDGER_FEE) == #ok;
+  });
+
+  test("a zero divisor is refused there too, not divided by", func() {
+    assert Pricing.divisorDeliverable(cacheAt(1_000), fee, TEN_DOLLARS, 0, LEDGER_FEE) == #err(#zeroDivisor);
+  });
+
+  test("⚠️ THE property: no ACCEPTED divisor can reach the unrecoverable stall", func() {
+    // This is the test that protects the one delivery state with no recovery
+    // lever: a ledger fee above a whole order's locked quantity means nothing
+    // ever reaches the ledger, so no `#BadFee` arrives to correct the stored fee,
+    // and there is deliberately no admin lever to reset it. A divisor attacks
+    // exactly that ratio, so what must hold is a relation between the two
+    // guards — not a value either one returns.
+    //
+    // For EVERY divisor `set_pricing_config` would accept, the minimum purchase
+    // must still quote and must still clear the fee. Swept rather than sampled,
+    // because the interesting divisors are at the boundary.
+    let cache = cacheAt(1_000);
+    var accepted = 0;
+    var rejected = 0;
+    var d = 1;
+    while (d <= 200_000) {
+      switch (Pricing.divisorDeliverable(cache, fee, TEN_DOLLARS, d, LEDGER_FEE)) {
+        case (#ok) {
+          accepted += 1;
+          switch (Pricing.quote(cache, fee, config.maxAgeNs, TEN_DOLLARS, 1_100, d, LEDGER_FEE)) {
+            case (#ok({ cycles })) {
+              // Not merely "greater than the fee": clears it with the headroom a
+              // rate move needs, which is the same predicate `quote` enforces.
+              assert Pricing.clearsLedgerFee(cycles, LEDGER_FEE);
+              assert cycles > LEDGER_FEE;
+            };
+            // ⚠️ An accepted divisor that cannot quote would BE the stall.
+            case (_) assert false;
+          };
+        };
+        case (#err(_)) rejected += 1;
+      };
+      // Step coarsely once past the band; the boundary is near 7,238.
+      d += (if (d < 10_000) 1 else 997);
+    };
+    // ⚠️ **Both sets non-empty, or the sweep proves nothing.** All-rejected would
+    // make the assertion vacuous; all-accepted would mean the guard never fires.
+    assert accepted > 0;
+    assert rejected > 0;
   });
 });
 

@@ -28,8 +28,7 @@ import {
   orderProblems,
   unresolvedProblems,
 
-  allAuditEvents,
-} from './harness';
+  allAuditEvents, allowTestBuyers } from './harness';
 import type { Destination, Order } from './types';
 
 /// The buyer's own cycles-ledger account — the only destination the gateway accepts (#29).
@@ -80,6 +79,9 @@ beforeAll(async () => {
   // a missing outcall rather than a rail that was never opened.
   expectOk(await gw.asAdmin.set_webhook_secret(WEBHOOK_SECRET));
   expectOk(await gw.asAdmin.set_stripe_api_key('rk_test_stranded_suite_key'));
+  // #99: these suites fund a reserve and accept test payments, so without an
+  // allow-list every create_order refuses as the faucet state.
+  await allowTestBuyers(gw);
   expectOk(await gw.asAdmin.set_stripe_origin('https://stranded.example'));
   expectOk(await gw.asAdmin.set_card_tiers([{ id: 'tier5', usdCents: TIER_USD_CENTS }]));
   // ⚠️ **`expected_livemode` is deliberately left UNSET, and both directions are wrong.**

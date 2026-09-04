@@ -173,6 +173,27 @@ module {
     /// acts on them differently — one means "ask for less", the other "ask for
     /// more" — and with custom amounts both are reachable by typing.
     #amountBelowMin : { usdCents : Nat; minUsdCents : Nat };
+    /// ⚠️ **The gateway is a faucet: it accepts free test payments, has an empty
+    /// buyer allow-list, and has a funded reserve** (#99 2b). Stripe test
+    /// payments are free and unlimited — `4242 4242 4242 4242` pays any session,
+    /// for anyone who reaches the page — so this combination gives cycles away to
+    /// the internet. Refused rather than warned about.
+    ///
+    /// ⚠️ **A fact about the GATEWAY, not about this buyer**, which is why it is
+    /// a separate reason from `#buyerNotAllowed` and why it is checked first. With
+    /// an empty list, a per-principal check would refuse every buyer with "not on
+    /// the allow-list" — and populating the list genuinely does fix it, so the
+    /// lever is right and the *diagnosis* is wrong. It reads as "this buyer is not
+    /// authorized" when the state is "we are unbounded and refusing everyone",
+    /// sending an operator to the list rather than to the order in which they
+    /// funded the reserve.
+    #unboundedGiveaway : { reserveFloor : Nat };
+    /// This principal is not on the buyer allow-list, which is enforced while the
+    /// gateway accepts free test payments (#99 2b).
+    ///
+    /// Per-*principal*, so it never latches and never announces — nothing about
+    /// the gateway changed, exactly like `#tooManyOpenOrders`.
+    #buyerNotAllowed;
   };
 
   /// Renderable config-validation failure.
@@ -202,6 +223,8 @@ module {
     switch (reason) {
       case (#tooManyOpenOrders({ open; max })) "tooManyOpenOrders(" # open.toText() # "/" # max.toText() # ")";
       case (#canisterCyclesLow({ balance; min })) "canisterCyclesLow(" # balance.toText() # "<" # min.toText() # ")";
+      case (#unboundedGiveaway({ reserveFloor })) "unboundedGiveaway(floor " # reserveFloor.toText() # ", empty allow-list, test payments accepted)";
+      case (#buyerNotAllowed) "buyerNotAllowed";
       case (#reserveShort({ requested; available })) "reserveShort(need " # requested.toText() # ", have " # available.toText() # ")";
       case (#amountAboveMax({ usdCents; maxUsdCents })) "amountAboveMax(" # usdCents.toText() # ">" # maxUsdCents.toText() # ")";
       case (#amountBelowMin({ usdCents; minUsdCents })) "amountBelowMin(" # usdCents.toText() # "<" # minUsdCents.toText() # ")";
@@ -237,6 +260,12 @@ module {
     /// The session outcall failed. Separate from `railClosed` because a present
     /// but invalid key is a different incident from an absent one.
     stripeApiFailed : Nat;
+    /// The faucet refusal (#99 2b) — see `Reason.unboundedGiveaway`.
+    unboundedGiveaway : Nat;
+    /// A non-allow-listed buyer against a POPULATED list. Counted separately from
+    /// `unboundedGiveaway` because the two mean opposite things: this one is the
+    /// allow-list working, that one is the allow-list missing.
+    buyerNotAllowed : Nat;
   };
 
   public func noRefusals() : RefusalCounts {
@@ -248,6 +277,8 @@ module {
       reserveShort = 0;
       railClosed = 0;
       stripeApiFailed = 0;
+      unboundedGiveaway = 0;
+      buyerNotAllowed = 0;
     });
   };
 
@@ -268,6 +299,8 @@ module {
       case (#tooManyOpenOrders(_)) ({ counts with tooManyOpenOrders = counts.tooManyOpenOrders + 1 });
       case (#canisterCyclesLow(_)) ({ counts with canisterCyclesLow = counts.canisterCyclesLow + 1 });
       case (#reserveShort(_)) ({ counts with reserveShort = counts.reserveShort + 1 });
+      case (#unboundedGiveaway(_)) ({ counts with unboundedGiveaway = counts.unboundedGiveaway + 1 });
+      case (#buyerNotAllowed) ({ counts with buyerNotAllowed = counts.buyerNotAllowed + 1 });
     };
   };
 
@@ -307,6 +340,13 @@ module {
     /// that one says *provision the key*, this one says *rotate it*. Folding them
     /// would file the wrong instruction.
     #stripeApiFailing;
+    /// The gateway is a faucet — see `Reason.unboundedGiveaway` (#99 2b).
+    ///
+    /// **A rail condition rather than a per-request reason** because it is a fact
+    /// about this gateway: it started refusing at a definite T, which is the
+    /// transition an operator wants exactly one audit line for. The lever is
+    /// "populate the allow-list", or "go live", or "do not fund the reserve yet".
+    #unboundedGiveaway;
   };
 
   /// Which refusals describe the gateway rather than one request. Exhaustive, so
@@ -315,10 +355,16 @@ module {
     switch (reason) {
       case (#reserveShort(_)) ?#reserveShort;
       case (#canisterCyclesLow(_)) ?#canisterCyclesLow;
+      case (#unboundedGiveaway(_)) ?#unboundedGiveaway;
       // Nothing about the gateway changed: one request was malformed
-      // (`#amountBelowMin`, `#amountAboveMax`) or one principal used its own slot
-      // (`#tooManyOpenOrders`).
-      case (#amountAboveMax(_) or #amountBelowMin(_) or #tooManyOpenOrders(_)) null;
+      // (`#amountBelowMin`, `#amountAboveMax`), or one principal used its own slot
+      // (`#tooManyOpenOrders`), or one principal is not on a list that IS doing its
+      // job (`#buyerNotAllowed` — the gateway is correctly bounded, so there is no
+      // gateway-level transition to announce).
+      case (
+        #amountAboveMax(_) or #amountBelowMin(_) or #tooManyOpenOrders(_)
+        or #buyerNotAllowed
+      ) null;
     };
   };
 
@@ -340,6 +386,7 @@ module {
     canisterCyclesLow : Bool;
     railClosed : Bool;
     stripeApiFailing : Bool;
+    unboundedGiveaway : Bool;
   };
 
   public func admitting() : RailStateLatch {
@@ -348,6 +395,7 @@ module {
       canisterCyclesLow = false;
       railClosed = false;
       stripeApiFailing = false;
+      unboundedGiveaway = false;
     });
   };
 
@@ -374,6 +422,12 @@ module {
         ({
           latch = { latch with stripeApiFailing = true };
           announce = not latch.stripeApiFailing;
+        });
+      };
+      case (#unboundedGiveaway) {
+        ({
+          latch = { latch with unboundedGiveaway = true };
+          announce = not latch.unboundedGiveaway;
         });
       };
     };
@@ -403,8 +457,28 @@ module {
   /// evidence that does not bear on it — and then re-announce on the next
   /// genuine refusal. Reaching a full admission means neither condition fired,
   /// which is exactly the evidence the latch needs.
+  /// ⚠️ **`#unboundedGiveaway` IS cleared here, and `#stripeApiFailing` is not —
+  /// the difference is what a synchronous admission proves.** A successful admit
+  /// says nothing about whether a Stripe *outcall* works, so clearing
+  /// `#stripeApiFailing` on it would drop the latch on evidence that does not bear
+  /// on it. The faucet condition is the opposite: it is a predicate over state the
+  /// admission just evaluated, so **if a buyer was admitted the predicate was
+  /// false at that moment** — the list is non-empty, or we are live, or the floor
+  /// is zero. Admission is direct proof.
+  ///
+  /// ⚠️ Decided rather than left to symmetry, because the other way round it
+  /// latches when the reserve is funded against an empty list and **never
+  /// clears**: `refusingNow` would report the faucet forever after the operator
+  /// populated the list and buyers started succeeding — a condition become
+  /// permanently unsatisfiable, making the console lie.
   public func latchAdmission(latch : RailStateLatch) : RailStateLatch {
-    ({ latch with reserveShort = false; canisterCyclesLow = false; railClosed = false });
+    ({
+      latch with
+      reserveShort = false;
+      canisterCyclesLow = false;
+      railClosed = false;
+      unboundedGiveaway = false;
+    });
   };
 
   /// A session was created successfully — the only evidence that bears on
@@ -429,7 +503,33 @@ module {
     openOrders : Nat;
     /// `Cycles.balance()` — this canister's own gas.
     canisterCycles : Nat;
-
+    /// The maintained reserve **floor**, used only as "is there anything to sell
+    /// at all" by the faucet check (#99 2b).
+    ///
+    /// ⚠️ **This is NOT a solvency input, and the distinction is load-bearing** —
+    /// see the warning at the end of `admit`. Solvency asks "can the reserve cover
+    /// *this order*", which must be paired with the hold in one synchronous block
+    /// or it is a TOCTOU window. This asks `> 0`, a question no interleaving can
+    /// make wrong in a harmful direction: if the floor is zero here and funded a
+    /// moment later, `solvent` still governs the actual sale and the next order
+    /// gets the faucet refusal.
+    ///
+    /// The **floor** rather than a ledger balance, and not merely because it is
+    /// synchronous: `solvent` derives availability from the floor too, so a
+    /// funded-but-unobserved reserve cannot sell and need not trigger the
+    /// condition (#82).
+    reserveFloor : Nat;
+    /// Whether free Stripe **test** payments would be accepted — the rail's
+    /// `expectLivemode` is anything other than `?true`.
+    ///
+    /// Passed as a plain Bool rather than the `?Bool` itself so this module stays
+    /// ignorant of Stripe: the gate's question is "are payments here free and
+    /// unlimited", not "which mode is the key in".
+    acceptsTestPayments : Bool;
+    /// Whether the buyer allow-list has no entries at all.
+    buyerAllowlistEmpty : Bool;
+    /// Whether THIS caller is on the buyer allow-list.
+    buyerAllowed : Bool;
   };
 
   /// Admission decision. Cheapest checks first so a spammed principal is
@@ -438,6 +538,18 @@ module {
   /// `usdCents` is the *gross* tier/order amount, checked against the
   /// per-purchase ceiling before any quote is computed.
   public func admit(config : Config, observation : Observation, usdCents : Nat) : Result.Result<(), Reason> {
+    // ── The faucet, before anything about this request ───────────────────────
+    //
+    // ⚠️ **First, and the order is the point.** This is a fact about the gateway,
+    // so it must not be shadowed by a refusal about the request: a below-minimum
+    // amount arriving while we are a faucet would report `#amountBelowMin`, the
+    // condition would never latch, and `refusingNow` would say we are admitting.
+    if (
+      observation.acceptsTestPayments and observation.buyerAllowlistEmpty
+      and observation.reserveFloor > 0
+    ) {
+      return #err(#unboundedGiveaway({ reserveFloor = observation.reserveFloor }));
+    };
     if (usdCents > config.maxPurchaseUsdCents) {
       return #err(#amountAboveMax({ usdCents; maxUsdCents = config.maxPurchaseUsdCents }));
     };
@@ -459,11 +571,42 @@ module {
         min = config.minCanisterCycles;
       }));
     };
+    // ── This caller against a list that is doing its job ─────────────────────
+    //
+    // ⚠️ **LAST, and the faucet check is FIRST, and the two positions are the same
+    // argument.** `#unboundedGiveaway` is a fact about the gateway, so it must not
+    // be shadowed by anything about one request. `#buyerNotAllowed` is a fact about
+    // one *principal*, so it must not shadow anything about the gateway — and it
+    // would: `can_purchase` is a query the frontend calls to ask "can anyone buy
+    // right now", and every suite in this repo probes it **anonymously**. Checked
+    // early, an unlisted caller answered `#buyerNotAllowed` to that probe and hid
+    // the gas floor, the short reserve and the faucet behind it. 50 integration
+    // assertions failed that way.
+    //
+    // ⚠️ **Two conditions before the caller is even considered, and both are
+    // load-bearing.** At go-live the list must have no effect whatsoever, because
+    // one that keeps filtering afterwards is an outage nobody would look for. And
+    // an EMPTY list must not filter either: that is the state a sandbox gateway is
+    // configured in before the list is populated, so filtering on it would refuse
+    // every buyer during exactly the window the deployment is being explored in.
+    // The empty case is bounded by `#unboundedGiveaway` instead, which fires only
+    // once there is something to sell.
+    if (
+      observation.acceptsTestPayments and not observation.buyerAllowlistEmpty
+      and not observation.buyerAllowed
+    ) {
+      return #err(#buyerNotAllowed);
+    };
     // ⚠️ **Solvency is NOT decided here — see `solvent` below.** Everything above
     // is arithmetic over values the caller already holds; the money question needs
     // a ledger read, so it cannot live in a synchronous function. Do not add a
     // balance check here to save a call: that is what reintroduces the TOCTOU
     // window this split exists to close.
+    //
+    // ⚠️ **The faucet check above reads `reserveFloor` and is NOT that mistake.**
+    // It asks `> 0` — is there anything to sell — not "does the reserve cover this
+    // order". A stale `> 0` cannot over-promise: `solvent` still decides every
+    // sale, paired with its hold. See `Observation.reserveFloor`.
     #ok;
   };
 

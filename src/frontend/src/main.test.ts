@@ -45,6 +45,9 @@ const TIER_CYCLES = 3_500_000_000_000n;
 
 const state = {
   tiers: [{ id: "tier10", usdCents: TIER_CENTS }],
+  /// The simulation divisor `pricing_status` reports (#99). `1n` is production,
+  /// which is what almost every test wants; the simulation-mode tests set it.
+  divisor: 1n,
   quote: {
     usdCents: TIER_CENTS,
     feeCents: 45n,
@@ -67,6 +70,8 @@ const state = {
     counts: {
       amountAboveMax: 0n,
       stripeApiFailed: 0n,
+      unboundedGiveaway: 0n,
+      buyerNotAllowed: 0n,
       canisterCyclesLow: 0n,
       amountBelowMin: 0n,
       reserveShort: 0n,
@@ -75,6 +80,7 @@ const state = {
     },
     refusingNow: {
       stripeApiFailing: false,
+      unboundedGiveaway: false,
       canisterCyclesLow: false,
       reserveShort: false,
       railClosed: false,
@@ -93,6 +99,7 @@ const state = {
       canisterCyclesLow: false,
       railClosed: false,
       stripeApiFailing: false,
+      unboundedGiveaway: false,
     },
     availableToSell: 775_000_000_000_000n,
     reserveObservedAtNs: undefined as bigint | undefined,
@@ -237,6 +244,7 @@ const typedStubs = {
       canisterCyclesLow: false,
       railClosed: false,
       stripeApiFailing: false,
+      unboundedGiveaway: false,
     },
   }),
   pricing_status: async () => ({
@@ -254,6 +262,7 @@ const typedStubs = {
       maxAgeNs: 900_000_000_000n,
       maxRateDeltaBps: 500n,
       minRateSources: 3n,
+      divisor: state.divisor,
     },
     lastAttempt: undefined,
   }),
@@ -373,6 +382,7 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
+  state.divisor = 1n;
   state.quote = { usdCents: TIER_CENTS, feeCents: 45n, netCents: 455n, cycles: TIER_CYCLES };
   state.transferFee = 100_000_000n;
   state.transferFeeError = false;
@@ -393,9 +403,11 @@ beforeEach(() => {
     counts: {
       amountAboveMax: 0n, stripeApiFailed: 0n, canisterCyclesLow: 0n, amountBelowMin: 0n,
       reserveShort: 0n, railClosed: 0n, tooManyOpenOrders: 0n,
+      unboundedGiveaway: 0n, buyerNotAllowed: 0n,
     },
     refusingNow: {
-      stripeApiFailing: false, canisterCyclesLow: false, reserveShort: false, railClosed: false,
+      stripeApiFailing: false,
+      unboundedGiveaway: false, canisterCyclesLow: false, reserveShort: false, railClosed: false,
     },
   };
   // ⚠️ Reset here, not spread from the previous test. Leaving these out let one test's
@@ -418,6 +430,7 @@ beforeEach(() => {
       canisterCyclesLow: false,
       railClosed: false,
       stripeApiFailing: false,
+      unboundedGiveaway: false,
     },
     availableToSell: 775_000_000_000_000n,
     reserveObservedAtNs: undefined,
@@ -1420,6 +1433,8 @@ describe("worklists (#68)", () => {
       counts: {
         amountAboveMax: 0n,
         stripeApiFailed: 0n,
+        unboundedGiveaway: 0n,
+        buyerNotAllowed: 0n,
         canisterCyclesLow: 0n,
         amountBelowMin: 4n,
         reserveShort: 2n,
@@ -1428,6 +1443,7 @@ describe("worklists (#68)", () => {
       },
       refusingNow: {
         stripeApiFailing: false,
+        unboundedGiveaway: false,
         canisterCyclesLow: false,
         reserveShort: false,
         railClosed: false,
@@ -1523,5 +1539,42 @@ describe("order history (#68)", () => {
     expect(el("admin-history-locked").hidden).toBe(false);
     expect(el("admin-history-locked").textContent).toMatch(/needs operator access/);
     expect(rows()).toHaveLength(0);
+  });
+});
+
+describe("simulation mode says so, in words (#99 2h)", () => {
+  test("production shows no simulation note at all", async () => {
+    await mount();
+    // ⚠️ `hidden`, not absence: jsdom neither renders nor respects `hidden`, so a
+    // test that only checked for the element would pass in either mode. And the
+    // text is asserted empty-of-claim too, in case a future render sets it
+    // unconditionally and relies on `hidden` alone.
+    const note = document.getElementById("simulation-note")!;
+    expect(note.hidden).toBe(true);
+    const cap = document.getElementById("trust-capacity-note")!;
+    expect(cap.hidden).toBe(true);
+  });
+
+  test("⚠️ simulation mode states the scale on the buy view, as a sentence", async () => {
+    state.divisor = 1_000n;
+    await mount();
+    const note = document.getElementById("simulation-note")!;
+    expect(note.hidden).toBe(false);
+    // The three things a buyer needs: that it is a test environment, the scale,
+    // and that no real money moves.
+    expect(note.textContent).toMatch(/test environment/i);
+    expect(note.textContent).toContain("1/1000");
+    expect(note.textContent).toMatch(/no money moves/i);
+  });
+
+  test("the available-to-sell figure gets its one sentence of explanation", async () => {
+    // Without it the ratio between a real reserve and a scaled quote reads as a
+    // bug: 775 T available while $10 buys 7 G.
+    state.divisor = 1_000n;
+    await mount();
+    const cap = document.getElementById("trust-capacity-note")!;
+    expect(cap.hidden).toBe(false);
+    expect(cap.textContent).toMatch(/real reserve/i);
+    expect(cap.textContent).toContain("1000");
   });
 });

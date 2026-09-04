@@ -903,6 +903,19 @@ function renderTrustFigures(
   capLabel.textContent = "Available to buy right now";
   cap.textContent = `${formatCycles(stats.availableToSell)} cycles`;
 
+  // ⚠️ **This figure stays in REAL cycles while quotes are scaled**, because
+  // `availableToSell` is `reserveFloor - promised` and only `promised` is scaled.
+  // So it can read 775 T while $10 buys 7 G — arithmetically right, and a
+  // startling ratio that reads as a bug without a word of explanation.
+  const capNote = document.getElementById("trust-capacity-note");
+  if (capNote) {
+    const divisor = simulationDivisor();
+    capNote.textContent =
+      `This is the real reserve. In simulation mode each purchase is scaled down ` +
+      `by ${divisor}, so this figure covers far more orders than its size suggests.`;
+    capNote.hidden = divisor === 1n;
+  }
+
   const orders = stats.deliveredOrders === 1n ? "1 order" : `${stats.deliveredOrders} orders`;
   del.textContent =
     `${orders} · ${formatCycles(stats.deliveredCycles)} cycles · ` +
@@ -919,14 +932,16 @@ async function loadMarket(): Promise<void> {
     backend.pricing_status(),
     backend.delivery_stats(),
   ]);
+  // ⚠️ Before `renderTrustFigures`, which reads the divisor for its note.
+  lastPricing = pricing;
   renderTrustFigures(stats);
+  renderSimulationNote();
   tiers = tierList;
   cardFee = { feeBps: pricing.config.feeBps, feeFixedCents: pricing.config.feeFixedCents };
 
   // Both rate inputs are shown, because both are needed to reproduce a quote —
   // the ICP price from the Exchange Rate Canister and the XDR/ICP rate the CMC
   // will actually price at. A buyer can query either canister and check us.
-  lastPricing = pricing;
   renderRateLine();
 
   // ⚠️ **No pre-emptive "we might not be able to serve you" banner.** The gateway
@@ -1054,6 +1069,35 @@ function renderRateLine(): void {
 /// The last `pricing_status`, so the rate strip can be re-rendered when quotes
 /// arrive rather than only at load.
 let lastPricing: PricingStatus | null = null;
+
+/// The simulation divisor (#99), read from the config `pricing_status` already
+/// returns — **no new endpoint**, and one place that answers "are we simulating".
+///
+/// `1n` when the gateway has not answered yet, which is the production value: a
+/// page that has not loaded its config must not claim a simulation.
+function simulationDivisor(): bigint {
+  return lastPricing?.config.divisor ?? 1n;
+}
+
+/// Say it plainly on the buy view and on the receipt: a real charge in Stripe's
+/// sandbox, and a fraction of the cycles.
+///
+/// ⚠️ **A sentence, not a badge.** A badge announces that a state exists; a buyer
+/// needs to know what it means for the purchase in front of them. At divisor 1
+/// both elements stay hidden, so a production page is unchanged.
+function renderSimulationNote(): void {
+  const divisor = simulationDivisor();
+  const text =
+    `Simulation mode: this gateway is running against Stripe's test environment, ` +
+    `and it delivers 1/${divisor} of the cycles a purchase would buy in production. ` +
+    `The card charge is real inside the sandbox; no money moves.`;
+  for (const id of ["simulation-note", "receipt-simulation-note"]) {
+    const node = document.getElementById(id);
+    if (!node) continue;
+    node.textContent = text;
+    node.hidden = divisor === 1n;
+  }
+}
 
 function renderTiers(): void {
   const container = el("tiers");
@@ -1686,7 +1730,11 @@ async function renderReceipt(order: Order): Promise<void> {
   el("receipt-sources").textContent =
     rateSourceNote(v.rateReceivedRates, v.rateQueriedSources) || "not yet";
 
-  const check = checkReceipt(v, receipt.order.lockedCycles);
+  // ⚠️ The divisor comes from config, not the order — see `checkReceipt`. In
+  // simulation mode `check.recomputed` is what PRODUCTION would have locked, which
+  // is the more interesting of the two numbers and is already on screen.
+  const check = checkReceipt(v, receipt.order.lockedCycles, simulationDivisor());
+  renderSimulationNote();
   el("receipt-formula").textContent = check.formula;
   const verdict = el("receipt-verdict");
   verdict.textContent = check.matches

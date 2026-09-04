@@ -65,6 +65,13 @@ TIERS = {
     "add_admin": "controller",              # granting the other tier
     "remove_admin": "controller",
     "admins": "controller",                 # who holds the tier is a controller's business
+    "add_allowed_buyer": "controller",      # who may take cycles out of a funded reserve
+                                            # for free test money is a RULE, not a case —
+                                            # and removing the last entry stops the
+                                            # gateway selling at all (#99 2b)
+    "remove_allowed_buyer": "controller",
+    "allowed_buyers": "controller",         # the list bounds a giveaway; who is on it is a
+                                            # controller's business, like `admins`
     # ── CASES: an admin resolves one case ───────────────────────────────────────────────
     "abandon_order": "admin",               # irreversible RECORD on one identified order,
                                             # audited under the actor's own principal, and

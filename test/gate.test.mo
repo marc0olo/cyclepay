@@ -7,9 +7,34 @@ import Text "mo:core/Text";
 // without an IC environment — the same seam style as Delivery/Recovery.
 
 /// An observation that admits: room on every axis.
+///
+/// ⚠️ **Live mode, so #99's allow-list has no effect here.** That is what keeps
+/// every pre-#99 case in this suite testing the axis it was written for rather
+/// than tripping the faucet refusal — and it is also the production shape.
 let healthy : Gate.Observation = {
   openOrders = 0;
   canisterCycles = 20_000_000_000_000; // 20T // 100 ICP // 50 ICP // 10 ICP
+  reserveFloor = 800_000_000_000_000; // 800T, funded
+  acceptsTestPayments = false;
+  buyerAllowlistEmpty = true;
+  buyerAllowed = false;
+};
+
+/// A sandbox gateway that admits: test payments accepted, but bounded by a
+/// populated allow-list that this caller is on.
+let sandboxHealthy : Gate.Observation = {
+  healthy with
+  acceptsTestPayments = true;
+  buyerAllowlistEmpty = false;
+  buyerAllowed = true;
+};
+
+/// ⚠️ The faucet: free test payments, nobody listed, and cycles to give away.
+let faucet : Gate.Observation = {
+  healthy with
+  acceptsTestPayments = true;
+  buyerAllowlistEmpty = true;
+  buyerAllowed = false;
 };
 
 let config = Gate.defaultConfig();
@@ -415,5 +440,143 @@ suite("#37 §2c — the session outcall is a fourth condition, cleared different
     assert not admitted.railClosed;
     // The outcall is not.
     assert admitted.stripeApiFailing;
+  });
+});
+
+suite("#99 the faucet refusal", func() {
+  test("the exact triple refuses: test payments, empty list, funded reserve", func() {
+    assert Gate.admit(config, faucet, amount)
+    == #err(#unboundedGiveaway({ reserveFloor = faucet.reserveFloor }));
+  });
+
+  test("a bounded sandbox admits — the list is what bounds it", func() {
+    assert Gate.admit(config, sandboxHealthy, amount) == #ok;
+  });
+
+  test("⚠️ EACH leg of the triple turns it off on its own", func() {
+    // Not one test per happy path: a predicate with three terms needs each term
+    // shown to be load-bearing, or a stuck `true` in any of them passes.
+    // 1. Live mode: real money in, so free-payment giveaway is not the risk.
+    assert Gate.admit(config, { faucet with acceptsTestPayments = false }, amount) == #ok;
+    // 2. A populated list bounds the total, which is the whole job.
+    assert Gate.admit(config, { faucet with buyerAllowlistEmpty = false; buyerAllowed = true }, amount) == #ok;
+    // 3. Nothing to sell: an unfunded reserve refuses on solvency anyway.
+    assert Gate.admit(config, { faucet with reserveFloor = 0 }, amount) == #ok;
+  });
+
+  test("⚠️ an EMPTY list does not filter per buyer — that would break Part 1", func() {
+    // The state a sandbox gateway is configured in before the list is populated.
+    // Filtering here would refuse every buyer during exactly the window the
+    // deployment is being explored in, which is why the empty case is bounded by
+    // the faucet condition instead. Caught by the leg test above: an earlier
+    // implementation checked `not buyerAllowed` without `not buyerAllowlistEmpty`
+    // and refused this caller with `#buyerNotAllowed`.
+    assert Gate.admit(config, { faucet with reserveFloor = 0 }, amount) == #ok;
+    // ...and the same observation WITH a populated list does filter, so the
+    // assertion above is not passing because the check is dead.
+    assert Gate.admit(config, { faucet with reserveFloor = 0; buyerAllowlistEmpty = false }, amount)
+    == #err(#buyerNotAllowed);
+  });
+
+  test("⚠️ the faucet is checked FIRST, so it cannot be shadowed by the request", func() {
+    // A below-minimum amount arriving while we are a faucet must report the
+    // faucet. Reported as `#amountBelowMin` the condition would never latch and
+    // `refusingNow` would claim we are admitting — the console lying about the
+    // one state that gives cycles away.
+    let belowFloor = config.minPurchaseUsdCents - 1;
+    assert Gate.admit(config, faucet, belowFloor)
+    == #err(#unboundedGiveaway({ reserveFloor = faucet.reserveFloor }));
+    // And the amount really is refusable on its own, so the assertion above is
+    // not passing for a second reason.
+    assert Gate.admit(config, sandboxHealthy, belowFloor)
+    == #err(#amountBelowMin({ usdCents = belowFloor; minUsdCents = config.minPurchaseUsdCents }));
+  });
+
+  test("an unlisted buyer against a POPULATED list is #buyerNotAllowed", func() {
+    assert Gate.admit(config, { sandboxHealthy with buyerAllowed = false }, amount)
+    == #err(#buyerNotAllowed);
+  });
+
+  test("⚠️ at go-live the list has NO effect — an unlisted buyer is admitted", func() {
+    // A list that keeps filtering after go-live is an outage nobody would look
+    // for. `healthy` is live mode with an empty list and nobody allowed.
+    assert Gate.admit(config, healthy, amount) == #ok;
+    assert Gate.admit(config, { healthy with buyerAllowlistEmpty = false }, amount) == #ok;
+  });
+
+  test("the faucet is a GATEWAY fact and the unlisted buyer is not", func() {
+    // Different diagnoses, so different halves of the #61 split: one announces
+    // "the gateway started refusing at T", the other says nothing about the
+    // gateway because the gateway is correctly bounded.
+    assert Gate.railConditionOf(#unboundedGiveaway({ reserveFloor = 1 })) == ?#unboundedGiveaway;
+    assert Gate.railConditionOf(#buyerNotAllowed) == null;
+    assert Gate.isRailState(#unboundedGiveaway({ reserveFloor = 1 }));
+    assert not Gate.isRailState(#buyerNotAllowed);
+  });
+
+  test("both new reasons are tallied, and separately", func() {
+    var counts = Gate.noRefusals();
+    counts := Gate.countRefusal(counts, #unboundedGiveaway({ reserveFloor = 1 }));
+    counts := Gate.countRefusal(counts, #buyerNotAllowed);
+    counts := Gate.countRefusal(counts, #buyerNotAllowed);
+    assert counts.unboundedGiveaway == 1;
+    // ⚠️ Separate counters because the two mean opposite things: 2 here is the
+    // allow-list working, 1 above is the allow-list missing.
+    assert counts.buyerNotAllowed == 2;
+  });
+
+  test("it announces once on the way in, like the other conditions", func() {
+    var latch = Gate.admitting();
+    let first = Gate.latchCondition(latch, #unboundedGiveaway);
+    assert first.announce;
+    assert first.latch.unboundedGiveaway;
+    let second = Gate.latchCondition(first.latch, #unboundedGiveaway);
+    assert not second.announce;
+  });
+
+  test("⚠️ admission CLEARS it — admission is direct proof the predicate was false", func() {
+    // The decision that separates it from `#stripeApiFailing`. Decided the other
+    // way, `refusingNow` reports the faucet forever after the operator populates
+    // the list and buyers start succeeding.
+    var latch = Gate.admitting();
+    latch := Gate.latchCondition(latch, #unboundedGiveaway).latch;
+    latch := Gate.latchCondition(latch, #stripeApiFailing).latch;
+    let admitted = Gate.latchAdmission(latch);
+    assert not admitted.unboundedGiveaway;
+    // Still true, and the contrast is the point: a synchronous admission says
+    // nothing about whether a Stripe outcall works.
+    assert admitted.stripeApiFailing;
+  });
+
+  test("⚠️ #buyerNotAllowed is LAST, so it cannot shadow a GATEWAY fact", func() {
+    // `can_purchase` is a query the frontend uses to ask "can anyone buy right
+    // now", and every suite probes it anonymously — an unlisted caller. Checked
+    // early, that probe answered `#buyerNotAllowed` and hid the gas floor behind
+    // it; 50 integration assertions failed exactly that way.
+    let unlistedAndBroke : Gate.Observation = {
+      sandboxHealthy with
+      buyerAllowed = false;
+      canisterCycles = 0;
+    };
+    assert Gate.admit(config, unlistedAndBroke, amount)
+    == #err(#canisterCyclesLow({ balance = 0; min = config.minCanisterCycles }));
+    // Same caller, healthy canister: now the per-principal refusal is the answer.
+    assert Gate.admit(config, { sandboxHealthy with buyerAllowed = false }, amount)
+    == #err(#buyerNotAllowed);
+  });
+
+  test("⚠️ the two new checks sit at OPPOSITE ends, and that is one argument", func() {
+    // The faucet is a gateway fact so nothing may shadow it; the unlisted buyer is
+    // a principal fact so it may shadow nothing. A broke faucet reports the
+    // faucet, a broke bounded gateway reports the gas floor.
+    assert Gate.admit(config, { faucet with canisterCycles = 0 }, amount)
+    == #err(#unboundedGiveaway({ reserveFloor = faucet.reserveFloor }));
+  });
+
+  test("both reasons render diagnosably", func() {
+    let text = Gate.reasonToText(#unboundedGiveaway({ reserveFloor = 42 }));
+    assert Text.contains(text, #text "42");
+    assert Text.contains(text, #text "allow-list");
+    assert Gate.reasonToText(#buyerNotAllowed) == "buyerNotAllowed";
   });
 });

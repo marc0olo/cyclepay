@@ -483,6 +483,101 @@ The gate refuses *before* the user pays. The authoritative check is the one insi
 `can_purchase(usdCents)` is a public query that returns the same decision, so the
 frontend can disable the button with a real reason instead of failing at submit.
 
+⚠️ **Two of the gate's reasons sit at opposite ends of `admit`, and the positions are
+the same argument.** `#unboundedGiveaway` is a fact about the *gateway*, so nothing
+about one request may shadow it: checked late, a sub-minimum amount arriving while the
+gateway is a faucet would report `#amountBelowMin`, the condition would never latch,
+and `refusingNow` would claim we are admitting. `#buyerNotAllowed` is a fact about one
+*principal*, so it must shadow nothing about the gateway: checked early, an unlisted
+caller answered that to `can_purchase` and hid the gas floor, the short reserve and the
+faucet behind it.
+
+⚠️ **The anonymous principal is exempt from the buyer allow-list**, and the exemption
+cannot widen anything — `create_order` rejects `#anonymous` before the gate. What it
+preserves is `can_purchase` as a gateway probe: the frontend calls it before sign-in,
+and the answer to "can this anonymous caller buy" is decided by `#anonymous`, not by a
+list.
+
+## 9a. Simulation mode: mainnet against the Stripe sandbox (#99)
+
+**One number is the whole switch: `pricing_status().config.divisor`.** `1` is
+production; anything greater is simulation, and the mode signal, the banner and the
+receipt's extra terms all key off that same value. There is deliberately no second
+boolean — one that disagreed with the divisor would let two places answer "are we
+simulating?" differently.
+
+| what | where | why there |
+|---|---|---|
+| the scale | `Pricing.quote` | the **single** derivation of a cycle quantity, one caller — so the quote, `lockedCycles`, the promise tally, the floor decrement and the transfer are all the same scaled number |
+| who may buy | the buyer allow-list | the only bound on the **total** given away; the divisor bounds only the per-order loss |
+| the ceiling | `Pricing.quote` again | the cycles-ledger deposit fee is **flat**, so an over-scaled order cannot clear it |
+
+⚠️ **Do NOT scale at delivery.** The reserve floor decrements at *issue* by the full
+locked amount (§5.4 rule 2), so a scaled transfer against an unscaled decrement would
+surface as an unexplained shortfall on every reconcile — the one signal that means an
+outflow we did not cause.
+
+⚠️ **The Stripe fee is taken BEFORE the divisor and the ledger fee AFTER it**, and the
+asymmetry reports what each third party actually took: the buyer really is charged the
+gross and Stripe really keeps its cut, so those are real dollars; the ledger really
+charges a flat fee to accept whatever deposit arrives. Where the division sits in the
+formula does not matter for correctness — `floor(floor(a/b)/d) == floor(a/(b*d))` for
+positive integers — so it is written as one division after the rate conversion, and
+`checkReceipt` divides at the same point.
+
+### The four guards, and what each one prevents
+
+| guard | prevents |
+|---|---|
+| `divisor > 1` requires `expected_livemode == ?false` **exactly** | real money in, scaled cycles out. ⚠️ `?false` exactly, not "not live": `null` means *either mode* and accepts live payments, **and `null` is the default** |
+| `set_expected_livemode` refuses anything but `?false` while `divisor > 1` | the same state reached from the other direction. Mutual, so neither order of operations gets there |
+| a divisor **change** is refused while any order is stored | a global divisor with earlier receipts recomputing against the new one, each reporting a mismatch. Reinstall to change it; refusing is the safe direction |
+| a scaled quote must clear the ledger fee **ten times over** | the one delivery state with no recovery lever: a fee above a whole order's locked quantity means nothing reaches the ledger, so no `#BadFee` ever arrives to correct the stored copy |
+
+⚠️ **The divisor's ceiling scales with `minPurchaseUsdCents`, not with the amount being
+bought**, because the guard asks whether the *smallest purchase this gateway sells*
+still clears the fee. At the shipped $10 floor a divisor of 1,000 leaves 7.24 G (72x the
+100 M fee); at a $1 floor the same divisor leaves 515 M and is **refused**. An operator
+who lowers the floor for a demo and then cannot set the divisor is seeing the guard work.
+
+### The faucet, and the one ordering rule
+
+⚠️ **Stripe test payments are free and unlimited** — `4242 4242 4242 4242` pays any
+session, for anyone who reaches the page. So test mode plus an empty allow-list plus a
+funded reserve is a cycles faucet, and the gateway **refuses to sell** in that state
+rather than warning about it (`#unboundedGiveaway`, a rail condition with its own
+counter and `refusingNow` flag).
+
+> **The allow-list must exist and be populated before the reserve is funded.**
+
+An **unfunded** reserve refuses every order structurally at `Gate.solvent`, before a
+Stripe session is even created — which is what makes a no-code sandbox deployment safe
+to explore, and why only the happy path waits on the allow-list. The canister cannot
+enforce the rule at funding time: the reserve arrives as an ICRC transfer *to* its
+ledger account, which it has no ability to refuse. It enforces it at the **sale**
+instead, which is the operation that gives cycles away.
+
+⚠️ **An empty list therefore means two different things**, and that is the design: it
+does not filter per buyer while the floor is zero (nothing can be sold anyway), and it
+refuses everyone the moment the floor is not.
+
+### What the buyer sees
+
+A sentence, not a badge — that a real charge happens in Stripe's sandbox and a fraction
+of the cycles is delivered. And the receipt shows **both legs**: `checkReceipt`'s
+`recomputed` stays the *unscaled* quantity, recomputed from the two rate inputs the
+order carries, so a simulation receipt states what production would have locked, the
+divisor, the locked quantity, and the ledger fee — four numbers that reconcile.
+
+⚠️ **`availableToSell` stays in REAL cycles while quotes are scaled** (it is
+`reserveFloor - promised`, and only `promised` is scaled), so it can read 775 T while
+$10 buys 7 G. Arithmetically right, and startling without a word of explanation.
+
+⚠️ **A refusal from the ledger-fee guard names the simulation, not payment processing.**
+`#tierBelowFees` says fees would exceed the amount, which is true for its own cause and
+false for this one — the amount is fine and the operator's divisor scaled the cycles
+below the deposit fee. `#simulationScaleTooSmall` is a separate variant for that reason.
+
 ## 10. Order lifecycle — Stripe owns the deadline
 
 **Orders are never deleted, and nothing sweeps them.** #33 deleted `Retention.mo`
@@ -786,12 +881,13 @@ privileges — any controller can do any of this):
 | `webhook_secret_status` / `stripe_api_key_status` | confirm a rotation landed, without reading either secret back |
 | `set_card_tiers` | register the preset amounts. Since #33 an empty vector shows no tiles and does **not** disable the rail — the switch is both Stripe secrets |
 | `set_gate_config` | open-order cap, own-cycles floor, per-purchase ceiling |
-| `set_pricing_config` | fee formula, staleness window (capped at 1 h), delta bound, minimum rate sources |
+| `set_pricing_config` | fee formula, staleness window (capped at 1 h), delta bound, minimum rate sources, and the **simulation divisor** (#99). Three divisor guards live here: it is accepted only while `expected_livemode` is exactly `?false`, it cannot CHANGE while any order is stored (reinstall to change it), and it is refused if it would scale the *smallest purchase this gateway sells* below ten times the cycles-ledger deposit fee |
 | `refresh_rates` | force a rate tick now instead of waiting for the timer |
 | `set_delivery_config` | the two delivery time bounds: alert-after (2 h) and max hold (72 h). Read them back with `lifecycle_config` |
 | `orphans` / `resolve_orphan` | the operator worklist |
 | `order_for_payment` | reconciliation: Stripe charge → order it funded |
 | `add_admin` / `remove_admin` / `admins` | grant, revoke and list the CASES tier (#68). ⚠️ Controller only, and controllers are not listed — they pass the admin guard without being granted, so an empty list does not mean nobody can act |
+| `add_allowed_buyer` / `remove_allowed_buyer` / `allowed_buyers` | who may buy while this gateway accepts free Stripe **test** payments (#99). ⚠️ Controller only: the list is the only bound on the *total* given away, where the divisor bounds only the per-order loss. **An empty list does not mean "everyone"** — with a funded reserve and test payments accepted it means the gateway refuses every buyer (`unboundedGiveaway`), because that combination is a cycles faucet. At `expected_livemode == ?true` the list has no effect at all |
 | `delivery_journal` | money-out record for one order |
 | `audit_log` | operational trail, **paginated** (`afterSeq`, `limit`). ⚠️ Nothing drops since #37 — it was a 4,096-entry ring and gaps in `seq` were how you spotted drops; **there are no gaps now**, and `seq` is only a never-reused ordering |
 | `abandon_order` | void an unpaid order, with the reason recorded in the audit trail |

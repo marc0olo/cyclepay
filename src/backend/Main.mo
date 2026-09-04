@@ -90,6 +90,25 @@ persistent actor CyclesGateway {
   /// principal — they do not retroactively fix principals derived before one was declared.
   let adminPrincipals = Set.empty<Principal>();
 
+  /// Principals allowed to create orders **while this gateway accepts free Stripe
+  /// test payments** (#99 2b).
+  ///
+  /// ⚠️ **Without it a sandbox deployment is a cycles faucet.** Stripe test
+  /// payments are free and unlimited, so `4242 4242 4242 4242` pays any session
+  /// for anyone who reaches the page. The simulation divisor caps the loss *per
+  /// order*; only this list caps the total.
+  ///
+  /// ⚠️ **An EMPTY list is not "refuse everyone" per buyer** — that would refuse
+  /// every buyer on a sandbox deployment before this list is populated, which is
+  /// the state a fresh gateway is configured in. What bounds the empty case is
+  /// `Gate.Reason.unboundedGiveaway`, which refuses the moment there is something
+  /// to sell. So an empty list means unrestricted while the reserve floor is zero
+  /// (where nothing can be sold anyway) and refusing-everyone once it is not.
+  ///
+  /// ⚠️ At go-live (`expectLivemode == ?true`) it has no effect whatsoever. A list
+  /// that keeps filtering after go-live is an outage nobody would look for.
+  let allowedBuyers = Set.empty<Principal>();
+
   /// The RULES tier: controller only. Traps rather than returning an error so an
   /// unauthorized call can never be mistaken for a handled outcome.
   ///
@@ -175,6 +194,59 @@ persistent actor CyclesGateway {
       granted = isGrantedAdmin(caller);
       isController = caller.isController();
     };
+  };
+
+  // ── The buyer allow-list (#99 2b) ────────────────────────────────────────
+  //
+  // ⚠️ **Controller-only, like everything that changes the RULES.** The list
+  // decides who may take cycles out of a funded reserve for free test money, so
+  // it is not a per-case decision an admin makes — it is a rule.
+
+  /// Allow a principal to buy while this gateway accepts free test payments
+  /// (controller only, audited).
+  public shared ({ caller }) func add_allowed_buyer(p : Principal) : async Result.Result<(), Text> {
+    requireController(caller);
+    // The anonymous principal is a shared identity: `create_order` rejects it
+    // before the gate, so a listed `2vxsx-fae` would be inert — but a list that
+    // contains it reads as though it were not.
+    if (p.isAnonymous()) return #err("the anonymous principal cannot be an allowed buyer");
+    if (allowedBuyers.contains(p)) return #err("already an allowed buyer: " # p.toText());
+    allowedBuyers.add(p);
+    auditAdmin(caller, "buyer.allowed", p.toText());
+    #ok;
+  };
+
+  /// Revoke a buyer's allowance (controller only, audited).
+  ///
+  /// ⚠️ **Removing the LAST entry does not open the gateway up — it closes it.**
+  /// An empty list plus a funded reserve plus test payments is
+  /// `Gate.Reason.unboundedGiveaway`, which refuses everyone. The audit line says
+  /// so, because "revoked the last buyer" and "the gateway stopped selling" are
+  /// the same event and an operator should not have to connect them later.
+  public shared ({ caller }) func remove_allowed_buyer(p : Principal) : async Result.Result<(), Text> {
+    requireController(caller);
+    if (not allowedBuyers.contains(p)) return #err(p.toText() # " is not on the buyer allow-list");
+    allowedBuyers.remove(p);
+    let emptied = allowedBuyers.size() == 0;
+    auditAdmin(
+      caller,
+      "buyer.disallowed",
+      p.toText()
+      # (
+        if (emptied and expectLivemode != ?true and reserveFloor > 0) {
+          " — ⚠️ the list is now EMPTY against a funded reserve, so the gateway refuses every buyer (unboundedGiveaway)";
+        } else if (emptied) { " — the list is now empty" } else { "" }
+      ),
+    );
+    #ok;
+  };
+
+  /// Who may buy while test payments are accepted (controller only).
+  ///
+  /// ⚠️ An empty list does not mean "everyone" — see `allowedBuyers`.
+  public shared query ({ caller }) func allowed_buyers() : async [Principal] {
+    requireController(caller);
+    allowedBuyers.values().toArray();
   };
 
   /// Provision or rotate the Stripe webhook signing secret (§7). Pass the
@@ -534,8 +606,40 @@ persistent actor CyclesGateway {
 
   /// Adjust pricing params (§7): fee formula, staleness window, delta guard.
   /// Validated atomically — a bad config never partially applies.
+  /// ⚠️ **Three divisor guards live here rather than in `Pricing.validateConfig`,
+  /// because each needs context that module cannot see** (#99). All three are
+  /// checked before anything is written, so a bad config never partially applies.
   public shared ({ caller }) func set_pricing_config(config : Pricing.Config) : async Result.Result<(), Pricing.ConfigError> {
     requireController(caller);
+    // 1. ⚠️ **`?false` EXACTLY, not `!= ?true`.** `null` means "either mode", so
+    // it accepts live payments — and `null` is the default. A guard keyed on
+    // `?true` would leave the state every freshly installed canister is in wide
+    // open, and that state takes real money and under-delivers.
+    if (config.divisor > 1 and expectLivemode != ?false) {
+      return #err(#divisorNeedsSandbox({ expectLivemode }));
+    };
+    // 2. The divisor is global, so it must not move under stored orders — every
+    // earlier receipt would recompute against the new value and report a
+    // mismatch. `storedCount` is `orders.size()`, so this costs one comparison.
+    if (config.divisor != pricingConfig.divisor) {
+      let stored = Orders.storedCount(orderStore);
+      if (stored > 0) return #err(#divisorChangeWithOrders({ stored }));
+    };
+    // 3. Would the smallest purchase we sell still clear the ledger's flat
+    // deposit fee at this divisor? Advisory-at-set-time only: `Pricing.quote`
+    // re-checks every order, because this one goes stale as rates move.
+    switch (
+      Pricing.divisorDeliverable(
+        rateCache,
+        { feeBps = config.feeBps; feeFixedCents = config.feeFixedCents },
+        gateConfig.minPurchaseUsdCents,
+        config.divisor,
+        cyclesLedgerFee,
+      )
+    ) {
+      case (#err(e)) return #err(e);
+      case (#ok) {};
+    };
     switch (Pricing.validateConfig(config)) {
       case (#ok) {
         pricingConfig := config;
@@ -543,7 +647,13 @@ persistent actor CyclesGateway {
         // for the old interval to elapse under the new window.
         Timer.cancelTimer(rateTimerId);
         rateTimerId := Timer.recurringTimer<system>(#nanoseconds(rateIntervalNs()), rateTimerJob);
-        auditAdmin(caller, "rates.configSet", "maxAgeNs=" # config.maxAgeNs.toText() # " deltaBps=" # config.maxRateDeltaBps.toText());
+        auditAdmin(
+          caller,
+          "rates.configSet",
+          "maxAgeNs=" # config.maxAgeNs.toText()
+          # " deltaBps=" # config.maxRateDeltaBps.toText()
+          # " divisor=" # config.divisor.toText(),
+        );
         #ok;
       };
       case (#err(e)) #err(e);
@@ -602,7 +712,19 @@ persistent actor CyclesGateway {
     #unknownTier : Text;
     /// §3 fee formula swallows the tier's gross amount — a tier/fee config
     /// problem for the operator, not something a retry fixes.
+    ///
+    /// ⚠️ **The buyer's fix is "pick a larger amount", which is why the
+    /// simulation-scale case below is NOT folded in here.** Telling a buyer that
+    /// payment processing is too large, when the cause is this gateway's
+    /// simulation divisor, names the wrong party and prescribes a fix that may
+    /// not work (#99 review finding 2).
     #tierBelowFees : Text;
+    /// The SCALED cycles would not clear the flat cycles-ledger deposit fee: this
+    /// gateway's simulation divisor is too large for this purchase (#99 2d).
+    ///
+    /// Not the buyer's fault and not fixable by them — it is an operator's
+    /// configuration. Carries both figures so the refusal is diagnosable.
+    #simulationScaleTooSmall : { scaledCycles : Nat; ledgerFee : Nat };
     /// #30 PR-B: the reserve balance could not be read, so solvency is unknown.
     /// Fails closed on purpose — selling against an unknown balance is exactly
     /// what the check exists to prevent. (A short reserve is reported through
@@ -880,11 +1002,21 @@ persistent actor CyclesGateway {
   func quoteCents(fee : { feeBps : Nat; feeFixedCents : Nat }, usdCents : Nat) : {
     #ok : (Nat, Types.Pricing);
     #stale;
-    #unpriceable;
+    #unpriceable : Pricing.Unpriceable;
   } {
-    switch (Pricing.quote(rateCache, fee, pricingConfig.maxAgeNs, usdCents, Time.now())) {
+    switch (
+      Pricing.quote(
+        rateCache,
+        fee,
+        pricingConfig.maxAgeNs,
+        usdCents,
+        Time.now(),
+        pricingConfig.divisor,
+        cyclesLedgerFee,
+      )
+    ) {
       case (#stale) #stale;
-      case (#unpriceable) #unpriceable;
+      case (#unpriceable(cause)) #unpriceable(cause);
       case (#ok({ cycles; rates })) {
         #ok((
           cycles,
@@ -916,6 +1048,27 @@ persistent actor CyclesGateway {
     {
       openOrders = Orders.openOrderCount(orderStore, caller, Time.now());
       canisterCycles = Cycles.balance();
+      // The maintained floor, read synchronously like everything else here. Used
+      // by the faucet check as `> 0` only — never as a solvency input, which is
+      // decided separately in `admitOrder`. See `Gate.Observation.reserveFloor`.
+      reserveFloor;
+      // ⚠️ `!= ?true`, so `null` ("either mode") counts as accepting test
+      // payments. It is also the DEFAULT, so a freshly installed canister is in
+      // this state — a predicate keyed on `?false` would miss exactly that.
+      acceptsTestPayments = expectLivemode != ?true;
+      buyerAllowlistEmpty = allowedBuyers.size() == 0;
+      // ⚠️ **The anonymous principal is EXEMPT from the list, and the exemption
+      // cannot widen anything.** `create_order` rejects `#anonymous` through
+      // `Auth.checkUser` before the gate is consulted, so the shared identity still
+      // cannot buy. What this preserves is `can_purchase`: it is a query the
+      // frontend calls *before* sign-in, and every suite in this repo probes it
+      // anonymously to ask "is the gateway open right now". Filtered, an anonymous
+      // probe answered `#buyerNotAllowed` and could no longer see the gas floor,
+      // the short reserve or the faucet behind it.
+      //
+      // The answer to "can this anonymous caller buy" is decided by `#anonymous`,
+      // not by a list — so the list has nothing to say about it.
+      buyerAllowed = caller.isAnonymous() or allowedBuyers.contains(caller);
     };
   };
 
@@ -1105,7 +1258,10 @@ persistent actor CyclesGateway {
     let fee = { feeBps = pricingConfig.feeBps; feeFixedCents = pricingConfig.feeFixedCents };
     let (lockedCycles, pricing) = switch (quoteCents(fee, usdCents)) {
       case (#ok(quoted)) quoted;
-      case (#unpriceable) return #err(#tierBelowFees(quoteLabel));
+      case (#unpriceable(#stripeFee)) return #err(#tierBelowFees(quoteLabel));
+      case (#unpriceable(#simulationScale(figures))) {
+        return #err(#simulationScaleTooSmall(figures));
+      };
       case (#stale) return #err(#rateUnavailable);
     };
     switch (minCycles) {
@@ -1246,19 +1402,28 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Adjust the admission gate (§7): open-order cap, own-cycles floor,
-  /// per-purchase ceiling. Validated atomically — a bad config never partially
-  /// applies. Lowering `maxPurchaseUsdCents` below an existing tier does NOT
-  /// retroactively invalidate that tier's registration, but the next
-  /// `set_card_tiers` will reject it and the webhook will refuse to deliver a
-  /// payment above the new ceiling.
-  /// Declare which Stripe mode this gateway serves (admin).
+  /// Declare which Stripe mode this gateway serves (controller only).
   ///
   /// Set it to `?true` before taking real payments and `?false` on a sandbox
   /// deployment. `null` restores "accept either", which only makes sense while
-  /// nothing of value is at stake.
-  public shared ({ caller }) func set_expected_livemode(expected : ?Bool) : async () {
+  /// nothing of value is at stake — and it is the default, so a fresh canister
+  /// starts there.
+  ///
+  /// ⚠️ **The other half of the divisor's mutual refusal (#99 2a).** While a
+  /// simulation divisor is set, this refuses anything but `?false`: live mode
+  /// takes real money and delivers scaled cycles, and `null` accepts live
+  /// payments too. Mutual, so **neither order of operations** reaches the state
+  /// that shorts a paying buyer — it is unrepresentable rather than discouraged.
+  public shared ({ caller }) func set_expected_livemode(expected : ?Bool) : async Result.Result<(), Text> {
     requireController(caller);
+    if (expected != ?false and pricingConfig.divisor > 1) {
+      return #err(
+        "refused: a simulation divisor of " # pricingConfig.divisor.toText()
+        # " is set, so only ?false is accepted here — accepting live or either-mode"
+        # " payments while scaling cycles down would short a paying buyer."
+        # " Clear the divisor first (which needs a reinstall, see set_pricing_config)."
+      );
+    };
     expectLivemode := expected;
     auditAdmin(
       caller,
@@ -1269,12 +1434,19 @@ persistent actor CyclesGateway {
         case null "unset — either mode delivers";
       },
     );
+    #ok;
   };
 
   public query func expected_livemode() : async ?Bool {
     expectLivemode;
   };
 
+  /// Adjust the admission gate (§7): open-order cap, own-cycles floor,
+  /// per-purchase ceiling. Validated atomically — a bad config never partially
+  /// applies. Lowering `maxPurchaseUsdCents` below an existing tier does NOT
+  /// retroactively invalidate that tier's registration, but the next
+  /// `set_card_tiers` will reject it and the webhook will refuse to deliver a
+  /// payment above the new ceiling.
   public shared ({ caller }) func set_gate_config(config : Gate.Config) : async Result.Result<(), Gate.ConfigError> {
     requireController(caller);
     // Cross-check against live tiers: lowering the ceiling under a registered tier
@@ -1381,7 +1553,7 @@ persistent actor CyclesGateway {
           netCents = Pricing.netCents(fee, usdCents);
           cycles = switch (quoteCents(fee, usdCents)) {
             case (#ok((cycles, _))) ?cycles;
-            case (#stale or #unpriceable) null;
+            case (#stale or #unpriceable(_)) null;
           };
         };
       },

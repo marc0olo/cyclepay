@@ -130,6 +130,23 @@ module {
     /// Kept low on purpose: every increment buys a little more confidence and
     /// costs availability, because falling short means refusing to quote.
     minRateSources : Nat;
+    /// Simulation scale: deliver `1/divisor` of the cycles a purchase buys.
+    /// **`1` is production and means the arithmetic below is bit-identical to
+    /// having no divisor at all** (#99).
+    ///
+    /// ⚠️ **`divisor > 1` IS the simulation-mode signal — there is no second
+    /// flag.** A separate boolean could disagree with this number, and then two
+    /// places would answer "are we simulating?" differently. One value has no
+    /// inconsistent state.
+    ///
+    /// ⚠️ Applied HERE, in `quote`, because this is the single derivation of a
+    /// cycle quantity and it has exactly one caller. That is what keeps the
+    /// quote the buyer sees, the `lockedCycles` on the order, the promise tally,
+    /// the reserve-floor decrement and the transfer all the *same* scaled
+    /// number. **Scaling at delivery instead would make every reconcile report
+    /// an unexplained shortfall** — the one signal that means an outflow we did
+    /// not cause.
+    divisor : Nat;
   };
 
   /// ICP/USD is volatile, so the window is short. The cost of a tighter window
@@ -147,6 +164,7 @@ module {
       maxAgeNs = defaultMaxAgeNs;
       maxRateDeltaBps = 5_000; // 50%
       minRateSources = 2;
+      divisor = 1;
     };
   };
 
@@ -161,7 +179,29 @@ module {
     #zeroRateDelta;
     /// Requiring zero sources would defeat the guard entirely.
     #zeroRateSources;
+    /// A zero divisor would divide the whole quote away; `1` is "off".
+    #zeroDivisor;
+    /// This divisor scales the smallest purchase we sell down below what the
+    /// cycles-ledger deposit fee would eat (#99 2d). Carries both figures so an
+    /// operator can see how far past the band they went.
+    #divisorUndeliverable : { scaledCycles : Nat; ledgerFee : Nat };
+    /// ⚠️ **`divisor > 1` requires `expectLivemode == ?false` EXACTLY** — not
+    /// merely "not live", because `null` means "either mode" and would accept live
+    /// payments while under-delivering. The mutual half lives in
+    /// `set_expected_livemode` (#99 2a).
+    #divisorNeedsSandbox : { expectLivemode : ?Bool };
+    /// ⚠️ **The divisor is global rather than recorded per order**, which is only
+    /// safe because it cannot change under stored orders: every earlier receipt
+    /// would otherwise recompute against the new divisor and report a mismatch —
+    /// exactly the claim the landing page makes. Reinstall to change it (#99 2e).
+    #divisorChangeWithOrders : { stored : Nat };
   };
+
+  // ⚠️ **`validateConfig` does NOT decide every `ConfigError`.** The three divisor
+  // cases above need context this module cannot see — the Stripe mode, the order
+  // store, and the live ledger fee — so `Main.set_pricing_config` decides those and
+  // returns them through this same type. One error type, two deciding sites; the
+  // alternative is a second error type that callers have to union by hand.
 
   public func validateConfig(config : Config) : Result.Result<(), ConfigError> {
     if (config.feeBps >= 10_000) return #err(#feeBpsTooHigh);
@@ -171,7 +211,63 @@ module {
     };
     if (config.maxRateDeltaBps == 0) return #err(#zeroRateDelta);
     if (config.minRateSources == 0) return #err(#zeroRateSources);
+    if (config.divisor == 0) return #err(#zeroDivisor);
     #ok;
+  };
+
+  // ── The cycles-ledger deposit fee, and why the divisor has a ceiling ──────
+  //
+  // ⚠️ **The ledger's fee is FLAT and it is not ours.** It charges a fixed
+  // amount to accept a deposit whatever the deposit is, so it does not scale
+  // with the divisor and it is the same in simulation mode as in production.
+  //
+  // ⚠️ **An over-scaled gateway makes an "unreachable" state reachable.** The
+  // delivery path documents the one state the stored fee cannot correct itself
+  // out of: a fee above a whole order's locked quantity means nothing ever
+  // reaches the ledger, so no `#BadFee` ever arrives to fix the stored copy, and
+  // there is deliberately no admin lever to reset it. In production that needs a
+  // ~70,000x fee rise. A divisor attacks exactly that ratio, so the guard below
+  // is what keeps the unrecoverable state unreachable.
+
+  /// How many times the ledger fee a scaled quote must clear.
+  ///
+  /// **Headroom rather than a bare `>`, because rates move.** A quote that
+  /// clears the fee by one cycle today walks into the stall on the next ICP
+  /// move; ten times over does not. At the $10 floor this puts the practical
+  /// divisor ceiling around 7,200 — comfortably above the recommended 1,000 and
+  /// below the scale at which a tester is mostly verifying the ledger's fee.
+  public let ledgerFeeHeadroom : Nat = 10;
+
+  public func clearsLedgerFee(scaledCycles : Nat, ledgerFee : Nat) : Bool {
+    scaledCycles >= ledgerFee * ledgerFeeHeadroom;
+  };
+
+  /// Would the **smallest purchase this gateway sells** still clear the ledger
+  /// fee at this divisor? Used by the config setter so an operator learns at set
+  /// time rather than through a buyer's refusal.
+  ///
+  /// ⚠️ **A config-time check alone is NOT enough, and rates are why**: this
+  /// passes against today's rate and goes stale as ICP moves. `quote` re-checks
+  /// on every order and is the authoritative guard.
+  ///
+  /// ⚠️ **Absent rates return `#ok`, deliberately.** "Cannot tell" must not
+  /// refuse a config change — on a cold canister the refresh timer may simply
+  /// not have run yet, and refusing would make the setting unreachable exactly
+  /// when it is being set up.
+  public func divisorDeliverable(
+    cache : Cache,
+    fee : { feeBps : Nat; feeFixedCents : Nat },
+    minGrossCents : Nat,
+    divisor : Nat,
+    ledgerFee : Nat,
+  ) : Result.Result<(), ConfigError> {
+    if (divisor == 0) return #err(#zeroDivisor);
+    let ?net = netCents(fee, minGrossCents) else return #ok;
+    let ?rates = cache.rates else return #ok;
+    let ?gross = cyclesForCents(net, rates.xdrPermyriadPerIcp, rates.usdPerIcpMicros) else return #ok;
+    let scaled = gross / divisor;
+    if (clearsLedgerFee(scaled, ledgerFee)) return #ok;
+    #err(#divisorUndeliverable({ scaledCycles = scaled; ledgerFee }));
   };
 
   /// The cached pair iff younger than `maxAgeNs` (age ≥ window = stale, the
@@ -247,21 +343,60 @@ module {
     ?(netCents * xdrPermyriadPerIcp * 1_000_000_000_000 / usdPerIcpMicros);
   };
 
+  /// Why a quote could not be produced at all, as distinct from being stale.
+  ///
+  /// ⚠️ **Two causes, not one, and conflating them tells a buyer the wrong
+  /// thing.** Before #99 both arrived as a bare `#unpriceable`, which the
+  /// frontend renders as *"Payment processing would exceed X. Pick a larger
+  /// amount."* That is right for the first cause and wrong for the second: a
+  /// buyer refused because the **simulation scale** is too small has not been
+  /// charged too much for processing, and picking a larger amount may not help.
+  public type Unpriceable = {
+    /// The gross does not clear the Stripe fee — or, defensively, the cached
+    /// rates cannot produce a cycle figure. The buyer's fix is a larger amount.
+    #stripeFee;
+    /// The SCALED cycles would not clear the flat cycles-ledger deposit fee, so
+    /// this gateway's simulation scale is too small for this purchase. Not the
+    /// buyer's fault and not fixable by them.
+    #simulationScale : { scaledCycles : Nat; ledgerFee : Nat };
+  };
+
   /// One-shot quote from a snapshot of fee config and rates. `#stale` = the
-  /// caller fails closed (§3.1); `#unpriceable` = the gross doesn't clear the
-  /// fee, or the rates are unusable — a config/source problem, not a
-  /// freshness one.
+  /// caller fails closed (§3.1); `#unpriceable` carries which of the two causes
+  /// fired.
+  ///
+  /// ⚠️ **The Stripe fee is taken BEFORE the divisor and the ledger fee is
+  /// checked AFTER it**, and that asymmetry is not for symmetry's sake: the buyer
+  /// really is charged the gross and Stripe really keeps its cut, so those are
+  /// real dollars and scaling them would misreport what Stripe took. The ledger
+  /// really charges a flat fee to accept whatever deposit arrives, so it comes
+  /// off the scaled amount.
+  ///
+  /// **Where the division sits in the formula does not matter for correctness**:
+  /// `floor(floor(a/b)/d) == floor(a/(b*d))` for positive integers. It is
+  /// written as one division after the rate conversion for clarity, and
+  /// `checkReceipt` divides at the same point so the recomputation a buyer can
+  /// follow still reconciles.
   public func quote(
     cache : Cache,
     fee : { feeBps : Nat; feeFixedCents : Nat },
     maxAgeNs : Int,
     grossCents : Nat,
     nowNs : Int,
-  ) : { #ok : { cycles : Nat; rates : Rates }; #stale; #unpriceable } {
-    let ?net = netCents(fee, grossCents) else return #unpriceable;
+    divisor : Nat,
+    ledgerFee : Nat,
+  ) : { #ok : { cycles : Nat; rates : Rates }; #stale; #unpriceable : Unpriceable } {
+    let ?net = netCents(fee, grossCents) else return #unpriceable(#stripeFee);
     let ?rates = freshRates(cache, maxAgeNs, nowNs) else return #stale;
-    let ?cycles = cyclesForCents(net, rates.xdrPermyriadPerIcp, rates.usdPerIcpMicros) else {
-      return #unpriceable;
+    let ?gross = cyclesForCents(net, rates.xdrPermyriadPerIcp, rates.usdPerIcpMicros) else {
+      return #unpriceable(#stripeFee);
+    };
+    // ⚠️ `divisor == 1` leaves this exactly `gross`, so production arithmetic is
+    // bit-identical to having no divisor at all. `validateConfig` rejects 0, so
+    // this cannot divide by zero.
+    let cycles = gross / divisor;
+    if (not clearsLedgerFee(cycles, ledgerFee)) {
+      return #unpriceable(#simulationScale({ scaledCycles = cycles; ledgerFee }));
     };
     #ok({ cycles; rates });
   };
