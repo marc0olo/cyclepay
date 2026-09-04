@@ -2857,13 +2857,23 @@ persistent actor CyclesGateway {
   /// then and only then does the observed balance bound the current one. Any of the
   /// three failing means an outflow may have moved the balance in the gap, and
   /// adopting would erase rule 2's decrement.
-  func observeReserve() : async* Nat {
+  /// ⚠️ **`holdersAfter` is returned rather than left for the caller to re-read, and
+  /// that is the point.** `withdraw_reserve` must re-check the promise-holder count
+  /// after this await — the floor is still full across it, so a `create_order` queued
+  /// here would be admitted against a reserve about to leave. Handing the count back
+  /// from the await the caller is already forced to make means there is nothing left to
+  /// forget: a comment saying "re-read this" is the weakest possible guard, and this
+  /// makes the value arrive with the result instead.
+  ///
+  /// Read AFTER the await, deliberately — a count captured before it answers the wrong
+  /// question.
+  func observeReserve() : async* { observed : Nat; quiet : Bool; holdersAfter : Nat } {
     let unsettledBefore = unsettledDeliveries();
     let issuedBefore = outflowsIssued;
     let observed = await cyclesLedger.icrc1_balance_of(Delivery.reserveAccount(selfPrincipal()));
     let quiet = unsettledBefore == 0 and unsettledDeliveries() == 0 and outflowsIssued == issuedBefore;
     reconcileReserve(observed, quiet);
-    observed;
+    ({ observed; quiet; holdersAfter = Orders.promiseHolderCount(orderStore) });
   };
 
   /// On-demand reserve refresh (admin — a public one would let anyone spend our
@@ -2876,7 +2886,7 @@ persistent actor CyclesGateway {
   /// says why.
   public shared ({ caller }) func refresh_reserve() : async Nat {
     requireAdmin(caller);
-    await* observeReserve();
+    (await* observeReserve()).observed;
   };
 
   /// Return the reserve to the caller, refusing while anything is owed (#103).
@@ -2922,7 +2932,6 @@ persistent actor CyclesGateway {
     // holders means no unsettled deliveries means the reconcile's quiet window holds.
     // The withdraw guard and the observation guard are the same structure, so they
     // cannot disagree.
-    ignore await* observeReserve();
     // ⚠️ **RE-CHECK, because `observeReserve` contains an await and the floor is still
     // FULL across it.** The decrement below is what refuses a concurrent create, and it
     // has not happened yet — so a `create_order` queued during the balance read sees a
@@ -2930,17 +2939,12 @@ persistent actor CyclesGateway {
     // session against a reserve that is about to leave. If they pay, they have paid for
     // cycles that are gone.
     //
-    // This is the same hazard the decrement-before-transfer rule exists for, one await
-    // earlier — and the fix is the pattern inside the function being called:
-    // `observeReserve` captures `unsettledBefore` and `outflowsIssued` and re-checks
-    // both after its own await, for exactly this reason.
-    //
-    // ⚠️ **NEITHER this re-read nor the decrement below is verified by a test, and that
-    // was measured rather than assumed**: deleting either one leaves the whole
-    // `withdraw.spec.ts` suite green. A PocketIC tick drains a message including its
-    // inter-canister awaits, so an ingress call cannot be landed inside one. Both rules
-    // rest on review — do not "simplify" either on the strength of a green suite.
-    let holdersAfter = Orders.promiseHolderCount(orderStore);
+    // ⚠️ **The count comes BACK from the observe rather than being re-read here**, so
+    // the guard cannot be forgotten by anyone editing this function: `observeReserve`
+    // computes it after its own await, alongside the `quiet` flag it computes for the
+    // same reason. A comment saying "re-read this" would be the weakest guard available,
+    // and comments are exactly what this codebase keeps finding insufficient.
+    let { holdersAfter } = await* observeReserve();
     if (holdersAfter > 0) {
       return #err(#ordersOutstanding({
         holders = holdersAfter;
@@ -4111,7 +4115,7 @@ persistent actor CyclesGateway {
       let now2 = Time.now();
       if (Recovery.reconcileDue(lastReserveReconcileAttemptNs, now2, reserveReconcileIntervalNs)) {
         lastReserveReconcileAttemptNs := now2;
-        try { ignore await* observeReserve() } catch (e) {
+        try { ignore (await* observeReserve()).observed } catch (e) {
           audit("reserve.observeFailed", "could not read the reserve balance: " # e.message() # " — the floor stands, so the gateway under-sells until the next attempt");
         };
       };

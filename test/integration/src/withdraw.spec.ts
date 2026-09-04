@@ -171,6 +171,11 @@ test('103e — the two interleaving windows, and ⚠️ what this suite CANNOT p
   //   2. the transfer — the floor is decremented SYNCHRONOUSLY before it, so a create
   //      arriving there is refused by `Gate.solvent` for free.
   //
+  // ⚠️ **Rule 1 is now STRUCTURAL rather than reviewed**: `observeReserve` returns the
+  // post-await holder count alongside the `quiet` flag it computes for the same reason,
+  // so the value arrives with the result and there is nothing to forget. Rule 2 — the
+  // decrement before the transfer — still rests on review.
+  //
   // ⚠️ **NEITHER ordering is verified by this suite, and saying so is the point.**
   // Measured, not assumed: with the re-read deleted, and again with the decrement moved
   // after the transfer, every test here still passed. A `pic.tick()` drains the whole
