@@ -299,34 +299,36 @@ export interface Response {
   'upgrade' : [] | [boolean],
   'status_code' : number,
 }
-export type Result = { 'ok' : null } |
-  { 'err' : SetError };
+export type Result = { 'ok' : Withdrawn } |
+  { 'err' : WithdrawError };
 export type Result_1 = { 'ok' : null } |
-  { 'err' : OriginError };
-export type Result_10 = { 'ok' : Order } |
-  { 'err' : string };
+  { 'err' : SetError };
+export type Result_10 = { 'ok' : Entry } |
+  { 'err' : ResolveError };
 export type Result_11 = { 'ok' : Order } |
+  { 'err' : string };
+export type Result_12 = { 'ok' : Order } |
   { 'err' : ProcessOrderError };
-export type Result_12 = { 'ok' : CreatedOrder } |
+export type Result_13 = { 'ok' : CreatedOrder } |
   { 'err' : CreateOrderError };
-export type Result_13 = { 'ok' : null } |
+export type Result_14 = { 'ok' : null } |
   { 'err' : Reason };
 export type Result_2 = { 'ok' : null } |
-  { 'err' : IntervalError };
+  { 'err' : OriginError };
 export type Result_3 = { 'ok' : null } |
-  { 'err' : ConfigError };
+  { 'err' : IntervalError };
 export type Result_4 = { 'ok' : null } |
-  { 'err' : ConfigError__1 };
+  { 'err' : ConfigError };
 export type Result_5 = { 'ok' : null } |
-  { 'err' : string };
+  { 'err' : ConfigError__1 };
 export type Result_6 = { 'ok' : null } |
-  { 'err' : ConfigError__2 };
-export type Result_7 = { 'ok' : null } |
-  { 'err' : ValidateError };
-export type Result_8 = { 'ok' : bigint } |
   { 'err' : string };
-export type Result_9 = { 'ok' : Entry } |
-  { 'err' : ResolveError };
+export type Result_7 = { 'ok' : null } |
+  { 'err' : ConfigError__2 };
+export type Result_8 = { 'ok' : null } |
+  { 'err' : ValidateError };
+export type Result_9 = { 'ok' : bigint } |
+  { 'err' : string };
 export type SetError = { 'tooShort' : { 'min' : bigint, 'size' : bigint } };
 export interface Status {
   'setAtNs' : [] | [bigint],
@@ -357,6 +359,17 @@ export type ValidateError = {
   } |
   { 'zeroUsdCents' : string } |
   { 'emptyTierId' : null };
+export type WithdrawError = {
+    'belowLedgerFee' : { 'fee' : bigint, 'floor' : bigint }
+  } |
+  { 'transferFailed' : string } |
+  { 'ordersOutstanding' : { 'holders' : bigint, 'promised' : bigint } } |
+  { 'nothingToWithdraw' : null };
+export interface Withdrawn {
+  'to' : Account,
+  'debited' : bigint,
+  'withdrawn' : bigint,
+}
 /**
  * / Fully on-chain cycles gateway — composition root.
  * /
@@ -378,7 +391,7 @@ export interface _SERVICE {
    * / Only reachable from a pre-delivery money-bearing state. A `#created` order
    * / has taken no money and needs no decision; a `#delivered` one is done.
    */
-  'abandon_order' : ActorMethod<[OrderId, string], Result_10>,
+  'abandon_order' : ActorMethod<[OrderId, string], Result_11>,
   /**
    * / Grant the CASES tier to a principal (controller only, audited).
    * /
@@ -390,12 +403,12 @@ export interface _SERVICE {
    * / (`cli.id.ai`), which is not this app, so the grant would sit on a principal the
    * / admin never sees.
    */
-  'add_admin' : ActorMethod<[Principal], Result_5>,
+  'add_admin' : ActorMethod<[Principal], Result_6>,
   /**
    * / Allow a principal to buy while this gateway accepts free test payments
    * / (controller only, audited).
    */
-  'add_allowed_buyer' : ActorMethod<[Principal], Result_5>,
+  'add_allowed_buyer' : ActorMethod<[Principal], Result_6>,
   /**
    * / Open-obligation depth, public.
    * /
@@ -524,8 +537,8 @@ export interface _SERVICE {
    * / `reserve_status` already publishes. Answered for the *calling* principal,
    * / so the open-order cap it reports is the caller's own.
    */
-  'can_purchase' : ActorMethod<[bigint], Result_13>,
-  'cancel_order' : ActorMethod<[OrderId], Result_10>,
+  'can_purchase' : ActorMethod<[bigint], Result_14>,
+  'cancel_order' : ActorMethod<[OrderId], Result_11>,
   /**
    * / Public — the frontend renders the amount tiles from this. There is no link
    * / to render: the canister creates a session per order (#33).
@@ -552,7 +565,7 @@ export interface _SERVICE {
    * / favour passes through and they keep the extra cycles. The guard can only
    * / ever protect the buyer. `null` opts out entirely.
    */
-  'create_order' : ActorMethod<[Amount, Destination, [] | [bigint]], Result_12>,
+  'create_order' : ActorMethod<[Amount, Destination, [] | [bigint]], Result_13>,
   /**
    * / §5.2 liveness observability, public (operational transparency, same stance as
    * / `reserve_status`): cadence + last completed timer sweep. A null or stale
@@ -665,7 +678,7 @@ export interface _SERVICE {
    * / whose buyer just paid would strand a real payment. Let the webhook (or the sweep)
    * / settle it on Stripe's answer.
    */
-  'expire_order' : ActorMethod<[OrderId], Result_10>,
+  'expire_order' : ActorMethod<[OrderId], Result_11>,
   /**
    * / §2 query authz: `caller == order.owner`, null otherwise — existence is
    * / not revealed to non-owners. Anonymous callers own nothing by
@@ -891,7 +904,7 @@ export interface _SERVICE {
    * / nothing (#37) and a refresh loop would be permanent state growth driven by a
    * / caller. An admin kick is audited — it is an ops action on someone else's order.
    */
-  'process_order' : ActorMethod<[OrderId], Result_11>,
+  'process_order' : ActorMethod<[OrderId], Result_12>,
   /**
    * / Batch pre-purchase quote, public.
    * /
@@ -932,7 +945,7 @@ export interface _SERVICE {
    * / transfer was issued (rule 2), and this call is the confirmation that the
    * / assumption was right.
    */
-  'record_delivered' : ActorMethod<[OrderId, bigint], Result_10>,
+  'record_delivered' : ActorMethod<[OrderId, bigint], Result_11>,
   /**
    * / Run the reconcile now rather than waiting for the daily one (admin, §7).
    * /
@@ -1011,7 +1024,7 @@ export interface _SERVICE {
   /**
    * / Revoke the CASES tier (controller only, audited).
    */
-  'remove_admin' : ActorMethod<[Principal], Result_5>,
+  'remove_admin' : ActorMethod<[Principal], Result_6>,
   /**
    * / Revoke a buyer's allowance (controller only, audited).
    * /
@@ -1021,7 +1034,7 @@ export interface _SERVICE {
    * / so, because "revoked the last buyer" and "the gateway stopped selling" are
    * / the same event and an operator should not have to connect them later.
    */
-  'remove_allowed_buyer' : ActorMethod<[Principal], Result_5>,
+  'remove_allowed_buyer' : ActorMethod<[Principal], Result_6>,
   /**
    * / Reserve solvency and order counters, public (#30 PR-B).
    * /
@@ -1045,6 +1058,7 @@ export interface _SERVICE {
       'totalOrders' : bigint,
       'tallySaturations' : bigint,
       'paidIntentsIndexed' : bigint,
+      'promiseHolders' : bigint,
       'reserveFloor' : bigint,
       'reserveAccount' : Account,
       'reserveObservedAtNs' : [] | [bigint],
@@ -1057,7 +1071,7 @@ export interface _SERVICE {
       'expiredOrders' : bigint,
     }
   >,
-  'resolve_orphan' : ActorMethod<[bigint], Result_9>,
+  'resolve_orphan' : ActorMethod<[bigint], Result_10>,
   /**
    * / Manual resolution (§4.1/§7) — the operator marking an obligation settled after
    * / acting off-chain: a refund issued in the Stripe Dashboard, or a delivery whose
@@ -1085,7 +1099,7 @@ export interface _SERVICE {
    * / references so the operator can disambiguate, because declining without a way
    * / through is a dead end rather than a safeguard.
    */
-  'resolve_problem' : ActorMethod<[OrderId, string, [] | [string]], Result_8>,
+  'resolve_problem' : ActorMethod<[OrderId, string, [] | [string]], Result_9>,
   /**
    * / Replace the card presets (§3/§7 — admin, validated atomically: a bad config
    * / never partially applies).
@@ -1096,7 +1110,7 @@ export interface _SERVICE {
    * / nothing — it just shows no tiles. The switch is both Stripe secrets being
    * / provisioned; `railsLive` is where that lives.
    */
-  'set_card_tiers' : ActorMethod<[Array<Tier>], Result_7>,
+  'set_card_tiers' : ActorMethod<[Array<Tier>], Result_8>,
   /**
    * / Tune the delivery timeline (admin, §7).
    * /
@@ -1104,7 +1118,7 @@ export interface _SERVICE {
    * / tell the operator at the moment the decision was already taken, and a
    * / non-positive bound would escalate every order instantly.
    */
-  'set_delivery_config' : ActorMethod<[Config__2], Result_6>,
+  'set_delivery_config' : ActorMethod<[Config__2], Result_7>,
   /**
    * / Declare which Stripe mode this gateway serves (controller only).
    * /
@@ -1119,7 +1133,7 @@ export interface _SERVICE {
    * / payments too. Mutual, so **neither order of operations** reaches the state
    * / that shorts a paying buyer — it is unrepresentable rather than discouraged.
    */
-  'set_expected_livemode' : ActorMethod<[[] | [boolean]], Result_5>,
+  'set_expected_livemode' : ActorMethod<[[] | [boolean]], Result_6>,
   /**
    * / Adjust the admission gate (§7): open-order cap, own-cycles floor,
    * / per-purchase ceiling. Validated atomically — a bad config never partially
@@ -1128,7 +1142,7 @@ export interface _SERVICE {
    * / `set_card_tiers` will reject it and the webhook will refuse to deliver a
    * / payment above the new ceiling.
    */
-  'set_gate_config' : ActorMethod<[Config__1], Result_4>,
+  'set_gate_config' : ActorMethod<[Config__1], Result_5>,
   /**
    * / Adjust pricing params (§7): fee formula, staleness window, delta guard.
    * / Validated atomically — a bad config never partially applies.
@@ -1136,20 +1150,20 @@ export interface _SERVICE {
    * / because each needs context that module cannot see** (#99). All three are
    * / checked before anything is written, so a bad config never partially applies.
    */
-  'set_pricing_config' : ActorMethod<[Config], Result_3>,
+  'set_pricing_config' : ActorMethod<[Config], Result_4>,
   /**
    * / Tune the sweep cadence (admin, §7) — re-arms immediately, no redeploy.
    * / Validated against the §5.1 bound: the cadence must stay well inside
    * / the ledger dedup window or replay loses its safety margin.
    */
-  'set_recovery_interval' : ActorMethod<[bigint], Result_2>,
+  'set_recovery_interval' : ActorMethod<[bigint], Result_3>,
   /**
    * / Provision or rotate the Stripe API key (#33) — admin, mirroring
    * / `set_webhook_secret` in every respect including the provisioning caveat:
    * / the argument transits the TLS-terminating boundary node as plain ingress.
    * / #11 covers vetKeys for encrypted delivery, and now applies to two secrets.
    */
-  'set_stripe_api_key' : ActorMethod<[string], Result>,
+  'set_stripe_api_key' : ActorMethod<[string], Result_1>,
   /**
    * / Set the origin Stripe returns buyers to (#33) — admin.
    * /
@@ -1158,7 +1172,7 @@ export interface _SERVICE {
    * / purchase later. Until a domain is chosen (#40/#23) this is the canister's
    * / own asset origin.
    */
-  'set_stripe_origin' : ActorMethod<[string], Result_1>,
+  'set_stripe_origin' : ActorMethod<[string], Result_2>,
   /**
    * / Provision or rotate the Stripe webhook signing secret (§7). Pass the
    * / full `whsec_...` string from the Stripe dashboard — the whole string,
@@ -1166,7 +1180,7 @@ export interface _SERVICE {
    * / TLS-terminating boundary node as plain ingress (§7 provisioning
    * / exposure); rotate after provisioning over an untrusted path.
    */
-  'set_webhook_secret' : ActorMethod<[string], Result>,
+  'set_webhook_secret' : ActorMethod<[string], Result_1>,
   'stripe_api_key_status' : ActorMethod<[], Status>,
   /**
    * / The origin, readable back because it is not a secret — it is the URL
@@ -1192,6 +1206,30 @@ export interface _SERVICE {
    * / out, even by controllers. `generation` confirms a rotation landed.
    */
   'webhook_secret_status' : ActorMethod<[], Status>,
+  /**
+   * / Return the reserve to the caller, refusing while anything is owed (#103).
+   * /
+   * / ⚠️ **Why this exists at all.** #30 recorded no withdraw lever because *"the app is
+   * / not in production and an over-funded local reserve costs nothing"* — true then, and
+   * / false the moment the reserve is funded on mainnet, where it is real money in a
+   * / ledger account with no way back. Decommissioning, or over-funding once, was a
+   * / permanent loss.
+   * /
+   * / ⚠️ **It grants a controller NO new capability, which is what makes it safe.** A
+   * / controller can install arbitrary code, so they can already move the reserve
+   * / anywhere by upgrading — `Auth.mo`'s tier note says exactly that. There is a cheaper
+   * / existing path too: rotate the webhook secret, sign a completed-session event for an
+   * / order you created, and take delivery having paid nothing. The trust boundary does
+   * / not move; an off-the-books capability becomes **one audited call**, which is more
+   * / visible than a wasm deploy and more visible than a run of forged orders.
+   * /
+   * / ⚠️ **A DECOMMISSIONING lever, not an incident lever, and the guard is why.** During
+   * / a forged-webhook drain the forged orders are open, so this refuses. The evacuation
+   * / path is three steps, not one: rotate the webhook secret (which closes the rail to
+   * / new orders), `abandon_order` the ones in flight (releasing their promises), then
+   * / withdraw. RUNBOOK's suspected-leak section carries that sequence.
+   */
+  'withdraw_reserve' : ActorMethod<[], Result>,
 }
 export declare const idlFactory: IDL.InterfaceFactory;
 export declare const init: (args: { IDL: typeof IDL }) => IDL.Type[];

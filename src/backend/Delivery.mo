@@ -10,11 +10,18 @@
 /// below: `icrc2_approve` and the ledger's `withdraw` are absent, so they cannot be
 /// called. `scripts/test-all.sh` fails the gate on a declaration that widens it.
 ///
-/// ⚠️ **One logical outflow.** `icrc1_transfer` is called twice — the attempt and its
-/// `#BadFee` re-issue of the same intent — and at most one debits: the re-issue runs
-/// only after the ledger definitively refused, and a landed earlier attempt is
-/// deduplicated. `Reserve.mo`'s rules 2 and 3 net to one decrement per execution, so
-/// reading "two call sites" as "two outflows" would double-count every delivery.
+/// ⚠️ **One logical outflow per delivery.** `icrc1_transfer` is called twice — the
+/// attempt and its `#BadFee` re-issue of the same intent — and at most one debits: the
+/// re-issue runs only after the ledger definitively refused, and a landed earlier
+/// attempt is deduplicated. `Reserve.mo`'s rules 2 and 3 net to one decrement per
+/// execution, so reading "two call sites" as "two outflows" would double-count every
+/// delivery.
+///
+/// ⚠️ **A third call site exists and it is a different DESTINATION CLASS, not a third
+/// outflow mechanism**: `Main.withdraw_reserve` (#103) transfers to a controller rather
+/// than to a buyer. `Reserve.mo`'s outflow section names both classes and what bounds
+/// each; `withdrawArgs` below builds its args, and `withdrawMemo` separates the two in
+/// the ledger's own record.
 import Blob "mo:core/Blob";
 import Map "mo:core/Map";
 import Nat "mo:core/Nat";
@@ -54,6 +61,25 @@ module {
   };
 
   public type TransferResult = { #Ok : Nat; #Err : TransferError };
+
+  /// A ledger refusal, rendered for an operator.
+  ///
+  /// ⚠️ Exhaustive, so a new `TransferError` case has to decide here rather than
+  /// arriving as an unexplained failure on a money path.
+  public func transferErrorToText(error : TransferError) : Text {
+    switch (error) {
+      case (#BadFee({ expected_fee })) "BadFee(ledger expects " # expected_fee.toText() # ")";
+      case (#BadBurn({ min_burn_amount })) "BadBurn(min " # min_burn_amount.toText() # ")";
+      case (#InsufficientFunds({ balance })) "InsufficientFunds(balance " # balance.toText() # ")";
+      case (#TooOld) "TooOld";
+      case (#CreatedInFuture({ ledger_time })) "CreatedInFuture(ledger " # ledger_time.toText() # ")";
+      case (#Duplicate({ duplicate_of })) "Duplicate(of block " # duplicate_of.toText() # ")";
+      case (#TemporarilyUnavailable) "TemporarilyUnavailable";
+      case (#GenericError({ error_code; message })) {
+        "GenericError(" # error_code.toText() # ": " # message # ")";
+      };
+    };
+  };
 
 
 
@@ -181,6 +207,38 @@ module {
       created_at_time = ?intent.createdAtTimeNs;
     };
   };
+
+  /// Transfer args for a reserve WITHDRAWAL (#103) — the second destination class.
+  ///
+  /// ⚠️ **This is not a delivery, and the difference is the destination.** Every other
+  /// transfer this canister makes goes to a buyer's own account for an order they paid
+  /// for; this one goes to a controller. `Reserve.mo`'s outflow section names both
+  /// classes and what bounds each.
+  ///
+  /// `created_at_time` is set for the same reason delivery sets it: the ledger
+  /// deduplicates on it, so a retry of the identical withdrawal cannot double-debit.
+  public func withdrawArgs(
+    to : Types.Account,
+    amount : Nat,
+    fee : Nat,
+    nowNs : Int,
+  ) : TransferArg {
+    {
+      from_subaccount = null;
+      to;
+      amount;
+      fee = ?fee;
+      memo = ?withdrawMemo;
+      // Converted here rather than by the caller, so `Nat64` stays in the module that
+      // already owns the ledger's wire types — exactly as `intent` does above.
+      created_at_time = ?Nat64.fromIntWrap(nowNs);
+    };
+  };
+
+  /// Distinguishes a withdrawal from a delivery in the ledger's own record, so the
+  /// two destination classes are separable by someone reading the ledger rather than
+  /// our audit log.
+  public let withdrawMemo : Blob = "cyclepay:withdraw";
 
   /// What the buyer receives: the locked quantity less the ledger's transfer fee.
   ///

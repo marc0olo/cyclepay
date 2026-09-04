@@ -894,6 +894,7 @@ privileges — any controller can do any of this):
 | `record_delivered` | record that an escalated order's cycles DID reach the buyer, evidenced by the ledger block |
 | `pending_deliveries` | every delivery with work outstanding right now, self-clearing — the live view the 2 h queue alert cannot give |
 | `refresh_reserve` | observe the reserve balance now — **required after a top-up**, or the gateway sells nothing |
+| `withdraw_reserve` | return the reserve to the caller (#103). ⚠️ Controller only, and the **second destination class** for the one outflow — every other transfer goes to a buyer's own account for an order they paid for. Refused while **any** promise-holder exists, so nothing can be owed to a buyer. A **decommissioning** lever, not an incident one: during a forged-webhook drain the forged orders are open, so it refuses — see RUNBOOK's three-step evacuation |
 | `recount_orders` | run the tally reconcile now instead of waiting for the daily one. ⚠️ **Not a stronger repair than the timer's** — same bounded pass, same one-directional rule, so a recount *below* the maintained tally is refused rather than adopted (#63). No force flag, deliberately |
 | `admin_order` / `admin_orders` | read any order, and list with filters + a cursor — the controller-side counterpart to the owner-scoped reads below (#38) |
 | `admin_receipt` | one order's full receipt for any principal. An **update**, not a query, so the read is audited (#38) |

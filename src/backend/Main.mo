@@ -2001,10 +2001,11 @@ persistent actor CyclesGateway {
 
   /// #30 PR-B — a maintained **lower bound** on the reserve's ledger balance.
   ///
-  /// Sound because the balance can only fall when we transfer out (no allowance
-  /// exists for anyone to pull from the account, and `withdraw` is owner-only and
-  /// never called) and can only rise on a top-up we cannot see until we look. So
-  /// every unobserved change is in our favour. `Reserve.mo`'s floor section has the
+  /// Sound because the balance can only fall when we transfer out — delivery to a
+  /// buyer, or `withdraw_reserve` to a controller (#103), both of which decrement this
+  /// floor before issuing; no allowance exists for anyone to pull from the account, and
+  /// the ledger's own `withdraw` is owner-only and not declared. It can only rise on a
+  /// top-up we cannot see until we look. So every unobserved change is in our favour. `Reserve.mo`'s floor section has the
   /// full argument and the three maintenance rules.
   ///
   /// ⚠️ It is a bound, not the balance. The **actual** reserve is a public account
@@ -2878,6 +2879,130 @@ persistent actor CyclesGateway {
     await* observeReserve();
   };
 
+  /// Return the reserve to the caller, refusing while anything is owed (#103).
+  ///
+  /// ⚠️ **Why this exists at all.** #30 recorded no withdraw lever because *"the app is
+  /// not in production and an over-funded local reserve costs nothing"* — true then, and
+  /// false the moment the reserve is funded on mainnet, where it is real money in a
+  /// ledger account with no way back. Decommissioning, or over-funding once, was a
+  /// permanent loss.
+  ///
+  /// ⚠️ **It grants a controller NO new capability, which is what makes it safe.** A
+  /// controller can install arbitrary code, so they can already move the reserve
+  /// anywhere by upgrading — `Auth.mo`'s tier note says exactly that. There is a cheaper
+  /// existing path too: rotate the webhook secret, sign a completed-session event for an
+  /// order you created, and take delivery having paid nothing. The trust boundary does
+  /// not move; an off-the-books capability becomes **one audited call**, which is more
+  /// visible than a wasm deploy and more visible than a run of forged orders.
+  ///
+  /// ⚠️ **A DECOMMISSIONING lever, not an incident lever, and the guard is why.** During
+  /// a forged-webhook drain the forged orders are open, so this refuses. The evacuation
+  /// path is three steps, not one: rotate the webhook secret (which closes the rail to
+  /// new orders), `abandon_order` the ones in flight (releasing their promises), then
+  /// withdraw. RUNBOOK's suspected-leak section carries that sequence.
+  public shared ({ caller }) func withdraw_reserve() : async Result.Result<Withdrawn, WithdrawError> {
+    requireController(caller);
+    // ⚠️ **The INDEX, not the tally.** `Reserve.applyDelta` clamps a release to zero
+    // when the tally has diverged low, so `promised` can read 0 while promise-holders
+    // still exist — the state `tallySaturations` exists to surface. Guarding on the
+    // tally would permit a withdraw with live orders outstanding, which is the one
+    // thing this guard is for. `promiseHolderCount` is `Set.size`: O(1), and set
+    // emptiness cannot saturate.
+    //
+    // The index is authoritative here for the same reason `reconcileBounded` treats it
+    // that way — a recount over `promiseHolders` is exact if the index is complete and
+    // too low otherwise, never too high.
+    let holders = Orders.promiseHolderCount(orderStore);
+    if (holders > 0) {
+      return #err(#ordersOutstanding({ holders; promised = Orders.promised(orderStore) }));
+    };
+    // Observe before withdrawing, or an unobserved top-up is stranded — which defeats
+    // the lever. ⚠️ **And an empty promise index is exactly what makes the observation
+    // adoptable**: `unsettledDeliveries` is a walk over `promiseHolders` (#69), so no
+    // holders means no unsettled deliveries means the reconcile's quiet window holds.
+    // The withdraw guard and the observation guard are the same structure, so they
+    // cannot disagree.
+    ignore await* observeReserve();
+    let debited = reserveFloor;
+    let fee = cyclesLedgerFee;
+    if (debited == 0) return #err(#nothingToWithdraw);
+    // Draining means transferring `debited - fee`, because the ledger charges the fee
+    // on top. Below the fee there is nothing recoverable at all.
+    let ?amount = Delivery.deliverableCycles(debited, fee) else {
+      return #err(#belowLedgerFee({ floor = debited; fee }));
+    };
+    let to : Types.Account = { owner = caller; subaccount = null };
+    // ── Rule 2 (§5.4): the floor drops when the transfer is ISSUED ──────────
+    //
+    // ⚠️ **Synchronously, before the await, or this is a TOCTOU on the money path.**
+    // `create_order` interleaves on the await below: it would check `Gate.solvent`
+    // against a reserve being emptied, admit an order, and leave a buyer paying for
+    // cycles that are gone. With the floor at zero first, every concurrent create
+    // refuses for free — no new lock and no new lever.
+    //
+    // ⚠️ **By `amount + fee`, not `amount`** — the figure actually debited, the same
+    // correction §5.4 carries for delivery. Decrementing by the transferred amount
+    // alone would leave the floor overstating the account by exactly the fee, and the
+    // next observation would report an unexplained shortfall: the one signal that is
+    // supposed to mean an outflow we did not cause.
+    reserveFloor := Reserve.floorAfterOutflow(reserveFloor, amount + fee);
+    outflowsIssued += 1;
+    let result = try {
+      await cyclesLedger.icrc1_transfer(
+        Delivery.withdrawArgs(to, amount, fee, Time.now())
+      );
+    } catch (e) {
+      // ⚠️ The floor is NOT credited back. A call that failed without a reply says
+      // nothing about whether the ledger acted, and rule 2 exists to be pessimistic
+      // about exactly that; a reconcile heals it if the transfer never happened.
+      auditAdmin(caller, "reserve.withdrawFailed", "to " # to.owner.toText() # ": " # e.message());
+      return #err(#transferFailed(e.message()));
+    };
+    switch (result) {
+      case (#Ok(block)) {
+        // ⚠️ The destination is IN the audit line, not just the fact of a withdrawal.
+        // A controller destination is the new class in this whole design, so a record
+        // that omits it is weaker than it looks.
+        auditAdmin(
+          caller,
+          "reserve.withdrawn",
+          amount.toText() # " cycles to " # to.owner.toText()
+          # " (debited " # (amount + fee).toText() # " incl. fee " # fee.toText()
+          # ", block " # block.toText() # ")",
+        );
+        #ok({ withdrawn = amount; debited = amount + fee; to });
+      };
+      case (#Err(e)) {
+        let detail = Delivery.transferErrorToText(e);
+        auditAdmin(caller, "reserve.withdrawRefused", "to " # to.owner.toText() # ": " # detail);
+        #err(#transferFailed(detail));
+      };
+    };
+  };
+
+  /// What a withdrawal moved. `debited` is `withdrawn + fee` — the figure the reserve
+  /// actually fell by, which is what reconciles against the ledger.
+  public type Withdrawn = { withdrawn : Nat; debited : Nat; to : Types.Account };
+
+  public type WithdrawError = {
+    /// Cycles are still owed: at least one order is non-terminal, so a buyer either
+    /// holds a payable session or has paid and not been delivered.
+    ///
+    /// ⚠️ Carries the holder COUNT and the tally so an operator knows what to clear —
+    /// a bare refusal on a decommissioning lever is a dead end. The two figures
+    /// disagreeing is itself the signal that the tally has saturated.
+    #ordersOutstanding : { holders : Nat; promised : Nat };
+    /// The observed floor is zero. Not an error state, but distinguishable from a
+    /// successful withdrawal of nothing.
+    #nothingToWithdraw;
+    /// The whole floor would not clear the ledger's flat deposit fee, so there is
+    /// nothing recoverable.
+    #belowLedgerFee : { floor : Nat; fee : Nat };
+    /// The ledger refused or the call failed. ⚠️ The floor has already been decremented
+    /// and is deliberately not restored — see the call site.
+    #transferFailed : Text;
+  };
+
   /// Reserve solvency and order counters, public (#30 PR-B).
   ///
   /// `reserveFloor` − `promisedTotal` = `availableToSell`, in one answer, so "the ledger
@@ -2896,6 +3021,18 @@ persistent actor CyclesGateway {
   public query func reserve_status() : async {
     reserveFloor : Nat;
     promisedTotal : Nat;
+    /// How many orders still hold a promise — `promiseHolders.size()`, O(1).
+    ///
+    /// ⚠️ **This is what `withdraw_reserve` guards on, so it must be readable before
+    /// calling it** (#103): the refusal names a count an operator then has to go and
+    /// find, and a decommissioning lever that cannot tell you what is blocking it is a
+    /// dead end.
+    ///
+    /// ⚠️ **It is also the direct read on a saturated tally.** `promisedTotal` clamps to
+    /// zero on release when it has diverged low, so `promisedTotal == 0` with
+    /// `promiseHolders > 0` is exactly the state `tallySaturations` counts — visible here
+    /// side by side rather than inferred from a counter.
+    promiseHolders : Nat;
     availableToSell : Nat;
     reserveObservedAtNs : ?Int;
     cyclesLedgerFee : Nat;
@@ -2910,6 +3047,7 @@ persistent actor CyclesGateway {
   } {
     {
       reserveFloor;
+      promiseHolders = Orders.promiseHolderCount(orderStore);
       /// Null means **no reconcile has ever run**, which is also why a freshly
       /// installed canister sells nothing until the operator refreshes: the floor
       /// starts at zero and only a look at the ledger can raise it.
