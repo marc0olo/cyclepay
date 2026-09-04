@@ -576,7 +576,7 @@ used to deliver silently.
 
 | # | Scenario | How | Expect |
 |---|---|---|---|
-| D1 | Dashboard resend | Dashboard → the event → "Resend" | `200 duplicate event`; **no** second credit |
+| D1 | Resend one event | `stripe events resend <evt_...>` — the event id is on the Dashboard's event page. ⚠️ **NOT the Dashboard's own "Resend"**: that acts on a delivery attempt to a *registered* endpoint, and this plan's only transport is `stripe listen`, which is a live subscription with no endpoint and no attempt record. On a sandbox run there is no Resend button to find. (RUNBOOK §6's Dashboard instruction is for a deployment, which does have a registered endpoint.) | `200 duplicate event`; **no** second credit |
 | D2 | Two genuine payments | pay the same link twice (two intents) | second → `#duplicate` |
 | D3 | Same intent, new event id | resend after >7 days if you can arrange it, else trust D1 | `200 already credited`, `stripe.replayedAfterPruning` |
 | D4 | Credited elsewhere | not reachable through the app since #33 — nothing but the webhook writes an attribution. To force it, deliver a hand-made `completed` for order Y carrying an intent already credited to order X | nothing delivered; `stripe.creditedElsewhere` + a `#duplicate` naming both |
