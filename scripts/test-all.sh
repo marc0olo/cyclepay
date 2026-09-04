@@ -6,8 +6,14 @@
 # point.
 #
 # Usage:
-#   scripts/test-all.sh              # everything
+#   scripts/test-all.sh              # everything (what CI runs; the only claimable run)
 #   scripts/test-all.sh --fast       # skip the PocketIC suite (~30 s vs ~2 min)
+#   scripts/test-all.sh --changed    # only the lanes the change can have broken
+#   scripts/test-all.sh --changed=REF  # ...against REF instead of origin/main
+#
+# --changed is a LOCAL LOOP tool. It prints what it skipped and its summary says the
+# run is partial, because a green tick over a lane that did not run is the failure
+# this whole script exists to prevent. CI passes neither flag.
 #
 # The PocketIC suite needs a 4 KiB-page host (macOS, or x86_64 Linux). It cannot
 # run in arm64 Linux guests with 16 KiB pages — the replica hard-asserts 4096-byte
@@ -21,9 +27,13 @@
 set -Eeuo pipefail
 
 FAST=0
+CHANGED=0
+BASE="origin/main"
 for arg in "$@"; do
   case "$arg" in
     --fast) FAST=1 ;;
+    --changed) CHANGED=1 ;;
+    --changed=*) CHANGED=1; BASE="${arg#--changed=}" ;;
     -h | --help)
       sed -n '2,17p' "$0" | sed 's|^# \{0,1\}||'
       exit 0
@@ -66,8 +76,86 @@ git diff HEAD --quiet 2>/dev/null || DIRTY=" · uncommitted changes"
 printf '\033[1mgate\033[0m on \033[1m%s\033[0m%s\n' "$BRANCH" "$DIRTY"
 
 step=0
+# ── Lanes: don't run what the change cannot have broken ─────────────────────────
+#
+# ⚠️ **Measured before it was built, because the obvious answer was wrong.** The
+# complaint that prompted this was "the UI tests make the loop slow". They do not:
+# on a full green run the frontend suite is 2.4 s and the browser specs 10.2 s, out
+# of minutes. The time is in the Motoko compile (`mops check`, `mops build`) and the
+# PocketIC suite at 61 s. Skipping the UI tests would have saved 3% and deleted the
+# only coverage of the cascade.
+#
+# So the lever is which LANE runs at all, not which suite gets deleted.
+#
+# ⚠️ **The default is still everything, and CI must never pass `--changed`.** This is
+# a local-loop tool. The safe direction is baked into `lane_active`: a path this does
+# not recognise activates EVERY lane, and a step name it does not recognise RUNS.
+# Both failure modes cost time rather than coverage.
+LANES=""
+lane_on() { case " $LANES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+lane_add() { lane_on "$1" || LANES="$LANES $1"; }
+
+detect_lanes() {
+  # Staged, unstaged, untracked AND committed-since-base: a lane must activate for
+  # work already committed on the branch, or a second run after a commit would skip
+  # the very thing that was changed.
+  local files
+  files="$(
+    { git diff --name-only HEAD 2>/dev/null
+      git diff --name-only --cached 2>/dev/null
+      git ls-files --others --exclude-standard 2>/dev/null
+      git diff --name-only "$BASE...HEAD" 2>/dev/null
+    } | sort -u
+  )"
+  if [ -z "$files" ]; then
+    printf '   nothing changed against %s — running the frontend lane only as a smoke check\n' "$BASE"
+    lane_add frontend
+    return
+  fi
+  local f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in
+      # ⚠️ A backend change regenerates the .did, which the frontend bindings and the
+      # integration bindings are both generated FROM. So it activates everything —
+      # there is no such thing as a backend-only change here.
+      src/backend/*|test/*.mo|mops.toml|mops.lock|deployed/*) lane_add backend; lane_add frontend; lane_add browser; lane_add integration; lane_add checks ;;
+      src/frontend/*) lane_add frontend; lane_add browser; lane_add checks ;;
+      test/browser/*) lane_add browser ;;
+      test/integration/*) lane_add integration ;;
+      scripts/*|docs/*|*.md|.github/*) lane_add checks ;;
+      # Unrecognised: activate everything. Costs time, never coverage.
+      *) lane_add backend; lane_add frontend; lane_add browser; lane_add integration; lane_add checks ;;
+    esac
+  done <<EOF
+$files
+EOF
+}
+
+# Which lane each step belongs to, by name. ⚠️ **An unlisted name RUNS** — renaming a
+# step must not silently drop it from the gate.
+lane_active() {
+  [ "$CHANGED" -eq 0 ] && return 0
+  case "$1" in
+    "mops check"*|"mops test"*|"mops build"*) lane_on backend ;;
+    "docs match"*|"every config setter"*|"admin tiers"*|"docs/DESIGN.md"*|"the reserve account"*) lane_on checks || lane_on backend ;;
+    "integration bindings"*|"integration typecheck"*|"PocketIC"*) lane_on integration ;;
+    "frontend build"*|"frontend typecheck"*|"frontend tests"*|"no frontend export"*|"no test hooks"*) lane_on frontend ;;
+    "brand lint"*) lane_on frontend || lane_on checks ;;
+    "browser specs"*) lane_on browser ;;
+    *) return 0 ;;
+  esac
+}
+
+SKIPPED_STEPS=""
 run() {
   step=$((step + 1))
+  if ! lane_active "$1"; then
+    printf '\n\033[2m── %d. %s — SKIPPED (--changed)\033[0m\n' "$step" "$1"
+    SKIPPED_STEPS="$SKIPPED_STEPS
+  - $1"
+    return 0
+  fi
   printf '\n\033[1m── %d. %s\033[0m\n' "$step" "$1"
   shift
   "$@"
@@ -114,6 +202,12 @@ command -v mops >/dev/null 2>&1 || {
 # unquoted heredoc that runs its own body has bitten twice in three days — once destroying
 # a GitHub issue body, once turning `stripe-dev.sh`'s closing notes into an `icp deploy`.
 # Fixed syntax, so it is enforceable here rather than written down again; see the script.
+if [ "$CHANGED" -eq 1 ]; then
+  printf '\n\033[1mlane detection (--changed against %s)\033[0m\n' "$BASE"
+  detect_lanes
+  printf '   active lanes:%s\n' "${LANES:- none}"
+fi
+
 run "shell — no unquoted heredoc runs its own body" scripts/check-heredocs.sh
 
 # ⚠️ **This also runs the STABLE-COMPATIBILITY check now (#90), because mops.toml
@@ -200,6 +294,7 @@ run "frontend tests" npm --prefix src/frontend run test
 # exist, and dead-code elimination is a compiler behaviour rather than a promise —
 # so it is checked here against the bytes that would be deployed.
 step=$((step + 1))
+if lane_active "no test hooks in the shipping bundle"; then
 printf '\n\033[1m── %d. %s\033[0m\n' "$step" "no test hooks in the shipping bundle"
 if grep -rl "__cyclepayFixtures" src/frontend/dist >/dev/null 2>&1; then
   printf '\n\033[31m✗ the fixture hook is present in src/frontend/dist — a fixtures build was left in the shipping output\033[0m\n' >&2
@@ -207,6 +302,11 @@ if grep -rl "__cyclepayFixtures" src/frontend/dist >/dev/null 2>&1; then
   exit 1
 fi
 printf '   dist/ carries no fixture hook\n'
+else
+  printf '\n\033[2m── %d. no test hooks in the shipping bundle — SKIPPED (--changed)\033[0m\n' "$step"
+  SKIPPED_STEPS="$SKIPPED_STEPS
+  - no test hooks in the shipping bundle"
+fi
 
 # The reserve floor's premise, enforced rather than asserted (#30 PR-B).
 #
@@ -227,7 +327,11 @@ printf '\n\033[1m── %d. %s\033[0m\n' "$step" "the reserve account has exactl
 # — widens what this canister can call without touching the service type in
 # Delivery.mo. The threat is "a declaration exists", so the search is for declarations,
 # everywhere.
-if grep -rnE '(icrc2_approve|icrc2_transfer_from|withdraw)[[:space:]]*:' src/backend/ >/dev/null 2>&1; then
+if ! lane_active "the reserve account has exactly one outflow"; then
+  printf '\n\033[2m── %d. the reserve account has exactly one outflow — SKIPPED (--changed)\033[0m\n' "$step"
+  SKIPPED_STEPS="$SKIPPED_STEPS
+  - the reserve account has exactly one outflow"
+elif grep -rnE '(icrc2_approve|icrc2_transfer_from|withdraw)[[:space:]]*:' src/backend/ >/dev/null 2>&1; then
   printf '\n\033[31m✗ a second way to move the reserve is declared somewhere in src/backend\033[0m\n' >&2
   grep -rnE '(icrc2_approve|icrc2_transfer_from|withdraw)[[:space:]]*:' src/backend/ >&2
   printf '\n  The reserve floor is a LOWER BOUND only while `icrc1_transfer` is the only\n' >&2
@@ -235,8 +339,9 @@ if grep -rnE '(icrc2_approve|icrc2_transfer_from|withdraw)[[:space:]]*:' src/bac
   printf '  see, so the gate admits sales against cycles that already left — silently.\n' >&2
   printf '  Read the floor section in src/backend/Reserve.mo before proceeding.\n' >&2
   exit 1
+else
+  printf '   icrc1_transfer is the only declared way out, tree-wide\n'
 fi
-printf '   icrc1_transfer is the only declared way out, tree-wide\n'
 
 # Brand guidelines: the mechanically checkable rules only (banned characters,
 # banned vocabulary, hardcoded colour, the no-auto-dark rule). Typography and
@@ -264,6 +369,12 @@ fi
 
 if [ "$FAST" -eq 1 ]; then
   printf '\n\033[31m⚠ skipped the PocketIC suite (--fast)\033[0m\n' >&2
+elif ! lane_active "PocketIC integration suite"; then
+  step=$((step + 2))
+  printf '\n\033[2m── integration typecheck + PocketIC suite — SKIPPED (--changed)\033[0m\n'
+  SKIPPED_STEPS="$SKIPPED_STEPS
+  - integration typecheck
+  - PocketIC integration suite"
 else
   # `npm test` and never `npx vitest run`: the latter skips pretest, which fetches
   # the sha256-pinned wasms and rebuilds the backend — so it would silently test a
@@ -290,7 +401,15 @@ run "vocabulary the change ADDS (advisory — read the hits)" python3 scripts/sw
 # is an explicit request so it still exits 0, but a green tick after an admitted
 # skip is the thing that lets "the gate is green" be quoted for a run that never
 # checked the go-live bar.
-if [ "$FAST" -eq 1 ]; then
+if [ -n "$SKIPPED_STEPS" ]; then
+  # ⚠️ **Never "passed" for a partial run.** The whole point of one entry point is
+  # that "the gate is green" means something; a lane-filtered run has to say so in
+  # the same breath, and name what it did not check rather than leaving the reader to
+  # infer it from a flag they may not have seen.
+  printf '\n\033[31m✗ gate PARTIAL (--changed against %s): the steps that ran passed.\033[0m\n' "$BASE" >&2
+  printf '\033[31m  NOT verified:%s\033[0m\n' "$SKIPPED_STEPS" >&2
+  printf '\033[31m  Run scripts/test-all.sh with no flags before claiming the gate is green.\033[0m\n' >&2
+elif [ "$FAST" -eq 1 ]; then
   printf '\n\033[31m✗ gate INCOMPLETE: everything except the PocketIC suite passed.\033[0m\n' >&2
   printf '\033[31m  The go-live bar is UNVERIFIED. Run without --fast before claiming it.\033[0m\n' >&2
 else
