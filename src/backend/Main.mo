@@ -1452,6 +1452,40 @@ persistent actor CyclesGateway {
     // Cross-check against live tiers: lowering the ceiling under a registered tier
     // would leave it sellable but unpayable (see Gate.ConfigError.tierAboveCeiling).
     let tierPrices = cardTiers.map(func(t) = (t.id, t.usdCents));
+    // ⚠️ **The divisor's ceiling is a function of the FLOOR, so lowering the floor
+    // has to be checked against the divisor** (#99). `set_pricing_config` refuses a
+    // divisor the current minimum purchase cannot survive; without this, the same
+    // configuration is reachable from the other direction — set the divisor at a
+    // $10 floor, then drop the floor to $1. Mutual, like the livemode guard, so
+    // neither order of operations gets there.
+    //
+    // Checked before anything writes, and only when a divisor is actually set, so a
+    // production gateway's gate config is unaffected.
+    if (pricingConfig.divisor > 1) {
+      switch (
+        Pricing.divisorDeliverable(
+          rateCache,
+          { feeBps = pricingConfig.feeBps; feeFixedCents = pricingConfig.feeFixedCents },
+          config.minPurchaseUsdCents,
+          pricingConfig.divisor,
+          cyclesLedgerFee,
+        )
+      ) {
+        case (#err(#divisorUndeliverable({ scaledCycles; ledgerFee }))) {
+          return #err(#floorUndeliverableAtDivisor({
+            minUsdCents = config.minPurchaseUsdCents;
+            divisor = pricingConfig.divisor;
+            scaledCycles;
+            ledgerFee;
+          }));
+        };
+        // The other `Pricing.ConfigError` cases cannot arise here: the divisor is
+        // already stored, so it is neither zero nor mode-conflicted, and the two
+        // order/mode cases are decided by `set_pricing_config` alone.
+        case (#err(_)) {};
+        case (#ok) {};
+      };
+    };
     switch (Gate.validateConfig(config, tierPrices)) {
       case (#ok) {
         gateConfig := config;

@@ -42,6 +42,7 @@ import {
   STEPS,
   checkReceipt,
   createOrderErrorMessage,
+  type GateReason,
   estimateLine,
   type FeeConfig,
   feeBreakdown,
@@ -856,6 +857,10 @@ function setIdentity(next: Identity | null): void {
   showAuthError(null);
   renderAuth();
   renderSubmitGate();
+  // ⚠️ Re-probed on every identity change, because the allow-list is per PRINCIPAL:
+  // the answer at load was about the anonymous caller (exempt from the list), and it
+  // is only after signing in that "may this buyer buy" has a subject.
+  void refreshEligibility();
   // Visibility belongs to renderView, which is what makes history a VIEW rather
   // than a section pinned to the bottom of whatever else is on screen. Signing in
   // reveals the header link, not the table.
@@ -875,6 +880,40 @@ function setIdentity(next: Identity | null): void {
     // screen because the order view no longer owns anything to show.
     renderView();
   }
+}
+
+/// Ask the gate whether this caller can buy AT ALL, and say so before they pick an
+/// amount (#99 2b).
+///
+/// ⚠️ **Probed at the gate's own minimum, not at a chosen amount**, because the point
+/// is to catch refusals that no amount can fix. That is also why only two reasons are
+/// rendered: `#buyerNotAllowed` and `#unboundedGiveaway` are invariant for this caller
+/// until an operator acts, while `#reserveShort`, `#canisterCyclesLow` and the amount
+/// bounds are volatile or amount-dependent and belong at the moment of the attempt —
+/// see `loadMarket`.
+///
+/// ⚠️ **Failures leave the notice hidden.** A network error is not evidence that this
+/// buyer is barred, and a banner saying so would be worse than the refusal it guesses at.
+async function refreshEligibility(): Promise<void> {
+  const bounds = amountBounds;
+  if (bounds === null) return;
+  let reason: GateReason | null = null;
+  try {
+    const answer = await backend.can_purchase(bounds.min);
+    reason = "err" in answer ? answer.err : null;
+  } catch {
+    show("gate-notice", false);
+    return;
+  }
+  const invariant =
+    reason !== null
+    && (reason.__kind__ === "buyerNotAllowed" || reason.__kind__ === "unboundedGiveaway");
+  if (!invariant || reason === null) {
+    show("gate-notice", false);
+    return;
+  }
+  el("gate-notice").textContent = gateReasonMessage(reason);
+  show("gate-notice", true);
 }
 
 /// The two trust figures, and they are not the same kind of claim.
@@ -944,11 +983,19 @@ async function loadMarket(): Promise<void> {
   // will actually price at. A buyer can query either canister and check us.
   renderRateLine();
 
-  // ⚠️ **No pre-emptive "we might not be able to serve you" banner.** The gateway
-  // either admits an order or refuses it with a reason the buyer can act on
-  // (`#reserveShort` names how much is available, so a smaller amount may work), and
-  // that refusal arrives at the moment it is true. A banner rendered from a
-  // separately-polled figure would be stale by construction.
+  // ⚠️ **No pre-emptive "we might not be able to serve you" banner, and that rule
+  // still stands** for every VOLATILE, amount-dependent refusal: the gateway either
+  // admits an order or refuses it with a reason the buyer can act on (`#reserveShort`
+  // names how much is available, so a smaller amount may work), and that refusal
+  // arrives at the moment it is true. A banner rendered from a separately-polled
+  // figure would be stale by construction.
+  //
+  // ⚠️ **`#buyerNotAllowed` and `#unboundedGiveaway` are the exception, because they
+  // are neither volatile nor amount-dependent** (#99). An uninvited tester is refused
+  // for EVERY amount, always, until an operator acts — so there is no fresher moment
+  // for that refusal to arrive at, and letting them pick an amount, sign in and press
+  // Buy to discover it is the outcome the pre-emptive rule was never about.
+  // `refreshEligibility` renders those two and stays silent on everything else.
   show("gate-notice", false);
 
   // The gate's own bounds, so the custom-amount field can say "between $10 and
@@ -968,7 +1015,11 @@ async function loadMarket(): Promise<void> {
   // Concurrent, and deliberately so: they hit different canisters and neither
   // reads the other's answer. Sequencing them would add a round trip to the
   // first paint of the only screen a visitor sees.
-  await Promise.all([refreshTierQuotes(), refreshDepositFee()]);
+  //
+  // ⚠️ `refreshEligibility` joins the group rather than running before it: it reads
+  // `amountBounds`, which is only set above. Called earlier it read `null` and
+  // returned without probing — which is how it silently did nothing.
+  await Promise.all([refreshTierQuotes(), refreshDepositFee(), refreshEligibility()]);
   renderTiers();
   renderDestinationNote();
   renderSubmitGate();

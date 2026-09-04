@@ -36,6 +36,14 @@ export type ConfigError = { 'zeroRateSources' : null } |
   { 'divisorNeedsSandbox' : { 'expectLivemode' : [] | [boolean] } } |
   { 'zeroRateDelta' : null };
 export type ConfigError__1 = {
+    'floorUndeliverableAtDivisor' : {
+      'ledgerFee' : bigint,
+      'divisor' : bigint,
+      'scaledCycles' : bigint,
+      'minUsdCents' : bigint,
+    }
+  } |
+  {
     'tierBelowFloor' : {
       'tierId' : string,
       'usdCents' : bigint,

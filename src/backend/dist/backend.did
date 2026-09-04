@@ -444,6 +444,13 @@ type ConfigError__1 =
                         maxUsdCents: nat;
                         minUsdCents: nat;
                       };
+   floorUndeliverableAtDivisor:
+    record {
+      divisor: nat;
+      ledgerFee: nat;
+      minUsdCents: nat;
+      scaledCycles: nat;
+    };
    tierAboveCeiling: record {
                        maxUsdCents: nat;
                        tierId: text;

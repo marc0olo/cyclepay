@@ -317,6 +317,12 @@ export const idlFactory = ({ IDL }) => {
   });
   const Result_6 = IDL.Variant({ 'ok' : IDL.Null, 'err' : ConfigError__2 });
   const ConfigError__1 = IDL.Variant({
+    'floorUndeliverableAtDivisor' : IDL.Record({
+      'ledgerFee' : IDL.Nat,
+      'divisor' : IDL.Nat,
+      'scaledCycles' : IDL.Nat,
+      'minUsdCents' : IDL.Nat,
+    }),
     'tierBelowFloor' : IDL.Record({
       'tierId' : IDL.Text,
       'usdCents' : IDL.Nat,

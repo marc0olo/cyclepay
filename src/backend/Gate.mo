@@ -124,6 +124,27 @@ module {
     /// A floor above the ceiling admits nothing at all — the rail would refuse
     /// every amount, which is a config typo rather than a policy.
     #floorAboveCeiling : { minUsdCents : Nat; maxUsdCents : Nat };
+    /// ⚠️ **The mirror of `Pricing.ConfigError.divisorUndeliverable`, and it exists
+    /// because the divisor's ceiling is a function of the FLOOR** (#99).
+    ///
+    /// `set_pricing_config` refuses a divisor that scales the current minimum
+    /// purchase below what the cycles-ledger deposit fee eats. Without this check,
+    /// lowering the floor afterwards reaches the same configuration from the other
+    /// direction: accept divisor 1,000 at a $10 floor, then drop the floor to $1,
+    /// and every minimum-amount purchase starts refusing with a message about the
+    /// simulation scale rather than about the change the operator just made.
+    ///
+    /// Not unsafe — `Pricing.quote` still refuses at creation, so no money moves
+    /// and nothing stalls. It is the *learns at set time rather than through a
+    /// buyer's refusal* property that goes missing, in the one direction that is
+    /// reachable. Mutual, like the livemode guard, so neither order of operations
+    /// gets there.
+    #floorUndeliverableAtDivisor : {
+      minUsdCents : Nat;
+      divisor : Nat;
+      scaledCycles : Nat;
+      ledgerFee : Nat;
+    };
   };
 
   /// `tierPrices` is every registered card tier, so the ceiling cannot be lowered
@@ -215,6 +236,13 @@ module {
       };
       case (#floorAboveCeiling({ minUsdCents; maxUsdCents })) {
         "floorAboveCeiling(" # minUsdCents.toText() # ">" # maxUsdCents.toText() # ")";
+      };
+      case (#floorUndeliverableAtDivisor({ minUsdCents; divisor; scaledCycles; ledgerFee })) {
+        // Names the divisor as well as the floor, because the operator changed the
+        // floor and the constraint comes from the other setting.
+        "floorUndeliverableAtDivisor(a " # minUsdCents.toText() # "-cent floor at divisor "
+        # divisor.toText() # " scales to " # scaledCycles.toText()
+        # " cycles, which does not clear the " # ledgerFee.toText() # " ledger fee with headroom)";
       };
     };
   };

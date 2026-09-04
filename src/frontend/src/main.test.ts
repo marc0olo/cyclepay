@@ -48,6 +48,8 @@ const state = {
   /// The simulation divisor `pricing_status` reports (#99). `1n` is production,
   /// which is what almost every test wants; the simulation-mode tests set it.
   divisor: 1n,
+  /// What `can_purchase` refuses with, or null for admitted (#99).
+  canPurchase: null as { __kind__: string } | null,
   quote: {
     usdCents: TIER_CENTS,
     feeCents: 45n,
@@ -210,6 +212,15 @@ const untypedOrderStubs = {
 
 const typedStubs = {
   card_tiers: async () => state.tiers,
+  /// #99: what the gate answers for this caller at the minimum purchase. `null` is
+  /// "admitted", which is what almost every test wants.
+  // ⚠️ The `as unknown as` hop, for the reason documented on `fixtures.ts`'s
+  // boundary: a ternary over the two Result arms widens to a union with optional
+  // `undefined` members, so neither direction of assignability holds.
+  can_purchase: (async () =>
+    state.canPurchase === null
+      ? { ok: null }
+      : { err: state.canPurchase }) as unknown as Backend["can_purchase"],
   lifecycle_config: async () => ({
     gate: {
       maxOpenOrdersPerPrincipal: 1n,
@@ -383,6 +394,7 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   state.divisor = 1n;
+  state.canPurchase = null;
   state.quote = { usdCents: TIER_CENTS, feeCents: 45n, netCents: 455n, cycles: TIER_CYCLES };
   state.transferFee = 100_000_000n;
   state.transferFeeError = false;
@@ -1576,5 +1588,55 @@ describe("simulation mode says so, in words (#99 2h)", () => {
     expect(cap.hidden).toBe(false);
     expect(cap.textContent).toMatch(/real reserve/i);
     expect(cap.textContent).toContain("1000");
+  });
+});
+
+describe("the gate notice: refusals no amount can fix (#99 2b)", () => {
+  test("an admitted caller sees no notice", async () => {
+    await mount();
+    expect(document.getElementById("gate-notice")!.hidden).toBe(true);
+  });
+
+  test("⚠️ an uninvited tester is told BEFORE picking an amount", async () => {
+    // The criterion this exists for: an unlisted buyer used to pick an amount, sign
+    // in and press Buy to find out.
+    state.canPurchase = { __kind__: "buyerNotAllowed", buyerNotAllowed: null } as never;
+    await mount();
+    const notice = document.getElementById("gate-notice")!;
+    expect(notice.hidden).toBe(false);
+    expect(notice.textContent).toMatch(/testers/i);
+  });
+
+  test("the faucet refusal is shown too, and does NOT mention an allow-list", async () => {
+    // Every buyer is refused in that state, so naming a list would send this one
+    // asking for access that would not help.
+    state.canPurchase = {
+      __kind__: "unboundedGiveaway",
+      unboundedGiveaway: { reserveFloor: 1n },
+    } as never;
+    await mount();
+    const notice = document.getElementById("gate-notice")!;
+    expect(notice.hidden).toBe(false);
+    expect(notice.textContent).not.toMatch(/allow|invited|tester/i);
+  });
+
+  test("⚠️ a VOLATILE refusal is NOT pre-announced — the existing rule still holds", async () => {
+    // `#reserveShort` names how much is available, so a smaller amount may work, and
+    // the figure would be stale by construction in a banner. It belongs at the moment
+    // of the attempt. This is the assertion that stops the notice growing into the
+    // pre-emptive banner this codebase deliberately does not have.
+    state.canPurchase = {
+      __kind__: "reserveShort",
+      reserveShort: { requested: 2n, available: 1n },
+    } as never;
+    await mount();
+    expect(document.getElementById("gate-notice")!.hidden).toBe(true);
+
+    state.canPurchase = {
+      __kind__: "canisterCyclesLow",
+      canisterCyclesLow: { balance: 1n, min: 2n },
+    } as never;
+    await mount();
+    expect(document.getElementById("gate-notice")!.hidden).toBe(true);
   });
 });

@@ -176,6 +176,51 @@ test('99d — an undeliverable divisor is refused at set time, and writes nothin
   expect((await pricingConfig()).divisor).toBe(DIVISOR);
 });
 
+test('99d2 — lowering the FLOOR is checked against the divisor, symmetrically', async () => {
+  const { gate } = await gw.asAnon.lifecycle_config();
+  expect((await pricingConfig()).divisor).toBe(DIVISOR);
+
+  // ⚠️ **The divisor's ceiling is a function of the floor, so the guard has to run
+  // in both setters or the configuration is reachable from the other direction.**
+  // `set_pricing_config` refuses a divisor the current minimum cannot survive; this
+  // is the mirror. Without it: accept the divisor at this floor, then lower the
+  // floor, and every minimum-amount purchase refuses with a message about the
+  // simulation scale rather than about the change the operator just made.
+  //
+  // Not unsafe — `Pricing.quote` still refuses at creation, so no money moves and
+  // nothing stalls. What goes missing is learning at set time instead of through a
+  // buyer's refusal.
+  // 42c, because the trip point depends on the divisor and this suite's is pinned at
+  // 100 (see DIVISOR). At 42c the net is 10c, which scales to 769 M — under the
+  // ten-times-the-fee headroom. ⚠️ At the recommended divisor of 1,000 the trip point
+  // is a far more plausible floor: $1 itself is refused there, which is exactly the
+  // coupling this guard makes visible at set time.
+  //
+  // Not lower than 42c: below ~30c the gross does not clear the STRIPE fee, so
+  // `divisorDeliverable` correctly declines to judge (there is no net to scale) and
+  // returns #ok. A first draft used 2c, passed for that reason, and proved nothing.
+  const err = expectErr(
+    await gw.asAdmin.set_gate_config({ ...gate, minPurchaseUsdCents: 42n }),
+  ) as {
+    floorUndeliverableAtDivisor: {
+      minUsdCents: bigint; divisor: bigint; scaledCycles: bigint; ledgerFee: bigint;
+    };
+  };
+  expect(err.floorUndeliverableAtDivisor.divisor).toBe(DIVISOR);
+  expect(err.floorUndeliverableAtDivisor.minUsdCents).toBe(42n);
+  expect(err.floorUndeliverableAtDivisor.scaledCycles).toBe(769_230_769n);
+  expect(err.floorUndeliverableAtDivisor.ledgerFee).toBe(CYCLES_LEDGER_FEE);
+
+  // Refused before anything writes: the floor is untouched.
+  expect((await gw.asAnon.lifecycle_config()).gate.minPurchaseUsdCents)
+    .toBe(gate.minPurchaseUsdCents);
+
+  // ⚠️ And the guard does not fire on a floor the divisor CAN survive, or it would
+  // be an unconditional refusal wearing a reason. Non-vacuous both ways.
+  expectOk(await gw.asAdmin.set_gate_config({ ...gate, minPurchaseUsdCents: 60n }));
+  expectOk(await gw.asAdmin.set_gate_config({ ...gate }));
+});
+
 test('99e — a scaled order delivers the scaled quantity, exactly', async () => {
   expect((await pricingConfig()).divisor).toBe(DIVISOR);
 
