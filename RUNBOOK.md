@@ -198,17 +198,43 @@ it once the endpoint is confirmed working.
 
 1. ⚠️ **Know what you can and cannot do.** A forged webhook drains at most what the
    reserve holds — that balance **is** the blast radius, and there is no cap or pause
-   lever standing behind it. There is deliberately no `withdraw_reserve`, so the
-   reserve cannot be emptied defensively either.
+   lever standing behind it.
+
+   ⚠️ **`withdraw_reserve` exists (#103) but it will REFUSE during an incident, and
+   that is by design.** It is guarded on there being no promise-holder at all, and a
+   forged drain means forged orders are open — so the guard fires. Do not plan an
+   incident around a one-call evacuation; there isn't one.
 
    What you *can* do immediately is stop **new** orders while you roll the secret: the
    rail is live only while both Stripe secrets are provisioned, so rotating the webhook
    secret (step 2) closes it until the new one is set. Forged orders already in flight
    will deliver.
 
-   The standing control is therefore a sizing decision made **before** an incident:
-   keep the reserve at what you are willing to lose between detection and rotation.
-   `reserve_status.availableToSell` is that figure.
+   **The evacuation path is three steps, and step 2 cannot be forced:**
+
+   1. Rotate the webhook secret (step 2 below). This closes the rail to new orders.
+   2. Clear every promise-holder. `reserve_status.promiseHolders` is the count, and it
+      must reach **zero**.
+   3. `withdraw_reserve`, which now passes its guard.
+
+   ⚠️ **Step 2 is a wait, not a lever, for anything with a delivery in flight.**
+   `abandon_order` refuses a paid order whose delivery is outstanding — *"whether its
+   cycles moved is not yet known — abandoning it now would refund a buyer who may
+   already hold them"* — so a forged order that is already being delivered cannot be
+   cleared on demand. It has to settle, or reach `needsReview` at the ~24 h dedup
+   window where the ledger is the source of truth. `process_order` re-drives a stalled
+   delivery; `pending_deliveries` is the live view.
+
+   ⚠️ **There is deliberately no lever that releases a promise over an unresolved
+   delivery**, and that is the same property the withdraw guard has: the reserve does
+   not move while any buyer's fate is unknown. Plan the incident around this, not
+   around a one-call evacuation.
+
+   Until `promiseHolders` reads zero the reserve stays where it is.
+
+   The standing control is therefore still a sizing decision made **before** an
+   incident: keep the reserve at what you are willing to lose between detection and
+   rotation. `reserve_status.availableToSell` is that figure.
 2. Roll the secret in Stripe + `set_webhook_secret` (steps above).
 3. Reconcile: compare `audit_log` / order store against the Stripe
    Dashboard's event log; forged "payments" have no matching Stripe
@@ -470,9 +496,18 @@ sell anyway. The ledger charges its fee **on top of** the amount,
 so a delivery moves the reserve by exactly `lockedCycles` — which is why #30's
 promise tally has no separate fee term.
 
-⚠️ **Nothing creates cycles here.** Refills are `icp cycles transfer` from
-outside, and there is deliberately no `withdraw_reserve` (#30 rejected it: the app
-is not in production and an over-funded local reserve costs nothing).
+⚠️ **Nothing creates cycles here.** Refills are `icp cycles transfer` from outside.
+
+⚠️ **`withdraw_reserve` exists as of #103, and #30's reason for rejecting it had
+expired.** That reason was *"the app is not in production and an over-funded local
+reserve costs nothing"* — true then, and false the moment the reserve is funded on
+mainnet, where it is real money in a ledger account with nothing to retrieve it.
+
+It is controller-only and refused while **any** promise-holder exists, so nothing can
+be owed to a buyer when it runs. It grants a controller no capability they lack: a
+controller can already move the reserve by upgrading the canister. ⚠️ **A
+decommissioning lever, not an incident one** — see the three-step evacuation in the
+suspected-leak section above.
 
 ⚠️ **THREE balances, and confusing them is the most common local-setup failure.**
 The reserve is not special — it is just the backend canister's account on the cycles

@@ -105,16 +105,38 @@ module {
 
   // ── The reserve floor (§5.4) ─────────────────────────────────────────────
   //
-  // ⚠️ **ONE outflow, and the enforcement is the actor type, not this comment.**
+  // ⚠️ **TWO destination classes, ONE outflow mechanism, and the enforcement is the
+  // actor type rather than this comment.**
+  //
+  // The mechanism is `icrc1_transfer` and nothing else. What #103 added is a second
+  // *destination class*, so the phrase "one outflow" must not be read as "one kind of
+  // recipient" — and the gate step greps declared METHODS, not destinations, so nothing
+  // else would catch that drift:
+  //
+  //   1. **Delivery** — to a buyer's own account, for an order they paid for. Bounded by
+  //      the order's `lockedCycles`, which the gate admitted against the floor, and by
+  //      §2's own-destination rule: `create_order` refuses any destination but the
+  //      caller's.
+  //   2. **Withdrawal** (#103) — to a controller. Bounded by there being **no
+  //      promise-holder at all**, so nothing is owed to any buyer, and it grants a
+  //      controller no capability they lack: a controller can already move the reserve
+  //      by upgrading this canister. `Main.withdraw_reserve` carries the full argument.
+  //
+  // Both decrement the floor by `amount + fee` before the transfer is issued (rule 2),
+  // so the accounting below is identical for either class.
+  //
+  // ⚠️ **ONE outflow mechanism, and the enforcement is the actor type, not this comment.**
   // `Delivery.CyclesLedgerService` declares exactly `icrc1_transfer` and
   // `icrc1_balance_of`. `icrc2_approve` and the ledger's `withdraw` are absent, so this
   // canister *cannot* call them — not "does not plan to". A gate step greps the backend
   // for such declarations, so adding one has to be deliberate.
   //
-  // ⚠️ **A grep finds `icrc1_transfer` at two call sites, and that is still ONE outflow.**
-  // They are the attempt and its `#BadFee` re-issue of the same intent; at most one can
-  // debit, and the ledger deduplicates if an earlier attempt landed. Reading "two call
-  // sites" as "two outflows" and adding a second decrement double-counts every delivery.
+  // ⚠️ **A grep finds `icrc1_transfer` at THREE call sites, and that is still one outflow
+  // per execution.** Two of them are a delivery's attempt and its `#BadFee` re-issue of
+  // the same intent; at most one can debit, and the ledger deduplicates if an earlier
+  // attempt landed. Reading "two call sites" as "two outflows" and adding a second
+  // decrement double-counts every delivery. The third is `withdraw_reserve` (#103), a
+  // separate execution entirely, which decrements once by the figure it debits.
 
   /// What the ledger should read after an outflow, at minimum. Every term is observed or
   /// derivable, so the reconcile can recompute it and report drift.

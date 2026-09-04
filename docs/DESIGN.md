@@ -196,7 +196,18 @@ The admission gate decides against a **maintained lower bound** on the reserve b
 synchronously, with no ledger read. That is sound because of one asymmetry in who can move
 the balance:
 
-- it can only **decrease** when we transfer out, and there is exactly one such outflow;
+- it can only **decrease** when we transfer out, and every such outflow decrements this
+  floor by `amount + fee` **before** issuing its transfer. ⚠️ **There are TWO destination
+  classes, and "one outflow" is about the mechanism, not the recipient** — `icrc1_transfer`
+  is the only way out, but it serves both:
+  - **delivery**, to a buyer's own account, bounded by that order's promise, which the gate
+    already admitted against this floor;
+  - **withdrawal** (#103), to a controller, guarded on there being **no promise-holder at
+    all** — so nothing can be owed to a buyer when it runs — and refused again after its
+    own balance read, because the floor is still full across that await.
+
+  The asymmetry holds for either class for the same reason: the decrement precedes the
+  transfer, so the floor is never optimistic about a transfer in flight.
 - it can only **increase** when someone tops the account up, which we cannot see without
   asking — and which is always positive.
 

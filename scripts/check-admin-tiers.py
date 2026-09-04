@@ -72,6 +72,14 @@ TIERS = {
     "remove_allowed_buyer": "controller",
     "allowed_buyers": "controller",         # the list bounds a giveaway; who is on it is a
                                             # controller's business, like `admins`
+    "withdraw_reserve": "controller",       # ⚠️ a money-OUT edge, and the second
+                                            # destination class in the whole design.
+                                            # Controller-only not as a hardening choice
+                                            # but because it grants no new capability at
+                                            # that tier: a controller can already move
+                                            # the reserve by upgrading the canister
+                                            # (Auth.mo's tier note). Granting it to the
+                                            # admin tier WOULD be new authority (#103)
     # ── CASES: an admin resolves one case ───────────────────────────────────────────────
     "abandon_order": "admin",               # irreversible RECORD on one identified order,
                                             # audited under the actor's own principal, and

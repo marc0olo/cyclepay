@@ -80,8 +80,8 @@ export const idlFactory = ({ IDL }) => {
     'lockedCycles' : IDL.Nat,
     'stripeSessionId' : IDL.Opt(IDL.Text),
   });
-  const Result_10 = IDL.Variant({ 'ok' : Order, 'err' : IDL.Text });
-  const Result_5 = IDL.Variant({ 'ok' : IDL.Null, 'err' : IDL.Text });
+  const Result_11 = IDL.Variant({ 'ok' : Order, 'err' : IDL.Text });
+  const Result_6 = IDL.Variant({ 'ok' : IDL.Null, 'err' : IDL.Text });
   const Filter = IDL.Record({
     'withUnresolvedProblems' : IDL.Bool,
     'status' : IDL.Opt(OrderStatus),
@@ -134,7 +134,7 @@ export const idlFactory = ({ IDL }) => {
     }),
     'tooManyOpenOrders' : IDL.Record({ 'max' : IDL.Nat, 'open' : IDL.Nat }),
   });
-  const Result_13 = IDL.Variant({ 'ok' : IDL.Null, 'err' : Reason });
+  const Result_14 = IDL.Variant({ 'ok' : IDL.Null, 'err' : Reason });
   const Tier = IDL.Record({ 'id' : IDL.Text, 'usdCents' : IDL.Nat });
   const Amount = IDL.Variant({ 'custom' : IDL.Nat, 'tier' : IDL.Text });
   const CreatedOrder = IDL.Record({ 'order' : Order });
@@ -155,7 +155,7 @@ export const idlFactory = ({ IDL }) => {
     'reserveUnavailable' : IDL.Null,
     'destinationNotOwned' : IDL.Null,
   });
-  const Result_12 = IDL.Variant({
+  const Result_13 = IDL.Variant({
     'ok' : CreatedOrder,
     'err' : CreateOrderError,
   });
@@ -258,7 +258,7 @@ export const idlFactory = ({ IDL }) => {
     'notFound' : IDL.Null,
     'inFlight' : IDL.Null,
   });
-  const Result_11 = IDL.Variant({ 'ok' : Order, 'err' : ProcessOrderError });
+  const Result_12 = IDL.Variant({ 'ok' : Order, 'err' : ProcessOrderError });
   const QuotePreview = IDL.Record({
     'netCents' : IDL.Opt(IDL.Nat),
     'feeCents' : IDL.Nat,
@@ -289,8 +289,8 @@ export const idlFactory = ({ IDL }) => {
     'alreadyResolved' : IDL.Nat,
     'notFound' : IDL.Nat,
   });
-  const Result_9 = IDL.Variant({ 'ok' : Entry, 'err' : ResolveError });
-  const Result_8 = IDL.Variant({ 'ok' : IDL.Nat, 'err' : IDL.Text });
+  const Result_10 = IDL.Variant({ 'ok' : Entry, 'err' : ResolveError });
+  const Result_9 = IDL.Variant({ 'ok' : IDL.Nat, 'err' : IDL.Text });
   const ValidateError = IDL.Variant({
     'belowFloor' : IDL.Record({
       'id' : IDL.Text,
@@ -306,7 +306,7 @@ export const idlFactory = ({ IDL }) => {
     'zeroUsdCents' : IDL.Text,
     'emptyTierId' : IDL.Null,
   });
-  const Result_7 = IDL.Variant({ 'ok' : IDL.Null, 'err' : ValidateError });
+  const Result_8 = IDL.Variant({ 'ok' : IDL.Null, 'err' : ValidateError });
   const ConfigError__2 = IDL.Variant({
     'nonPositiveMaxHold' : IDL.Null,
     'alertNotBeforeMaxHold' : IDL.Record({
@@ -315,7 +315,7 @@ export const idlFactory = ({ IDL }) => {
     }),
     'nonPositiveAlertAfter' : IDL.Null,
   });
-  const Result_6 = IDL.Variant({ 'ok' : IDL.Null, 'err' : ConfigError__2 });
+  const Result_7 = IDL.Variant({ 'ok' : IDL.Null, 'err' : ConfigError__2 });
   const ConfigError__1 = IDL.Variant({
     'floorUndeliverableAtDivisor' : IDL.Record({
       'ledgerFee' : IDL.Nat,
@@ -340,7 +340,7 @@ export const idlFactory = ({ IDL }) => {
     }),
     'zeroPurchaseCeiling' : IDL.Null,
   });
-  const Result_4 = IDL.Variant({ 'ok' : IDL.Null, 'err' : ConfigError__1 });
+  const Result_5 = IDL.Variant({ 'ok' : IDL.Null, 'err' : ConfigError__1 });
   const ConfigError = IDL.Variant({
     'zeroRateSources' : IDL.Null,
     'feeBpsTooHigh' : IDL.Null,
@@ -360,22 +360,22 @@ export const idlFactory = ({ IDL }) => {
     }),
     'zeroRateDelta' : IDL.Null,
   });
-  const Result_3 = IDL.Variant({ 'ok' : IDL.Null, 'err' : ConfigError });
+  const Result_4 = IDL.Variant({ 'ok' : IDL.Null, 'err' : ConfigError });
   const IntervalError = IDL.Variant({
     'zeroInterval' : IDL.Null,
     'intervalTooLong' : IDL.Record({ 'maxNs' : IDL.Nat }),
   });
-  const Result_2 = IDL.Variant({ 'ok' : IDL.Null, 'err' : IntervalError });
+  const Result_3 = IDL.Variant({ 'ok' : IDL.Null, 'err' : IntervalError });
   const SetError = IDL.Variant({
     'tooShort' : IDL.Record({ 'min' : IDL.Nat, 'size' : IDL.Nat }),
   });
-  const Result = IDL.Variant({ 'ok' : IDL.Null, 'err' : SetError });
+  const Result_1 = IDL.Variant({ 'ok' : IDL.Null, 'err' : SetError });
   const OriginError = IDL.Variant({
     'hasQueryOrFragment' : IDL.Null,
     'empty' : IDL.Null,
     'notHttps' : IDL.Null,
   });
-  const Result_1 = IDL.Variant({ 'ok' : IDL.Null, 'err' : OriginError });
+  const Result_2 = IDL.Variant({ 'ok' : IDL.Null, 'err' : OriginError });
   const Status = IDL.Record({
     'setAtNs' : IDL.Opt(IDL.Int),
     'generation' : IDL.Nat,
@@ -387,11 +387,26 @@ export const idlFactory = ({ IDL }) => {
     'body' : IDL.Vec(IDL.Nat8),
     'headers' : IDL.Vec(HttpHeader),
   });
+  const Withdrawn = IDL.Record({
+    'to' : Account,
+    'debited' : IDL.Nat,
+    'withdrawn' : IDL.Nat,
+  });
+  const WithdrawError = IDL.Variant({
+    'belowLedgerFee' : IDL.Record({ 'fee' : IDL.Nat, 'floor' : IDL.Nat }),
+    'transferFailed' : IDL.Text,
+    'ordersOutstanding' : IDL.Record({
+      'holders' : IDL.Nat,
+      'promised' : IDL.Nat,
+    }),
+    'nothingToWithdraw' : IDL.Null,
+  });
+  const Result = IDL.Variant({ 'ok' : Withdrawn, 'err' : WithdrawError });
   
   return IDL.Service({
-    'abandon_order' : IDL.Func([OrderId, IDL.Text], [Result_10], []),
-    'add_admin' : IDL.Func([IDL.Principal], [Result_5], []),
-    'add_allowed_buyer' : IDL.Func([IDL.Principal], [Result_5], []),
+    'abandon_order' : IDL.Func([OrderId, IDL.Text], [Result_11], []),
+    'add_admin' : IDL.Func([IDL.Principal], [Result_6], []),
+    'add_allowed_buyer' : IDL.Func([IDL.Principal], [Result_6], []),
     'admin_order' : IDL.Func([OrderId], [IDL.Opt(Order)], []),
     'admin_orders' : IDL.Func(
         [Filter, IDL.Opt(OrderId), IDL.Nat],
@@ -413,12 +428,12 @@ export const idlFactory = ({ IDL }) => {
     'admins' : IDL.Func([], [IDL.Vec(IDL.Principal)], ['query']),
     'allowed_buyers' : IDL.Func([], [IDL.Vec(IDL.Principal)], ['query']),
     'audit_log' : IDL.Func([IDL.Opt(IDL.Nat), IDL.Nat], [Page__2], ['query']),
-    'can_purchase' : IDL.Func([IDL.Nat], [Result_13], ['query']),
-    'cancel_order' : IDL.Func([OrderId], [Result_10], []),
+    'can_purchase' : IDL.Func([IDL.Nat], [Result_14], ['query']),
+    'cancel_order' : IDL.Func([OrderId], [Result_11], []),
     'card_tiers' : IDL.Func([], [IDL.Vec(Tier)], ['query']),
     'create_order' : IDL.Func(
         [Amount, Destination, IDL.Opt(IDL.Nat)],
-        [Result_12],
+        [Result_13],
         [],
       ),
     'cycles_status' : IDL.Func(
@@ -456,7 +471,7 @@ export const idlFactory = ({ IDL }) => {
         ['query'],
       ),
     'expected_livemode' : IDL.Func([], [IDL.Opt(IDL.Bool)], ['query']),
-    'expire_order' : IDL.Func([OrderId], [Result_10], []),
+    'expire_order' : IDL.Func([OrderId], [Result_11], []),
     'get_order' : IDL.Func([OrderId], [IDL.Opt(Order)], ['query']),
     'health' : IDL.Func([], [IDL.Bool], ['query']),
     'http_request' : IDL.Func([Request], [Response], ['query']),
@@ -520,10 +535,10 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Record({ 'orders' : IDL.Nat, 'unresolved' : IDL.Nat })],
         ['query'],
       ),
-    'process_order' : IDL.Func([OrderId], [Result_11], []),
+    'process_order' : IDL.Func([OrderId], [Result_12], []),
     'quote_previews' : IDL.Func([IDL.Vec(IDL.Nat)], [QuotePreviews], ['query']),
     'receipt' : IDL.Func([OrderId], [IDL.Opt(Receipt)], ['query']),
-    'record_delivered' : IDL.Func([OrderId, IDL.Nat], [Result_10], []),
+    'record_delivered' : IDL.Func([OrderId, IDL.Nat], [Result_11], []),
     'recount_orders' : IDL.Func(
         [],
         [IDL.Vec(IDL.Tuple(IDL.Text, IDL.Nat))],
@@ -582,8 +597,8 @@ export const idlFactory = ({ IDL }) => {
         ],
         ['query'],
       ),
-    'remove_admin' : IDL.Func([IDL.Principal], [Result_5], []),
-    'remove_allowed_buyer' : IDL.Func([IDL.Principal], [Result_5], []),
+    'remove_admin' : IDL.Func([IDL.Principal], [Result_6], []),
+    'remove_allowed_buyer' : IDL.Func([IDL.Principal], [Result_6], []),
     'reserve_status' : IDL.Func(
         [],
         [
@@ -591,6 +606,7 @@ export const idlFactory = ({ IDL }) => {
             'totalOrders' : IDL.Nat,
             'tallySaturations' : IDL.Nat,
             'paidIntentsIndexed' : IDL.Nat,
+            'promiseHolders' : IDL.Nat,
             'reserveFloor' : IDL.Nat,
             'reserveAccount' : Account,
             'reserveObservedAtNs' : IDL.Opt(IDL.Int),
@@ -605,21 +621,21 @@ export const idlFactory = ({ IDL }) => {
         ],
         ['query'],
       ),
-    'resolve_orphan' : IDL.Func([IDL.Nat], [Result_9], []),
+    'resolve_orphan' : IDL.Func([IDL.Nat], [Result_10], []),
     'resolve_problem' : IDL.Func(
         [OrderId, IDL.Text, IDL.Opt(IDL.Text)],
-        [Result_8],
+        [Result_9],
         [],
       ),
-    'set_card_tiers' : IDL.Func([IDL.Vec(Tier)], [Result_7], []),
-    'set_delivery_config' : IDL.Func([Config__2], [Result_6], []),
-    'set_expected_livemode' : IDL.Func([IDL.Opt(IDL.Bool)], [Result_5], []),
-    'set_gate_config' : IDL.Func([Config__1], [Result_4], []),
-    'set_pricing_config' : IDL.Func([Config], [Result_3], []),
-    'set_recovery_interval' : IDL.Func([IDL.Nat], [Result_2], []),
-    'set_stripe_api_key' : IDL.Func([IDL.Text], [Result], []),
-    'set_stripe_origin' : IDL.Func([IDL.Text], [Result_1], []),
-    'set_webhook_secret' : IDL.Func([IDL.Text], [Result], []),
+    'set_card_tiers' : IDL.Func([IDL.Vec(Tier)], [Result_8], []),
+    'set_delivery_config' : IDL.Func([Config__2], [Result_7], []),
+    'set_expected_livemode' : IDL.Func([IDL.Opt(IDL.Bool)], [Result_6], []),
+    'set_gate_config' : IDL.Func([Config__1], [Result_5], []),
+    'set_pricing_config' : IDL.Func([Config], [Result_4], []),
+    'set_recovery_interval' : IDL.Func([IDL.Nat], [Result_3], []),
+    'set_stripe_api_key' : IDL.Func([IDL.Text], [Result_1], []),
+    'set_stripe_origin' : IDL.Func([IDL.Text], [Result_2], []),
+    'set_webhook_secret' : IDL.Func([IDL.Text], [Result_1], []),
     'stripe_api_key_status' : IDL.Func([], [Status], ['query']),
     'stripe_origin' : IDL.Func([], [IDL.Opt(IDL.Text)], ['query']),
     'transform_stripe_response' : IDL.Func(
@@ -633,6 +649,7 @@ export const idlFactory = ({ IDL }) => {
         ['query'],
       ),
     'webhook_secret_status' : IDL.Func([], [Status], ['query']),
+    'withdraw_reserve' : IDL.Func([], [Result], []),
   });
 };
 
