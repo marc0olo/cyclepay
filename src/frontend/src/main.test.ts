@@ -1605,6 +1605,11 @@ describe("the gate notice: refusals no amount can fix (#99 2b)", () => {
     const notice = document.getElementById("gate-notice")!;
     expect(notice.hidden).toBe(false);
     expect(notice.textContent).toMatch(/testers/i);
+    // ⚠️ **No "nothing was charged" before an attempt.** True after one and
+    // misleading before: it implies a purchase was tried and reversed, at exactly the
+    // moment the page is trying to be clear. `gateReasonMessage` keeps that clause for
+    // the after-attempt path; this notice reads from a separate table.
+    expect(notice.textContent).not.toMatch(/charged/i);
   });
 
   test("the faucet refusal is shown too, and does NOT mention an allow-list", async () => {
@@ -1618,6 +1623,11 @@ describe("the gate notice: refusals no amount can fix (#99 2b)", () => {
     const notice = document.getElementById("gate-notice")!;
     expect(notice.hidden).toBe(false);
     expect(notice.textContent).not.toMatch(/allow|invited|tester/i);
+    expect(notice.textContent).not.toMatch(/charged/i);
+    // ⚠️ And no operator vocabulary: a buyer must not be told the gateway is an
+    // "unbounded giveaway" or read a description of the faucet. brand-lint checks
+    // characters, not audience, so nothing else catches this.
+    expect(notice.textContent).not.toMatch(/giveaway|faucet|reserve|allow-list/i);
   });
 
   test("⚠️ a VOLATILE refusal is NOT pre-announced — the existing rule still holds", async () => {

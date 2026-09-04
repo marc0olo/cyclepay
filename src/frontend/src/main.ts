@@ -42,6 +42,7 @@ import {
   STEPS,
   checkReceipt,
   createOrderErrorMessage,
+  PRE_ANNOUNCED_GATE_REASONS,
   type GateReason,
   estimateLine,
   type FeeConfig,
@@ -905,14 +906,17 @@ async function refreshEligibility(): Promise<void> {
     show("gate-notice", false);
     return;
   }
-  const invariant =
-    reason !== null
-    && (reason.__kind__ === "buyerNotAllowed" || reason.__kind__ === "unboundedGiveaway");
-  if (!invariant || reason === null) {
+  // ⚠️ **The table is the filter.** Not a hand-written `||` over two tag names beside
+  // a second copy of the same two names in `format.ts` — that pair is the mirror this
+  // repo has removed four times. A key present means the refusal is invariant for this
+  // caller until an operator acts; absent means it belongs at the moment of the
+  // attempt, and this stays silent.
+  const notice = reason === null ? undefined : PRE_ANNOUNCED_GATE_REASONS[reason.__kind__];
+  if (notice === undefined) {
     show("gate-notice", false);
     return;
   }
-  el("gate-notice").textContent = gateReasonMessage(reason);
+  el("gate-notice").textContent = notice;
   show("gate-notice", true);
 }
 

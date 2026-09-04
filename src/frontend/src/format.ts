@@ -424,6 +424,32 @@ export function gateReasonMessage(reason: GateReason): string {
   }
 }
 
+/// The same two refusals, worded for a buyer who has **not attempted anything yet**
+/// (#99 2b).
+///
+/// ⚠️ **Why a second table rather than reusing `gateReasonMessage`: "Nothing was
+/// charged" is true after an attempt and misleading before one.** In a pre-emptive
+/// notice it implies a purchase was tried and reversed, which is confusing at exactly
+/// the moment the page is trying to be clear. Everything else about the copy is
+/// unchanged — neither message names an allow-list to a buyer who cannot act on it,
+/// and neither describes the gateway's misconfiguration in operator vocabulary.
+///
+/// ⚠️ **This table IS the filter.** A key present here means "invariant for this
+/// caller until an operator acts, so pre-announcing it cannot go stale"; absent means
+/// the refusal belongs at the moment of the attempt. `Partial<Record<GateReasonTag,
+/// …>>` keys it on the real Candid tag union, so there is no second hand-written list
+/// of tags for the caller to drift from — the mistake this repo has now removed four
+/// times.
+///
+/// ⚠️ Deliberately NOT extended to `#reserveShort` or `#canisterCyclesLow`: both are
+/// volatile and amount-dependent (a smaller amount may work), so a banner rendered
+/// from them is stale by construction. That is the rule `main.ts`'s `loadMarket`
+/// documents, and this table is the narrow exception to it, not its replacement.
+export const PRE_ANNOUNCED_GATE_REASONS: Partial<Record<GateReason["__kind__"], string>> = {
+  unboundedGiveaway: "This gateway is not accepting purchases right now.",
+  buyerNotAllowed: "This gateway is in testing, and only invited testers can buy.",
+};
+
 /// The `#quoteChanged` refusal, in the buyer's terms. Leads with "nothing was
 /// charged" because that is the first thing someone wants to know when a payment
 /// flow refuses.

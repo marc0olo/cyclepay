@@ -1479,10 +1479,35 @@ persistent actor CyclesGateway {
             ledgerFee;
           }));
         };
-        // The other `Pricing.ConfigError` cases cannot arise here: the divisor is
-        // already stored, so it is neither zero nor mode-conflicted, and the two
-        // order/mode cases are decided by `set_pricing_config` alone.
-        case (#err(_)) {};
+        // ⚠️ **Every other `Pricing.ConfigError` is DROPPED here, and each by name so
+        // the discard is a decision rather than a catch-all.** A bare `case (#err(_))
+        // {}` is the shape this repo has removed four times from the seed script,
+        // where a swallowed reason was the whole defect.
+        //
+        // - `#zeroDivisor` — unreachable: the divisor is already stored, and
+        //   `set_pricing_config` refused zero before storing it.
+        // - `#divisorNeedsSandbox`, `#divisorChangeWithOrders` — not this setter's
+        //   questions. Both are about *changing the divisor*, which is not happening.
+        // - `#divisorUndeliverable` is handled above; it is the only one that is
+        //   about the floor.
+        //
+        // ⚠️ **And `divisorDeliverable` returns `#ok` when the floor is below the
+        // STRIPE fee**, because there is then no net amount to scale and it declines
+        // to judge. That is deliberately NOT refused here: a floor that cannot clear
+        // the processing fee is not a divisor problem, and `Pricing.quote` refuses
+        // such an order at creation with `#unpriceable(#stripeFee)`. Worth knowing,
+        // because a test that used a 2-cent floor passed for exactly this reason
+        // while looking like it exercised the guard.
+        case (#err(#zeroDivisor or #divisorNeedsSandbox(_) or #divisorChangeWithOrders(_))) {};
+        // The five fee/rate cases are `validateConfig`'s, and `divisorDeliverable`
+        // never returns one — it does not look at the fee formula or the rate bounds.
+        // Listed rather than wildcarded so a new `ConfigError` has to decide here too.
+        case (
+          #err(
+            #feeBpsTooHigh or #nonPositiveMaxAge or #maxAgeTooLong(_)
+            or #zeroRateDelta or #zeroRateSources
+          )
+        ) {};
         case (#ok) {};
       };
     };
