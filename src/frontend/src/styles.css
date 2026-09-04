@@ -624,6 +624,20 @@ tbody tr:hover {
   font-size: 0.8125rem;
   color: var(--icp-fg-muted);
 }
+/* The identity and its copy button are one thing; `#auth-area`'s gap separates that
+   pair from Sign out. */
+.identity-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+/* A copy button beside an inline value, not under a command block: the standard
+   `.copy` padding is sized for the latter and overwhelms a header row. */
+.copy-inline {
+  padding: 0.1rem 0.45rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
 
 .site-footer {
   margin-top: var(--space-7);

@@ -807,19 +807,38 @@ function renderAuth(): void {
   const area = el("auth-area");
   area.replaceChildren();
   if (identity) {
+    // ⚠️ **Truncated for width, so the full value needs a way OUT of the page.** A
+    // `title` tooltip cannot be copied and truncated text cannot be selected into
+    // something usable — and this principal is what a buyer pastes into
+    // `add_allowed_buyer`, what an operator pastes into `add_admin`, and what the
+    // step-3 command's output has to match. Shown short, copied in full.
+    const full = identity.getPrincipal().toText();
     const principal = document.createElement("span");
     principal.className = "principal";
-    principal.title = identity.getPrincipal().toText();
-    principal.textContent = shortPrincipal(identity.getPrincipal().toText());
+    principal.title = full;
+    principal.textContent = shortPrincipal(full);
+    const copy = copyButton(full, "Copy your principal");
+    // Paired in a wrapper so the header reads as TWO controls rather than three: the
+    // identity (with its copy) and the way out. `#auth-area`'s flex gap would
+    // otherwise space all three equally and make Copy look like a peer of Sign out.
+    const pair = document.createElement("span");
+    pair.className = "identity-pair";
+    pair.append(principal, copy);
     const out = document.createElement("button");
+    // ⚠️ **Identified, not positional.** Three tests selected the header's FIRST
+    // button to mean "sign out", and adding a copy button beside the principal broke
+    // all three — they clicked Copy, stayed signed in, and asserted on a sign-in that
+    // never happened. An id says which control is meant.
+    out.id = "sign-out";
     out.textContent = "Sign out";
     out.onclick = async () => {
       await signOut();
       setIdentity(null);
     };
-    area.append(principal, out);
+    area.append(pair, out);
   } else {
     const inBtn = document.createElement("button");
+    inBtn.id = "sign-in";
     inBtn.className = "cta-secondary";
     // Not "Sign in with Internet Identity": naming the mechanism above the fold
     // imports the vocabulary the Google-plus-card path is meant to delete. The
@@ -1994,24 +2013,52 @@ function repeatOrder(order: Order): void {
 /// Copy-to-clipboard for the CLI commands. Falls back to selecting the text:
 /// clipboard access is refused in some browsers and over plain HTTP, and a
 /// button that silently does nothing is worse than one that selects for you.
+/// Copy `text` and flash the button, with a selection fallback where the clipboard
+/// is unavailable (an insecure origin, or a browser that refuses without a gesture).
+///
+/// ⚠️ **`text` is passed in rather than read off the button's target**, because the
+/// thing shown and the thing worth copying are not always the same string: the header
+/// renders a TRUNCATED principal, and copying what is displayed would hand over
+/// `abcde…vwxyz`, which is useless in a command. The fallback selects `fallbackNode`
+/// when there is one — a truncated node is not worth selecting either, so the header
+/// passes none.
+function copyWithFeedback(btn: HTMLButtonElement, text: string, fallbackNode?: Element): void {
+  const done = () => {
+    const original = btn.textContent;
+    btn.textContent = "Copied";
+    setTimeout(() => { btn.textContent = original; }, 1_500);
+  };
+  void navigator.clipboard?.writeText(text).then(done).catch(() => {
+    if (!fallbackNode) return;
+    const range = document.createRange();
+    range.selectNodeContents(fallbackNode);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  });
+}
+
+/// A copy button for a value rendered by JS rather than sitting in the markup.
+///
+/// `label` is short because these sit inline beside the value, not under a command
+/// block. `aria-label` carries what is being copied, since "Copy" alone is ambiguous
+/// to a screen reader when several are on the page.
+function copyButton(text: string, ariaLabel: string): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "copy copy-inline";
+  btn.textContent = "Copy";
+  btn.setAttribute("aria-label", ariaLabel);
+  btn.onclick = () => copyWithFeedback(btn, text);
+  return btn;
+}
+
 function wireCopyButtons(): void {
   for (const btn of document.querySelectorAll<HTMLButtonElement>("button.copy")) {
     btn.onclick = () => {
       const target = document.getElementById(btn.dataset.copy ?? "");
       if (!target) return;
-      const text = target.textContent ?? "";
-      const done = () => {
-        const original = btn.textContent;
-        btn.textContent = "Copied";
-        setTimeout(() => { btn.textContent = original; }, 1_500);
-      };
-      void navigator.clipboard?.writeText(text).then(done).catch(() => {
-        const range = document.createRange();
-        range.selectNodeContents(target);
-        const sel = window.getSelection();
-        sel?.removeAllRanges();
-        sel?.addRange(range);
-      });
+      copyWithFeedback(btn, target.textContent ?? "", target);
     };
   }
 }

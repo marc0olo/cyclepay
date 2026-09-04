@@ -293,7 +293,12 @@ const typedStubs = {
 
 const backend = { ...typedStubs, ...untypedOrderStubs };
 
-const identity = { getPrincipal: () => ({ toText: () => "aaaaa-aa" }) };
+/// ⚠️ **A realistic 63-character principal, not `aaaaa-aa`.** `shortPrincipal` only
+/// truncates past 16 characters, so a short stub makes every assertion about the
+/// truncated-versus-full distinction pass without testing it — including the one that
+/// the header copies the FULL value rather than what it displays.
+const FULL_PRINCIPAL = "eoyfw-2h5xd-hy7ba-kzsyz-2vhy4-xnpnb-qmowk-vknpi-tsqwc-p7ubm-4qe";
+const identity = { getPrincipal: () => ({ toText: () => FULL_PRINCIPAL }) };
 
 vi.mock("./actor", () => ({
   backendCanisterId: "aaaaa-aa",
@@ -856,7 +861,15 @@ describe("sign-in failures are explained wherever they start", () => {
   /// one used to swallow all of them. A button that does nothing when clicked is
   /// the worst of the outcomes: it reads as the app ignoring you.
   async function signOutInHeader(): Promise<void> {
-    el("auth-area").querySelector("button")!.click();
+    // ⚠️ By id, not by position. This read `querySelector("button")` and therefore
+    // meant "whichever button comes first", which stopped being Sign out the moment a
+    // copy button was added beside the principal.
+    el<HTMLButtonElement>("sign-out").click();
+    await settle();
+  }
+
+  async function signInInHeader(): Promise<void> {
+    el<HTMLButtonElement>("sign-in").click();
     await settle();
   }
 
@@ -864,8 +877,7 @@ describe("sign-in failures are explained wherever they start", () => {
     await mount("landing");
     await signOutInHeader();
     state.signInError = new Error("popup was blocked by the browser");
-    el("auth-area").querySelector("button")!.click();
-    await settle();
+    await signInInHeader();
     const error = el("auth-error");
     expect(error.hidden).toBe(false);
     expect(error.textContent).toMatch(/allow pop-ups/i);
@@ -877,13 +889,11 @@ describe("sign-in failures are explained wherever they start", () => {
     await mount("landing");
     await signOutInHeader();
     state.signInError = new Error("UserInterrupt");
-    el("auth-area").querySelector("button")!.click();
-    await settle();
+    await signInInHeader();
     expect(el("auth-error").textContent).toMatch(/cancelled/i);
 
     state.signInError = new Error("connection reset");
-    el("auth-area").querySelector("button")!.click();
-    await settle();
+    await signInInHeader();
     expect(el("auth-error").textContent).toMatch(/could not reach the sign-in service/i);
   });
 
@@ -891,13 +901,11 @@ describe("sign-in failures are explained wherever they start", () => {
     await mount("landing");
     await signOutInHeader();
     state.signInError = new Error("UserInterrupt");
-    el("auth-area").querySelector("button")!.click();
-    await settle();
+    await signInInHeader();
     expect(el("auth-error").hidden).toBe(false);
 
     state.signInError = undefined;
-    el("auth-area").querySelector("button")!.click();
-    await settle();
+    await signInInHeader();
     expect(el("auth-error").hidden).toBe(true);
   });
 });
@@ -1058,7 +1066,13 @@ describe("the pay button comes from the ORDER, not from browser memory", () => {
     state.order = anOrder("created");
     await mount();
     await openFromHistory();
-    expect(el("client-ref").textContent).toBe("aaaaa-aa_abcdef0123456789abcdef0123456789");
+    // ⚠️ Derived from the identity rather than hardcoded. This read
+    // `"aaaaa-aa_abcdef…"`, a literal copy of a principal defined 700 lines above —
+    // so changing the stub identity broke it, which is the mirror this repo keeps
+    // removing. The reference is `<principal>_<orderId>` and both halves come from
+    // their sources.
+    expect(el("client-ref").textContent)
+      .toBe(`${FULL_PRINCIPAL}_abcdef0123456789abcdef0123456789`);
   });
 
   test("no session yet means no button, rather than a broken one", async () => {
@@ -1648,5 +1662,62 @@ describe("the gate notice: refusals no amount can fix (#99 2b)", () => {
     } as never;
     await mount();
     expect(document.getElementById("gate-notice")!.hidden).toBe(true);
+  });
+});
+
+describe("the signed-in principal is copyable", () => {
+  /// Captures what `navigator.clipboard.writeText` was handed.
+  function captureClipboard(): { last: () => string | undefined } {
+    let last: string | undefined;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (text: string) => { last = text; } },
+    });
+    return { last: () => last };
+  }
+
+  test("⚠️ the header copies the FULL principal, not the truncated display text", async () => {
+    // The whole point. The header shows `eoyfw…4qe` for width; copying that hands over
+    // something useless in `add_allowed_buyer` or `add_admin`.
+    const clip = captureClipboard();
+    await mount();
+    const shown = document.querySelector("#auth-area .principal")!;
+    expect(shown.textContent).not.toBe(FULL_PRINCIPAL);
+    expect(shown.textContent).toContain("…");
+
+    const btn = document.querySelector<HTMLButtonElement>("#auth-area button.copy")!;
+    btn.click();
+    await Promise.resolve();
+    expect(clip.last()).toBe(FULL_PRINCIPAL);
+  });
+
+  test("the copy button reports back, so a click is not silent", async () => {
+    const clip = captureClipboard();
+    await mount();
+    const btn = document.querySelector<HTMLButtonElement>("#auth-area button.copy")!;
+    expect(btn.textContent).toBe("Copy");
+    btn.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(btn.textContent).toBe("Copied");
+    expect(clip.last()).toBe(FULL_PRINCIPAL);
+  });
+
+  test("it carries an aria-label, since \"Copy\" alone is ambiguous with several on a page", async () => {
+    await mount();
+    const btn = document.querySelector<HTMLButtonElement>("#auth-area button.copy")!;
+    expect(btn.getAttribute("aria-label")).toMatch(/principal/i);
+  });
+
+  test("signed out, there is no principal and no copy button", async () => {
+    await mount("landing");
+    // ⚠️ `mount` arrives SIGNED IN, so this has to sign out first — asserting on the
+    // default state would have passed while testing nothing about signing out.
+    el<HTMLButtonElement>("sign-out").click();
+    await Promise.resolve();
+    // Nothing to copy, and a Copy button beside a Sign in prompt would be nonsense.
+    expect(document.querySelector("#auth-area .principal")).toBeNull();
+    expect(document.querySelector("#auth-area button.copy")).toBeNull();
+    expect(document.getElementById("sign-in")).not.toBeNull();
   });
 });

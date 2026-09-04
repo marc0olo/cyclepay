@@ -267,9 +267,19 @@
               <code id="cmd-link" class="mono"></code>
               <button type="button" class="copy" data-copy="cmd-link">Copy</button>
             </div>
+            <!-- Copyable because step 3 asks the buyer to compare it against what
+                 `icp identity principal` prints, and comparing two 63-character
+                 principals by eye is how a mismatch gets missed.
+
+                 NOTE: INLINE, not a `.cmd` block: the two commands on this card are the
+                 deliverable, and giving a fact the same visual weight as them makes
+                 the page compete with itself. A first pass used `.cmd` and grew the
+                 delivered view by 54px, which the visual baseline caught. -->
             <p class="muted">
               Your cycles are in
-              <code id="credited-principal" class="mono"></code>.
+              <code id="credited-principal" class="mono"></code>
+              <button type="button" class="copy copy-inline" data-copy="credited-principal"
+                      aria-label="Copy the principal your cycles are in">Copy</button>
             </p>
             <p class="muted">
               Check it landed on the right identity:
@@ -381,7 +391,16 @@
 
         <section id="admin-identity">
           <h3 class="section-h">This browser identity</h3>
-          <p id="admin-principal" class="mono"></p>
+          <!-- Copyable because the sentence below literally says to send it to a
+               controller, and because `add_admin` takes it as an argument. Inline for
+               the same reason as the buyer's: `admin-link-command` below is the
+               command block on this panel, and two competing blocks read as two
+               instructions. -->
+          <p class="mono">
+            <code id="admin-principal"></code>
+            <button type="button" class="copy copy-inline" data-copy="admin-principal"
+                    aria-label="Copy this browser identity's principal">Copy</button>
+          </p>
           <p id="admin-grant-state"></p>
           <div id="admin-link" hidden>
             <p class="muted">
