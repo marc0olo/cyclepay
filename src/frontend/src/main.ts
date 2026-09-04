@@ -807,19 +807,38 @@ function renderAuth(): void {
   const area = el("auth-area");
   area.replaceChildren();
   if (identity) {
+    // ⚠️ **Truncated for width, so the full value needs a way OUT of the page.** A
+    // `title` tooltip cannot be copied and truncated text cannot be selected into
+    // something usable — and this principal is what a buyer pastes into
+    // `add_allowed_buyer`, what an operator pastes into `add_admin`, and what the
+    // step-3 command's output has to match. Shown short, copied in full.
+    const full = identity.getPrincipal().toText();
     const principal = document.createElement("span");
     principal.className = "principal";
-    principal.title = identity.getPrincipal().toText();
-    principal.textContent = shortPrincipal(identity.getPrincipal().toText());
+    principal.title = full;
+    principal.textContent = shortPrincipal(full);
+    const copy = copyButton(full, "Copy your principal");
+    // Paired in a wrapper so the header reads as TWO controls rather than three: the
+    // identity (with its copy) and the way out. `#auth-area`'s flex gap would
+    // otherwise space all three equally and make Copy look like a peer of Sign out.
+    const pair = document.createElement("span");
+    pair.className = "identity-pair";
+    pair.append(principal, copy);
     const out = document.createElement("button");
+    // ⚠️ **Identified, not positional.** Three tests selected the header's FIRST
+    // button to mean "sign out", and adding a copy button beside the principal broke
+    // all three — they clicked Copy, stayed signed in, and asserted on a sign-in that
+    // never happened. An id says which control is meant.
+    out.id = "sign-out";
     out.textContent = "Sign out";
     out.onclick = async () => {
       await signOut();
       setIdentity(null);
     };
-    area.append(principal, out);
+    area.append(pair, out);
   } else {
     const inBtn = document.createElement("button");
+    inBtn.id = "sign-in";
     inBtn.className = "cta-secondary";
     // Not "Sign in with Internet Identity": naming the mechanism above the fold
     // imports the vocabulary the Google-plus-card path is meant to delete. The
@@ -1994,24 +2013,134 @@ function repeatOrder(order: Order): void {
 /// Copy-to-clipboard for the CLI commands. Falls back to selecting the text:
 /// clipboard access is refused in some browsers and over plain HTTP, and a
 /// button that silently does nothing is worse than one that selects for you.
+/// The copy glyph, and the tick that replaces it on success.
+///
+/// ⚠️ **Inline SVG, not an emoji.** `scripts/brand-lint.sh` bans pictographs in
+/// user-facing copy, and it is right to: clipboard emoji render differently on every
+/// platform and some fonts have no glyph at all, which shows as a box.
+///
+/// `aria-hidden` on the SVG because the accessible name lives on the button's
+/// `aria-label` — otherwise a screen reader reads the icon and the label.
+const COPY_ICON =
+  '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">'
+  + '<rect x="5.5" y="5.5" width="8" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/>'
+  + '<path d="M10.5 3.5V2.75A1.25 1.25 0 0 0 9.25 1.5H3.75A1.25 1.25 0 0 0 2.5 2.75v7.5A1.25 1.25 0 0 0 3.75 11.5H4.5"'
+  + ' fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+
+const DONE_ICON =
+  '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">'
+  + '<path d="M3 8.5l3.2 3.2L13 5" fill="none" stroke="currentColor" stroke-width="1.8"'
+  + ' stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+/// Copy `text`, and **report the outcome whichever way it goes** (#106 follow-up).
+///
+/// ⚠️ **Three ways this used to fail silently, and all three read to a user as "the
+/// button does nothing".**
+///
+/// 1. `navigator.clipboard?.writeText(t).then(…).catch(…)` — optional chaining
+///    short-circuits the WHOLE chain, so where `navigator.clipboard` is absent
+///    (any non-secure origin: a LAN IP, a plain-http host) `writeText` was never
+///    called, `then` never ran so there was no feedback, and `catch` never ran so
+///    there was no fallback either. Nothing happened at all.
+/// 2. When `writeText` REJECTED — permission denied, or a browser that wants the
+///    write closer to the gesture — the catch ran, and for the header button there
+///    was no node to select, so it returned having done nothing visible.
+/// 3. Success flashed a label; failure flashed nothing. A user cannot tell "copied"
+///    from "ignored me" if only one of them speaks.
+///
+/// So: a synchronous `execCommand` fallback that works without the async API, and a
+/// state on the button for every outcome including failure.
+function copyWithFeedback(btn: HTMLButtonElement, text: string, fallbackNode?: Element): void {
+  const settle = (state: "copied" | "failed") => {
+    btn.dataset.state = state;
+    btn.innerHTML = state === "copied" ? DONE_ICON : COPY_ICON;
+    // Announced, not just drawn: the icon swap is invisible to a screen reader.
+    btn.setAttribute("aria-live", "polite");
+    const label = btn.dataset.label ?? "Copy";
+    btn.title = state === "copied" ? "Copied" : "Press Ctrl/Cmd+C to copy";
+    setTimeout(() => {
+      btn.dataset.state = "idle";
+      btn.innerHTML = COPY_ICON;
+      btn.title = label;
+    }, 1_600);
+  };
+
+  /// Select the value so Ctrl/Cmd+C works, which is the honest last resort: it puts
+  /// the user one keystroke from the thing they asked for instead of nowhere.
+  const selectIt = (): boolean => {
+    if (!fallbackNode) return false;
+    const range = document.createRange();
+    range.selectNodeContents(fallbackNode);
+    const sel = window.getSelection();
+    if (!sel) return false;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return true;
+  };
+
+  /// The pre-`navigator.clipboard` path. Synchronous, so it works in the places the
+  /// async API is unavailable — and it needs a node in the document, hence the
+  /// off-screen textarea rather than a detached one.
+  const execCopy = (): boolean => {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.top = "-1000px";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    area.remove();
+    return ok;
+  };
+
+  const write = navigator.clipboard?.writeText;
+  if (typeof write !== "function") {
+    // ⚠️ Not an optional-chained no-op any more. No async clipboard means go
+    // straight to the synchronous path, and report either way.
+    settle(execCopy() || selectIt() ? "copied" : "failed");
+    return;
+  }
+  void navigator.clipboard.writeText(text).then(
+    () => settle("copied"),
+    () => settle(execCopy() || selectIt() ? "copied" : "failed"),
+  );
+}
+
+/// A copy button for a value rendered by JS rather than sitting in the markup.
+function copyButton(text: string, ariaLabel: string): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "copy copy-inline";
+  btn.innerHTML = COPY_ICON;
+  btn.dataset.state = "idle";
+  btn.dataset.label = ariaLabel;
+  btn.title = ariaLabel;
+  // The accessible name, because the button has no text of its own now.
+  btn.setAttribute("aria-label", ariaLabel);
+  btn.onclick = () => copyWithFeedback(btn, text);
+  return btn;
+}
+
 function wireCopyButtons(): void {
   for (const btn of document.querySelectorAll<HTMLButtonElement>("button.copy")) {
+    // The markup carries the label; the glyph is installed here so there is ONE
+    // definition of what a copy button looks like.
+    const label = btn.getAttribute("aria-label") ?? "Copy";
+    btn.dataset.label = label;
+    btn.dataset.state = "idle";
+    btn.title = label;
+    btn.innerHTML = COPY_ICON;
     btn.onclick = () => {
       const target = document.getElementById(btn.dataset.copy ?? "");
       if (!target) return;
-      const text = target.textContent ?? "";
-      const done = () => {
-        const original = btn.textContent;
-        btn.textContent = "Copied";
-        setTimeout(() => { btn.textContent = original; }, 1_500);
-      };
-      void navigator.clipboard?.writeText(text).then(done).catch(() => {
-        const range = document.createRange();
-        range.selectNodeContents(target);
-        const sel = window.getSelection();
-        sel?.removeAllRanges();
-        sel?.addRange(range);
-      });
+      copyWithFeedback(btn, target.textContent ?? "", target);
     };
   }
 }
