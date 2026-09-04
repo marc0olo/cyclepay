@@ -1770,3 +1770,118 @@ describe("the signed-in principal is copyable", () => {
     expect(document.getElementById("sign-in")).not.toBeNull();
   });
 });
+
+describe("the landing view is about one thing", () => {
+  test("⚠️ the banners are ABOVE the views, not after them", async () => {
+    // The defect this pins: `#auth-error`, `#gate-notice` and `#simulation-note` used
+    // to sit AFTER `#view-landing` in the document, so on the landing view they
+    // rendered below the entire page — a notice saying "you cannot buy here"
+    // arriving under the fold, after the thing it is about. Nothing hid them; the
+    // DOM order did, and no assertion could see it.
+    await mount("landing");
+    const banners = document.getElementById("banners")!;
+    const landing = document.getElementById("view-landing")!;
+    // DOCUMENT_POSITION_FOLLOWING === 4: `landing` comes after `banners`.
+    expect(banners.compareDocumentPosition(landing) & 4).toBe(4);
+    for (const id of ["auth-error", "gate-notice", "simulation-note"]) {
+      expect(banners.contains(document.getElementById(id))).toBe(true);
+    }
+  });
+
+  test("one way in, and it says what it does", async () => {
+    // Nothing asserted this before, so renaming or losing the page's only call to
+    // action would have broken no test.
+    await mount("landing");
+    const cta = el<HTMLButtonElement>("start-buy");
+    expect(cta.textContent).toBe("Buy cycles");
+    // ⚠️ Exactly one. The landing view deliberately does not ask a visitor to choose
+    // between routes before it (#29), and a second primary button is how that creeps
+    // back in.
+    expect(document.querySelectorAll("#view-landing .cta").length).toBe(1);
+  });
+
+  test("the stats carry their framing line", async () => {
+    // ⚠️ The frame is load-bearing, which is why the "Checkable by anyone" prose
+    // could go and this sentence could not: these are two DIFFERENT KINDS of number.
+    // Capacity is read from the cycles ledger and anyone can check it; the delivered
+    // totals are ours to report. Bare figures are decoration.
+    await mount("landing");
+    expect(document.getElementById("trust-figures")!.hidden).toBe(false);
+    expect(el("trust-capacity").textContent).toMatch(/cycles/);
+    expect(el("trust-delivered").textContent).not.toBe("");
+    const frame = document.querySelector(".trust-frame")!;
+    expect(frame.textContent).toMatch(/anyone can query/i);
+  });
+
+  test("the theme toggle is an icon naming where the click goes", async () => {
+    await mount("landing");
+    const btn = el<HTMLButtonElement>("theme-toggle");
+    expect(btn.textContent?.trim()).toBe("");
+    expect(btn.querySelector("svg")).not.toBeNull();
+    // ⚠️ The DESTINATION, not the current state: in light mode the button offers
+    // dark. Labelling it with the current theme reads as a status light and makes
+    // the click a guess.
+    expect(btn.getAttribute("aria-label")).toMatch(/switch to dark/i);
+    btn.click();
+    expect(btn.getAttribute("aria-label")).toMatch(/switch to light/i);
+    expect(btn.querySelector("svg")).not.toBeNull();
+  });
+});
+
+describe("the console link appears only for someone who can use it", () => {
+  function adminNav(): HTMLElement | null {
+    return document.getElementById("admin-nav");
+  }
+
+  test("⚠️ an ordinary buyer never sees it", async () => {
+    // This is the whole reason the link is conditional. `view.ts`'s rule is that a
+    // console link on a purchase page is noise for every visitor who is not an
+    // operator — a link shown unconditionally would break that rule, not implement it.
+    state.adminStatus = {
+      caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+      granted: false,
+      isController: false,
+    };
+    await mount();
+    expect(adminNav()!.hidden).toBe(true);
+  });
+
+  test("a granted admin sees it, and it points at the console", async () => {
+    state.adminStatus = {
+      caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+      granted: true,
+      isController: false,
+    };
+    await mount();
+    const link = adminNav()!;
+    expect(link.hidden).toBe(false);
+    expect(link.getAttribute("href")).toBe("#/admin");
+  });
+
+  test("⚠️ a controller sees it WITHOUT being granted — the tiers are nested", async () => {
+    // A controller passes the admin guard without appearing on the granted list, so
+    // keying the link on `granted` alone would hide the console from the one identity
+    // that can do everything in it.
+    state.adminStatus = {
+      caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+      granted: false,
+      isController: true,
+    };
+    await mount();
+    expect(adminNav()!.hidden).toBe(false);
+  });
+
+  test("signing out withdraws it", async () => {
+    // A stale link would offer a console the caller can no longer reach.
+    state.adminStatus = {
+      caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+      granted: true,
+      isController: false,
+    };
+    await mount();
+    expect(adminNav()!.hidden).toBe(false);
+    el<HTMLButtonElement>("sign-out").click();
+    await Promise.resolve();
+    expect(adminNav()!.hidden).toBe(true);
+  });
+});
