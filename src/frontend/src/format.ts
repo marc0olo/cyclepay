@@ -582,17 +582,31 @@ export const CREATE_ORDER_ERROR_KEYS: Record<CreateOrderError["__kind__"], true>
 /// send this account a transfer memoed `FE * 32` and have this app announce "Created a
 /// canister" in a history the buyer reconciles against.
 ///
-/// ⚠️ **A create tells you THAT, never WHICH.** The created id comes back in
+/// ⚠️ **A creation tells you THAT, never WHICH.** The created id comes back in
 /// `CreateCanisterSuccess.canister_id`, the method reply, and never enters the block. So
-/// `#created` carries no principal and no later read can recover one.
+/// `#creation` carries no principal and no later read can recover one.
+///
+/// ⚠️ **ATTEMPTED, not succeeded, and the names say so deliberately.** A `create_canister`
+/// that FAILS writes the same `FE * 32` burn (`CreateCanisterError.FailedToCreate` carries
+/// a `fee_block`), and a `withdraw` that fails writes the same `CBOR[target]` burn
+/// (`FailedToWithdraw.fee_block`). Both were measured, against a nonexistent subnet and a
+/// nonexistent canister. The burn is the CHARGE, not the outcome, so labelling either
+/// "Created" or "Topped up" claims an outcome the block cannot support.
+///
+/// The outcome shows only in the REFUND that follows: a failed creation mints back with
+/// memo `FD * 32`, a failed withdraw with `FF * 32`. This module deliberately does NOT
+/// decode those. `DepositArgs` takes a caller-supplied memo and a deposit IS a mint, so
+/// anyone could deposit memoed `FF * 32` and forge a refund row. Burns are safe precisely
+/// because none of the four burn paths accepts a memo argument.
 export type BurnPurpose =
-  | { kind: "created" }
-  | { kind: "toppedUp"; canister: string }
+  | { kind: "creation" }
+  | { kind: "topUp"; canister: string }
   | { kind: "unknown" };
 
-/// The sentinel the ledger writes on a canister creation: 32 bytes of 0xFE. Verified
-/// against two creations of different canisters, whose memos were byte-identical, so it
-/// carries no per-canister data.
+/// The sentinel the ledger writes for a canister creation: 32 bytes of 0xFE. Verified
+/// against two creations of different canisters, whose memos were byte-identical (so it
+/// carries no per-canister data), and against a creation that FAILED, which wrote the
+/// same bytes.
 const CREATE_SENTINEL_BYTE = 0xfe;
 const CREATE_SENTINEL_LEN = 32;
 
@@ -603,14 +617,14 @@ export function decodeBurnMemo(memo: [] | [Uint8Array]): BurnPurpose {
     raw.length === CREATE_SENTINEL_LEN
     && raw.every((b) => b === CREATE_SENTINEL_BYTE)
   ) {
-    return { kind: "created" };
+    return { kind: "creation" };
   }
   // A withdraw's memo is CBOR: 0x81 = array(1), 0x4a = byte string of length 10, then a
   // 10-byte canister principal. Matched exactly rather than by prefix, so a longer or
   // shorter payload falls through to `unknown` instead of decoding a truncated id.
   if (raw.length === 12 && raw[0] === 0x81 && raw[1] === 0x4a) {
     try {
-      return { kind: "toppedUp", canister: Principal.fromUint8Array(raw.slice(2)).toText() };
+      return { kind: "topUp", canister: Principal.fromUint8Array(raw.slice(2)).toText() };
     } catch {
       // A blob that is the right shape but not a valid principal is data this app does
       // not understand, not a reason to drop the row.

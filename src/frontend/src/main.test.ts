@@ -2247,15 +2247,48 @@ describe("the cycles ledger's own record, from the index canister", () => {
     await openDashboard();
     const rows = document.querySelectorAll("#ledger-history tbody tr");
     expect(rows.length).toBe(2);
-    expect(rows[0]!.textContent).toContain("Topped up");
+    expect(rows[0]!.textContent).toContain("Canister top-up");
     // The target canister is named, and linked where it can be inspected.
     const canisterLink = rows[0]!.querySelector<HTMLAnchorElement>('a[href*="/canister/"]')!;
     expect(canisterLink.getAttribute("href"))
       .toBe("https://dashboard.internetcomputer.org/canister/4xhad-gd777-77775-aaacq-cai");
-    expect(rows[1]!.textContent).toContain("Created a canister");
+    expect(rows[1]!.textContent).toContain("Canister creation");
     // ⚠️ No canister on a creation, and the absence is the finding: the created id is
     // returned by the method and never written into the block.
     expect(rows[1]!.querySelector('a[href*="/canister/"]')).toBeNull();
+  });
+
+  test("⚠️ a refund mint is NOT labelled a refund", async () => {
+    // A failed creation refunds with memo `FD * 32` and a failed withdraw with `FF * 32`,
+    // but both are MINTS and `deposit` takes a caller-supplied memo, so naming them would
+    // let anyone deposit memoed `FF * 32` and fake a refund row. The pair still reads
+    // correctly: the charge above, the money back below.
+    state.ledgerTxs = [
+      { id: 30n, transaction: tx("burn", { burn: [{ from: acct(ME), amount: 2_000_000_000_000n, memo: [new Uint8Array(32).fill(0xfe)] }] }) },
+      { id: 31n, transaction: tx("mint", { mint: [{ to: acct(ME), amount: 1_999_800_000_000n }] }) },
+    ];
+    await openDashboard();
+    const rows = document.querySelectorAll("#ledger-history tbody tr");
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.textContent).toContain("Canister creation");
+    expect(rows[1]!.textContent).toContain("Added");
+    const text = document.getElementById("ledger-history")!.textContent ?? "";
+    expect(text).not.toMatch(/refund/i);
+  });
+
+  test("⚠️ neither burn label claims the operation succeeded", async () => {
+    // Both memos are exactly what a FAILED create and a FAILED withdraw wrote, so a label
+    // asserting an outcome would be false on this very input.
+    state.ledgerTxs = [
+      { id: 32n, transaction: tx("burn", { burn: [{ from: acct(ME), amount: 20n, memo: [new Uint8Array(32).fill(0xfe)] }] }) },
+      { id: 33n, transaction: tx("burn", { burn: [{ from: acct(ME), amount: 30n, memo: [new Uint8Array([0x81, 0x4a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01])] }] }) },
+    ];
+    await openDashboard();
+    const text = document.getElementById("ledger-history")!.textContent ?? "";
+    expect(text).not.toContain("Created a canister");
+    expect(text).not.toContain("Topped up");
+    expect(text).toContain("Canister creation");
+    expect(text).toContain("Canister top-up");
   });
 
   test("⚠️ a burn never shows the viewer as the other party", async () => {

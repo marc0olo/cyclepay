@@ -293,10 +293,14 @@ function describeLedgerTx(
   }
   if (tx.mint.length > 0) {
     const m = tx.mint[0]!;
-    // ⚠️ **Not "minted from ICP".** Cycles recovered from a deleted canister arrive as a
-    // mint too, and mints carry no memo to tell the two apart, so this label states what
-    // is observable: cycles entered the account from outside it. A delivered order is a
-    // transfer from the gateway, not a mint, so it is not this row.
+    // ⚠️ **Not "minted from ICP", and deliberately not labelled from its memo either.**
+    // Cycles recovered from a deleted canister arrive as a mint, and so do the refunds of
+    // a failed creation (memo `FD * 32`) and a failed withdraw (memo `FF * 32`). Naming
+    // those would be forgeable: `deposit` takes a CALLER-supplied memo and a deposit is a
+    // mint, so anyone could deposit memoed `FF * 32` and fake a refund row here. Burns
+    // are safe to decode because no burn path accepts a memo. This label therefore states
+    // only what is observable: cycles entered the account from outside it. A delivered
+    // order is a transfer from the gateway, not a mint, so it is not this row.
     return { what: "Added", amount: `+${formatCycles(m.amount)}`, counterparty: "-" };
   }
   if (tx.burn.length > 0) {
@@ -306,17 +310,21 @@ function describeLedgerTx(
     // which only a burn's memo can be trusted for: see `decodeBurnMemo`.
     const amount = `-${formatCycles(b.amount)}`;
     const purpose = decodeBurnMemo(b.memo);
-    if (purpose.kind === "toppedUp") {
+    // ⚠️ **Both labels name the CHARGE, not an outcome.** A create and a withdraw that
+    // FAIL write the same burn as one that succeeds, and the refund that reveals the
+    // failure is a separate later row. "Created a canister" / "Topped up" would assert
+    // something the block does not carry.
+    if (purpose.kind === "topUp") {
       return {
-        what: "Topped up",
+        what: "Canister top-up",
         amount,
         counterparty: shortPrincipal(purpose.canister),
         canister: purpose.canister,
       };
     }
-    if (purpose.kind === "created") {
+    if (purpose.kind === "creation") {
       // No principal: the ledger does not record which canister a creation made.
-      return { what: "Created a canister", amount, counterparty: "-" };
+      return { what: "Canister creation", amount, counterparty: "-" };
     }
     return { what: "Spent", amount, counterparty: "-" };
   }
