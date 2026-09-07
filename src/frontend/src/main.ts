@@ -54,11 +54,11 @@ import {
   RATE_LOCK_NOTE,
   formatAgo,
   formatDuration,
-  STEPS,
   checkReceipt,
   createOrderErrorMessage,
   PRE_ANNOUNCED_GATE_REASONS,
   type GateReason,
+  amountLabels,
   creditedSplit,
   estimateLine,
   type FeeConfig,
@@ -669,6 +669,9 @@ function renderView(): void {
   // there is nothing to link the CLI to, and offering the step early is how a buyer
   // ends up running a command against an empty balance.
   show("order-next-row", delivered && order !== null);
+  // Still order-scoped at this layer. The page's content is identity-derived, so the
+  // parameter is unused and it makes the page unreachable from the dashboard: that is
+  // the next change, not this one.
   const nextLink = document.getElementById("order-next-link") as HTMLAnchorElement | null;
   if (nextLink && order !== null) {
     nextLink.href = routeHash({ view: "next", orderId: order.id });
@@ -1896,12 +1899,15 @@ function renderSimulationNote(): void {
     `Simulation mode: this gateway is running against Stripe's test environment, ` +
     `and it delivers 1/${divisor} of the cycles a purchase would buy in production. ` +
     `The card charge is real inside the sandbox; no money moves.`;
-  for (const id of ["simulation-note", "receipt-simulation-note"]) {
-    const node = document.getElementById(id);
-    if (!node) continue;
-    node.textContent = text;
-    node.hidden = divisor === 1n;
-  }
+  // ⚠️ **ONE element, and the loop over two was the bug.** This same sentence was
+  // written into the page banner AND into the receipt, so a delivered order stated
+  // simulation mode twice on one screen. The banner is the right home: it is a fact
+  // about the gateway, not about this order, and the divisor already appears inside
+  // the receipt's formula as one of its terms.
+  const node = document.getElementById("simulation-note");
+  if (node === null) return;
+  node.textContent = text;
+  node.hidden = divisor === 1n;
 }
 
 function renderTiers(): void {
@@ -2452,28 +2458,25 @@ function renderOrder(order: Order): void {
     ? statusInfo("expired")
     : statusInfo(key);
 
-  const timeline = el("timeline");
-  timeline.replaceChildren();
-  STEPS.forEach((step, index) => {
-    const li = document.createElement("li");
-    li.textContent = step;
-    if (info.step >= 0) {
-      if (index < info.step || (info.terminal && index === info.step)) li.className = "done";
-      else if (index === info.step) li.className = "now";
-    }
-    timeline.append(li);
-  });
+  const pill = el("order-status-pill");
+  pill.textContent = info.pill;
+  pill.className = `status-pill tone-${info.tone}`;
 
   const statusLine = el("order-status-line");
   statusLine.textContent = info.label;
   statusLine.className = `tone-${info.tone}`;
-  // ⚠️ **Shown only when the timeline cannot express the status, and the predicate is
-  // the DATA rather than a list.** `step >= 0` means the timeline is already showing
-  // this state, so printing the same label underneath said "Awaiting payment" twice in
-  // adjacent lines. `step === -1` is exactly the set the timeline has no slot for
-  // (cancelled, expired, needsReview, abandoned), and there these labels carry the
-  // only information available: "Expired. This order can no longer be paid".
-  show("order-status-line", info.step < 0);
+  // ⚠️ **Shown only when the label says MORE than the badge, and the predicate is the
+  // DATA rather than a list of statuses.** For most statuses `pill` and `label` are the
+  // same words, and printing both said "Awaiting payment" twice in adjacent lines. Where
+  // they differ, the label carries an instruction the badge has no room for: "Expired.
+  // This order can no longer be paid", "Needs operator attention. Contact support".
+  show("order-status-line", info.label !== info.pill);
+
+  // Tense follows the order. Two labels, two facts: a paid order HAS paid but has not
+  // yet received, so one "done" flag would promise cycles that have not moved.
+  const labels = amountLabels(key);
+  el("order-pay-label").textContent = labels.pay;
+  el("order-receive-label").textContent = labels.receive;
 
   // `#expired` used to be here, on the §4 grounds that a late payment still
   // completed. #34 deleted `#expired → #paid`, so an expired order is not
@@ -2600,21 +2603,17 @@ async function renderReceipt(order: Order): Promise<void> {
     return;
   }
   const v = receipt.verification;
-  el("receipt-paid").textContent = receipt.paidUsdCents === undefined
-    ? "not yet"
-    : formatUsdCents(receipt.paidUsdCents);
-  el("receipt-delivered").textContent = receipt.cyclesDelivered === undefined
-    ? "not yet"
-    : formatCycles(receipt.cyclesDelivered);
+  // ⚠️ **`paidUsdCents` and `cyclesDelivered` are NOT rendered here any more.** They
+  // were the same two numbers the summary card already states, written by a second
+  // code path, so the page showed "$10.00" and "7.138 G" twice. The card is the one
+  // owner. This function keeps the facts only the receipt has.
   // ⚠️ **The block index becomes a LINK, because it is the one fact on this page a
   // buyer can check without this canister.** The cycles ledger is public, so the
   // dashboard entry is evidence rather than a convenience: it is where "the cycles
   // arrived" stops being our claim and becomes someone else's record.
   const blockCell = el("receipt-block");
   blockCell.replaceChildren();
-  if (receipt.deliveryBlockIndex === undefined) {
-    blockCell.textContent = "not yet";
-  } else {
+  if (receipt.deliveryBlockIndex !== undefined) {
     const link = document.createElement("a");
     link.href =
       `https://dashboard.internetcomputer.org/tokens/${cyclesLedgerCanisterId}`
@@ -2625,8 +2624,14 @@ async function renderReceipt(order: Order): Promise<void> {
     link.textContent = `${receipt.deliveryBlockIndex} (view on the dashboard)`;
     blockCell.append(link);
   }
-  el("receipt-sources").textContent =
-    rateSourceNote(v.rateReceivedRates, v.rateQueriedSources) || "not yet";
+  const sources = rateSourceNote(v.rateReceivedRates, v.rateQueriedSources);
+  el("receipt-sources").textContent = sources;
+  // These two live in the summary card now, so an empty one is a BLANK ROW in the
+  // middle of the terms rather than a line in a section of its own. Hidden instead of
+  // printing "not yet", which on a delivered order would be a claim, and on an unpaid
+  // one is noise about a fact that cannot exist yet.
+  show("term-block", receipt.deliveryBlockIndex !== undefined);
+  show("term-sources", sources !== "");
 
   // ⚠️ The divisor comes from config, not the order — see `checkReceipt`. In
   // simulation mode `check.recomputed` is what PRODUCTION would have locked, which

@@ -541,6 +541,50 @@ button:disabled {
   color: var(--icp-accent);
 }
 
+/* ── the purchase head, and status as a badge ─────────────────────────────── */
+
+.purchase-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.purchase-head h2 {
+  margin: 0;
+}
+
+/* IMPORTANT: the tone class supplies the colour, and the border picks it up through
+   `currentColor`, so the badge is never colour on its own: it has an outline, a
+   background wash and uppercase tracking. A delivered order and a failed one differ
+   in shape as well as hue. */
+.status-pill {
+  margin: 0;
+  align-self: center;
+  font-family: var(--font-ui);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-pill);
+  background: var(--icp-bg-elev);
+  white-space: nowrap;
+}
+
+/* The next step, sitting with the purchase rather than under the arithmetic. */
+.next-step {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-5) 0;
+  max-width: 34rem;
+}
+
+.next-step p {
+  margin: 0;
+}
+
 /* ── the checkout summary ─────────────────────────────────────────────────── */
 
 .checkout-summary {

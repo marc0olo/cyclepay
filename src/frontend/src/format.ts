@@ -21,6 +21,14 @@ export type StatusKey = `${OrderStatus}`;
 
 export interface StatusInfo {
   label: string;
+  /// The status as a badge: two or three words, never a sentence.
+  ///
+  /// ⚠️ **Separate from `label` so the two can never say the same thing twice.** The
+  /// order page shows this always and shows `label` only when it says MORE, which is
+  /// exactly the statuses whose label carries an instruction ("Expired. This order can
+  /// no longer be paid"). One field, one place, and the page needs no list of which
+  /// statuses are wordy.
+  pill: string;
   /// Index into STEPS for the progress timeline; -1 = off the happy path.
   step: number;
   /// Stop polling: the backend will never move this order again.
@@ -43,27 +51,27 @@ export const STEPS = ["Awaiting payment", "Paid", "Delivered"] as const;
 export function statusInfo(key: StatusKey): StatusInfo {
   switch (key) {
     case "created":
-      return { label: "Awaiting payment", step: 0, terminal: false, tone: "active" };
+      return { label: "Awaiting payment", pill: "Awaiting payment", step: 0, terminal: false, tone: "active" };
     case "cancelled":
       // The buyer's own decision, and its own status — so a reload no longer
       // tells someone who cancelled that their order "expired" (#34).
-      return { label: "Cancelled", step: -1, terminal: true, tone: "warn" };
+      return { label: "Cancelled", pill: "Cancelled", step: -1, terminal: true, tone: "warn" };
     case "expired":
       // TERMINAL as of #34, which deleted `#expired → #paid`. It used to say a
       // completed payment still went through; that is no longer true, and a
       // payment arriving now becomes an operator obligation to refund rather
       // than cycles.
-      return { label: "Expired. This order can no longer be paid", step: -1, terminal: true, tone: "warn" };
+      return { label: "Expired. This order can no longer be paid", pill: "Expired", step: -1, terminal: true, tone: "warn" };
     case "paid":
-      return { label: "Payment received", step: 1, terminal: false, tone: "active" };
+      return { label: "Payment received", pill: "Paid", step: 1, terminal: false, tone: "active" };
     case "delivered":
-      return { label: "Delivered", step: 2, terminal: true, tone: "ok" };
+      return { label: "Delivered", pill: "Delivered", step: 2, terminal: true, tone: "ok" };
     case "needsReview":
       // NOT terminal: the operator can still end it, and until they do the order
       // holds its promise. Polling continues so the buyer sees that happen.
-      return { label: "Needs operator attention. Contact support", step: -1, terminal: false, tone: "err" };
+      return { label: "Needs operator attention. Contact support", pill: "Needs attention", step: -1, terminal: false, tone: "err" };
     case "abandoned":
-      return { label: "Ended by support. Contact us about a refund", step: -1, terminal: true, tone: "err" };
+      return { label: "Ended by support. Contact us about a refund", pill: "Ended", step: -1, terminal: true, tone: "err" };
   }
 }
 
@@ -693,4 +701,17 @@ export function decodeOrderMemo(
   // `fatal: true` is redundant belt-and-braces: removing it does not fail the suite.
   // Removing THIS line does.
   return /^[0-9a-f]{8,64}$/.test(text) ? text : null;
+}
+
+/// The amount labels, in the tense the order has actually reached.
+///
+/// ⚠️ **Two independent tenses, not one.** A `#paid` order HAS paid but has NOT yet
+/// received, so a single "is it done" flag would print "You received" beside cycles
+/// that have not moved. Each label follows its own fact.
+export function amountLabels(key: StatusKey): { pay: string; receive: string } {
+  const paid = key === "paid" || key === "delivered";
+  return {
+    pay: paid ? "You paid" : "You pay",
+    receive: key === "delivered" ? "You received" : "You receive",
+  };
 }

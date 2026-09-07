@@ -733,7 +733,8 @@ describe("the active order", () => {
     el("orders").querySelector("tr")!.dispatchEvent(new Event("click"));
     await settle();
     await settle();
-    expect(el("order-status-line").textContent).toContain("Payment received");
+    // The badge carries it: "Payment received" is the long label, "Paid" the badge.
+    expect(el("order-status-pill").textContent).toBe("Paid");
     expect(el("cancel-area").hidden).toBe(true);
   });
 
@@ -942,6 +943,8 @@ describe("the delivered tour", () => {
     expect(el("order-next-row").hidden).toBe(false);
     expect(el<HTMLAnchorElement>("order-next-link").getAttribute("href"))
       .toBe("#/order/abcdef0123456789abcdef0123456789/next");
+    // The label names what it does rather than asking a question.
+    expect(el("order-next-link").textContent).toMatch(/Link ICP CLI/);
 
     state.order = anOrder("paid");
     await mount();
@@ -2641,12 +2644,12 @@ describe("the order page reads as a checkout", () => {
     expect(el("pay-note").hidden).toBe(true);
   });
 
-  test("⚠️ the status is stated ONCE while the timeline can express it", async () => {
-    // The line printed the timeline's own current label, so an awaiting-payment order
-    // said so twice in adjacent lines.
+  test("⚠️ the status is stated ONCE where the badge already says it", async () => {
+    // The line printed the same words as the badge, so an awaiting-payment order said
+    // so twice in adjacent lines.
     await openCreated();
+    expect(el("order-status-pill").textContent).toBe("Awaiting payment");
     expect(el("order-status-line").hidden).toBe(true);
-    expect(el("timeline").textContent).toMatch(/Awaiting payment/);
   });
 
   test("⚠️ and it IS stated for a status the timeline has no slot for", async () => {
@@ -2655,6 +2658,8 @@ describe("the order page reads as a checkout", () => {
     state.order = anOrder("expired");
     await mount();
     await openFromHistory();
+    // Short on the badge, and the instruction the badge has no room for below it.
+    expect(el("order-status-pill").textContent).toBe("Expired");
     expect(el("order-status-line").hidden).toBe(false);
     expect(el("order-status-line").textContent).toMatch(/no longer be paid/i);
   });
@@ -2690,5 +2695,86 @@ describe("the order page reads as a checkout", () => {
     expect(document.querySelectorAll(".order-ref button.copy").length).toBe(1);
     // And the label is still there exactly once, so the rebuild did not lose it.
     expect(document.querySelector(".order-ident")!.textContent).toMatch(/^Order /);
+  });
+});
+
+describe("a delivered order states each fact once", () => {
+  async function openDelivered(): Promise<void> {
+    state.order = anOrder("delivered");
+    await mount();
+    await openFromHistory();
+  }
+
+  test("⚠️ the price appears ONCE on the page, not in two lists", async () => {
+    // "You pay $10.00" in the summary and "You paid $10.00" in the receipt were the
+    // same number written by two code paths. Counted across the whole order section,
+    // so a future second list fails this rather than passing quietly.
+    await openDelivered();
+    const text = el("active-order").textContent ?? "";
+    expect(text.match(/\$10\.00/g)?.length).toBe(1);
+  });
+
+  test("⚠️ the cycle figure appears once as a figure", async () => {
+    // Same defect on the other row: "You receive 7.138 G" and "Cycles delivered
+    // 7.138 G". The formula line below restates the arithmetic on purpose, which is a
+    // different claim, so only the FIGURE cells are counted.
+    await openDelivered();
+    const cells = [el("order-cycles").textContent, el("order-price").textContent];
+    expect(cells.every((c) => (c ?? "").length > 0)).toBe(true);
+    expect(document.getElementById("receipt-paid")).toBeNull();
+    expect(document.getElementById("receipt-delivered")).toBeNull();
+  });
+
+  test("⚠️ simulation mode is stated once, not at the top AND in the receipt", async () => {
+    // `renderSimulationNote` looped over two element ids and wrote the same sentence
+    // into both, so this screen said it twice.
+    state.divisor = 1_000n;
+    await openDelivered();
+    const shown = Array.from(document.querySelectorAll("p"))
+      .filter((n) => !(n as HTMLElement).hidden)
+      .filter((n) => /simulation mode/i.test(n.textContent ?? ""));
+    expect(shown.length).toBe(1);
+    expect(shown[0]!.id).toBe("simulation-note");
+  });
+
+  test("the labels are past tense once the order is done", async () => {
+    await openDelivered();
+    expect(el("order-pay-label").textContent).toBe("You paid");
+    expect(el("order-receive-label").textContent).toBe("You received");
+  });
+
+  test("⚠️ a PAID order has paid but not received, and says so", async () => {
+    // One "is it complete" flag would print "You received" beside cycles that have
+    // not moved yet. Two independent tenses.
+    state.order = anOrder("paid");
+    await mount();
+    await openFromHistory();
+    expect(el("order-pay-label").textContent).toBe("You paid");
+    expect(el("order-receive-label").textContent).toBe("You receive");
+  });
+
+  test("an unpaid order keeps both labels in the future", async () => {
+    state.order = anOrder("created");
+    await mount();
+    await openFromHistory();
+    expect(el("order-pay-label").textContent).toBe("You pay");
+    expect(el("order-receive-label").textContent).toBe("You receive");
+  });
+
+  test("the timeline is gone, and the badge carries the state", async () => {
+    await openDelivered();
+    expect(document.getElementById("timeline")).toBeNull();
+    expect(el("order-status-pill").textContent).toBe("Delivered");
+  });
+
+  test("the CLI step is offered with the purchase, above the arithmetic", async () => {
+    // It was the last element on the page, below the price proof. Asserted as document
+    // order so styling cannot satisfy it.
+    await openDelivered();
+    const next = el("order-next-row");
+    const receipt = el("receipt-area");
+    expect(next.hidden).toBe(false);
+    expect(next.compareDocumentPosition(receipt) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
   });
 });
