@@ -21,6 +21,7 @@ import Problems "../Problems";
 import Iter "mo:core/Iter";
 import List "mo:core/List";
 import Map "mo:core/Map";
+import Set "mo:core/Set";
 import Nat "mo:core/Nat";
 import Principal "mo:core/Principal";
 import Result "mo:core/Result";
@@ -335,6 +336,17 @@ module {
     /// a payment that was delivered out of a funded reserve), unlike the
     /// `#unattributed` spam the dedup sets absorb.
     paidIntents : Map.Map<Text, Types.OrderId>;
+    /// Orders whose OWNER has asked to cancel, from `Main.cancelRequests`.
+    ///
+    /// ⚠️ **This module is the writer that wins the race with `cancel_order`.** Our own
+    /// expire call makes Stripe fire `checkout.session.expired`, and it lands here
+    /// before the cancel is recorded. Without this the buyer's own decision is stored
+    /// as `expiredBy = #sessionExpired`.
+    ///
+    /// A `Set` value rather than a callback: `Deps` is rebuilt per call, so this is the
+    /// live set, and passing it keeps the attribution decision inside `Orders` where
+    /// both writers share one copy of it.
+    cancelRequests : Set.Set<Types.OrderId>;
     /// Per-purchase ceiling (`Gate.Config.maxPurchaseUsdCents`) — defence in
     /// depth now that the webhook honours only the quoted amount: an order
     /// created under a higher ceiling still matches its own quote after the
@@ -971,7 +983,7 @@ module {
       // Null is accepted and backfilled — see the note above.
       case null {};
     };
-    switch (Orders.expireBySession(deps.orders, orderId, expired.sessionId, nowNs)) {
+    switch (Orders.expireBySession(deps.orders, deps.cancelRequests, orderId, expired.sessionId, nowNs)) {
       case (#ok(_)) {
         audit(deps, nowNs, "stripe.sessionExpired", "order " # orderId # " expired by Stripe (session " # expired.sessionId # ")");
       };

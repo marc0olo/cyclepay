@@ -1748,6 +1748,8 @@ persistent actor CyclesGateway {
   /// effect on the very next webhook.
   func webhookDeps() : Card.Deps {
     {
+      // The live set: `Deps` is rebuilt per call, so this is never a stale copy.
+      cancelRequests;
       orders = orderStore;
       dedup;
       orphanStore;

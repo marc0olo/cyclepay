@@ -959,8 +959,20 @@ module {
     };
   };
 
+  /// ⚠️ **Takes `requestedCancels`, and that parameter is the fix.** This is the
+  /// `checkout.session.expired` WEBHOOK's path, and it is the writer that actually wins
+  /// the race with `cancel_order`: our own expire call makes Stripe fire this event, and
+  /// it arrives before the cancel is recorded. An earlier attempt routed the recovery
+  /// sweep and the admin expire through the attribution and left this one calling
+  /// straight through, so the buyer's cancellation went on being recorded as
+  /// `#sessionExpired` — the same mistake twice, because the fix was applied to the two
+  /// paths that were not the problem.
+  ///
+  /// A required parameter rather than an optional one on purpose: a caller cannot reach
+  /// this function without deciding what it knows about the buyer's intent.
   public func expireBySession(
     store : Store,
+    requestedCancels : Set.Set<Types.OrderId>,
     id : Types.OrderId,
     sessionId : Text,
     nowNs : Int,
@@ -968,18 +980,30 @@ module {
     switch (store.orders.get(id)) {
       case null #err(#notFound(id));
       case (?order) {
-        switch (transition(order, #expired, nowNs)) {
-          case (#ok(updated)) {
-            let expired = {
-              updated with
-              expiredBy = ?(#sessionExpired : Types.ExpiredBy);
-              stripeSessionId = ?sessionId;
+        if (requestedCancels.contains(id)) {
+          // The owner asked to cancel and Stripe has now confirmed the session is dead
+          // — which is what the cancel itself caused. Attribute it to them.
+          switch (transition(order, #cancelled, nowNs)) {
+            case (#ok(updated)) {
+              requestedCancels.remove(id);
+              #ok(commitTransition(store, order, { updated with stripeSessionId = ?sessionId }));
             };
-            // Release point 1 (#30), and the most common one: Stripe says the
-            // session died unpaid, so every unpaid order releases here.
-            #ok(commitTransition(store, order, expired));
+            case (#err(e)) #err(e);
           };
-          case (#err(e)) #err(e);
+        } else {
+          switch (transition(order, #expired, nowNs)) {
+            case (#ok(updated)) {
+              let expired = {
+                updated with
+                expiredBy = ?(#sessionExpired : Types.ExpiredBy);
+                stripeSessionId = ?sessionId;
+              };
+              // Release point 1 (#30), and the most common one: Stripe says the
+              // session died unpaid, so every unpaid order releases here.
+              #ok(commitTransition(store, order, expired));
+            };
+            case (#err(e)) #err(e);
+          };
         };
       };
     };

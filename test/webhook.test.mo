@@ -11,6 +11,7 @@ import Orphans "../src/backend/Orphans";
 import Http "../src/backend/Http";
 import Idempotency "../src/backend/Idempotency";
 import Orders "../src/backend/Orders";
+import Set "mo:core/Set";
 import Types "../src/backend/Types";
 import Card "../src/backend/rails/Card";
 import Util "../src/backend/Util";
@@ -52,6 +53,9 @@ let lockedCycles : Nat = 3_500_000_000_000;
 
 func freshDeps() : Card.Deps {
   {
+    // No cancel requested by default: these tests are about ingestion. The
+    // cancel-attribution case builds its own set below.
+    cancelRequests = Set.empty<Types.OrderId>();
     orders = Orders.emptyStore();
     dedup = Idempotency.emptyStore();
     orphanStore = Orphans.emptyStore();
@@ -123,6 +127,18 @@ func partialRefundBody(eventId : Text, intent : Text, refunded : Nat, chargeTota
     "\"data\":{\"object\":{\"payment_intent\":\"" # intent # "\"," #
     "\"amount\":" # chargeTotal.toText() # "," #
     "\"amount_refunded\":" # refunded.toText() # "}}}"
+  ).encodeUtf8();
+};
+
+func expiredBody(eventId : Text, ref : ?Text) : Blob {
+  let refJson = switch (ref) {
+    case (?r) "\"" # r # "\"";
+    case (null) "null";
+  };
+  (
+    "{\"id\":\"" # eventId # "\",\"type\":\"checkout.session.expired\",\"livemode\":true,"
+    # "\"data\":{\"object\":{\"id\":\"cs_test_x\",\"object\":\"checkout.session\","
+    # "\"client_reference_id\":" # refJson # "}}}"
   ).encodeUtf8();
 };
 
@@ -1072,5 +1088,44 @@ suite("handleWebhook: only a real payment creates money-out work", func() {
     let outcome = Card.handleWebhook(freshDeps(), null, signedReq(paidBody("e", "p", null, 500)), nowNs, Card.defaultToleranceSeconds);
     assert outcome.response.status_code == 503;
     assert outcome.paidOrder == null;
+  });
+});
+
+suite("a buyer's cancel is not a system expiry, THROUGH the webhook", func() {
+  test("⚠️ the expired event records #cancelled when the owner asked to cancel", func() {
+    // ⚠️ **This is the path the previous two fixes missed.** `cancel_order` expires the
+    // session at Stripe, Stripe fires `checkout.session.expired`, and THIS handler
+    // settles the order before the cancel is recorded. The first attempt guarded the
+    // recovery sweep from a transient set this module cannot see; the second routed the
+    // sweep and the admin expire through the attribution and left this call going
+    // straight to `expireBySession`. Both passed their tests, because neither test
+    // drove the webhook.
+    let deps = freshDeps();
+    withOrder(deps, #card);
+    deps.cancelRequests.add(orderId);
+
+    let resp = deliver(deps, expiredBody("evt_x", ?goodRef));
+    assert resp.status_code == 200;
+
+    let ?settled = Orders.get(deps.orders, orderId) else Runtime.trap("order vanished");
+    assert settled.status == #cancelled;
+    // Nothing expired, so no cause. This is the provenance #34 added `expiredBy` for.
+    assert settled.expiredBy == null;
+    // The honoured intent is pruned.
+    assert not deps.cancelRequests.contains(orderId);
+  });
+
+  test("⚠️ and with no request it is still a real expiry, with its cause", func() {
+    // The other half. Without it, the assertion above is satisfied by a handler that
+    // cancels every expired session, which would record every abandoned checkout as
+    // the buyer's own decision.
+    let deps = freshDeps();
+    withOrder(deps, #card);
+
+    assert deliver(deps, expiredBody("evt_y", ?goodRef)).status_code == 200;
+
+    let ?settled = Orders.get(deps.orders, orderId) else Runtime.trap("order vanished");
+    assert settled.status == #expired;
+    assert settled.expiredBy == ?(#sessionExpired : Types.ExpiredBy);
   });
 });

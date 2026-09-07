@@ -164,7 +164,7 @@ suite("the promise tally (#30 PR-B) — every writer moves it", func() {
     // checkout takes, and the one that leaked.
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    switch (Orders.expireBySession(store, "ord-1", "cs_test", 300)) {
+    switch (Orders.expireBySession(store, Set.empty<Types.OrderId>(), "ord-1", "cs_test", 300)) {
       case (#ok(_)) {};
       case (#err(_)) assert false;
     };
@@ -269,7 +269,7 @@ suite("the promise tally (#30 PR-B) — every writer moves it", func() {
     ignore newOrder(store, "ord-1", alice);
     ignore Orders.applyTransition(store, "ord-1", #cancelled, 300);
     assert Orders.promised(store) == 0;
-    switch (Orders.expireBySession(store, "ord-1", "cs_test", 400)) {
+    switch (Orders.expireBySession(store, Set.empty<Types.OrderId>(), "ord-1", "cs_test", 400)) {
       case (#err(#illegalTransition(_))) {};
       case (_) assert false;
     };
