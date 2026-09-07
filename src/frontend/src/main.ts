@@ -419,7 +419,15 @@ let customUsdCents: bigint | null = null;
 /// The backend's quote for the typed amount, from `quote_previews` — never
 /// computed here, so what the buyer is shown and what `create_order` locks cannot
 /// disagree.
-let customQuote: bigint | null = null;
+///
+/// ⚠️ **The WHOLE preview, not just its cycles.** This held only `.cycles` and threw
+/// `feeCents` and `netCents` away, so the detail card had no split for a typed amount
+/// and rendered three labelled rows with nothing in them: "Payment processing",
+/// "Buys cycles", "Operator margin", all empty. The comment there justified the blanks
+/// by claiming a typed amount is quoted for cycles but not for the split, which is
+/// simply false — `QuotePreview` carries all four fields for any amount. The data was
+/// arriving and being discarded one line before it was needed.
+let customQuote: QuotePreview | null = null;
 /// The gate's bounds, read from `lifecycle_config`. Null until the market loads;
 /// the input stays disabled until then rather than guessing a range.
 let amountBounds: { min: bigint; max: bigint } | null = null;
@@ -1998,9 +2006,14 @@ function renderTiers(): void {
 /// line to the rate-lock sentence while the other did not.
 function renderAmountDetail(): void {
   const chosen = chosenAmount();
-  const quote = chosen?.kind === "tier" ? tierQuotes.get(chosen.tierId) : undefined;
-  const cycles = chosen?.kind === "tier" ? (quote?.cycles ?? null) : customQuote;
-  const gross = chosen?.kind === "tier" ? quote?.usdCents : (customUsdCents ?? undefined);
+  // ⚠️ ONE source for both kinds of amount. A preset's quote and a typed amount's
+  // preview are the same shape from the same backend query, so there is no reason for
+  // the card to know which it is looking at.
+  const quote = chosen?.kind === "tier"
+    ? tierQuotes.get(chosen.tierId)
+    : (customQuote ?? undefined);
+  const cycles = quote?.cycles ?? null;
+  const gross = quote?.usdCents ?? (customUsdCents ?? undefined);
 
   const hideAll = (): void => {
     show("amount-detail", false);
@@ -2012,12 +2025,12 @@ function renderAmountDetail(): void {
     return;
   }
 
-  // ⚠️ **"No split known" and "the fee exceeds the amount" are DIFFERENT, and conflating
-  // them was a bug this suite caught.** A typed amount is quoted for cycles but not for
-  // the split, so its `netCents` is absent - and `feeRows` reads an absent net as the
-  // processor's fee swallowing the whole amount, which put a valid $25 order behind
-  // "Pick a larger amount". The split is only consulted when the backend supplied one.
-  const split = quote?.feeCents === undefined
+  // ⚠️ **An absent `netCents` means the fee EXCEEDS the amount, and it is the only
+  // thing that means that.** `feeRows` reads it that way, which is right: the backend
+  // omits the net exactly when the processor's fee would swallow the whole charge. This
+  // used to be reachable for a typed amount too, because the preview's split was being
+  // discarded on arrival, so a valid $25 order landed behind "Pick a larger amount".
+  const split = quote === undefined
     ? null
     : feeRows(gross, quote.feeCents, quote.netCents, cardFee);
   if (split?.kind === "tooSmall") {
@@ -2031,8 +2044,6 @@ function renderAmountDetail(): void {
   }
 
   el("detail-pay").textContent = formatUsdCents(gross);
-  // Blank rather than computed locally: deriving a fee here is how a page comes to show
-  // a number the gateway would not honour.
   el("detail-processing").textContent = split?.processing ?? "";
   el("detail-net").textContent = split?.net ?? "";
   el("detail-margin").textContent = split?.margin ?? "";
@@ -2095,7 +2106,7 @@ function renderSubmitGate(): void {
   } else if (chosenAmount() === null) {
     btn.disabled = true;
     btn.textContent = "Pick an amount";
-  } else if (customUsdCents !== null && customQuote === null) {
+  } else if (customUsdCents !== null && (customQuote?.cycles ?? null) === null) {
     // A typed amount the gateway could not price. Same refusal as an unpriceable
     // preset, said in the same words.
     btn.disabled = true;
@@ -2292,7 +2303,7 @@ async function onCustomAmountInput(): Promise<void> {
     // would not honour.
     try {
       const preview = await backend.quote_previews([read.cents]);
-      customQuote = preview.quotes[0]?.cycles ?? null;
+      customQuote = preview.quotes[0] ?? null;
     } catch {
       customQuote = null;
     }
@@ -2346,7 +2357,9 @@ async function createCardOrder(dest: Destination): Promise<void> {
   // floor and ceiling.
   const chosen = chosenAmount();
   if (chosen === null) return;
-  const shown = chosen.kind === "tier" ? (tierQuotes.get(chosen.tierId)?.cycles ?? null) : customQuote;
+  const shown = chosen.kind === "tier"
+    ? (tierQuotes.get(chosen.tierId)?.cycles ?? null)
+    : (customQuote?.cycles ?? null);
   const amount: Amount = chosen.kind === "tier"
     ? { __kind__: "tier", tier: chosen.tierId }
     : { __kind__: "custom", custom: chosen.usdCents };

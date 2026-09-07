@@ -3147,3 +3147,52 @@ describe("the landing call to action is part of the argument", () => {
     expect(document.querySelectorAll(".cta-hero").length).toBe(1);
   });
 });
+
+describe("a typed amount gets the SAME detail as a preset", () => {
+  async function typeCustom(value: string): Promise<void> {
+    await mount();
+    el("tier-custom").click();
+    await settle();
+    const field = el<HTMLInputElement>("custom-amount");
+    field.value = value;
+    field.dispatchEvent(new Event("input"));
+    await settle();
+  }
+
+  test("⚠️ the split rows are FILLED, not three empty labels", async () => {
+    // The bug: `customQuote` kept only `.cycles` from the preview and discarded
+    // `feeCents` and `netCents`, so the card had no split for a typed amount and
+    // rendered "Payment processing", "Buys cycles" and "Operator margin" with nothing
+    // in them. `QuotePreview` carries all four fields for any amount; the data was
+    // arriving and being thrown away one line before it was needed.
+    await typeCustom("53");
+    expect(el("amount-detail").hidden).toBe(false);
+    for (const id of ["detail-pay", "detail-processing", "detail-net", "detail-margin"]) {
+      expect(el(id).textContent).not.toBe("");
+    }
+    expect(el("detail-margin").textContent).toBe("none");
+  });
+
+  test("⚠️ no labelled row in the card is ever left blank", async () => {
+    // The general form of the same defect: a label with no value reads as a figure
+    // that failed to load. Asserted across every row so a future row cannot ship
+    // half-wired the way these three did.
+    await typeCustom("53");
+    const rows = el("amount-detail").querySelectorAll("dl > div");
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      const label = row.querySelector("dt")?.textContent ?? "";
+      const value = row.querySelector("dd")?.textContent ?? "";
+      expect(value, `row "${label}" has a label and no value`).not.toBe("");
+    }
+  });
+
+  test("the figures come from the BACKEND's preview, not from arithmetic here", async () => {
+    // The mock answers a fixed quote, so these are the backend's numbers rather than
+    // anything this page derived: what the buyer sees and what create_order locks
+    // cannot disagree.
+    await typeCustom("53");
+    expect(el("detail-processing").textContent).toContain("$0.45");
+    expect(el("detail-net").textContent).toBe("$4.55");
+  });
+});
