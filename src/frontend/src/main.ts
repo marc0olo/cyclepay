@@ -60,9 +60,8 @@ import {
   type GateReason,
   amountLabels,
   creditedSplit,
-  estimateLine,
   type FeeConfig,
-  feeBreakdown,
+  feeRows,
   gateReasonMessage,
   lockedVsEstimate,
   minAcceptableCycles,
@@ -1712,6 +1711,19 @@ async function loadMarket(): Promise<void> {
   tiers = tierList;
   cardFee = { feeBps: pricing.config.feeBps, feeFixedCents: pricing.config.feeFixedCents };
 
+  // ⚠️ **The first configured amount is preselected, and it is the FIRST rather than
+  // the cheapest or a hardcoded $10.** The operator decides the order of these, so the
+  // one they put first is the one they mean as the default; picking the minimum by value
+  // would silently override that. A buyer arriving at "Pick an amount" with nothing
+  // picked has to act before the page tells them anything: with a selection, the
+  // breakdown is on screen immediately and the button is live.
+  //
+  // Only when nothing is chosen yet, so a reload mid-flow does not move a buyer's own
+  // choice, and a typed amount is never overwritten.
+  if (selectedTierId === null && !customChosen && tiers.length > 0) {
+    selectedTierId = tiers[0]!.id;
+  }
+
   // Both rate inputs are shown, because both are needed to reproduce a quote —
   // the ICP price from the Exchange Rate Canister and the XDR/ICP rate the CMC
   // will actually price at. A buyer can query either canister and check us.
@@ -1819,13 +1831,12 @@ function renderRateLine(): void {
       ? [...tierQuotes.values()].some((q) => q.cycles !== undefined)
       : pricing.lastAttempt?.ok !== false;
 
+  // ⚠️ **This strip now says ONE thing: that there is no rate.** It used to print the
+  // rate, the fee and "cycles are locked at order creation" - all three of which the
+  // detail card above already states, the fee twice over. It keeps the no-rate notice
+  // because when there is no rate there is no card to put it in.
   if (pricing.rates && priceable) {
-    const rates = pricing.rates;
-    const usdPerIcp = (Number(rates.usdPerIcpMicros) / 1e6).toFixed(2);
-    const xdrPerIcp = (Number(rates.xdrPermyriadPerIcp) / 1e4).toFixed(4);
-    const fee = `fee ${Number(pricing.config.feeBps) / 100}% + ${formatUsdCents(pricing.config.feeFixedCents)}`;
-    node.textContent =
-      `ICP $${usdPerIcp} · ${xdrPerIcp} XDR/ICP · ${fee} · cycles are locked at order creation`;
+    node.textContent = "";
     return;
   }
   node.textContent =
@@ -1909,9 +1920,15 @@ function renderTiers(): void {
     // so with no rate every tile printed the same sentence and the page said it three
     // times in one row, plus again under the field, plus in the button. It is a fact
     // about the gateway, not about this tier: `#rate-line` states it once.
+    // ⚠️ **The FIGURE, not the explanation.** This printed
+    // "≈ 7.138 G cycles credited (7.238 G sent, less the cycles ledger's 100 M transfer
+    // fee)": eighty-five characters of prose inside a button, wrapping to three lines,
+    // and byte-identical in the parenthetical across every tile. That parenthetical says
+    // nothing distinguishing one amount from another, which is the only job a label in a
+    // chooser has. It moved under the tiles, once, for the amount actually chosen.
     label.textContent = quoted?.cycles === undefined || quoted.cycles === null
       ? ""
-      : estimateLine(quoted.cycles, transferFee);
+      : `≈ ${creditedSplit(quoted.cycles, transferFee).figure}`;
     btn.append(amount, label);
     btn.onclick = () => {
       selectedTierId = tier.id;
@@ -1925,7 +1942,7 @@ function renderTiers(): void {
       show("custom-amount-error", false);
       clearRequote();
       renderTiers();
-      renderTierDetail();
+      renderAmountDetail();
       renderSubmitGate();
     };
     container.append(btn);
@@ -1955,7 +1972,7 @@ function renderTiers(): void {
     selectedTierId = null;
     clearRequote();
     renderTiers();
-    renderTierDetail();
+    renderAmountDetail();
     renderSubmitGate();
     // Focus follows the reveal: the tile exists to get the buyer into the field, and
     // making them click twice for one intent is the cost of hiding it.
@@ -1964,26 +1981,78 @@ function renderTiers(): void {
   container.append(custom);
 
   show("custom-panel", customChosen);
-  renderTierDetail();
+  renderAmountDetail();
 }
 
-/// Fee split and rate-lock note for the selected tier.
-function renderTierDetail(): void {
-  const node = el("tier-detail");
-  const quote = selectedTierId === null ? undefined : tierQuotes.get(selectedTierId);
-  if (!quote || cardFee === null) {
-    show("tier-detail", false);
+/// The chosen amount's detail: the same card the order page shows after locking.
+///
+/// ⚠️ **ONE renderer for the preset and the typed amount.** There were two writing
+/// different shapes into the same node, which is how one of them came to join the fee
+/// line to the rate-lock sentence while the other did not.
+function renderAmountDetail(): void {
+  const chosen = chosenAmount();
+  const quote = chosen?.kind === "tier" ? tierQuotes.get(chosen.tierId) : undefined;
+  const cycles = chosen?.kind === "tier" ? (quote?.cycles ?? null) : customQuote;
+  const gross = chosen?.kind === "tier" ? quote?.usdCents : (customUsdCents ?? undefined);
+
+  const hideAll = (): void => {
+    show("amount-detail", false);
+    show("amount-too-small", false);
+    show("rate-lock-note", false);
+  };
+  if (chosen === null || cardFee === null || gross === undefined) {
+    hideAll();
+    return;
+  }
+
+  // ⚠️ **"No split known" and "the fee exceeds the amount" are DIFFERENT, and conflating
+  // them was a bug this suite caught.** A typed amount is quoted for cycles but not for
+  // the split, so its `netCents` is absent - and `feeRows` reads an absent net as the
+  // processor's fee swallowing the whole amount, which put a valid $25 order behind
+  // "Pick a larger amount". The split is only consulted when the backend supplied one.
+  const split = quote?.feeCents === undefined
+    ? null
+    : feeRows(gross, quote.feeCents, quote.netCents, cardFee);
+  if (split?.kind === "tooSmall") {
+    // Not a formatting variant of the card: there is no split to show, so the card
+    // stays down and the reason stands alone.
+    el("amount-too-small").textContent = split.message;
+    show("amount-too-small", true);
+    show("amount-detail", false);
     show("rate-lock-note", false);
     return;
   }
-  node.textContent = feeBreakdown(quote.usdCents, quote.feeCents, quote.netCents, cardFee);
-  // ⚠️ **A separate node, and the join was the bug.** These were one string with a
-  // space between them, so the page read "operator margin: none The exchange rate is
-  // locked when you create the order": a dot-separated data line running into a
-  // 150-character sentence, with "none The" reading as a phrase.
+
+  el("detail-pay").textContent = formatUsdCents(gross);
+  // Blank rather than computed locally: deriving a fee here is how a page comes to show
+  // a number the gateway would not honour.
+  el("detail-processing").textContent = split?.processing ?? "";
+  el("detail-net").textContent = split?.net ?? "";
+  el("detail-margin").textContent = split?.margin ?? "";
+  el("detail-rate").textContent = rateTerms();
+
+  if (cycles === null) {
+    el("detail-receive").textContent = "";
+    show("detail-fee-note", false);
+  } else {
+    const split = creditedSplit(cycles, transferFee);
+    el("detail-receive").textContent = `≈ ${split.figure}`;
+    el("detail-fee-note").textContent = split.note ?? "";
+    show("detail-fee-note", split.note !== null);
+  }
   el("rate-lock-note").textContent = RATE_LOCK_NOTE;
   show("rate-lock-note", true);
-  show("tier-detail", true);
+  show("amount-detail", true);
+  show("amount-too-small", false);
+}
+
+/// The rate, for the card's own row. The strip below no longer prints it.
+function rateTerms(): string {
+  const rates = lastPricing?.rates;
+  if (!rates) return "";
+  const usdPerIcp = (Number(rates.usdPerIcpMicros) / 1e6).toFixed(2);
+  const xdrPerIcp = (Number(rates.xdrPermyriadPerIcp) / 1e4).toFixed(4);
+  return `ICP $${usdPerIcp} · ${xdrPerIcp} XDR/ICP`;
 }
 
 /// The one way into the buy view. Pushed, not replaced: the visitor asked for
@@ -2218,27 +2287,10 @@ async function onCustomAmountInput(): Promise<void> {
       customQuote = null;
     }
   }
-  renderCustomEstimate();
+  renderAmountDetail();
   renderSubmitGate();
 }
 
-/// What the typed amount buys, under the field.
-function renderCustomEstimate(): void {
-  const node = el("tier-detail");
-  if (customUsdCents === null) {
-    show("tier-detail", false);
-    show("rate-lock-note", false);
-    return;
-  }
-  // ⚠️ No rate means NOTHING here, not a fourth copy of the reason: `#rate-line`
-  // carries it once and the button already refuses. Repeating it beside the field the
-  // buyer is typing into implies the field is the problem.
-  const priced = customQuote !== null;
-  node.textContent = priced ? estimateLine(customQuote, transferFee) : "";
-  el("rate-lock-note").textContent = RATE_LOCK_NOTE;
-  show("tier-detail", priced);
-  show("rate-lock-note", priced);
-}
 
 /// The one place "what amount is the buyer buying" is answered.
 ///

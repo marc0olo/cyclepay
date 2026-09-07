@@ -210,9 +210,45 @@
                dot-separated data line running straight into a 150-character sentence,
                with "none The" reading as one phrase. A data line and a policy note are
                not the same kind of content and never belonged in one node. -->
-          <p id="tier-detail" class="estimate-detail" hidden></p>
+          <!-- IMPORTANT: The chosen amount's detail, and it is the SAME card the order
+               page shows after locking. Deliberate reuse: the preview and the receipt
+               are the same object at two moments, so a buyer who read one recognises
+               the other, and the two cannot drift into disagreeing layouts.
+
+               This replaced three muted lines that overlapped each other. The first was
+               the split as sideways prose ("charged · processing · buys cycles ·
+               margin"), which is a table written on one line: nothing lines up and
+               nothing can be compared down a column. The second was the rate-lock
+               sentence. The third was a rate strip that repeated the fee AND the lock
+               statement the two above it had already made. -->
+          <div id="amount-detail" class="checkout-summary" hidden>
+            <dl class="checkout-amounts">
+              <div>
+                <dt>You pay</dt>
+                <dd id="detail-pay" class="amount"></dd>
+              </div>
+              <div>
+                <dt>You receive</dt>
+                <dd id="detail-receive" class="amount"></dd>
+              </div>
+            </dl>
+            <p id="detail-fee-note" class="muted fee-note" hidden></p>
+            <dl class="checkout-terms">
+              <div><dt>Payment processing</dt><dd id="detail-processing"></dd></div>
+              <div><dt>Buys cycles</dt><dd id="detail-net"></dd></div>
+              <div><dt>Operator margin</dt><dd id="detail-margin"></dd></div>
+              <div><dt>Rate</dt><dd id="detail-rate" class="mono"></dd></div>
+            </dl>
+          </div>
+          <!-- The amount cannot carry the processor's fee at all: not a formatting
+               variant of the card, so it is its own line and the card stays hidden. -->
+          <p id="amount-too-small" class="error" hidden></p>
           <p id="rate-lock-note" class="muted" hidden></p>
           <p id="quote-notice" class="notice" hidden></p>
+          <!-- IMPORTANT: ONLY the no-rate notice now. It used to also print the rate,
+               the fee and the lock statement, all of which the card above states. It
+               remains the single owner of "there is no rate", which is why it is not
+               folded into the card: when there is no rate there is no card. -->
           <p id="rate-line" class="muted"></p>
         </section>
 

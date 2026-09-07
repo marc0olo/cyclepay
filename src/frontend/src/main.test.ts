@@ -591,19 +591,21 @@ describe("tier rendering", () => {
     expect(tierButton().querySelector(".amount")!.textContent).toBe("$10.00");
   });
 
-  test("selecting a tier reveals the fee split and the rate-lock note", async () => {
+  test("the chosen amount's split is a card of ROWS, not a sentence", async () => {
+    // ⚠️ It was one line of prose: "charged · processing · buys cycles · margin", a
+    // table written sideways where nothing lines up and no column can be compared. And
+    // it ran straight into the rate-lock sentence, so the page read "operator margin:
+    // none The exchange rate is locked...".
     await mount();
-    expect(el("tier-detail").hidden).toBe(true);
-    tierButton().click();
-    await settle();
-    const detail = el("tier-detail");
-    expect(detail.hidden).toBe(false);
-    expect(detail.textContent).toContain("$0.45 payment processing");
-    expect(detail.textContent).toContain("operator margin: none");
-    // ⚠️ **A SEPARATE element, and the join was the bug.** These were one string with
-    // a space between them, so the page read "operator margin: none The exchange rate
-    // is locked...": a dot-separated data line running into a 150-character sentence.
-    expect(detail.textContent).not.toContain("locked when you create the order");
+    // Preselected, so the breakdown is on screen without the buyer acting first.
+    expect(el("amount-detail").hidden).toBe(false);
+    expect(el("detail-pay").textContent).toBe("$10.00");
+    expect(el("detail-processing").textContent).toContain("$0.45");
+    expect(el("detail-net").textContent).toBe("$4.55");
+    expect(el("detail-margin").textContent).toBe("none");
+    // Each figure in its own cell: no cell carries the whole sentence.
+    expect(el("detail-processing").textContent).not.toContain("charged");
+    expect(el("amount-detail").textContent).not.toContain("locked when you create the order");
     const lock = el("rate-lock-note");
     expect(lock.hidden).toBe(false);
     expect(lock.textContent).toContain("locked when you create the order");
@@ -656,14 +658,23 @@ describe("the deposit fee is disclosed on every order", () => {
     expect(tierButton().querySelector(".cycles")!.textContent).toContain("cycles");
   });
 
-  test("a fee large enough to move the figure is shown as a split", async () => {
+  test("a fee large enough to move the figure is shown as a split, UNDER the tiles", async () => {
+    // ⚠️ The tile carries the figure and the card carries the explanation. The
+    // parenthetical used to be inside every button, byte-identical across all of them,
+    // saying nothing that distinguished one amount from another.
     state.transferFee = 500_000_000_000n;
     await mount();
     const label = tierButton().querySelector(".cycles")!.textContent!;
-    expect(label).toContain("3 T cycles credited");
+    expect(label).toBe("≈ 3 T cycles");
+    expect(label).not.toContain("sent");
+
+    // And the split is stated once, in the card, for the chosen amount.
+    expect(el("detail-receive").textContent).toBe("≈ 3 T cycles");
+    const note = el("detail-fee-note");
+    expect(note.hidden).toBe(false);
     // "3.5 T sent", not "minted" (#30 PR-C): the gateway transfers from its reserve.
-    expect(label).toContain("3.5 T sent");
-    expect(label).not.toContain("minted");
+    expect(note.textContent).toContain("3.5 T sent");
+    expect(note.textContent).not.toContain("minted");
   });
 });
 
@@ -1164,11 +1175,14 @@ describe("the rate strip never contradicts the tiers", () => {
     expect(label).toBe("");
   });
 
-  test("a usable rate is printed in full", async () => {
+  test("⚠️ a usable rate is on the CARD, and the strip goes quiet", async () => {
+    // The strip printed the rate, the fee and "cycles are locked at order creation",
+    // all of which the card above states, the fee twice over. Its one remaining job is
+    // to say there is no rate, so with a rate it says nothing at all.
     await mount();
-    const strip = el("rate-line").textContent ?? "";
-    expect(strip).toContain("XDR/ICP");
-    expect(strip).not.toMatch(/no exchange rate/i);
+    expect(el("detail-rate").textContent).toContain("XDR/ICP");
+    expect(el("detail-rate").textContent).toContain("ICP $4.55");
+    expect(el("rate-line").textContent).toBe("");
   });
 });
 
@@ -1271,7 +1285,15 @@ describe("a buyer can type an amount", () => {
     return el<HTMLInputElement>("custom-amount");
   }
 
+  /// ⚠️ **Opens the Custom tile first, because the field is closed until it is.**
+  /// Typing straight into a hidden field is not a flow a buyer can perform, and it also
+  /// left the preselected preset chosen: the button then offered to buy $10 while the
+  /// field showed an error about the amount typed.
   async function type(value: string): Promise<void> {
+    if (el("custom-panel").hidden) {
+      el("tier-custom").click();
+      await settle();
+    }
     customField().value = value;
     customField().dispatchEvent(new Event("input"));
     await settle();
@@ -1291,7 +1313,7 @@ describe("a buyer can type an amount", () => {
     expect(el("custom-amount-error").hidden).toBe(true);
     // Priced through quote_previews — the same code create_order calls — so what
     // the buyer sees and what the gateway locks cannot disagree.
-    expect(el("tier-detail").hidden).toBe(false);
+    expect(el("amount-detail").hidden).toBe(false);
 
     el<HTMLFormElement>("order-form").dispatchEvent(new Event("submit"));
     await settle();

@@ -160,21 +160,55 @@ export function cyclesForCents(
 /// The fee split in words, from the backend's own numbers. Ends with the margin
 /// statement because "what is the operator taking?" is the question a fee line
 /// actually raises. And on this gateway the answer is nothing.
+/// The fee split as ROWS, or the reason the amount cannot carry the fee at all.
+///
+/// ⚠️ **The rows exist because a dot-separated sentence is not a breakdown.** The buy
+/// view printed all of this as one line of prose, `charged · processing · buys cycles ·
+/// margin`, which is a table written sideways: nothing lines up, the figures cannot be
+/// compared down a column, and it grew to a hundred characters. `feeBreakdown` is built
+/// from this so the one string and the rows cannot drift.
+///
+/// The `#tooSmall` case is not a formatting variant: the processor's fee exceeds the
+/// whole amount, so there is no split to show and the buyer has to pick more.
+export type FeeRows =
+  | { kind: "rows"; pay: string; processing: string; net: string; margin: string }
+  | { kind: "tooSmall"; message: string };
+
+export function feeRows(
+  grossCents: bigint,
+  feeCents: bigint,
+  netCents: bigint | undefined,
+  fee: FeeConfig,
+): FeeRows {
+  if (netCents === undefined) {
+    return {
+      kind: "tooSmall",
+      message: `Payment processing (${formatUsdCents(feeCents)}) would exceed ${formatUsdCents(grossCents)}. Pick a larger amount.`,
+    };
+  }
+  const rate = fee.feeBps === 0n && fee.feeFixedCents === 0n
+    ? "no processor fee"
+    : `${Number(fee.feeBps) / 100}% + ${formatUsdCents(fee.feeFixedCents)}`;
+  return {
+    kind: "rows",
+    pay: formatUsdCents(grossCents),
+    processing: `${formatUsdCents(feeCents)} (${rate})`,
+    net: formatUsdCents(netCents),
+    margin: "none",
+  };
+}
+
 export function feeBreakdown(
   grossCents: bigint,
   feeCents: bigint,
   netCents: bigint | undefined,
   fee: FeeConfig,
 ): string {
-  if (netCents === undefined) {
-    return `Payment processing (${formatUsdCents(feeCents)}) would exceed ${formatUsdCents(grossCents)}. Pick a larger amount.`;
-  }
-  const rate = fee.feeBps === 0n && fee.feeFixedCents === 0n
-    ? "no processor fee"
-    : `${Number(fee.feeBps) / 100}% + ${formatUsdCents(fee.feeFixedCents)}`;
+  const rows = feeRows(grossCents, feeCents, netCents, fee);
+  if (rows.kind === "tooSmall") return rows.message;
   return (
-    `${formatUsdCents(grossCents)} charged · ${formatUsdCents(feeCents)} payment processing (${rate}) · ` +
-    `${formatUsdCents(netCents)} buys cycles · operator margin: none`
+    `${rows.pay} charged · ${rows.processing.replace(" (", " payment processing (")} · ` +
+    `${rows.net} buys cycles · operator margin: ${rows.margin}`
   );
 }
 
