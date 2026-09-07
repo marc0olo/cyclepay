@@ -2073,6 +2073,26 @@ persistent actor CyclesGateway {
   transient let expiryChecksInFlight = Set.empty<Types.OrderId>();
   transient var lastExpiryScanAtNs : Int = 0;
 
+  /// Orders with a buyer's cancellation in flight, so the recovery sweep leaves them
+  /// alone until it lands.
+  ///
+  /// ⚠️ **`cancel_order` expires the session at Stripe BEFORE recording the cancel**
+  /// (#33 option B: nothing is ever half-cancelled). Between those two steps there is an
+  /// await, and in that window Stripe's honest answer to the sweep's retrieve is
+  /// `"expired"` — because the buyer's own cancel just expired it. The sweep then wrote
+  /// `#expired` with `expiredBy = #sessionExpired`, and the buyer's `→ #cancelled`
+  /// transition was refused as terminal. The buyer's decision was recorded as a system
+  /// expiry, which is exactly the provenance #34 added `expiredBy` to preserve.
+  ///
+  /// ⚠️ **`expireWithCause`'s own no-op guard cannot cover this**, and that is why a set
+  /// is needed rather than a stronger check there: that guard protects an order that is
+  /// ALREADY `#cancelled`. Here the cancel has not been recorded yet — it is in the
+  /// await — so there is nothing in the store for it to protect.
+  ///
+  /// Transient, like the others: a guard surviving an upgrade would block its order
+  /// forever, and no money state lives here.
+  transient let cancelsInFlight = Set.empty<Types.OrderId>();
+
   /// Orders already audited for a blocked delivery this session, so a stuck
   /// order contributes one audit line rather than one per sweep. Transient: the
   /// durable record of a stuck order is the problem filed on it once the max-wait
@@ -3265,7 +3285,17 @@ persistent actor CyclesGateway {
         audit("order.cancelledSessionless", id # " had no session; cancelled without an outcall");
       };
       case (?sessionId) {
-        switch (await* expireStripeSession(sessionId)) {
+        // ⚠️ **Registered BEFORE the await, cleared in `finally`.** The whole race is
+        // the window this outcall opens: the session is expired at Stripe but the
+        // cancel is not recorded yet, so the sweep's retrieve gets an honest "expired"
+        // and attributes the buyer's decision to a system expiry. `finally` rather than
+        // a trailing remove, so a trap or a reject cannot leave the order permanently
+        // invisible to the sweep.
+        cancelsInFlight.add(id);
+        let outcome = try {
+          await* expireStripeSession(sessionId);
+        } finally { cancelsInFlight.remove(id) };
+        switch (outcome) {
           case (#ok) {};
           case (#notOpen(_)) {
             // THREE causes, and this arm cannot tell them apart: the session completed
@@ -3336,7 +3366,14 @@ persistent actor CyclesGateway {
       };
     };
     let ?cancelled = tryTransition(id, #cancelled) else {
-      return #err("order " # id # " refused the transition to cancelled");
+      // ⚠️ **The buyer reads this, so it must not name the state machine.** It said
+      // "refused the transition to cancelled", which describes our matrix rather than
+      // their order. Reaching here means something else settled the order while this
+      // call was in flight, and the page they are looking at already shows what: the
+      // status re-renders from the store on the same response.
+      return #err(
+        "order " # id # " was already settled while this was in flight — the status above is current"
+      );
     };
     audit("order.cancelled", id # " cancelled by owner");
     #ok(cancelled);
@@ -3995,6 +4032,10 @@ persistent actor CyclesGateway {
   func checkSessionExpiry(orderId : Types.OrderId) : async* () {
     let ?order = Orders.get(orderStore, orderId) else return;
     let ?sessionId = order.stripeSessionId else return;
+    // ⚠️ **A buyer's cancel is mid-flight: leave it.** Skipping costs nothing — the
+    // sweep asks again next pass — while acting here overwrites the buyer's own
+    // decision with a system expiry. See `cancelsInFlight`.
+    if (cancelsInFlight.contains(orderId)) return;
     let answer = await* retrieveStripeSession(sessionId);
 
     // ⚠️ **Re-read the order. The await above is a window and the order can move
