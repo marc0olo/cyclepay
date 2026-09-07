@@ -3237,7 +3237,12 @@ describe("the CLI page is a numbered sequence", () => {
     // was: a different principal with an empty balance.
     await openCli();
     const steps = el("cli-steps").querySelectorAll(":scope > li");
-    expect(steps.length).toBe(4);
+    // FIVE now: the prerequisite is step one, inside the list. It was a "Before you
+    // start" panel above it, and a note above a numbered procedure reads as optional
+    // preamble — while skipping it makes the link command fail outright.
+    expect(steps.length).toBe(5);
+    expect(steps[0]!.className).toContain("step-prereq");
+    expect(steps[0]!.textContent).toMatch(/CLI access/);
     const commands = Array.from(el("cli-steps").querySelectorAll("code[id^='cmd-']"))
       .map((n) => n.textContent);
     expect(commands).toEqual([
@@ -3257,15 +3262,31 @@ describe("the CLI page is a numbered sequence", () => {
     expect(el("cmd-link").textContent).not.toContain(" dev ");
   });
 
-  test("⚠️ the prerequisite comes BEFORE step 1", async () => {
-    // "Enable CLI access" was the last paragraph of the first card, i.e. after the
-    // command it guards — a warning read only by someone who already failed.
+  test("⚠️ the prerequisite IS step one, and it names where to do it", async () => {
+    // It was the last paragraph of the first card — after the command it guards, so a
+    // warning read only by someone who already failed. Then it was a panel above the
+    // list, which reads as preamble. It is step one.
+    //
+    // ⚠️ And it links the SETTINGS, not only the guide. Saying "enable CLI access for
+    // your Internet Identity" with a docs link made a buyer read a page to discover the
+    // switch lives in their id.ai settings.
     await openCli();
-    const prereq = document.querySelector(".cli-prereq")!;
-    const steps = el("cli-steps");
-    expect(prereq.compareDocumentPosition(steps) & Node.DOCUMENT_POSITION_FOLLOWING)
-      .toBeTruthy();
-    expect(prereq.textContent).toMatch(/CLI access not enabled/);
+    const first = el("cli-steps").querySelector(":scope > li")!;
+    expect(first.textContent).toMatch(/CLI access/);
+    expect(first.querySelector<HTMLAnchorElement>("#cli-settings")!.getAttribute("href"))
+      .toBe("https://id.ai");
+    expect(first.querySelector("#cli-guide")).not.toBeNull();
+  });
+
+  test("⚠️ the agent aside does not break out to full bleed", async () => {
+    // `.explainer.sunk` breaks the measure with a negative inline margin and paints its
+    // own background — a landing-page band. Directly under a numbered procedure it read
+    // as a different page pasted on.
+    await openCli();
+    const aside = document.querySelector(".cli-aside")!;
+    expect(aside).not.toBeNull();
+    expect(aside.className).not.toContain("sunk");
+    expect(document.querySelector("#view-cli .explainer")).toBeNull();
   });
 
   test("the guide link points at the current CLI version", async () => {
@@ -3281,7 +3302,7 @@ describe("the CLI page is a numbered sequence", () => {
     await openCli();
     expect(el("credited-principal").textContent).toBe(FULL_PRINCIPAL);
     expect(el("cli-expect-balance").textContent).not.toBe("");
-    expect(el("cli-summary").textContent).toMatch(/Four commands/);
+    expect(el("cli-summary").textContent).toMatch(/One setting and four commands/);
   });
 
   test("every command has a copy button wired to its own id", async () => {

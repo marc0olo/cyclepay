@@ -43,7 +43,10 @@ test.describe("the delivered view", () => {
     await expect(page.locator("#cmd-deploy")).toHaveText("icp deploy -e ic");
     // The numerals come from the list counter, so a browser is the only place the
     // buyer's actual "step 1, 2, 3, 4" can be checked at all.
-    await expect(page.locator("#cli-steps > li")).toHaveCount(4);
+    // FIVE: the prerequisite is step one, in the list. Without it the link command
+    // fails outright, so it is not preamble.
+    await expect(page.locator("#cli-steps > li")).toHaveCount(5);
+    await expect(page.locator("#cli-settings")).toHaveAttribute("href", "https://id.ai");
     // And the guide points at the version the commands were verified against.
     await expect(page.locator("#cli-guide")).toHaveAttribute("href", /\/1\.4\//);
     // The command must name THIS origin, or it derives a different principal and

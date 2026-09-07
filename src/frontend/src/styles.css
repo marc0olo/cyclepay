@@ -526,9 +526,40 @@ button:disabled {
 
 /* ── the CLI page: numbered steps ─────────────────────────────────────────── */
 
-/* The prerequisite, ahead of step 1 because that is the order it matters in. */
-.cli-prereq {
-  margin-bottom: var(--space-6);
+/* Step one is a prerequisite performed in a BROWSER, not the terminal, and skipping it
+   makes step two fail outright — so it is tinted to read differently from the command
+   steps without leaving the sequence. */
+.step-prereq {
+  background: var(--icp-bg-elev);
+  border: 1px solid var(--icp-rule);
+  border-left: 3px solid var(--icp-warn);
+  border-radius: var(--radius-md);
+  padding: var(--space-4) var(--space-4) var(--space-4) 3.25rem;
+  margin-left: -0.5rem;
+}
+
+/* The numeral sits inside the tinted box rather than in the page gutter. */
+.cli-steps > li.step-prereq::before {
+  left: var(--space-4);
+  top: var(--space-4);
+}
+
+/* A quiet aside after the procedure. Deliberately NOT `.explainer.sunk`, which breaks
+   out to full bleed with its own background: that is a landing-page band, and directly
+   under a numbered procedure it reads as a different page pasted on. */
+.cli-aside {
+  margin-top: var(--space-7);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--icp-rule);
+  max-width: var(--measure);
+}
+
+.cli-aside h3 {
+  margin: 0 0 var(--space-2);
+}
+
+.cli-aside p {
+  margin: 0;
 }
 
 /* Numbers come from the list, not from hand-written eyebrows: the previous version

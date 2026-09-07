@@ -495,22 +495,6 @@
         <h2 class="section-h">Link the ICP CLI</h2>
         <p class="lede" id="cli-summary"></p>
 
-        <!-- IMPORTANT: The PREREQUISITE comes first, and it used to be the last
-             paragraph of the first card. Hitting "CLI access not enabled" is the most
-             common way this flow fails, and a warning placed after the command it
-             guards is a warning read only by someone who already failed. -->
-        <section class="notice cli-prereq">
-          <h3 class="section-h">Before you start</h3>
-          <p>
-            Enable CLI access for your Internet Identity, or the sign-in page says
-            "CLI access not enabled" and the link command never receives an identity.
-            <!-- href set by `renderCliSteps` from `CLI_IDENTITY_GUIDE`, so the CLI
-                 version lives beside the commands rather than in two places. -->
-            <a id="cli-guide" target="_blank" rel="noopener noreferrer" href="#/">Read
-              the guide &#8599;</a>
-          </p>
-        </section>
-
         <!-- IMPORTANT: NUMBERED steps, one treatment each. This was two cards with two
              different visual treatments covering four commands: the first card held a
              command, a fact, a second command and two paragraphs of caveats, and the
@@ -520,6 +504,28 @@
              An `<ol>`, so the sequence is the markup rather than a visual convention,
              and screen readers announce the position. -->
         <ol id="cli-steps" class="cli-steps">
+          <!-- IMPORTANT: The prerequisite is STEP ONE, inside the list, not a panel
+               above it. It was a "Before you start" note, and a note above a numbered
+               procedure reads as optional preamble - but without this switch the link
+               command fails outright, so it is the first thing you do, numbered like
+               everything else and tinted so it does not look like the others.
+
+               It also names WHERE. Saying "enable CLI access for your Internet
+               Identity" and linking only the guide made a buyer read a docs page to
+               discover the switch lives in their id.ai settings. -->
+          <li class="step-prereq">
+            <h3 class="section-h">Enable CLI access on your identity</h3>
+            <p>
+              Open your
+              <a id="cli-settings" target="_blank" rel="noopener noreferrer" href="#/">id.ai settings &#8599;</a>
+              and turn on CLI access. Without it the next command fails: the sign-in
+              page says "CLI access not enabled" and never returns an identity.
+            </p>
+            <p class="muted">
+              <a id="cli-guide" target="_blank" rel="noopener noreferrer" href="#/">How this works &#8599;</a>
+            </p>
+          </li>
+
           <li>
             <h3 class="section-h">Link this site's identity to the CLI</h3>
             <p class="muted">
@@ -598,7 +604,12 @@
         <!-- Moved here from the landing page, not deleted. It is guidance for after the
              purchase rather than a reason to make one, and it is still aimed at a human:
              someone pointing their own coding agent at the tooling. -->
-        <section class="explainer sunk">
+        <!-- IMPORTANT: NOT `.explainer.sunk` here. That class breaks out to full bleed
+             with its own background fill, which works as a band on the landing page and
+             reads as a different page pasted on immediately after a numbered procedure.
+             A quiet aside with a rule instead: subordinate to the steps, not a new
+             section competing with them. -->
+        <aside class="cli-aside">
           <h3 class="section-h">Building with an agent?</h3>
           <p>
             Point your coding agent at the
@@ -606,7 +617,7 @@
             and the
             <a href="https://skills.internetcomputer.org" target="_blank" rel="noopener noreferrer">skills library &#8599;</a>.
           </p>
-        </section>
+        </aside>
 
         <p><a id="cli-back" href="#/history">Back to your dashboard</a></p>
       </section>

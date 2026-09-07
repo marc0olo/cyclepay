@@ -24,6 +24,7 @@ import {
 import { currentIdentity, signIn, signOut } from "./auth";
 import {
   CLI_IDENTITY_GUIDE,
+  IDENTITY_SETTINGS,
   deployCommand,
   identityDefaultCommand,
   linkIdentityCommand,
@@ -2692,6 +2693,7 @@ function renderCliSteps(onCli: boolean): void {
   // `config.ts` rather than typed into the markup: one place to change when the CLI
   // version moves, which is exactly what went stale at 1.2.
   el<HTMLAnchorElement>("cli-guide").href = CLI_IDENTITY_GUIDE;
+  el<HTMLAnchorElement>("cli-settings").href = IDENTITY_SETTINGS;
   // The balance to compare against comes from the same ledger read the heading uses,
   // so the page cannot tell a buyer to expect a figure it is not itself showing.
   const shown = document.getElementById("ledger-balance")?.textContent ?? "";
@@ -2714,8 +2716,8 @@ function renderCliSummary(): void {
     return;
   }
   node.textContent = ledgerBalance === null
-    ? "Four commands and you are deploying."
-    : `${formatCycles(ledgerBalance)} cycles in your account. Four commands and you are deploying.`;
+    ? "One setting and four commands to deploy."
+    : `${formatCycles(ledgerBalance)} cycles in your account. One setting and four commands to deploy.`;
 }
 
 async function renderReceipt(order: Order): Promise<void> {

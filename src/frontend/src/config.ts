@@ -67,7 +67,16 @@ export function deployCommand(): string {
   return "icp deploy -e ic";
 }
 
+/// Where the prerequisite is actually performed: the identity provider's own settings.
+///
+/// ⚠️ **The guide alone was not enough.** The page said "enable CLI access for your
+/// Internet Identity" and linked the guide, without saying WHERE — so a buyer had to
+/// read a docs page to discover that the switch lives in their id.ai settings. Naming
+/// the place and linking straight to it is the difference between a warning and an
+/// instruction, and without the switch the link command fails outright.
+export const IDENTITY_SETTINGS = "https://id.ai";
+
 /// The guide for enabling CLI access on an Internet Identity — the prerequisite that
-/// makes step 1 possible at all.
+/// makes the link command possible at all.
 export const CLI_IDENTITY_GUIDE =
   "https://cli.internetcomputer.org/1.4/guides/managing-identities/#signing-in-as-a-specific-app";
