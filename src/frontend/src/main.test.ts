@@ -48,6 +48,13 @@ const state = {
   /// The simulation divisor `pricing_status` reports (#99). `1n` is production,
   /// which is what almost every test wants; the simulation-mode tests set it.
   divisor: 1n,
+  /// Whether `lifecycle_config` fails, for the console's cannot-read path (#97).
+  lifecycleError: false,
+  /// The rail settings the console's configuration surface reads (#97).
+  expectedLivemode: false as boolean | null,
+  stripeOrigin: "https://gateway.example" as string | null,
+  apiKeySet: true,
+  webhookSet: true,
   /// What `can_purchase` refuses with, or null for admitted (#99).
   canPurchase: null as { __kind__: string } | null,
   quote: {
@@ -212,6 +219,17 @@ const untypedOrderStubs = {
 
 const typedStubs = {
   card_tiers: async () => state.tiers,
+  // #97: the console's configuration surface reads these. Defaults match a provisioned
+  // sandbox gateway, so most tests see a console that is fully configured.
+  expected_livemode: async () => state.expectedLivemode,
+  stripe_origin: async () => state.stripeOrigin,
+  // The full `Status` shape, not just `isSet`: a duck-typed stub is the mirror this
+  // suite has removed before, and `satisfies Partial<Backend>` catches it.
+  // The full `Status`, not just `isSet`: a duck-typed stub is the mirror this suite has
+  // removed before, and `satisfies Partial<Backend>` catches it. The actor bindings map
+  // `opt nat` to an OPTIONAL property, so an unset timestamp is simply absent.
+  stripe_api_key_status: async () => ({ isSet: state.apiKeySet, generation: 1n }),
+  webhook_secret_status: async () => ({ isSet: state.webhookSet, generation: 1n }),
   /// #99: what the gate answers for this caller at the minimum purchase. `null` is
   /// "admitted", which is what almost every test wants.
   // ⚠️ The `as unknown as` hop, for the reason documented on `fixtures.ts`'s
@@ -221,7 +239,11 @@ const typedStubs = {
     state.canPurchase === null
       ? { ok: null }
       : { err: state.canPurchase }) as unknown as Backend["can_purchase"],
-  lifecycle_config: async () => ({
+  lifecycle_config: async () => {
+    // #97: the console must SAY the read failed rather than render an empty table,
+    // which reads as "nothing is configured" — a calmer claim than "we could not ask".
+    if (state.lifecycleError) throw new Error("lifecycle_config unreachable");
+    return ({
     gate: {
       maxOpenOrdersPerPrincipal: 1n,
       minCanisterCycles: 5_000_000_000_000n,
@@ -233,7 +255,8 @@ const typedStubs = {
     // gap: `lifecycle_config` gained `delivery` in #68 step 1, and neither the fixtures
     // nor this stub was updated. Both suites stayed green.
     delivery: { alertAfterNs: 7_200_000_000_000n, maxHoldNs: 259_200_000_000_000n },
-  }),
+    });
+  },
   admin_status: async () => state.adminStatus,
   orphans_unresolved: async (_after: bigint | null, _limit: bigint) => state.orphans,
   delayed_deliveries: async (_after: string | null, _limit: bigint) => state.delayed,
@@ -451,6 +474,11 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
+  state.lifecycleError = false;
+  state.expectedLivemode = false;
+  state.stripeOrigin = "https://gateway.example";
+  state.apiKeySet = true;
+  state.webhookSet = true;
   state.divisor = 1n;
   state.canPurchase = null;
   state.quote = { usdCents: TIER_CENTS, feeCents: 45n, netCents: 455n, cycles: TIER_CYCLES };
@@ -1940,5 +1968,112 @@ describe("the console link appears only for someone who can use it", () => {
     el<HTMLButtonElement>("sign-out").click();
     await Promise.resolve();
     expect(adminNav()!.hidden).toBe(true);
+  });
+});
+
+describe("the console says what can be changed, and what it means (#97)", () => {
+  /// The console is admin-gated, so every test here arrives as a controller.
+  async function openConsole(): Promise<void> {
+    state.adminStatus = {
+      caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+      granted: false,
+      isController: true,
+    };
+    await mount("landing", "#/admin");
+  }
+
+  test("⚠️ every configuration field is shown, with a meaning and an effect", async () => {
+    // The gap this closes: the console had NO config surface. Nine setters existed and
+    // it displayed the current value of none of them, so "what mode is this gateway in"
+    // was answerable only by reading the source.
+    await openConsole();
+    const fields = document.querySelectorAll("#config-groups .config-value");
+    // Twelve record fields (6 pricing, 4 gate, 2 delivery) plus the four rail rows.
+    expect(fields.length).toBeGreaterThanOrEqual(16);
+    // Every value is accompanied by prose. A bare number is what the operator already
+    // had from `pricing_status`, and it is what they said told them nothing.
+    const docs = document.querySelectorAll("#config-groups .config-doc");
+    expect(docs.length).toBeGreaterThanOrEqual(12);
+    for (const d of docs) expect((d.textContent ?? "").length).toBeGreaterThan(40);
+  });
+
+  test("the divisor reads as production or as a scale, never as a bare 1", async () => {
+    await openConsole();
+    const divisor = document.querySelector('#config-groups [data-field="divisor"]')!;
+    expect(divisor.textContent).toMatch(/production/i);
+    state.divisor = 1_000n;
+    await openConsole();
+    const scaled = document.querySelector('#config-groups [data-field="divisor"]')!;
+    expect(scaled.textContent).toMatch(/1\/1000/);
+  });
+
+  test("⚠️ nanoseconds and basis points are shown in units a person reads", async () => {
+    // A raw 300000000000 is not a number anyone reads as five minutes, and 290 is not a
+    // number anyone reads as 2.9%. Both keep the raw value beside them, because the
+    // command takes the raw one.
+    await openConsole();
+    const age = document.querySelector('[data-field="maxAgeNs"]')!;
+    expect(age.textContent).toMatch(/minute/i);
+    // The RAW value too, matched as a shape rather than a literal: the command takes
+    // nanoseconds, so an operator needs both, and hardcoding the stub's number here
+    // would be one more copy of a value defined elsewhere in this file.
+    expect(age.textContent).toMatch(/\(\d{9,} ns\)/);
+    const fee = document.querySelector('[data-field="feeBps"]')!;
+    expect(fee.textContent).toContain("2.9%");
+  });
+
+  test("each config group carries the command that changes it, pre-filled", async () => {
+    // #97's point: the setters take whole records, and hand-authoring one while
+    // omitting a field silently changes a live parameter. The rendered command already
+    // holds every current value, so an operator edits one number.
+    await openConsole();
+    const commands = [...document.querySelectorAll("#config-groups code.mono")]
+      .map((c) => c.textContent ?? "");
+    const pricing = commands.find((c) => c.includes("set_pricing_config"))!;
+    expect(pricing).toContain("feeBps = 290");
+    expect(pricing).toContain("divisor = 1");
+    expect(commands.some((c) => c.includes("set_gate_config"))).toBe(true);
+    expect(commands.some((c) => c.includes("set_delivery_config"))).toBe(true);
+  });
+
+  test("⚠️ NO command is offered for either secret", async () => {
+    // Permanent: a rendered command containing the key lands in this page's DOM and its
+    // clipboard. The console reports whether they are set and nothing else.
+    await openConsole();
+    const all = document.getElementById("admin")!.textContent ?? "";
+    expect(all).not.toContain("set_stripe_api_key");
+    expect(all).not.toContain("set_webhook_secret");
+    // ...but it does say whether the rail is live.
+    expect(all).toMatch(/key set/i);
+    expect(all).toMatch(/webhook set/i);
+  });
+
+  test("the argument-free levers are listed, including the ones nothing else mentions", async () => {
+    await openConsole();
+    const actions = document.getElementById("action-list")!.textContent ?? "";
+    for (const m of ["refresh_reserve", "refresh_rates", "recount_orders", "withdraw_reserve"]) {
+      expect(actions).toContain(m);
+    }
+  });
+
+  test("⚠️ an irreversible action states what it cannot undo, next to the command", async () => {
+    // The reason these are commands rather than buttons. A button removes the half that
+    // matters: the human reading an irreversible instruction before running it.
+    await openConsole();
+    const danger = document.querySelectorAll("#admin .config-danger");
+    expect(danger.length).toBeGreaterThan(0);
+    const withdraw = [...danger].map((d) => d.textContent ?? "")
+      .find((t) => /reserve/i.test(t) && /no lever/i.test(t));
+    expect(withdraw).toBeTruthy();
+  });
+
+  test("an unreadable configuration says so rather than rendering an empty table", async () => {
+    // An empty table reads as "nothing is configured", which is a different and much
+    // calmer claim than "we could not ask".
+    state.lifecycleError = true;
+    await openConsole();
+    expect(document.getElementById("config-groups")!.textContent)
+      .toMatch(/could not read the configuration/i);
+    state.lifecycleError = false;
   });
 });

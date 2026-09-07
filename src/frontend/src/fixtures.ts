@@ -251,6 +251,12 @@ export function installFixtures(host: FixtureHost): void {
     // Populated on purpose: a console screenshot with every list empty shows the layout
     // and none of the judgement the design is about. These figures are shaped to show
     // both halves of the wait-versus-work split at once.
+    // #97: the configuration surface reads these. A provisioned sandbox gateway, so the
+    // console renders as fully configured rather than as a half-set-up one.
+    expected_livemode: async () => false,
+    stripe_origin: async () => "https://gateway.example",
+    stripe_api_key_status: async () => ({ isSet: true, generation: 1n }),
+    webhook_secret_status: async () => ({ isSet: true, generation: 1n }),
     admin_status: async () => ({
       caller: BUYER,
       granted: true,

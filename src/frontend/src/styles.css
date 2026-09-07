@@ -1114,3 +1114,48 @@ code.flow-detail {
 #admin-refusals .worklist-row[data-urgency="wait"] .worklist-title {
   color: var(--icp-fg-muted);
 }
+
+/* ── the configuration surface (#97) ──────────────────────────────────────── */
+
+.config-group {
+  padding-block: var(--space-4);
+  border-top: 1px solid var(--icp-rule);
+}
+.config-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 14rem) minmax(0, 1fr);
+  gap: var(--space-2) var(--space-4);
+  margin: var(--space-3) 0 0;
+}
+.config-fields dt {
+  font-family: var(--font-ui);
+  font-weight: 500;
+  color: var(--icp-fg);
+}
+.config-fields dd {
+  margin: 0;
+}
+/* The value gets the mono treatment because it is the thing being changed. */
+.config-value {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--icp-fg);
+}
+/* The explanation spans both columns: it is prose, and squeezing it into the value
+   column would set it at a measure nobody reads. */
+.config-doc,
+.config-fields dd:not(.config-value) {
+  grid-column: 1 / -1;
+  max-width: 76ch;
+}
+/* What running the command cannot undo. Reads as a warning without a pictograph,
+   which brand-lint bans in user-facing copy. */
+.config-danger {
+  font-family: var(--font-ui);
+  font-size: 0.875rem;
+  color: var(--icp-err);
+  border-left: 2px solid currentColor;
+  padding-left: var(--space-3);
+  margin-top: var(--space-3);
+  max-width: 76ch;
+}
