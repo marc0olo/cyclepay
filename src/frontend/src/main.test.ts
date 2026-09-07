@@ -355,12 +355,51 @@ window.addEventListener = ((type: string, fn: EventListener, opts?: unknown) => 
   realAddEventListener(type, fn, opts as never);
 }) as typeof window.addEventListener;
 
+/// Intervals the current mount installed, so the next one can clear them.
+///
+/// ⚠️ **The same leak as the listeners above, missed for TIMERS.** `main.ts` arms
+/// `deadlineTimer` with `setInterval(…, 1000)` and it re-renders `#order-deadline`
+/// from that instance's own `activeOrder`. Each mount is a fresh module with a fresh
+/// `activeOrder` — and a fresh interval that nothing stopped. So every earlier test's
+/// copy of the app kept ticking, and each one wrote the deadline of the order IT was
+/// holding into the one shared document.
+///
+/// The symptom was a countdown of 36,853,875 minutes: an earlier test's order carrying
+/// the fixture's `FUTURE_NS` (year 2096), painted over the 10-minutes-from-now the
+/// current test had just rendered correctly. Whether it landed between the render and
+/// the assertion is a pure race, which is why it passed locally and failed on CI —
+/// and why instrumenting showed the right row, the right state and the wrong text.
+let installedIntervals: Array<ReturnType<typeof setInterval>> = [];
+const realSetInterval = globalThis.setInterval;
+// The `as unknown as` hop for the reason `fixtures.ts` documents: Node's and the DOM's
+// `setInterval` overloads do not overlap in either direction.
+globalThis.setInterval = ((fn: TimerHandler, ms?: number, ...rest: unknown[]) => {
+  const id = realSetInterval(fn as never, ms, ...(rest as never[]));
+  installedIntervals.push(id);
+  return id;
+}) as unknown as typeof globalThis.setInterval;
+
 async function mount(from: "buy" | "landing" = "buy", hash = ""): Promise<void> {
+  // ⚠️ **Drain the PREVIOUS mount's in-flight work before this document exists.**
+  // `init()` fires several loads with `void`, each a chain of awaits. A chain still
+  // running when the next test replaces the body resolves against the NEW document
+  // and paints the PREVIOUS test's data into it — and the row it renders looks
+  // perfectly valid, so a test reads the wrong order rather than throwing.
+  //
+  // That is a real failure, not a hypothetical: CI rendered a countdown of 36,853,875
+  // minutes because `openFromHistory` clicked a leaked row carrying the fixture's
+  // `FUTURE_NS` instead of the 10-minutes-from-now the test had just set. It passed
+  // locally every time — how many ticks the chain needs depends on machine speed,
+  // which is exactly why it only showed up on the runner.
+  await settle();
   // jsdom has no layout, so these are absent. main.ts calls them.
   Element.prototype.scrollIntoView ??= () => undefined;
   window.localStorage.clear();
   for (const [type, fn] of installedListeners) window.removeEventListener(type, fn);
   installedListeners = [];
+  // ⚠️ And the timers, for the same reason. See `installedIntervals`.
+  for (const id of installedIntervals) clearInterval(id);
+  installedIntervals = [];
   // jsdom keeps `location` across tests in a file, so a previous test's #/buy
   // would be parsed as the starting route and land the visitor past the landing
   // view a test is about. A real first-time visitor arrives with no hash; `hash`
@@ -373,11 +412,11 @@ async function mount(from: "buy" | "landing" = "buy", hash = ""): Promise<void> 
   document.body.innerHTML = body[1]!.replace(/<script[\s\S]*?<\/script>/g, "");
   vi.resetModules();
   await import("./main");
-  // let init()'s awaits settle
-  await new Promise((r) => setTimeout(r, 0));
+  // let init()'s awaits settle — a CHAIN of them, so one tick is not enough
+  await settle();
   if (from === "buy") {
     el("start-buy").click();
-    await new Promise((r) => setTimeout(r, 0));
+    await settle();
   }
 }
 
@@ -393,8 +432,22 @@ function tierButton(): HTMLButtonElement {
   return btn;
 }
 
+/// Let the app catch up.
+///
+/// ⚠️ **Several ticks, not one.** The app's loads are chains — `loadMarket` awaits a
+/// `Promise.all` whose members await further calls — and a single macrotask drains
+/// only the first link. One tick was enough on a fast machine and not on CI, which is
+/// the worst version of not enough: the suite passed locally and failed on the runner,
+/// with a symptom (a stale order rendered into a fresh document) that looked like a
+/// product bug rather than a harness one.
+///
+/// Four is not a magic number so much as headroom over the longest chain here; the
+/// cost is microseconds and the alternative is flakiness that reappears whenever a
+/// load grows one more await.
 async function settle(): Promise<void> {
-  await new Promise((r) => setTimeout(r, 0));
+  for (let i = 0; i < 4; i += 1) {
+    await new Promise((r) => setTimeout(r, 0));
+  }
 }
 
 beforeEach(() => {
@@ -1618,7 +1671,8 @@ describe("the gate notice: refusals no amount can fix (#99 2b)", () => {
     await mount();
     const notice = document.getElementById("gate-notice")!;
     expect(notice.hidden).toBe(false);
-    expect(notice.textContent).toMatch(/testers/i);
+    expect(notice.textContent).toMatch(/invited/i);
+    expect(notice.textContent).toMatch(/principal/i);
     // ⚠️ **No "nothing was charged" before an attempt.** True after one and
     // misleading before: it implies a purchase was tried and reversed, at exactly the
     // moment the page is trying to be clear. `gateReasonMessage` keeps that clause for
@@ -1627,8 +1681,11 @@ describe("the gate notice: refusals no amount can fix (#99 2b)", () => {
   });
 
   test("the faucet refusal is shown too, and does NOT mention an allow-list", async () => {
-    // Every buyer is refused in that state, so naming a list would send this one
-    // asking for access that would not help.
+    // ⚠️ The faucet case tells the buyer the SAME thing, and an earlier version got
+    // this wrong: it withheld the allow-list here because the empty list is the
+    // operator's state, "so asking for access would not help". False — adding the
+    // asking buyer makes the list non-empty, which clears the condition and admits
+    // them. Both cases now name the action.
     state.canPurchase = {
       __kind__: "unboundedGiveaway",
       unboundedGiveaway: { reserveFloor: 1n },
@@ -1636,12 +1693,12 @@ describe("the gate notice: refusals no amount can fix (#99 2b)", () => {
     await mount();
     const notice = document.getElementById("gate-notice")!;
     expect(notice.hidden).toBe(false);
-    expect(notice.textContent).not.toMatch(/allow|invited|tester/i);
+    expect(notice.textContent).toMatch(/invited/i);
+    expect(notice.textContent).toMatch(/principal/i);
+    // Still no "nothing was charged" before an attempt, and still no operator
+    // vocabulary: a buyer must not read a description of the faucet.
     expect(notice.textContent).not.toMatch(/charged/i);
-    // ⚠️ And no operator vocabulary: a buyer must not be told the gateway is an
-    // "unbounded giveaway" or read a description of the faucet. brand-lint checks
-    // characters, not audience, so nothing else catches this.
-    expect(notice.textContent).not.toMatch(/giveaway|faucet|reserve|allow-list/i);
+    expect(notice.textContent).not.toMatch(/giveaway|faucet|reserve|unbounded/i);
   });
 
   test("⚠️ a VOLATILE refusal is NOT pre-announced — the existing rule still holds", async () => {
@@ -1768,5 +1825,120 @@ describe("the signed-in principal is copyable", () => {
     expect(document.querySelector("#auth-area .principal")).toBeNull();
     expect(document.querySelector("#auth-area button.copy")).toBeNull();
     expect(document.getElementById("sign-in")).not.toBeNull();
+  });
+});
+
+describe("the landing view is about one thing", () => {
+  test("⚠️ the banners are ABOVE the views, not after them", async () => {
+    // The defect this pins: `#auth-error`, `#gate-notice` and `#simulation-note` used
+    // to sit AFTER `#view-landing` in the document, so on the landing view they
+    // rendered below the entire page — a notice saying "you cannot buy here"
+    // arriving under the fold, after the thing it is about. Nothing hid them; the
+    // DOM order did, and no assertion could see it.
+    await mount("landing");
+    const banners = document.getElementById("banners")!;
+    const landing = document.getElementById("view-landing")!;
+    // DOCUMENT_POSITION_FOLLOWING === 4: `landing` comes after `banners`.
+    expect(banners.compareDocumentPosition(landing) & 4).toBe(4);
+    for (const id of ["auth-error", "gate-notice", "simulation-note"]) {
+      expect(banners.contains(document.getElementById(id))).toBe(true);
+    }
+  });
+
+  test("one way in, and it says what it does", async () => {
+    // Nothing asserted this before, so renaming or losing the page's only call to
+    // action would have broken no test.
+    await mount("landing");
+    const cta = el<HTMLButtonElement>("start-buy");
+    expect(cta.textContent).toBe("Buy cycles");
+    // ⚠️ Exactly one. The landing view deliberately does not ask a visitor to choose
+    // between routes before it (#29), and a second primary button is how that creeps
+    // back in.
+    expect(document.querySelectorAll("#view-landing .cta").length).toBe(1);
+  });
+
+  test("the stats carry their framing line", async () => {
+    // ⚠️ The frame is load-bearing, which is why the "Checkable by anyone" prose
+    // could go and this sentence could not: these are two DIFFERENT KINDS of number.
+    // Capacity is read from the cycles ledger and anyone can check it; the delivered
+    // totals are ours to report. Bare figures are decoration.
+    await mount("landing");
+    expect(document.getElementById("trust-figures")!.hidden).toBe(false);
+    expect(el("trust-capacity").textContent).toMatch(/cycles/);
+    expect(el("trust-delivered").textContent).not.toBe("");
+    const frame = document.querySelector(".trust-frame")!;
+    expect(frame.textContent).toMatch(/anyone can query/i);
+  });
+
+  test("the theme toggle is an icon naming where the click goes", async () => {
+    await mount("landing");
+    const btn = el<HTMLButtonElement>("theme-toggle");
+    expect(btn.textContent?.trim()).toBe("");
+    expect(btn.querySelector("svg")).not.toBeNull();
+    // ⚠️ The DESTINATION, not the current state: in light mode the button offers
+    // dark. Labelling it with the current theme reads as a status light and makes
+    // the click a guess.
+    expect(btn.getAttribute("aria-label")).toMatch(/switch to dark/i);
+    btn.click();
+    expect(btn.getAttribute("aria-label")).toMatch(/switch to light/i);
+    expect(btn.querySelector("svg")).not.toBeNull();
+  });
+});
+
+describe("the console link appears only for someone who can use it", () => {
+  function adminNav(): HTMLElement | null {
+    return document.getElementById("admin-nav");
+  }
+
+  test("⚠️ an ordinary buyer never sees it", async () => {
+    // This is the whole reason the link is conditional. `view.ts`'s rule is that a
+    // console link on a purchase page is noise for every visitor who is not an
+    // operator — a link shown unconditionally would break that rule, not implement it.
+    state.adminStatus = {
+      caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+      granted: false,
+      isController: false,
+    };
+    await mount();
+    expect(adminNav()!.hidden).toBe(true);
+  });
+
+  test("a granted admin sees it, and it points at the console", async () => {
+    state.adminStatus = {
+      caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+      granted: true,
+      isController: false,
+    };
+    await mount();
+    const link = adminNav()!;
+    expect(link.hidden).toBe(false);
+    expect(link.getAttribute("href")).toBe("#/admin");
+  });
+
+  test("⚠️ a controller sees it WITHOUT being granted — the tiers are nested", async () => {
+    // A controller passes the admin guard without appearing on the granted list, so
+    // keying the link on `granted` alone would hide the console from the one identity
+    // that can do everything in it.
+    state.adminStatus = {
+      caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+      granted: false,
+      isController: true,
+    };
+    await mount();
+    expect(adminNav()!.hidden).toBe(false);
+  });
+
+  test("signing out withdraws it", async () => {
+    // A stale link would offer a console the caller can no longer reach.
+    state.adminStatus = {
+      caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+      granted: true,
+      isController: false,
+    };
+    await mount();
+    expect(adminNav()!.hidden).toBe(false);
+    el<HTMLButtonElement>("sign-out").click();
+    await Promise.resolve();
+    expect(adminNav()!.hidden).toBe(true);
   });
 });
