@@ -33,6 +33,10 @@ export type FixtureHost = {
   useCyclesLedger(factory: () => CyclesLedger): void;
   /// The cycles-ledger INDEX, for the dashboard's transaction list.
   useCyclesIndex(factory: () => CyclesIndex): void;
+  /// Which principal counts as the gateway. Needed because the ledger list's order
+  /// cross-reference is gated on the sender, so this is the one seam that decides
+  /// whether that column renders anything.
+  useGatewayPrincipal(id: string): void;
   /// The app's own `setIdentity`.
   signIn(identity: Identity | null): void;
   /// The app's own `openOrder` — routes, renders and starts the poll.
@@ -73,6 +77,11 @@ const DEPOSIT_FEE = 100_000_000n;
 /// Fixed, because an order id appears on screen and a screenshot baseline cannot
 /// tolerate a fresh one per run.
 const ORDER_ID = "f1c7ea0b9d2e4a6580b3c1d7e9f20a4b";
+/// The gateway's own principal, as this fixture pretends it. The order cross-reference
+/// on a ledger transfer is gated on the SENDER being this, so a fixture that could not
+/// name it could not exercise the gate at all: every row would read "-" and the browser
+/// suite would pass while the column did nothing.
+const GATEWAY = Principal.selfAuthenticating(new Uint8Array(32).fill(9));
 const CREATED_AT_NS = 1_770_000_000_000_000_000n;
 /// Fixed like the order id, and far enough ahead that the order is payable no
 /// matter when the suite runs — the order view renders expiry from this rather
@@ -155,6 +164,8 @@ export function installFixtures(host: FixtureHost): void {
 
   const identity = { getPrincipal: () => BUYER } as unknown as Identity;
 
+  host.useGatewayPrincipal(GATEWAY.toText());
+
   // Only the methods the UI actually calls, answering only the fields it reads.
   // Cast once, here, with the reason stated: the generated actor type carries
   // admin methods and config records this surface never touches, and stubbing
@@ -189,10 +200,12 @@ export function installFixtures(host: FixtureHost): void {
               kind: "transfer",
               timestamp: 1_760_000_000_000_000_000n,
               transfer: [{
-                from: { owner: "aaaaa-aa", subaccount: [] },
+                from: { owner: GATEWAY.toText(), subaccount: [] },
                 to: { owner: BUYER, subaccount: [] },
                 amount: 7_338_461_538_461n,
                 fee: [],
+                // Delivery.mo sets the memo to the order id as UTF-8.
+                memo: [new TextEncoder().encode(ORDER_ID)],
               }],
               mint: [],
               burn: [],

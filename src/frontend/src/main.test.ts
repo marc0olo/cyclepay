@@ -2183,9 +2183,13 @@ describe("the cycles ledger's own record, from the index canister", () => {
     ...body,
   });
 
+  /// ⚠️ Opens the LEDGER tab, not the bare dashboard hash. The two records are
+  /// separate tabs now, and `refreshLedgerHistory` only runs for the visible one, so
+  /// mounting at `#/history` would leave every assertion below looking at a hidden
+  /// panel that was never populated.
   async function openDashboard(): Promise<void> {
     state.order = anOrder("delivered");
-    await mount("landing", "#/history");
+    await mount("landing", "#/history/ledger");
     await settle();
   }
 
@@ -2305,12 +2309,92 @@ describe("the cycles ledger's own record, from the index canister", () => {
     ];
     await openDashboard();
     const cells = document.querySelectorAll("#ledger-history tbody tr td");
-    expect(cells.length).toBe(5);
+    expect(cells.length).toBe(6);
     expect(cells[2]!.textContent).toContain("Spent");
     // The rendered form of this account, which is what would actually appear.
     expect(shortPrincipal(ME)).toBe("eoyfw…m-4qe");
     expect(cells[4]!.textContent).toBe("-");
     expect(cells[4]!.textContent).not.toBe(shortPrincipal(ME));
+  });
+
+  test("the ledger table cross-references the order a delivery paid out", async () => {
+    // Delivery.mo memoes the transfer with the order id, and the receipt's own docs
+    // name that as the proof. The gateway in these tests is `backendCanisterId`.
+    state.ledgerTxs = [
+      { id: 40n, transaction: tx("transfer", { transfer: [{
+        from: acct("aaaaa-aa"), to: acct(ME), amount: 500_000_000_000n, fee: [],
+        memo: [new TextEncoder().encode("f22bd6dc4932a8480f3cee3669a48cc6")],
+      }] }) },
+    ];
+    await openDashboard();
+    const link = document.querySelector<HTMLAnchorElement>(
+      '#ledger-history a[href^="#/order/"]',
+    )!;
+    expect(link).not.toBeNull();
+    expect(link.getAttribute("href")).toBe("#/order/f22bd6dc4932a8480f3cee3669a48cc6");
+  });
+
+  test("⚠️ a memo from anyone BUT the gateway is not read as an order", async () => {
+    // Transfer memos are CALLER-supplied. Ungated, a stranger could send one cycle
+    // memoed with a real order id and put a false order reference in this list. The
+    // memo below is byte-identical to the passing case above; only the sender differs,
+    // so nothing but the gate can be making the difference.
+    state.ledgerTxs = [
+      { id: 41n, transaction: tx("transfer", { transfer: [{
+        from: acct(FULL_PRINCIPAL.replace(/^e/, "d")), to: acct(ME),
+        amount: 1n, fee: [],
+        memo: [new TextEncoder().encode("f22bd6dc4932a8480f3cee3669a48cc6")],
+      }] }) },
+    ];
+    await openDashboard();
+    expect(document.querySelectorAll("#ledger-history tbody tr").length).toBe(1);
+    expect(document.querySelector('#ledger-history a[href^="#/order/"]')).toBeNull();
+    // Present as a row, just not attributed: dropping it would make the list wrong.
+    expect(document.getElementById("ledger-history")!.textContent).toContain("Received");
+  });
+
+  test("a transfer with no memo is simply unattributed", async () => {
+    state.ledgerTxs = [
+      { id: 42n, transaction: tx("transfer", { transfer: [{
+        from: acct("aaaaa-aa"), to: acct(ME), amount: 1n, fee: [], memo: [],
+      }] }) },
+    ];
+    await openDashboard();
+    expect(document.querySelector('#ledger-history a[href^="#/order/"]')).toBeNull();
+  });
+
+  test("⚠️ a gateway memo that is not an order id does not reach the href", async () => {
+    // The sender gate passes here: this IS from the gateway. What stops it is the shape
+    // check. Without one, whatever the memo decoded to would be interpolated straight
+    // into a link, and `parseRoute` would not resolve it either. Mutation-checked:
+    // removing the hex validation leaves the rest of the suite green.
+    state.ledgerTxs = [
+      { id: 43n, transaction: tx("transfer", { transfer: [{
+        from: acct("aaaaa-aa"), to: acct(ME), amount: 1n, fee: [],
+        memo: [new TextEncoder().encode("../../etc/passwd?x=1")],
+      }] }) },
+      { id: 44n, transaction: tx("transfer", { transfer: [{
+        from: acct("aaaaa-aa"), to: acct(ME), amount: 1n, fee: [],
+        // Right character set, far too short to be an order id.
+        memo: [new TextEncoder().encode("ab")],
+      }] }) },
+    ];
+    await openDashboard();
+    expect(document.querySelectorAll("#ledger-history tbody tr").length).toBe(2);
+    expect(document.querySelector('#ledger-history a[href^="#/order/"]')).toBeNull();
+    expect(document.getElementById("ledger-history")!.textContent)
+      .not.toContain("etc/passwd");
+  });
+
+  test("a memo that is not valid UTF-8 is not attributed", async () => {
+    state.ledgerTxs = [
+      { id: 45n, transaction: tx("transfer", { transfer: [{
+        from: acct("aaaaa-aa"), to: acct(ME), amount: 1n, fee: [],
+        memo: [new Uint8Array([0xff, 0xfe, 0xfd])],
+      }] }) },
+    ];
+    await openDashboard();
+    expect(document.querySelector('#ledger-history a[href^="#/order/"]')).toBeNull();
   });
 
   test("⚠️ an unrecognised kind is NAMED, not dropped", async () => {
@@ -2352,5 +2436,58 @@ describe("the cycles ledger's own record, from the index canister", () => {
     await settle();
     expect(document.getElementById("ledger-history")!.textContent)
       .toMatch(/sign in to see your ledger activity/i);
+  });
+});
+
+describe("the dashboard's two records are tabs", () => {
+  async function openTab(hash: string): Promise<void> {
+    state.order = anOrder("delivered");
+    await mount("landing", hash);
+    await settle();
+  }
+
+  test("the bare hash opens the orders record", async () => {
+    await openTab("#/history");
+    expect(el("panel-orders").hidden).toBe(false);
+    expect(el("panel-ledger").hidden).toBe(true);
+  });
+
+  test("the ledger hash opens the ledger record", async () => {
+    await openTab("#/history/ledger");
+    expect(el("panel-orders").hidden).toBe(true);
+    expect(el("panel-ledger").hidden).toBe(false);
+  });
+
+  test("⚠️ exactly ONE tab is marked current, in both directions", async () => {
+    // `aria-current="false"` still reads as present to some assistive tech, so the
+    // attribute is removed rather than written false. Asserting only the selected tab
+    // would pass with both marked, which announces two current tabs.
+    await openTab("#/history");
+    expect(el("tab-orders").getAttribute("aria-current")).toBe("true");
+    expect(el("tab-ledger").hasAttribute("aria-current")).toBe(false);
+    await openTab("#/history/ledger");
+    expect(el("tab-ledger").getAttribute("aria-current")).toBe("true");
+    expect(el("tab-orders").hasAttribute("aria-current")).toBe(false);
+  });
+
+  test("⚠️ the ledger index is NOT queried for a panel nobody opened", async () => {
+    // 25 index rows for a hidden panel is work with no reader. The index mock throws
+    // if `state.indexError` is set, so a fetch on the orders tab would surface as the
+    // unreachable message inside the panel rather than as silence.
+    state.indexError = true;
+    state.ledgerTxs = [];
+    await openTab("#/history");
+    expect(el("ledger-history").textContent).toBe("");
+    // And it IS queried once its own tab is open, so the assertion above is not just
+    // measuring a render that never happens.
+    await openTab("#/history/ledger");
+    expect(el("ledger-history").textContent).toMatch(/could not reach/i);
+  });
+
+  test("the balance loads on either tab, because it belongs to neither record", async () => {
+    await openTab("#/history");
+    expect(el("ledger-balance").textContent).not.toMatch(/reading the ledger/i);
+    await openTab("#/history/ledger");
+    expect(el("ledger-balance").textContent).not.toMatch(/reading the ledger/i);
   });
 });

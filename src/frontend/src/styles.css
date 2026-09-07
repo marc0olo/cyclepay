@@ -1188,6 +1188,57 @@ code.flow-detail {
 }
 
 /* The order record's own facts, no longer inside a disclosure. */
+/* ── the two records, one tab each ────────────────────────────────────────── */
+
+.record-tabs {
+  display: flex;
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--icp-rule);
+  margin: var(--space-5) 0 var(--space-4);
+  /* Narrow screens: the two labels are long, so they wrap to a second line rather
+     than forcing the page to scroll sideways. */
+  flex-wrap: wrap;
+}
+
+.record-tab {
+  font-family: var(--font-ui);
+  font-size: 0.9375rem;
+  color: var(--icp-fg-secondary);
+  text-decoration: none;
+  padding: var(--space-2) var(--space-3);
+  /* Reserved on every tab, so selecting one does not move the row by 2px. */
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.record-tab:hover {
+  color: var(--icp-fg);
+}
+
+/* ⚠️ The selected tab is marked by WEIGHT and a RULE, not by colour alone.
+   `aria-current` is the single source of truth: the same attribute assistive tech
+   reads drives the visual state, so the two cannot drift. Keyed off the attribute
+   rather than a class for exactly that reason. */
+.record-tab[aria-current] {
+  color: var(--icp-fg);
+  font-weight: 600;
+  border-bottom-color: var(--icp-accent);
+}
+
+/* Forced-colours mode drops author colours, taking the accent rule with it. The
+   selected tab keeps a visible mark there because the border is restated in a
+   system colour. */
+@media (forced-colors: active) {
+  .record-tab[aria-current] {
+    border-bottom-color: Highlight;
+  }
+}
+
+.record-tab:focus-visible {
+  outline: 2px solid var(--icp-accent);
+  outline-offset: 2px;
+}
+
 .orders-table {
   width: 100%;
 }

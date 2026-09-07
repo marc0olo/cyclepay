@@ -5,6 +5,7 @@
 import type { Identity } from "@icp-sdk/core/agent";
 import {
   makeBackend,
+  backendCanisterId,
   cyclesLedgerCanisterId,
   makeCyclesIndex,
   makeCyclesLedger,
@@ -48,7 +49,7 @@ import {
   parseIcEnvCookies,
   resolveLiveBackendId,
 } from "./ic-env";
-import { type View, type Route, parseRoute, routeHash, TOUR_STEPS, stepStates } from "./view";
+import { type View, type Route, type HistoryTab, parseRoute, routeHash, TOUR_STEPS, stepStates } from "./view";
 import {
   RATE_LOCK_NOTE,
   formatAgo,
@@ -66,6 +67,7 @@ import {
   minAcceptableCycles,
   quoteChangedMessage,
   decodeBurnMemo,
+  decodeOrderMemo,
   formatCycles,
   formatUsdCents,
   parseUsdAmount,
@@ -217,7 +219,8 @@ async function refreshLedgerHistory(): Promise<void> {
   table.className = "orders-table";
   const head = document.createElement("thead");
   head.innerHTML =
-    "<tr><th>When</th><th>Block</th><th>What</th><th>Amount</th><th>Counterparty</th></tr>";
+    "<tr><th>When</th><th>Block</th><th>What</th><th>Amount</th><th>Counterparty</th>"
+    + "<th>Order</th></tr>";
   const body = document.createElement("tbody");
   for (const row of rows) {
     const tr = document.createElement("tr");
@@ -253,7 +256,20 @@ async function refreshLedgerHistory(): Promise<void> {
     } else {
       other.textContent = described.counterparty;
     }
-    tr.append(when, block, what, amount, other);
+    // ⚠️ **Header and cell in one change.** This table once shipped six headers and
+    // five cells, which shifted every column after the gap and made the whole row read
+    // wrong. A column is added in both places or neither.
+    const order = document.createElement("td");
+    if (described.orderId === undefined) {
+      order.textContent = "-";
+    } else {
+      const orderLink = document.createElement("a");
+      orderLink.href = `#/order/${described.orderId}`;
+      orderLink.className = "order-link mono";
+      orderLink.textContent = shortPrincipal(described.orderId);
+      order.append(orderLink);
+    }
+    tr.append(when, block, what, amount, other, order);
     body.append(tr);
   }
   table.append(head, body);
@@ -277,18 +293,51 @@ function mutedLine(text: string): HTMLElement {
 /// money in or money out depending on which side the caller is, and rendering "0.5 T
 /// transfer" without a sign is the one formatting choice here that could make a buyer
 /// think they were charged when they were paid.
+/// Show one dashboard record and mark which tab is selected.
+///
+/// ⚠️ **The selected tab must be distinguishable without colour.** `aria-current`
+/// carries it for assistive tech, and the stylesheet keys its weight and underline off
+/// the same attribute, so the highlight is never colour alone. A tab styled only by a
+/// hue fails for the colour-blind reader and disappears entirely in forced-colours
+/// mode, and this control is the only thing telling you which of two similar tables
+/// you are looking at.
+function renderRecordTabs(tab: HistoryTab): void {
+  show("panel-orders", tab === "orders");
+  show("panel-ledger", tab === "ledger");
+  for (const [id, owns] of [
+    ["tab-orders", tab === "orders"],
+    ["tab-ledger", tab === "ledger"],
+  ] as const) {
+    const node = document.getElementById(id);
+    if (node === null) continue;
+    // Set/removed rather than written as "false": `aria-current="false"` still reads as
+    // present to some assistive tech, which would announce both tabs as current.
+    if (owns) node.setAttribute("aria-current", "true");
+    else node.removeAttribute("aria-current");
+  }
+}
+
 function describeLedgerTx(
   tx: IndexTransaction,
   me: string,
-): { what: string; amount: string; counterparty: string; canister?: string } {
+): { what: string; amount: string; counterparty: string; canister?: string; orderId?: string } {
   const short = (a: { owner: unknown }) => shortPrincipal(String(a.owner));
   if (tx.transfer.length > 0) {
     const t = tx.transfer[0]!;
     const outgoing = String(t.from.owner) === me;
+    // A delivery arrives as a transfer FROM the gateway, and its memo is the order id.
+    // Gated on the sender inside `decodeOrderMemo`, because transfer memos are
+    // caller-supplied and an ungated read would let a stranger name one of our orders.
+    const orderId = decodeOrderMemo(
+      t.memo,
+      String(t.from.owner),
+      liveBackendId ?? backendCanisterId,
+    );
     return {
       what: outgoing ? "Sent" : "Received",
       amount: `${outgoing ? "-" : "+"}${formatCycles(t.amount)}`,
       counterparty: outgoing ? short(t.to) : short(t.from),
+      ...(orderId === null ? {} : { orderId }),
     };
   }
   if (tx.mint.length > 0) {
@@ -490,6 +539,9 @@ function renderStaleCookieNotice(into: HTMLElement): void {
 
 /// One view owns the screen at a time. See view.ts for why.
 let currentView: View = "landing";
+/// Which dashboard record is showing. Mirrors the hash, so a reload or a Back lands
+/// on the same panel rather than snapping to the default.
+let currentHistoryTab: HistoryTab = "orders";
 /// Orders this principal has, so the header link can hide when there are none.
 let orderCount = 0;
 
@@ -585,8 +637,12 @@ function renderView(): void {
     renderOperatorSummary();
   }
   if (effective === "history") {
+    // The balance is above the tabs and belongs to neither record, so it loads either
+    // way. The ledger list is only fetched when its panel is actually showing:
+    // 25 index rows for a panel nobody opened is work with no reader.
     void refreshLedgerBalance();
-    void refreshLedgerHistory();
+    renderRecordTabs(currentHistoryTab);
+    if (currentHistoryTab === "ledger") void refreshLedgerHistory();
   }
   show("history-link", orderCount > 0 && identity !== null);
   if ((onOrder || onNext) && !ready) renderOrderMissing();
@@ -1387,6 +1443,7 @@ function applyRoute(route: Route): void {
   if (route.view !== "order" && pollOrderId !== null) stopPolling();
 
   currentView = route.view;
+  if (route.view === "history") currentHistoryTab = route.tab;
   if (route.view === "admin") {
     // Worklists depend on the grant, so they follow the status read rather than racing it.
     void loadAdminStatus().then(async () => {
@@ -2987,7 +3044,7 @@ async function init(): Promise<void> {
   el("history-link").onclick = () => {
     // The anchor already sets the hash; this only stops a same-hash click from
     // being a no-op after the view moved on.
-    applyRoute({ view: "history" });
+    applyRoute({ view: "history", tab: "orders" });
   };
 
   // Test-only, and gone from a production build: `__FIXTURES__` is replaced with
@@ -3006,6 +3063,11 @@ async function init(): Promise<void> {
       },
       useCyclesIndex: (factory) => {
         cyclesIndexFactory = factory;
+      },
+      // Safe despite also being the actor's id: `backendFactory` is set above and
+      // short-circuits `buildBackend`, so this only ever feeds the sender gate.
+      useGatewayPrincipal: (id) => {
+        liveBackendId = id;
       },
       signIn: setIdentity,
       openOrder,

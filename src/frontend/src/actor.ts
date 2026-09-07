@@ -182,6 +182,9 @@ export interface IndexTransfer {
   to: IndexAccount;
   amount: bigint;
   fee: [] | [bigint];
+  /// ⚠️ CALLER-supplied, unlike a burn's. Only meaningful once the sender is known:
+  /// see `decodeOrderMemo`.
+  memo: [] | [Uint8Array];
 }
 
 export interface IndexTransaction {

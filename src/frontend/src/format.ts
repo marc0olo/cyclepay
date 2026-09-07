@@ -633,3 +633,44 @@ export function decodeBurnMemo(memo: [] | [Uint8Array]): BurnPurpose {
   }
   return { kind: "unknown" };
 }
+
+/// The order a delivery transfer paid out, from its memo.
+///
+/// `Delivery.mo` sets the transfer's memo to the order id as UTF-8, and the receipt's
+/// own documentation names that as the proof: the block is checkable against the ledger
+/// "by the order id in the transfer's memo".
+///
+/// ⚠️ **Gated on the SENDER, and that gate is the whole safety argument.**
+/// `TransferArgs` carries a caller-supplied memo, so any stranger can transfer one
+/// cycle to a buyer with a memo naming a real order. Ungated, this page would print
+/// "Order f22bd6dc" on a row the gateway had nothing to do with, inside the list a
+/// buyer reconciles their money against. Only a transfer FROM the gateway's own
+/// account can carry a claim about a gateway order.
+///
+/// Contrast `decodeBurnMemo`: no burn path accepts a memo argument, so those need no
+/// sender gate. This one does precisely because transfers do.
+export function decodeOrderMemo(
+  memo: [] | [Uint8Array],
+  fromOwner: string,
+  gatewayPrincipal: string | undefined,
+): string | null {
+  // No configured gateway means no trusted sender, so nothing is attributable.
+  if (gatewayPrincipal === undefined || gatewayPrincipal === "") return null;
+  if (fromOwner !== gatewayPrincipal) return null;
+  if (memo.length === 0) return null;
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(memo[0]!);
+  } catch {
+    return null;
+  }
+  // Order ids are hex. Validated rather than trusted so a memo that decodes to text
+  // cannot put arbitrary characters into a link's href, and so the value is one
+  // `parseRoute` will actually resolve.
+  //
+  // ⚠️ **This check, not the `fatal` flag above, is what makes the result safe.**
+  // Non-fatal decoding would yield replacement characters, which fail here too, so
+  // `fatal: true` is redundant belt-and-braces: removing it does not fail the suite.
+  // Removing THIS line does.
+  return /^[0-9a-f]{8,64}$/.test(text) ? text : null;
+}
