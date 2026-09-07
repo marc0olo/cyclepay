@@ -17,6 +17,7 @@ import IC "mo:ic/Types";
 // `n.toText()` and `blob.decodeUtf8()` resolve through the imported module, so
 // dropping an "unused" import here is a compile error rather than a tidy-up.
 import Char "mo:core/Char";
+import Iter "mo:core/Iter";
 import Nat "mo:core/Nat";
 import Nat8 "mo:core/Nat8";
 import Nat64 "mo:core/Nat64";
@@ -361,12 +362,52 @@ module {
   /// #4 captures the real expire-on-completed response; pin this against that
   /// body then, or switch to matching the structured `error.code` instead of the
   /// message, which is what Stripe actually guarantees stable.
-  public func isNotOpen(status : Nat, body : Blob) : Bool {
-    if (status == 200) return false;
-    let ?text = body.decodeUtf8() else return false;
-    text.contains(#text "No such checkout.session")
-    or text.contains(#text "in a status of complete")
-    or text.contains(#text "in a status of expired");
+  public type ExpireOutcome = {
+    /// Stripe expired the session.
+    #ok;
+    /// Stripe understood us and will not expire it: the session is already complete or
+    /// expired, or there is no such session. All of those mean the same thing to the
+    /// caller, which is *change nothing and let the webhook decide*.
+    #notOpen : Text;
+    /// The key is present but Stripe refuses it. Same diagnosis and same lever as a
+    /// refused create, which is why `Gate.RailCondition.stripeApiFailing` covers both.
+    #unauthorized;
+    /// We do not know. The order must stay payable and uncancelled.
+    #failed : Text;
+  };
+
+  /// Classify Stripe's answer to `POST /v1/checkout/sessions/{id}/expire`.
+  ///
+  /// ⚠️ **Keyed on the STATUS, never on the error prose, and matching prose is what
+  /// broke it.** This function used to look for three hand-written phrases -
+  /// "No such checkout.session", "in a status of complete", "in a status of expired" -
+  /// and real Stripe answers a completed session's expire with a 400 whose body
+  /// contains none of them. So the branch that exists to recognise "already paid" could
+  /// never fire, and cancelling a paid order reported "could not reach Stripe" while
+  /// latching `stripeApiFailing`: a P1 saying "rotate the key" for a key that was fine.
+  ///
+  /// ⚠️ **And the unit test asserted the INVENTED wording**, so it passed against a
+  /// string Stripe never sends. A matcher can only be tested against prose if the prose
+  /// is real; a status code needs no such faith.
+  ///
+  /// 4xx that is not 401/403 is Stripe understanding the request and refusing it, and
+  /// the expire endpoint has exactly two reasons to do that. The body travels in
+  /// `#notOpen` so an operator can see what Stripe actually said without this module
+  /// having to guess it in advance.
+  public func expireOutcome(status : Nat, body : Blob) : ExpireOutcome {
+    if (status == 200) return #ok;
+    if (status == 401 or status == 403) return #unauthorized;
+    if (status == 400 or status == 404) {
+      let detail = switch (body.decodeUtf8()) {
+        // The repo's truncation idiom, same as `Orphans.truncateClaimedRef`.
+        case (?text) if (text.size() > 300) {
+          Text.fromIter(text.chars().take(300)) # "…(truncated)";
+        } else { text };
+        case (null) "non-UTF-8 body";
+      };
+      return #notOpen(detail);
+    };
+    #failed("Stripe answered " # status.toText());
   };
 
 

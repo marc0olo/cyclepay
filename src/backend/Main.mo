@@ -894,7 +894,7 @@ persistent actor CyclesGateway {
   /// "not open" means the session already completed or expired, so the caller
   /// must change nothing and let the webhook resolve it; "failed" means we do not
   /// know, so the order must stay payable and uncancelled.
-  func expireStripeSession(sessionId : Text) : async* { #ok; #notOpen; #failed : Text } {
+  func expireStripeSession(sessionId : Text) : async* Session.ExpireOutcome {
     let ?apiKey = Secret.get(stripeApiKey) else return #failed("the Stripe API key is not provisioned");
     let ?keyText = apiKey.decodeUtf8() else return #failed("the stored API key is not valid UTF-8");
     let response = try {
@@ -914,9 +914,10 @@ persistent actor CyclesGateway {
       let kind = Session.classifyFailure(e.message());
       return #failed(Session.failureAdvice(kind) # " [" # e.message() # "]");
     };
-    if (response.status == 200) return #ok;
-    if (Session.isNotOpen(response.status, response.body)) return #notOpen;
-    #failed("Stripe answered " # response.status.toText());
+    // ⚠️ Classified in ONE place, by status. See `Session.expireOutcome`: this used to
+    // grep the error prose for three invented phrases, so the "already paid" branch
+    // could never fire against real Stripe.
+    Session.expireOutcome(response.status, response.body);
   };
 
   /// `GET /v1/checkout/sessions/{id}` — the read that settles a stranded `#created`
@@ -3174,11 +3175,23 @@ persistent actor CyclesGateway {
       case (?sessionId) {
         switch (await* expireStripeSession(sessionId)) {
           case (#ok) {};
-          case (#notOpen) {
-            audit("order.expireRaced", id # ": session " # sessionId # " is no longer open");
+          case (#notOpen(detail)) {
+            // The body travels into the audit line because this module deliberately
+            // does not guess Stripe's wording: recording what it actually said is how
+            // the next reader learns it. See `Session.expireOutcome`.
+            audit("order.expireRaced", id # ": session " # sessionId # " is no longer open. Stripe said: " # detail);
             return #err(
               "order " # id # "'s session is already settled or expired — the webhook or the recovery sweep will resolve it on Stripe's answer, which is the only authority on which of the two happened"
             );
+          };
+          case (#unauthorized) {
+            // ⚠️ 401/403 is the ONE expire answer that means "rotate the key", so it is
+            // the only one that latches. A 400 latched it before, which filed a P1
+            // saying the key was refused for a key that was fine.
+            noteStripeApiFailed(
+              "expire REFUSED (401/403): the restricted key needs WRITE on Checkout Sessions — rotate it"
+            );
+            return #err("Stripe refused our credentials while cancelling order " # id # " — an operator has been notified");
           };
           case (#failed(detail)) {
             audit("order.expireFailed", id # ": " # detail);
@@ -3248,7 +3261,7 @@ persistent actor CyclesGateway {
       case (?sessionId) {
         switch (await* expireStripeSession(sessionId)) {
           case (#ok) {};
-          case (#notOpen) {
+          case (#notOpen(_)) {
             // Two causes and we must not guess between them from our clock: the
             // session completed (the payment won the race) or it expired already.
             // Change nothing and let the incoming `checkout.session.completed` or
@@ -3278,8 +3291,24 @@ persistent actor CyclesGateway {
             // so it routes through the same latch: one line when the API starts
             // refusing us, a counter for the volume.
             noteStripeApiFailed("expire: " # detail);
+            // ⚠️ **NOT "could not reach Stripe".** This arm is now only genuine unknowns
+            // (a 5xx, or the outcall itself failing), and a 5xx means Stripe was reached
+            // and something went wrong at its end. The old wording claimed a diagnosis
+            // this arm does not have, and it was the wording a buyer saw for an
+            // already-paid order, which took a different branch entirely.
             return #err(
-              "could not reach Stripe to cancel order " # id # " — try again, or it expires on its own"
+              "could not cancel order " # id # " at Stripe — try again, or it expires on its own"
+            );
+          };
+          case (#unauthorized) {
+            // ⚠️ The one expire answer that means "rotate the key", and the only one
+            // that should latch. A 400 latched this before, filing a P1 that said the
+            // key was refused when the key was fine.
+            noteStripeApiFailed(
+              "expire REFUSED (401/403): the restricted key needs WRITE on Checkout Sessions — rotate it"
+            );
+            return #err(
+              "could not cancel order " # id # ": Stripe refused our credentials. An operator has been notified; the order expires on its own if it is not paid"
             );
           };
         };

@@ -5,6 +5,8 @@
 // is whether the real API accepts the body — only a manual run against a sandbox
 // key does that, and the PocketIC suite cannot either, because it mocks outcalls.
 import { suite; test } "mo:test";
+import Iter "mo:core/Iter";
+import Nat "mo:core/Nat";
 import Text "mo:core/Text";
 import Session "../src/backend/rails/Session";
 
@@ -228,21 +230,67 @@ suite("expiring a session", func() {
       == "https://api.stripe.com/v1/checkout/sessions/cs_test_a1b2/expire";
   });
 
-  test("recognises 'no longer open' as its own outcome, not a failure", func() {
-    // Cancellation must not guess from our clock why a session is closed: it
-    // either completed (the payment won the race) or expired already. Both are
-    // "refresh and let the webhook resolve it", neither is "try again".
-    assert Session.isNotOpen(400, Text.encodeUtf8("{\"error\":{\"message\":\"You cannot expire a Checkout Session in a status of complete.\"}}"));
-    assert Session.isNotOpen(400, Text.encodeUtf8("{\"error\":{\"message\":\"... in a status of expired.\"}}"));
-    assert Session.isNotOpen(404, Text.encodeUtf8("{\"error\":{\"message\":\"No such checkout.session: cs_x\"}}"));
+  test("a 4xx that is not 401/403 is 'no longer open', whatever the prose says", func() {
+    // Cancellation must not guess from our clock why a session is closed: it either
+    // completed (the payment won the race) or expired already. Both are "change
+    // nothing and let the webhook resolve it", neither is "try again".
+    //
+    // ⚠️ **Keyed on the STATUS, and the body here is deliberately NOT Stripe's real
+    // wording.** The previous version of this test asserted three invented phrases
+    // ("in a status of complete" and friends) against a matcher that grepped for
+    // exactly those phrases, so it passed while production failed: real Stripe answers
+    // a paid session's expire with a 400 whose body contains none of them. Cancelling a
+    // paid order therefore reported "could not reach Stripe" and latched
+    // `stripeApiFailing` — a P1 saying "rotate the key" for a key that was fine.
+    //
+    // These bodies are gibberish ON PURPOSE. If the classification depended on their
+    // text again, this test would fail, which is the property the old one lacked.
+    switch (Session.expireOutcome(400, Text.encodeUtf8("{\"error\":{\"message\":\"anything at all\"}}"))) {
+      case (#notOpen(detail)) assert detail.contains(#text "anything at all");
+      case (_) assert false;
+    };
+    switch (Session.expireOutcome(404, Text.encodeUtf8("[]"))) {
+      case (#notOpen(_)) {};
+      case (_) assert false;
+    };
   });
 
-  test("a 200 and a generic failure are NOT 'not open'", func() {
-    // A 500 or a rate limit must leave the order uncancelled and payable, so it
-    // must never be mistaken for a closed session.
-    assert not Session.isNotOpen(200, Text.encodeUtf8("{\"status\":\"expired\"}"));
-    assert not Session.isNotOpen(500, Text.encodeUtf8("{\"error\":{\"message\":\"internal\"}}"));
-    assert not Session.isNotOpen(429, Text.encodeUtf8("{\"error\":{\"message\":\"rate limited\"}}"));
+  test("401 and 403 are their OWN outcome, because only they mean rotate the key", func() {
+    // The one expire answer that is a credentials problem. Folding it into `#failed`
+    // (or worse, letting a 400 reach the same latch) files the wrong instruction.
+    switch (Session.expireOutcome(401, Text.encodeUtf8("{}"))) {
+      case (#unauthorized) {};
+      case (_) assert false;
+    };
+    switch (Session.expireOutcome(403, Text.encodeUtf8("{}"))) {
+      case (#unauthorized) {};
+      case (_) assert false;
+    };
+  });
+
+  test("a 200 succeeds and a 5xx stays UNKNOWN, so the order stays payable", func() {
+    // A 500 or a rate limit must leave the order uncancelled and payable, so it must
+    // never be mistaken for a closed session.
+    switch (Session.expireOutcome(200, Text.encodeUtf8("{\"status\":\"expired\"}"))) {
+      case (#ok) {};
+      case (_) assert false;
+    };
+    switch (Session.expireOutcome(500, Text.encodeUtf8("{\"error\":{\"message\":\"internal\"}}"))) {
+      case (#failed(_)) {};
+      case (_) assert false;
+    };
+    switch (Session.expireOutcome(429, Text.encodeUtf8("{\"error\":{\"message\":\"rate limited\"}}"))) {
+      case (#failed(_)) {};
+      case (_) assert false;
+    };
+  });
+
+  test("an oversized body is truncated rather than carried whole into the audit log", func() {
+    let big = Text.fromIter(Iter.map<Nat, Char>(Nat.range(0, 400), func(_) { 'x' }));
+    switch (Session.expireOutcome(400, Text.encodeUtf8(big))) {
+      case (#notOpen(detail)) assert detail.contains(#text "truncated");
+      case (_) assert false;
+    };
   });
 });
 
