@@ -2588,7 +2588,12 @@ describe("the order page reads as a checkout", () => {
     // list below both buttons. Asserted as document order rather than as pixels, so
     // it holds at any width and cannot be satisfied by styling.
     await openCreated();
-    const summary = document.querySelector(".checkout-summary")!;
+    // ⚠️ Scoped to the ORDER section, and it must stay scoped. A later layer gives the
+    // buy view's amount detail the same `.checkout-summary` class on purpose — the
+    // preview and the receipt are one object at two moments — so a bare class selector
+    // finds whichever comes first in the document, which is the buy card. Unscoped,
+    // these assertions passed on this layer and failed two layers up.
+    const summary = document.querySelector("#active-order .checkout-summary")!;
     const actions = document.querySelector(".order-actions")!;
     expect(summary.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING)
       .toBeTruthy();
@@ -2808,7 +2813,7 @@ describe("the delivered page leads with the outcome", () => {
     // reference and the next step were both loose lines below the card; they are rows
     // and a footer inside it now.
     await openDelivered();
-    const card = document.querySelector(".checkout-summary")!;
+    const card = document.querySelector("#active-order .checkout-summary")!;
     for (const id of ["order-price", "order-cycles", "order-rate", "order-dest",
                       "client-ref", "order-next-row"]) {
       expect(card.contains(el(id)), `#${id} should live in the card`).toBe(true);
@@ -2818,7 +2823,7 @@ describe("the delivered page leads with the outcome", () => {
   test("⚠️ the next step is ANCHORED in the card, not floating below it", async () => {
     await openDelivered();
     expect(el("order-next-row").hidden).toBe(false);
-    expect(document.querySelector(".checkout-summary")!.contains(el("order-next-link")))
+    expect(document.querySelector("#active-order .checkout-summary")!.contains(el("order-next-link")))
       .toBe(true);
     // Names what cycles are actually for. "Spend them" was wrong: they pay for
     // creating and running canisters.
