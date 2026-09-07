@@ -1159,3 +1159,35 @@ code.flow-detail {
   margin-top: var(--space-3);
   max-width: 76ch;
 }
+
+/* ── the dashboard, and rows that look like rows ───────────────────────────── */
+
+.balance-block {
+  padding-block: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--icp-rule);
+  margin-bottom: var(--space-5);
+}
+
+/* A row is navigable, so it says so. It used to be a `tr` with an onclick and no
+   affordance at all: no cursor, no hover, and nothing a keyboard could reach. The
+   order id is a real link now, and this makes the whole row read as its target. */
+.order-row {
+  cursor: pointer;
+}
+.order-row:hover {
+  background: var(--icp-accent-dim);
+}
+.order-row:focus-within {
+  outline: 2px solid var(--icp-accent);
+  outline-offset: -2px;
+}
+.order-link {
+  color: var(--icp-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* The order record's own facts, no longer inside a disclosure. */
+.orders-table {
+  width: 100%;
+}

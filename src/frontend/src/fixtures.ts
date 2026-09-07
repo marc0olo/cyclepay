@@ -163,7 +163,10 @@ export function installFixtures(host: FixtureHost): void {
   // differently and only one of them is a bug.
   const cyclesLedger: CyclesLedger = {
     icrc1_fee: async () => DEPOSIT_FEE,
-    icrc1_balance_of: async () => 0n,
+    // The dashboard reads this from the LEDGER rather than from the gateway. A
+    // realistic figure, not zero: a fixture showing "0 cycles" beside a delivered
+    // order reads as a bug in the very thing the balance exists to demonstrate.
+    icrc1_balance_of: async () => 7_338_461_538_461n,
   };
 
   const stub = {

@@ -268,7 +268,74 @@
              commands ARE the deliverable, so they lead and the order facts
              collapse beneath them. Every delivered order gets it, because every
              order credits the buyer's own account (#29). -->
-        <div id="tour" hidden>
+        <!-- NOTE: order details, problems and the receipt are SIBLINGS now, and none of
+             them is inside a disclosure.
+
+             They used to be nested: `order-problems` and `receipt-area` sat INSIDE
+             `<details id="order-details">`, which main.ts collapsed on the delivered
+             view. So on the one view a buyer opens to see what they got, the page
+             showed no cycle quantity at all, the receipt was two clicks deep, and a
+             problem notice hid behind one. Nothing hid them; the nesting did, and it
+             looked like an indentation accident rather than a decision.
+
+             The order view is now a record: what you bought, what went wrong if
+             anything, and the arithmetic you can check. The next action lives on its
+             own page. -->
+        <dl class="order-facts">
+          <dt>Cycles</dt><dd id="order-cycles"></dd>
+          <dt>Price</dt><dd id="order-price"></dd>
+          <dt>Destination</dt><dd id="order-dest"></dd>
+          <dt>Locked rate</dt><dd id="order-rate"></dd>
+          <dt>Payment reference</dt><dd id="client-ref" class="wrap"></dd>
+        </dl>
+
+        <!-- Problems attached to this order (#37/#38). Hidden when there are none,
+             which is the normal case: an empty panel headed "Problems" reads as a
+             fault on every healthy order. -->
+        <section id="order-problems" class="notice" hidden>
+          <h3 class="section-h">What happened to this order</h3>
+          <ul id="order-problem-list"></ul>
+        </section>
+
+        <!-- The receipt, OPEN rather than behind a summary. The landing page's whole
+             claim is that every order carries a receipt that recomputes its own price;
+             putting it behind a disclosure on the order page made the claim true and
+             the artefact hidden. -->
+        <section id="receipt-area" hidden>
+          <h3 class="section-h">Receipt and price verification</h3>
+          <dl class="order-facts">
+            <dt>You paid</dt><dd id="receipt-paid"></dd>
+            <dt>Cycles delivered</dt><dd id="receipt-delivered"></dd>
+            <dt>Cycles ledger block</dt><dd id="receipt-block"></dd>
+            <dt>Rate sources</dt><dd id="receipt-sources"></dd>
+          </dl>
+          <p id="receipt-formula" class="mono"></p>
+          <p id="receipt-verdict"></p>
+          <p id="receipt-simulation-note" class="notice" hidden></p>
+          <p class="muted">
+            Both rates come from canisters you can query yourself: the
+            <a href="https://dashboard.internetcomputer.org/canister/uf6dk-hyaaa-aaaaq-qaaaq-cai"
+               target="_blank" rel="noopener noreferrer">Exchange Rate Canister &#8599;</a>
+            for USD/ICP and the Cycles Minting Canister for XDR/ICP. Recompute the
+            line above and it must match the cycles this order locked.
+          </p>
+        </section>
+
+        <!-- Where a delivered order goes next. A LINK, not the guidance itself: the
+             commands are a page of their own. -->
+        <p id="order-next-row" hidden>
+          <a id="order-next-link" class="cta" href="#/">What to do next</a>
+        </p>
+      </section>
+
+      <!-- The next-steps view (#/order/<id>/next). NOTE: the tour used to live on the
+           order record, where it dominated the page and pushed every number behind a
+           collapsed disclosure. Two questions, two pages: the order says what you
+           bought, this says what to do with it. -->
+      <section id="view-next" class="view" hidden>
+        <h2 class="section-h">Your cycles are ready</h2>
+        <p class="lede" id="next-summary"></p>
+<div id="tour">
           <section class="handoff step-card">
             <p class="eyebrow">Step 3 of 4</p>
             <h3 class="section-h">Link your identity to the <em>CLI</em></h3>
@@ -333,53 +400,22 @@
           </section>
         </div>
 
-        <!-- Collapsed on the delivered view: once the cycles have arrived the
-             facts are reference material, and the next action is the tour above.
-             Open by default everywhere else. -->
-        <details id="order-details">
-          <summary>Order details</summary>
-          <dl class="order-facts">
-            <dt>Payment reference</dt><dd id="client-ref" class="wrap"></dd>
-            <dt>Cycles</dt><dd id="order-cycles"></dd>
-            <dt>Price</dt><dd id="order-price"></dd>
-            <dt>Destination</dt><dd id="order-dest"></dd>
-            <dt>Locked rate</dt><dd id="order-rate"></dd>
-          </dl>
-        <!-- Problems attached to this order (#37/#38). Hidden when there are none,
-             which is the normal case. An empty panel headed "Problems" reads as a
-             fault on every healthy order. The buyer sees their own; an operator sees
-             the same thing through `admin_order`, which is the point of putting them
-             on the order rather than in a separate list. -->
-        <section id="order-problems" class="notice" hidden>
-          <h3>What happened to this order</h3>
-          <ul id="order-problem-list"></ul>
-        </section>
-        <details id="receipt-area" hidden>
-          <summary>Receipt and price verification</summary>
-          <dl class="order-facts">
-            <dt>You paid</dt><dd id="receipt-paid"></dd>
-            <dt>Cycles delivered</dt><dd id="receipt-delivered"></dd>
-            <dt>Cycles ledger block</dt><dd id="receipt-block"></dd>
-            <dt>Rate sources</dt><dd id="receipt-sources"></dd>
-          </dl>
-          <p id="receipt-formula" class="mono"></p>
-          <p id="receipt-verdict"></p>
-          <p id="receipt-simulation-note" class="notice" hidden></p>
-          <p class="muted">
-            Both rates come from canisters you can query yourself: the
-            <a href="https://dashboard.internetcomputer.org/canister/uf6dk-hyaaa-aaaaq-qaaaq-cai"
-               target="_blank" rel="noopener noreferrer">Exchange Rate Canister ↗</a>
-            for USD/ICP and the Cycles Minting Canister for XDR/ICP. Recompute the
-            line above and it must match the cycles this order locked.
+        <!-- Moved here from the landing page, not deleted. It is guidance for after
+             the purchase rather than a reason to make one, and it is still aimed at a
+             human: someone pointing their own coding agent at the tooling. -->
+        <section class="explainer sunk">
+          <h3 class="section-h">Build with an agent</h3>
+          <p>
+            Point your coding agent at the
+            <a href="https://mcp.internetcomputer.org" target="_blank" rel="noopener noreferrer">MCP server &#8599;</a>
+            and the
+            <a href="https://skills.internetcomputer.org" target="_blank" rel="noopener noreferrer">skills library &#8599;</a>.
           </p>
-        </details>
-        </details>
+        </section>
+
+        <p><a id="next-back" href="#/">Back to this order</a></p>
       </section>
 
-      <!-- A deep link to an order id this gateway does not hold. Its own state,
-           not an empty order view: the previous behaviour logged to the console
-           and left the last order's facts on screen, so the wrong order's numbers
-           were shown under the wrong URL. -->
       <section id="order-missing" class="view" hidden>
         <h2 class="section-h">We could not find that order</h2>
         <p id="order-missing-detail"></p>
@@ -387,16 +423,37 @@
       </section>
 
       <section id="history" class="view" hidden>
-        <h2 class="section-h">Your orders</h2>
-        <table>
+        <h2 class="section-h">Your cycles</h2>
+
+        <!-- The balance, READ FROM THE LEDGER rather than from this canister.
+             NOTE: that is the point, not an optimisation. This is the one number a
+             buyer should never have to take our word for, and the cycles ledger is a
+             public canister anyone can query. It also closes the loop on the claim the
+             purchase flow makes: "your cycles go to your account" is checkable here. -->
+        <dl class="trust-figures balance-block">
+          <div>
+            <dt>Your cycles balance</dt>
+            <dd id="ledger-balance" class="figure">reading the ledger...</dd>
+            <dd id="ledger-balance-note" class="muted"></dd>
+          </div>
+        </dl>
+
+        <h3 class="section-h">Order history</h3>
+        <table class="orders-table">
           <thead>
             <tr>
-              <th>Created</th><th>Order</th><th>Rail</th><th>Cycles</th>
-              <th>Price</th><th>Status</th><th><span class="sr-only">Actions</span></th>
+              <!-- NOTE: no RAIL column. It read "card" on every row, because card is
+                   the only rail: a column with one value is a column that costs width
+                   and says nothing. And no ACTIONS column, because "Buy again" is
+                   gone: it appeared on every row including unpaid ones, where the
+                   open-order cap refuses the second order it was offering to start. -->
+              <th>Created</th><th>Order</th><th>Cycles</th>
+              <th>Price</th><th>Status</th>
             </tr>
           </thead>
           <tbody id="orders"></tbody>
         </table>
+        <p class="muted">Select a row to see the order and its receipt.</p>
       </section>
 
       <!-- The operator console (#68). Reached at #/admin only: no nav link, because a

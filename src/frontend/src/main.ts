@@ -5,6 +5,7 @@
 import type { Identity } from "@icp-sdk/core/agent";
 import {
   makeBackend,
+  cyclesLedgerCanisterId,
   makeCyclesLedger,
   type CyclesLedger,
   type PricingStatus,
@@ -119,6 +120,39 @@ let cyclesLedgerFactory: (() => CyclesLedger) | null = null;
 function buildCyclesLedger(): CyclesLedger {
   if (cyclesLedgerFactory !== null) return cyclesLedgerFactory();
   return makeCyclesLedger();
+}
+
+/// The buyer's own cycles balance, read from the LEDGER.
+///
+/// ⚠️ **Read from the ledger, not proxied through this canister, and that is the
+/// point.** It is the one number a buyer should never have to take our word for: the
+/// cycles ledger is a public canister anyone can query. It also closes the loop on
+/// what the purchase flow promises, since "your cycles go to your account" becomes
+/// something the page demonstrates rather than asserts.
+async function refreshLedgerBalance(): Promise<void> {
+  const node = document.getElementById("ledger-balance");
+  const note = document.getElementById("ledger-balance-note");
+  if (!node || !note) return;
+  if (identity === null) {
+    node.textContent = "sign in to see it";
+    note.textContent = "";
+    return;
+  }
+  try {
+    const balance = await buildCyclesLedger().icrc1_balance_of({
+      owner: identity.getPrincipal(),
+      subaccount: [],
+    });
+    node.textContent = `${formatCycles(balance)} cycles`;
+    note.textContent =
+      "Read from the cycles ledger, which anyone can query. This is your whole balance,"
+      + " not only what you bought here.";
+  } catch {
+    // ⚠️ Says the read failed rather than printing a zero. A zero is a claim about
+    // the buyer's money, and "we could not ask" is a different statement.
+    node.textContent = "could not read the ledger";
+    note.textContent = "The balance is unchanged; only this page could not fetch it.";
+  }
 }
 
 /// The one place a backend actor is built.
@@ -283,8 +317,13 @@ let orderCount = 0;
 function renderStepper(view: View, order: Order | null): void {
   const node = document.getElementById("stepper");
   if (!node) return;
-  const relevant =
-    view === "buy" || ((view === "order" || view === "delivered") && order !== null);
+  // ⚠️ **Buying and the guidance that follows it, NOT the order record.** The strip
+  // used to persist onto the order view, where four steps competed with the facts a
+  // buyer had opened that page to read. The steps are a promise about the purchase
+  // journey; a receipt with a progress bar on it answers a question nobody asked
+  // there. `stepStates` returns all-todo for the record, but the strip should be
+  // absent rather than blank.
+  const relevant = view === "buy" || (view === "next" && order !== null);
   if (!relevant) {
     node.hidden = true;
     return;
@@ -331,6 +370,11 @@ function renderView(): void {
   const delivered = currentView === "order" && order !== null && statusKeyOf(order) === "delivered";
   const effective: View = delivered ? "delivered" : currentView;
   const onOrder = effective === "order" || effective === "delivered";
+  // ⚠️ Declared HERE, beside `onOrder`. It was declared further down and read by the
+  // `order-missing` line above it — a `const` in its temporal dead zone, so
+  // `renderView` threw a ReferenceError partway through and left every view hidden.
+  // The symptom was a blank page, which reads as a routing bug rather than a crash.
+  const onNext = currentView === "next";
 
   show("view-landing", effective === "landing");
   show("buy-flow", effective === "buy");
@@ -341,23 +385,42 @@ function renderView(): void {
   // used to unhide it too, which is how a poll tick could paint an order over the
   // history table the visitor had navigated to.
   show("active-order", onOrder && ready);
-  show("order-missing", onOrder && !ready);
+  // NOTE: , matching the renderOrderMissing call below. Keyed on
+  //  alone, a next-steps deep link that could not load its order showed
+  // NOTHING: not the guidance, not the missing-order message, a blank page.
+  show("order-missing", (onOrder || onNext) && !ready);
   show("history", effective === "history");
   show("admin", effective === "admin");
+  // The next-steps view owns the screen like any other: the tour is no longer a panel
+  // stacked on the order record.
+  show("view-next", onNext && ready);
   if (effective === "admin") {
     renderAdminIdentity();
     renderOperatorSummary();
   }
+  if (effective === "history") void refreshLedgerBalance();
   show("history-link", orderCount > 0 && identity !== null);
-  if (onOrder && !ready) renderOrderMissing();
+  if ((onOrder || onNext) && !ready) renderOrderMissing();
 
-  renderStepper(effective, order);
+  renderStepper(onNext ? "next" : effective, order);
 
-  // On delivery the next action is the tour, so the facts collapse under it.
-  // Everywhere else they are the only content and stay open.
-  const details = document.getElementById("order-details") as HTMLDetailsElement | null;
-  if (details) details.open = !delivered;
-  renderTour(order, delivered);
+  // ⚠️ **Nothing collapses over the order's facts any more.** This used to close
+  // `#order-details` on the delivered view so the tour could lead — and because the
+  // receipt and the problems panel were NESTED inside that disclosure, the one view a
+  // buyer opens to see what they got showed no cycle quantity, hid the receipt two
+  // clicks deep, and buried a problem notice. The tour moved to its own view instead,
+  // which is the fix the collapse was standing in for.
+  renderTour(order, onNext);
+  if (onNext) renderNextSummary(order);
+
+  // The way from the record to the guidance. Only on a DELIVERED order: before that
+  // there is nothing to link the CLI to, and offering the step early is how a buyer
+  // ends up running a command against an empty balance.
+  show("order-next-row", delivered && order !== null);
+  const nextLink = document.getElementById("order-next-link") as HTMLAnchorElement | null;
+  if (nextLink && order !== null) {
+    nextLink.href = routeHash({ view: "next", orderId: order.id });
+  }
 }
 
 /// What the operator console knows about the caller's own identity.
@@ -1145,7 +1208,13 @@ function applyRoute(route: Route): void {
     void loadRefusals();
     void loadAdminConfig();
   }
-  if (route.view === "order" && activeOrder?.id !== route.orderId) {
+  // ⚠️ `next` needs the order too: it renders the quantity and the destination
+  // principal, so a deep link straight to the guidance must fetch rather than render
+  // an empty page.
+  if (
+    (route.view === "order" || route.view === "next")
+    && activeOrder?.id !== route.orderId
+  ) {
     // Deep link or Back into an order we are not currently holding.
     orderLoad = "loading";
     void loadOrderById(route.orderId);
@@ -1165,14 +1234,36 @@ async function loadOrderById(orderId: string): Promise<void> {
     return;
   }
   // The route may have moved on while the query was in flight.
-  if (currentView !== "order") return;
+  //
+  // ⚠️ **Both views that need this order, not just one.** The guard exists so a query
+  // resolving after the visitor navigated away cannot paint an order over the view
+  // they moved to — still right. But `next` needs the same order, and keyed on
+  // `"order"` alone this returned early on every next-steps deep link: `orderLoad`
+  // never reached `ok`, so the guidance rendered as "we could not find that order"
+  // for an order that had loaded fine.
+  if (currentView !== "order" && currentView !== "next") return;
   if (order === null) {
     orderLoad = "missing";
     renderView();
     return;
   }
   orderLoad = "ok";
-  openOrder(order);
+  // ⚠️ **Adopt the order without changing the route.** `openOrder` navigates to
+  // `#/order/<id>` with `replaceState`, which is right when a visitor CLICKS a row —
+  // and wrong here: on a `#/order/<id>/next` deep link it rewrote the hash and threw
+  // the `/next` away, so the guidance was unreachable by URL. The route already says
+  // where the visitor is; this only supplies what it needs.
+  activeOrder = order;
+  stopPolling();
+  renderOrder(order);
+  if (currentView === "order") {
+    // Polling belongs to the record, which is the view that shows a live status. The
+    // guidance page has nothing that changes.
+    pollOrderId = order.id;
+    lastPolledStatus = statusKeyOf(order);
+    pollTimer = setInterval(() => void pollActiveOrder(), POLL_MS);
+  }
+  renderView();
 }
 
 // --- auth ----------------------------------------------------------------
@@ -2129,7 +2220,15 @@ function renderOrder(order: Order): void {
   show("cancel-area", awaitingPayment && identity !== null);
   el<HTMLButtonElement>("cancel-order").disabled = false;
 
-  void renderReceipt(order);
+  // ⚠️ **The `.catch` is not decoration.** `void`-ing this swallowed every error the
+  // receipt render could throw: the section stayed hidden, no message appeared, and
+  // nothing anywhere said why — a buyer would see an order with no receipt and no
+  // explanation. Found because a missing export in a test mock produced exactly that
+  // silence, and the only way to see it was to add this.
+  void renderReceipt(order).catch((error) => {
+    // eslint-disable-next-line no-console
+    console.error("could not render the receipt", error);
+  });
 }
 
 /// Receipt + price verification for a delivered order.
@@ -2162,6 +2261,29 @@ function renderTour(order: Order | null, delivered: boolean): void {
   node.hidden = false;
 }
 
+/// The one-line summary at the top of the next-steps view: what landed, where.
+///
+/// ⚠️ Says the QUANTITY. The delivered view used to state no cycle figure anywhere,
+/// because everything numeric sat inside a collapsed disclosure while the tour filled
+/// the page. The order record carries the full detail; this says enough to know the
+/// commands below are about something real.
+function renderNextSummary(order: Order | null): void {
+  const node = document.getElementById("next-summary");
+  if (!node) return;
+  if (order === null) {
+    node.textContent = "";
+    return;
+  }
+  node.textContent =
+    `${formatCycles(order.lockedCycles)} cycles are in your account. `
+    + "Two commands and you are deploying.";
+  const back = document.getElementById("next-back") as HTMLAnchorElement | null;
+  if (back) {
+    back.href = routeHash({ view: "order", orderId: order.id });
+    back.textContent = "Back to this order and its receipt";
+  }
+}
+
 async function renderReceipt(order: Order): Promise<void> {
   if (!identity || statusKeyOf(order) !== "delivered") {
     show("receipt-area", false);
@@ -2185,9 +2307,25 @@ async function renderReceipt(order: Order): Promise<void> {
   el("receipt-delivered").textContent = receipt.cyclesDelivered === undefined
     ? "not yet"
     : formatCycles(receipt.cyclesDelivered);
-  el("receipt-block").textContent = receipt.deliveryBlockIndex === undefined
-    ? "not yet"
-    : receipt.deliveryBlockIndex.toString();
+  // ⚠️ **The block index becomes a LINK, because it is the one fact on this page a
+  // buyer can check without this canister.** The cycles ledger is public, so the
+  // dashboard entry is evidence rather than a convenience: it is where "the cycles
+  // arrived" stops being our claim and becomes someone else's record.
+  const blockCell = el("receipt-block");
+  blockCell.replaceChildren();
+  if (receipt.deliveryBlockIndex === undefined) {
+    blockCell.textContent = "not yet";
+  } else {
+    const link = document.createElement("a");
+    link.href =
+      `https://dashboard.internetcomputer.org/tokens/${cyclesLedgerCanisterId}`
+      + `/transaction/${receipt.deliveryBlockIndex}`;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.className = "mono";
+    link.textContent = `${receipt.deliveryBlockIndex} (view on the dashboard)`;
+    blockCell.append(link);
+  }
   el("receipt-sources").textContent =
     rateSourceNote(v.rateReceivedRates, v.rateQueriedSources) || "not yet";
 
@@ -2329,73 +2467,48 @@ async function refreshHistory(): Promise<void> {
   for (const order of orders) {
     const info = statusInfo(statusKeyOf(order));
     const row = document.createElement("tr");
+    // ⚠️ **Five cells against five headers.** The header used to carry a RAIL column
+    // with no cell behind it — six headers, five cells — so every column from Rail
+    // onward was rendering the NEXT field's value: cycles under "Rail", price under
+    // "Cycles", status under "Price". A column whose only value is "card" cost width,
+    // said nothing, and silently shifted the whole table.
     const cells = [
       new Date(nsToMillis(order.createdAtNs)).toLocaleString(),
-      `${order.id.slice(0, 8)}…`,
+      null, // the order id, rendered as a link below
       formatCycles(order.lockedCycles),
       formatUsdCents(order.pricing.usdCents),
       info.label,
     ];
     cells.forEach((text, index) => {
       const td = document.createElement("td");
-      td.textContent = text;
+      if (text === null) {
+        // ⚠️ A LINK, not just a clickable row. `tr.onclick` is unreachable by keyboard
+        // and shows no destination on hover; an anchor is both, and it makes the row's
+        // purpose legible without a hint column.
+        const link = document.createElement("a");
+        link.className = "order-link mono";
+        link.href = routeHash({ view: "order", orderId: order.id });
+        link.textContent = `${order.id.slice(0, 8)}…`;
+        td.append(link);
+      } else {
+        td.textContent = text;
+      }
       if (index === cells.length - 1) td.className = `tone-${info.tone}`;
       row.append(td);
     });
+    row.className = "order-row";
     row.onclick = () => {
       lockNotice = null;
       openOrder(order);
     };
-
-    // Buy again: for an operator refilling the same canister every month this
-    // is the whole flow — one click plus payment.
-    const actions = document.createElement("td");
-    const again = document.createElement("button");
-    again.type = "button";
-    again.className = "buy-again";
-    again.textContent = "Buy again";
-    again.onclick = (event) => {
-      event.stopPropagation(); // the row itself opens the order
-      repeatOrder(order);
-    };
-    actions.append(again);
-    row.append(actions);
+    // ⚠️ **"Buy again" is gone, and it was worse than redundant.** It rendered on
+    // EVERY row including unpaid ones, where the one-open-order cap refuses the very
+    // order it was offering to start: the button led a buyer into `#tooManyOpenOrders`.
+    // Starting an order is what the buy view is for.
     body.append(row);
   }
 }
 
-/// Prefill a new order from an existing one: the amount, which is all an order
-/// carries that a buyer can choose. Every order goes to the caller's own
-/// account, so there is nothing about *where* to carry across.
-///
-/// Deliberately does NOT submit. The price is re-quoted at today's rate, and
-/// charging a card from a table row without showing the new figure would be the
-/// one place this app takes money without the buyer seeing the number first.
-function repeatOrder(order: Order): void {
-  lockNotice = null;
-  stopPolling();
-
-  // Match the tier by price. A tier that no longer exists (retired, or repriced)
-  // leaves nothing selected rather than silently picking a neighbour.
-  const tier = tiers.find((t) => t.usdCents === order.pricing.usdCents);
-  selectedTierId = tier ? tier.id : null;
-  if (tier === undefined) {
-    showFormError("That amount is no longer offered. Pick one below.");
-  } else {
-    showFormError(null);
-  }
-  clearRequote();
-  renderTiers();
-  renderTierDetail();
-  renderSubmitGate();
-  // The prefill is on the BUY view, and "Buy again" is clicked from the history
-  // view. Without this the button filled in a form nobody was looking at and the
-  // orders table stayed on screen, so the one-click repeat purchase did nothing
-  // visible at all. Pushed, not replaced: the visitor asked for it, so Back
-  // returns them to their orders.
-  navigate({ view: "buy" });
-  el("card-panel").scrollIntoView({ behavior: "smooth", block: "start" });
-}
 
 /// Copy-to-clipboard for the CLI commands. Falls back to selecting the text:
 /// clipboard access is refused in some browsers and over plain HTTP, and a
