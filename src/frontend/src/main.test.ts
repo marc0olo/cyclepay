@@ -1618,7 +1618,8 @@ describe("the gate notice: refusals no amount can fix (#99 2b)", () => {
     await mount();
     const notice = document.getElementById("gate-notice")!;
     expect(notice.hidden).toBe(false);
-    expect(notice.textContent).toMatch(/testers/i);
+    expect(notice.textContent).toMatch(/invited/i);
+    expect(notice.textContent).toMatch(/principal/i);
     // ⚠️ **No "nothing was charged" before an attempt.** True after one and
     // misleading before: it implies a purchase was tried and reversed, at exactly the
     // moment the page is trying to be clear. `gateReasonMessage` keeps that clause for
@@ -1627,8 +1628,11 @@ describe("the gate notice: refusals no amount can fix (#99 2b)", () => {
   });
 
   test("the faucet refusal is shown too, and does NOT mention an allow-list", async () => {
-    // Every buyer is refused in that state, so naming a list would send this one
-    // asking for access that would not help.
+    // ⚠️ The faucet case tells the buyer the SAME thing, and an earlier version got
+    // this wrong: it withheld the allow-list here because the empty list is the
+    // operator's state, "so asking for access would not help". False — adding the
+    // asking buyer makes the list non-empty, which clears the condition and admits
+    // them. Both cases now name the action.
     state.canPurchase = {
       __kind__: "unboundedGiveaway",
       unboundedGiveaway: { reserveFloor: 1n },
@@ -1636,12 +1640,12 @@ describe("the gate notice: refusals no amount can fix (#99 2b)", () => {
     await mount();
     const notice = document.getElementById("gate-notice")!;
     expect(notice.hidden).toBe(false);
-    expect(notice.textContent).not.toMatch(/allow|invited|tester/i);
+    expect(notice.textContent).toMatch(/invited/i);
+    expect(notice.textContent).toMatch(/principal/i);
+    // Still no "nothing was charged" before an attempt, and still no operator
+    // vocabulary: a buyer must not read a description of the faucet.
     expect(notice.textContent).not.toMatch(/charged/i);
-    // ⚠️ And no operator vocabulary: a buyer must not be told the gateway is an
-    // "unbounded giveaway" or read a description of the faucet. brand-lint checks
-    // characters, not audience, so nothing else catches this.
-    expect(notice.textContent).not.toMatch(/giveaway|faucet|reserve|allow-list/i);
+    expect(notice.textContent).not.toMatch(/giveaway|faucet|reserve|unbounded/i);
   });
 
   test("⚠️ a VOLATILE refusal is NOT pre-announced — the existing rule still holds", async () => {

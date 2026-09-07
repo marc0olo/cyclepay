@@ -270,37 +270,38 @@ describe("the two-cause #unpriceable split (#99 review finding 2)", () => {
 });
 
 describe("the faucet and allow-list refusals (#99 2b)", () => {
-  test("⚠️ the faucet refusal tells the buyer nothing about an allow-list", () => {
-    // It is the operator's state, not this buyer's: every buyer is refused. Saying
-    // "you are not authorized" would send them asking for access that would not
-    // help.
-    const msg = gateReasonMessage({
-      __kind__: "unboundedGiveaway",
-      unboundedGiveaway: { reserveFloor: 1n },
-    } as never);
-    expect(msg).not.toMatch(/allow|invited|tester|authoriz/i);
-    expect(msg).toMatch(/nothing was charged/i);
+  const faucet = { __kind__: "unboundedGiveaway", unboundedGiveaway: { reserveFloor: 1n } };
+  const unlisted = { __kind__: "buyerNotAllowed", buyerNotAllowed: null };
+
+  test("⚠️ BOTH tell the buyer they must be invited, and how to ask", () => {
+    // An earlier version withheld the allow-list from the faucet case, reasoning that
+    // the empty list is the operator's misconfiguration so asking for access "would
+    // not help". That was FALSE, and a test pinned it: the condition is
+    // `testPayments && listEmpty && reserveFunded`, so adding the asking buyer makes
+    // the list non-empty, clears the condition AND admits them. Asking is the fix.
+    for (const reason of [faucet, unlisted]) {
+      const msg = gateReasonMessage(reason as never);
+      expect(msg).toMatch(/invited/i);
+      expect(msg).toMatch(/principal/i);
+      expect(msg).toMatch(/nothing was charged/i);
+    }
   });
 
-  test("the unlisted-buyer refusal IS about this buyer, and says so", () => {
-    const msg = gateReasonMessage({
-      __kind__: "buyerNotAllowed",
-      buyerNotAllowed: null,
-    } as never);
-    expect(msg).toMatch(/testers/i);
-    expect(msg).toMatch(/nothing was charged/i);
+  test("⚠️ neither uses operator vocabulary", () => {
+    // A buyer must not be told the gateway is an "unbounded giveaway", or read a
+    // description of the faucet. brand-lint checks characters, not audience, so
+    // nothing else catches this.
+    for (const reason of [faucet, unlisted]) {
+      expect(gateReasonMessage(reason as never))
+        .not.toMatch(/giveaway|faucet|reserve|unbounded/i);
+    }
   });
 
-  test("the two refusals do not share a message", () => {
-    const faucet = gateReasonMessage({
-      __kind__: "unboundedGiveaway",
-      unboundedGiveaway: { reserveFloor: 1n },
-    } as never);
-    const unlisted = gateReasonMessage({
-      __kind__: "buyerNotAllowed",
-      buyerNotAllowed: null,
-    } as never);
-    expect(faucet).not.toBe(unlisted);
+  test("the buyer's instruction converges even though the reasons do not", () => {
+    // Separate reasons, separate counters, separate operator diagnoses — one says the
+    // list is missing and the other says it is working. What converges is the action
+    // the BUYER takes, which is identical.
+    expect(gateReasonMessage(faucet as never)).toBe(gateReasonMessage(unlisted as never));
   });
 });
 

@@ -411,18 +411,38 @@ export function gateReasonMessage(reason: GateReason): string {
       );
     case "canisterCyclesLow":
       return "Purchases are temporarily unavailable while the gateway is topped up. Nothing was charged; please try again later.";
+    // ⚠️ **Both refusals give the buyer the SAME instruction, and an earlier version
+    // got this wrong.** It withheld the allow-list from `#unboundedGiveaway` on the
+    // reasoning that the empty list is the operator's misconfiguration, so asking for
+    // access "would not help". That is false: the condition is
+    // `testPayments && listEmpty && reserveFunded`, so adding the asking buyer makes
+    // the list non-empty, clears the condition, AND admits them. Asking is exactly
+    // the fix.
+    //
+    // The two stay separate REASONS because they are different diagnoses for the
+    // operator — one says the list is missing, the other says it is working — and
+    // they keep separate counters. What converges is the buyer's next action.
     case "unboundedGiveaway":
-      // ⚠️ Says nothing about an allow-list, deliberately. This refusal means the
-      // OPERATOR has a funded reserve behind an empty allow-list, and every buyer
-      // is refused — so telling this buyer they are "not authorized" would name
-      // the wrong problem and send them asking for access that would not help.
-      return "Purchases are not open on this gateway yet. Nothing was charged.";
     case "buyerNotAllowed":
-      // The list IS populated, so this really is about this buyer, and the fix is
-      // something they can act on.
-      return "This gateway is in testing and only invited testers can buy. Nothing was charged.";
+      return (
+        "This gateway is in a testing phase, so only invited buyers can purchase. "
+        + "Nothing was charged. Sign in, copy your principal from the top of the page, "
+        + "and send it to the operator to be added."
+      );
   }
 }
+
+/// The invite-only notice, defined once because both refusals give the buyer the same
+/// instruction. See `gateReasonMessage` for why they converge despite being separate
+/// reasons.
+///
+/// ⚠️ Points at the header rather than printing the principal: this renders for an
+/// anonymous visitor too (the faucet condition is a fact about the gateway, not about
+/// the caller), and there is no principal to print until they sign in.
+const PRE_ANNOUNCED_INVITE_ONLY =
+  "This gateway is in a testing phase, so only invited buyers can purchase. "
+  + "Sign in, copy your principal from the top of the page, and send it to the "
+  + "operator to be added.";
 
 /// The same two refusals, worded for a buyer who has **not attempted anything yet**
 /// (#99 2b).
@@ -446,8 +466,11 @@ export function gateReasonMessage(reason: GateReason): string {
 /// from them is stale by construction. That is the rule `main.ts`'s `loadMarket`
 /// documents, and this table is the narrow exception to it, not its replacement.
 export const PRE_ANNOUNCED_GATE_REASONS: Partial<Record<GateReason["__kind__"], string>> = {
-  unboundedGiveaway: "This gateway is not accepting purchases right now.",
-  buyerNotAllowed: "This gateway is in testing, and only invited testers can buy.",
+  // ⚠️ Both say the same thing, and both name the ACTION. "Not accepting purchases
+  // right now" reads as an outage and leaves a tester with nothing to do; what they
+  // need is to know they must be invited and how to ask.
+  unboundedGiveaway: PRE_ANNOUNCED_INVITE_ONLY,
+  buyerNotAllowed: PRE_ANNOUNCED_INVITE_ONLY,
 };
 
 /// The `#quoteChanged` refusal, in the buyer's terms. Leads with "nothing was
