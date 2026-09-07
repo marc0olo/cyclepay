@@ -49,6 +49,12 @@
   --icp-ok: #0b5e5c;
   --icp-warn: #8a5a1c;
   --icp-err: #8e3b22;
+  /* Destructive edge and wash, for a cancel that must read as destructive without
+     becoming a second loud button. Washes and borders only, never text: at these
+     alphas neither clears a text contrast bar. Same construction as
+     `--icp-accent-dim`, and defined per theme because `--icp-err` itself moves. */
+  --icp-err-edge: rgba(142, 59, 34, 0.45);
+  --icp-err-wash: rgba(142, 59, 34, 0.08);
 
   /* Type. Three faces, no fourth. */
   --font-display: 'Newsreader', Georgia, 'Times New Roman', serif;
@@ -106,6 +112,8 @@
   --icp-ok: #14938e;
   --icp-warn: #c79a4b;
   --icp-err: #d97757;
+  --icp-err-edge: rgba(217, 119, 87, 0.45);
+  --icp-err-wash: rgba(217, 119, 87, 0.10);
 
   --grid-ink: rgba(240, 235, 224, 0.04);
 }

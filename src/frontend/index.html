@@ -234,35 +234,83 @@
       </div>
 
       <section id="active-order" hidden>
-        <h2 class="section-h">Order <span id="order-id-short" class="mono"></span></h2>
+        <!-- IMPORTANT: **The heading is the PURCHASE, not the id.** An order id led this page
+             as an h2, which put an opaque identifier where a buyer looks for what they
+             are being asked to authorise. The id is a support handle: demoted to a
+             muted line, truncated, and copyable, which is the only thing anyone
+             actually does with it. Status-neutral wording, because this one section
+             serves every status the order can be in. -->
+        <h2 class="section-h">Your purchase</h2>
+        <p class="order-ident muted">
+          Order <span id="order-id-short" class="mono"></span>
+        </p>
         <p id="order-lock-notice" class="notice" hidden></p>
         <!-- A live countdown, not a static "reserved until 14:32": thirty-five
              minutes is short enough that a stale timestamp misleads a buyer who
              looked away. Rendered from `expiresAtNs`, which is Stripe's own
              deadline. -->
-        <p id="order-deadline" class="muted" hidden></p>
         <ol id="timeline" class="timeline"></ol>
-        <p id="order-status-line"></p>
-        <div id="pay-area" hidden>
-          <a id="pay-link" target="_blank" rel="noopener noreferrer" class="cta">Pay with card ↗</a>
-          <p class="muted">
-            Opens Stripe in a new tab. Keep this one open: it updates the moment
-            the payment clears.
-          </p>
+        <!-- IMPORTANT: **Only for a status the timeline CANNOT express.** This printed the same
+             label as the timeline's current step, so an awaiting-payment order said so
+             twice in adjacent lines. The timeline covers created, paid and delivered;
+             cancelled, expired, abandoned and needsReview are outside it, and there
+             this line is the only statement of what happened. See `renderOrder`. -->
+        <p id="order-status-line" hidden></p>
+
+        <!-- IMPORTANT: **The amounts lead, and the reading order was the bug.** A buyer was
+             asked to click "Pay with card" some 350px above learning the charge was
+             $10.00: the figures sat in a monospace list BELOW both buttons, every row
+             at one weight, so the price had exactly the prominence of a 90-character
+             support identifier. A checkout states what is being authorised, then
+             offers the control. -->
+        <div class="checkout-summary">
+          <dl class="checkout-amounts">
+            <div>
+              <dt>You pay</dt>
+              <dd id="order-price" class="amount"></dd>
+            </div>
+            <div>
+              <dt>You receive</dt>
+              <dd id="order-cycles" class="amount"></dd>
+            </div>
+          </dl>
+          <!-- IMPORTANT: **Kept, though it is detail.** Why the credited figure is smaller than
+               the quantity bought is the one arithmetic gap that reads as being
+               short-changed if left unexplained, so it stays: as a sub-line under the
+               figure it explains, not as prose inside a value cell. -->
+          <p id="order-cycles-note" class="muted fee-note" hidden></p>
+          <dl class="checkout-terms">
+            <div><dt>Rate</dt><dd id="order-rate" class="mono"></dd></div>
+            <div><dt>Destination</dt><dd id="order-dest"></dd></div>
+          </dl>
+          <!-- A live countdown, not a static "reserved until 14:32": thirty-five
+               minutes is short enough that a stale timestamp misleads a buyer who
+               looked away. Rendered from `expiresAtNs`, which is Stripe's own
+               deadline. Inside the summary because it is a term of this price. -->
+          <p id="order-deadline" class="muted" hidden></p>
         </div>
-        <div id="cancel-area" hidden>
-          <button id="cancel-order" type="button" class="ghost">Cancel this order</button>
-          <!-- This sentence is a promise made at the moment it matters, so it has
-               to match the transition matrix: `#cancelled → #paid` does not exist
-               (#34), so a payment arriving after a cancel is refunded rather than
-               applied. It said the opposite until #34 made expiry terminal. -->
-          <p class="muted">
-            Frees the slot so you can start another. Only cancel if you have not
-            paid: a payment that arrives after this cannot be applied to the
-            order, and would have to be refunded instead.
-          </p>
-          <p id="cancel-status" class="error" hidden></p>
+
+        <!-- IMPORTANT: **The two actions are ALTERNATIVES, so they share a row.** Each used to
+             be followed by its own explanatory paragraph, which put sixty words between
+             them and made two choices read as two unrelated controls. Cancel keeps a
+             destructive tint rather than a filled fill: filled red beside a filled
+             accent gives a page two loud buttons and shouts the option a buyer is less
+             likely to want. -->
+        <div class="order-actions">
+          <div id="pay-area" hidden>
+            <a id="pay-link" target="_blank" rel="noopener noreferrer" class="cta">Pay with card ↗</a>
+          </div>
+          <div id="cancel-area" hidden>
+            <button id="cancel-order" type="button" class="ghost danger">Cancel this order</button>
+          </div>
         </div>
+        <!-- IMPORTANT: Shown by the SAME predicate as `#pay-area` (see `renderOrder`): it is a
+             note about that button, and a note outliving its control is a claim about a
+             control that is not there. -->
+        <p id="pay-note" class="muted" hidden>
+          Opens Stripe in a new tab. This page updates when the payment clears.
+        </p>
+        <p id="cancel-status" class="error" hidden></p>
 
         <!-- The guided tour. On delivery this is the point of the page: the two
              commands ARE the deliverable, so they lead and the order facts
@@ -281,13 +329,13 @@
              The order view is now a record: what you bought, what went wrong if
              anything, and the arithmetic you can check. The next action lives on its
              own page. -->
-        <dl class="order-facts">
-          <dt>Cycles</dt><dd id="order-cycles"></dd>
-          <dt>Price</dt><dd id="order-price"></dd>
-          <dt>Destination</dt><dd id="order-dest"></dd>
-          <dt>Locked rate</dt><dd id="order-rate"></dd>
-          <dt>Payment reference</dt><dd id="client-ref" class="wrap"></dd>
-        </dl>
+        <!-- IMPORTANT: **A support handle, not a fact a buyer reads.** This was ninety
+             monospace characters at the same weight as the price, and the widest thing
+             on the page. Truncated with a copy button: quoting it to support is the
+             only use it has. NOT inside a disclosure, per the note above. -->
+        <p class="order-ref muted">
+          Payment reference <span id="client-ref" class="mono"></span>
+        </p>
 
         <!-- Problems attached to this order (#37/#38). Hidden when there are none,
              which is the normal case: an empty panel headed "Problems" reads as a

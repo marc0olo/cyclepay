@@ -357,6 +357,20 @@ button:disabled {
   border-color: var(--icp-fg-muted);
 }
 
+/* ⚠️ A destructive TINT, not a filled red button. Filled red beside the filled
+   accent CTA gives the page two loud controls and shouts the choice a buyer is less
+   likely to want. The border carries it as well as the text, so the signal is not
+   colour alone, and `:hover` commits further rather than being the first hint. */
+.ghost.danger {
+  color: var(--icp-err);
+  border-color: var(--icp-err-edge);
+}
+.ghost.danger:hover {
+  color: var(--icp-err);
+  border-color: var(--icp-err);
+  background: var(--icp-err-wash);
+}
+
 .linklike {
   background: none;
   border: 0;
@@ -525,6 +539,106 @@ button:disabled {
 .timeline li.now {
   border-top-color: var(--icp-accent);
   color: var(--icp-accent);
+}
+
+/* ── the checkout summary ─────────────────────────────────────────────────── */
+
+.checkout-summary {
+  background: var(--icp-bg-elev);
+  border: 1px solid var(--icp-rule);
+  border-radius: var(--radius-md);
+  padding: var(--space-5);
+  margin: var(--space-5) 0;
+  /* Its own measure: the two amount rows read as a pair, and a card as wide as the
+     page puts label and figure too far apart to associate. */
+  max-width: 34rem;
+}
+
+.checkout-amounts {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.checkout-amounts > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.checkout-amounts dt {
+  font-family: var(--font-ui);
+  color: var(--icp-fg-secondary);
+}
+
+/* The two figures a buyer is deciding on. Deliberately the largest text in the
+   section: they used to sit at body weight in a list below both buttons. */
+.checkout-amounts .amount {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.375rem;
+  color: var(--icp-fg);
+  margin: 0;
+  text-align: right;
+}
+
+.fee-note {
+  /* Hangs under the figure it explains, right-aligned to sit with it rather than
+     with the label on the other side of the row. */
+  text-align: right;
+  font-size: 0.8125rem;
+  margin: calc(var(--space-2) * -1) 0 0;
+}
+
+.checkout-terms {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 0;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--icp-rule);
+  font-size: 0.9375rem;
+}
+
+.checkout-terms > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.checkout-terms dt {
+  font-family: var(--font-ui);
+  color: var(--icp-fg-secondary);
+}
+
+.checkout-terms dd {
+  margin: 0;
+  text-align: right;
+}
+
+/* The two actions on one row, wrapping on a narrow screen rather than forcing the
+   page sideways. `align-items: center` because the CTA is a pill and the cancel a
+   rectangle: matching their vertical centres reads level, matching their boxes does
+   not. */
+.order-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+  margin: var(--space-5) 0 var(--space-3);
+}
+
+.order-ident,
+.order-ref {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.875rem;
+}
+
+.order-ref {
+  margin-top: var(--space-6);
 }
 
 .order-facts {

@@ -170,20 +170,40 @@ export function cyclesCredited(cycles: bigint | null, transferFee: bigint): bigi
 /// arrives for a different amount than quoted, the quantity is re-derived at
 /// that same locked rate. Saying "cycles are locked" would be wrong in that one
 /// case; saying the rate is locked is always true.
+/// The credited quantity, and separately why it differs from what was bought.
+///
+/// ⚠️ **The FIGURE and its explanation are separate values, because the checkout puts
+/// them in different places.** They used to exist only glued into one sentence, so the
+/// order page rendered a hundred-character line of prose inside a value cell where a
+/// buyer was looking for a number. `estimateLine` is now built from this, so the two
+/// renderings cannot drift: one primitive, two presentations.
+///
+/// `note` is null when the two figures do not READ differently. `formatCycles` shows
+/// three decimals, so on a multi-trillion order the 100 M transfer fee rounds away and
+/// "3.5 T credited, 3.5 T sent less the 100 M fee" reads as a contradiction rather
+/// than a disclosure.
+export function creditedSplit(
+  cycles: bigint,
+  transferFee: bigint,
+): { figure: string; note: string | null } {
+  const credited = formatCycles(cyclesCredited(cycles, transferFee)!);
+  const sent = formatCycles(cycles);
+  return {
+    figure: `${credited} cycles`,
+    note: credited === sent
+      ? null
+      : `${sent} sent, less the cycles ledger's ${formatCycles(transferFee)} transfer fee`,
+  };
+}
+
 export function estimateLine(cycles: bigint | null, transferFee: bigint): string {
   if (cycles === null) {
     return "No exchange rate available right now. Orders are paused until one is.";
   }
+  const { figure, note } = creditedSplit(cycles, transferFee);
   const shown = formatCycles(cyclesCredited(cycles, transferFee)!);
-  // Only spell out the split when the two figures actually *read* differently.
-  // `formatCycles` shows three decimals, so on a multi-trillion order the 100 M
-  // transfer fee rounds away entirely, and "3.5 T credited (3.5 T sent, less the
-  // 100 M transfer fee)" reads as a contradiction rather than a disclosure.
-  if (shown !== formatCycles(cycles)) {
-    return (
-      `≈ ${shown} cycles credited ` +
-      `(${formatCycles(cycles)} sent, less the cycles ledger's ${formatCycles(transferFee)} transfer fee)`
-    );
+  if (note !== null) {
+    return `≈ ${figure.replace(" cycles", "")} cycles credited (${note})`;
   }
   // Just the number that lands. The fee is disclosed once, in `#dest-fee-note`
   // under the destination; naming it here as well puts the same parenthetical on

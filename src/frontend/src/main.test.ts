@@ -1187,8 +1187,19 @@ describe("the pay button comes from the ORDER, not from browser memory", () => {
     // so changing the stub identity broke it, which is the mirror this repo keeps
     // removing. The reference is `<principal>_<orderId>` and both halves come from
     // their sources.
-    expect(el("client-ref").textContent)
-      .toBe(`${FULL_PRINCIPAL}_abcdef0123456789abcdef0123456789`);
+    const full = `${FULL_PRINCIPAL}_abcdef0123456789abcdef0123456789`;
+    // ⚠️ **Truncated on screen, but the requirement is that it be OBTAINABLE.** The
+    // full string is ninety characters and was the widest thing on the page, at the
+    // same weight as the price. Quoting it to support is its only use, so the test
+    // asserts what a person can actually get rather than what is painted.
+    expect(el("client-ref").textContent).not.toBe(full);
+    expect(el("client-ref").textContent).toContain(FULL_PRINCIPAL.slice(0, 12));
+    const clip = stubClipboard("ok");
+    const copy = document.querySelector<HTMLButtonElement>(".order-ref button.copy")!;
+    expect(copy).not.toBeNull();
+    copy.click();
+    await settle();
+    expect(clip.last()).toBe(full);
   });
 
   test("no session yet means no button, rather than a broken one", async () => {
@@ -1301,18 +1312,35 @@ describe("a buyer can type an amount", () => {
 });
 
 describe("the deadline is a countdown, not a timestamp", () => {
-  test("a payable order shows the time remaining and warns about the edge", async () => {
-    // Thirty-five minutes is short enough that "reserved until 14:32" misleads a
-    // buyer who looked away — and one who starts paying near the deadline loses
-    // the attempt, so the copy has to say so.
+  /// Put a payable order on screen with a chosen amount of time left.
+  async function orderWithTimeLeft(ms: number): Promise<void> {
     const soon = anOrder("created") as Record<string, unknown>;
-    soon.expiresAtNs = BigInt(Date.now() + 10 * 60_000) * 1_000_000n;
+    soon.expiresAtNs = BigInt(Date.now() + ms) * 1_000_000n;
     state.order = soon;
     await mount();
     await openFromHistory();
+  }
+
+  test("a payable order shows the time remaining", async () => {
+    // Thirty-five minutes is short enough that "reserved until 14:32" misleads a
+    // buyer who looked away, so this is a countdown.
+    await orderWithTimeLeft(10 * 60_000);
     expect(el("order-deadline").hidden).toBe(false);
     expect(el("order-deadline").textContent).toMatch(/9 min|10 min/);
+  });
+
+  test("⚠️ the edge warning fires on the CLOCK, not on every render", async () => {
+    // The advice is worth reading at three minutes and is noise at ten, where it was
+    // a hundred and forty characters of caution above the price it qualified. Both
+    // regimes are asserted: a test for the warning alone would pass against copy that
+    // always shows it, which is the behaviour being removed.
+    await orderWithTimeLeft(10 * 60_000);
+    expect(el("order-deadline").textContent).not.toMatch(/not charged/i);
+    expect(el("order-deadline").classList.contains("tone-warn")).toBe(false);
+
+    await orderWithTimeLeft(3 * 60_000);
     expect(el("order-deadline").textContent).toMatch(/not charged/i);
+    expect(el("order-deadline").classList.contains("tone-warn")).toBe(true);
   });
 
   test("no countdown once the order is past payment", async () => {
@@ -1785,27 +1813,32 @@ describe("the gate notice: refusals no amount can fix (#99 2b)", () => {
   });
 });
 
-describe("the signed-in principal is copyable", () => {
-  /// Captures what `navigator.clipboard.writeText` was handed, or makes it reject.
-  function stubClipboard(mode: "ok" | "reject" | "absent"): { last: () => string | undefined } {
-    let last: string | undefined;
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: mode === "absent"
-        ? undefined
-        : {
-          writeText: async (text: string) => {
-            if (mode === "reject") throw new Error("denied");
-            last = text;
-          },
+/// Captures what `navigator.clipboard.writeText` was handed, or makes it reject.
+///
+/// Module scope because more than one surface is copyable now: the principal in the
+/// header and the order id and payment reference on the checkout. A second copy of
+/// this would be the mirror this repo keeps deleting.
+function stubClipboard(mode: "ok" | "reject" | "absent"): { last: () => string | undefined } {
+  let last: string | undefined;
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: mode === "absent"
+      ? undefined
+      : {
+        writeText: async (text: string) => {
+          if (mode === "reject") throw new Error("denied");
+          last = text;
         },
-    });
-    // `execCommand` is the synchronous fallback and jsdom has no implementation, so
-    // it is stubbed to report failure — which is what forces the reject and absent
-    // cases down to the selection path and lets the failure state be observed.
-    (document as unknown as { execCommand: () => boolean }).execCommand = () => false;
-    return { last: () => last };
-  }
+      },
+  });
+  // `execCommand` is the synchronous fallback and jsdom has no implementation, so it
+  // is stubbed to report failure — which is what forces the reject and absent cases
+  // down to the selection path and lets the failure state be observed.
+  (document as unknown as { execCommand: () => boolean }).execCommand = () => false;
+  return { last: () => last };
+}
+
+describe("the signed-in principal is copyable", () => {
 
   function headerCopy(): HTMLButtonElement {
     return document.querySelector<HTMLButtonElement>("#auth-area button.copy")!;
@@ -2528,5 +2561,134 @@ describe("the dashboard's two records are tabs", () => {
     expect(el("ledger-balance").textContent).not.toMatch(/reading the ledger/i);
     await openTab("#/history/ledger");
     expect(el("ledger-balance").textContent).not.toMatch(/reading the ledger/i);
+  });
+});
+
+describe("the order page reads as a checkout", () => {
+  async function openCreated(): Promise<void> {
+    state.order = anOrder("created");
+    await mount();
+    await openFromHistory();
+  }
+
+  test("⚠️ the amounts come BEFORE the actions in the document", async () => {
+    // The reading order was the defect: a buyer was asked to click "Pay with card"
+    // some 350px above learning what the charge was, because the figures sat in a
+    // list below both buttons. Asserted as document order rather than as pixels, so
+    // it holds at any width and cannot be satisfied by styling.
+    await openCreated();
+    const summary = document.querySelector(".checkout-summary")!;
+    const actions = document.querySelector(".order-actions")!;
+    expect(summary.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+  });
+
+  test("the two amounts a buyer is deciding on are both present and distinct", async () => {
+    await openCreated();
+    expect(el("order-price").textContent).toBe("$10.00");
+    // The figure ALONE. This used to be a hundred-character sentence in a value cell.
+    expect(el("order-cycles").textContent).toMatch(/^[\d.]+ [GTMK]? ?cycles$/);
+    expect(el("order-cycles").textContent).not.toMatch(/less the|transfer fee/);
+  });
+
+  test("the fee explanation is a sub-line, not prose inside the figure", async () => {
+    // A simulation-scale order, where the 100 M ledger fee is ~1.4% of the delivery
+    // and the two figures genuinely read differently.
+    state.order = anOrder("created", 7_238_461_538n);
+    await mount();
+    await openFromHistory();
+    expect(el("order-cycles-note").hidden).toBe(false);
+    expect(el("order-cycles-note").textContent).toMatch(/transfer fee/);
+    // The figure itself stays a figure.
+    expect(el("order-cycles").textContent).not.toMatch(/transfer fee/);
+  });
+
+  test("⚠️ and the sub-line is SUPPRESSED when the two figures read the same", async () => {
+    // At 3.5 T the 100 M fee rounds away at three decimals, so "3.500 T credited,
+    // 3.500 T sent less the 100 M fee" reads as a contradiction rather than a
+    // disclosure. Without this half, the assertion above would be satisfied by a note
+    // that always shows.
+    await openCreated();
+    expect(el("order-cycles").textContent).toMatch(/3\.5/);
+    expect(el("order-cycles-note").hidden).toBe(true);
+  });
+
+  test("⚠️ both actions sit in ONE row, with nothing between them", async () => {
+    // Each used to be followed by its own paragraph, which put sixty words between
+    // two choices and made them read as unrelated controls.
+    await openCreated();
+    const actions = document.querySelector(".order-actions")!;
+    expect(actions.contains(el("pay-link"))).toBe(true);
+    expect(actions.contains(el("cancel-order"))).toBe(true);
+    expect(actions.querySelector("p")).toBeNull();
+  });
+
+  test("cancel reads as destructive", async () => {
+    await openCreated();
+    expect(el("cancel-order").classList.contains("danger")).toBe(true);
+  });
+
+  test("⚠️ the pay note cannot outlive the pay button", async () => {
+    // One predicate drives both. A note about a control that is not on screen is a
+    // claim about a control that is not there.
+    await openCreated();
+    expect(el("pay-area").hidden).toBe(false);
+    expect(el("pay-note").hidden).toBe(false);
+    state.order = anOrder("delivered");
+    await mount();
+    await openFromHistory();
+    expect(el("pay-area").hidden).toBe(true);
+    expect(el("pay-note").hidden).toBe(true);
+  });
+
+  test("⚠️ the status is stated ONCE while the timeline can express it", async () => {
+    // The line printed the timeline's own current label, so an awaiting-payment order
+    // said so twice in adjacent lines.
+    await openCreated();
+    expect(el("order-status-line").hidden).toBe(true);
+    expect(el("timeline").textContent).toMatch(/Awaiting payment/);
+  });
+
+  test("⚠️ and it IS stated for a status the timeline has no slot for", async () => {
+    // The other half, without which the assertion above would be satisfied by simply
+    // deleting the line. `step === -1` statuses carry the only information available.
+    state.order = anOrder("expired");
+    await mount();
+    await openFromHistory();
+    expect(el("order-status-line").hidden).toBe(false);
+    expect(el("order-status-line").textContent).toMatch(/no longer be paid/i);
+  });
+
+  test("the order id is demoted and copyable", async () => {
+    await openCreated();
+    // Not the heading any more: an id is a support handle, not the purpose of a page.
+    expect(document.querySelector("#active-order h2")!.textContent).not.toMatch(/abcdef/);
+    const clip = stubClipboard("ok");
+    const copy = document.querySelector<HTMLButtonElement>(".order-ident button.copy")!;
+    copy.click();
+    await settle();
+    expect(clip.last()).toBe("abcdef0123456789abcdef0123456789");
+  });
+
+  test("⚠️ a second render does not stack a copy button", async () => {
+    // `renderOrder` runs on every 3 s poll tick and these buttons are built there, so
+    // an append would grow one per tick. `replaceChildren` is what keeps it at one.
+    //
+    // ⚠️ **The first version of this test drained `settle()` twice and was vacuous.**
+    // `settle` only flushes microtasks; the 3 s interval never fires under jsdom, so
+    // `renderOrder` ran exactly once and nothing could have stacked. Mutating
+    // `replaceChildren` to `append` left the suite green. This navigates away and back
+    // instead, which really does render the order twice.
+    await openCreated();
+    expect(document.querySelectorAll(".order-ident button.copy").length).toBe(1);
+
+    el("history-link").click();
+    await settle();
+    await openFromHistory();
+
+    expect(document.querySelectorAll(".order-ident button.copy").length).toBe(1);
+    expect(document.querySelectorAll(".order-ref button.copy").length).toBe(1);
+    // And the label is still there exactly once, so the rebuild did not lose it.
+    expect(document.querySelector(".order-ident")!.textContent).toMatch(/^Order /);
   });
 });

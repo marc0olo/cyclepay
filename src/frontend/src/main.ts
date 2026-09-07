@@ -59,6 +59,7 @@ import {
   createOrderErrorMessage,
   PRE_ANNOUNCED_GATE_REASONS,
   type GateReason,
+  creditedSplit,
   estimateLine,
   type FeeConfig,
   feeBreakdown,
@@ -2304,6 +2305,11 @@ function describeDestination(order: Order): string {
 /// Only while the order is still payable: on a paid or delivered order the
 /// deadline is history, and showing a timer next to "Delivered" would read as
 /// something still being at risk.
+/// When the deadline advice stops being noise and starts being useful. Five minutes,
+/// because that is the span in which "start now" changes what a buyer does: above it
+/// the caution qualifies a price nobody is about to lose.
+const URGENT_WINDOW_MS = 5 * 60 * 1000;
+
 function renderDeadline(order: Order): void {
   const node = document.getElementById("order-deadline");
   if (!node) return;
@@ -2319,9 +2325,19 @@ function renderDeadline(order: Order): void {
     show("order-deadline", false);
     return;
   }
-  node.textContent =
-    `This price is held for ${left}. Start paying with a few minutes to spare: `
-    + `a payment still in flight when the window closes fails, and you are not charged.`;
+  // ⚠️ **The warning fires on the CLOCK, not on every render.** The advice
+  // ("start with minutes to spare, an in-flight payment fails at the window") is worth
+  // reading at four minutes and is noise at thirty-four, where it was a hundred and
+  // forty characters of caution above the price it qualified. Progressive disclosure
+  // driven by state rather than by a click, so nobody has to open anything to be
+  // warned at the moment it matters.
+  const msLeft = nsToMillis(deadline) - Date.now();
+  const urgent = msLeft <= URGENT_WINDOW_MS;
+  node.textContent = urgent
+    ? `Price held for ${left}. Start now: a payment still in flight when the window `
+      + `closes fails, and you are not charged.`
+    : `Price held for ${left}.`;
+  node.classList.toggle("tone-warn", urgent);
   show("order-deadline", true);
 }
 
@@ -2393,10 +2409,23 @@ function renderOrder(order: Order): void {
   // navigated, so without this a tick could refill and re-reveal the order panel
   // underneath the history table or the buy form.
   if (currentView !== "order") return;
-  el("order-id-short").textContent = `${order.id.slice(0, 8)}…`;
+  const idNode = el("order-id-short");
+  idNode.textContent = `${order.id.slice(0, 8)}…`;
+  // Truncated ids exist to be quoted, so the full one is reachable without a
+  // selection. `replaceChildren` because renderOrder runs on every 3 s poll tick and
+  // appending would stack a copy button per tick.
+  idNode.parentElement?.replaceChildren(
+    document.createTextNode("Order "),
+    idNode,
+    copyButton(order.id, "Copy the full order id"),
+  );
   // No "≈" here: the rate is locked, so this figure is what the order pays out.
-  el("order-cycles").textContent = estimateLine(order.lockedCycles, transferFee)
-    .replace(/^≈ /, "");
+  // ⚠️ The FIGURE alone. The explanation of why it differs from what was bought is a
+  // separate node under it, because a value cell is not where prose belongs.
+  const credited = creditedSplit(order.lockedCycles, transferFee);
+  el("order-cycles").textContent = credited.figure;
+  el("order-cycles-note").textContent = credited.note ?? "";
+  show("order-cycles-note", credited.note !== null);
   el("order-price").textContent = formatUsdCents(order.pricing.usdCents);
   el("order-dest").textContent = describeDestination(order);
   renderDeadline(order);
@@ -2438,6 +2467,13 @@ function renderOrder(order: Order): void {
   const statusLine = el("order-status-line");
   statusLine.textContent = info.label;
   statusLine.className = `tone-${info.tone}`;
+  // ⚠️ **Shown only when the timeline cannot express the status, and the predicate is
+  // the DATA rather than a list.** `step >= 0` means the timeline is already showing
+  // this state, so printing the same label underneath said "Awaiting payment" twice in
+  // adjacent lines. `step === -1` is exactly the set the timeline has no slot for
+  // (cancelled, expired, needsReview, abandoned), and there these labels carry the
+  // only information available: "Expired. This order can no longer be paid".
+  show("order-status-line", info.step < 0);
 
   // `#expired` used to be here, on the §4 grounds that a late payment still
   // completed. #34 deleted `#expired → #paid`, so an expired order is not
@@ -2456,7 +2492,11 @@ function renderOrder(order: Order): void {
   // one-open-order cap the buyer could not even start over. The URL is on the
   // record now (#33/#34), so a reload, a second device and a deep link all work.
   const link = order.stripeSessionUrl;
-  show("pay-area", awaitingPayment && link !== undefined);
+  const payable = awaitingPayment && link !== undefined;
+  show("pay-area", payable);
+  // The note is about that button. One predicate for both, so a note cannot outlive
+  // the control it describes.
+  show("pay-note", payable);
   if (link !== undefined) {
     el<HTMLAnchorElement>("pay-link").href = link;
   }
@@ -2464,7 +2504,14 @@ function renderOrder(order: Order): void {
   // on the buyer's card receipt, so it stays on screen, but it was only ever in
   // the response so the frontend could build a Payment Link URL.
   if (identity !== null) {
-    el("client-ref").textContent = clientReferenceFor(identity.getPrincipal().toText(), order.id);
+    const ref = clientReferenceFor(identity.getPrincipal().toText(), order.id);
+    const refNode = el("client-ref");
+    refNode.textContent = `${ref.slice(0, 12)}…${ref.slice(-6)}`;
+    refNode.parentElement?.replaceChildren(
+      document.createTextNode("Payment reference "),
+      refNode,
+      copyButton(ref, "Copy the payment reference"),
+    );
   }
 
   // Only an unpaid order can be given up on; past payment it is going to
