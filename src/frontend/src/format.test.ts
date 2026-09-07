@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   checkReceipt,
+  decodeBurnMemo,
   CREATE_ORDER_ERROR_KEYS,
   createOrderErrorMessage,
   cyclesCredited,
@@ -567,5 +568,61 @@ describe("StatusKey is derived from the generated enum (#68)", () => {
       expect(typeof statusInfo(key).label).toBe("string");
       expect(statusInfo(key).label.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("decodeBurnMemo: which action a burn was", () => {
+  // The bytes a real cycles ledger wrote. Captured from a local create and a local
+  // withdraw issued against the SAME target canister, so nothing but the operation
+  // differs between them. Both blocks reported op "burn" and block type 1burn.
+  const CREATE_MEMO = new Uint8Array(32).fill(0xfe);
+  const TOPUP_MEMO = new Uint8Array([
+    0x81, 0x4a, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xa0, 0x00, 0x05, 0x01, 0x01,
+  ]);
+
+  test("a top-up names its target canister", () => {
+    // The principal this decodes to is the canister the withdraw was actually issued
+    // to, so this pins the CBOR offsets rather than just the shape.
+    expect(decodeBurnMemo([TOPUP_MEMO])).toEqual({
+      kind: "toppedUp",
+      canister: "4xhad-gd777-77775-aaacq-cai",
+    });
+  });
+
+  test("a creation is detected, and carries NO canister", () => {
+    // ⚠️ The absence is the finding, not an omission here: the created id is returned by
+    // the method and never written into the block, so no later read can recover it.
+    const decoded = decodeBurnMemo([CREATE_MEMO]);
+    expect(decoded).toEqual({ kind: "created" });
+    expect(decoded).not.toHaveProperty("canister");
+  });
+
+  test("an absent memo is unknown, not a creation", () => {
+    expect(decodeBurnMemo([])).toEqual({ kind: "unknown" });
+  });
+
+  test("near-misses on the sentinel do not read as a creation", () => {
+    // Matched on exact length and every byte, so neither a short run nor a long one
+    // nor one wrong byte can be mistaken for the ledger's sentinel.
+    expect(decodeBurnMemo([new Uint8Array(31).fill(0xfe)])).toEqual({ kind: "unknown" });
+    expect(decodeBurnMemo([new Uint8Array(33).fill(0xfe)])).toEqual({ kind: "unknown" });
+    const oneOff = new Uint8Array(32).fill(0xfe);
+    oneOff[17] = 0xfd;
+    expect(decodeBurnMemo([oneOff])).toEqual({ kind: "unknown" });
+  });
+
+  test("a CBOR-shaped memo of the wrong length does not decode a truncated id", () => {
+    // Prefix matching would take the first bytes of a longer payload and render a
+    // principal that names a canister nobody touched. Length is part of the match.
+    expect(decodeBurnMemo([new Uint8Array([0x81, 0x4a, 0x00, 0x00, 0x01, 0x01])]))
+      .toEqual({ kind: "unknown" });
+    const tooLong = new Uint8Array([
+      0x81, 0x4a, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xa0, 0x00, 0x05, 0x01, 0x01, 0x99,
+    ]);
+    expect(decodeBurnMemo([tooLong])).toEqual({ kind: "unknown" });
+  });
+
+  test("an unrecognised memo is unknown rather than thrown away", () => {
+    expect(decodeBurnMemo([new Uint8Array([1, 2, 3])])).toEqual({ kind: "unknown" });
   });
 });

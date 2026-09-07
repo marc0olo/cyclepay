@@ -189,7 +189,7 @@ export interface IndexTransaction {
   timestamp: bigint;
   transfer: [] | [IndexTransfer];
   mint: [] | [{ to: IndexAccount; amount: bigint }];
-  burn: [] | [{ from: IndexAccount; amount: bigint }];
+  burn: [] | [{ from: IndexAccount; amount: bigint; memo: [] | [Uint8Array] }];
   approve: [] | [{ from: IndexAccount; spender: IndexAccount; amount: bigint }];
 }
 

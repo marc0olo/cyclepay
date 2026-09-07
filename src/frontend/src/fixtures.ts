@@ -171,9 +171,13 @@ export function installFixtures(host: FixtureHost): void {
     icrc1_balance_of: async () => 7_338_461_538_461n,
   };
 
-  /// The account's ledger history, from the INDEX. Two rows, because one direction
-  /// proves nothing: a `transfer` is money in or out depending on which side the
-  /// caller is, and the render computes that from the accounts rather than the kind.
+  /// The account's ledger history, from the INDEX. One row per shape the render has to
+  /// tell apart, because a single direction proves nothing: a `transfer` is money in or
+  /// out depending on which side the caller is, and every BURN carries the same
+  /// `op`/`kind`/`from`, so only the memo separates a canister creation from a top-up.
+  ///
+  /// The two burn memos are the bytes a real cycles ledger wrote, captured from a local
+  /// create and a local withdraw against the same target canister.
   const cyclesIndex: CyclesIndex = {
     get_account_transactions: async () => ({
       Ok: {
@@ -202,7 +206,30 @@ export function installFixtures(host: FixtureHost): void {
               timestamp: 1_760_000_600_000_000_000n,
               transfer: [],
               mint: [],
-              burn: [{ from: { owner: BUYER, subaccount: [] }, amount: 500_000_000_000n }],
+              burn: [{
+                from: { owner: BUYER, subaccount: [] },
+                amount: 500_000_000_000n,
+                // CBOR: 0x81 array(1), 0x4a bytes(10), then the target canister.
+                memo: [new Uint8Array([
+                  0x81, 0x4a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0x3d, 0xae, 0x01, 0x01,
+                ])],
+              }],
+              approve: [],
+            },
+          },
+          {
+            id: 4_902n,
+            transaction: {
+              kind: "burn",
+              timestamp: 1_760_000_900_000_000_000n,
+              transfer: [],
+              mint: [],
+              burn: [{
+                from: { owner: BUYER, subaccount: [] },
+                amount: 2_000_000_000_000n,
+                // The creation sentinel: 32 bytes of 0xFE, carrying no canister id.
+                memo: [new Uint8Array(32).fill(0xfe)],
+              }],
               approve: [],
             },
           },

@@ -22,6 +22,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 // types are still what the stub is checked against.
 import { Principal } from "@icp-sdk/core/principal";
 import type { Backend } from "./actor";
+import { shortPrincipal } from "./format";
 
 type OrphanPage = Awaited<ReturnType<Backend["orphans_unresolved"]>>;
 type DelayedPage = Awaited<ReturnType<Backend["delayed_deliveries"]>>;
@@ -2222,14 +2223,61 @@ describe("the cycles ledger's own record, from the index canister", () => {
     // purpose. Labelling it "transfer" would make spending look like a loss.
     state.ledgerTxs = [
       { id: 1n, transaction: tx("mint", { mint: [{ to: acct(ME), amount: 10n }] }) },
-      { id: 2n, transaction: tx("burn", { burn: [{ from: acct(ME), amount: 20n }] }) },
+      { id: 2n, transaction: tx("burn", { burn: [{ from: acct(ME), amount: 20n, memo: [] }] }) },
       { id: 3n, transaction: tx("approve", { approve: [{ from: acct(ME), spender: acct("s"), amount: 30n }] }) },
     ];
     await openDashboard();
     const text = document.getElementById("ledger-history")!.textContent ?? "";
-    expect(text).toContain("Minted in");
+    expect(text).toContain("Added");
     expect(text).toContain("Spent");
     expect(text).toContain("Approved");
+  });
+
+  test("a burn's memo says whether it created a canister or topped one up", async () => {
+    // ⚠️ Both rows are `1burn` with op "burn" and `from` = this account. The ledger
+    // declares four block types and gives neither operation its own, so without the
+    // memo these two are indistinguishable and both read "Spent".
+    const TOPUP = new Uint8Array([
+      0x81, 0x4a, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xa0, 0x00, 0x05, 0x01, 0x01,
+    ]);
+    state.ledgerTxs = [
+      { id: 20n, transaction: tx("burn", { burn: [{ from: acct(ME), amount: 20n, memo: [TOPUP] }] }) },
+      { id: 21n, transaction: tx("burn", { burn: [{ from: acct(ME), amount: 30n, memo: [new Uint8Array(32).fill(0xfe)] }] }) },
+    ];
+    await openDashboard();
+    const rows = document.querySelectorAll("#ledger-history tbody tr");
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.textContent).toContain("Topped up");
+    // The target canister is named, and linked where it can be inspected.
+    const canisterLink = rows[0]!.querySelector<HTMLAnchorElement>('a[href*="/canister/"]')!;
+    expect(canisterLink.getAttribute("href"))
+      .toBe("https://dashboard.internetcomputer.org/canister/4xhad-gd777-77775-aaacq-cai");
+    expect(rows[1]!.textContent).toContain("Created a canister");
+    // ⚠️ No canister on a creation, and the absence is the finding: the created id is
+    // returned by the method and never written into the block.
+    expect(rows[1]!.querySelector('a[href*="/canister/"]')).toBeNull();
+  });
+
+  test("⚠️ a burn never shows the viewer as the other party", async () => {
+    // `burn.from` IS this account, so putting it in the counterparty column rendered
+    // the viewer their own principal under "Other party".
+    //
+    // ⚠️ **Asserts on the CELL, against the RENDERED form.** The first version of this
+    // test asked whether the row text contained `ME.slice(0, 10)`, and it could never
+    // fail: the column renders `shortPrincipal(ME)`, which is `eoyfw…m-4qe`, so a
+    // ten-character slice of the full principal is not a substring of anything on the
+    // page. Restoring the bug left the suite green.
+    state.ledgerTxs = [
+      { id: 22n, transaction: tx("burn", { burn: [{ from: acct(ME), amount: 20n, memo: [] }] }) },
+    ];
+    await openDashboard();
+    const cells = document.querySelectorAll("#ledger-history tbody tr td");
+    expect(cells.length).toBe(5);
+    expect(cells[2]!.textContent).toContain("Spent");
+    // The rendered form of this account, which is what would actually appear.
+    expect(shortPrincipal(ME)).toBe("eoyfw…m-4qe");
+    expect(cells[4]!.textContent).toBe("-");
+    expect(cells[4]!.textContent).not.toBe(shortPrincipal(ME));
   });
 
   test("⚠️ an unrecognised kind is NAMED, not dropped", async () => {

@@ -65,6 +65,7 @@ import {
   lockedVsEstimate,
   minAcceptableCycles,
   quoteChangedMessage,
+  decodeBurnMemo,
   formatCycles,
   formatUsdCents,
   parseUsdAmount,
@@ -240,7 +241,18 @@ async function refreshLedgerHistory(): Promise<void> {
     amount.textContent = described.amount;
     const other = document.createElement("td");
     other.className = "mono";
-    other.textContent = described.counterparty;
+    if (described.canister !== undefined) {
+      const canisterLink = document.createElement("a");
+      canisterLink.href =
+        `https://dashboard.internetcomputer.org/canister/${described.canister}`;
+      canisterLink.target = "_blank";
+      canisterLink.rel = "noopener noreferrer";
+      canisterLink.className = "order-link mono";
+      canisterLink.textContent = described.counterparty;
+      other.append(canisterLink);
+    } else {
+      other.textContent = described.counterparty;
+    }
     tr.append(when, block, what, amount, other);
     body.append(tr);
   }
@@ -268,7 +280,7 @@ function mutedLine(text: string): HTMLElement {
 function describeLedgerTx(
   tx: IndexTransaction,
   me: string,
-): { what: string; amount: string; counterparty: string } {
+): { what: string; amount: string; counterparty: string; canister?: string } {
   const short = (a: { owner: unknown }) => shortPrincipal(String(a.owner));
   if (tx.transfer.length > 0) {
     const t = tx.transfer[0]!;
@@ -281,15 +293,32 @@ function describeLedgerTx(
   }
   if (tx.mint.length > 0) {
     const m = tx.mint[0]!;
-    // A delivered order arrives as a transfer from the gateway, not a mint; a mint is
-    // cycles created from ICP, which is how a top-up outside this app looks.
-    return { what: "Minted in", amount: `+${formatCycles(m.amount)}`, counterparty: short(m.to) };
+    // ⚠️ **Not "minted from ICP".** Cycles recovered from a deleted canister arrive as a
+    // mint too, and mints carry no memo to tell the two apart, so this label states what
+    // is observable: cycles entered the account from outside it. A delivered order is a
+    // transfer from the gateway, not a mint, so it is not this row.
+    return { what: "Added", amount: `+${formatCycles(m.amount)}`, counterparty: "-" };
   }
   if (tx.burn.length > 0) {
     const b = tx.burn[0]!;
-    // Spending cycles on a canister burns them, so this is the row a buyer sees after
-    // deploying: the money leaving for its actual purpose.
-    return { what: "Spent", amount: `-${formatCycles(b.amount)}`, counterparty: short(b.from) };
+    // ⚠️ **`b.from` is the VIEWER, so it must not go in the counterparty column** — it
+    // rendered their own principal under "Other party". What is useful sits in the memo,
+    // which only a burn's memo can be trusted for: see `decodeBurnMemo`.
+    const amount = `-${formatCycles(b.amount)}`;
+    const purpose = decodeBurnMemo(b.memo);
+    if (purpose.kind === "toppedUp") {
+      return {
+        what: "Topped up",
+        amount,
+        counterparty: shortPrincipal(purpose.canister),
+        canister: purpose.canister,
+      };
+    }
+    if (purpose.kind === "created") {
+      // No principal: the ledger does not record which canister a creation made.
+      return { what: "Created a canister", amount, counterparty: "-" };
+    }
+    return { what: "Spent", amount, counterparty: "-" };
   }
   if (tx.approve.length > 0) {
     const a = tx.approve[0]!;
