@@ -165,7 +165,7 @@ export const REFUSAL_HINTS: Record<RefusalTag, Hint> = {
     urgency: "wait",
   },
   canisterCyclesLow: {
-    means: "The canister's own cycle balance is at or under the floor, so it refuses to sell rather than risk running out part way through a delivery.",
+    means: "The canister's own cycle balance is at or under the floor, so it stops accepting new orders. Orders already paid for are still delivered: the floor does not gate delivery.",
     then: "Top up the canister's gas, not the reserve. They are different balances, and topping up the wrong one changes nothing.",
     urgency: "act",
   },
