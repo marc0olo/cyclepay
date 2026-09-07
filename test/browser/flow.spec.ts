@@ -54,7 +54,10 @@ test.describe("sign-in is reachable from the flow", () => {
     const prose = await page.evaluate(() => {
       const parts: string[] = [];
       for (const section of document.querySelectorAll(
-        ".site-header, .hero, .start-row, .explainer, .site-footer",
+        // `.start-row` is gone from this list because the call to action moved INSIDE
+        // `.hero`, which already collects it. Dropping a selector that now matches
+        // nothing rather than leaving it to look like coverage it no longer provides.
+        ".site-header, .hero, .explainer, .site-footer",
       )) {
         const clone = section.cloneNode(true) as HTMLElement;
         clone.querySelectorAll("code").forEach((n) => n.remove());

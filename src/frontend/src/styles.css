@@ -221,15 +221,29 @@ a:hover {
 /* ── the way in ───────────────────────────────────────────────────────────── */
 
 /* One button, on the landing view, and nothing to choose before it. */
-.start-row {
-  margin-block: var(--space-6);
+/* The action row inside the hero's argument column: button first, its price
+   qualifier beside it as fine print. `align-items: center` because a pill and two
+   lines of small text match on their centres, not their boxes. Wraps on a narrow
+   screen so the note goes under the button rather than squeezing it. */
+.hero-action {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  margin-top: var(--space-6);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--icp-rule);
+}
+
+/* Narrow on purpose: beside a button this is fine print, and fine print that runs
+   the full measure stops reading as subordinate. `.meta-strip` still supplies the UI
+   face and the size, so the browser suite's font assertion keeps its subject. */
+.hero-action-note {
+  margin: 0;
+  max-width: 24ch;
 }
 
 /* The row it sits in carried the emptiness that made the button look small. */
-.start-row.start-row-hero {
-  margin-block: var(--space-5) var(--space-6);
-}
-
 /* ── the stats, promoted out of the old trust block ───────────────────────── */
 
 .trust-block {

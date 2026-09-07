@@ -3109,3 +3109,41 @@ describe("the amount picker offers four choices, one of them Custom", () => {
       .toBeTruthy();
   });
 });
+
+describe("the landing call to action is part of the argument", () => {
+  test("⚠️ it lives INSIDE the hero's copy column, not below the section", async () => {
+    // It was a sibling of `<section class="hero">`, so the grid frame closed above it
+    // and it terminated neither column of a two-column layout. Asserted structurally
+    // rather than by pixels: a CSS-only nudge cannot satisfy this.
+    await mount("landing");
+    const btn = el("start-buy");
+    const copy = document.querySelector(".hero-copy")!;
+    expect(copy.contains(btn)).toBe(true);
+    expect(document.querySelector(".start-row")).toBeNull();
+  });
+
+  test("the price qualifier sits WITH the button, on one row", async () => {
+    // Fine print beside what it qualifies, rather than a third stacked block above it.
+    await mount("landing");
+    const row = document.querySelector(".hero-action")!;
+    expect(row.contains(el("start-buy"))).toBe(true);
+    expect(row.contains(el("rate-claim"))).toBe(true);
+  });
+
+  test("it follows the promise it acts on", async () => {
+    // Headline, promise, action. The button must come after the lede in document
+    // order, or it is offering to act on a claim the reader has not met yet.
+    await mount("landing");
+    const lede = document.querySelector(".hero-copy .lede")!;
+    const row = document.querySelector(".hero-action")!;
+    expect(lede.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+  });
+
+  test("still exactly one loud button on the page", async () => {
+    // `cta-hero` is the only place that size is used: a second would make neither
+    // prominent. Pinned so the move did not quietly duplicate it.
+    await mount("landing");
+    expect(document.querySelectorAll(".cta-hero").length).toBe(1);
+  });
+});

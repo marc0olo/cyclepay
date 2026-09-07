@@ -73,9 +73,28 @@
           <p class="lede">
             Your canisters live on mainnet in a few minutes, paid for with a credit card.
           </p>
-          <p class="meta-strip">
-            <span id="rate-claim">At the protocol exchange rate, plus card processing.</span>
-          </p>
+          <!-- IMPORTANT: The action lives INSIDE the argument column, on a row with
+               its own qualifier, and it used to be a sibling of the whole hero
+               section. Outside the frame it read as leftover: the grid border closed
+               above it, a gap opened below it before the stats, and it terminated
+               neither column of a two-column layout. The reader's eye went left
+               column, then right column (numbered steps pull hard), then had to come
+               back down and left to find the only thing to do.
+
+               On a row rather than stacked under the prose: the button leads and the
+               price qualifier sits beside it as fine print, which is where fine print
+               belongs relative to what it qualifies. One gesture, not three blocks.
+
+               The highlight is POSITION and ISOLATION, not more colour. On a
+               near-black page this is the only saturated element on screen; a wash or
+               a glow behind it would lower its contrast against its own surroundings.
+               A hairline rule separates the action from the prose instead. -->
+          <div class="hero-action">
+            <button id="start-buy" type="button" class="cta cta-hero">Buy cycles</button>
+            <p class="meta-strip hero-action-note">
+              <span id="rate-claim">At the protocol exchange rate, plus card processing.</span>
+            </p>
+          </div>
         </div>
 
         <!-- The four steps as a figure rather than a wrapping sentence. The
@@ -113,15 +132,6 @@
           </li>
         </ol>
       </section>
-
-      <!-- One route in. There is one thing to buy, delivered to one place, so
-           the page does not ask the visitor to classify themselves before it
-           (#29). -->
-      <!-- The one thing this page is for. `cta-hero` is the only place that size
-           is used, deliberately: a second one would make neither prominent. -->
-      <p class="start-row start-row-hero">
-        <button id="start-buy" type="button" class="cta cta-hero">Buy cycles</button>
-      </p>
 
       <!-- ── The stats, promoted ────────────────────────────────────────────────
            Moved up from the bottom and given the page's largest numerals, because
