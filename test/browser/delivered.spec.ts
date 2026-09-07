@@ -28,12 +28,24 @@ test.describe("the delivered view", () => {
     // came to show no cycle quantity at all. Following the link is what a buyer does.
     await page.locator("#order-next-link").click();
 
-    const tour = page.locator("#tour");
+    const tour = page.locator("#cli-steps");
     await expect(tour).toBeVisible();
     // Visible, not merely un-`hidden`. The whole reason this suite exists.
     await expect(page.locator("#cmd-link")).toBeVisible();
     await expect(page.locator("#cmd-link")).toContainText("icp identity link web");
-    await expect(page.locator("#cmd-verify")).toContainText("icp identity principal");
+    // ⚠️ The full four-step sequence, in order, in a real browser. Step 2
+    // (`icp identity default`) was missing from this page entirely: without it a buyer
+    // links, verifies, sees a match, then deploys as whatever their default identity
+    // was — a different principal with an empty balance.
+    await expect(page.locator("#cmd-default")).toHaveText("icp identity default cyclepay-id");
+    await expect(page.locator("#cmd-principal")).toHaveText("icp identity principal");
+    await expect(page.locator("#cmd-balance")).toHaveText("icp cycles balance");
+    await expect(page.locator("#cmd-deploy")).toHaveText("icp deploy -e ic");
+    // The numerals come from the list counter, so a browser is the only place the
+    // buyer's actual "step 1, 2, 3, 4" can be checked at all.
+    await expect(page.locator("#cli-steps > li")).toHaveCount(4);
+    // And the guide points at the version the commands were verified against.
+    await expect(page.locator("#cli-guide")).toHaveAttribute("href", /\/1\.4\//);
     // The command must name THIS origin, or it derives a different principal and
     // the buyer lands on an empty balance.
     await expect(page.locator("#cmd-link")).toContainText(`--app ${new URL(page.url()).host}`);
@@ -79,7 +91,7 @@ test.describe("the delivered view", () => {
     await signInAsFixtureBuyer(page);
     await openFixtureOrder(page, { status: "paid" });
     await expect(page.locator("#active-order")).toBeVisible();
-    await expect(page.locator("#tour")).toBeHidden();
+    await expect(page.locator("#cli-steps")).toBeHidden();
 
     await setFixtureStatus(page, "delivered");
 
@@ -88,7 +100,7 @@ test.describe("the delivered view", () => {
     // tour: the record no longer turns into the guidance.
     await expect(page.locator("#order-next-row")).toBeVisible({ timeout: 15_000 });
     await expect(page.locator("#receipt-verdict")).toContainText(/verified/i);
-    await expect(page.locator("#tour")).toBeHidden();
+    await expect(page.locator("#cli-steps")).toBeHidden();
   });
 
   test("a payable order offers a REACHABLE pay button, and a reload keeps it", async ({ page }) => {
@@ -124,7 +136,7 @@ test.describe("the delivered view", () => {
     await signInAsFixtureBuyer(page);
     await openFixtureOrder(page, { status: "paid" });
     await expect(page.locator("#active-order")).toBeVisible();
-    await expect(page.locator("#tour")).toBeHidden();
+    await expect(page.locator("#cli-steps")).toBeHidden();
   });
 });
 

@@ -932,7 +932,7 @@ describe("the delivered tour", () => {
     await mount("landing", "#/cli");
     await settle();
 
-    expect(el("tour").hidden).toBe(false);
+    expect(el("cli-steps").hidden).toBe(false);
     const cmd = el("cmd-link").textContent ?? "";
     expect(cmd).toContain("icp identity link web");
     // A bare DOMAIN, never an origin with a scheme. Verified against icp-cli
@@ -950,10 +950,14 @@ describe("the delivered tour", () => {
     // longer route; reading it from the identity is what lets the page exist without
     // an order at all.
     expect(el("credited-principal").textContent).toBe(FULL_PRINCIPAL);
-    // Verified against icp-cli 1.2.0, not invented: `icp identity principal`
-    // exists and takes --identity. The link command is NOT claimed to print a
-    // principal, because the CLI guide does not say it does.
-    expect(el("cmd-verify").textContent).toBe("icp identity principal --identity dev");
+    // ⚠️ **No `--identity` flag, and that is the point.** Step 2 makes the linked
+    // identity the default, so these act as it. Printing the flag instead hid the fact
+    // that step 2 was needed at all — a buyer verified with the flag, saw a match, then
+    // deployed as whatever their default was: a different principal, empty balance.
+    expect(el("cmd-default").textContent).toBe("icp identity default cyclepay-id");
+    expect(el("cmd-principal").textContent).toBe("icp identity principal");
+    expect(el("cmd-balance").textContent).toBe("icp cycles balance");
+    expect(el("cmd-deploy").textContent).toBe("icp deploy -e ic");
     // ⚠️ **The tour is its own VIEW now, and the order record is not on it.** It used
     // to sit on the order page and lead, with the facts collapsed beneath it — which
     // is how the delivered view came to show no cycle quantity at all. Two questions,
@@ -970,7 +974,7 @@ describe("the delivered tour", () => {
     state.order = anOrder("paid");
     await mount();
     await openFromHistory();
-    expect(el("tour").hidden).toBe(true);
+    expect(el("cli-steps").hidden).toBe(true);
     expect(el("view-cli").hidden).toBe(true);
   });
 
@@ -1010,7 +1014,7 @@ describe("the delivered tour", () => {
       el("orders").querySelector("tr")!.click();
       await vi.advanceTimersByTimeAsync(0);
       expect(el("active-order").hidden).toBe(false);
-      expect(el("tour").hidden).toBe(true);
+      expect(el("cli-steps").hidden).toBe(true);
 
       // The gateway delivers. The visitor does nothing.
       state.order = anOrder("delivered");
@@ -1021,7 +1025,7 @@ describe("the delivered tour", () => {
       // collapsed beneath it, which is how the delivered view came to show no cycle
       // quantity. Now the poll updates the record and offers the way onward.
       expect(el("active-order").hidden).toBe(false);
-      expect(el("tour").hidden).toBe(true);
+      expect(el("cli-steps").hidden).toBe(true);
       expect(el("order-next-row").hidden).toBe(false);
       expect(el<HTMLAnchorElement>("order-next-link").getAttribute("href")).toBe("#/cli");
       // NOTE: the receipt is asserted by the `receipt` suite, which controls its own
@@ -1139,7 +1143,7 @@ describe("routes that name nothing", () => {
     expect(el("active-order").hidden).toBe(false);
     // ⚠️ The tour is NOT here any more: the record shows the facts and links to the
     // guidance. Asserting its presence was asserting the layout this PR replaced.
-    expect(el("tour").hidden).toBe(true);
+    expect(el("cli-steps").hidden).toBe(true);
     expect(el("order-next-row").hidden).toBe(false);
   });
 
@@ -2886,7 +2890,7 @@ describe("the CLI page stands on its own", () => {
     await mount("landing", "#/cli");
     await settle();
     expect(el("view-cli").hidden).toBe(false);
-    expect(el("tour").hidden).toBe(false);
+    expect(el("cli-steps").hidden).toBe(false);
     expect(el("cmd-link").textContent).toContain("icp identity link web");
     // And it does not fall through to the missing-order page, which is what an
     // order-scoped route did when there was no order.
@@ -2926,7 +2930,7 @@ describe("the CLI page stands on its own", () => {
     await settle();
     el("sign-out").click();
     await settle();
-    expect(el("tour").hidden).toBe(true);
+    expect(el("cli-steps").hidden).toBe(true);
     expect(el("cli-summary").textContent).toMatch(/sign in/i);
   });
 
@@ -3216,5 +3220,76 @@ describe("a typed amount gets the SAME detail as a preset", () => {
     await typeCustom("53");
     expect(el("detail-processing").textContent).toContain("$0.45");
     expect(el("detail-net").textContent).toBe("$4.55");
+  });
+});
+
+describe("the CLI page is a numbered sequence", () => {
+  async function openCli(): Promise<void> {
+    state.order = undefined;
+    await mount("landing", "#/cli");
+    await settle();
+  }
+
+  test("⚠️ all FOUR steps are there, in order, and step 2 is the one that was missing", async () => {
+    // The page shipped two cards covering four commands and omitted `icp identity
+    // default` entirely. Without it a buyer links, verifies with an explicit
+    // `--identity` flag, sees a match, then deploys as whatever their default identity
+    // was: a different principal with an empty balance.
+    await openCli();
+    const steps = el("cli-steps").querySelectorAll(":scope > li");
+    expect(steps.length).toBe(4);
+    const commands = Array.from(el("cli-steps").querySelectorAll("code[id^='cmd-']"))
+      .map((n) => n.textContent);
+    expect(commands).toEqual([
+      "icp identity link web cyclepay-id --app localhost:3000",
+      "icp identity default cyclepay-id",
+      "icp identity principal",
+      "icp cycles balance",
+      "icp deploy -e ic",
+    ]);
+  });
+
+  test("the identity is named after the app, not 'dev'", async () => {
+    // `dev` is what everyone's throwaway local identity is already called, so the
+    // command silently proposed overwriting it.
+    await openCli();
+    expect(el("cmd-link").textContent).toContain("cyclepay-id");
+    expect(el("cmd-link").textContent).not.toContain(" dev ");
+  });
+
+  test("⚠️ the prerequisite comes BEFORE step 1", async () => {
+    // "Enable CLI access" was the last paragraph of the first card, i.e. after the
+    // command it guards — a warning read only by someone who already failed.
+    await openCli();
+    const prereq = document.querySelector(".cli-prereq")!;
+    const steps = el("cli-steps");
+    expect(prereq.compareDocumentPosition(steps) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+    expect(prereq.textContent).toMatch(/CLI access not enabled/);
+  });
+
+  test("the guide link points at the current CLI version", async () => {
+    await openCli();
+    expect(el<HTMLAnchorElement>("cli-guide").getAttribute("href"))
+      .toBe("https://cli.internetcomputer.org/1.4/guides/managing-identities/#signing-in-as-a-specific-app");
+  });
+
+  test("⚠️ the verify step states the values THIS page shows", async () => {
+    // The reason to verify here rather than in the docs: both numbers are in front of
+    // the buyer. The expected balance comes from the same ledger read the heading uses,
+    // so the page cannot tell a buyer to expect a figure it is not itself showing.
+    await openCli();
+    expect(el("credited-principal").textContent).toBe(FULL_PRINCIPAL);
+    expect(el("cli-expect-balance").textContent).not.toBe("");
+    expect(el("cli-summary").textContent).toMatch(/Four commands/);
+  });
+
+  test("every command has a copy button wired to its own id", async () => {
+    // Five commands, five buttons: a copy button pointing at the wrong id is silent.
+    await openCli();
+    for (const id of ["cmd-link", "cmd-default", "cmd-principal", "cmd-balance", "cmd-deploy"]) {
+      const btn = document.querySelector(`button.copy[data-copy="${id}"]`);
+      expect(btn, `no copy button for #${id}`).not.toBeNull();
+    }
   });
 });

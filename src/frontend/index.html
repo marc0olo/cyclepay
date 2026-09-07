@@ -494,74 +494,112 @@
       <section id="view-cli" class="view" hidden>
         <h2 class="section-h">Link the ICP CLI</h2>
         <p class="lede" id="cli-summary"></p>
-<div id="tour">
-          <section class="handoff step-card">
-            <h3 class="section-h">Link your identity to the <em>CLI</em></h3>
-            <p>
-              This links the account your cycles are in, so the CLI spends the
-              same balance you just topped up.
+
+        <!-- IMPORTANT: The PREREQUISITE comes first, and it used to be the last
+             paragraph of the first card. Hitting "CLI access not enabled" is the most
+             common way this flow fails, and a warning placed after the command it
+             guards is a warning read only by someone who already failed. -->
+        <section class="notice cli-prereq">
+          <h3 class="section-h">Before you start</h3>
+          <p>
+            Enable CLI access for your Internet Identity, or the sign-in page says
+            "CLI access not enabled" and the link command never receives an identity.
+            <!-- href set by `renderCliSteps` from `CLI_IDENTITY_GUIDE`, so the CLI
+                 version lives beside the commands rather than in two places. -->
+            <a id="cli-guide" target="_blank" rel="noopener noreferrer" href="#/">Read
+              the guide &#8599;</a>
+          </p>
+        </section>
+
+        <!-- IMPORTANT: NUMBERED steps, one treatment each. This was two cards with two
+             different visual treatments covering four commands: the first card held a
+             command, a fact, a second command and two paragraphs of caveats, and the
+             second had an accent rail for no reason the content justified. Nothing said
+             what order to do things in, and step 2 was missing outright.
+
+             An `<ol>`, so the sequence is the markup rather than a visual convention,
+             and screen readers announce the position. -->
+        <ol id="cli-steps" class="cli-steps">
+          <li>
+            <h3 class="section-h">Link this site's identity to the CLI</h3>
+            <p class="muted">
+              This links the account your cycles are in, so the CLI acts as the same
+              identity this page is signed in as.
             </p>
             <div class="cmd">
               <code id="cmd-link" class="mono"></code>
               <button type="button" class="copy" data-copy="cmd-link"
                       aria-label="Copy the identity link command"></button>
             </div>
-            <!-- Copyable because step 3 asks the buyer to compare it against what
-                 `icp identity principal` prints, and comparing two 63-character
-                 principals by eye is how a mismatch gets missed.
+          </li>
 
-                 NOTE: INLINE, not a `.cmd` block: the two commands on this card are the
-                 deliverable, and giving a fact the same visual weight as them makes
-                 the page compete with itself. A first pass used `.cmd` and grew the
-                 delivered view by 54px, which the visual baseline caught. -->
+          <li>
+            <h3 class="section-h">Make it the identity the CLI uses</h3>
+            <!-- IMPORTANT: The step that was MISSING. Without it a buyer links
+                 successfully, verifies, sees a match, then deploys as whatever their
+                 default identity was: a different principal with an empty balance. -->
             <p class="muted">
-              Your cycles are in
+              Every command below acts as your default identity, so point it at the one
+              you just linked.
+            </p>
+            <div class="cmd">
+              <code id="cmd-default" class="mono"></code>
+              <button type="button" class="copy" data-copy="cmd-default"
+                      aria-label="Copy the set-default-identity command"></button>
+            </div>
+          </li>
+
+          <li>
+            <h3 class="section-h">Check it worked</h3>
+            <!-- IMPORTANT: Each command paired with the value THIS PAGE shows, which is
+                 the whole reason to verify here rather than in the docs: the buyer has
+                 both numbers in front of them. -->
+            <div class="cmd">
+              <code id="cmd-principal" class="mono"></code>
+              <button type="button" class="copy" data-copy="cmd-principal"
+                      aria-label="Copy the print-principal command"></button>
+            </div>
+            <p class="muted expect">
+              Must print
               <code id="credited-principal" class="mono"></code>
               <button type="button" class="copy copy-inline" data-copy="credited-principal"
-                      aria-label="Copy the principal your cycles are in">Copy</button>
-            </p>
-            <p class="muted">
-              Check it landed on the right identity:
+                      aria-label="Copy the principal your cycles are in"></button>
             </p>
             <div class="cmd">
-              <code id="cmd-verify" class="mono"></code>
-              <button type="button" class="copy" data-copy="cmd-verify"
-                      aria-label="Copy the verify identity command"></button>
+              <code id="cmd-balance" class="mono"></code>
+              <button type="button" class="copy" data-copy="cmd-balance"
+                      aria-label="Copy the check-balance command"></button>
             </div>
-            <p class="muted">
-              That prints a principal. It should match the one above. If it does
-              not, the <code>--app</code> value did not match this site and the
-              balance will look empty.
+            <p class="muted expect">
+              Must match <span id="cli-expect-balance" class="mono"></span>
             </p>
             <p class="muted">
-              You need to enable CLI access for your Internet Identity first, or
-              the sign-in page says "CLI access not enabled" and the command never
-              receives an identity.
-              <a href="https://cli.internetcomputer.org/1.2/guides/managing-identities/#signing-in-as-a-specific-app"
-                 target="_blank" rel="noopener noreferrer">Read the guide ↗</a>
+              A different principal means the <code>--app</code> value did not match
+              this site, and the balance will look empty.
             </p>
-          </section>
+          </li>
 
-          <section class="step-card outlined">
-            <h3 class="section-h">Deploy</h3>
+          <li>
+            <h3 class="section-h">Deploy to mainnet</h3>
+            <p class="muted">Run this in your own project.</p>
             <div class="cmd">
-              <code id="cmd-create" class="mono">icp deploy -e ic</code>
-              <button type="button" class="copy" data-copy="cmd-create"
-                      aria-label="Copy the canister create command"></button>
+              <code id="cmd-deploy" class="mono"></code>
+              <button type="button" class="copy" data-copy="cmd-deploy"
+                      aria-label="Copy the deploy command"></button>
             </div>
             <p class="muted">
               New to the tooling? Follow the
               <a href="https://docs.internetcomputer.org/getting-started/quickstart"
-                 target="_blank" rel="noopener noreferrer">quickstart ↗</a>.
+                 target="_blank" rel="noopener noreferrer">quickstart &#8599;</a>.
             </p>
-          </section>
-        </div>
+          </li>
+        </ol>
 
-        <!-- Moved here from the landing page, not deleted. It is guidance for after
-             the purchase rather than a reason to make one, and it is still aimed at a
-             human: someone pointing their own coding agent at the tooling. -->
+        <!-- Moved here from the landing page, not deleted. It is guidance for after the
+             purchase rather than a reason to make one, and it is still aimed at a human:
+             someone pointing their own coding agent at the tooling. -->
         <section class="explainer sunk">
-          <h3 class="section-h">Build with an agent</h3>
+          <h3 class="section-h">Building with an agent?</h3>
           <p>
             Point your coding agent at the
             <a href="https://mcp.internetcomputer.org" target="_blank" rel="noopener noreferrer">MCP server &#8599;</a>

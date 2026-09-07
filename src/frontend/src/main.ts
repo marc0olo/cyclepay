@@ -22,7 +22,14 @@ import {
   type Tier,
 } from "./actor";
 import { currentIdentity, signIn, signOut } from "./auth";
-import { linkIdentityCommand, verifyIdentityCommand } from "./config";
+import {
+  CLI_IDENTITY_GUIDE,
+  deployCommand,
+  identityDefaultCommand,
+  linkIdentityCommand,
+  verifyBalanceCommand,
+  verifyPrincipalCommand,
+} from "./config";
 import {
   DELIVERY_FIELDS,
   GATE_FIELDS,
@@ -649,7 +656,7 @@ function renderView(): void {
   // buyer opens to see what they got showed no cycle quantity, hid the receipt two
   // clicks deep, and buried a problem notice. The tour moved to its own view instead,
   // which is the fix the collapse was standing in for.
-  renderTour(onCli);
+  renderCliSteps(onCli);
   if (onCli) {
     // The balance drives the summary, so it must be read on this view too.
     void refreshLedgerBalance().then(renderCliSummary);
@@ -2657,8 +2664,8 @@ function renderOrder(order: Order): void {
 /// account (#29). The two suppressed cases — a canister top-up, where there was
 /// nothing to link, and somebody else's account, where the buyer's identity
 /// could not reach the balance — are destinations the gateway no longer accepts.
-function renderTour(onCli: boolean): void {
-  const node = document.getElementById("tour");
+function renderCliSteps(onCli: boolean): void {
+  const node = document.getElementById("cli-steps");
   if (!node) return;
   // ⚠️ **Gated on the IDENTITY, not on a delivered order.** The principal came from
   // `order.destination.cyclesLedgerAccount.owner`, which §2 forces to equal the
@@ -2673,8 +2680,22 @@ function renderTour(onCli: boolean): void {
     return;
   }
   el("credited-principal").textContent = identity.getPrincipal().toText();
+  // ⚠️ Rendered in the ORDER the page presents them, and every one of them is a real
+  // subcommand rather than prose about one: see `config.ts` for why step 2 exists and
+  // why the verify commands carry no `--identity` flag.
   el("cmd-link").textContent = linkIdentityCommand();
-  el("cmd-verify").textContent = verifyIdentityCommand();
+  el("cmd-default").textContent = identityDefaultCommand();
+  el("cmd-principal").textContent = verifyPrincipalCommand();
+  el("cmd-balance").textContent = verifyBalanceCommand();
+  el("cmd-deploy").textContent = deployCommand();
+  // The guide URL is a deployment constant like the commands, so it is set from
+  // `config.ts` rather than typed into the markup: one place to change when the CLI
+  // version moves, which is exactly what went stale at 1.2.
+  el<HTMLAnchorElement>("cli-guide").href = CLI_IDENTITY_GUIDE;
+  // The balance to compare against comes from the same ledger read the heading uses,
+  // so the page cannot tell a buyer to expect a figure it is not itself showing.
+  const shown = document.getElementById("ledger-balance")?.textContent ?? "";
+  el("cli-expect-balance").textContent = /^[\d]/.test(shown) ? shown : "the balance above";
   node.hidden = false;
 }
 
@@ -2693,8 +2714,8 @@ function renderCliSummary(): void {
     return;
   }
   node.textContent = ledgerBalance === null
-    ? "Two commands and you are deploying."
-    : `${formatCycles(ledgerBalance)} cycles in your account. Two commands and you are deploying.`;
+    ? "Four commands and you are deploying."
+    : `${formatCycles(ledgerBalance)} cycles in your account. Four commands and you are deploying.`;
 }
 
 async function renderReceipt(order: Order): Promise<void> {
