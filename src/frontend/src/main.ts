@@ -2043,24 +2043,34 @@ function renderAmountDetail(): void {
     return;
   }
 
+  // ⚠️ **No rate means NO CARD, not a card with a hole in it.** This wrote an empty
+  // string into "You receive" and showed the rest, so the buyer got "You pay $53.00"
+  // beside a labelled row with nothing in it: a figure that looks like it failed to
+  // load, next to a charge that looks committed. The card's job is to say what is
+  // being bought, and with no rate it cannot. `#rate-line` carries the reason and the
+  // button already refuses, so there is nowhere for this to be silently wrong.
+  //
+  // Same posture as the tiles, which show the quantity or nothing rather than a
+  // placeholder, and as `term-block`/`term-sources`, which hide rather than print
+  // "not yet" into the middle of the terms.
+  if (cycles === null) {
+    hideAll();
+    return;
+  }
+
   el("detail-pay").textContent = formatUsdCents(gross);
   el("detail-processing").textContent = split?.processing ?? "";
   el("detail-net").textContent = split?.net ?? "";
   el("detail-margin").textContent = split?.margin ?? "";
   el("detail-rate").textContent = rateTerms();
 
-  if (cycles === null) {
-    el("detail-receive").textContent = "";
-    show("detail-fee-note", false);
-  } else {
-    const split = creditedSplit(cycles, transferFee);
-    el("detail-receive").textContent = `≈ ${split.figure}`;
-    // `depositFeeLine`, not `split.note`: the note is silent when the two figures read
-    // the same, which is every order large enough for the fee to round away.
-    const feeLine = depositFeeLine(cycles, transferFee);
-    el("detail-fee-note").textContent = feeLine ?? "";
-    show("detail-fee-note", feeLine !== null);
-  }
+  const credited = creditedSplit(cycles, transferFee);
+  el("detail-receive").textContent = `≈ ${credited.figure}`;
+  // `depositFeeLine`, not `credited.note`: the note is silent when the two figures read
+  // the same, which is every order large enough for the fee to round away.
+  const feeLine = depositFeeLine(cycles, transferFee);
+  el("detail-fee-note").textContent = feeLine ?? "";
+  show("detail-fee-note", feeLine !== null);
   el("rate-lock-note").textContent = RATE_LOCK_NOTE;
   show("rate-lock-note", true);
   show("amount-detail", true);

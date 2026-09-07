@@ -3187,6 +3187,28 @@ describe("a typed amount gets the SAME detail as a preset", () => {
     }
   });
 
+  test("⚠️ no rate means no CARD, not a card with a hole in it", async () => {
+    // ⚠️ **This path is why the "no labelled row is blank" test above was vacuous.**
+    // That test only ever ran the PRICED path, because the mock always answers with
+    // cycles. With no rate, `renderAmountDetail` wrote an empty string into "You
+    // receive" and showed everything else, so a buyer saw "You pay $53.00" beside a
+    // labelled row with nothing in it. Found in a real browser, not by this suite.
+    state.quote = { ...state.quote, cycles: undefined };
+    await typeCustom("53");
+    expect(el("amount-detail").hidden).toBe(true);
+    // The reason lives in one place, and the button refuses.
+    expect(el("rate-line").textContent).toMatch(/no exchange rate/i);
+    expect(el<HTMLButtonElement>("create-order").disabled).toBe(true);
+  });
+
+  test("⚠️ and a PRESET with no rate hides it too, not just a typed amount", async () => {
+    // The other half: the bug was in the shared renderer, so both paths reach it.
+    state.quote = { ...state.quote, cycles: undefined };
+    await mount();
+    expect(el("amount-detail").hidden).toBe(true);
+    expect(el("detail-receive").textContent).toBe("");
+  });
+
   test("the figures come from the BACKEND's preview, not from arithmetic here", async () => {
     // The mock answers a fixed quote, so these are the backend's numbers rather than
     // anything this page derived: what the buyer sees and what create_order locks
