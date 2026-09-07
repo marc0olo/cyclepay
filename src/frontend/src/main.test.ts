@@ -355,12 +355,51 @@ window.addEventListener = ((type: string, fn: EventListener, opts?: unknown) => 
   realAddEventListener(type, fn, opts as never);
 }) as typeof window.addEventListener;
 
+/// Intervals the current mount installed, so the next one can clear them.
+///
+/// ⚠️ **The same leak as the listeners above, missed for TIMERS.** `main.ts` arms
+/// `deadlineTimer` with `setInterval(…, 1000)` and it re-renders `#order-deadline`
+/// from that instance's own `activeOrder`. Each mount is a fresh module with a fresh
+/// `activeOrder` — and a fresh interval that nothing stopped. So every earlier test's
+/// copy of the app kept ticking, and each one wrote the deadline of the order IT was
+/// holding into the one shared document.
+///
+/// The symptom was a countdown of 36,853,875 minutes: an earlier test's order carrying
+/// the fixture's `FUTURE_NS` (year 2096), painted over the 10-minutes-from-now the
+/// current test had just rendered correctly. Whether it landed between the render and
+/// the assertion is a pure race, which is why it passed locally and failed on CI —
+/// and why instrumenting showed the right row, the right state and the wrong text.
+let installedIntervals: Array<ReturnType<typeof setInterval>> = [];
+const realSetInterval = globalThis.setInterval;
+// The `as unknown as` hop for the reason `fixtures.ts` documents: Node's and the DOM's
+// `setInterval` overloads do not overlap in either direction.
+globalThis.setInterval = ((fn: TimerHandler, ms?: number, ...rest: unknown[]) => {
+  const id = realSetInterval(fn as never, ms, ...(rest as never[]));
+  installedIntervals.push(id);
+  return id;
+}) as unknown as typeof globalThis.setInterval;
+
 async function mount(from: "buy" | "landing" = "buy", hash = ""): Promise<void> {
+  // ⚠️ **Drain the PREVIOUS mount's in-flight work before this document exists.**
+  // `init()` fires several loads with `void`, each a chain of awaits. A chain still
+  // running when the next test replaces the body resolves against the NEW document
+  // and paints the PREVIOUS test's data into it — and the row it renders looks
+  // perfectly valid, so a test reads the wrong order rather than throwing.
+  //
+  // That is a real failure, not a hypothetical: CI rendered a countdown of 36,853,875
+  // minutes because `openFromHistory` clicked a leaked row carrying the fixture's
+  // `FUTURE_NS` instead of the 10-minutes-from-now the test had just set. It passed
+  // locally every time — how many ticks the chain needs depends on machine speed,
+  // which is exactly why it only showed up on the runner.
+  await settle();
   // jsdom has no layout, so these are absent. main.ts calls them.
   Element.prototype.scrollIntoView ??= () => undefined;
   window.localStorage.clear();
   for (const [type, fn] of installedListeners) window.removeEventListener(type, fn);
   installedListeners = [];
+  // ⚠️ And the timers, for the same reason. See `installedIntervals`.
+  for (const id of installedIntervals) clearInterval(id);
+  installedIntervals = [];
   // jsdom keeps `location` across tests in a file, so a previous test's #/buy
   // would be parsed as the starting route and land the visitor past the landing
   // view a test is about. A real first-time visitor arrives with no hash; `hash`
@@ -373,11 +412,11 @@ async function mount(from: "buy" | "landing" = "buy", hash = ""): Promise<void> 
   document.body.innerHTML = body[1]!.replace(/<script[\s\S]*?<\/script>/g, "");
   vi.resetModules();
   await import("./main");
-  // let init()'s awaits settle
-  await new Promise((r) => setTimeout(r, 0));
+  // let init()'s awaits settle — a CHAIN of them, so one tick is not enough
+  await settle();
   if (from === "buy") {
     el("start-buy").click();
-    await new Promise((r) => setTimeout(r, 0));
+    await settle();
   }
 }
 
@@ -393,8 +432,22 @@ function tierButton(): HTMLButtonElement {
   return btn;
 }
 
+/// Let the app catch up.
+///
+/// ⚠️ **Several ticks, not one.** The app's loads are chains — `loadMarket` awaits a
+/// `Promise.all` whose members await further calls — and a single macrotask drains
+/// only the first link. One tick was enough on a fast machine and not on CI, which is
+/// the worst version of not enough: the suite passed locally and failed on the runner,
+/// with a symptom (a stale order rendered into a fresh document) that looked like a
+/// product bug rather than a harness one.
+///
+/// Four is not a magic number so much as headroom over the longest chain here; the
+/// cost is microseconds and the alternative is flakiness that reappears whenever a
+/// load grows one more await.
 async function settle(): Promise<void> {
-  await new Promise((r) => setTimeout(r, 0));
+  for (let i = 0; i < 4; i += 1) {
+    await new Promise((r) => setTimeout(r, 0));
+  }
 }
 
 beforeEach(() => {
