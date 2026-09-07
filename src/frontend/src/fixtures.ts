@@ -20,7 +20,7 @@
 /// bundle for the hook's name to keep that claim true rather than assumed.
 import { Principal } from "@icp-sdk/core/principal";
 import type { Identity } from "@icp-sdk/core/agent";
-import type { Backend, CyclesLedger, Order } from "./actor";
+import type { Backend, CyclesIndex, CyclesLedger, Order } from "./actor";
 import { cyclesForCents } from "./format";
 
 /// The seams main.ts hands over. Deliberately narrow: fixtures may choose what
@@ -31,6 +31,8 @@ export type FixtureHost = {
   /// this point, including the one `setIdentity` rebuilds on sign-in.
   useBackend(factory: (identity: Identity | null) => Backend): void;
   useCyclesLedger(factory: () => CyclesLedger): void;
+  /// The cycles-ledger INDEX, for the dashboard's transaction list.
+  useCyclesIndex(factory: () => CyclesIndex): void;
   /// The app's own `setIdentity`.
   signIn(identity: Identity | null): void;
   /// The app's own `openOrder` — routes, renders and starts the poll.
@@ -167,6 +169,47 @@ export function installFixtures(host: FixtureHost): void {
     // realistic figure, not zero: a fixture showing "0 cycles" beside a delivered
     // order reads as a bug in the very thing the balance exists to demonstrate.
     icrc1_balance_of: async () => 7_338_461_538_461n,
+  };
+
+  /// The account's ledger history, from the INDEX. Two rows, because one direction
+  /// proves nothing: a `transfer` is money in or out depending on which side the
+  /// caller is, and the render computes that from the accounts rather than the kind.
+  const cyclesIndex: CyclesIndex = {
+    get_account_transactions: async () => ({
+      Ok: {
+        balance: 7_338_461_538_461n,
+        transactions: [
+          {
+            id: 4_812n,
+            transaction: {
+              kind: "transfer",
+              timestamp: 1_760_000_000_000_000_000n,
+              transfer: [{
+                from: { owner: "aaaaa-aa", subaccount: [] },
+                to: { owner: BUYER, subaccount: [] },
+                amount: 7_338_461_538_461n,
+                fee: [],
+              }],
+              mint: [],
+              burn: [],
+              approve: [],
+            },
+          },
+          {
+            id: 4_901n,
+            transaction: {
+              kind: "burn",
+              timestamp: 1_760_000_600_000_000_000n,
+              transfer: [],
+              mint: [],
+              burn: [{ from: { owner: BUYER, subaccount: [] }, amount: 500_000_000_000n }],
+              approve: [],
+            },
+          },
+        ],
+        oldest_tx_id: [],
+      },
+    }),
   };
 
   const stub = {
@@ -463,11 +506,13 @@ export function installFixtures(host: FixtureHost): void {
     async useBackend() {
       host.useBackend(() => fixtureBackend);
       host.useCyclesLedger(() => cyclesLedger);
+      host.useCyclesIndex(() => cyclesIndex);
       await host.reloadMarket();
     },
     async signIn() {
       host.useBackend(() => fixtureBackend);
       host.useCyclesLedger(() => cyclesLedger);
+      host.useCyclesIndex(() => cyclesIndex);
       host.signIn(identity);
       await host.reloadMarket();
     },

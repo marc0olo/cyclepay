@@ -52,6 +52,10 @@ const state = {
   ledgerBalance: 3_400_000_000_000n,
   /// Whether the ledger balance read fails, for the dashboard's honest-failure path.
   ledgerBalanceError: false,
+  /// The ledger history the INDEX reports, and its two failure modes.
+  ledgerTxs: [] as Array<{ id: bigint; transaction: unknown }>,
+  indexError: false,
+  indexRefusal: null as string | null,
   /// Whether `lifecycle_config` fails, for the console's cannot-read path (#97).
   lifecycleError: false,
   /// The rail settings the console's configuration surface reads (#97).
@@ -333,6 +337,19 @@ vi.mock("./actor", () => ({
   // to the public dashboard, and a test asserting that URL is asserting the ledger a
   // buyer would actually check.
   cyclesLedgerCanisterId: "um5iw-rqaaa-aaaaq-qaaba-cai",
+  cyclesIndexCanisterId: "ul4oc-4iaaa-aaaaq-qaabq-cai",
+  // The account's ledger history. `state.ledgerTxs` drives it; `state.indexError` and
+  // `state.indexRefusal` drive the two ways it fails — an unreachable canister, and an
+  // index that answers with a message rather than a reject.
+  makeCyclesIndex: () => ({
+    get_account_transactions: async () => {
+      if (state.indexError) throw new Error("index unreachable");
+      if (state.indexRefusal !== null) return { Err: { message: state.indexRefusal } };
+      return {
+        Ok: { balance: state.ledgerBalance, transactions: state.ledgerTxs, oldest_tx_id: [] },
+      };
+    },
+  }),
   makeBackend: () => backend,
   // #30 PR-A: the ledger's fee is read from the LEDGER, not disclosed by
   // `quote_previews`. `state.transferFee` still drives it, so every existing
@@ -488,6 +505,9 @@ async function settle(): Promise<void> {
 beforeEach(() => {
   state.ledgerBalance = 3_400_000_000_000n;
   state.ledgerBalanceError = false;
+  state.ledgerTxs = [];
+  state.indexError = false;
+  state.indexRefusal = null;
   state.lifecycleError = false;
   state.expectedLivemode = false;
   state.stripeOrigin = "https://gateway.example";
@@ -2146,5 +2166,110 @@ describe("the dashboard: balance, then history", () => {
     await openDashboard();
     expect(document.querySelector(".buy-again")).toBeNull();
     expect(document.getElementById("orders")!.textContent).not.toMatch(/buy again/i);
+  });
+});
+
+describe("the cycles ledger's own record, from the index canister", () => {
+  const ME = FULL_PRINCIPAL;
+  const acct = (owner: string) => ({ owner, subaccount: [] as [] });
+  const tx = (kind: string, body: Record<string, unknown>) => ({
+    kind,
+    timestamp: 1_760_000_000_000_000_000n,
+    transfer: [] as unknown[],
+    mint: [] as unknown[],
+    burn: [] as unknown[],
+    approve: [] as unknown[],
+    ...body,
+  });
+
+  async function openDashboard(): Promise<void> {
+    state.order = anOrder("delivered");
+    await mount("landing", "#/history");
+    await settle();
+  }
+
+  test("⚠️ direction comes from the ACCOUNTS, not from the kind", async () => {
+    // The one formatting choice here that could mislead about money: a `transfer` is
+    // in or out depending on which side the caller is, and an unsigned "0.5 T
+    // transfer" would let a buyer read a payment as a charge.
+    state.ledgerTxs = [
+      { id: 10n, transaction: tx("transfer", { transfer: [{ from: acct("gateway-x"), to: acct(ME), amount: 500_000_000_000n, fee: [] }] }) },
+      { id: 11n, transaction: tx("transfer", { transfer: [{ from: acct(ME), to: acct("canister-y"), amount: 200_000_000_000n, fee: [] }] }) },
+    ];
+    await openDashboard();
+    const rows = document.querySelectorAll("#ledger-history tbody tr");
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.textContent).toContain("Received");
+    expect(rows[0]!.textContent).toContain("+500");
+    expect(rows[1]!.textContent).toContain("Sent");
+    expect(rows[1]!.textContent).toContain("-200");
+  });
+
+  test("every row links to the public ledger entry", async () => {
+    // The point of showing this at all: the entries are checkable somewhere that is
+    // not us.
+    state.ledgerTxs = [
+      { id: 4812n, transaction: tx("transfer", { transfer: [{ from: acct("g"), to: acct(ME), amount: 1n, fee: [] }] }) },
+    ];
+    await openDashboard();
+    const link = document.querySelector<HTMLAnchorElement>("#ledger-history a")!;
+    expect(link.getAttribute("href"))
+      .toBe("https://dashboard.internetcomputer.org/tokens/um5iw-rqaaa-aaaaq-qaaba-cai/transaction/4812");
+  });
+
+  test("mint, burn and approve each read as what they are", async () => {
+    // A burn is the row a buyer sees after deploying: cycles leaving for their actual
+    // purpose. Labelling it "transfer" would make spending look like a loss.
+    state.ledgerTxs = [
+      { id: 1n, transaction: tx("mint", { mint: [{ to: acct(ME), amount: 10n }] }) },
+      { id: 2n, transaction: tx("burn", { burn: [{ from: acct(ME), amount: 20n }] }) },
+      { id: 3n, transaction: tx("approve", { approve: [{ from: acct(ME), spender: acct("s"), amount: 30n }] }) },
+    ];
+    await openDashboard();
+    const text = document.getElementById("ledger-history")!.textContent ?? "";
+    expect(text).toContain("Minted in");
+    expect(text).toContain("Spent");
+    expect(text).toContain("Approved");
+  });
+
+  test("⚠️ an unrecognised kind is NAMED, not dropped", async () => {
+    // A row the ledger recorded and this page cannot classify still belongs in a list
+    // a buyer reconciles a balance against. Dropping it makes the list quietly wrong.
+    state.ledgerTxs = [{ id: 9n, transaction: tx("somethingNew", {}) }];
+    await openDashboard();
+    expect(document.querySelectorAll("#ledger-history tbody tr").length).toBe(1);
+    expect(document.getElementById("ledger-history")!.textContent).toContain("somethingNew");
+  });
+
+  test("an empty history says what would appear here", async () => {
+    await openDashboard();
+    expect(document.getElementById("ledger-history")!.textContent)
+      .toMatch(/no ledger activity yet/i);
+  });
+
+  test("⚠️ the two failure modes read differently", async () => {
+    // The index answers with a MESSAGE rather than a reject when it cannot serve the
+    // account, so folding both into one line would discard the only diagnosis there is.
+    state.indexError = true;
+    await openDashboard();
+    expect(document.getElementById("ledger-history")!.textContent)
+      .toMatch(/could not reach the cycles ledger index/i);
+    // ...and it says the balance above is unaffected, because a failed list beside a
+    // real balance otherwise reads as the money being gone.
+    expect(document.getElementById("ledger-history")!.textContent).toMatch(/unaffected/i);
+
+    state.indexError = false;
+    state.indexRefusal = "account not indexed";
+    await openDashboard();
+    expect(document.getElementById("ledger-history")!.textContent)
+      .toContain("account not indexed");
+  });
+
+  test("signed out, it invites a sign-in", async () => {
+    await openDashboard();
+    el<HTMLButtonElement>("sign-out").click();
+    await settle();
+    expect(document.getElementById("ledger-history")!.textContent)
+      .toMatch(/sign in to see your ledger activity/i);
   });
 });

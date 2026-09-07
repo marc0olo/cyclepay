@@ -454,6 +454,18 @@
           <tbody id="orders"></tbody>
         </table>
         <p class="muted">Select a row to see the order and its receipt.</p>
+
+        <!-- The ledger's own record for this account, from the cycles-ledger INDEX
+             canister. NOTE: from a canister rather than the dashboard's REST API, because
+             this page's claim is that its figures come from canisters anyone can
+             query. Every row links to the public dashboard so the entry can be read
+             somewhere that is not us. -->
+        <h3 class="section-h">Cycles ledger activity</h3>
+        <p class="muted">
+          Everything the cycles ledger has recorded for your account, including
+          transfers this gateway had nothing to do with.
+        </p>
+        <div id="ledger-history"></div>
       </section>
 
       <!-- The operator console (#68). Reached at #/admin only: no nav link, because a

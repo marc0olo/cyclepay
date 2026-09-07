@@ -6,7 +6,10 @@ import type { Identity } from "@icp-sdk/core/agent";
 import {
   makeBackend,
   cyclesLedgerCanisterId,
+  makeCyclesIndex,
   makeCyclesLedger,
+  type CyclesIndex,
+  type IndexTransaction,
   type CyclesLedger,
   type PricingStatus,
   makeBackendAt,
@@ -111,6 +114,7 @@ let liveBackendId: string | null = null;
 /// sign-in.
 let backendFactory: ((who: Identity | null) => Backend) | null = null;
 let cyclesLedgerFactory: (() => CyclesLedger) | null = null;
+let cyclesIndexFactory: (() => CyclesIndex) | null = null;
 
 /// The one place a cycles-ledger actor is built (#30 PR-A).
 ///
@@ -120,6 +124,11 @@ let cyclesLedgerFactory: (() => CyclesLedger) | null = null;
 function buildCyclesLedger(): CyclesLedger {
   if (cyclesLedgerFactory !== null) return cyclesLedgerFactory();
   return makeCyclesLedger();
+}
+
+function buildCyclesIndex(): CyclesIndex {
+  if (cyclesIndexFactory !== null) return cyclesIndexFactory();
+  return makeCyclesIndex();
 }
 
 /// The buyer's own cycles balance, read from the LEDGER.
@@ -153,6 +162,146 @@ async function refreshLedgerBalance(): Promise<void> {
     node.textContent = "could not read the ledger";
     note.textContent = "The balance is unchanged; only this page could not fetch it.";
   }
+}
+
+/// One account's cycles-ledger history, from the index canister.
+///
+/// ⚠️ **Read on-chain, and every row links out.** The gateway's own record shows the
+/// orders it delivered; this shows what the LEDGER says happened, which is a superset
+/// and is not ours to edit. A buyer reconciling a balance needs the second one.
+async function refreshLedgerHistory(): Promise<void> {
+  const host = document.getElementById("ledger-history");
+  if (!host) return;
+  // ⚠️ **Every path below ends in ONE `replaceChildren`, never clear-then-append.**
+  // `renderView` fires this more than once per navigation, so two runs overlap: with
+  // a clear at the top and an append at the bottom, both appended and the page showed
+  // the list TWICE. Building the nodes first and writing once at the end makes the
+  // last writer authoritative instead of additive.
+  if (identity === null) {
+    host.replaceChildren(mutedLine("Sign in to see your ledger activity."));
+    return;
+  }
+  const me = identity.getPrincipal().toText();
+  let result: Awaited<ReturnType<CyclesIndex["get_account_transactions"]>>;
+  try {
+    result = await buildCyclesIndex().get_account_transactions({
+      account: { owner: identity.getPrincipal(), subaccount: [] },
+      start: [],
+      // A page, not everything: an account with a long history would otherwise render
+      // thousands of rows nobody scrolls to.
+      max_results: 25n,
+    });
+  } catch {
+    host.replaceChildren(mutedLine(
+      "Could not reach the cycles ledger index. Your balance and orders above are"
+      + " unaffected; only this list could not be fetched.",
+    ));
+    return;
+  }
+  if ("Err" in result) {
+    // The index answers with a message rather than a reject when it cannot serve the
+    // account, so it is reported rather than swallowed into the same generic line.
+    host.replaceChildren(mutedLine(`The ledger index refused: ${result.Err.message}`));
+    return;
+  }
+  const rows = result.Ok.transactions;
+  if (rows.length === 0) {
+    host.replaceChildren(mutedLine(
+      "No ledger activity yet. A delivered order appears here as a transfer in.",
+    ));
+    return;
+  }
+
+  const table = document.createElement("table");
+  table.className = "orders-table";
+  const head = document.createElement("thead");
+  head.innerHTML =
+    "<tr><th>When</th><th>Block</th><th>What</th><th>Amount</th><th>Counterparty</th></tr>";
+  const body = document.createElement("tbody");
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    const described = describeLedgerTx(row.transaction, me);
+    const when = document.createElement("td");
+    when.textContent = new Date(Number(row.transaction.timestamp / 1_000_000n)).toLocaleString();
+    const block = document.createElement("td");
+    const link = document.createElement("a");
+    link.href =
+      `https://dashboard.internetcomputer.org/tokens/${cyclesLedgerCanisterId}`
+      + `/transaction/${row.id}`;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.className = "order-link mono";
+    link.textContent = row.id.toString();
+    block.append(link);
+    const what = document.createElement("td");
+    what.textContent = described.what;
+    const amount = document.createElement("td");
+    amount.className = "mono";
+    amount.textContent = described.amount;
+    const other = document.createElement("td");
+    other.className = "mono";
+    other.textContent = described.counterparty;
+    tr.append(when, block, what, amount, other);
+    body.append(tr);
+  }
+  table.append(head, body);
+  const out: HTMLElement[] = [table];
+  if (result.Ok.oldest_tx_id.length > 0 && rows.length === 25) {
+    out.push(mutedLine("Showing the 25 most recent. Older entries are on the dashboard."));
+  }
+  host.replaceChildren(...out);
+}
+
+function mutedLine(text: string): HTMLElement {
+  const p = document.createElement("p");
+  p.className = "muted";
+  p.textContent = text;
+  return p;
+}
+
+/// One ledger transaction, in the buyer's terms.
+///
+/// ⚠️ **Direction is computed from the ACCOUNTS, not from the kind.** A `transfer` is
+/// money in or money out depending on which side the caller is, and rendering "0.5 T
+/// transfer" without a sign is the one formatting choice here that could make a buyer
+/// think they were charged when they were paid.
+function describeLedgerTx(
+  tx: IndexTransaction,
+  me: string,
+): { what: string; amount: string; counterparty: string } {
+  const short = (a: { owner: unknown }) => shortPrincipal(String(a.owner));
+  if (tx.transfer.length > 0) {
+    const t = tx.transfer[0]!;
+    const outgoing = String(t.from.owner) === me;
+    return {
+      what: outgoing ? "Sent" : "Received",
+      amount: `${outgoing ? "-" : "+"}${formatCycles(t.amount)}`,
+      counterparty: outgoing ? short(t.to) : short(t.from),
+    };
+  }
+  if (tx.mint.length > 0) {
+    const m = tx.mint[0]!;
+    // A delivered order arrives as a transfer from the gateway, not a mint; a mint is
+    // cycles created from ICP, which is how a top-up outside this app looks.
+    return { what: "Minted in", amount: `+${formatCycles(m.amount)}`, counterparty: short(m.to) };
+  }
+  if (tx.burn.length > 0) {
+    const b = tx.burn[0]!;
+    // Spending cycles on a canister burns them, so this is the row a buyer sees after
+    // deploying: the money leaving for its actual purpose.
+    return { what: "Spent", amount: `-${formatCycles(b.amount)}`, counterparty: short(b.from) };
+  }
+  if (tx.approve.length > 0) {
+    const a = tx.approve[0]!;
+    return {
+      what: "Approved",
+      amount: formatCycles(a.amount),
+      counterparty: short(a.spender),
+    };
+  }
+  // An unrecognised kind is NAMED rather than dropped: a row the ledger recorded and
+  // this page cannot classify still belongs in a list the buyer reconciles against.
+  return { what: tx.kind, amount: "-", counterparty: "-" };
 }
 
 /// The one place a backend actor is built.
@@ -398,7 +547,10 @@ function renderView(): void {
     renderAdminIdentity();
     renderOperatorSummary();
   }
-  if (effective === "history") void refreshLedgerBalance();
+  if (effective === "history") {
+    void refreshLedgerBalance();
+    void refreshLedgerHistory();
+  }
   show("history-link", orderCount > 0 && identity !== null);
   if ((onOrder || onNext) && !ready) renderOrderMissing();
 
@@ -2814,6 +2966,9 @@ async function init(): Promise<void> {
       },
       useCyclesLedger: (factory) => {
         cyclesLedgerFactory = factory;
+      },
+      useCyclesIndex: (factory) => {
+        cyclesIndexFactory = factory;
       },
       signIn: setIdentity,
       openOrder,
