@@ -42,10 +42,32 @@ module {
     /// cap of 1 without that check, one missed expiry webhook locks a buyer out forever.
     maxOpenOrdersPerPrincipal : Nat;
     /// Floor on this canister's OWN cycle balance — its gas, not the cycles it
-    /// sells. Below the freezing threshold the canister stops accepting updates;
-    /// at zero it is uninstalled. This is the "should never happen" guard, and it
-    /// must be well above the freezing threshold so there is room to notice and
-    /// top up.
+    /// sells. Below it the gate refuses to admit new orders.
+    ///
+    /// ⚠️ **It gates ADMISSION only, and reading it as a delivery guard inverts
+    /// the lever.** `admit` is reached from `create_order` and `can_purchase` and
+    /// nowhere else: the Stripe webhook reaches delivery without consulting it, and
+    /// `cancel_order`, `withdraw_reserve` and every admin setter keep working below
+    /// the floor. That asymmetry IS the design — stop taking on new obligations,
+    /// leave every path that discharges the existing ones open. An operator who
+    /// believes this protects delivery raises it to rescue a stalled one, which
+    /// refuses every buyer and changes nothing about delivery.
+    ///
+    /// ⚠️ **What it bounds is a gas DRAIN, not freezing.** At the 5 T default the
+    /// freezing threshold is ~149× further down (~34 B, i.e. 30 days of idle burn),
+    /// so sales close with over a year of runway still in hand. Sizing it against
+    /// freezing invites lowering it by two orders of magnitude, and that is exactly
+    /// what removes the bound. The three things it holds:
+    ///   - **identity-rotated order flooding**, whose only bound this is. See
+    ///     `maxOpenOrdersPerPrincipal` above: a per-principal cap cannot see an
+    ///     attacker generating fresh principals.
+    ///   - **a Stripe key that is present but revoked.** Every `create_order` reaches
+    ///     the session outcall and 401s for ~220 M cycles. Nothing else bounds it.
+    ///   - **the 1 B every rate call must ATTACH** (`Xrc`), which leaves the spendable
+    ///     balance for the call's duration. Below that, pricing dies as well.
+    ///
+    /// `0` is permitted and means "do not gate on my own balance" (`validateConfig`).
+    /// It leaves the first two bounded only by the canister freezing.
     ///
     /// ⚠️ **THREE balances, and confusing them is the classic operational error.**
     ///   - **gas** — this canister's own balance, spent by running. `icp canister status`.
