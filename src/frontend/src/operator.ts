@@ -290,8 +290,9 @@ export const GATE_FIELDS: Record<keyof GateConfig, FieldDoc> = {
   },
   minCanisterCycles: {
     label: "Own-gas floor",
-    means: "The canister's own cycle balance below which it stops selling, rather than risk running out part way through a delivery.",
-    effect: "A global lever: raising it above the current balance refuses EVERY buyer until it is lowered or the canister is topped up, and nothing reverts it. This is the gas the canister spends to run, not the reserve it sells.",
+    means: "The canister's own cycle balance below which it stops accepting new orders. It does not gate delivery: an order already paid for is still delivered, and cancellation and the Stripe webhook keep working below the floor.",
+    effect: "A global lever: raising it above the current balance refuses EVERY buyer until it is lowered or the canister is topped up, and nothing reverts it. This is the gas the canister spends to run, not the reserve it sells. Its job is to close the rail before a gas drain empties it (a revoked Stripe key retrying its outcall, or orders flooded from rotating principals), so lowering it widens that window.",
+    bound: "Any value. Zero disables the check, and order floods from rotating principals are then bounded only by the canister freezing, which stops delivery as well as sales.",
   },
 };
 
