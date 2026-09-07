@@ -1673,16 +1673,23 @@ function renderTrustFigures(
   cap.textContent = `${formatCycles(stats.availableToSell)} cycles`;
 
   // ⚠️ **This figure stays in REAL cycles while quotes are scaled**, because
-  // `availableToSell` is `reserveFloor - promised` and only `promised` is scaled.
-  // So it can read 775 T while $10 buys 7 G — arithmetically right, and a
-  // startling ratio that reads as a bug without a word of explanation.
-  const capNote = document.getElementById("trust-capacity-note");
-  if (capNote) {
-    const divisor = simulationDivisor();
-    capNote.textContent =
-      `This is the real reserve. In simulation mode each purchase is scaled down ` +
-      `by ${divisor}, so this figure covers far more orders than its size suggests.`;
-    capNote.hidden = divisor === 1n;
+  // `availableToSell` is `reserveFloor - promised` and only `promised` is scaled. So it
+  // can read 775 T while $10 buys 7 G.
+  //
+  // ⚠️ **It no longer carries its own sentence about that, and the reason is where the
+  // reader is.** The note explained the ratio between this figure and a QUOTE, which is
+  // a comparison only someone mid-purchase makes; these figures are the landing page's
+  // trust panel. The page banner already states the scale on every view, so the note
+  // was a second copy of it aimed at a comparison the reader is not making yet.
+
+  // The account these figures come from, on a dashboard that is not us. Built here
+  // because it needs this deployment's own canister id rather than a hardcoded one.
+  const accountLink = document.getElementById("reserve-account-link") as HTMLAnchorElement | null;
+  const gateway = liveBackendId ?? backendCanisterId;
+  if (accountLink && gateway !== undefined && gateway !== "") {
+    accountLink.href =
+      `https://dashboard.internetcomputer.org/tokens/${cyclesLedgerCanisterId}`
+      + `/account/${gateway}`;
   }
 
   // ⚠️ One quantity at figure size. Three of them wrapped mid-number at the promoted

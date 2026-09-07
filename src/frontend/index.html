@@ -144,7 +144,6 @@
             <!-- NOTE: in simulation mode this figure is REAL reserve cycles
                  while quotes are scaled, so the ratio between them is startling
                  and correct. One sentence, or it reads as a bug. -->
-            <dd id="trust-capacity-note" class="muted" hidden></dd>
           </div>
           <div id="trust-delivered-wrap">
             <dt>Delivered so far</dt>
@@ -157,9 +156,17 @@
             <dd id="trust-delivered-note" class="muted"></dd>
           </div>
         </dl>
+        <!-- IMPORTANT: The claim is now a LINK, not an assertion. "Anyone can query
+             this without us" is the whole posture of these figures, and a sentence
+             saying so while making the reader find the account themselves is asking
+             for trust in the very place it offers verification. The href is built by
+             `renderTrustFigures` because it needs this deployment's own canister id. -->
         <p class="muted trust-frame">
-          Capacity is read from the cycles ledger, which anyone can query without
-          us. Delivered totals are ours to report.
+          Capacity is read from the cycles ledger, which anyone can query without us:
+          <a id="reserve-account-link" target="_blank" rel="noopener noreferrer"
+             href="https://dashboard.internetcomputer.org/tokens/um5iw-rqaaa-aaaaq-qaaba-cai">see
+            the reserve account &#8599;</a>.
+          Delivered totals are ours to report.
         </p>
       </section>
 

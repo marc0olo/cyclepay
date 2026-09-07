@@ -1784,8 +1784,8 @@ describe("simulation mode says so, in words (#99 2h)", () => {
     // unconditionally and relies on `hidden` alone.
     const note = document.getElementById("simulation-note")!;
     expect(note.hidden).toBe(true);
-    const cap = document.getElementById("trust-capacity-note")!;
-    expect(cap.hidden).toBe(true);
+    // The reserve figure has no note of its own any more: see the test below.
+    expect(document.getElementById("trust-capacity-note")).toBeNull();
   });
 
   test("⚠️ simulation mode states the scale on the buy view, as a sentence", async () => {
@@ -1800,15 +1800,33 @@ describe("simulation mode says so, in words (#99 2h)", () => {
     expect(note.textContent).toMatch(/no money moves/i);
   });
 
-  test("the available-to-sell figure gets its one sentence of explanation", async () => {
-    // Without it the ratio between a real reserve and a scaled quote reads as a
-    // bug: 775 T available while $10 buys 7 G.
+  test("⚠️ the reserve figure does NOT repeat the scale, on either mode", async () => {
+    // It used to carry its own sentence explaining the ratio between this figure and a
+    // quote — 775 T available while $10 buys 7 G. That comparison is only made by
+    // someone mid-purchase, and these figures are the landing page's trust panel; the
+    // page banner states the scale on every view already. Asserted in simulation mode
+    // specifically, because that is the only mode where the note ever appeared.
     state.divisor = 1_000n;
     await mount();
-    const cap = document.getElementById("trust-capacity-note")!;
-    expect(cap.hidden).toBe(false);
-    expect(cap.textContent).toMatch(/real reserve/i);
-    expect(cap.textContent).toContain("1000");
+    expect(document.getElementById("trust-capacity-note")).toBeNull();
+    const panel = document.getElementById("trust-figures")?.textContent ?? "";
+    expect(panel).not.toMatch(/real reserve/i);
+    // And the scale is still stated once, by the banner.
+    expect(document.getElementById("simulation-note")!.textContent).toContain("1/1000");
+  });
+
+  test("the capacity claim links to the account, rather than asserting it", async () => {
+    // "Anyone can query this without us" is the posture of the whole panel. Saying so
+    // while leaving the reader to find the account is asking for trust in the one place
+    // that offers verification.
+    await mount();
+    const link = document.getElementById("reserve-account-link") as HTMLAnchorElement;
+    expect(link).not.toBeNull();
+    // The gateway's own id, not a hardcoded one: `backendCanisterId` in these tests.
+    expect(link.getAttribute("href"))
+      .toBe("https://dashboard.internetcomputer.org/tokens/um5iw-rqaaa-aaaaq-qaaba-cai/account/aaaaa-aa");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
   });
 });
 
