@@ -39,7 +39,9 @@ test.describe("the delivered view", () => {
     await expect(page.locator("#cmd-link")).toContainText(`--app ${new URL(page.url()).host}`);
     await expect(page.locator("#credited-principal")).toHaveText(await fixturePrincipal(page));
     // The quantity, which the collapsed version never stated anywhere.
-    await expect(page.locator("#next-summary")).toContainText(/cycles are in your account/i);
+    // The quantity comes from the LEDGER now, not from the order this page used to be
+    // scoped to: what there is to spend is the question the page answers.
+    await expect(page.locator("#cli-summary")).toContainText(/in your account/i);
     // One view owns the screen: the record is not also on it.
     await expect(page.locator("#active-order")).toBeHidden();
   });
@@ -253,5 +255,34 @@ test.describe("the dashboard's two records, in a real browser", () => {
     const headers = await page.locator("#ledger-history thead th").count();
     const cells = await page.locator("#ledger-history tbody tr").first().locator("td").count();
     expect(cells).toBe(headers);
+  });
+});
+
+test.describe("the CLI page is reachable without an order", () => {
+  test("straight from the dashboard, no order in play", async ({ page }) => {
+    // The reason it stopped being order-scoped: a buyer who bought last week has no
+    // order in mind, they want to spend the balance. Verified in a real browser
+    // because the route, the view machine and the identity all take part.
+    await page.goto("/");
+    await signInAsFixtureBuyer(page);
+    await page.goto("/#/history");
+    await page.locator("#cli-link").click();
+
+    await expect(page).toHaveURL(/#\/cli$/);
+    await expect(page.locator("#view-cli")).toBeVisible();
+    await expect(page.locator("#cmd-link")).toBeVisible();
+    await expect(page.locator("#cmd-link")).toContainText("icp identity link web");
+    // Never the missing-order page, which is what an order-scoped route showed here.
+    await expect(page.locator("#order-missing")).toBeHidden();
+    // And no numbered journey: the visitor may not be on one.
+    await expect(page.locator("#stepper")).toBeHidden();
+  });
+
+  test("a deep link to it works cold, with no navigation history", async ({ page }) => {
+    await page.goto("/#/cli");
+    await signInAsFixtureBuyer(page);
+    await expect(page.locator("#view-cli")).toBeVisible();
+    await expect(page.locator("#credited-principal"))
+      .toHaveText(await fixturePrincipal(page));
   });
 });

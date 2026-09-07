@@ -420,16 +420,21 @@
 
       </section>
 
-      <!-- The next-steps view (#/order/<id>/next). NOTE: the tour used to live on the
-           order record, where it dominated the page and pushed every number behind a
-           collapsed disclosure. Two questions, two pages: the order says what you
-           bought, this says what to do with it. -->
-      <section id="view-next" class="view" hidden>
-        <h2 class="section-h">Your cycles are ready</h2>
-        <p class="lede" id="next-summary"></p>
+      <!-- The CLI page (#/cli). NOTE: the tour used to live on the order record, where
+           it dominated the page and pushed every number behind a collapsed disclosure.
+           Two questions, two pages: the order says what you bought, this says what to
+           do with it.
+
+           IMPORTANT: NOT scoped to an order any more. Everything here is derived from
+           the signed-in identity, and the balance comes from the ledger, so it is
+           reachable from the dashboard by someone who bought cycles last week. That
+           is also why the four-step strip is absent: it narrates one purchase
+           journey, and a visitor arriving here may not be on it. -->
+      <section id="view-cli" class="view" hidden>
+        <h2 class="section-h">Link the ICP CLI</h2>
+        <p class="lede" id="cli-summary"></p>
 <div id="tour">
           <section class="handoff step-card">
-            <p class="eyebrow">Step 3 of 4</p>
             <h3 class="section-h">Link your identity to the <em>CLI</em></h3>
             <p>
               This links the account your cycles are in, so the CLI spends the
@@ -477,7 +482,6 @@
           </section>
 
           <section class="step-card outlined">
-            <p class="eyebrow">Step 4 of 4</p>
             <h3 class="section-h">Deploy</h3>
             <div class="cmd">
               <code id="cmd-create" class="mono">icp deploy -e ic</code>
@@ -505,7 +509,7 @@
           </p>
         </section>
 
-        <p><a id="next-back" href="#/">Back to this order</a></p>
+        <p><a id="cli-back" href="#/history">Back to your dashboard</a></p>
       </section>
 
       <section id="order-missing" class="view" hidden>
@@ -529,6 +533,14 @@
             <dd id="ledger-balance-note" class="muted"></dd>
           </div>
         </dl>
+
+        <!-- IMPORTANT: The second entry point to the CLI page, and the reason that page
+             stopped being order-scoped. A buyer who bought cycles last week has no
+             order in mind: they want to spend the balance above. Beside the balance
+             because that is the thing the CLI acts on. -->
+        <p class="next-step">
+          <a id="cli-link" class="ghost" href="#/cli">Link ICP CLI</a>
+        </p>
 
         <!-- Two RECORDS of the same money, one tab each. NOTE: the balance above sits
              outside the tabs because it belongs to neither record, and the tabs are
