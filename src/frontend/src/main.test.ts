@@ -2864,6 +2864,8 @@ describe("the CLI page stands on its own", () => {
     await mount("landing", "#/cli");
     await settle();
     expect(el<HTMLAnchorElement>("cli-back").getAttribute("href")).toBe("#/history");
+  });
+});
 
 describe("the delivered page leads with the outcome", () => {
   async function openDelivered(): Promise<void> {
