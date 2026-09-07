@@ -600,7 +600,13 @@ describe("tier rendering", () => {
     expect(detail.hidden).toBe(false);
     expect(detail.textContent).toContain("$0.45 payment processing");
     expect(detail.textContent).toContain("operator margin: none");
-    expect(detail.textContent).toContain("locked when you create the order");
+    // ⚠️ **A SEPARATE element, and the join was the bug.** These were one string with
+    // a space between them, so the page read "operator margin: none The exchange rate
+    // is locked...": a dot-separated data line running into a 150-character sentence.
+    expect(detail.textContent).not.toContain("locked when you create the order");
+    const lock = el("rate-lock-note");
+    expect(lock.hidden).toBe(false);
+    expect(lock.textContent).toContain("locked when you create the order");
   });
 
   test("an unpriceable quote disables the submit button with a reason", async () => {
@@ -622,17 +628,19 @@ describe("the deposit fee is disclosed on every order", () => {
     // no longer a state of this form in which it is hidden.
     await mount();
 
-    // At 3.5 T the 100 M fee is 0.003%, so it rounds away at display precision.
-    // The tile therefore states the figure alone: three tiles each repeating
-    // "(the cycles ledger takes 100 M…)" above a note saying the same thing is
-    // noise around the one number a buyer is choosing between.
+    // At 3.5 T the 100 M fee is 0.003%, so it rounds away at display precision and
+    // the tile states the figure alone.
     const label = tierButton().querySelector(".cycles")!.textContent!;
     expect(label).toBe("≈ 3.5 T cycles");
 
-    // The note is where the fee is disclosed, and it is unconditional.
-    const note = el("dest-fee-note");
-    expect(note.hidden).toBe(false);
-    expect(note.textContent).toContain("not added to your price");
+    // ⚠️ **Disclosed by the FIGURE, not by a note beside it.** The "Where the cycles
+    // go" section that carried the sentence is gone: it explained a destination the
+    // buyer cannot change, sitting between the amount and the button that acts on it.
+    // What protects the buyer is that this figure is the CREDITED one, so the fee is
+    // already inside the number they are choosing on - see the split test below, where
+    // a fee big enough to move the figure does show. The sentence itself now lives on
+    // the order, under the quantity it explains, and still before any money moves.
+    expect(document.getElementById("dest-fee-note")).toBeNull();
   });
 
   test("an unreachable ledger hides the fee rather than inventing one", async () => {
@@ -644,7 +652,6 @@ describe("the deposit fee is disclosed on every order", () => {
     // arrive.
     state.transferFeeError = true;
     await mount();
-    expect(el("dest-fee-note").hidden).toBe(true);
     // And the tile still prices, because the quote came from the backend.
     expect(tierButton().querySelector(".cycles")!.textContent).toContain("cycles");
   });
@@ -829,7 +836,9 @@ describe("one way into the buy view", () => {
     await settle();
     expect(el("buy-flow").hidden).toBe(false);
     expect(el("view-landing").hidden).toBe(true);
-    expect(el("dest-own").hidden).toBe(false);
+    // The destination is not stated HERE any more: it is unaskable and unchangeable,
+    // and the order the buyer is about to create states it. See the checkout card.
+    expect(document.getElementById("dest-own")).toBeNull();
     expect(window.location.hash).toBe("#/buy");
   });
 
@@ -1146,8 +1155,13 @@ describe("the rate strip never contradicts the tiers", () => {
     const strip = el("rate-line").textContent ?? "";
     expect(strip).toMatch(/no exchange rate/i);
     expect(strip).not.toContain("XDR/ICP");
-    // And the tiers agree, which is the whole point.
-    expect(tierButton().querySelector(".cycles")!.textContent).toMatch(/no exchange rate/i);
+    // ⚠️ **And the tiers say NOTHING, which is the fix.** They used to each print the
+    // same sentence, so with three tiles the page stated it three times in one row,
+    // plus under the field, plus in the button: four copies of one fact about the
+    // gateway. The strip above owns it. What must not happen is a tile quoting a
+    // figure the gateway would refuse, and an empty label cannot.
+    const label = tierButton().querySelector(".cycles")!.textContent;
+    expect(label).toBe("");
   });
 
   test("a usable rate is printed in full", async () => {
@@ -2819,22 +2833,20 @@ describe("the CLI page stands on its own", () => {
     expect(el("order-missing").hidden).toBe(true);
   });
 
-  test("⚠️ the four-step strip is absent here", async () => {
-    // The steps promise one purchase journey. Reached from the dashboard, the visitor
-    // may not be on it, so "Step 3 of 4" narrates something untrue.
+  test("⚠️ there is no four-step strip left anywhere", async () => {
+    // It was removed from this page first (it narrates one purchase journey and this
+    // page is reachable from the dashboard), and then from the buy view too: above a
+    // single decision, a four-stage strip describes stages the visitor cannot act on.
+    // The element itself is gone, so this asserts absence rather than hidden-ness.
     state.order = undefined;
     await mount("landing", "#/cli");
     await settle();
-    expect(el("stepper").hidden).toBe(true);
+    expect(document.getElementById("stepper")).toBeNull();
     expect(document.body.textContent).not.toMatch(/Step 3 of 4|Step 4 of 4/);
-  });
 
-  test("the strip is still on the buy view, where the journey is real", async () => {
-    // The other half: removing it everywhere would take orientation off the one page
-    // where a first-time buyer benefits from it.
     await mount("landing", "#/buy");
     await settle();
-    expect(el("stepper").hidden).toBe(false);
+    expect(document.getElementById("stepper")).toBeNull();
   });
 
   test("the dashboard offers it too, not only a delivered order", async () => {
@@ -2957,5 +2969,83 @@ describe("two rendering bugs found by looking at the page", () => {
     document.body.append(probe);
     expect(getComputedStyle(probe).textDecorationLine).not.toBe("underline");
     probe.remove();
+  });
+});
+
+describe("the amount picker offers four choices, one of them Custom", () => {
+  test("⚠️ the field is CLOSED until Custom is chosen", async () => {
+    // An always-open field competed with the presets for the same decision, and needed
+    // the label "or enter an amount" to explain a relationship the layout denied.
+    await mount();
+    expect(el("custom-panel").hidden).toBe(true);
+    el("tier-custom").click();
+    await settle();
+    expect(el("custom-panel").hidden).toBe(false);
+  });
+
+  test("Custom sits IN the row, at the same weight as the presets", async () => {
+    // Not a control beside the row: it is one of the ways to name an amount, so it is
+    // in the same container and carries the same class. Counted RELATIVE to the
+    // configured presets rather than hardcoded: this suite runs one tier, the browser
+    // fixture runs three, and a literal count would pin the mock instead of the rule.
+    await mount();
+    const tiles = el("tiers").querySelectorAll("button.tier");
+    expect(tiles.length).toBe(state.tiers.length + 1);
+    expect(tiles[tiles.length - 1]!.id).toBe("tier-custom");
+    expect(tiles[tiles.length - 1]!.className).toContain("tier");
+  });
+
+  test("⚠️ picking a preset closes the field again", async () => {
+    // The one-answer rule, in both directions. Leaving it open after a preset was
+    // chosen would show a field whose value is being ignored.
+    await mount();
+    el("tier-custom").click();
+    await settle();
+    expect(el("custom-panel").hidden).toBe(false);
+    tierButton().click();
+    await settle();
+    expect(el("custom-panel").hidden).toBe(true);
+  });
+
+  test("choosing Custom deselects the preset, and shows the range", async () => {
+    await mount();
+    tierButton().click();
+    await settle();
+    expect(tierButton().className).toContain("selected");
+    el("tier-custom").click();
+    await settle();
+    expect(tierButton().className).not.toContain("selected");
+    expect(el("tier-custom").className).toContain("selected");
+    // The bounds move from a standalone line into the tile, where the choice is made.
+    expect(el("tier-custom").textContent).toMatch(/\$10\.00 to \$100\.00/);
+  });
+
+  test("⚠️ no rate means the tiles say NOTHING, and the strip says it once", async () => {
+    // Four copies of one fact about the gateway: three tiles, the field, the button.
+    state.quote = { usdCents: TIER_CENTS, feeCents: 45n, netCents: 455n, cycles: undefined };
+    await mount();
+    const shown = Array.from(el("buy-flow").querySelectorAll("*"))
+      .filter((n) => !(n as HTMLElement).hidden)
+      .map((n) => n.textContent ?? "")
+      .filter((t) => /no exchange rate/i.test(t));
+    // Ancestors carry their children's text, so the count is on the OWNER: exactly one
+    // element states it directly.
+    const owners = Array.from(el("buy-flow").querySelectorAll("*"))
+      .filter((n) => !(n as HTMLElement).hidden)
+      .filter((n) => Array.from(n.childNodes).some(
+        (c) => c.nodeType === 3 && /no exchange rate/i.test(c.textContent ?? ""),
+      ));
+    expect(shown.length).toBeGreaterThan(0);
+    expect(owners.length).toBe(1);
+    expect(owners[0]!.id).toBe("rate-line");
+  });
+
+  test("the buy button is the prominent one, and follows the amount", async () => {
+    await mount();
+    expect(el("create-order").className).toContain("cta-buy");
+    const tiers = el("tiers");
+    const btn = el("create-order");
+    expect(tiers.compareDocumentPosition(btn) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
   });
 });

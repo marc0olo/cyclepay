@@ -49,7 +49,7 @@ import {
   parseIcEnvCookies,
   resolveLiveBackendId,
 } from "./ic-env";
-import { type View, type Route, type HistoryTab, parseRoute, routeHash, TOUR_STEPS, stepStates } from "./view";
+import { type View, type Route, type HistoryTab, parseRoute, routeHash } from "./view";
 import {
   RATE_LOCK_NOTE,
   formatAgo,
@@ -574,49 +574,6 @@ let orderCount = 0;
 /// ⚠️ A second destination kind brings back the question this used to answer:
 /// `icp identity link web` links the CALLER's identity, so for a balance that is
 /// not theirs the commands reach the wrong account and must not be printed.
-function renderStepper(view: View): void {
-  const node = document.getElementById("stepper");
-  if (!node) return;
-  // ⚠️ **Buying and the guidance that follows it, NOT the order record.** The strip
-  // used to persist onto the order view, where four steps competed with the facts a
-  // buyer had opened that page to read. The steps are a promise about the purchase
-  // journey; a receipt with a progress bar on it answers a question nobody asked
-  // there. `stepStates` returns all-todo for the record, but the strip should be
-  // absent rather than blank.
-  // ⚠️ **The buy view only.** The strip is a promise about one purchase journey, and
-  // the CLI page is reachable from the dashboard by someone who is not on that journey
-  // at all: "Step 3 of 4" there narrates a purchase the visitor may not be making.
-  const relevant = view === "buy";
-  if (!relevant) {
-    node.hidden = true;
-    return;
-  }
-  const states = stepStates(view, identity !== null);
-  node.replaceChildren();
-  TOUR_STEPS.forEach((step, i) => {
-    const li = document.createElement("li");
-    li.className = `step ${states[i]}`;
-    const n = document.createElement("span");
-    n.className = "step-n";
-    n.textContent = String(step.n);
-    const label = document.createElement("span");
-    label.textContent = step.label;
-    li.append(n, label);
-    // Completion is carried by colour and weight, which is not enough on its
-    // own. A checkmark glyph would be, but the brand rules ban pictographs and
-    // exempting myself from a rule I wrote into the linter is not a precedent
-    // worth setting — so the state goes to assistive tech as a word.
-    if (states[i] !== "todo") {
-      const sr = document.createElement("span");
-      sr.className = "sr-only";
-      sr.textContent = states[i] === "done" ? " (done)" : " (current step)";
-      li.append(sr);
-    }
-    li.setAttribute("aria-current", states[i] === "current" ? "step" : "false");
-    node.append(li);
-  });
-  node.hidden = false;
-}
 
 /// How the order the route names worked out. `ok` covers "we are not on the order
 /// view at all", which is why it is the default.
@@ -677,7 +634,6 @@ function renderView(): void {
   show("history-link", orderCount > 0 && identity !== null);
   if ((onOrder || onCli) && !ready) renderOrderMissing();
 
-  renderStepper(effective);
 
   // ⚠️ **Nothing collapses over the order's facts any more.** This used to close
   // `#order-details` on the delivered view so the tour could lead — and because the
@@ -1799,7 +1755,6 @@ async function loadMarket(): Promise<void> {
   // returned without probing — which is how it silently did nothing.
   await Promise.all([refreshTierQuotes(), refreshDepositFee(), refreshEligibility()]);
   renderTiers();
-  renderDestinationNote();
   renderSubmitGate();
 }
 
@@ -1831,7 +1786,7 @@ async function refreshTierQuotes(): Promise<void> {
 /// cannot await the ledger — a staleness class in exchange for a number this
 /// app can just ask for.
 ///
-/// A failure leaves `transferFee` at 0, which `renderDestinationNote` and
+/// A failure leaves `transferFee` at 0, which
 /// `estimateLine` already treat as "not known yet": the buyer sees the locked
 /// quantity with no fee note rather than a quantity computed from a guessed fee.
 /// Shown-too-high is the safe direction — the alternative is promising cycles
@@ -1844,24 +1799,6 @@ async function refreshDepositFee(): Promise<void> {
   }
 }
 
-/// The ledger's transfer fee, disclosed beside the destination it applies to.
-///
-/// Every order pays it, so the note depends on nothing the visitor can change —
-/// only on whether a quote has named a fee yet. It is also the ONLY place the
-/// fee is spelled out: the amount tiles show what lands, because repeating the
-/// parenthetical on each of them put three copies of one sentence around the
-/// figure a buyer is choosing between.
-function renderDestinationNote(): void {
-  const node = el("dest-fee-note");
-  if (transferFee === 0n) {
-    show("dest-fee-note", false);
-    return;
-  }
-  node.textContent =
-    `The cycles ledger charges ${formatCycles(transferFee)} cycles to accept a deposit, ` +
-    `so your account receives that much less than the order locks. It is not added to your price.`;
-  show("dest-fee-note", true);
-}
 
 /// The rate strip under the amounts.
 ///
@@ -1931,6 +1868,13 @@ function renderSimulationNote(): void {
   node.hidden = divisor === 1n;
 }
 
+/// Whether the buyer has opened the custom-amount field.
+///
+/// ⚠️ **State, not a DOM read.** Deriving it from the field's `hidden` attribute would
+/// make the render depend on what the last render painted, which is how a panel ends up
+/// stuck open after a re-render it did not expect.
+let customChosen = false;
+
 function renderTiers(): void {
   const container = el("tiers");
   container.replaceChildren();
@@ -1960,13 +1904,20 @@ function renderTiers(): void {
     const label = document.createElement("span");
     label.className = "cycles";
     const quoted = tierQuotes.get(tier.id);
-    label.textContent = quoted === undefined
-      ? "not yet"
-      : estimateLine(quoted.cycles ?? null, transferFee);
+    // ⚠️ **The QUANTITY or nothing, never the shared reason.** `estimateLine(null, …)`
+    // returns "No exchange rate available right now. Orders are paused until one is.",
+    // so with no rate every tile printed the same sentence and the page said it three
+    // times in one row, plus again under the field, plus in the button. It is a fact
+    // about the gateway, not about this tier: `#rate-line` states it once.
+    label.textContent = quoted?.cycles === undefined || quoted.cycles === null
+      ? ""
+      : estimateLine(quoted.cycles, transferFee);
     btn.append(amount, label);
     btn.onclick = () => {
       selectedTierId = tier.id;
-      // The other direction of the same rule: a tile clears the typed amount.
+      // The other direction of the same rule: a tile clears the typed amount, and
+      // closes the field with it. One answer to "which amount".
+      customChosen = false;
       customUsdCents = null;
       customQuote = null;
       const field = document.getElementById("custom-amount") as HTMLInputElement | null;
@@ -1979,6 +1930,40 @@ function renderTiers(): void {
     };
     container.append(btn);
   }
+
+  // ⚠️ **Custom is the FOURTH tile, not a control beside the row.** It is one of four
+  // ways to name an amount, so it sits at the same weight as the presets; an
+  // always-open field below them competed with the presets for the same decision and
+  // needed the label "or enter an amount" to explain a relationship the layout was
+  // denying. Selecting it opens the field; picking a preset closes it again, which is
+  // the same one-answer rule the presets and the field already had between them.
+  const custom = document.createElement("button");
+  custom.type = "button";
+  custom.id = "tier-custom";
+  custom.className = "tier tier-custom" + (customChosen ? " selected" : "");
+  const customAmount = document.createElement("span");
+  customAmount.className = "amount";
+  customAmount.textContent = "Custom";
+  const customHint = document.createElement("span");
+  customHint.className = "cycles";
+  customHint.textContent = amountBounds === null
+    ? ""
+    : `${formatUsdCents(amountBounds.min)} to ${formatUsdCents(amountBounds.max)}`;
+  custom.append(customAmount, customHint);
+  custom.onclick = () => {
+    customChosen = true;
+    selectedTierId = null;
+    clearRequote();
+    renderTiers();
+    renderTierDetail();
+    renderSubmitGate();
+    // Focus follows the reveal: the tile exists to get the buyer into the field, and
+    // making them click twice for one intent is the cost of hiding it.
+    document.getElementById("custom-amount")?.focus();
+  };
+  container.append(custom);
+
+  show("custom-panel", customChosen);
   renderTierDetail();
 }
 
@@ -1988,10 +1973,16 @@ function renderTierDetail(): void {
   const quote = selectedTierId === null ? undefined : tierQuotes.get(selectedTierId);
   if (!quote || cardFee === null) {
     show("tier-detail", false);
+    show("rate-lock-note", false);
     return;
   }
-  node.textContent =
-    `${feeBreakdown(quote.usdCents, quote.feeCents, quote.netCents, cardFee)} ${RATE_LOCK_NOTE}`;
+  node.textContent = feeBreakdown(quote.usdCents, quote.feeCents, quote.netCents, cardFee);
+  // ⚠️ **A separate node, and the join was the bug.** These were one string with a
+  // space between them, so the page read "operator margin: none The exchange rate is
+  // locked when you create the order": a dot-separated data line running into a
+  // 150-character sentence, with "none The" reading as a phrase.
+  el("rate-lock-note").textContent = RATE_LOCK_NOTE;
+  show("rate-lock-note", true);
   show("tier-detail", true);
 }
 
@@ -2236,12 +2227,17 @@ function renderCustomEstimate(): void {
   const node = el("tier-detail");
   if (customUsdCents === null) {
     show("tier-detail", false);
+    show("rate-lock-note", false);
     return;
   }
-  node.textContent = customQuote === null
-    ? "No exchange rate available right now. Orders are paused until one is."
-    : `${estimateLine(customQuote, transferFee)} ${RATE_LOCK_NOTE}`;
-  show("tier-detail", true);
+  // ⚠️ No rate means NOTHING here, not a fourth copy of the reason: `#rate-line`
+  // carries it once and the button already refuses. Repeating it beside the field the
+  // buyer is typing into implies the field is the problem.
+  const priced = customQuote !== null;
+  node.textContent = priced ? estimateLine(customQuote, transferFee) : "";
+  el("rate-lock-note").textContent = RATE_LOCK_NOTE;
+  show("tier-detail", priced);
+  show("rate-lock-note", priced);
 }
 
 /// The one place "what amount is the buyer buying" is answered.
@@ -3171,7 +3167,6 @@ async function init(): Promise<void> {
   // ic_env cookies, find the id that actually answers and use that one.
   await resolveStaleIcEnv();
 
-  renderDestinationNote();
 
   // The session BEFORE the route, because the route can depend on it. `get_order`
   // answers per caller, so resolving `#/order/<id>` while still anonymous looks up

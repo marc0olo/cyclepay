@@ -71,31 +71,23 @@ test.describe("view routing", () => {
   });
 });
 
-test.describe("the stepper", () => {
-  test("is absent on the landing view and present once buying", async ({ page }) => {
-    await page.goto("/");
-    await expect(page.locator("#stepper")).toBeHidden();
-    await page.locator("#start-buy").click();
-    await expect(page.locator("#stepper")).toBeVisible();
-    await expect(page.locator("#stepper .step")).toHaveCount(4);
-  });
-
-  test("step 1 is the current step while signed out", async ({ page }) => {
-    await page.goto("/");
-    await page.locator("#start-buy").click();
-    await expect(page.locator("#stepper .step").nth(0)).toHaveClass(/current/);
-    await expect(page.locator("#stepper .step").nth(3)).toHaveClass(/todo/);
-  });
-
-  test("the hero still states the four steps, and the stepper repeats them", async ({ page }) => {
-    // The headline promises four steps; the strip has to agree with it or one of
-    // the two is lying.
+test.describe("no progress strip anywhere", () => {
+  test("⚠️ the four-step strip is gone, and the hero figure is not it", async ({ page }) => {
+    // The strip read "1 Sign in, 2 Pay, 3 Link the CLI, 4 Deploy" above the amount
+    // picker, narrating a four-stage journey above a single decision. Removed.
+    //
+    // The LANDING hero still tells the four-step story, and that is a different thing:
+    // it is the product pitch on the page that has to make the case, not a progress
+    // indicator on the page where you act. Both halves are asserted, so deleting the
+    // hero figure by mistake fails here rather than passing quietly.
     await page.goto("/");
     const hero = await page.locator(".flow-step").allInnerTexts();
     expect(hero).toHaveLength(4);
+
     await page.locator("#start-buy").click();
-    const strip = await page.locator("#stepper .step").allInnerTexts();
-    expect(strip).toHaveLength(4);
+    await expect(page.locator("#buy-flow")).toBeVisible();
+    await expect(page.locator("#stepper")).toHaveCount(0);
+    await expect(page.locator(".stepper")).toHaveCount(0);
   });
 });
 

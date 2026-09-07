@@ -179,10 +179,6 @@
 </div><!-- /view-landing -->
 
 
-      <!-- The four steps the product is sold as, carried across buy, order and
-           delivered so progress is visible rather than promised. -->
-      <ol id="stepper" class="stepper" aria-label="Progress" hidden></ol>
-
       <div id="buy-flow" class="view" hidden>
         <section id="card-panel">
           <h2 class="section-h">Pick an amount</h2>
@@ -192,37 +188,49 @@
           <!-- A typed amount, bounded by the gate's own floor and ceiling, read
                from the canister at load and never written down here. Picking a
                tile clears this and typing clears the tile: "which amount" has one
-               answer. -->
-          <p class="or-custom">or enter an amount</p>
-          <label class="amount-label" for="custom-amount">
-            <span id="custom-amount-range" class="muted">Loading amounts…</span>
-            <input id="custom-amount" type="text" inputmode="decimal"
-                   placeholder="25.00" autocomplete="off" spellcheck="false" disabled />
-          </label>
-          <p id="custom-amount-error" class="error" hidden></p>
+               answer.
+
+               IMPORTANT: The field is CLOSED until the Custom tile is chosen, and the
+               tile is the fourth member of the row above rather than a control beside
+               it. Four ways to name an amount, one row, one weight: an always-open
+               field competed with the presets for the same decision, and the label
+               "or enter an amount" had to explain a relationship the layout was
+               denying. -->
+          <div id="custom-panel" hidden>
+            <label class="amount-label" for="custom-amount">
+              <span id="custom-amount-range" class="muted">Loading amounts…</span>
+              <input id="custom-amount" type="text" inputmode="decimal"
+                     placeholder="25.00" autocomplete="off" spellcheck="false" disabled />
+            </label>
+            <p id="custom-amount-error" class="error" hidden></p>
+          </div>
+          <!-- IMPORTANT: The breakdown and the rate-lock policy are TWO elements. They
+               were one string joined with a space, so the page read "operator margin:
+               none The exchange rate is locked when you create the order": a
+               dot-separated data line running straight into a 150-character sentence,
+               with "none The" reading as one phrase. A data line and a policy note are
+               not the same kind of content and never belonged in one node. -->
           <p id="tier-detail" class="estimate-detail" hidden></p>
+          <p id="rate-lock-note" class="muted" hidden></p>
           <p id="quote-notice" class="notice" hidden></p>
           <p id="rate-line" class="muted"></p>
         </section>
 
         <section>
           <form id="order-form">
-            <!-- Not a question. Cycles go to the signed-in principal's own
-                 cycles-ledger account, and the gateway refuses anything else
-                 (#29), so there is no field to fill in and no principal to
-                 mistype. A destination input of any kind belongs here only if
-                 `Types.Destination` grows a case to justify it. -->
-            <div id="dest-own" class="dest-implicit">
-              <h2 class="section-h">Where the cycles go</h2>
-              <p>
-                Your cycles go to your account. You'll link it to the CLI in a
-                moment.
-              </p>
-              <p id="dest-fee-note" class="muted" hidden></p>
-            </div>
+            <!-- IMPORTANT: "Where the cycles go" is GONE from this view. It was a
+                 heading, a sentence and a fee note explaining a destination the buyer
+                 cannot change: cycles go to the signed-in principal's own
+                 cycles-ledger account and the gateway refuses anything else (#29). All
+                 of it is stated on the order the buyer is about to create, where the
+                 card carries Destination and the deposit fee as a sub-line under the
+                 quantity it explains. A section answering an unaskable question sat
+                 between the amount and the button that acts on it.
 
+                 A destination input belongs here only if `Types.Destination` grows a
+                 case to justify one. -->
             <p id="form-error" class="error" hidden></p>
-            <button id="create-order" type="submit" class="cta" disabled>Sign in to continue</button>
+            <button id="create-order" type="submit" class="cta cta-buy" disabled>Sign in to continue</button>
             <div id="signin-providers" class="providers" hidden>
               <p class="muted">
                 Sign in with Google, Apple, or Microsoft, or use a passkey. Your

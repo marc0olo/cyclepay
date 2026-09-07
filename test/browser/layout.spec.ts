@@ -23,28 +23,71 @@ test.describe("the hidden attribute actually hides", () => {
     await expect(page.locator("#buy-flow")).toBeVisible();
   });
 
-  test("the form states the destination and asks for no id", async ({ page }) => {
+  test("the form asks for no destination, and no longer explains one either", async ({ page }) => {
     // Not "the field is hidden": the field is GONE (#29), along with the radios
     // and the other-account disclosure. `toHaveCount(0)` is the assertion that a
     // reintroduced input cannot satisfy by being display:none.
+    //
+    // ⚠️ The explaining SECTION is gone too. It was a heading, a sentence and a fee
+    // note about a destination the buyer cannot change, sitting between the amount and
+    // the button that acts on it. The order they are about to create states both facts.
     await page.goto("/");
     await page.locator("#start-buy").click();
-    await expect(page.locator("#dest-own")).toBeVisible();
+    await expect(page.locator("#dest-own")).toHaveCount(0);
+    await expect(page.locator("#dest-fee-note")).toHaveCount(0);
     await expect(page.locator("#canister-principal")).toHaveCount(0);
     await expect(page.locator("#dest-choice")).toHaveCount(0);
     await expect(page.locator("#dest-ledger-advanced")).toHaveCount(0);
     await expect(page.locator('input[name="dest-kind"]')).toHaveCount(0);
   });
 
-  test("the deposit fee is disclosed without anything to toggle", async ({ page }) => {
-    // It used to appear only after switching to the account destination. With one
-    // destination it applies to every order, so it is on screen as soon as a
-    // quote has named it.
+  test("⚠️ the deposit fee is still inside the figure the buyer chooses on", async ({ page }) => {
+    // The reason removing the note is safe: the tile states the CREDITED quantity, so
+    // the fee is already in the number being decided on. Verified in a browser because
+    // the quote, the ledger fee read and the render all take part.
     await page.goto("/");
     await useFixtureBackend(page);
     await page.locator("#start-buy").click();
-    await expect(page.locator("#dest-fee-note")).toBeVisible();
-    await expect(page.locator("#dest-fee-note")).toContainText("not added to your price");
+    const label = page.locator("#tiers button.tier .cycles").first();
+    await expect(label).toContainText("cycles");
+    // Never a bare "sent" figure with no credited one: that would overstate delivery.
+    await expect(label).not.toHaveText(/^\s*$/);
+  });
+});
+
+test.describe("the amount picker", () => {
+  test("⚠️ Custom is a tile, and the field opens only when it is chosen", async ({ page }) => {
+    // In a real browser because `hidden` on a grid child is exactly the kind of thing
+    // CSS can defeat, and this suite exists for that class of failure.
+    await page.goto("/");
+    await useFixtureBackend(page);
+    await page.locator("#start-buy").click();
+
+    const panel = page.locator("#custom-panel");
+    await expect(panel).toBeHidden();
+    // The tile sits in the row with the presets, not beside it.
+    await expect(page.locator("#tiers #tier-custom")).toBeVisible();
+
+    await page.locator("#tier-custom").click();
+    await expect(panel).toBeVisible();
+    await expect(page.locator("#custom-amount")).toBeFocused();
+
+    // And a preset closes it again: one answer to "which amount".
+    await page.locator("#tiers button.tier").first().click();
+    await expect(panel).toBeHidden();
+  });
+
+  test("the buy button follows the amount and is the prominent control", async ({ page }) => {
+    await page.goto("/");
+    await useFixtureBackend(page);
+    await page.locator("#start-buy").click();
+    const btn = page.locator("#create-order");
+    await expect(btn).toBeVisible();
+    await expect(btn).toHaveClass(/cta-buy/);
+    // Larger than the body scale it used to sit at.
+    const size = await btn.evaluate((n) => parseFloat(getComputedStyle(n).fontSize));
+    const body = await page.evaluate(() => parseFloat(getComputedStyle(document.body).fontSize));
+    expect(size).toBeGreaterThan(body);
   });
 });
 
