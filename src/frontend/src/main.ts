@@ -2458,19 +2458,24 @@ function renderOrder(order: Order): void {
     ? statusInfo("expired")
     : statusInfo(key);
 
-  const pill = el("order-status-pill");
-  pill.textContent = info.pill;
-  pill.className = `status-pill tone-${info.tone}`;
+  // ⚠️ **The heading IS the outcome.** The credited quantity is passed in, so a
+  // delivered order reads "7.138 G cycles delivered" rather than a neutral title beside
+  // a badge a buyer has to go looking for.
+  const headline = el("order-headline");
+  const creditedFigure = creditedSplit(order.lockedCycles, transferFee).figure;
+  headline.textContent = info.headline(
+    statusKeyOf(order) === "delivered" ? creditedFigure : undefined,
+  );
+  headline.className = `section-h tone-${info.tone}`;
 
   const statusLine = el("order-status-line");
-  statusLine.textContent = info.label;
+  statusLine.textContent = info.guidance ?? "";
   statusLine.className = `tone-${info.tone}`;
-  // ⚠️ **Shown only when the label says MORE than the badge, and the predicate is the
-  // DATA rather than a list of statuses.** For most statuses `pill` and `label` are the
-  // same words, and printing both said "Awaiting payment" twice in adjacent lines. Where
-  // they differ, the label carries an instruction the badge has no room for: "Expired.
-  // This order can no longer be paid", "Needs operator attention. Contact support".
-  show("order-status-line", info.label !== info.pill);
+  // ⚠️ **Shown only when the status has something to DO about it**, which is a fact
+  // about the status rather than a comparison between two of its strings. It used to
+  // print `label` whenever `label !== pill`; with the heading now carrying the outcome,
+  // that fired for every status and repeated what the heading had just said.
+  show("order-status-line", info.guidance !== undefined);
 
   // Tense follows the order. Two labels, two facts: a paid order HAS paid but has not
   // yet received, so one "done" flag would promise cycles that have not moved.
@@ -2781,7 +2786,11 @@ async function refreshHistory(): Promise<void> {
       null, // the order id, rendered as a link below
       formatCycles(order.lockedCycles),
       formatUsdCents(order.pricing.usdCents),
-      info.label,
+      // ⚠️ The BADGE form, not the label. This rendered "Expired. This order can no
+      // longer be paid" into a status column: a sentence where two words belong, in a
+      // table whose other cells are a date, an id and two figures. `pill` exists for
+      // exactly this and was only being used on the order page.
+      info.pill,
     ];
     cells.forEach((text, index) => {
       const td = document.createElement("td");

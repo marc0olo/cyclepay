@@ -246,10 +246,13 @@
              allows, is decoration: on a delivered order every segment was lit and it
              carried nothing. Status has one owner now. What is lost: a paid order no
              longer shows "1 of 3 done" graphically, and reads "Paid" instead. -->
-        <div class="purchase-head">
-          <h2 class="section-h">Your purchase</h2>
-          <p id="order-status-pill" class="status-pill"></p>
-        </div>
+        <!-- IMPORTANT: The heading is the OUTCOME, and the badge that used to sit in
+             the far corner is gone rather than relocated. "Your purchase" plus a small
+             DELIVERED pill answered the one question a buyer has - did I get my cycles -
+             three times and prominently zero times: the pill, a receipt row, and a
+             block index. `statusInfo(...).headline` names the state and the quantity in
+             one statement, so the page announces itself. -->
+        <h2 id="order-headline" class="section-h"></h2>
         <p class="order-ident muted">
           Order <span id="order-id-short" class="mono"></span>
         </p>
@@ -302,6 +305,25 @@
                looked away. Rendered from `expiresAtNs`, which is Stripe's own
                deadline. Inside the summary because it is a term of this price. -->
           <p id="order-deadline" class="muted" hidden></p>
+
+          <!-- IMPORTANT: In the card, because it is an order FACT like the block index.
+               Outside it, it was one more line of prose under a tidy frame. -->
+          <p class="order-ref muted">
+            Payment reference <span id="client-ref" class="mono"></span>
+          </p>
+
+          <!-- IMPORTANT: The next step is ANCHORED in the card, not floating below it.
+               It was a two-word label on an 870px button between the frame and a wall
+               of prose, with its own explanation underneath, so the pair anchored to
+               nothing. The card is what a buyer reads and trusts; the action belongs at
+               its end, the same reasoning as the landing hero.
+
+               "Spend them" was wrong: cycles pay for CREATING and running canisters,
+               which is what the caption says now. -->
+          <div id="order-next-row" class="card-action" hidden>
+            <p class="muted">Create and deploy canisters from your terminal.</p>
+            <a id="order-next-link" class="cta" href="#/">Link ICP CLI</a>
+          </div>
         </div>
 
         <!-- IMPORTANT: **The two actions are ALTERNATIVES, so they share a row.** Each used to
@@ -326,19 +348,6 @@
         </p>
         <p id="cancel-status" class="error" hidden></p>
 
-        <!-- IMPORTANT: The next step, promoted to sit WITH the purchase rather than
-             below the arithmetic. It was the last thing on the page, under the price
-             proof, labelled "What to do next" - a question rather than the thing it
-             does. Cycles are only useful through the tooling, so on a delivered order
-             this is the point of the page. -->
-        <div id="order-next-row" class="next-step" hidden>
-          <a id="order-next-link" class="cta" href="#/">Link ICP CLI</a>
-          <p class="muted">
-            The ICP CLI spends these cycles: deploy canisters, top them up, and check
-            balances from your terminal.
-          </p>
-        </div>
-
         <!-- The guided tour. On delivery this is the point of the page: the two
              commands ARE the deliverable, so they lead and the order facts
              collapse beneath them. Every delivered order gets it, because every
@@ -356,14 +365,6 @@
              The order view is now a record: what you bought, what went wrong if
              anything, and the arithmetic you can check. The next action lives on its
              own page. -->
-        <!-- IMPORTANT: **A support handle, not a fact a buyer reads.** This was ninety
-             monospace characters at the same weight as the price, and the widest thing
-             on the page. Truncated with a copy button: quoting it to support is the
-             only use it has. NOT inside a disclosure, per the note above. -->
-        <p class="order-ref muted">
-          Payment reference <span id="client-ref" class="mono"></span>
-        </p>
-
         <!-- Problems attached to this order (#37/#38). Hidden when there are none,
              which is the normal case: an empty panel headed "Problems" reads as a
              fault on every healthy order. -->
@@ -377,15 +378,30 @@
              putting it behind a disclosure on the order page made the claim true and
              the artefact hidden. -->
         <section id="receipt-area" hidden>
-          <h3 class="section-h">Price verification</h3>
-          <!-- IMPORTANT: The FACTS moved into the summary card; what is left is the
-               proof, which answers a different question and is the only part a buyer
-               may reasonably skip. The simulation notice that sat here is gone: it was
-               the same sentence `#simulation-note` prints at the top of the page, so
-               the page said it twice, and the divisor already appears inside the
-               formula line as one of its terms. -->
-          <p id="receipt-formula" class="mono"></p>
+          <!-- IMPORTANT: The PROOF collapses; the FACTS do not, and that distinction is
+               the whole reason this is allowed to be a disclosure.
+
+               The rule this file carries is that the receipt must not sit behind one.
+               That rule exists because `order-problems` and `receipt-area` were once
+               nested inside a collapsed `<details>`, so the one page a buyer opens to
+               see what they got showed no cycle quantity at all and hid a problem
+               notice. Every one of those facts is now in the summary card above, open
+               and unconditional: the amounts, the rate, the destination, the ledger
+               block, the source count, the reference. What closes here is the
+               arithmetic a sceptic recomputes - long, secondary, and the only part of
+               this page a buyer can reasonably skip.
+
+               `#order-problems` stays OUTSIDE, open, for the same reason it was pulled
+               out: a fault must never need a click. -->
+          <!-- IMPORTANT: The VERDICT stays outside the disclosure, and a browser test
+               is why. "Verified: recomputed from these inputs, the price matches" is
+               the reassurance, not the arithmetic: collapsing it hid the trust signal
+               while leaving the long proof behind the same click, which is a strictly
+               worse trade. What closes is the formula and the how-to-check-it prose. -->
           <p id="receipt-verdict"></p>
+          <details id="receipt-details">
+            <summary>Show the arithmetic</summary>
+          <p id="receipt-formula" class="mono"></p>
           <p class="muted">
             Both rates come from canisters you can query yourself: the
             <a href="https://dashboard.internetcomputer.org/canister/uf6dk-hyaaa-aaaaq-qaaaq-cai"
@@ -393,7 +409,13 @@
             for USD/ICP and the Cycles Minting Canister for XDR/ICP. Recompute the
             line above and it must match the cycles this order locked.
           </p>
+          </details>
         </section>
+
+        <!-- The quiet route out, matching the CLI page. NOT a prominent Dashboard
+             button: the header carries Dashboard on every page, so a loud one here
+             would duplicate the nav. -->
+        <p><a id="order-back" href="#/history">Back to your dashboard</a></p>
 
 
       </section>

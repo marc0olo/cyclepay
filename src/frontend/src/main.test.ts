@@ -733,8 +733,10 @@ describe("the active order", () => {
     el("orders").querySelector("tr")!.dispatchEvent(new Event("click"));
     await settle();
     await settle();
-    // The badge carries it: "Payment received" is the long label, "Paid" the badge.
-    expect(el("order-status-pill").textContent).toBe("Paid");
+    // The heading carries it now, and there is nothing to DO about a paid order, so
+    // the guidance line stays down.
+    expect(el("order-headline").textContent).toBe("Payment received, delivering now");
+    expect(el("order-status-line").hidden).toBe(true);
     expect(el("cancel-area").hidden).toBe(true);
   });
 
@@ -752,7 +754,10 @@ describe("the active order", () => {
     el("cancel-order").click();
     await settle();
     await settle();
-    expect(el("order-status-line").textContent).toBe("Cancelled");
+    // The heading states it; a cancelled order has nothing to DO about it, so the
+    // guidance line stays down.
+    expect(el("order-headline").textContent).toBe("You cancelled this order");
+    expect(el("order-status-line").hidden).toBe(true);
     expect(el("order-status-line").textContent).not.toMatch(/expired/i);
     expect(el("order-status-line").textContent).not.toMatch(/still goes through/i);
     // Nothing left to cancel, and nothing left to pay.
@@ -1230,7 +1235,10 @@ describe("expiry renders from the DEADLINE, not the status", () => {
     expect(el("pay-area").hidden).toBe(true);
     // And the page SAYS expired rather than "Awaiting payment", which would tell
     // the buyer to do something that cannot work.
-    expect(el("order-status-line").textContent).toMatch(/expired/i);
+    // ⚠️ Rendered from the DEADLINE while the stored status is still `created`, which
+    // is the point of this test. The heading is what says so now.
+    expect(el("order-headline").textContent).toBe("This order expired");
+    expect(el("order-status-line").textContent).toBe("This order can no longer be paid.");
     // Cancel is hidden too, and that is deliberate rather than incidental:
     // Stripe's expire endpoint accepts open sessions only, so past the deadline
     // `cancel_order` can only fail. A button that always fails is worse than
@@ -2644,11 +2652,12 @@ describe("the order page reads as a checkout", () => {
     expect(el("pay-note").hidden).toBe(true);
   });
 
-  test("⚠️ the status is stated ONCE where the badge already says it", async () => {
-    // The line printed the same words as the badge, so an awaiting-payment order said
-    // so twice in adjacent lines.
+  test("⚠️ the status is stated ONCE, by the heading", async () => {
+    // The page led with a neutral "Your purchase" and a badge in the far corner, and
+    // the line under it repeated the badge. The heading is the statement now.
     await openCreated();
-    expect(el("order-status-pill").textContent).toBe("Awaiting payment");
+    expect(el("order-headline").textContent).toBe("Awaiting your payment");
+    expect(document.getElementById("order-status-pill")).toBeNull();
     expect(el("order-status-line").hidden).toBe(true);
   });
 
@@ -2658,10 +2667,12 @@ describe("the order page reads as a checkout", () => {
     state.order = anOrder("expired");
     await mount();
     await openFromHistory();
-    // Short on the badge, and the instruction the badge has no room for below it.
-    expect(el("order-status-pill").textContent).toBe("Expired");
+    // The heading states it; the line adds only the thing to DO about it, and does
+    // not repeat the heading's words.
+    expect(el("order-headline").textContent).toBe("This order expired");
     expect(el("order-status-line").hidden).toBe(false);
-    expect(el("order-status-line").textContent).toMatch(/no longer be paid/i);
+    expect(el("order-status-line").textContent).toBe("This order can no longer be paid.");
+    expect(el("order-status-line").textContent).not.toMatch(/expired/i);
   });
 
   test("the order id is demoted and copyable", async () => {
@@ -2761,10 +2772,16 @@ describe("a delivered order states each fact once", () => {
     expect(el("order-receive-label").textContent).toBe("You receive");
   });
 
-  test("the timeline is gone, and the badge carries the state", async () => {
+  test("⚠️ the heading names the OUTCOME and the quantity together", async () => {
+    // The one question a delivered order has to answer, answered where a reader lands
+    // rather than in a badge in the far corner. The timeline and the badge are both
+    // gone; this is the single statement that replaced them.
     await openDelivered();
     expect(document.getElementById("timeline")).toBeNull();
-    expect(el("order-status-pill").textContent).toBe("Delivered");
+    expect(document.getElementById("order-status-pill")).toBeNull();
+    expect(el("order-headline").textContent).toMatch(/delivered$/);
+    // The quantity, not a label: it must agree with the card's own figure.
+    expect(el("order-headline").textContent).toContain(el("order-cycles").textContent!.replace("≈ ", ""));
   });
 
   test("the CLI step is offered with the purchase, above the arithmetic", async () => {
@@ -2776,5 +2793,98 @@ describe("a delivered order states each fact once", () => {
     expect(next.hidden).toBe(false);
     expect(next.compareDocumentPosition(receipt) & Node.DOCUMENT_POSITION_FOLLOWING)
       .toBeTruthy();
+  });
+});
+
+describe("the delivered page leads with the outcome", () => {
+  async function openDelivered(): Promise<void> {
+    state.order = anOrder("delivered");
+    await mount();
+    await openFromHistory();
+  }
+
+  test("⚠️ every order FACT is in the card, and nothing is left loose around it", async () => {
+    // The complaint this fixes: a tidy frame with a wall of prose outside it. The
+    // reference and the next step were both loose lines below the card; they are rows
+    // and a footer inside it now.
+    await openDelivered();
+    const card = document.querySelector(".checkout-summary")!;
+    for (const id of ["order-price", "order-cycles", "order-rate", "order-dest",
+                      "client-ref", "order-next-row"]) {
+      expect(card.contains(el(id)), `#${id} should live in the card`).toBe(true);
+    }
+  });
+
+  test("⚠️ the next step is ANCHORED in the card, not floating below it", async () => {
+    await openDelivered();
+    expect(el("order-next-row").hidden).toBe(false);
+    expect(document.querySelector(".checkout-summary")!.contains(el("order-next-link")))
+      .toBe(true);
+    // Names what cycles are actually for. "Spend them" was wrong: they pay for
+    // creating and running canisters.
+    expect(el("order-next-row").textContent).toMatch(/deploy canisters/i);
+  });
+
+  test("⚠️ the PROOF collapses but every fact stays open", async () => {
+    // The rule this respects: the receipt must not sit behind a disclosure. It exists
+    // because the quantity and a problem notice once hid behind one. Those stay open;
+    // only the arithmetic closes.
+    await openDelivered();
+    const details = document.querySelector<HTMLDetailsElement>("#receipt-details")!;
+    expect(details.open).toBe(false);
+    // The facts are NOT inside it.
+    for (const id of ["order-cycles", "order-price", "client-ref"]) {
+      expect(details.contains(el(id))).toBe(false);
+    }
+    // ⚠️ Nor is the VERDICT. A browser test caught that collapsing it hid the
+    // reassurance while leaving the long proof behind the same click.
+    expect(details.contains(el("receipt-verdict"))).toBe(false);
+    // Its CONTENT is asserted by the browser suite, which drives a real receipt
+    // ("the order record shows the numbers, with nothing collapsed over them" — the
+    // test that caught this). Asserting it here would need that fixture too; what
+    // this test owns is the structure.
+    // The arithmetic itself IS inside.
+    expect(details.contains(el("receipt-formula"))).toBe(true);
+    // And a problem notice never needs a click.
+    expect(details.contains(el("order-problems"))).toBe(false);
+  });
+
+  test("the way out is a quiet link, not a second loud button", async () => {
+    // The header already carries Dashboard on every page, so a prominent one here
+    // would duplicate the nav.
+    await openDelivered();
+    const back = el<HTMLAnchorElement>("order-back");
+    expect(back.getAttribute("href")).toBe("#/history");
+    expect(back.className).not.toContain("cta");
+  });
+});
+
+describe("two rendering bugs found by looking at the page", () => {
+  test("⚠️ the orders table shows the BADGE form, not a sentence", async () => {
+    // It rendered `info.label`, so the status column read "Expired. This order can no
+    // longer be paid" — a sentence in a column whose other cells are a date, an id and
+    // two figures. `pill` existed for this and was only used on the order page.
+    state.order = anOrder("expired");
+    await mount();
+    await settle();
+    const cells = el("orders").querySelectorAll("tr td");
+    const status = cells[cells.length - 1]!.textContent ?? "";
+    expect(status).toBe("Expired");
+    expect(status).not.toMatch(/no longer be paid/);
+  });
+
+  test("⚠️ a ghost anchor takes no underline, so it reads as one control", async () => {
+    // Half of a bug in the dashboard's CLI link: `a.ghost` inherited the global anchor
+    // underline, so a bordered box also looked like a link — two fighting affordances.
+    // Asserted on a ghost anchor that exists on THIS layer; the dashboard's own link
+    // arrives with `#cli-link` one layer up, where the `.next-step` stretch half of the
+    // same bug is asserted.
+    const probe = document.createElement("a");
+    probe.className = "ghost";
+    probe.href = "#/";
+    probe.textContent = "Link ICP CLI";
+    document.body.append(probe);
+    expect(getComputedStyle(probe).textDecorationLine).not.toBe("underline");
+    probe.remove();
   });
 });

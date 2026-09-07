@@ -21,6 +21,26 @@ export type StatusKey = `${OrderStatus}`;
 
 export interface StatusInfo {
   label: string;
+  /// What the page LEADS with: the outcome, in the buyer's terms.
+  ///
+  /// ⚠️ **The heading used to be status-neutral ("Your purchase") with the status in a
+  /// badge in the far corner, and that neutrality is what made the page mute.** The one
+  /// question a buyer has on a delivered order is "did I get my cycles", and it was
+  /// answered three times and prominently zero times: a small pill, a receipt row, and
+  /// a block index. A page should announce its own state.
+  ///
+  /// Takes the credited quantity where the status has one to name, so the outcome and
+  /// the amount are one statement rather than a label and a lookup.
+  headline: (cycles?: string) => string;
+  /// The one thing to DO about this status, or nothing.
+  ///
+  /// ⚠️ **Explicit, replacing a `label !== pill` string comparison.** That heuristic
+  /// worked while the page led with a badge; with a headline it broke, because the
+  /// headline and the label differ in wording for every status, so the line reappeared
+  /// under a headline that already said it. Four statuses have nothing to add and three
+  /// carry an instruction: that is a fact about the statuses, not about how two strings
+  /// happen to compare, so it is stated once here and switched exhaustively.
+  guidance?: string;
   /// The status as a badge: two or three words, never a sentence.
   ///
   /// ⚠️ **Separate from `label` so the two can never say the same thing twice.** The
@@ -51,27 +71,27 @@ export const STEPS = ["Awaiting payment", "Paid", "Delivered"] as const;
 export function statusInfo(key: StatusKey): StatusInfo {
   switch (key) {
     case "created":
-      return { label: "Awaiting payment", pill: "Awaiting payment", step: 0, terminal: false, tone: "active" };
+      return { label: "Awaiting payment", pill: "Awaiting payment", headline: () => "Awaiting your payment", step: 0, terminal: false, tone: "active" };
     case "cancelled":
       // The buyer's own decision, and its own status — so a reload no longer
       // tells someone who cancelled that their order "expired" (#34).
-      return { label: "Cancelled", pill: "Cancelled", step: -1, terminal: true, tone: "warn" };
+      return { label: "Cancelled", pill: "Cancelled", headline: () => "You cancelled this order", step: -1, terminal: true, tone: "warn" };
     case "expired":
       // TERMINAL as of #34, which deleted `#expired → #paid`. It used to say a
       // completed payment still went through; that is no longer true, and a
       // payment arriving now becomes an operator obligation to refund rather
       // than cycles.
-      return { label: "Expired. This order can no longer be paid", pill: "Expired", step: -1, terminal: true, tone: "warn" };
+      return { label: "Expired. This order can no longer be paid", pill: "Expired", headline: () => "This order expired", guidance: "This order can no longer be paid.", step: -1, terminal: true, tone: "warn" };
     case "paid":
-      return { label: "Payment received", pill: "Paid", step: 1, terminal: false, tone: "active" };
+      return { label: "Payment received", pill: "Paid", headline: () => "Payment received, delivering now", step: 1, terminal: false, tone: "active" };
     case "delivered":
-      return { label: "Delivered", pill: "Delivered", step: 2, terminal: true, tone: "ok" };
+      return { label: "Delivered", pill: "Delivered", headline: (cycles) => cycles === undefined ? "Delivered" : `${cycles} delivered`, step: 2, terminal: true, tone: "ok" };
     case "needsReview":
       // NOT terminal: the operator can still end it, and until they do the order
       // holds its promise. Polling continues so the buyer sees that happen.
-      return { label: "Needs operator attention. Contact support", pill: "Needs attention", step: -1, terminal: false, tone: "err" };
+      return { label: "Needs operator attention. Contact support", pill: "Needs attention", headline: () => "This order needs attention", guidance: "Contact support.", step: -1, terminal: false, tone: "err" };
     case "abandoned":
-      return { label: "Ended by support. Contact us about a refund", pill: "Ended", step: -1, terminal: true, tone: "err" };
+      return { label: "Ended by support. Contact us about a refund", pill: "Ended", headline: () => "This order was ended by support", guidance: "Contact us about a refund.", step: -1, terminal: true, tone: "err" };
   }
 }
 
