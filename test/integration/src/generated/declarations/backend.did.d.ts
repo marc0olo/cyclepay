@@ -411,22 +411,7 @@ export interface _SERVICE {
    * / has taken no money and needs no decision; a `#delivered` one is done.
    */
   'abandon_order' : ActorMethod<[OrderId, string], Result_12>,
-  /**
-   * / Grant the CASES tier to a principal (controller only, audited).
-   * /
-   * / ⚠️ **The grant is on a PRINCIPAL, and an admin's principal comes from the origin
-   * / they signed in at.** The flow is: the admin reads their own principal from
-   * / `admin_status`, gives it to a controller, and then acts from a CLI identity linked to
-   * / the same Internet Identity — `icp identity link web <name> --app <origin>`. ⚠️ Without
-   * / `--app` the CLI links a principal derived from the auth domain's own default
-   * / (`cli.id.ai`), which is not this app, so the grant would sit on a principal the
-   * / admin never sees.
-   */
   'add_admin' : ActorMethod<[Principal], Result_11>,
-  /**
-   * / Allow a principal to buy while this gateway accepts free test payments
-   * / (controller only, audited).
-   */
   'add_allowed_buyer' : ActorMethod<[Principal], Result_11>,
   /**
    * / Read **any** order by id (admin, #38).
@@ -493,18 +478,7 @@ export interface _SERVICE {
     [],
     { 'granted' : boolean, 'caller' : Principal, 'isController' : boolean }
   >,
-  /**
-   * / Who holds the CASES tier (controller only).
-   * /
-   * / ⚠️ Controllers are NOT listed — they pass `checkAdmin` without being granted, so an
-   * / empty list does not mean nobody can act.
-   */
   'admins' : ActorMethod<[], Array<Principal>>,
-  /**
-   * / Who may buy while test payments are accepted (controller only).
-   * /
-   * / ⚠️ An empty list does not mean "everyone" — see `allowedBuyers`.
-   */
   'allowed_buyers' : ActorMethod<[], Array<Principal>>,
   /**
    * / The operational trail, **paginated** (#38).
@@ -1066,19 +1040,7 @@ export interface _SERVICE {
     [],
     { 'refusingNow' : RailStateLatch, 'counts' : RefusalCounts }
   >,
-  /**
-   * / Revoke the CASES tier (controller only, audited).
-   */
   'remove_admin' : ActorMethod<[Principal], Result_11>,
-  /**
-   * / Revoke a buyer's allowance (controller only, audited).
-   * /
-   * / ⚠️ **Removing the LAST entry does not open the gateway up — it closes it.**
-   * / An empty list plus a funded reserve plus test payments is
-   * / `Gate.Reason.unboundedGiveaway`, which refuses everyone. The audit line says
-   * / so, because "revoked the last buyer" and "the gateway stopped selling" are
-   * / the same event and an operator should not have to connect them later.
-   */
   'remove_allowed_buyer' : ActorMethod<[Principal], Result_11>,
   /**
    * / Reserve solvency and order counters, public (#30 PR-B).

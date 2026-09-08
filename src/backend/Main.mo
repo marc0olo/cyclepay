@@ -10,7 +10,6 @@ import Error "mo:core/Error";
 // ⚠️ Referenced only through dot-notation sugar (`someIter.toArray()`), which resolves
 // via the imported module — so this reads as an unused import and is not. Removing it
 // fails with M0072 "field toArray does not exist", nowhere near the import.
-import Iter "mo:core/Iter";
 import Int "mo:core/Int";
 import List "mo:core/List";
 import Map "mo:core/Map";
@@ -41,6 +40,7 @@ import Recovery "Recovery";
 import Reserve "Reserve";
 import Card "rails/Card";
 import SecretsMixin "mixins/Secrets";
+import PrincipalsMixin "mixins/Principals";
 import Session "rails/Session";
 import Secret "Secret";
 import Tiers "Tiers";
@@ -163,64 +163,8 @@ persistent actor CyclesGateway {
     adminPrincipals.contains(p);
   };
 
-  /// Why a principal could not be added to, or removed from, one of the two lists
-  /// (#123).
-  ///
-  /// ⚠️ **One type for both lists and both directions**, because the four methods refuse
-  /// for exactly these three reasons and a caller acts on the reason, not on which list
-  /// it was. `#alreadyPresent` and `#notPresent` carry the principal so a console can
-  /// name it without re-deriving it from the argument it just sent.
-  ///
-  /// ⚠️ **`#anonymousNotAllowed` is not "invalid input".** The anonymous principal is a
-  /// real, callable identity that every unauthenticated caller shares, so granting it
-  /// admin would grant the world admin, and allow-listing it would let anyone buy while
-  /// test payments are on. It is refused for a specific reason, and the tag says which.
-  public type ListError = {
-    #anonymousNotAllowed;
-    #alreadyPresent : { principal : Principal };
-    #notPresent : { principal : Principal };
-  };
 
-  /// Grant the CASES tier to a principal (controller only, audited).
-  ///
-  /// ⚠️ **The grant is on a PRINCIPAL, and an admin's principal comes from the origin
-  /// they signed in at.** The flow is: the admin reads their own principal from
-  /// `admin_status`, gives it to a controller, and then acts from a CLI identity linked to
-  /// the same Internet Identity — `icp identity link web <name> --app <origin>`. ⚠️ Without
-  /// `--app` the CLI links a principal derived from the auth domain's own default
-  /// (`cli.id.ai`), which is not this app, so the grant would sit on a principal the
-  /// admin never sees.
-  public shared ({ caller }) func add_admin(p : Principal) : async Result.Result<(), ListError> {
-    requireController(caller);
-    // Belt and braces: `Auth.checkAdmin` rejects anonymous before consulting either
-    // predicate, so a granted `2vxsx-fae` would be inert — but a list that contains it
-    // reads as though it were not.
-    if (p.isAnonymous()) return #err(#anonymousNotAllowed);
-    if (adminPrincipals.contains(p)) return #err(#alreadyPresent({ principal = p }));
-    adminPrincipals.add(p);
-    auditAdmin(caller, "admin.granted", p.toText());
-    #ok;
-  };
 
-  /// Revoke the CASES tier (controller only, audited).
-  public shared ({ caller }) func remove_admin(p : Principal) : async Result.Result<(), ListError> {
-    requireController(caller);
-    // ⚠️ Not "not an admin": that is the authz trap's wording, and an operator reading it
-    // back cannot tell whether THEY were refused or the target simply was not listed.
-    if (not adminPrincipals.contains(p)) return #err(#notPresent({ principal = p }));
-    adminPrincipals.remove(p);
-    auditAdmin(caller, "admin.revoked", p.toText());
-    #ok;
-  };
-
-  /// Who holds the CASES tier (controller only).
-  ///
-  /// ⚠️ Controllers are NOT listed — they pass `checkAdmin` without being granted, so an
-  /// empty list does not mean nobody can act.
-  public shared query ({ caller }) func admins() : async [Principal] {
-    requireController(caller);
-    adminPrincipals.values().toArray();
-  };
 
   /// "Is MY principal granted?" — public and caller-scoped.
   ///
@@ -246,52 +190,8 @@ persistent actor CyclesGateway {
   // decides who may take cycles out of a funded reserve for free test money, so
   // it is not a per-case decision an admin makes — it is a rule.
 
-  /// Allow a principal to buy while this gateway accepts free test payments
-  /// (controller only, audited).
-  public shared ({ caller }) func add_allowed_buyer(p : Principal) : async Result.Result<(), ListError> {
-    requireController(caller);
-    // The anonymous principal is a shared identity: `create_order` rejects it
-    // before the gate, so a listed `2vxsx-fae` would be inert — but a list that
-    // contains it reads as though it were not.
-    if (p.isAnonymous()) return #err(#anonymousNotAllowed);
-    if (allowedBuyers.contains(p)) return #err(#alreadyPresent({ principal = p }));
-    allowedBuyers.add(p);
-    auditAdmin(caller, "buyer.allowed", p.toText());
-    #ok;
-  };
 
-  /// Revoke a buyer's allowance (controller only, audited).
-  ///
-  /// ⚠️ **Removing the LAST entry does not open the gateway up — it closes it.**
-  /// An empty list plus a funded reserve plus test payments is
-  /// `Gate.Reason.unboundedGiveaway`, which refuses everyone. The audit line says
-  /// so, because "revoked the last buyer" and "the gateway stopped selling" are
-  /// the same event and an operator should not have to connect them later.
-  public shared ({ caller }) func remove_allowed_buyer(p : Principal) : async Result.Result<(), ListError> {
-    requireController(caller);
-    if (not allowedBuyers.contains(p)) return #err(#notPresent({ principal = p }));
-    allowedBuyers.remove(p);
-    let emptied = allowedBuyers.size() == 0;
-    auditAdmin(
-      caller,
-      "buyer.disallowed",
-      p.toText()
-      # (
-        if (emptied and stripeState.expectLivemode != ?true and reserveState.floor > 0) {
-          " — ⚠️ the list is now EMPTY against a funded reserve, so the gateway refuses every buyer (unboundedGiveaway)";
-        } else if (emptied) { " — the list is now empty" } else { "" }
-      ),
-    );
-    #ok;
-  };
 
-  /// Who may buy while test payments are accepted (controller only).
-  ///
-  /// ⚠️ An empty list does not mean "everyone" — see `allowedBuyers`.
-  public shared query ({ caller }) func allowed_buyers() : async [Principal] {
-    requireController(caller);
-    allowedBuyers.values().toArray();
-  };
 
   // ── Order + tier state (task 6) ─────────────────────────────────────────
 
@@ -4651,7 +4551,7 @@ persistent actor CyclesGateway {
   transient let _rateWarmup : Timer.TimerId =
     Timer.setTimer<system>(#nanoseconds(0), rateTimerJob);
 
-  // ── Endpoints, by feature (#120) ────────────────────────────────────────────
+  // ── Endpoints, by feature (#120; the rules are docs/DESIGN.md §9.1) ─────────
   //
   // ⚠️ **Every `include` sits at the END of the actor body, and that is required rather
   // than tidy.** Its arguments are evaluated once, right here, so each must name a field
@@ -4670,6 +4570,15 @@ persistent actor CyclesGateway {
   // and the expensive one: wrapping changes the actor's stable shape, and with no
   // migration chain (#32) that means a reinstall. Closures are parameters, never stable
   // state, so `deployed/backend.most` does not move for this split.
+  include PrincipalsMixin(
+    adminPrincipals,
+    allowedBuyers,
+    reserveState,
+    stripeState,
+    requireController,
+    auditAdmin,
+  );
+
   include SecretsMixin(
     webhookSecret,
     stripeApiKey,
