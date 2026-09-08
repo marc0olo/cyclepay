@@ -289,6 +289,12 @@ persistent actor CyclesGateway {
     result;
   };
 
+  /// Whether the restricted Stripe key is provisioned — **never the key**.
+  ///
+  /// The console offers this read and no command for the setter: a rendered
+  /// `set_stripe_api_key` would put the key in a page's DOM and clipboard, which is what
+  /// `scripts/check-admin-commands.py` fails on. Admin-gated like every other read of
+  /// operational state that names a secret's presence.
   public shared query ({ caller }) func stripe_api_key_status() : async Secret.Status {
     requireAdmin(caller);
     Secret.status(stripeApiKey);
@@ -1438,6 +1444,11 @@ persistent actor CyclesGateway {
     #ok;
   };
 
+  /// Which Stripe mode this gateway declares it serves, or null while unset.
+  ///
+  /// Public because the page reads it: a sandbox deployment says so on every view, and
+  /// a mismatch against the mode a webhook arrives in is what `Card.handleWebhook`
+  /// refuses on. `set_expected_livemode` is the controller-only setter.
   public query func expected_livemode() : async ?Bool {
     expectLivemode;
   };
@@ -1760,22 +1771,6 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Open-obligation depth, public.
-  ///
-  /// Nothing is evicted, so this only comes down by the operator working it. A climbing
-  /// value means dollars are arriving that nobody has dealt with — the most important
-  /// operational number on the money path, and public because operational state is not
-  /// secret (§8).
-  /// Refusal tallies, and whether the gate is refusing right now (#61).
-  ///
-  /// ⚠️ **Public, like every other monitoring surface here** — operational state
-  /// is public by design; the webhook secret is the only secret in the system.
-  ///
-  /// ⚠️ **This query is the point of the counters.** A tally nobody reads is the
-  /// `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
-  /// per counter with the response — the counters mean different things:
-  /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
-  /// `reserveShort` climbing is a refill. Same shape, opposite actions.
   /// Read **any** order by id (admin, #38).
   ///
   /// ⚠️ **A deliberate exception to §2's "existence is not revealed to non-owners", so it
@@ -1842,6 +1837,16 @@ persistent actor CyclesGateway {
     };
   };
 
+  /// Refusal tallies, and whether the gate is refusing right now (#61).
+  ///
+  /// ⚠️ **Public, like every other monitoring surface here** — operational state
+  /// is public by design; the webhook secret is the only secret in the system.
+  ///
+  /// ⚠️ **This query is the point of the counters.** A tally nobody reads is the
+  /// `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
+  /// per counter with the response — the counters mean different things:
+  /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
+  /// `reserveShort` climbing is a refill. Same shape, opposite actions.
   public query func refusal_counts() : async {
     counts : Gate.RefusalCounts;
     /// True while that rail-state condition is refusing. Each flips to true with
@@ -1852,6 +1857,12 @@ persistent actor CyclesGateway {
     { counts = refusalCounts; refusingNow = railStateLatch };
   };
 
+  /// Open-obligation depth, public.
+  ///
+  /// Nothing is evicted, so this only comes down by the operator working it. A climbing
+  /// value means dollars are arriving that nobody has dealt with — the most important
+  /// operational number on the money path, and public because operational state is not
+  /// secret (§8).
   public query func orphan_depth() : async { unresolved : Nat; retained : Nat } {
     {
       unresolved = Orphans.unresolvedCount(orphanStore);
@@ -1971,6 +1982,11 @@ persistent actor CyclesGateway {
     #ok(closed);
   };
 
+  /// Mark one orphaned payment settled off-chain (admin, §4.1).
+  ///
+  /// The operator has dealt with it in Stripe; this records that they did. Audited with
+  /// the entry's own detail, because nothing else in the system can tell afterwards that
+  /// the obligation was met rather than forgotten. Nothing re-opens it.
   public shared ({ caller }) func resolve_orphan(id : Nat) : async Result.Result<Orphans.Entry, Orphans.ResolveError> {
     requireAdmin(caller);
     let resolved = Orphans.resolve(orphanStore, id, Time.now());
@@ -1981,8 +1997,6 @@ persistent actor CyclesGateway {
     resolved;
   };
 
-  /// §4.2 operational trail, newest-last. Admin: details reference payment
-  /// intents. Readers detect ring-buffer drops via gaps in `seq`.
   /// The operational trail, **paginated** (#38).
   ///
   /// ⚠️ **Pagination became necessary the moment #37 removed the ring.** The bound used
@@ -2786,6 +2800,10 @@ persistent actor CyclesGateway {
     n;
   };
 
+  /// Orders past `alertAfterNs` and still undelivered (admin, paged by #38).
+  ///
+  /// The worklist behind `operator_summary.deliveriesDelayed`: one entry per order,
+  /// with the journal figures a human needs to decide whether it is stuck or slow.
   public shared query ({ caller }) func delayed_deliveries(
     afterId : ?Types.OrderId,
     limit : Nat,
@@ -3563,15 +3581,30 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Everything the **buyer** needs to verify their own purchase (§2 authz:
-  /// `caller == order.owner`).
+  /// One receipt, from an order and its journal entry.
   ///
-  /// The buyer can **check** the claim rather than take it: recompute the quote from the
-  /// two recorded rate inputs, and look up the block index on the ledger.
-  /// ⚠️ **Owner-only, and a `query`, which is why the admin path is a separate method.**
-  /// See `admin_receipt`. Auditing writes state, so an audited read cannot be a query —
-  /// and folding the admin case in here would have made **every buyer's** receipt read
-  /// an update, putting the common path through consensus to serve the rare one.
+  /// ⚠️ **One owner, because there are two endpoints and they must not drift.** `receipt`
+  /// and `admin_receipt` differ only in who may call and whether the read is audited —
+  /// the record itself is the same object, and it was built twice, field for field. A
+  /// verification figure that disagreed between the buyer's copy and the operator's copy
+  /// would be the worst possible place for a copy-paste divergence.
+  func receiptOf(order : Types.Order, journal : ?Types.JournalEntry) : Receipt {
+    {
+      order;
+      paidUsdCents = order.paidUsdCents;
+      deliveryBlockIndex = switch (journal) { case (?entry) entry.blockIndex; case null null };
+      cyclesDelivered = switch (journal) { case (?entry) entry.cyclesDelivered; case null null };
+      verification = {
+        // `??`, because the fallback is exactly "unpaid, so quote the order's own figure".
+        netCents = Pricing.netCents(order.pricing, order.paidUsdCents ?? order.pricing.usdCents);
+        usdPerIcpMicros = order.pricing.usdPerIcpMicros;
+        xdrPermyriadPerIcp = order.pricing.xdrPermyriadPerIcp;
+        rateReceivedRates = order.pricing.rateReceivedRates;
+        rateQueriedSources = order.pricing.rateQueriedSources;
+      };
+    };
+  };
+
   /// The same receipt, for **any** order (admin, #38) — and **audited**, which is the
   /// whole reason it is a separate method.
   ///
@@ -3599,43 +3632,22 @@ persistent actor CyclesGateway {
     };
     auditAdmin(caller, "order.adminRead", order.id # " (receipt)");
     let journal = deliveryJournal.get(id);
-    ?{
-      order;
-      paidUsdCents = order.paidUsdCents;
-      deliveryBlockIndex = switch (journal) { case (?entry) entry.blockIndex; case null null };
-      cyclesDelivered = switch (journal) { case (?entry) entry.cyclesDelivered; case null null };
-      verification = {
-        netCents = Pricing.netCents(order.pricing, switch (order.paidUsdCents) {
-          case (?paid) paid;
-          case null order.pricing.usdCents;
-        });
-        usdPerIcpMicros = order.pricing.usdPerIcpMicros;
-        xdrPermyriadPerIcp = order.pricing.xdrPermyriadPerIcp;
-        rateReceivedRates = order.pricing.rateReceivedRates;
-        rateQueriedSources = order.pricing.rateQueriedSources;
-      };
-    };
+    ?receiptOf(order, journal);
   };
 
+  /// Everything the **buyer** needs to verify their own purchase (§2 authz:
+  /// `caller == order.owner`).
+  ///
+  /// The buyer can **check** the claim rather than take it: recompute the quote from the
+  /// two recorded rate inputs, and look up the block index on the ledger.
+  /// ⚠️ **Owner-only, and a `query`, which is why the admin path is a separate method.**
+  /// See `admin_receipt`. Auditing writes state, so an audited read cannot be a query —
+  /// and folding the admin case in here would have made **every buyer's** receipt read
+  /// an update, putting the common path through consensus to serve the rare one.
   public shared query ({ caller }) func receipt(id : Types.OrderId) : async ?Receipt {
     let ?order = Orders.getOwned(orderStore, id, caller) else return null;
     let journal = deliveryJournal.get(id);
-    ?{
-      order;
-      paidUsdCents = order.paidUsdCents;
-      deliveryBlockIndex = switch (journal) { case (?entry) entry.blockIndex; case null null };
-      cyclesDelivered = switch (journal) { case (?entry) entry.cyclesDelivered; case null null };
-      verification = {
-        netCents = Pricing.netCents(order.pricing, switch (order.paidUsdCents) {
-          case (?paid) paid;
-          case null order.pricing.usdCents;
-        });
-        usdPerIcpMicros = order.pricing.usdPerIcpMicros;
-        xdrPermyriadPerIcp = order.pricing.xdrPermyriadPerIcp;
-        rateReceivedRates = order.pricing.rateReceivedRates;
-        rateQueriedSources = order.pricing.rateQueriedSources;
-      };
-    };
+    ?receiptOf(order, journal);
   };
 
   /// Money-out journal for one order (admin, §4.2) — intent, block_index, cycles
@@ -3761,7 +3773,7 @@ persistent actor CyclesGateway {
   func reportReconciliation(report : Orders.Reconciliation) {
     if (report.adopted.size() > 0) {
       let rendered = report.adopted.map(
-        func(d : Orders.Drift) : Text = d.status # " " # d.was.toText() # "→" # d.is.toText()
+        func d = d.status # " " # d.was.toText() # "→" # d.is.toText()
       );
       audit(
         "orders.countDrift",
@@ -3771,7 +3783,7 @@ persistent actor CyclesGateway {
     };
     if (report.refused.size() > 0) {
       let rendered = report.refused.map(
-        func(d : Orders.Drift) : Text = d.status # " tally " # d.was.toText() # ", recount " # d.is.toText()
+        func d = d.status # " tally " # d.was.toText() # ", recount " # d.is.toText()
       );
       audit(
         "orders.countRecountLow",
@@ -4425,6 +4437,11 @@ persistent actor CyclesGateway {
     };
   };
 
+  /// The recovery machinery's own clocks and its last findings, public.
+  ///
+  /// Four independent passes report here — the stranded sweep, the tally reconcile, the
+  /// reserve reconcile and the rotating index scan — because each can stop running
+  /// without any of the others noticing. RUNBOOK §8 alerts on the gaps between them.
   public query func recovery_status() : async {
     intervalNs : Nat;
     lastSweep : ?{ atNs : Int; pending : Nat };

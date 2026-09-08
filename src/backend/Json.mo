@@ -93,9 +93,9 @@ module {
             i += 2;
             let ?low = parseHex4() else return null;
             if (low < 0xDC00 or low > 0xDFFF) return null;
-            return ?Char.fromNat32(0x10000 + (unit - 0xD800) * 0x400 + (low - 0xDC00));
+            return ?(0x10000 + (unit - 0xD800) * 0x400 + (low - 0xDC00)).toChar();
           };
-          ?Char.fromNat32(unit);
+          ?unit.toChar();
         };
         case (_) null;
       };

@@ -146,7 +146,7 @@ module {
   };
 
   public func emptyStore() : Store {
-    { entries = Map.empty<Nat, Entry>(); var nextId = 0 };
+    { entries = Map.empty(); var nextId = 0 };
   };
 
   public type AddResult = {

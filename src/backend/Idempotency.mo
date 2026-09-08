@@ -31,8 +31,8 @@ module {
 
   public func emptyStore() : Store {
     {
-      stripeEvents = Map.empty<Text, Int>();
-      stripeIntents = Map.empty<Text, Int>();
+      stripeEvents = Map.empty();
+      stripeIntents = Map.empty();
     };
   };
 

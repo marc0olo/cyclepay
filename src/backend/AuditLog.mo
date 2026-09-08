@@ -59,7 +59,7 @@ module {
   };
 
   public func emptyLog() : Log {
-    { events = Queue.empty<Event>(); var nextSeq = 0 };
+    { events = Queue.empty(); var nextSeq = 0 };
   };
 
   /// Append. **Nothing is evicted** (#37).

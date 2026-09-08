@@ -60,10 +60,25 @@ recorded reasoning — don't "fix" them without reading the rationale:
   and `docs/STRIPE.md` §7. Confidentiality comes from the SEV-SNP subnet, and the
   **reserve balance is the blast radius** — a forged webhook delivers from it, and
   nothing caps that, so the reserve is sized to what a leak could cost.
-- **`writing-motoko` architecture pattern** (`lib/`, `mixins/`). This backend uses flat
-  modules with explicit dependency records (`Card.Deps`) instead of mixins, so
-  the whole ingestion path unit-tests without an IC environment. Equivalent
-  separation, deliberately chosen.
+- **`writing-motoko` architecture pattern**, and ⚠️ **only the `lib/` half of it.**
+  Measured 2026-09-08, because this entry used to claim the whole pattern was covered:
+
+  - **`lib/` — genuinely equivalent.** Domain logic lives in stateless modules that
+    take state as a parameter (`Orders`, `Delivery`, `Gate`, `Reserve`, `rails/Card`
+    with its explicit `Card.Deps`), which is what lets the whole ingestion path
+    unit-test with no IC environment. Deliberately chosen, and it holds.
+  - **`mixins/` — NOT covered, and the testability argument above does not bear on
+    it.** All **61** public methods sit in `Main.mo` alongside the state they own, which
+    is 4,633 lines: skill findings A1 (a public method in `main.mo`) and A2 (a
+    monolithic file). `Card.Deps` is the `lib/` pattern; mixins would leave it
+    untouched. Tracked in #120 — and probed rather than assumed: `mixin`/`include`
+    compile on the pinned `moc`, and need no migration chain, so #32 does not gate it.
+
+  ⚠️ **A recorded departure is a claim with a scope.** This one was written about `lib/`
+  and then read as covering the monolith too, which is how an agent skips a finding
+  nobody decided to accept. When a skill and this file disagree, the skill wins unless
+  the reasoning here says why *for that specific finding* — and if the reasoning has
+  expired, fix this file rather than working around it.
 
 ## Running it locally
 

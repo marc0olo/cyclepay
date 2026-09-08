@@ -7,10 +7,12 @@
 /// authenticated by payload only, never by caller. Dispatch is off a route
 /// *table* with a per-route `upgrade` flag (binding seam §11.1.2) — "exactly
 /// one route" is policy, not architecture; a future rail adds rows.
-import Array "mo:core/Array";
 import Blob "mo:core/Blob";
 import Char "mo:core/Char";
 import List "mo:core/List";
+// `Nat32` for the receiver `.toChar()` in `asciiLower`: the conversion is spelled on
+// the source value, and the import is what lets the method resolve.
+import Nat32 "mo:core/Nat32";
 import Text "mo:core/Text";
 
 module {
@@ -71,7 +73,7 @@ module {
   /// ASCII-only lowercase. Header names are ASCII tokens, so this is enough
   /// — and it avoids Unicode case-folding surprises.
   func asciiLower(text : Text) : Text {
-    text.map(func c = if (c >= 'A' and c <= 'Z') Char.fromNat32(c.toNat32() + 32) else c);
+    text.map(func c = if (c >= 'A' and c <= 'Z') (c.toNat32() + 32).toChar() else c);
   };
 
   public func response(statusCode : Nat16, headers : [HeaderField], body : Blob) : Response {
@@ -108,7 +110,7 @@ module {
             return text(413, "payload too large");
           };
           if (isQuery and route.upgrade) {
-            return { status_code = 200; headers = []; body = Blob.fromArray([]); upgrade = ?true };
+            return { status_code = 200; headers = []; body = Blob.empty(); upgrade = ?true };
           };
           return route.handler(req);
         };

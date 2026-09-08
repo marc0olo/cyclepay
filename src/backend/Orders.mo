@@ -34,7 +34,7 @@ module {
   public func idFromEntropy(entropy : Blob) : ?Types.OrderId {
     if (entropy.size() < idEntropyBytes) return null;
     let prefix = entropy.toArray().sliceToArray(0, idEntropyBytes);
-    ?Util.hexEncode(Blob.fromArray(prefix));
+    ?Util.hexEncode(prefix.toBlob());
   };
 
   /// §6.1 — the reference the canister sets on the Checkout Session it creates
@@ -201,13 +201,13 @@ module {
 
   public func emptyStore() : Store {
     {
-      orders = Map.empty<Types.OrderId, Types.Order>();
-      principalsToOrders = Map.empty<Principal, Set.Set<Types.OrderId>>();
-      counts = Map.empty<Text, Nat>();
+      orders = Map.empty();
+      principalsToOrders = Map.empty();
+      counts = Map.empty();
       var promised = 0;
       var tallySaturations = 0;
-      unresolvedProblems = Set.empty<Types.OrderId>();
-      promiseHolders = Set.empty<Types.OrderId>();
+      unresolvedProblems = Set.empty();
+      promiseHolders = Set.empty();
       var deliveredOrders = 0;
       var deliveredCycles = 0;
       var deliveredUsdCents = 0;
@@ -1108,7 +1108,7 @@ module {
   ) : [{ kind : Types.ProblemKind; detail : Text; ref : ?Text }] {
     let ?order = store.orders.get(id) else return [];
     let out = List.empty<{ kind : Types.ProblemKind; detail : Text; ref : ?Text }>();
-    for (p in order.problems.vals()) {
+    for (p in order.problems.values()) {
       if (Problems.isUnresolved(p) and Problems.kindToText(p.kind) == kindTag) {
         out.add({ kind = p.kind; detail = p.detail; ref = Problems.identifyingRef(p.kind) });
       };
@@ -1524,7 +1524,7 @@ module {
     switch (store.principalsToOrders.get(caller)) {
       case null [];
       case (?ids) {
-        ids.values().filterMap<Types.OrderId, Types.Order>(func(id) = store.orders.get(id)).toArray();
+        ids.values().filterMap(func(id) = store.orders.get(id)).toArray();
       };
     };
   };

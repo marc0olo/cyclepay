@@ -410,22 +410,6 @@ export interface _SERVICE {
    */
   'add_allowed_buyer' : ActorMethod<[Principal], Result_6>,
   /**
-   * / Open-obligation depth, public.
-   * /
-   * / Nothing is evicted, so this only comes down by the operator working it. A climbing
-   * / value means dollars are arriving that nobody has dealt with — the most important
-   * / operational number on the money path, and public because operational state is not
-   * / secret (§8).
-   * / Refusal tallies, and whether the gate is refusing right now (#61).
-   * /
-   * / ⚠️ **Public, like every other monitoring surface here** — operational state
-   * / is public by design; the webhook secret is the only secret in the system.
-   * /
-   * / ⚠️ **This query is the point of the counters.** A tally nobody reads is the
-   * / `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
-   * / per counter with the response — the counters mean different things:
-   * / `amountBelowMin` climbing is a UI bug or an attacker probing, while
-   * / `reserveShort` climbing is a refill. Same shape, opposite actions.
    * / Read **any** order by id (admin, #38).
    * /
    * / ⚠️ **A deliberate exception to §2's "existence is not revealed to non-owners", so it
@@ -459,15 +443,6 @@ export interface _SERVICE {
    */
   'admin_orders' : ActorMethod<[Filter, [] | [OrderId], bigint], Page__1>,
   /**
-   * / Everything the **buyer** needs to verify their own purchase (§2 authz:
-   * / `caller == order.owner`).
-   * /
-   * / The buyer can **check** the claim rather than take it: recompute the quote from the
-   * / two recorded rate inputs, and look up the block index on the ledger.
-   * / ⚠️ **Owner-only, and a `query`, which is why the admin path is a separate method.**
-   * / See `admin_receipt`. Auditing writes state, so an audited read cannot be a query —
-   * / and folding the admin case in here would have made **every buyer's** receipt read
-   * / an update, putting the common path through consensus to serve the rare one.
    * / The same receipt, for **any** order (admin, #38) — and **audited**, which is the
    * / whole reason it is a separate method.
    * /
@@ -513,8 +488,6 @@ export interface _SERVICE {
    */
   'allowed_buyers' : ActorMethod<[], Array<Principal>>,
   /**
-   * / §4.2 operational trail, newest-last. Admin: details reference payment
-   * / intents. Readers detect ring-buffer drops via gaps in `seq`.
    * / The operational trail, **paginated** (#38).
    * /
    * / ⚠️ **Pagination became necessary the moment #37 removed the ring.** The bound used
@@ -599,6 +572,12 @@ export interface _SERVICE {
    * / signature of a cycle-drain attempt.
    */
   'cycles_status' : ActorMethod<[], { 'floor' : bigint, 'balance' : bigint }>,
+  /**
+   * / Orders past `alertAfterNs` and still undelivered (admin, paged by #38).
+   * /
+   * / The worklist behind `operator_summary.deliveriesDelayed`: one entry per order,
+   * / with the journal figures a human needs to decide whether it is stuck or slow.
+   */
   'delayed_deliveries' : ActorMethod<
     [[] | [OrderId], bigint],
     { 'entries' : Array<DelayedDelivery>, 'nextCursor' : [] | [OrderId] }
@@ -660,6 +639,13 @@ export interface _SERVICE {
       'deliveredOrders' : bigint,
     }
   >,
+  /**
+   * / Which Stripe mode this gateway declares it serves, or null while unset.
+   * /
+   * / Public because the page reads it: a sandbox deployment says so on every view, and
+   * / a mismatch against the mode a webhook arrives in is what `Card.handleWebhook`
+   * / refuses on. `set_expected_livemode` is the controller-only setter.
+   */
   'expected_livemode' : ActorMethod<[], [] | [boolean]>,
   /**
    * / **Admin: expire one `#created` order, releasing its reserve capacity** (#52).
@@ -813,6 +799,14 @@ export interface _SERVICE {
    * / here — check the order's problems and the orphan list for an obligation carrying it.
    */
   'order_for_payment' : ActorMethod<[string], [] | [OrderId]>,
+  /**
+   * / Open-obligation depth, public.
+   * /
+   * / Nothing is evicted, so this only comes down by the operator working it. A climbing
+   * / value means dollars are arriving that nobody has dealt with — the most important
+   * / operational number on the money path, and public because operational state is not
+   * / secret (§8).
+   */
   'orphan_depth' : ActorMethod<
     [],
     { 'retained' : bigint, 'unresolved' : bigint }
@@ -925,6 +919,17 @@ export interface _SERVICE {
    * / be wrong here.
    */
   'quote_previews' : ActorMethod<[Array<bigint>], QuotePreviews>,
+  /**
+   * / Everything the **buyer** needs to verify their own purchase (§2 authz:
+   * / `caller == order.owner`).
+   * /
+   * / The buyer can **check** the claim rather than take it: recompute the quote from the
+   * / two recorded rate inputs, and look up the block index on the ledger.
+   * / ⚠️ **Owner-only, and a `query`, which is why the admin path is a separate method.**
+   * / See `admin_receipt`. Auditing writes state, so an audited read cannot be a query —
+   * / and folding the admin case in here would have made **every buyer's** receipt read
+   * / an update, putting the common path through consensus to serve the rare one.
+   */
   'receipt' : ActorMethod<[OrderId], [] | [Receipt]>,
   /**
    * / Record that an escalated order's cycles **did** reach the buyer (admin, §7).
@@ -967,6 +972,13 @@ export interface _SERVICE {
    * / tallies the gate reads.
    */
   'recount_orders' : ActorMethod<[], Array<[string, bigint]>>,
+  /**
+   * / The recovery machinery's own clocks and its last findings, public.
+   * /
+   * / Four independent passes report here — the stranded sweep, the tally reconcile, the
+   * / reserve reconcile and the rotating index scan — because each can stop running
+   * / without any of the others noticing. RUNBOOK §8 alerts on the gaps between them.
+   */
   'recovery_status' : ActorMethod<
     [],
     {
@@ -1019,6 +1031,18 @@ export interface _SERVICE {
    * / says why.
    */
   'refresh_reserve' : ActorMethod<[], bigint>,
+  /**
+   * / Refusal tallies, and whether the gate is refusing right now (#61).
+   * /
+   * / ⚠️ **Public, like every other monitoring surface here** — operational state
+   * / is public by design; the webhook secret is the only secret in the system.
+   * /
+   * / ⚠️ **This query is the point of the counters.** A tally nobody reads is the
+   * / `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
+   * / per counter with the response — the counters mean different things:
+   * / `amountBelowMin` climbing is a UI bug or an attacker probing, while
+   * / `reserveShort` climbing is a refill. Same shape, opposite actions.
+   */
   'refusal_counts' : ActorMethod<
     [],
     { 'refusingNow' : RailStateLatch, 'counts' : RefusalCounts }
@@ -1073,6 +1097,13 @@ export interface _SERVICE {
       'expiredOrders' : bigint,
     }
   >,
+  /**
+   * / Mark one orphaned payment settled off-chain (admin, §4.1).
+   * /
+   * / The operator has dealt with it in Stripe; this records that they did. Audited with
+   * / the entry's own detail, because nothing else in the system can tell afterwards that
+   * / the obligation was met rather than forgotten. Nothing re-opens it.
+   */
   'resolve_orphan' : ActorMethod<[bigint], Result_10>,
   /**
    * / Manual resolution (§4.1/§7) — the operator marking an obligation settled after
@@ -1183,6 +1214,14 @@ export interface _SERVICE {
    * / exposure); rotate after provisioning over an untrusted path.
    */
   'set_webhook_secret' : ActorMethod<[string], Result_1>,
+  /**
+   * / Whether the restricted Stripe key is provisioned — **never the key**.
+   * /
+   * / The console offers this read and no command for the setter: a rendered
+   * / `set_stripe_api_key` would put the key in a page's DOM and clipboard, which is what
+   * / `scripts/check-admin-commands.py` fails on. Admin-gated like every other read of
+   * / operational state that names a secret's presence.
+   */
   'stripe_api_key_status' : ActorMethod<[], Status>,
   /**
    * / The origin, readable back because it is not a secret — it is the URL
