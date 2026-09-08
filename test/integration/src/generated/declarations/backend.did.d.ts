@@ -446,6 +446,25 @@ export interface _SERVICE {
    * / the intended use, and if it becomes one the list inherits the audit.
    */
   'admin_orders' : ActorMethod<[Filter, [] | [OrderId], bigint], Page__1>,
+  /**
+   * / The same receipt, for **any** order (admin, #38) — and **audited**, which is the
+   * / whole reason it is a separate method.
+   * /
+   * / ⚠️ **The audit is not about existence disclosure; it is about an operator leaving a
+   * / record of having looked.** `Receipt` embeds the whole `Order`, so an *unaudited*
+   * / admin path returns exactly what `admin_order` returns with no trace — which makes
+   * / `admin_order`'s audit **bypassable by calling the other method**. Reading an operator
+   * / read as harmless because the data is reachable elsewhere is the mistake to avoid.
+   * /
+   * / ⚠️ **A separate method rather than a branch, because auditing writes state.** An
+   * / audited read cannot be a `query`, and folding this into `receipt` would make **every
+   * / buyer's** receipt read an update — the common path through consensus to serve the
+   * / rare one.
+   * /
+   * / ⚠️ **Auditing is the mitigation for lifting the owner boundary at all.** A path that
+   * / lifts it without the audit is not a smaller version of the change; it is the change
+   * / without its safeguard.
+   */
   'admin_receipt' : ActorMethod<[OrderId], [] | [Receipt]>,
   /**
    * / "Is MY principal granted?" — public and caller-scoped.
