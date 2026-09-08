@@ -467,8 +467,16 @@ by field.** `reserveState`, `gateState`, `pricingState`, `stripeState`, `tierSta
 slice it uses. The alternative — an accessor closure per field — needs no shape change,
 and it is what the three TRANSIENT fields still use, for a sharper reason: they exist to
 answer "has this happened since the canister started", which a value frozen at include
-time answers wrongly and confidently. For the 21 stable fields it would have put plumbing
-at every include site to work around by-value semantics.
+time answers wrongly and confidently. For the 21 grouped `var` fields it would have put
+plumbing at every include site to work around by-value semantics.
+
+⚠️ **Two counts in this section have different denominators, so each is stated with its
+instrument.** The seven records hold **21 `var` fields** between them — that is the
+number every claim in this section is about. `deployed/backend.most` separately declares
+**19 top-level stable names**, of which seven are those records; the figures moved
+independently (#130 removed two standalone stable `let`s that were never in a record,
+changing the second and not the first). A bare number here is how an edit lands on the
+quantity nobody measured.
 
 ⚠️ **`webhookPaidOrder` uses a TAKE-ONCE accessor**, not a get/set pair: the dispatcher
 sets it and the mixin consumes it in the same message, so reading and clearing as one
@@ -481,7 +489,7 @@ is when `include` evaluates its arguments, and none of them ever changes. The ru
 is about MUTABLE state; a snapshot of an immutable value is the value.
 
 ⚠️⚠️ **Grouping also closed those fields to future extension, and THAT cost outlives the
-one-time drop below.** Before the split each of the 21 was an actor-level `var`, and
+one-time drop below.** Before the split each of those 21 was an actor-level `var`, and
 adding another was free. Now a new field inside any `*State` record needs the migration
 chain this project has never had (§11 / #32) — measured both ways on the branch that
 introduced them:

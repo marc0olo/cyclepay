@@ -102,6 +102,21 @@ module {
   /// hourly is ample.
   public let expiryScanIntervalNs : Nat = 3_600_000_000_000; // 1 h
 
+  /// How often the sweep reconciles the per-status tallies against the order store.
+  ///
+  /// Daily, not per-sweep: the reconcile is O(orders) while the tallies exist precisely
+  /// so the hot queries are O(1), and drift can only come from a bookkeeping bug, which
+  /// does not need a 15-minute detection window.
+  public let countReconcileIntervalNs : Nat = 86_400_000_000_000; // 24 h
+
+  /// How often the sweep reconciles the reserve floor against the cycles ledger.
+  ///
+  /// Hourly rather than per-sweep because it costs a ledger round trip plus two journal
+  /// scans, and because what it detects — an unobserved top-up — is an operator action
+  /// that has `refresh_reserve` for immediacy. The cost of the delay is bounded and
+  /// one-directional: a floor below the truth under-sells, never over-sells.
+  public let reserveReconcileIntervalNs : Nat = 3_600_000_000_000; // 1 h
+
   /// Retrieves per scan pass, resuming on the next pass.
   ///
   /// ⚠️ **The stranded population is CORRELATED, which is why a per-order cost argument

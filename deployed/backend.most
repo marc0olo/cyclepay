@@ -196,7 +196,6 @@ actor {
       var root : Node__1045371124<OrderId__370787278>;
       var size : Nat__58649523
     };
-  stable countReconcileIntervalNs : Nat;
   stable dedup :
     {
       stripeEvents : Map__386906547<Text, Int>;
@@ -267,7 +266,6 @@ actor {
       var lastSweep : ?{atNs : Int; pending : Nat};
       var sweepIntervalNs : Nat
     };
-  stable reserveReconcileIntervalNs : Nat;
   stable reserveState :
     {
       var cyclesLedgerFee : Nat;
