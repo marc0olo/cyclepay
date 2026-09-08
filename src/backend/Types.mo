@@ -22,7 +22,7 @@ module {
   /// that trap is a 5xx Stripe retries for ~3 days.
   ///
   /// ⚠️ **What `-Werror` does NOT catch:** `Orders.openOrderCount` and
-  /// `Orders.ordersFor` look owners up through `principalsToOrders`, a
+  /// `Orders.ownerPage` look owners up through `principalsToOrders`, a
   /// Principal-keyed index, and never pattern-match. A non-principal owner would
   /// compile clean and silently return nothing for those. Fail-closed, but the seam
   /// work has to **reindex**, not just re-match.

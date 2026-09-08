@@ -128,6 +128,11 @@ module {
     };
   };
 
+  /// Config validation failed, and each arm carries what the operator needs to fix it.
+  ///
+  /// ⚠️ **`#tierAboveCeiling` names the offending tier and both numbers**, because "your
+  /// ceiling is too low" without saying which tier collides is a message an operator has
+  /// to go and investigate.
   public type ConfigError = {
     #zeroOpenOrderCap;
     #zeroPurchaseCeiling;
@@ -237,36 +242,6 @@ module {
     /// Per-*principal*, so it never latches and never announces — nothing about
     /// the gateway changed, exactly like `#tooManyOpenOrders`.
     #buyerNotAllowed;
-  };
-
-  /// Renderable config-validation failure.
-  ///
-  /// `#tierAboveCeiling` names the offending tier and both numbers, because "your
-  /// ceiling is too low" without saying which tier collides is a message an operator
-  /// has to go and investigate.
-  public func configErrorToText(error : ConfigError) : Text {
-    switch (error) {
-      case (#zeroOpenOrderCap) "zeroOpenOrderCap";
-      case (#zeroPurchaseCeiling) "zeroPurchaseCeiling";
-      case (#tierAboveCeiling({ tierId; usdCents; maxUsdCents })) {
-        "tierAboveCeiling(tier " # tierId # " costs " # usdCents.toText()
-        # " cents, ceiling would be " # maxUsdCents.toText() # ")";
-      };
-      case (#tierBelowFloor({ tierId; usdCents; minUsdCents })) {
-        "tierBelowFloor(tier " # tierId # " costs " # usdCents.toText()
-        # " cents, floor would be " # minUsdCents.toText() # ")";
-      };
-      case (#floorAboveCeiling({ minUsdCents; maxUsdCents })) {
-        "floorAboveCeiling(" # minUsdCents.toText() # ">" # maxUsdCents.toText() # ")";
-      };
-      case (#floorUndeliverableAtDivisor({ minUsdCents; divisor; scaledCycles; ledgerFee })) {
-        // Names the divisor as well as the floor, because the operator changed the
-        // floor and the constraint comes from the other setting.
-        "floorUndeliverableAtDivisor(a " # minUsdCents.toText() # "-cent floor at divisor "
-        # divisor.toText() # " scales to " # scaledCycles.toText()
-        # " cycles, which does not clear the " # ledgerFee.toText() # " ledger fee with headroom)";
-      };
-    };
   };
 
   public func reasonToText(reason : Reason) : Text {
@@ -416,10 +391,6 @@ module {
         or #buyerNotAllowed
       ) null;
     };
-  };
-
-  public func isRailState(reason : Reason) : Bool {
-    railConditionOf(reason) != null;
   };
 
   /// Which rail-state conditions are **currently** refusing, latched per

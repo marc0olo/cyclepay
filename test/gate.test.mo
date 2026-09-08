@@ -227,17 +227,13 @@ suite("the ceiling cannot be lowered under a live tier", func() {
   });
 
   test("the error carries what the operator needs to fix it", func() {
-    switch (Gate.validateConfig({ config with maxPurchaseUsdCents = 100; minPurchaseUsdCents = 100 }, tiers)) {
-      case (#err(e)) {
-        let text = Gate.configErrorToText(e);
-        // The full rendered sentence, not a substring: `#text "tier10"` is also
-        // a prefix of nothing here, but the same trap applied to "tier5"/"tier50"
-        // before — a substring assertion would not have told us which tier was
-        // named.
-        assert text == "tierAboveCeiling(tier tier10 costs 1000 cents, ceiling would be 100)";
-      };
-      case (#ok) assert false;
-    };
+    // ⚠️ **The payload, not a rendering of it.** This asserted
+    // `configErrorToText(e) == "tierAboveCeiling(tier tier10 costs …)"` — a function
+    // whose only caller was this line, so the test proved a sentence nobody produces
+    // while the data an operator actually receives went unasserted. The whole variant
+    // is compared, so a tier named wrongly or a number dropped fails here.
+    assert Gate.validateConfig({ config with maxPurchaseUsdCents = 100; minPurchaseUsdCents = 100 }, tiers)
+      == #err(#tierAboveCeiling({ tierId = "tier10"; usdCents = 1_000; maxUsdCents = 100 }));
   });
 });
 
@@ -278,14 +274,6 @@ suite("#61 refusal counters", func() {
     assert c.reserveShort == 1;
   });
 
-  test("only the two rail-state conditions are rail state", func() {
-    assert Gate.isRailState(shortReserve);
-    assert Gate.isRailState(lowGas);
-    // Nothing about the gateway changed in these three.
-    assert not Gate.isRailState(belowMin);
-    assert not Gate.isRailState(aboveMax);
-    assert not Gate.isRailState(capReached);
-  });
 });
 
 suite("#61 rail-state latch", func() {
@@ -382,6 +370,8 @@ suite("#61 rail closure is the third latching condition", func() {
   test("railConditionOf covers every Reason, and only the rail-state ones map", func() {
     assert Gate.railConditionOf(shortReserve) == ?#reserveShort;
     assert Gate.railConditionOf(lowGas) == ?#canisterCyclesLow;
+    // Null for the next three because nothing about the GATEWAY changed: they are
+    // per-request or per-principal, so there is no state to announce.
     assert Gate.railConditionOf(belowMin) == null;
     assert Gate.railConditionOf(aboveMax) == null;
     assert Gate.railConditionOf(capReached) == null;
@@ -510,8 +500,6 @@ suite("#99 the faucet refusal", func() {
     // gateway because the gateway is correctly bounded.
     assert Gate.railConditionOf(#unboundedGiveaway({ reserveFloor = 1 })) == ?#unboundedGiveaway;
     assert Gate.railConditionOf(#buyerNotAllowed) == null;
-    assert Gate.isRailState(#unboundedGiveaway({ reserveFloor = 1 }));
-    assert not Gate.isRailState(#buyerNotAllowed);
   });
 
   test("both new reasons are tallied, and separately", func() {

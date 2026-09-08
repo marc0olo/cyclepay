@@ -110,7 +110,22 @@ def leaked_docs(did_text):
     if service is None:
         sys.exit(f"ABORT: no `service` block in {DID} — cannot pass vacuously")
     out = []
-    for i in range(service, len(lines)):
+    # ⚠️ **`service + 1`, and the `+ 1` is load-bearing.** `service : {` matches
+    # `DID_METHOD` itself — moc's space before the colon is the only thing that stops it —
+    # and the line directly above it is `Main.mo`'s file header, which moc emits as the
+    # service doc. So scanning from `service` reports `service` as an endpoint carrying a
+    # neighbour's doc the day moc emits `service: {`: a red gate nobody would connect back
+    # to a compiler's whitespace.
+    #
+    # ⚠️ **This shipped WITH `leaked_docs()` and survived two PRs and two reviews** — the
+    # header has been the line before `service : {` since a128982, the commit that added
+    # this function. #133 did not create it; banning `///` elsewhere in `Main.mo` forced
+    # the header's placement to be stated precisely, which is what put the two facts next
+    # to each other. **The lesson is the one that generalises: a check written to detect
+    # positional aliasing was one character of compiler whitespace from a false positive,
+    # and reading the regex is not enough to see it — you have to ask what the invariant
+    # RESTS on.** Same shape as `check-admin-tiers.py`'s `\s*\(`.
+    for i in range(service + 1, len(lines)):
         m = DID_METHOD.match(lines[i])
         if m and i > 0 and lines[i - 1].strip().startswith("///"):
             out.append(m.group(1))
@@ -146,6 +161,18 @@ def self_test():
     got = leaked_docs(did)
     if got != ["get_order"]:
         sys.exit(f"ABORT: self-test expected ['get_order'] leaked, got {got}")
+
+    # ⚠️ The service line itself, spelled without moc's space, must not read as an
+    # endpoint — see the note in `leaked_docs`. This case is what pins the `+ 1`.
+    tight = "\n".join([
+        "/// The actor's own doc, which moc DOES emit.",
+        "service: {",
+        "  health: () -> (Health) query;",
+        "}",
+    ])
+    got = leaked_docs(tight)
+    if got != []:
+        sys.exit(f"ABORT: self-test — the service line read as an endpoint: {got}")
 
 
 def main():
