@@ -894,7 +894,7 @@ persistent actor CyclesGateway {
   /// "not open" means the session already completed or expired, so the caller
   /// must change nothing and let the webhook resolve it; "failed" means we do not
   /// know, so the order must stay payable and uncancelled.
-  func expireStripeSession(sessionId : Text) : async* { #ok; #notOpen; #failed : Text } {
+  func expireStripeSession(sessionId : Text) : async* Session.ExpireOutcome {
     let ?apiKey = Secret.get(stripeApiKey) else return #failed("the Stripe API key is not provisioned");
     let ?keyText = apiKey.decodeUtf8() else return #failed("the stored API key is not valid UTF-8");
     let response = try {
@@ -914,9 +914,10 @@ persistent actor CyclesGateway {
       let kind = Session.classifyFailure(e.message());
       return #failed(Session.failureAdvice(kind) # " [" # e.message() # "]");
     };
-    if (response.status == 200) return #ok;
-    if (Session.isNotOpen(response.status, response.body)) return #notOpen;
-    #failed("Stripe answered " # response.status.toText());
+    // ⚠️ Classified in ONE place, by status. See `Session.expireOutcome`: this used to
+    // grep the error prose for three invented phrases, so the "already paid" branch
+    // could never fire against real Stripe.
+    Session.expireOutcome(response.status, response.body);
   };
 
   /// `GET /v1/checkout/sessions/{id}` — the read that settles a stranded `#created`
@@ -3126,20 +3127,6 @@ persistent actor CyclesGateway {
     paidIntents.get(paymentRef);
   };
 
-  /// Let a buyer give up on their own unpaid order (owner-scoped).
-  ///
-  /// ⚠️ **Load-bearing on the open-order cap**, whose refusal tells the buyer to pay or
-  /// abandon one — advice they cannot follow without this, since `abandon_order` is
-  /// admin-only and takes *paid* orders. Remove it and a buyer who opened the cap's worth
-  /// of checkouts is locked out until their sessions expire.
-  ///
-  /// ⚠️ **Nothing is stranded, and the reason is the ORDERING**: the session is expired
-  /// on Stripe *before* the order moves, so an in-flight payment either wins that race
-  /// (and the order is not cancelled at all) or it cannot start. `#cancelled → #paid` is
-  /// absent from the matrix, so a cancelled order is unpayable by construction.
-  ///
-  /// No problem filed: nothing is owed, and filing an obligation for an order where no
-  /// money moved is exactly the noise the worklist must not accumulate.
   /// **Admin: expire one `#created` order, releasing its reserve capacity** (#52).
   ///
   /// ⚠️ **The lever for the class the sweep structurally CANNOT see**, so do not delete it
@@ -3174,11 +3161,23 @@ persistent actor CyclesGateway {
       case (?sessionId) {
         switch (await* expireStripeSession(sessionId)) {
           case (#ok) {};
-          case (#notOpen) {
-            audit("order.expireRaced", id # ": session " # sessionId # " is no longer open");
+          case (#notOpen(detail)) {
+            // The body travels into the audit line because this module deliberately
+            // does not guess Stripe's wording: recording what it actually said is how
+            // the next reader learns it. See `Session.expireOutcome`.
+            audit("order.expireRaced", id # ": session " # sessionId # " is no longer open. Stripe said: " # detail);
             return #err(
               "order " # id # "'s session is already settled or expired — the webhook or the recovery sweep will resolve it on Stripe's answer, which is the only authority on which of the two happened"
             );
+          };
+          case (#unauthorized) {
+            // ⚠️ 401/403 is the ONE expire answer that means "rotate the key", so it is
+            // the only one that latches. A 400 latched it before, which filed a P1
+            // saying the key was refused for a key that was fine.
+            noteStripeApiFailed(
+              "expire REFUSED (401/403): the restricted key needs WRITE on Checkout Sessions — rotate it"
+            );
+            return #err("Stripe refused our credentials while cancelling order " # id # " — an operator has been notified");
           };
           case (#failed(detail)) {
             audit("order.expireFailed", id # ": " # detail);
@@ -3208,11 +3207,31 @@ persistent actor CyclesGateway {
     };
   };
 
+  /// Let a buyer give up on their own unpaid order (owner-scoped).
+  ///
+  /// ⚠️ **Load-bearing on the open-order cap**, whose refusal tells the buyer to pay or
+  /// abandon one — advice they cannot follow without this, since `abandon_order` is
+  /// admin-only and takes *paid* orders. Remove it and a buyer who opened the cap's worth
+  /// of checkouts is locked out until their sessions expire.
+  ///
+  /// ⚠️ **Nothing is stranded, and the reason is the ORDERING**: the session is expired
+  /// on Stripe *before* the order moves, so an in-flight payment either wins that race
+  /// (and the order is not cancelled at all) or it cannot start. `#cancelled → #paid` is
+  /// absent from the matrix, so a cancelled order is unpayable by construction.
+  ///
+  /// No problem filed: nothing is owed, and filing an obligation for an order where no
+  /// money moved is exactly the noise the worklist must not accumulate.
   public shared ({ caller }) func cancel_order(id : Types.OrderId) : async Result.Result<Types.Order, Text> {
     let ?order = Orders.getOwned(orderStore, id, caller) else return #err("no order " # id);
     switch (order.status) {
       case (#created) {};
       case (#cancelled) return #ok(order); // idempotent: already given up on
+      // Named separately because the catch-all's wording is about a PAID order, and an
+      // expired one is the opposite case: nothing was charged and nothing will deliver.
+      // A stale tab is enough to reach it.
+      case (#expired) {
+        return #err("order " # id # " has already expired, so there is nothing to cancel");
+      };
       case (status) {
         return #err(
           "order " # id # " is " # Types.statusToText(status)
@@ -3248,23 +3267,38 @@ persistent actor CyclesGateway {
       case (?sessionId) {
         switch (await* expireStripeSession(sessionId)) {
           case (#ok) {};
-          case (#notOpen) {
-            // Two causes and we must not guess between them from our clock: the
-            // session completed (the payment won the race) or it expired already.
-            // Change nothing and let the incoming `checkout.session.completed` or
+          case (#notOpen(_)) {
+            // THREE causes, and this arm cannot tell them apart: the session completed
+            // (the payment won the race), it had already expired, or Stripe refused the
+            // request itself. The first two settle without us, so the right move is to
+            // change nothing and let the incoming `checkout.session.completed` or
             // `checkout.session.expired` resolve it.
             //
-            // ⚠️ **No audit line, deliberately (#37 §2c).** It failed the admission
-            // rule on both halves: a buyer can retry the cancel and hit this again, so
-            // it was caller-bounded — and its information exists nowhere else *only*
-            // if you ignore that **the resolving event is itself logged**. The
-            // `completed` or `expired` webhook that settles this race writes the record,
-            // and it is the one an operator actually needs, because it says WHICH of
-            // the two causes it was. This line said only "one of two things happened".
+            // ⚠️ **The third cause is why this no longer claims a diagnosis.** A
+            // malformed request also answers 400, and "already settled or has expired"
+            // is then false: the order is still `#created` and payable, so the buyer
+            // refreshes onto an order that is still there and clicks again. The wording
+            // below is true of all three, and it names what happens next in each case
+            // instead of asserting which one it was.
             //
-            // The buyer still learns, from the error returned below.
+            // ⚠️ **No audit line, and the earlier reason for that was WRONG.** It said
+            // the information exists in the resolving event — true of the first two
+            // causes, and there is no resolving event for the third. The rule that does
+            // apply is `AuditLog.mo`'s, which is explicit about this shape: a buyer can
+            // retry, so "a caller decides" how often it fires, and that is a counter
+            // with a monitoring row rather than a line. `Gate.RefusalCounts` cannot gain
+            // one without an upgrade-incompatible change to the stable shape, so the
+            // counter waits for a change entitled to make one.
+            //
+            // Until then the operator's lever is `expire_order`, which takes this same
+            // path, is admin-authenticated — so the same rule admits its line — and
+            // audits Stripe's body verbatim as `order.expireRaced`. A malformed request
+            // is not per-order: it fails every cancel, so running it once against a live
+            // `#created` order surfaces the cause. RUNBOOK §8 carries the row.
             return #err(
-              "order " # id # " is already settled or has expired — refresh the page"
+              "Stripe would not close the payment session for order " # id
+              # ". If it was paid it will deliver; if not it expires on its own. Refresh"
+              # " the page to see which"
             );
           };
           case (#failed(detail)) {
@@ -3278,8 +3312,24 @@ persistent actor CyclesGateway {
             // so it routes through the same latch: one line when the API starts
             // refusing us, a counter for the volume.
             noteStripeApiFailed("expire: " # detail);
+            // ⚠️ **NOT "could not reach Stripe".** This arm is now only genuine unknowns
+            // (a 5xx, or the outcall itself failing), and a 5xx means Stripe was reached
+            // and something went wrong at its end. The old wording claimed a diagnosis
+            // this arm does not have, and it was the wording a buyer saw for an
+            // already-paid order, which took a different branch entirely.
             return #err(
-              "could not reach Stripe to cancel order " # id # " — try again, or it expires on its own"
+              "could not cancel order " # id # " at Stripe — try again, or it expires on its own"
+            );
+          };
+          case (#unauthorized) {
+            // ⚠️ The one expire answer that means "rotate the key", and the only one
+            // that should latch. A 400 latched this before, filing a P1 that said the
+            // key was refused when the key was fine.
+            noteStripeApiFailed(
+              "expire REFUSED (401/403): the restricted key needs WRITE on Checkout Sessions — rotate it"
+            );
+            return #err(
+              "could not cancel order " # id # ": Stripe refused our credentials. An operator has been notified; the order expires on its own if it is not paid"
             );
           };
         };
