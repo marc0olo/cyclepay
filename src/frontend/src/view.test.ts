@@ -33,7 +33,7 @@ describe("the dashboard's two records are one view with a tab", () => {
       { view: "history", tab: "ledger" },
       { view: "admin" },
       { view: "order", orderId: "f22bd6dc4932a8480f3cee3669a48cc6" },
-      { view: "next", orderId: "f22bd6dc4932a8480f3cee3669a48cc6" },
+      { view: "cli" },
     ];
     for (const route of routes) {
       expect(parseRoute(routeHash(route))).toEqual(route);
@@ -48,11 +48,13 @@ describe("the dashboard's two records are one view with a tab", () => {
     expect(parseRoute("#/history/")).toEqual({ view: "landing" });
   });
 
-  test("⚠️ the order route is still matched before its own /next prefix", () => {
-    // Regression guard for a bug this router already had: `order/<id>/next` also
-    // matches the order pattern's prefix, so testing the shorter one first sent every
-    // next-steps link to the order view.
-    expect(parseRoute("#/order/abc/next")).toEqual({ view: "next", orderId: "abc" });
+  test("the CLI page needs no order, and takes none", () => {
+    // ⚠️ The `order/<id>/next` route is GONE, and with it the prefix-ordering hazard
+    // it created. Everything that page shows is identity-derived, so the parameter
+    // supplied nothing and made the page unreachable from the dashboard.
+    expect(parseRoute("#/cli")).toEqual({ view: "cli" });
+    expect(routeHash({ view: "cli" })).toBe("#/cli");
+    expect(parseRoute("#/order/abc/next")).toEqual({ view: "landing" });
     expect(parseRoute("#/order/abc")).toEqual({ view: "order", orderId: "abc" });
   });
 });

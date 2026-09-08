@@ -896,7 +896,7 @@ describe("the delivered tour", () => {
     // derives a principal from a different origin, so the buyer lands on an
     // empty balance and reads it as theft.
     state.order = anOrder("delivered");
-    await mount("landing", "#/order/abcdef0123456789abcdef0123456789/next");
+    await mount("landing", "#/cli");
     await settle();
 
     expect(el("tour").hidden).toBe(false);
@@ -912,9 +912,11 @@ describe("the delivered tour", () => {
     // default, which is a different principal again.
     expect(cmd).toContain("--app");
     // The principal is shown beside it so a mismatch is self-diagnosable.
-    // The order's DESTINATION owner, not the signed-in identity: the fixture's order
-    // is addressed to `aaaaa-aa`, and the tour shows where the cycles actually went.
-    expect(el("credited-principal").textContent).toBe("aaaaa-aa");
+    // ⚠️ **The signed-in IDENTITY now, not an order destination.** §2 forces every
+    // destination to equal the caller's own account, so this was the same value by a
+    // longer route; reading it from the identity is what lets the page exist without
+    // an order at all.
+    expect(el("credited-principal").textContent).toBe(FULL_PRINCIPAL);
     // Verified against icp-cli 1.2.0, not invented: `icp identity principal`
     // exists and takes --identity. The link command is NOT claimed to print a
     // principal, because the CLI guide does not say it does.
@@ -924,9 +926,10 @@ describe("the delivered tour", () => {
     // is how the delivered view came to show no cycle quantity at all. Two questions,
     // two pages.
     expect(el("active-order").hidden).toBe(true);
-    expect(el("view-next").hidden).toBe(false);
-    // And it says the quantity, which is what the collapsed version never did.
-    expect(el("next-summary").textContent).toMatch(/cycles are in your account/i);
+    expect(el("view-cli").hidden).toBe(false);
+    // The quantity comes from the LEDGER, not from one order: it is what there is to
+    // spend, which is the question this page answers.
+    expect(el("cli-summary").textContent).toMatch(/in your account/i);
   });
 
   test("an undelivered order shows no commands yet", async () => {
@@ -935,7 +938,7 @@ describe("the delivered tour", () => {
     await mount();
     await openFromHistory();
     expect(el("tour").hidden).toBe(true);
-    expect(el("view-next").hidden).toBe(true);
+    expect(el("view-cli").hidden).toBe(true);
   });
 
   test("⚠️ a delivered order LINKS to the guidance rather than embedding it", async () => {
@@ -946,8 +949,9 @@ describe("the delivered tour", () => {
     await mount();
     await openFromHistory();
     expect(el("order-next-row").hidden).toBe(false);
-    expect(el<HTMLAnchorElement>("order-next-link").getAttribute("href"))
-      .toBe("#/order/abcdef0123456789abcdef0123456789/next");
+    // ⚠️ A FIXED page. Its content is identity-derived, so the order id supplied
+    // nothing and made the page unreachable from the dashboard.
+    expect(el<HTMLAnchorElement>("order-next-link").getAttribute("href")).toBe("#/cli");
     // The label names what it does rather than asking a question.
     expect(el("order-next-link").textContent).toMatch(/Link ICP CLI/);
 
@@ -986,8 +990,7 @@ describe("the delivered tour", () => {
       expect(el("active-order").hidden).toBe(false);
       expect(el("tour").hidden).toBe(true);
       expect(el("order-next-row").hidden).toBe(false);
-      expect(el<HTMLAnchorElement>("order-next-link").getAttribute("href"))
-        .toContain("/next");
+      expect(el<HTMLAnchorElement>("order-next-link").getAttribute("href")).toBe("#/cli");
       // NOTE: the receipt is asserted by the `receipt` suite, which controls its own
       // timing. Repeating it here under fake timers only tests the flush count.
     } finally {
@@ -2798,6 +2801,69 @@ describe("a delivered order states each fact once", () => {
     expect(next.hidden).toBe(false);
     expect(next.compareDocumentPosition(receipt) & Node.DOCUMENT_POSITION_FOLLOWING)
       .toBeTruthy();
+  });
+});
+
+describe("the CLI page stands on its own", () => {
+  test("⚠️ it opens with NO order in play at all", async () => {
+    // The point of the change. `state.order = null` means `get_order` answers nothing,
+    // which is exactly a visitor arriving from the dashboard a week after buying.
+    state.order = undefined;
+    await mount("landing", "#/cli");
+    await settle();
+    expect(el("view-cli").hidden).toBe(false);
+    expect(el("tour").hidden).toBe(false);
+    expect(el("cmd-link").textContent).toContain("icp identity link web");
+    // And it does not fall through to the missing-order page, which is what an
+    // order-scoped route did when there was no order.
+    expect(el("order-missing").hidden).toBe(true);
+  });
+
+  test("⚠️ the four-step strip is absent here", async () => {
+    // The steps promise one purchase journey. Reached from the dashboard, the visitor
+    // may not be on it, so "Step 3 of 4" narrates something untrue.
+    state.order = undefined;
+    await mount("landing", "#/cli");
+    await settle();
+    expect(el("stepper").hidden).toBe(true);
+    expect(document.body.textContent).not.toMatch(/Step 3 of 4|Step 4 of 4/);
+  });
+
+  test("the strip is still on the buy view, where the journey is real", async () => {
+    // The other half: removing it everywhere would take orientation off the one page
+    // where a first-time buyer benefits from it.
+    await mount("landing", "#/buy");
+    await settle();
+    expect(el("stepper").hidden).toBe(false);
+  });
+
+  test("the dashboard offers it too, not only a delivered order", async () => {
+    state.order = anOrder("delivered");
+    await mount("landing", "#/history");
+    await settle();
+    const link = el<HTMLAnchorElement>("cli-link");
+    expect(link.getAttribute("href")).toBe("#/cli");
+    expect(link.textContent).toMatch(/Link ICP CLI/);
+  });
+
+  test("signed out, it asks for a sign-in rather than printing commands", async () => {
+    // The commands name the caller's principal, so without one they would be wrong
+    // in the way that is hardest to notice: they run and reach a different account.
+    state.order = undefined;
+    await mount("landing", "#/cli");
+    await settle();
+    el("sign-out").click();
+    await settle();
+    expect(el("tour").hidden).toBe(true);
+    expect(el("cli-summary").textContent).toMatch(/sign in/i);
+  });
+
+  test("the back link goes to the dashboard, which always exists", async () => {
+    // It used to say "Back to this order" and point at the order it was scoped to.
+    state.order = undefined;
+    await mount("landing", "#/cli");
+    await settle();
+    expect(el<HTMLAnchorElement>("cli-back").getAttribute("href")).toBe("#/history");
   });
 });
 

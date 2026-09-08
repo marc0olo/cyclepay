@@ -20,7 +20,7 @@
 /// the link renders only when `admin_status` says the caller is granted or is a
 /// controller, so the visitors it would be noise for never see it. What changed is that
 /// an operator no longer has to know to type `#/admin`.
-/// `next` is the post-delivery guidance: linking the CLI and deploying. It is its own
+/// `cli` is the post-delivery guidance: linking the CLI and deploying. It is its own
 /// view rather than a panel on the order, because those are two different questions.
 /// "What did I buy" is a record with numbers and a receipt; "what do I do now" is a
 /// sequence of commands. The order view previously answered the second one so loudly
@@ -31,7 +31,7 @@ export type View =
   | "buy"
   | "order"
   | "delivered"
-  | "next"
+  | "cli"
   | "history"
   | "admin";
 
@@ -52,7 +52,12 @@ export type Route =
   | { view: "landing" }
   | { view: "buy" }
   | { view: "order"; orderId: string }
-  | { view: "next"; orderId: string }
+  /// ⚠️ **No order id, and that absence is the design.** Everything this page shows
+  /// is derived from the signed-in identity: the link command names this origin, the
+  /// principal to verify is the caller's, and the balance comes from the ledger. The
+  /// order it used to be scoped to supplied nothing, and the parameter made the page
+  /// unreachable from the dashboard, where there is no one order to name.
+  | { view: "cli" }
   | { view: "history"; tab: HistoryTab }
   | { view: "admin" };
 
@@ -75,11 +80,7 @@ export function parseRoute(hash: string): Route {
   }
   if (clean === "history/ledger") return { view: "history", tab: "ledger" };
   if (clean === "admin") return { view: "admin" };
-  // ⚠️ The longer pattern first: `order/<id>/next` also matches the order pattern's
-  // prefix, and a route table that tests the shorter one first sends every next-steps
-  // link to the order view instead.
-  const next = /^order\/([a-zA-Z0-9-]+)\/next$/.exec(clean);
-  if (next) return { view: "next", orderId: next[1]! };
+  if (clean === "cli") return { view: "cli" };
   const order = /^order\/([a-zA-Z0-9-]+)$/.exec(clean);
   if (order) return { view: "order", orderId: order[1]! };
   return { view: "landing" };
@@ -98,8 +99,8 @@ export function routeHash(route: Route): string {
       return "#/admin";
     case "order":
       return `#/order/${route.orderId}`;
-    case "next":
-      return `#/order/${route.orderId}/next`;
+    case "cli":
+      return "#/cli";
     case "landing":
       return "#/";
   }
@@ -136,9 +137,11 @@ export function stepStates(view: View, signedIn: boolean): StepState[] {
   switch (view) {
     case "buy":
       return [signedIn ? "done" : "current", signedIn ? "current" : "todo", "todo", "todo"];
-    case "next":
-      // The cycles have landed, so paying is done and linking is the live step.
-      return ["done", "done", "current", "todo"];
+    // ⚠️ **No case for the CLI page, deliberately.** The four steps are a promise
+    // about ONE purchase journey, and that page is now reachable from the dashboard by
+    // someone who is not partway through a purchase at all. "Step 3 of 4" there
+    // narrates a journey the visitor may not be on. `renderStepper` omits the strip
+    // for it rather than rendering four steps that mean nothing.
     case "order":
     case "delivered":
       // ⚠️ No strip on the order record. The caller omits it entirely rather than

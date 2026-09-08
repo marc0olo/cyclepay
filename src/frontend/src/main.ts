@@ -147,6 +147,7 @@ async function refreshLedgerBalance(): Promise<void> {
   const note = document.getElementById("ledger-balance-note");
   if (!node || !note) return;
   if (identity === null) {
+    ledgerBalance = null;
     node.textContent = "sign in to see it";
     note.textContent = "";
     return;
@@ -156,6 +157,7 @@ async function refreshLedgerBalance(): Promise<void> {
       owner: identity.getPrincipal(),
       subaccount: [],
     });
+    ledgerBalance = balance;
     node.textContent = `${formatCycles(balance)} cycles`;
     note.textContent =
       "Read from the cycles ledger, which anyone can query. This is your whole balance,"
@@ -163,6 +165,7 @@ async function refreshLedgerBalance(): Promise<void> {
   } catch {
     // ⚠️ Says the read failed rather than printing a zero. A zero is a claim about
     // the buyer's money, and "we could not ask" is a different statement.
+    ledgerBalance = null;
     node.textContent = "could not read the ledger";
     note.textContent = "The balance is unchanged; only this page could not fetch it.";
   }
@@ -432,6 +435,18 @@ let cardFee: FeeConfig | null = null;
 // The cycles ledger's own transfer fee. ⚠️ NOT from `quote_previews` any more —
 // #30 PR-A stopped disclosing it there, so this is read from the ledger directly.
 let transferFee = 0n;
+
+/// The account's balance as the LEDGER last reported it, or null when it has not been
+/// read or the read failed.
+///
+/// ⚠️ **Held here rather than read back out of `#ledger-balance`.** The CLI page states
+/// the balance in its own words, and it used to get it by sniffing that cell's
+/// `textContent` with `/^[\d]/` — deriving render state from the DOM, which
+/// `customChosen` warns about a few hundred lines up for the same reason: the sniff
+/// answers "does this look like a number" instead of "did the read succeed", so a
+/// failure message that happened to start with a digit would be quoted back as a
+/// balance, and the two renderers disagreed about the fallback.
+let ledgerBalance: bigint | null = null;
 // Set when a created order's locked quantity differs from the estimate shown —
 // within tolerance, so the order went through, but the buyer should still hear
 // the real number rather than discover it.
@@ -559,7 +574,7 @@ let orderCount = 0;
 /// ⚠️ A second destination kind brings back the question this used to answer:
 /// `icp identity link web` links the CALLER's identity, so for a balance that is
 /// not theirs the commands reach the wrong account and must not be printed.
-function renderStepper(view: View, order: Order | null): void {
+function renderStepper(view: View): void {
   const node = document.getElementById("stepper");
   if (!node) return;
   // ⚠️ **Buying and the guidance that follows it, NOT the order record.** The strip
@@ -568,7 +583,10 @@ function renderStepper(view: View, order: Order | null): void {
   // journey; a receipt with a progress bar on it answers a question nobody asked
   // there. `stepStates` returns all-todo for the record, but the strip should be
   // absent rather than blank.
-  const relevant = view === "buy" || (view === "next" && order !== null);
+  // ⚠️ **The buy view only.** The strip is a promise about one purchase journey, and
+  // the CLI page is reachable from the dashboard by someone who is not on that journey
+  // at all: "Step 3 of 4" there narrates a purchase the visitor may not be making.
+  const relevant = view === "buy";
   if (!relevant) {
     node.hidden = true;
     return;
@@ -619,7 +637,7 @@ function renderView(): void {
   // `order-missing` line above it — a `const` in its temporal dead zone, so
   // `renderView` threw a ReferenceError partway through and left every view hidden.
   // The symptom was a blank page, which reads as a routing bug rather than a crash.
-  const onNext = currentView === "next";
+  const onCli = currentView === "cli";
 
   show("view-landing", effective === "landing");
   show("buy-flow", effective === "buy");
@@ -630,15 +648,20 @@ function renderView(): void {
   // used to unhide it too, which is how a poll tick could paint an order over the
   // history table the visitor had navigated to.
   show("active-order", onOrder && ready);
-  // NOTE: , matching the renderOrderMissing call below. Keyed on
-  //  alone, a next-steps deep link that could not load its order showed
-  // NOTHING: not the guidance, not the missing-order message, a blank page.
-  show("order-missing", (onOrder || onNext) && !ready);
+  // ⚠️ **The ORDER view only, and this reverses an earlier fix on purpose.** It was
+  // widened to cover the next-steps view because a deep link there that could not load
+  // its order showed nothing at all: not the guidance, not a missing-order message,
+  // a blank page. That reasoning died with the order parameter. The CLI page needs no
+  // order, so keeping it here made "We could not find that order" the greeting for
+  // anyone arriving from the dashboard.
+  show("order-missing", onOrder && !ready);
   show("history", effective === "history");
   show("admin", effective === "admin");
   // The next-steps view owns the screen like any other: the tour is no longer a panel
   // stacked on the order record.
-  show("view-next", onNext && ready);
+  // ⚠️ No `ready` gate: the CLI page no longer depends on an order, so waiting for one
+  // to load would leave a visitor arriving from the dashboard on a blank screen.
+  show("view-cli", onCli);
   if (effective === "admin") {
     renderAdminIdentity();
     renderOperatorSummary();
@@ -652,9 +675,9 @@ function renderView(): void {
     if (currentHistoryTab === "ledger") void refreshLedgerHistory();
   }
   show("history-link", orderCount > 0 && identity !== null);
-  if ((onOrder || onNext) && !ready) renderOrderMissing();
+  if ((onOrder || onCli) && !ready) renderOrderMissing();
 
-  renderStepper(onNext ? "next" : effective, order);
+  renderStepper(effective);
 
   // ⚠️ **Nothing collapses over the order's facts any more.** This used to close
   // `#order-details` on the delivered view so the tour could lead — and because the
@@ -662,8 +685,12 @@ function renderView(): void {
   // buyer opens to see what they got showed no cycle quantity, hid the receipt two
   // clicks deep, and buried a problem notice. The tour moved to its own view instead,
   // which is the fix the collapse was standing in for.
-  renderTour(order, onNext);
-  if (onNext) renderNextSummary(order);
+  renderTour(onCli);
+  if (onCli) {
+    // The balance drives the summary, so it must be read on this view too.
+    void refreshLedgerBalance().then(renderCliSummary);
+    renderCliSummary();
+  }
 
   // The way from the record to the guidance. Only on a DELIVERED order: before that
   // there is nothing to link the CLI to, and offering the step early is how a buyer
@@ -674,7 +701,7 @@ function renderView(): void {
   // the next change, not this one.
   const nextLink = document.getElementById("order-next-link") as HTMLAnchorElement | null;
   if (nextLink && order !== null) {
-    nextLink.href = routeHash({ view: "next", orderId: order.id });
+    nextLink.href = routeHash({ view: "cli" });
   }
 }
 
@@ -1464,13 +1491,10 @@ function applyRoute(route: Route): void {
     void loadRefusals();
     void loadAdminConfig();
   }
-  // ⚠️ `next` needs the order too: it renders the quantity and the destination
-  // principal, so a deep link straight to the guidance must fetch rather than render
-  // an empty page.
-  if (
-    (route.view === "order" || route.view === "next")
-    && activeOrder?.id !== route.orderId
-  ) {
+  // The order view is the only route that names an order, so it is the only one that
+  // has to fetch. The CLI page used to be `#/order/<id>/next` and needed the same
+  // order; it is order-free now, which is what collapsed this condition to one term.
+  if (route.view === "order" && activeOrder?.id !== route.orderId) {
     // Deep link or Back into an order we are not currently holding.
     orderLoad = "loading";
     void loadOrderById(route.orderId);
@@ -1489,15 +1513,12 @@ async function loadOrderById(orderId: string): Promise<void> {
     renderView();
     return;
   }
-  // The route may have moved on while the query was in flight.
-  //
-  // ⚠️ **Both views that need this order, not just one.** The guard exists so a query
-  // resolving after the visitor navigated away cannot paint an order over the view
-  // they moved to — still right. But `next` needs the same order, and keyed on
-  // `"order"` alone this returned early on every next-steps deep link: `orderLoad`
-  // never reached `ok`, so the guidance rendered as "we could not find that order"
-  // for an order that had loaded fine.
-  if (currentView !== "order" && currentView !== "next") return;
+  // The route may have moved on while the query was in flight, and a query resolving
+  // after the visitor navigated away must not paint an order over the view they moved
+  // to. Keyed on the ONE view that shows an order: it briefly also had to admit the
+  // next-steps view, which was scoped to an order back then and rendered "we could not
+  // find that order" for an order that had loaded fine. That view no longer takes one.
+  if (currentView !== "order") return;
   if (order === null) {
     orderLoad = "missing";
     renderView();
@@ -1505,20 +1526,20 @@ async function loadOrderById(orderId: string): Promise<void> {
   }
   orderLoad = "ok";
   // ⚠️ **Adopt the order without changing the route.** `openOrder` navigates to
-  // `#/order/<id>` with `replaceState`, which is right when a visitor CLICKS a row —
-  // and wrong here: on a `#/order/<id>/next` deep link it rewrote the hash and threw
-  // the `/next` away, so the guidance was unreachable by URL. The route already says
-  // where the visitor is; this only supplies what it needs.
+  // `#/order/<id>` with `replaceState`, which is right when a visitor CLICKS a row and
+  // wrong here: the route already says where the visitor is, so rewriting it can only
+  // lose whatever it said. It did exactly that to the guidance page's deep link while
+  // that page still carried an order id.
   activeOrder = order;
   stopPolling();
   renderOrder(order);
-  if (currentView === "order") {
-    // Polling belongs to the record, which is the view that shows a live status. The
-    // guidance page has nothing that changes.
-    pollOrderId = order.id;
-    lastPolledStatus = statusKeyOf(order);
-    pollTimer = setInterval(() => void pollActiveOrder(), POLL_MS);
-  }
+  // Unconditional: the guard above already returned for every other view, so a second
+  // `currentView === "order"` here could not be false. It was reachable while the
+  // guidance page shared this loader, and reading it as a live condition would suggest
+  // there is still a view that loads an order and does not poll it.
+  pollOrderId = order.id;
+  lastPolledStatus = statusKeyOf(order);
+  pollTimer = setInterval(() => void pollActiveOrder(), POLL_MS);
   renderView();
 }
 
@@ -2554,41 +2575,44 @@ function renderOrder(order: Order): void {
 /// account (#29). The two suppressed cases — a canister top-up, where there was
 /// nothing to link, and somebody else's account, where the buyer's identity
 /// could not reach the balance — are destinations the gateway no longer accepts.
-function renderTour(order: Order | null, delivered: boolean): void {
+function renderTour(onCli: boolean): void {
   const node = document.getElementById("tour");
   if (!node) return;
-  if (!delivered || order === null) {
+  // ⚠️ **Gated on the IDENTITY, not on a delivered order.** The principal came from
+  // `order.destination.cyclesLedgerAccount.owner`, which §2 forces to equal the
+  // caller's own account, so it was the signed-in principal by a longer route. Reading
+  // it from the identity is what lets this page exist without an order.
+  //
+  // ⚠️ If a destination that is NOT the caller's ever ships, this becomes wrong for
+  // it: `icp identity link web` links the CALLER, so commands printed for someone
+  // else's balance reach the wrong account. Today every order credits the buyer (#29).
+  if (!onCli || identity === null) {
     node.hidden = true;
     return;
   }
-  el("credited-principal").textContent =
-    order.destination.cyclesLedgerAccount.owner.toText();
+  el("credited-principal").textContent = identity.getPrincipal().toText();
   el("cmd-link").textContent = linkIdentityCommand();
   el("cmd-verify").textContent = verifyIdentityCommand();
   node.hidden = false;
 }
 
-/// The one-line summary at the top of the next-steps view: what landed, where.
+/// The one-line summary at the top of the CLI page: what there is to spend.
 ///
-/// ⚠️ Says the QUANTITY. The delivered view used to state no cycle figure anywhere,
-/// because everything numeric sat inside a collapsed disclosure while the tour filled
-/// the page. The order record carries the full detail; this says enough to know the
-/// commands below are about something real.
-function renderNextSummary(order: Order | null): void {
-  const node = document.getElementById("next-summary");
+/// ⚠️ **The LEDGER's balance, not one order's figure.** This said "N cycles are in
+/// your account" from the order it was scoped to, which is the wrong number the moment
+/// a buyer has more than one order and an impossible one when they arrive from the
+/// dashboard. `refreshLedgerBalance` already reads the account; this reuses its
+/// result rather than adding a second read with its own failure mode.
+function renderCliSummary(): void {
+  const node = document.getElementById("cli-summary");
   if (!node) return;
-  if (order === null) {
-    node.textContent = "";
+  if (identity === null) {
+    node.textContent = "Sign in to see the commands for your account.";
     return;
   }
-  node.textContent =
-    `${formatCycles(order.lockedCycles)} cycles are in your account. `
-    + "Two commands and you are deploying.";
-  const back = document.getElementById("next-back") as HTMLAnchorElement | null;
-  if (back) {
-    back.href = routeHash({ view: "order", orderId: order.id });
-    back.textContent = "Back to this order and its receipt";
-  }
+  node.textContent = ledgerBalance === null
+    ? "Two commands and you are deploying."
+    : `${formatCycles(ledgerBalance)} cycles in your account. Two commands and you are deploying.`;
 }
 
 async function renderReceipt(order: Order): Promise<void> {
