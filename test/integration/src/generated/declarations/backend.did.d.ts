@@ -587,17 +587,7 @@ export interface _SERVICE {
    * / than the window would let the cache lapse between ticks and refuse orders.
    */
   'health' : ActorMethod<[], boolean>,
-  /**
-   * / §6.0 query half: the boundary node calls this first; a matched
-   * / upgrade route answers `upgrade = ?true` and the gateway re-issues the
-   * / request to `http_request_update` through consensus.
-   */
   'http_request' : ActorMethod<[Request], Response>,
-  /**
-   * / §6.0 update half. Anyone can call this directly via Candid, so the
-   * / dispatcher re-applies every guard; the route handlers themselves are
-   * / payload-authenticated (HMAC), never caller-authenticated.
-   */
   'http_request_update' : ActorMethod<[Request], Response>,
   'lifecycle_config' : ActorMethod<
     [],
@@ -871,16 +861,6 @@ export interface _SERVICE {
   'set_webhook_secret' : ActorMethod<[string], Result_1>,
   'stripe_api_key_status' : ActorMethod<[], Status>,
   'stripe_origin' : ActorMethod<[], [] | [string]>,
-  /**
-   * / The outcall transform (#33). Referenced by name in the request, so it has to
-   * / be a public `shared query` on the actor even though nothing should ever call
-   * / it directly.
-   * /
-   * / Its whole job is `Session.strip`: **remove every response header.** Stripe
-   * / returns a unique `request-id` per HTTP request, and each replica issues its
-   * / own request — so passing headers through fails consensus on *every* call, not
-   * / occasionally. Replication-count independent: any `n > 1` breaks.
-   */
   'transform_stripe_response' : ActorMethod<
     [{ 'context' : Uint8Array, 'response' : HttpRequestResult }],
     HttpRequestResult

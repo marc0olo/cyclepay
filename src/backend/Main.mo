@@ -24,7 +24,6 @@ import Timer "mo:core/Timer";
 // `Call.httpRequest` attaches the exact `ic0.cost_http_request` price; `IC` is
 // imported for the request/response types the transform signature needs.
 import Call "mo:ic/Call";
-import IC "mo:ic/Types";
 import AuditLog "AuditLog";
 import Auth "Auth";
 import Cmc "Cmc";
@@ -45,6 +44,7 @@ import PrincipalsMixin "mixins/Principals";
 import MonitoringMixin "mixins/Monitoring";
 import ConfigMixin "mixins/Config";
 import OrdersMixin "mixins/Orders";
+import WebhookMixin "mixins/Webhook";
 import Session "rails/Session";
 import Secret "Secret";
 import Tiers "Tiers";
@@ -606,17 +606,6 @@ persistent actor CyclesGateway {
     order : Types.Order;
   };
 
-  /// The outcall transform (#33). Referenced by name in the request, so it has to
-  /// be a public `shared query` on the actor even though nothing should ever call
-  /// it directly.
-  ///
-  /// Its whole job is `Session.strip`: **remove every response header.** Stripe
-  /// returns a unique `request-id` per HTTP request, and each replica issues its
-  /// own request — so passing headers through fails consensus on *every* call, not
-  /// occasionally. Replication-count independent: any `n > 1` breaks.
-  public shared query func transform_stripe_response(args : { context : Blob; response : IC.HttpRequestResult }) : async IC.HttpRequestResult {
-    Session.strip(args.response);
-  };
 
   /// Create the Checkout Session for a freshly committed order (#33).
   ///
@@ -3546,38 +3535,7 @@ persistent actor CyclesGateway {
     },
   ];
 
-  /// §6.0 query half: the boundary node calls this first; a matched
-  /// upgrade route answers `upgrade = ?true` and the gateway re-issues the
-  /// request to `http_request_update` through consensus.
-  public query func http_request(req : Http.Request) : async Http.Response {
-    Http.handleQuery(routes, req, maxRequestBodyBytes);
-  };
 
-  /// §6.0 update half. Anyone can call this directly via Candid, so the
-  /// dispatcher re-applies every guard; the route handlers themselves are
-  /// payload-authenticated (HMAC), never caller-authenticated.
-  public func http_request_update(req : Http.Request) : async Http.Response {
-    let response = Http.handleUpdate(routes, req, maxRequestBodyBytes);
-    // Kick money-out (§5) as a detached self-message ONLY when this delivery
-    // actually marked an order #paid, and drive just that order rather than
-    // sweeping every one. `webhookPaidOrder` is set inside the dispatch above
-    // and consumed here.
-    //
-    // This route is unauthenticated by necessity (Stripe cannot sign in), so
-    // anything it triggers is free for anyone on the internet to invoke. A
-    // sweep over all orders — which makes paid inter-canister calls per
-    // sweepable order — must therefore never be reachable from a 404, a bad
-    // signature, or an unprovisioned-secret 503. The §5.2 recovery timer
-    // remains the backstop if this detached message dies.
-    switch (webhookPaidOrder) {
-      case (?orderId) {
-        webhookPaidOrder := null;
-        ignore async { await* processDelivery(orderId) };
-      };
-      case null {};
-    };
-    response;
-  };
 
 
   /// §5.2 the timer itself. Transient initializer = runs on install AND on
@@ -3629,6 +3587,20 @@ persistent actor CyclesGateway {
   // and the expensive one: wrapping changes the actor's stable shape, and with no
   // migration chain (#32) that means a reinstall. Closures are parameters, never stable
   // state, so `deployed/backend.most` does not move for this split.
+  include WebhookMixin(
+    routes,
+    maxRequestBodyBytes,
+    {
+      // Read and cleared as one step, so a stale value cannot trigger a second kick.
+      take = func() : ?Types.OrderId {
+        let taken = webhookPaidOrder;
+        webhookPaidOrder := null;
+        taken;
+      };
+    },
+    { processDelivery },
+  );
+
   include OrdersMixin(
     orderStore,
     deliveryJournal,
