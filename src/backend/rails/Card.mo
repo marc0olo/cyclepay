@@ -21,6 +21,7 @@ import Problems "../Problems";
 import Iter "mo:core/Iter";
 import List "mo:core/List";
 import Map "mo:core/Map";
+import Set "mo:core/Set";
 import Nat "mo:core/Nat";
 import Principal "mo:core/Principal";
 import Result "mo:core/Result";
@@ -335,6 +336,17 @@ module {
     /// a payment that was delivered out of a funded reserve), unlike the
     /// `#unattributed` spam the dedup sets absorb.
     paidIntents : Map.Map<Text, Types.OrderId>;
+    /// Orders whose OWNER has asked to cancel, from `Main.cancelRequests`.
+    ///
+    /// ⚠️ **This module is the writer that wins the race with `cancel_order`.** Our own
+    /// expire call makes Stripe fire `checkout.session.expired`, and it lands here
+    /// before the cancel is recorded. Without this the buyer's own decision is stored
+    /// as `expiredBy = #sessionExpired`.
+    ///
+    /// A `Set` value rather than a callback: `Deps` is rebuilt per call, so this is the
+    /// live set, and passing it keeps the attribution decision inside `Orders` where
+    /// both writers share one copy of it.
+    cancelRequests : Set.Set<Types.OrderId>;
     /// Per-purchase ceiling (`Gate.Config.maxPurchaseUsdCents`) — defence in
     /// depth now that the webhook honours only the quoted amount: an order
     /// created under a higher ceiling still matches its own quote after the
@@ -827,6 +839,22 @@ module {
         // Link the payment to the order it funded, so a later refund of this
         // intent can tell whether cycles were already delivered.
         deps.paidIntents.add(session.paymentIntent, orderId);
+        // ⚠️ **The payment won, so a pending cancel intent is dead.** `#cancelled` is
+        // reachable only from `#created`, so once an order is `#paid` nothing can honour
+        // the intent and the entry would sit in stable memory for the life of the
+        // canister. `cancel_order`'s `#notOpen` arm is exactly how one gets here: the
+        // expire answered 400 *because* this session completed.
+        //
+        // ⚠️ **This is the third and last exit from `#created`, which is what bounds the
+        // set.** The matrix gives `#created` three: `#cancelled` and `#expired`, both
+        // settled through `Orders.settleUnpayable` / `expireBySession`, which remove the
+        // id as they decide with it — and `#paid`, whose only writer is this call. So
+        // membership implies `#created`, and the `#created` set is bounded by the gate's
+        // own-order cap and the reserve. `expireWithCause` needs no removal for a
+        // matching reason: it fires only for an order whose session never attached, and
+        // `cancel_order` cannot record an intent for one of those (no session id, so it
+        // takes the sessionless branch without adding).
+        deps.cancelRequests.remove(orderId);
         // ⚠️ **Close any `#paidNotCredited` obligation for this order (#52).** The
         // recovery sweep files that when Stripe reports a paid session we never
         // credited; this is the resend landing, which is the remedy the entry asks for.
@@ -971,7 +999,7 @@ module {
       // Null is accepted and backfilled — see the note above.
       case null {};
     };
-    switch (Orders.expireBySession(deps.orders, orderId, expired.sessionId, nowNs)) {
+    switch (Orders.expireBySession(deps.orders, deps.cancelRequests, orderId, expired.sessionId, nowNs)) {
       case (#ok(_)) {
         audit(deps, nowNs, "stripe.sessionExpired", "order " # orderId # " expired by Stripe (session " # expired.sessionId # ")");
       };

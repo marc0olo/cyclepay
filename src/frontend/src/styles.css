@@ -221,15 +221,29 @@ a:hover {
 /* ── the way in ───────────────────────────────────────────────────────────── */
 
 /* One button, on the landing view, and nothing to choose before it. */
-.start-row {
-  margin-block: var(--space-6);
+/* The action row inside the hero's argument column: button first, its price
+   qualifier beside it as fine print. `align-items: center` because a pill and two
+   lines of small text match on their centres, not their boxes. Wraps on a narrow
+   screen so the note goes under the button rather than squeezing it. */
+.hero-action {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  margin-top: var(--space-6);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--icp-rule);
+}
+
+/* Narrow on purpose: beside a button this is fine print, and fine print that runs
+   the full measure stops reading as subordinate. `.meta-strip` still supplies the UI
+   face and the size, so the browser suite's font assertion keeps its subject. */
+.hero-action-note {
+  margin: 0;
+  max-width: 24ch;
 }
 
 /* The row it sits in carried the emptiness that made the button look small. */
-.start-row.start-row-hero {
-  margin-block: var(--space-5) var(--space-6);
-}
-
 /* ── the stats, promoted out of the old trust block ───────────────────────── */
 
 .trust-block {
@@ -509,6 +523,98 @@ button:disabled {
   border-top: 1px solid var(--icp-rule);
 }
 
+
+/* ── the CLI page: numbered steps ─────────────────────────────────────────── */
+
+/* Step one is a prerequisite performed in a BROWSER, not the terminal, and skipping it
+   makes step two fail outright — so it is tinted to read differently from the command
+   steps without leaving the sequence. */
+.step-prereq {
+  background: var(--icp-bg-elev);
+  border: 1px solid var(--icp-rule);
+  border-left: 3px solid var(--icp-warn);
+  border-radius: var(--radius-md);
+  padding: var(--space-4) var(--space-4) var(--space-4) 3.25rem;
+  margin-left: -0.5rem;
+}
+
+/* The numeral sits inside the tinted box rather than in the page gutter. */
+.cli-steps > li.step-prereq::before {
+  left: var(--space-4);
+  top: var(--space-4);
+}
+
+/* A quiet aside after the procedure. Deliberately NOT `.explainer.sunk`, which breaks
+   out to full bleed with its own background: that is a landing-page band, and directly
+   under a numbered procedure it reads as a different page pasted on. */
+.cli-aside {
+  margin-top: var(--space-7);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--icp-rule);
+  max-width: var(--measure);
+}
+
+.cli-aside h3 {
+  margin: 0 0 var(--space-2);
+}
+
+.cli-aside p {
+  margin: 0;
+}
+
+/* Numbers come from the list, not from hand-written eyebrows: the previous version
+   had "Step 3 of 4" typed into the markup, which went stale the moment the count
+   changed and said nothing to a screen reader. */
+.cli-steps {
+  list-style: none;
+  counter-reset: cli-step;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-6);
+}
+
+.cli-steps > li {
+  counter-increment: cli-step;
+  display: grid;
+  gap: var(--space-3);
+  /* Room for the numeral in the gutter, so the step bodies align with each other
+     rather than each indenting by its own label width. */
+  padding-left: 2.75rem;
+  position: relative;
+}
+
+.cli-steps > li::before {
+  content: counter(cli-step);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1.9rem;
+  height: 1.9rem;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--icp-accent);
+  border: 1px solid var(--icp-rule);
+  border-radius: var(--radius-pill);
+}
+
+.cli-steps h3 {
+  margin: 0;
+}
+
+.cli-steps p {
+  margin: 0;
+}
+
+/* The value the command must print, tied to the command above it. */
+.expect {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
 
 /* ── the purchase head, and status as a badge ─────────────────────────────── */
 

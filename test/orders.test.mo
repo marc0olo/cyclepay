@@ -164,8 +164,53 @@ suite("the promise tally (#30 PR-B) — every writer moves it", func() {
     // checkout takes, and the one that leaked.
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    switch (Orders.expireBySession(store, "ord-1", "cs_test", 300)) {
+    switch (Orders.expireBySession(store, Set.empty<Types.OrderId>(), "ord-1", "cs_test", 300)) {
       case (#ok(_)) {};
+      case (#err(_)) assert false;
+    };
+    assert Orders.promised(store) == 0;
+  });
+
+  test("⚠️ a requested cancel settles as CANCELLED, whoever gets there first", func() {
+    // The race: `cancel_order` expires the session at Stripe before recording the
+    // cancel, so Stripe's `checkout.session.expired` webhook can settle the order
+    // first — and it did, in a real local run, recording the buyer's own decision as
+    // `expiredBy = #sessionExpired`.
+    //
+    // `settleUnpayable` reads the buyer's intent instead of racing, so every writer
+    // reaches the same correctly-attributed state.
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    let requested = Set.empty<Types.OrderId>();
+    requested.add("ord-1");
+
+    switch (Orders.settleUnpayable(store, requested, "ord-1", #sessionExpired, 300)) {
+      case (#ok(settled)) {
+        assert settled.status == #cancelled;
+        // ⚠️ Nothing expired, so no cause is recorded. This is the provenance #34
+        // added `expiredBy` for, and the whole point of the fix.
+        assert settled.expiredBy == null;
+      };
+      case (#err(_)) assert false;
+    };
+    // And the hold is released either way: capacity must not depend on attribution.
+    assert Orders.promised(store) == 0;
+    // The honoured intent is pruned, so a later expiry of a re-used id cannot read
+    // as a cancel.
+    assert not requested.contains("ord-1");
+  });
+
+  test("⚠️ and with NO requested cancel it is a real expiry, with its cause", func() {
+    // The other half. Without this, the assertion above would be satisfied by a
+    // function that always cancels — which would record every abandoned checkout as
+    // the buyer's decision.
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "ord-1", alice);
+    switch (Orders.settleUnpayable(store, Set.empty<Types.OrderId>(), "ord-1", #sessionExpired, 300)) {
+      case (#ok(settled)) {
+        assert settled.status == #expired;
+        assert settled.expiredBy == ?#sessionExpired;
+      };
       case (#err(_)) assert false;
     };
     assert Orders.promised(store) == 0;
@@ -224,7 +269,7 @@ suite("the promise tally (#30 PR-B) — every writer moves it", func() {
     ignore newOrder(store, "ord-1", alice);
     ignore Orders.applyTransition(store, "ord-1", #cancelled, 300);
     assert Orders.promised(store) == 0;
-    switch (Orders.expireBySession(store, "ord-1", "cs_test", 400)) {
+    switch (Orders.expireBySession(store, Set.empty<Types.OrderId>(), "ord-1", "cs_test", 400)) {
       case (#err(#illegalTransition(_))) {};
       case (_) assert false;
     };

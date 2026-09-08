@@ -932,7 +932,7 @@ describe("the delivered tour", () => {
     await mount("landing", "#/cli");
     await settle();
 
-    expect(el("tour").hidden).toBe(false);
+    expect(el("cli-steps").hidden).toBe(false);
     const cmd = el("cmd-link").textContent ?? "";
     expect(cmd).toContain("icp identity link web");
     // A bare DOMAIN, never an origin with a scheme. Verified against icp-cli
@@ -950,10 +950,14 @@ describe("the delivered tour", () => {
     // longer route; reading it from the identity is what lets the page exist without
     // an order at all.
     expect(el("credited-principal").textContent).toBe(FULL_PRINCIPAL);
-    // Verified against icp-cli 1.2.0, not invented: `icp identity principal`
-    // exists and takes --identity. The link command is NOT claimed to print a
-    // principal, because the CLI guide does not say it does.
-    expect(el("cmd-verify").textContent).toBe("icp identity principal --identity dev");
+    // ⚠️ **No `--identity` flag, and that is the point.** Step 2 makes the linked
+    // identity the default, so these act as it. Printing the flag instead hid the fact
+    // that step 2 was needed at all — a buyer verified with the flag, saw a match, then
+    // deployed as whatever their default was: a different principal, empty balance.
+    expect(el("cmd-default").textContent).toBe("icp identity default cyclepay-id");
+    expect(el("cmd-principal").textContent).toBe("icp identity principal");
+    expect(el("cmd-balance").textContent).toBe("icp cycles balance");
+    expect(el("cmd-deploy").textContent).toBe("icp deploy -e ic");
     // ⚠️ **The tour is its own VIEW now, and the order record is not on it.** It used
     // to sit on the order page and lead, with the facts collapsed beneath it — which
     // is how the delivered view came to show no cycle quantity at all. Two questions,
@@ -970,7 +974,7 @@ describe("the delivered tour", () => {
     state.order = anOrder("paid");
     await mount();
     await openFromHistory();
-    expect(el("tour").hidden).toBe(true);
+    expect(el("cli-steps").hidden).toBe(true);
     expect(el("view-cli").hidden).toBe(true);
   });
 
@@ -1010,7 +1014,7 @@ describe("the delivered tour", () => {
       el("orders").querySelector("tr")!.click();
       await vi.advanceTimersByTimeAsync(0);
       expect(el("active-order").hidden).toBe(false);
-      expect(el("tour").hidden).toBe(true);
+      expect(el("cli-steps").hidden).toBe(true);
 
       // The gateway delivers. The visitor does nothing.
       state.order = anOrder("delivered");
@@ -1021,7 +1025,7 @@ describe("the delivered tour", () => {
       // collapsed beneath it, which is how the delivered view came to show no cycle
       // quantity. Now the poll updates the record and offers the way onward.
       expect(el("active-order").hidden).toBe(false);
-      expect(el("tour").hidden).toBe(true);
+      expect(el("cli-steps").hidden).toBe(true);
       expect(el("order-next-row").hidden).toBe(false);
       expect(el<HTMLAnchorElement>("order-next-link").getAttribute("href")).toBe("#/cli");
       // NOTE: the receipt is asserted by the `receipt` suite, which controls its own
@@ -1139,7 +1143,7 @@ describe("routes that name nothing", () => {
     expect(el("active-order").hidden).toBe(false);
     // ⚠️ The tour is NOT here any more: the record shows the facts and links to the
     // guidance. Asserting its presence was asserting the layout this PR replaced.
-    expect(el("tour").hidden).toBe(true);
+    expect(el("cli-steps").hidden).toBe(true);
     expect(el("order-next-row").hidden).toBe(false);
   });
 
@@ -1784,8 +1788,8 @@ describe("simulation mode says so, in words (#99 2h)", () => {
     // unconditionally and relies on `hidden` alone.
     const note = document.getElementById("simulation-note")!;
     expect(note.hidden).toBe(true);
-    const cap = document.getElementById("trust-capacity-note")!;
-    expect(cap.hidden).toBe(true);
+    // The reserve figure has no note of its own any more: see the test below.
+    expect(document.getElementById("trust-capacity-note")).toBeNull();
   });
 
   test("⚠️ simulation mode states the scale on the buy view, as a sentence", async () => {
@@ -1800,15 +1804,33 @@ describe("simulation mode says so, in words (#99 2h)", () => {
     expect(note.textContent).toMatch(/no money moves/i);
   });
 
-  test("the available-to-sell figure gets its one sentence of explanation", async () => {
-    // Without it the ratio between a real reserve and a scaled quote reads as a
-    // bug: 775 T available while $10 buys 7 G.
+  test("⚠️ the reserve figure does NOT repeat the scale, on either mode", async () => {
+    // It used to carry its own sentence explaining the ratio between this figure and a
+    // quote — 775 T available while $10 buys 7 G. That comparison is only made by
+    // someone mid-purchase, and these figures are the landing page's trust panel; the
+    // page banner states the scale on every view already. Asserted in simulation mode
+    // specifically, because that is the only mode where the note ever appeared.
     state.divisor = 1_000n;
     await mount();
-    const cap = document.getElementById("trust-capacity-note")!;
-    expect(cap.hidden).toBe(false);
-    expect(cap.textContent).toMatch(/real reserve/i);
-    expect(cap.textContent).toContain("1000");
+    expect(document.getElementById("trust-capacity-note")).toBeNull();
+    const panel = document.getElementById("trust-figures")?.textContent ?? "";
+    expect(panel).not.toMatch(/real reserve/i);
+    // And the scale is still stated once, by the banner.
+    expect(document.getElementById("simulation-note")!.textContent).toContain("1/1000");
+  });
+
+  test("the capacity claim links to the account, rather than asserting it", async () => {
+    // "Anyone can query this without us" is the posture of the whole panel. Saying so
+    // while leaving the reader to find the account is asking for trust in the one place
+    // that offers verification.
+    await mount();
+    const link = document.getElementById("reserve-account-link") as HTMLAnchorElement;
+    expect(link).not.toBeNull();
+    // The gateway's own id, not a hardcoded one: `backendCanisterId` in these tests.
+    expect(link.getAttribute("href"))
+      .toBe("https://dashboard.internetcomputer.org/tokens/um5iw-rqaaa-aaaaq-qaaba-cai/account/aaaaa-aa");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
   });
 });
 
@@ -2868,7 +2890,7 @@ describe("the CLI page stands on its own", () => {
     await mount("landing", "#/cli");
     await settle();
     expect(el("view-cli").hidden).toBe(false);
-    expect(el("tour").hidden).toBe(false);
+    expect(el("cli-steps").hidden).toBe(false);
     expect(el("cmd-link").textContent).toContain("icp identity link web");
     // And it does not fall through to the missing-order page, which is what an
     // order-scoped route did when there was no order.
@@ -2908,7 +2930,7 @@ describe("the CLI page stands on its own", () => {
     await settle();
     el("sign-out").click();
     await settle();
-    expect(el("tour").hidden).toBe(true);
+    expect(el("cli-steps").hidden).toBe(true);
     expect(el("cli-summary").textContent).toMatch(/sign in/i);
   });
 
@@ -3089,5 +3111,212 @@ describe("the amount picker offers four choices, one of them Custom", () => {
     const btn = el("create-order");
     expect(tiers.compareDocumentPosition(btn) & Node.DOCUMENT_POSITION_FOLLOWING)
       .toBeTruthy();
+  });
+});
+
+describe("the landing call to action is part of the argument", () => {
+  test("⚠️ it lives INSIDE the hero's copy column, not below the section", async () => {
+    // It was a sibling of `<section class="hero">`, so the grid frame closed above it
+    // and it terminated neither column of a two-column layout. Asserted structurally
+    // rather than by pixels: a CSS-only nudge cannot satisfy this.
+    await mount("landing");
+    const btn = el("start-buy");
+    const copy = document.querySelector(".hero-copy")!;
+    expect(copy.contains(btn)).toBe(true);
+    expect(document.querySelector(".start-row")).toBeNull();
+  });
+
+  test("the price qualifier sits WITH the button, on one row", async () => {
+    // Fine print beside what it qualifies, rather than a third stacked block above it.
+    await mount("landing");
+    const row = document.querySelector(".hero-action")!;
+    expect(row.contains(el("start-buy"))).toBe(true);
+    expect(row.contains(el("rate-claim"))).toBe(true);
+  });
+
+  test("it follows the promise it acts on", async () => {
+    // Headline, promise, action. The button must come after the lede in document
+    // order, or it is offering to act on a claim the reader has not met yet.
+    await mount("landing");
+    const lede = document.querySelector(".hero-copy .lede")!;
+    const row = document.querySelector(".hero-action")!;
+    expect(lede.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+  });
+
+  test("still exactly one loud button on the page", async () => {
+    // `cta-hero` is the only place that size is used: a second would make neither
+    // prominent. Pinned so the move did not quietly duplicate it.
+    await mount("landing");
+    expect(document.querySelectorAll(".cta-hero").length).toBe(1);
+  });
+});
+
+describe("a typed amount gets the SAME detail as a preset", () => {
+  async function typeCustom(value: string): Promise<void> {
+    await mount();
+    el("tier-custom").click();
+    await settle();
+    const field = el<HTMLInputElement>("custom-amount");
+    field.value = value;
+    field.dispatchEvent(new Event("input"));
+    await settle();
+  }
+
+  test("⚠️ the split rows are FILLED, not three empty labels", async () => {
+    // The bug: `customQuote` kept only `.cycles` from the preview and discarded
+    // `feeCents` and `netCents`, so the card had no split for a typed amount and
+    // rendered "Payment processing", "Buys cycles" and "Operator margin" with nothing
+    // in them. `QuotePreview` carries all four fields for any amount; the data was
+    // arriving and being thrown away one line before it was needed.
+    await typeCustom("53");
+    expect(el("amount-detail").hidden).toBe(false);
+    for (const id of ["detail-pay", "detail-processing", "detail-net", "detail-margin"]) {
+      expect(el(id).textContent).not.toBe("");
+    }
+    expect(el("detail-margin").textContent).toBe("none");
+  });
+
+  test("⚠️ no labelled row in the card is ever left blank", async () => {
+    // The general form of the same defect: a label with no value reads as a figure
+    // that failed to load. Asserted across every row so a future row cannot ship
+    // half-wired the way these three did.
+    await typeCustom("53");
+    const rows = el("amount-detail").querySelectorAll("dl > div");
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      const label = row.querySelector("dt")?.textContent ?? "";
+      const value = row.querySelector("dd")?.textContent ?? "";
+      expect(value, `row "${label}" has a label and no value`).not.toBe("");
+    }
+  });
+
+  test("⚠️ no rate means no CARD, not a card with a hole in it", async () => {
+    // ⚠️ **This path is why the "no labelled row is blank" test above was vacuous.**
+    // That test only ever ran the PRICED path, because the mock always answers with
+    // cycles. With no rate, `renderAmountDetail` wrote an empty string into "You
+    // receive" and showed everything else, so a buyer saw "You pay $53.00" beside a
+    // labelled row with nothing in it. Found in a real browser, not by this suite.
+    state.quote = { ...state.quote, cycles: undefined };
+    await typeCustom("53");
+    expect(el("amount-detail").hidden).toBe(true);
+    // The reason lives in one place, and the button refuses.
+    expect(el("rate-line").textContent).toMatch(/no exchange rate/i);
+    expect(el<HTMLButtonElement>("create-order").disabled).toBe(true);
+  });
+
+  test("⚠️ and a PRESET with no rate hides it too, not just a typed amount", async () => {
+    // The other half: the bug was in the shared renderer, so both paths reach it.
+    state.quote = { ...state.quote, cycles: undefined };
+    await mount();
+    expect(el("amount-detail").hidden).toBe(true);
+    expect(el("detail-receive").textContent).toBe("");
+  });
+
+  test("the figures come from the BACKEND's preview, not from arithmetic here", async () => {
+    // The mock answers a fixed quote, so these are the backend's numbers rather than
+    // anything this page derived: what the buyer sees and what create_order locks
+    // cannot disagree.
+    await typeCustom("53");
+    expect(el("detail-processing").textContent).toContain("$0.45");
+    expect(el("detail-net").textContent).toBe("$4.55");
+  });
+});
+
+describe("the CLI page is a numbered sequence", () => {
+  async function openCli(): Promise<void> {
+    state.order = undefined;
+    await mount("landing", "#/cli");
+    await settle();
+  }
+
+  test("⚠️ all FOUR steps are there, in order, and step 2 is the one that was missing", async () => {
+    // The page shipped two cards covering four commands and omitted `icp identity
+    // default` entirely. Without it a buyer links, verifies with an explicit
+    // `--identity` flag, sees a match, then deploys as whatever their default identity
+    // was: a different principal with an empty balance.
+    await openCli();
+    const steps = el("cli-steps").querySelectorAll(":scope > li");
+    // FIVE now: the prerequisite is step one, inside the list. It was a "Before you
+    // start" panel above it, and a note above a numbered procedure reads as optional
+    // preamble — while skipping it makes the link command fail outright.
+    expect(steps.length).toBe(5);
+    expect(steps[0]!.className).toContain("step-prereq");
+    expect(steps[0]!.textContent).toMatch(/CLI access/);
+    const commands = Array.from(el("cli-steps").querySelectorAll("code[id^='cmd-']"))
+      .map((n) => n.textContent);
+    expect(commands).toEqual([
+      "icp identity link web cyclepay-id --app localhost:3000",
+      "icp identity default cyclepay-id",
+      "icp identity principal",
+      "icp cycles balance",
+      "icp deploy -e ic",
+    ]);
+  });
+
+  test("the identity is named after the app, not 'dev'", async () => {
+    // `dev` is what everyone's throwaway local identity is already called, so the
+    // command silently proposed overwriting it.
+    await openCli();
+    expect(el("cmd-link").textContent).toContain("cyclepay-id");
+    expect(el("cmd-link").textContent).not.toContain(" dev ");
+  });
+
+  test("⚠️ the prerequisite IS step one, and it names where to do it", async () => {
+    // It was the last paragraph of the first card — after the command it guards, so a
+    // warning read only by someone who already failed. Then it was a panel above the
+    // list, which reads as preamble. It is step one.
+    //
+    // ⚠️ And it links the SETTINGS, not only the guide. Saying "enable CLI access for
+    // your Internet Identity" with a docs link made a buyer read a page to discover the
+    // switch lives in their id.ai settings.
+    await openCli();
+    const first = el("cli-steps").querySelector(":scope > li")!;
+    expect(first.textContent).toMatch(/CLI access/);
+    expect(first.querySelector<HTMLAnchorElement>("#cli-settings")!.getAttribute("href"))
+      .toBe("https://id.ai");
+    expect(first.querySelector("#cli-guide")).not.toBeNull();
+  });
+
+  test("⚠️ the agent aside does not break out to full bleed", async () => {
+    // `.explainer.sunk` breaks the measure with a negative inline margin and paints its
+    // own background — a landing-page band. Directly under a numbered procedure it read
+    // as a different page pasted on.
+    await openCli();
+    const aside = document.querySelector(".cli-aside")!;
+    expect(aside).not.toBeNull();
+    expect(aside.className).not.toContain("sunk");
+    expect(document.querySelector("#view-cli .explainer")).toBeNull();
+  });
+
+  test("the guide link points at the current CLI version", async () => {
+    await openCli();
+    expect(el<HTMLAnchorElement>("cli-guide").getAttribute("href"))
+      .toBe("https://cli.internetcomputer.org/1.4/guides/managing-identities/#signing-in-as-a-specific-app");
+  });
+
+  test("⚠️ the verify step states the values THIS page shows", async () => {
+    // The reason to verify here rather than in the docs: both numbers are in front of
+    // the buyer. The expected balance comes from the same ledger read the heading uses,
+    // so the page cannot tell a buyer to expect a figure it is not itself showing.
+    await openCli();
+    expect(el("credited-principal").textContent).toBe(FULL_PRINCIPAL);
+    // The FIGURE, not "the balance above": the page has the number, so it states it.
+    expect(el("cli-expect-balance").textContent).toMatch(/^[\d.]+ [KMGT]? ?cycles$/);
+    // ⚠️ Steps, not commands. The page renders four numbered steps holding five
+    // commands — step 3 verifies twice — and calling them four commands was a count of
+    // the wrong thing in the copy that introduces the sequence.
+    expect(el("cli-summary").textContent).toMatch(/One setting and four steps/);
+    expect(el("cli-steps").querySelectorAll(":scope > li").length).toBe(5);
+    expect(el("cli-summary").textContent).not.toMatch(/four commands/);
+  });
+
+  test("every command has a copy button wired to its own id", async () => {
+    // Five commands, five buttons: a copy button pointing at the wrong id is silent.
+    await openCli();
+    for (const id of ["cmd-link", "cmd-default", "cmd-principal", "cmd-balance", "cmd-deploy"]) {
+      const btn = document.querySelector(`button.copy[data-copy="${id}"]`);
+      expect(btn, `no copy button for #${id}`).not.toBeNull();
+    }
   });
 });

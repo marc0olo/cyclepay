@@ -16,7 +16,20 @@
   --icp-bg-sunk: #f3f1ea;         /* alternating sections, panels */
   --icp-fg: #1a1a1a;              /* ink: body text, headings */
   --icp-fg-secondary: #4b4943;    /* meta strips, labels */
-  --icp-fg-muted: #868078;        /* captions, attributions */
+  /* ⚠️ **Darkened from the brand palette's #868078, deliberately, and measured.**
+     #868078 on this parchment is 3.71:1 — it FAILS WCAG AA for body text (4.5:1) and
+     clears only the large-text bar, while `.muted` is 0.875rem prose: step captions,
+     the trust-panel framing, "Google, Apple, or Microsoft". This is 5.15:1.
+
+     internetcomputer.org/icp-mcp carries #868078 in light and #7a7367 in dark, so the
+     reference fails AA on muted text in BOTH modes. Not a reason to keep it: the DARK
+     palette in this very file was already tuned upward for the same reason
+     (#8f867a here vs the reference's #7a7367, 5.25 vs 4.01), so light was simply never
+     revisited. This applies that correction to the other mode.
+
+     Same hue and chroma family, one step darker — the palette's character is intact.
+     `src/frontend/src/tokens.test.ts` holds the ratio so it cannot drift back. */
+  --icp-fg-muted: #6f6961;        /* captions, attributions */
   --icp-rule: #e7e3da;            /* 1px dividers — the only border colour */
 
   /* One accent. Rust. */

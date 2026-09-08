@@ -73,9 +73,28 @@
           <p class="lede">
             Your canisters live on mainnet in a few minutes, paid for with a credit card.
           </p>
-          <p class="meta-strip">
-            <span id="rate-claim">At the protocol exchange rate, plus card processing.</span>
-          </p>
+          <!-- IMPORTANT: The action lives INSIDE the argument column, on a row with
+               its own qualifier, and it used to be a sibling of the whole hero
+               section. Outside the frame it read as leftover: the grid border closed
+               above it, a gap opened below it before the stats, and it terminated
+               neither column of a two-column layout. The reader's eye went left
+               column, then right column (numbered steps pull hard), then had to come
+               back down and left to find the only thing to do.
+
+               On a row rather than stacked under the prose: the button leads and the
+               price qualifier sits beside it as fine print, which is where fine print
+               belongs relative to what it qualifies. One gesture, not three blocks.
+
+               The highlight is POSITION and ISOLATION, not more colour. On a
+               near-black page this is the only saturated element on screen; a wash or
+               a glow behind it would lower its contrast against its own surroundings.
+               A hairline rule separates the action from the prose instead. -->
+          <div class="hero-action">
+            <button id="start-buy" type="button" class="cta cta-hero">Buy cycles</button>
+            <p class="meta-strip hero-action-note">
+              <span id="rate-claim">At the protocol exchange rate, plus card processing.</span>
+            </p>
+          </div>
         </div>
 
         <!-- The four steps as a figure rather than a wrapping sentence. The
@@ -114,15 +133,6 @@
         </ol>
       </section>
 
-      <!-- One route in. There is one thing to buy, delivered to one place, so
-           the page does not ask the visitor to classify themselves before it
-           (#29). -->
-      <!-- The one thing this page is for. `cta-hero` is the only place that size
-           is used, deliberately: a second one would make neither prominent. -->
-      <p class="start-row start-row-hero">
-        <button id="start-buy" type="button" class="cta cta-hero">Buy cycles</button>
-      </p>
-
       <!-- ── The stats, promoted ────────────────────────────────────────────────
            Moved up from the bottom and given the page's largest numerals, because
            they are the only thing here a visitor can check without trusting us.
@@ -144,7 +154,6 @@
             <!-- NOTE: in simulation mode this figure is REAL reserve cycles
                  while quotes are scaled, so the ratio between them is startling
                  and correct. One sentence, or it reads as a bug. -->
-            <dd id="trust-capacity-note" class="muted" hidden></dd>
           </div>
           <div id="trust-delivered-wrap">
             <dt>Delivered so far</dt>
@@ -157,9 +166,17 @@
             <dd id="trust-delivered-note" class="muted"></dd>
           </div>
         </dl>
+        <!-- IMPORTANT: The claim is now a LINK, not an assertion. "Anyone can query
+             this without us" is the whole posture of these figures, and a sentence
+             saying so while making the reader find the account themselves is asking
+             for trust in the very place it offers verification. The href is built by
+             `renderTrustFigures` because it needs this deployment's own canister id. -->
         <p class="muted trust-frame">
-          Capacity is read from the cycles ledger, which anyone can query without
-          us. Delivered totals are ours to report.
+          Capacity is read from the cycles ledger, which anyone can query without us:
+          <a id="reserve-account-link" target="_blank" rel="noopener noreferrer"
+             href="https://dashboard.internetcomputer.org/tokens/um5iw-rqaaa-aaaaq-qaaba-cai">see
+            the reserve account &#8599;</a>.
+          Delivered totals are ours to report.
         </p>
       </section>
 
@@ -477,81 +494,130 @@
       <section id="view-cli" class="view" hidden>
         <h2 class="section-h">Link the ICP CLI</h2>
         <p class="lede" id="cli-summary"></p>
-<div id="tour">
-          <section class="handoff step-card">
-            <h3 class="section-h">Link your identity to the <em>CLI</em></h3>
+
+        <!-- IMPORTANT: NUMBERED steps, one treatment each. This was two cards with two
+             different visual treatments covering four commands: the first card held a
+             command, a fact, a second command and two paragraphs of caveats, and the
+             second had an accent rail for no reason the content justified. Nothing said
+             what order to do things in, and step 2 was missing outright.
+
+             An `<ol>`, so the sequence is the markup rather than a visual convention,
+             and screen readers announce the position. -->
+        <ol id="cli-steps" class="cli-steps">
+          <!-- IMPORTANT: The prerequisite is STEP ONE, inside the list, not a panel
+               above it. It was a "Before you start" note, and a note above a numbered
+               procedure reads as optional preamble - but without this switch the link
+               command fails outright, so it is the first thing you do, numbered like
+               everything else and tinted so it does not look like the others.
+
+               It also names WHERE. Saying "enable CLI access for your Internet
+               Identity" and linking only the guide made a buyer read a docs page to
+               discover the switch lives in their id.ai settings. -->
+          <li class="step-prereq">
+            <h3 class="section-h">Enable CLI access on your identity</h3>
             <p>
-              This links the account your cycles are in, so the CLI spends the
-              same balance you just topped up.
+              Open your
+              <a id="cli-settings" target="_blank" rel="noopener noreferrer" href="#/">id.ai settings &#8599;</a>
+              and turn on CLI access. Without it the next command fails: the sign-in
+              page says "CLI access not enabled" and never returns an identity.
+            </p>
+            <p class="muted">
+              <a id="cli-guide" target="_blank" rel="noopener noreferrer" href="#/">How this works &#8599;</a>
+            </p>
+          </li>
+
+          <li>
+            <h3 class="section-h">Link this site's identity to the CLI</h3>
+            <p class="muted">
+              This links the account your cycles are in, so the CLI acts as the same
+              identity this page is signed in as.
             </p>
             <div class="cmd">
               <code id="cmd-link" class="mono"></code>
               <button type="button" class="copy" data-copy="cmd-link"
                       aria-label="Copy the identity link command"></button>
             </div>
-            <!-- Copyable because step 3 asks the buyer to compare it against what
-                 `icp identity principal` prints, and comparing two 63-character
-                 principals by eye is how a mismatch gets missed.
+          </li>
 
-                 NOTE: INLINE, not a `.cmd` block: the two commands on this card are the
-                 deliverable, and giving a fact the same visual weight as them makes
-                 the page compete with itself. A first pass used `.cmd` and grew the
-                 delivered view by 54px, which the visual baseline caught. -->
+          <li>
+            <h3 class="section-h">Make it the identity the CLI uses</h3>
+            <!-- IMPORTANT: The step that was MISSING. Without it a buyer links
+                 successfully, verifies, sees a match, then deploys as whatever their
+                 default identity was: a different principal with an empty balance. -->
             <p class="muted">
-              Your cycles are in
+              Every command below acts as your default identity, so point it at the one
+              you just linked.
+            </p>
+            <div class="cmd">
+              <code id="cmd-default" class="mono"></code>
+              <button type="button" class="copy" data-copy="cmd-default"
+                      aria-label="Copy the set-default-identity command"></button>
+            </div>
+          </li>
+
+          <li>
+            <h3 class="section-h">Check it worked</h3>
+            <!-- IMPORTANT: Each command paired with the value THIS PAGE shows, which is
+                 the whole reason to verify here rather than in the docs: the buyer has
+                 both numbers in front of them. -->
+            <div class="cmd">
+              <code id="cmd-principal" class="mono"></code>
+              <button type="button" class="copy" data-copy="cmd-principal"
+                      aria-label="Copy the print-principal command"></button>
+            </div>
+            <p class="muted expect">
+              Must print
               <code id="credited-principal" class="mono"></code>
               <button type="button" class="copy copy-inline" data-copy="credited-principal"
-                      aria-label="Copy the principal your cycles are in">Copy</button>
-            </p>
-            <p class="muted">
-              Check it landed on the right identity:
+                      aria-label="Copy the principal your cycles are in"></button>
             </p>
             <div class="cmd">
-              <code id="cmd-verify" class="mono"></code>
-              <button type="button" class="copy" data-copy="cmd-verify"
-                      aria-label="Copy the verify identity command"></button>
+              <code id="cmd-balance" class="mono"></code>
+              <button type="button" class="copy" data-copy="cmd-balance"
+                      aria-label="Copy the check-balance command"></button>
             </div>
-            <p class="muted">
-              That prints a principal. It should match the one above. If it does
-              not, the <code>--app</code> value did not match this site and the
-              balance will look empty.
+            <p class="muted expect">
+              Must match <span id="cli-expect-balance" class="mono"></span>
             </p>
             <p class="muted">
-              You need to enable CLI access for your Internet Identity first, or
-              the sign-in page says "CLI access not enabled" and the command never
-              receives an identity.
-              <a href="https://cli.internetcomputer.org/1.2/guides/managing-identities/#signing-in-as-a-specific-app"
-                 target="_blank" rel="noopener noreferrer">Read the guide ↗</a>
+              A different principal means the <code>--app</code> value did not match
+              this site, and the balance will look empty.
             </p>
-          </section>
+          </li>
 
-          <section class="step-card outlined">
-            <h3 class="section-h">Deploy</h3>
+          <li>
+            <h3 class="section-h">Deploy to mainnet</h3>
+            <p class="muted">Run this in your own project.</p>
             <div class="cmd">
-              <code id="cmd-create" class="mono">icp deploy -e ic</code>
-              <button type="button" class="copy" data-copy="cmd-create"
-                      aria-label="Copy the canister create command"></button>
+              <code id="cmd-deploy" class="mono"></code>
+              <button type="button" class="copy" data-copy="cmd-deploy"
+                      aria-label="Copy the deploy command"></button>
             </div>
             <p class="muted">
               New to the tooling? Follow the
               <a href="https://docs.internetcomputer.org/getting-started/quickstart"
-                 target="_blank" rel="noopener noreferrer">quickstart ↗</a>.
+                 target="_blank" rel="noopener noreferrer">quickstart &#8599;</a>.
             </p>
-          </section>
-        </div>
+          </li>
+        </ol>
 
-        <!-- Moved here from the landing page, not deleted. It is guidance for after
-             the purchase rather than a reason to make one, and it is still aimed at a
-             human: someone pointing their own coding agent at the tooling. -->
-        <section class="explainer sunk">
-          <h3 class="section-h">Build with an agent</h3>
+        <!-- Moved here from the landing page, not deleted. It is guidance for after the
+             purchase rather than a reason to make one, and it is still aimed at a human:
+             someone pointing their own coding agent at the tooling. -->
+        <!-- IMPORTANT: NOT `.explainer.sunk` here. That class breaks out to full bleed
+             with its own background fill, which works as a band on the landing page and
+             reads as a different page pasted on immediately after a numbered procedure.
+             A quiet aside with a rule instead: subordinate to the steps, not a new
+             section competing with them. -->
+        <aside class="cli-aside">
+          <h3 class="section-h">Building with an agent?</h3>
           <p>
             Point your coding agent at the
             <a href="https://mcp.internetcomputer.org" target="_blank" rel="noopener noreferrer">MCP server &#8599;</a>
             and the
             <a href="https://skills.internetcomputer.org" target="_blank" rel="noopener noreferrer">skills library &#8599;</a>.
           </p>
-        </section>
+        </aside>
 
         <p><a id="cli-back" href="#/history">Back to your dashboard</a></p>
       </section>

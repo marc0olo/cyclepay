@@ -909,8 +909,70 @@ module {
   /// response was lost (a trap or upgrade between the order commit and the
   /// continuation), the order holds no session id — and this event, arriving ~30
   /// minutes later, is the thing that tells it which session it had.
+  /// Settle an order whose session Stripe says is dead, attributing it to whoever
+  /// actually caused it.
+  ///
+  /// ⚠️ **The buyer's intent decides the attribution, not who wins the race.**
+  /// `cancel_order` expires the session at Stripe BEFORE recording the cancel (#33
+  /// option B: nothing is ever half-cancelled), so between those two steps Stripe's
+  /// honest answer to anyone asking is "expired" — and the `checkout.session.expired`
+  /// webhook it fires arrives in that window. Three different writers could reach the
+  /// order first: that webhook, the #52 recovery sweep, and the admin expire.
+  ///
+  /// Whoever arrives, the state must be the same. So the caller passes the set of
+  /// orders whose OWNER has asked to cancel, and this function reads it: a requested
+  /// cancel settles as `#cancelled` with no `expiredBy`, anything else as `#expired`
+  /// with its cause. `cancel_order`'s own transition then finds the order already
+  /// `#cancelled` and returns success through its idempotent branch.
+  ///
+  /// ⚠️ **One owner for the decision, deliberately.** An earlier fix guarded only the
+  /// sweep, from a transient set the webhook's module could not see, and the webhook
+  /// went on winning. A guard that each writer has to remember is a guard the next
+  /// writer forgets; this is the only place `#expired` gets chosen over `#cancelled`.
+  public func settleUnpayable(
+    store : Store,
+    requestedCancels : Set.Set<Types.OrderId>,
+    id : Types.OrderId,
+    cause : Types.ExpiredBy,
+    nowNs : Int,
+  ) : Result.Result<Types.Order, TransitionError> {
+    switch (store.orders.get(id)) {
+      case null #err(#notFound(id));
+      case (?order) {
+        if (requestedCancels.contains(id)) {
+          // The owner asked for this and Stripe has confirmed the session is dead, so
+          // it is provably unpayable AND the buyer's own decision. `expiredBy` stays
+          // null: nothing expired, someone cancelled.
+          switch (transition(order, #cancelled, nowNs)) {
+            case (#ok(updated)) {
+              // Pruned here rather than by the caller: the intent has been honoured, so
+              // holding it would let a LATER expiry of a re-used id read as a cancel.
+              requestedCancels.remove(id);
+              #ok(commitTransition(store, order, updated));
+            };
+            case (#err(e)) #err(e);
+          };
+        } else {
+          expireWithCause(store, id, cause, nowNs);
+        };
+      };
+    };
+  };
+
+  /// ⚠️ **Takes `requestedCancels`, and that parameter is the fix.** This is the
+  /// `checkout.session.expired` WEBHOOK's path, and it is the writer that actually wins
+  /// the race with `cancel_order`: our own expire call makes Stripe fire this event, and
+  /// it arrives before the cancel is recorded. An earlier attempt routed the recovery
+  /// sweep and the admin expire through the attribution and left this one calling
+  /// straight through, so the buyer's cancellation went on being recorded as
+  /// `#sessionExpired` — the same mistake twice, because the fix was applied to the two
+  /// paths that were not the problem.
+  ///
+  /// A required parameter rather than an optional one on purpose: a caller cannot reach
+  /// this function without deciding what it knows about the buyer's intent.
   public func expireBySession(
     store : Store,
+    requestedCancels : Set.Set<Types.OrderId>,
     id : Types.OrderId,
     sessionId : Text,
     nowNs : Int,
@@ -918,18 +980,30 @@ module {
     switch (store.orders.get(id)) {
       case null #err(#notFound(id));
       case (?order) {
-        switch (transition(order, #expired, nowNs)) {
-          case (#ok(updated)) {
-            let expired = {
-              updated with
-              expiredBy = ?(#sessionExpired : Types.ExpiredBy);
-              stripeSessionId = ?sessionId;
+        if (requestedCancels.contains(id)) {
+          // The owner asked to cancel and Stripe has now confirmed the session is dead
+          // — which is what the cancel itself caused. Attribute it to them.
+          switch (transition(order, #cancelled, nowNs)) {
+            case (#ok(updated)) {
+              requestedCancels.remove(id);
+              #ok(commitTransition(store, order, { updated with stripeSessionId = ?sessionId }));
             };
-            // Release point 1 (#30), and the most common one: Stripe says the
-            // session died unpaid, so every unpaid order releases here.
-            #ok(commitTransition(store, order, expired));
+            case (#err(e)) #err(e);
           };
-          case (#err(e)) #err(e);
+        } else {
+          switch (transition(order, #expired, nowNs)) {
+            case (#ok(updated)) {
+              let expired = {
+                updated with
+                expiredBy = ?(#sessionExpired : Types.ExpiredBy);
+                stripeSessionId = ?sessionId;
+              };
+              // Release point 1 (#30), and the most common one: Stripe says the
+              // session died unpaid, so every unpaid order releases here.
+              #ok(commitTransition(store, order, expired));
+            };
+            case (#err(e)) #err(e);
+          };
         };
       };
     };

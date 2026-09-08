@@ -1748,6 +1748,8 @@ persistent actor CyclesGateway {
   /// effect on the very next webhook.
   func webhookDeps() : Card.Deps {
     {
+      // The live set: `Deps` is rebuilt per call, so this is never a stale copy.
+      cancelRequests;
       orders = orderStore;
       dedup;
       orphanStore;
@@ -2072,6 +2074,50 @@ persistent actor CyclesGateway {
   /// re-earning after a deploy. Neither is money state.
   transient let expiryChecksInFlight = Set.empty<Types.OrderId>();
   transient var lastExpiryScanAtNs : Int = 0;
+
+  /// Orders whose OWNER has asked to cancel, recorded before the Stripe outcall (§4.3).
+  ///
+  /// ⚠️ **`cancel_order` expires the session at Stripe BEFORE recording the cancel**
+  /// (#33 option B: nothing is ever half-cancelled). Between those two steps the order
+  /// looks expired to everyone, because it is: Stripe fires `checkout.session.expired`
+  /// immediately, and three writers can reach the order first — that webhook, the #52
+  /// sweep, and the admin expire. The buyer's own cancellation was recorded as
+  /// `#sessionExpired`, which is exactly the provenance #34 added `expiredBy` to keep.
+  ///
+  /// ⚠️ **Intent, not a lock, and that distinction is the fix.** An earlier attempt used
+  /// a transient set and made the sweep skip; the webhook lives in another module that
+  /// could not see it, so it went on winning. Preventing the race needs every writer to
+  /// remember a guard. Recording the intent means whoever wins ATTRIBUTES correctly, so
+  /// the race stops mattering. `Orders.settleUnpayable` is the one place that reads it.
+  ///
+  /// ⚠️ **`expireWithCause`'s own no-op guard cannot cover this.** That guard protects
+  /// an order that is ALREADY `#cancelled`; here the cancel has not been recorded yet.
+  ///
+  /// ⚠️ **Stable, because a trap or an upgrade mid-cancel must not lose the intent** —
+  /// that is precisely the window where the order settles without the buyer. A new
+  /// stable var is upgrade-compatible; this is not a field on an existing record.
+  ///
+  /// ⚠️ **Membership implies `#created`, and every exit from `#created` removes.** That
+  /// is the bound, and it has to be enumerated rather than asserted, because the earlier
+  /// claim here — "pruned when the order goes terminal" — was simply not true of the
+  /// paths that return an error. `isLegalTransition` gives `#created` three exits:
+  ///
+  ///  * `#cancelled` and `#expired` — every writer goes through `Orders.settleUnpayable`
+  ///    or `Orders.expireBySession`, which remove the id in the act of deciding with it,
+  ///    plus `cancel_order`'s own success and already-settled returns below.
+  ///  * `#paid` — one writer, `Orders.markPaid`, called only from `rails/Card.mo`, which
+  ///    removes it there: the payment won, and `#cancelled` is unreachable from `#paid`,
+  ///    so nothing could honour the intent afterwards.
+  ///
+  /// `expireWithCause` is the apparent fourth writer and needs no removal: it fires only
+  /// for an order whose session never attached, and `cancel_order` records nothing for
+  /// one of those — with no session id it takes the sessionless branch.
+  ///
+  /// ⚠️ **A stale entry could never mis-attribute even so**, because a delivered or paid
+  /// order cannot transition to `#cancelled`. The reason to bound it is stable growth,
+  /// not correctness — which is why the fix is one removal at the third exit rather than
+  /// threading the set through every status writer.
+  let cancelRequests = Set.empty<Types.OrderId>();
 
   /// Orders already audited for a blocked delivery this session, so a stuck
   /// order contributes one audit line rather than one per sweep. Transient: the
@@ -3195,7 +3241,7 @@ persistent actor CyclesGateway {
     // order while the outcall was in flight, and the matrix no-ops `#cancelled → #expired`
     // for free — which is what keeps the buyer's own decision, and its `expiredBy`
     // provenance, from being overwritten.
-    switch (Orders.expireWithCause(orderStore, id, #sessionExpired, Time.now())) {
+    switch (Orders.settleUnpayable(orderStore, cancelRequests, id, #sessionExpired, Time.now())) {
       case (#ok(updated)) {
         auditAdmin(caller, "order.expiredByAdmin", id # ": reserve capacity released");
         #ok(updated);
@@ -3265,6 +3311,11 @@ persistent actor CyclesGateway {
         audit("order.cancelledSessionless", id # " had no session; cancelled without an outcall");
       };
       case (?sessionId) {
+        // ⚠️ Recorded BEFORE the await, and deliberately NOT cleared in a `finally`:
+        // this is the buyer's intent, not a lock. If this call traps, the intent has to
+        // survive, because that is the window in which some other writer settles the
+        // order. It is pruned once the order is terminal.
+        cancelRequests.add(id);
         switch (await* expireStripeSession(sessionId)) {
           case (#ok) {};
           case (#notOpen(_)) {
@@ -3336,8 +3387,29 @@ persistent actor CyclesGateway {
       };
     };
     let ?cancelled = tryTransition(id, #cancelled) else {
-      return #err("order " # id # " refused the transition to cancelled");
+      // ⚠️ **Reaching here now means the race was WON by someone else and settled
+      // correctly**, which is the normal path rather than a failure: the
+      // `checkout.session.expired` webhook Stripe fires from our own expire call
+      // routinely lands first, reads `cancelRequests`, and records `#cancelled`. So
+      // report the buyer's own order back to them rather than an error.
+      let ?fresh = Orders.get(orderStore, id) else return #err("no order " # id);
+      switch (fresh.status) {
+        case (#cancelled) {
+          cancelRequests.remove(id);
+          audit("order.cancelled", id # " cancelled by owner (settled by the expiry event)");
+          return #ok(fresh);
+        };
+        case (_) {
+          // Genuinely something else: paid in the window, or an admin ended it. The
+          // page re-renders from this response, so it shows what actually happened.
+          cancelRequests.remove(id);
+          return #err(
+            "order " # id # " was already settled while this was in flight — the status above is current"
+          );
+        };
+      };
     };
+    cancelRequests.remove(id);
     audit("order.cancelled", id # " cancelled by owner");
     #ok(cancelled);
   };
@@ -4046,7 +4118,7 @@ persistent actor CyclesGateway {
         // `#cancelled → #expired` for free, which is what keeps a buyer's own
         // cancellation from being overwritten with a system expiry — and with it the
         // `expiredBy` provenance that says which of the two happened.
-        switch (Orders.expireWithCause(orderStore, orderId, #sessionExpired, Time.now())) {
+        switch (Orders.settleUnpayable(orderStore, cancelRequests, orderId, #sessionExpired, Time.now())) {
           case (#ok(_)) audit("stripe.strandedExpired", orderId # ": Stripe confirmed the session expired; reserve capacity released");
           case (#err(_)) {}; // moved under us — cancelled, paid, already expired. Correct to do nothing.
         };

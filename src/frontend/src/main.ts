@@ -22,7 +22,15 @@ import {
   type Tier,
 } from "./actor";
 import { currentIdentity, signIn, signOut } from "./auth";
-import { linkIdentityCommand, verifyIdentityCommand } from "./config";
+import {
+  CLI_IDENTITY_GUIDE,
+  IDENTITY_SETTINGS,
+  deployCommand,
+  identityDefaultCommand,
+  linkIdentityCommand,
+  verifyBalanceCommand,
+  verifyPrincipalCommand,
+} from "./config";
 import {
   DELIVERY_FIELDS,
   GATE_FIELDS,
@@ -419,7 +427,15 @@ let customUsdCents: bigint | null = null;
 /// The backend's quote for the typed amount, from `quote_previews` — never
 /// computed here, so what the buyer is shown and what `create_order` locks cannot
 /// disagree.
-let customQuote: bigint | null = null;
+///
+/// ⚠️ **The WHOLE preview, not just its cycles.** This held only `.cycles` and threw
+/// `feeCents` and `netCents` away, so the detail card had no split for a typed amount
+/// and rendered three labelled rows with nothing in them: "Payment processing",
+/// "Buys cycles", "Operator margin", all empty. The comment there justified the blanks
+/// by claiming a typed amount is quoted for cycles but not for the split, which is
+/// simply false — `QuotePreview` carries all four fields for any amount. The data was
+/// arriving and being discarded one line before it was needed.
+let customQuote: QuotePreview | null = null;
 /// The gate's bounds, read from `lifecycle_config`. Null until the market loads;
 /// the input stays disabled until then rather than guessing a range.
 let amountBounds: { min: bigint; max: bigint } | null = null;
@@ -641,10 +657,16 @@ function renderView(): void {
   // buyer opens to see what they got showed no cycle quantity, hid the receipt two
   // clicks deep, and buried a problem notice. The tour moved to its own view instead,
   // which is the fix the collapse was standing in for.
-  renderTour(onCli);
+  renderCliSteps(onCli);
   if (onCli) {
-    // The balance drives the summary, so it must be read on this view too.
-    void refreshLedgerBalance().then(renderCliSummary);
+    // ⚠️ **BOTH renderers re-run when the read lands, not just the summary.** They
+    // state the same balance in two places — the lede, and the figure step 3 tells the
+    // buyer to expect — and re-rendering one left the other saying "the balance above"
+    // about a number the page had by then.
+    void refreshLedgerBalance().then(() => {
+      renderCliSummary();
+      renderCliSteps(onCli);
+    });
     renderCliSummary();
   }
 
@@ -1673,16 +1695,23 @@ function renderTrustFigures(
   cap.textContent = `${formatCycles(stats.availableToSell)} cycles`;
 
   // ⚠️ **This figure stays in REAL cycles while quotes are scaled**, because
-  // `availableToSell` is `reserveFloor - promised` and only `promised` is scaled.
-  // So it can read 775 T while $10 buys 7 G — arithmetically right, and a
-  // startling ratio that reads as a bug without a word of explanation.
-  const capNote = document.getElementById("trust-capacity-note");
-  if (capNote) {
-    const divisor = simulationDivisor();
-    capNote.textContent =
-      `This is the real reserve. In simulation mode each purchase is scaled down ` +
-      `by ${divisor}, so this figure covers far more orders than its size suggests.`;
-    capNote.hidden = divisor === 1n;
+  // `availableToSell` is `reserveFloor - promised` and only `promised` is scaled. So it
+  // can read 775 T while $10 buys 7 G.
+  //
+  // ⚠️ **It no longer carries its own sentence about that, and the reason is where the
+  // reader is.** The note explained the ratio between this figure and a QUOTE, which is
+  // a comparison only someone mid-purchase makes; these figures are the landing page's
+  // trust panel. The page banner already states the scale on every view, so the note
+  // was a second copy of it aimed at a comparison the reader is not making yet.
+
+  // The account these figures come from, on a dashboard that is not us. Built here
+  // because it needs this deployment's own canister id rather than a hardcoded one.
+  const accountLink = document.getElementById("reserve-account-link") as HTMLAnchorElement | null;
+  const gateway = liveBackendId ?? backendCanisterId;
+  if (accountLink && gateway !== undefined && gateway !== "") {
+    accountLink.href =
+      `https://dashboard.internetcomputer.org/tokens/${cyclesLedgerCanisterId}`
+      + `/account/${gateway}`;
   }
 
   // ⚠️ One quantity at figure size. Three of them wrapped mid-number at the promoted
@@ -1991,9 +2020,14 @@ function renderTiers(): void {
 /// line to the rate-lock sentence while the other did not.
 function renderAmountDetail(): void {
   const chosen = chosenAmount();
-  const quote = chosen?.kind === "tier" ? tierQuotes.get(chosen.tierId) : undefined;
-  const cycles = chosen?.kind === "tier" ? (quote?.cycles ?? null) : customQuote;
-  const gross = chosen?.kind === "tier" ? quote?.usdCents : (customUsdCents ?? undefined);
+  // ⚠️ ONE source for both kinds of amount. A preset's quote and a typed amount's
+  // preview are the same shape from the same backend query, so there is no reason for
+  // the card to know which it is looking at.
+  const quote = chosen?.kind === "tier"
+    ? tierQuotes.get(chosen.tierId)
+    : (customQuote ?? undefined);
+  const cycles = quote?.cycles ?? null;
+  const gross = quote?.usdCents ?? (customUsdCents ?? undefined);
 
   const hideAll = (): void => {
     show("amount-detail", false);
@@ -2005,12 +2039,12 @@ function renderAmountDetail(): void {
     return;
   }
 
-  // ⚠️ **"No split known" and "the fee exceeds the amount" are DIFFERENT, and conflating
-  // them was a bug this suite caught.** A typed amount is quoted for cycles but not for
-  // the split, so its `netCents` is absent - and `feeRows` reads an absent net as the
-  // processor's fee swallowing the whole amount, which put a valid $25 order behind
-  // "Pick a larger amount". The split is only consulted when the backend supplied one.
-  const split = quote?.feeCents === undefined
+  // ⚠️ **An absent `netCents` means the fee EXCEEDS the amount, and it is the only
+  // thing that means that.** `feeRows` reads it that way, which is right: the backend
+  // omits the net exactly when the processor's fee would swallow the whole charge. This
+  // used to be reachable for a typed amount too, because the preview's split was being
+  // discarded on arrival, so a valid $25 order landed behind "Pick a larger amount".
+  const split = quote === undefined
     ? null
     : feeRows(gross, quote.feeCents, quote.netCents, cardFee);
   if (split?.kind === "tooSmall") {
@@ -2023,26 +2057,34 @@ function renderAmountDetail(): void {
     return;
   }
 
+  // ⚠️ **No rate means NO CARD, not a card with a hole in it.** This wrote an empty
+  // string into "You receive" and showed the rest, so the buyer got "You pay $53.00"
+  // beside a labelled row with nothing in it: a figure that looks like it failed to
+  // load, next to a charge that looks committed. The card's job is to say what is
+  // being bought, and with no rate it cannot. `#rate-line` carries the reason and the
+  // button already refuses, so there is nowhere for this to be silently wrong.
+  //
+  // Same posture as the tiles, which show the quantity or nothing rather than a
+  // placeholder, and as `term-block`/`term-sources`, which hide rather than print
+  // "not yet" into the middle of the terms.
+  if (cycles === null) {
+    hideAll();
+    return;
+  }
+
   el("detail-pay").textContent = formatUsdCents(gross);
-  // Blank rather than computed locally: deriving a fee here is how a page comes to show
-  // a number the gateway would not honour.
   el("detail-processing").textContent = split?.processing ?? "";
   el("detail-net").textContent = split?.net ?? "";
   el("detail-margin").textContent = split?.margin ?? "";
   el("detail-rate").textContent = rateTerms();
 
-  if (cycles === null) {
-    el("detail-receive").textContent = "";
-    show("detail-fee-note", false);
-  } else {
-    const split = creditedSplit(cycles, transferFee);
-    el("detail-receive").textContent = `≈ ${split.figure}`;
-    // `depositFeeLine`, not `split.note`: the note is silent when the two figures read
-    // the same, which is every order large enough for the fee to round away.
-    const feeLine = depositFeeLine(cycles, transferFee);
-    el("detail-fee-note").textContent = feeLine ?? "";
-    show("detail-fee-note", feeLine !== null);
-  }
+  const credited = creditedSplit(cycles, transferFee);
+  el("detail-receive").textContent = `≈ ${credited.figure}`;
+  // `depositFeeLine`, not `credited.note`: the note is silent when the two figures read
+  // the same, which is every order large enough for the fee to round away.
+  const feeLine = depositFeeLine(cycles, transferFee);
+  el("detail-fee-note").textContent = feeLine ?? "";
+  show("detail-fee-note", feeLine !== null);
   el("rate-lock-note").textContent = RATE_LOCK_NOTE;
   show("rate-lock-note", true);
   show("amount-detail", true);
@@ -2088,7 +2130,7 @@ function renderSubmitGate(): void {
   } else if (chosenAmount() === null) {
     btn.disabled = true;
     btn.textContent = "Pick an amount";
-  } else if (customUsdCents !== null && customQuote === null) {
+  } else if (customUsdCents !== null && (customQuote?.cycles ?? null) === null) {
     // A typed amount the gateway could not price. Same refusal as an unpriceable
     // preset, said in the same words.
     btn.disabled = true;
@@ -2285,7 +2327,7 @@ async function onCustomAmountInput(): Promise<void> {
     // would not honour.
     try {
       const preview = await backend.quote_previews([read.cents]);
-      customQuote = preview.quotes[0]?.cycles ?? null;
+      customQuote = preview.quotes[0] ?? null;
     } catch {
       customQuote = null;
     }
@@ -2339,7 +2381,9 @@ async function createCardOrder(dest: Destination): Promise<void> {
   // floor and ceiling.
   const chosen = chosenAmount();
   if (chosen === null) return;
-  const shown = chosen.kind === "tier" ? (tierQuotes.get(chosen.tierId)?.cycles ?? null) : customQuote;
+  const shown = chosen.kind === "tier"
+    ? (tierQuotes.get(chosen.tierId)?.cycles ?? null)
+    : (customQuote?.cycles ?? null);
   const amount: Amount = chosen.kind === "tier"
     ? { __kind__: "tier", tier: chosen.tierId }
     : { __kind__: "custom", custom: chosen.usdCents };
@@ -2627,8 +2671,8 @@ function renderOrder(order: Order): void {
 /// account (#29). The two suppressed cases — a canister top-up, where there was
 /// nothing to link, and somebody else's account, where the buyer's identity
 /// could not reach the balance — are destinations the gateway no longer accepts.
-function renderTour(onCli: boolean): void {
-  const node = document.getElementById("tour");
+function renderCliSteps(onCli: boolean): void {
+  const node = document.getElementById("cli-steps");
   if (!node) return;
   // ⚠️ **Gated on the IDENTITY, not on a delivered order.** The principal came from
   // `order.destination.cyclesLedgerAccount.owner`, which §2 forces to equal the
@@ -2643,8 +2687,24 @@ function renderTour(onCli: boolean): void {
     return;
   }
   el("credited-principal").textContent = identity.getPrincipal().toText();
+  // ⚠️ Rendered in the ORDER the page presents them, and every one of them is a real
+  // subcommand rather than prose about one: see `config.ts` for why step 2 exists and
+  // why the verify commands carry no `--identity` flag.
   el("cmd-link").textContent = linkIdentityCommand();
-  el("cmd-verify").textContent = verifyIdentityCommand();
+  el("cmd-default").textContent = identityDefaultCommand();
+  el("cmd-principal").textContent = verifyPrincipalCommand();
+  el("cmd-balance").textContent = verifyBalanceCommand();
+  el("cmd-deploy").textContent = deployCommand();
+  // The guide URL is a deployment constant like the commands, so it is set from
+  // `config.ts` rather than typed into the markup: one place to change when the CLI
+  // version moves, which is exactly what went stale at 1.2.
+  el<HTMLAnchorElement>("cli-guide").href = CLI_IDENTITY_GUIDE;
+  el<HTMLAnchorElement>("cli-settings").href = IDENTITY_SETTINGS;
+  // The balance to compare against comes from the same ledger read the heading uses,
+  // so the page cannot tell a buyer to expect a figure it is not itself showing.
+  el("cli-expect-balance").textContent = ledgerBalance === null
+    ? "the balance above"
+    : `${formatCycles(ledgerBalance)} cycles`;
   node.hidden = false;
 }
 
@@ -2663,8 +2723,8 @@ function renderCliSummary(): void {
     return;
   }
   node.textContent = ledgerBalance === null
-    ? "Two commands and you are deploying."
-    : `${formatCycles(ledgerBalance)} cycles in your account. Two commands and you are deploying.`;
+    ? "One setting and four steps to deploy."
+    : `${formatCycles(ledgerBalance)} cycles in your account. One setting and four steps to deploy.`;
 }
 
 async function renderReceipt(order: Order): Promise<void> {
