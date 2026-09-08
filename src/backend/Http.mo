@@ -1,7 +1,20 @@
-/// Hand-rolled HTTP ingress (§6.0) — deliberately NOT mo:server, which drags
-/// in deprecated mo:base plus asset/caching/certification machinery this
-/// canister doesn't need (assets live on a separate canister; this one only
-/// takes POSTs whose query responses the gateway discards on upgrade).
+/// Hand-rolled HTTP ingress (§6.0).
+///
+/// ⚠️ **Not a rejected dependency — there is nothing to depend on.** Checked against the
+/// pinned packages rather than assumed: `mo:core` contains no HTTP at all, and `mo:ic`'s
+/// HTTP types are **outbound only** (`HttpRequestArgs` with `max_response_bytes`,
+/// `transform`, `is_replicated` — the management canister's outcall interface, which
+/// `rails/Session.mo` does use). Neither models the INBOUND gateway shape: `method`,
+/// `url`, `headers`, `body` in; `status_code` and `upgrade` out. Those types have to be
+/// declared here whichever way this goes.
+///
+/// So what is actually hand-rolled is the dispatch — about forty lines: a route table, a
+/// per-route `upgrade` flag, a body-size guard, and two header helpers. The alternative
+/// is a framework (`mo:server`), whose asset, caching and certification machinery this
+/// canister does not use: assets live on a separate canister, and every response here is
+/// either discarded pre-upgrade or an error, so nothing is certified. ⚠️ That comparison
+/// is a judgement about a package this repo does not install and nothing here verifies —
+/// the checkable half is the paragraph above.
 ///
 /// Requests arrive as the *anonymous* principal (§6.0): routes here are
 /// authenticated by payload only, never by caller. Dispatch is off a route
