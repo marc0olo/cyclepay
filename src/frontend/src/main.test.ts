@@ -55,6 +55,9 @@ const state = {
   ledgerBalanceError: false,
   /// The ledger history the INDEX reports, and its two failure modes.
   ledgerTxs: [] as Array<{ id: bigint; transaction: unknown }>,
+  /// The oldest block the index holds FOR THIS ACCOUNT, which is what decides whether
+  /// a full page has anything behind it. Null means the account has no history.
+  ledgerOldestTxId: null as bigint | null,
   indexError: false,
   indexRefusal: null as string | null,
   /// Whether `lifecycle_config` fails, for the console's cannot-read path (#97).
@@ -347,7 +350,11 @@ vi.mock("./actor", () => ({
       if (state.indexError) throw new Error("index unreachable");
       if (state.indexRefusal !== null) return { Err: { message: state.indexRefusal } };
       return {
-        Ok: { balance: state.ledgerBalance, transactions: state.ledgerTxs, oldest_tx_id: [] },
+        Ok: {
+          balance: state.ledgerBalance,
+          transactions: state.ledgerTxs,
+          oldest_tx_id: state.ledgerOldestTxId === null ? [] : [state.ledgerOldestTxId],
+        },
       };
     },
   }),
@@ -507,6 +514,7 @@ beforeEach(() => {
   state.ledgerBalance = 3_400_000_000_000n;
   state.ledgerBalanceError = false;
   state.ledgerTxs = [];
+  state.ledgerOldestTxId = null;
   state.indexError = false;
   state.indexRefusal = null;
   state.lifecycleError = false;
@@ -2220,6 +2228,37 @@ describe("the cycles ledger's own record, from the index canister", () => {
     const link = document.querySelector<HTMLAnchorElement>("#ledger-history a")!;
     expect(link.getAttribute("href"))
       .toBe("https://dashboard.internetcomputer.org/tokens/um5iw-rqaaa-aaaaq-qaaba-cai/transaction/4812");
+  });
+
+  describe("the truncation line", () => {
+    // ⚠️ Both directions, because the interesting one is the FALSE case: the line used
+    // to fire on a full page alone, so an account holding exactly 25 transactions was
+    // told the rest were somewhere else. Pinned by driving `oldest_tx_id`, which the
+    // rest of this suite leaves empty.
+    const page = (): Array<{ id: bigint; transaction: unknown }> =>
+      Array.from({ length: 25 }, (_, n) => ({
+        id: BigInt(100 - n),
+        transaction: tx("transfer", {
+          transfer: [{ from: acct("g"), to: acct(ME), amount: 1n, fee: [] }],
+        }),
+      }));
+
+    test("a full page whose last row IS the oldest claims nothing more", async () => {
+      state.ledgerTxs = page();
+      state.ledgerOldestTxId = 76n; // the id of the 25th row
+      await openDashboard();
+      const text = document.getElementById("ledger-history")!.textContent ?? "";
+      expect(document.querySelectorAll("#ledger-history tbody tr").length).toBe(25);
+      expect(text).not.toContain("Showing the 25 most recent");
+    });
+
+    test("a full page with an older block behind it says so", async () => {
+      state.ledgerTxs = page();
+      state.ledgerOldestTxId = 3n;
+      await openDashboard();
+      const text = document.getElementById("ledger-history")!.textContent ?? "";
+      expect(text).toContain("Showing the 25 most recent");
+    });
   });
 
   test("mint, burn and approve each read as what they are", async () => {

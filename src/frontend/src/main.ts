@@ -274,7 +274,13 @@ async function refreshLedgerHistory(): Promise<void> {
   }
   table.append(head, body);
   const out: HTMLElement[] = [table];
-  if (result.Ok.oldest_tx_id.length > 0 && rows.length === 25) {
+  // ⚠️ **Compared against the account's OLDEST id, not against the page size.** A full
+  // page is not evidence that anything was left out: an account with exactly 25
+  // transactions filled one and was told the rest were elsewhere. The index reports the
+  // oldest id it holds for the account, so the last row reaching it means this page is
+  // the whole history.
+  const oldest = result.Ok.oldest_tx_id[0];
+  if (oldest !== undefined && rows[rows.length - 1]!.id > oldest) {
     out.push(mutedLine("Showing the 25 most recent. Older entries are on the dashboard."));
   }
   host.replaceChildren(...out);
@@ -287,12 +293,6 @@ function mutedLine(text: string): HTMLElement {
   return p;
 }
 
-/// One ledger transaction, in the buyer's terms.
-///
-/// ⚠️ **Direction is computed from the ACCOUNTS, not from the kind.** A `transfer` is
-/// money in or money out depending on which side the caller is, and rendering "0.5 T
-/// transfer" without a sign is the one formatting choice here that could make a buyer
-/// think they were charged when they were paid.
 /// Show one dashboard record and mark which tab is selected.
 ///
 /// ⚠️ **The selected tab must be distinguishable without colour.** `aria-current`
@@ -317,6 +317,12 @@ function renderRecordTabs(tab: HistoryTab): void {
   }
 }
 
+/// One ledger transaction, in the buyer's terms.
+///
+/// ⚠️ **Direction is computed from the ACCOUNTS, not from the kind.** A `transfer` is
+/// money in or money out depending on which side the caller is, and rendering "0.5 T
+/// transfer" without a sign is the one formatting choice here that could make a buyer
+/// think they were charged when they were paid.
 function describeLedgerTx(
   tx: IndexTransaction,
   me: string,
