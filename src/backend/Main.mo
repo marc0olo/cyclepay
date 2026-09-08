@@ -36,6 +36,7 @@ import Gate "Gate";
 import Http "Http";
 import Idempotency "Idempotency";
 import Orders "Orders";
+import Receipts "Receipts";
 import Recovery "Recovery";
 import Reserve "Reserve";
 import Card "rails/Card";
@@ -43,6 +44,7 @@ import SecretsMixin "mixins/Secrets";
 import PrincipalsMixin "mixins/Principals";
 import MonitoringMixin "mixins/Monitoring";
 import ConfigMixin "mixins/Config";
+import OrdersMixin "mixins/Orders";
 import Session "rails/Session";
 import Secret "Secret";
 import Tiers "Tiers";
@@ -1168,36 +1170,7 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// §2 query authz: `caller == order.owner`, null otherwise — existence is
-  /// not revealed to non-owners. Anonymous callers own nothing by
-  /// construction (create_order rejects them), so they always get null.
-  public shared query ({ caller }) func get_order(id : Types.OrderId) : async ?Types.Order {
-    Orders.getOwned(orderStore, id, caller);
-  };
 
-  /// Order history for the caller (§2, fixes the lost-receipt problem).
-  /// The caller's own orders, **paginated** (#38).
-  ///
-  /// ⚠️ **This was a latent trap on the BUYER path, not an ergonomic wart.** It returned
-  /// every order the caller owns, unbounded, and a query response is capped at ~2 MB —
-  /// so an oversized read does not degrade, it **traps**. The open-order cap of 1 means
-  /// a buyer accumulates them slowly, but nothing bounded it, and nothing drops orders
-  /// under #37.
-  ///
-  /// ⚠️ **Paging bounded the RESPONSE; `Orders.ownerPage` bounds the WORK (#70).** The
-  /// admin pager's owner filter walks every principal's orders to find one principal's,
-  /// so this used to cost O(all orders ever created) in a single message — a page cap on
-  /// a ~2 MB response, against a limit that is actually instructions. `ownerPage` walks
-  /// the caller's own index from the cursor instead, and its cost is that buyer's page.
-  public shared query ({ caller }) func list_orders(
-    afterId : ?Types.OrderId,
-    limit : Nat,
-  ) : async Orders.Page {
-    // ⚠️ The SAME function the unit test's `scanned` bound is asserted on, with the
-    // count projected away here (#70). A separate uninstrumented path for production
-    // would put that bound on code nobody runs.
-    Orders.ownerPage(orderStore, caller, afterId, limit).page;
-  };
 
 
 
@@ -2183,48 +2156,7 @@ persistent actor CyclesGateway {
     Orders.countOf(orderStore, #paid);
   };
 
-  public type ProcessOrderError = { #notFound; #inFlight };
 
-  /// Manual delivery kick — **admin, or the order's own owner** (#30 PR-B).
-  ///
-  /// Safe to spam by construction: every step is journalled, deduplicated, idempotent
-  /// and single-flighted. A page refresh heals a stuck order in seconds rather than
-  /// waiting a sweep interval.
-  ///
-  /// ⚠️ **Owner-scoped, not public.** `getOwned` is the guard, so a caller can only kick
-  /// their OWN order — one order per kick, serialised, on an order they paid real money
-  /// to create. *Unauthenticated* traffic triggering a sweep over **every** order is a
-  /// different shape and stays refused.
-  ///
-  /// ⚠️ **This does not replace the recovery sweep and must not be read as making it
-  /// optional.** The sweep is the *guarantee* — we took the money, so we deliver whether
-  /// or not the buyer comes back; this is the *latency fix*. A retry that only exists in
-  /// the UI makes fulfilling an obligation depend on the buyer returning, and whoever
-  /// closed the tab is exactly who most needs us to finish.
-  ///
-  /// ⚠️ **An owner kicking their own order is NOT audited**, because the log drops
-  /// nothing (#37) and a refresh loop would be permanent state growth driven by a
-  /// caller. An admin kick is audited — it is an ops action on someone else's order.
-  public shared ({ caller }) func process_order(id : Types.OrderId) : async Result.Result<Types.Order, ProcessOrderError> {
-    let isAdmin = Auth.checkAdmin(caller, Principal.isController, isGrantedAdmin).isOk();
-    if (isAdmin) {
-      auditAdmin(caller, "delivery.manualKick", id);
-    } else {
-      // Not an admin, so this must be the owner's own order. `getOwned` answers
-      // "not found" for someone else's, which is also the right answer to give:
-      // whether an id exists is not a stranger's business. No separate anonymous
-      // check is needed — `create_order` refuses the anonymous principal, so it
-      // owns no order and every id answers `#notFound` for it.
-      if (Orders.getOwned(orderStore, id, caller) == null) return #err(#notFound);
-    };
-    if (Orders.get(orderStore, id) == null) return #err(#notFound);
-    if (deliveriesInFlight.contains(id)) return #err(#inFlight);
-    await* processDelivery(id);
-    switch (Orders.get(orderStore, id)) {
-      case (?order) #ok(order);
-      case null #err(#notFound);
-    };
-  };
 
   /// Run the reconcile now rather than waiting for the daily one (admin, §7).
   ///
@@ -2787,166 +2719,6 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Let a buyer give up on their own unpaid order (owner-scoped).
-  ///
-  /// ⚠️ **Load-bearing on the open-order cap**, whose refusal tells the buyer to pay or
-  /// abandon one — advice they cannot follow without this, since `abandon_order` is
-  /// admin-only and takes *paid* orders. Remove it and a buyer who opened the cap's worth
-  /// of checkouts is locked out until their sessions expire.
-  ///
-  /// ⚠️ **Nothing is stranded, and the reason is the ORDERING**: the session is expired
-  /// on Stripe *before* the order moves, so an in-flight payment either wins that race
-  /// (and the order is not cancelled at all) or it cannot start. `#cancelled → #paid` is
-  /// absent from the matrix, so a cancelled order is unpayable by construction.
-  ///
-  /// No problem filed: nothing is owed, and filing an obligation for an order where no
-  /// money moved is exactly the noise the worklist must not accumulate.
-  public shared ({ caller }) func cancel_order(id : Types.OrderId) : async Result.Result<Types.Order, Text> {
-    let ?order = Orders.getOwned(orderStore, id, caller) else return #err("no order " # id);
-    switch (order.status) {
-      case (#created) {};
-      case (#cancelled) return #ok(order); // idempotent: already given up on
-      // Named separately because the catch-all's wording is about a PAID order, and an
-      // expired one is the opposite case: nothing was charged and nothing will deliver.
-      // A stale tab is enough to reach it.
-      case (#expired) {
-        return #err("order " # id # " has already expired, so there is nothing to cancel");
-      };
-      case (status) {
-        return #err(
-          "order " # id # " is " # Types.statusToText(status)
-          # "; a paid order cannot be cancelled — it will deliver, or contact support"
-        );
-      };
-    };
-    // `#cancelled`, not `#expired`: the buyer's own decision is a distinct state,
-    // so a reload shows them "Cancelled" rather than telling them their order
-    // expired (#34). And `#cancelled → #paid` is absent from the matrix, which is
-    // what makes a cancelled order unpayable by construction rather than by a
-    // runtime check somebody has to remember.
-    //
-    // ── Atomic with Stripe (#33, option B) ──────────────────────────────────
-    // Expire the session FIRST, then mark the order. Nothing is ever *half*
-    // cancelled: if the session is still live on Stripe, the order is not
-    // cancelled. That ordering is the whole reason `#cancelled → #paid` never
-    // needs to be legal — Stripe guarantees a session ends in exactly one of
-    // completed/expired, so a successful expire proves no payment completed.
-    //
-    // An earlier draft made this outcall non-fatal (audit and return success
-    // anyway). Rejected: it recreates the half-cancelled state — order says
-    // cancelled, session still charges the buyer — that `#cancelled` exists to
-    // eliminate.
-    switch (order.stripeSessionId) {
-      case null {
-        // No session ever existed, so no URL left the canister and the order is
-        // provably unpayable. This is the residue case: a trap or upgrade landed
-        // between the order commit and the outcall response, so the in-call
-        // failure handler never ran. Cancel with no outcall.
-        audit("order.cancelledSessionless", id # " had no session; cancelled without an outcall");
-      };
-      case (?sessionId) {
-        // ⚠️ Recorded BEFORE the await, and deliberately NOT cleared in a `finally`:
-        // this is the buyer's intent, not a lock. If this call traps, the intent has to
-        // survive, because that is the window in which some other writer settles the
-        // order. It is pruned once the order is terminal.
-        cancelRequests.add(id);
-        switch (await* expireStripeSession(sessionId)) {
-          case (#ok) {};
-          case (#notOpen(_)) {
-            // THREE causes, and this arm cannot tell them apart: the session completed
-            // (the payment won the race), it had already expired, or Stripe refused the
-            // request itself. The first two settle without us, so the right move is to
-            // change nothing and let the incoming `checkout.session.completed` or
-            // `checkout.session.expired` resolve it.
-            //
-            // ⚠️ **The third cause is why this no longer claims a diagnosis.** A
-            // malformed request also answers 400, and "already settled or has expired"
-            // is then false: the order is still `#created` and payable, so the buyer
-            // refreshes onto an order that is still there and clicks again. The wording
-            // below is true of all three, and it names what happens next in each case
-            // instead of asserting which one it was.
-            //
-            // ⚠️ **No audit line, and the earlier reason for that was WRONG.** It said
-            // the information exists in the resolving event — true of the first two
-            // causes, and there is no resolving event for the third. The rule that does
-            // apply is `AuditLog.mo`'s, which is explicit about this shape: a buyer can
-            // retry, so "a caller decides" how often it fires, and that is a counter
-            // with a monitoring row rather than a line. `Gate.RefusalCounts` cannot gain
-            // one without an upgrade-incompatible change to the stable shape, so the
-            // counter waits for a change entitled to make one.
-            //
-            // Until then the operator's lever is `expire_order`, which takes this same
-            // path, is admin-authenticated — so the same rule admits its line — and
-            // audits Stripe's body verbatim as `order.expireRaced`. A malformed request
-            // is not per-order: it fails every cancel, so running it once against a live
-            // `#created` order surfaces the cause. RUNBOOK §8 carries the row.
-            return #err(
-              "Stripe would not close the payment session for order " # id
-              # ". If it was paid it will deliver; if not it expires on its own. Refresh"
-              # " the page to see which"
-            );
-          };
-          case (#failed(detail)) {
-            // The order stays payable and uncancelled, which is the safe side:
-            // the buyer can retry, or it expires on its own.
-            //
-            // ⚠️ **And because the buyer CAN retry, this line was caller-bounded** —
-            // the comment above invites exactly the loop that made it fail
-            // `AuditLog.mo`'s admission rule. It is the same Stripe-API-failing
-            // condition `create_order` latches, with the same cause and the same lever,
-            // so it routes through the same latch: one line when the API starts
-            // refusing us, a counter for the volume.
-            noteStripeApiFailed("expire: " # detail);
-            // ⚠️ **NOT "could not reach Stripe".** This arm is now only genuine unknowns
-            // (a 5xx, or the outcall itself failing), and a 5xx means Stripe was reached
-            // and something went wrong at its end. The old wording claimed a diagnosis
-            // this arm does not have, and it was the wording a buyer saw for an
-            // already-paid order, which took a different branch entirely.
-            return #err(
-              "could not cancel order " # id # " at Stripe — try again, or it expires on its own"
-            );
-          };
-          case (#unauthorized) {
-            // ⚠️ The one expire answer that means "rotate the key", and the only one
-            // that should latch. A 400 latched this before, filing a P1 that said the
-            // key was refused when the key was fine.
-            noteStripeApiFailed(
-              "expire REFUSED (401/403): the restricted key needs WRITE on Checkout Sessions — rotate it"
-            );
-            return #err(
-              "could not cancel order " # id # ": Stripe refused our credentials. An operator has been notified; the order expires on its own if it is not paid"
-            );
-          };
-        };
-      };
-    };
-    let ?cancelled = tryTransition(id, #cancelled) else {
-      // ⚠️ **Reaching here now means the race was WON by someone else and settled
-      // correctly**, which is the normal path rather than a failure: the
-      // `checkout.session.expired` webhook Stripe fires from our own expire call
-      // routinely lands first, reads `cancelRequests`, and records `#cancelled`. So
-      // report the buyer's own order back to them rather than an error.
-      let ?fresh = Orders.get(orderStore, id) else return #err("no order " # id);
-      switch (fresh.status) {
-        case (#cancelled) {
-          cancelRequests.remove(id);
-          audit("order.cancelled", id # " cancelled by owner (settled by the expiry event)");
-          return #ok(fresh);
-        };
-        case (_) {
-          // Genuinely something else: paid in the window, or an admin ended it. The
-          // page re-renders from this response, so it shows what actually happened.
-          cancelRequests.remove(id);
-          return #err(
-            "order " # id # " was already settled while this was in flight — the status above is current"
-          );
-        };
-      };
-    };
-    cancelRequests.remove(id);
-    audit("order.cancelled", id # " cancelled by owner");
-    #ok(cancelled);
-  };
 
   /// Stop trying to deliver an order (admin, §7) — **the only path to a
   /// terminal non-delivered state.**
@@ -3073,72 +2845,7 @@ persistent actor CyclesGateway {
     #ok(delivered);
   };
 
-  public type Receipt = {
-    order : Types.Order;
-    /// What the buyer actually paid, if they have.
-    paidUsdCents : ?Nat;
-    /// The **cycles-ledger** block the delivery transfer landed in — the on-chain
-    /// proof, checkable by anyone against that ledger by the order id in the
-    /// transfer's memo.
-    deliveryBlockIndex : ?Nat;
-    /// Cycles delivered to the buyer's account.
-    cyclesDelivered : ?Nat;
-    /// Recompute the quote from these and it must equal `order.lockedCycles`:
-    ///   netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros
-    /// where netCents = usdCents − (⌈usdCents·feeBps/10⁴⌉ + feeFixedCents).
-    /// Both rate inputs are queryable from the XRC and the CMC, so the price is
-    /// reproducible from first principles rather than merely asserted by us.
-    verification : {
-      netCents : ?Nat;
-      usdPerIcpMicros : Nat;
-      xdrPermyriadPerIcp : Nat;
-      rateReceivedRates : Nat;
-      rateQueriedSources : Nat;
-    };
-  };
-
-  /// One receipt, from an order and its journal entry.
-  ///
-  /// ⚠️ **One owner, because there are two endpoints and they must not drift.** `receipt`
-  /// and `admin_receipt` differ only in who may call and whether the read is audited —
-  /// the record itself is the same object, and it was built twice, field for field. A
-  /// verification figure that disagreed between the buyer's copy and the operator's copy
-  /// would be the worst possible place for a copy-paste divergence.
-  func receiptOf(order : Types.Order, journal : ?Types.JournalEntry) : Receipt {
-    {
-      order;
-      paidUsdCents = order.paidUsdCents;
-      deliveryBlockIndex = switch (journal) { case (?entry) entry.blockIndex; case null null };
-      cyclesDelivered = switch (journal) { case (?entry) entry.cyclesDelivered; case null null };
-      verification = {
-        // `??`, because the fallback is exactly "unpaid, so quote the order's own figure".
-        netCents = Pricing.netCents(order.pricing, order.paidUsdCents ?? order.pricing.usdCents);
-        usdPerIcpMicros = order.pricing.usdPerIcpMicros;
-        xdrPermyriadPerIcp = order.pricing.xdrPermyriadPerIcp;
-        rateReceivedRates = order.pricing.rateReceivedRates;
-        rateQueriedSources = order.pricing.rateQueriedSources;
-      };
-    };
-  };
-
-  /// The same receipt, for **any** order (admin, #38) — and **audited**, which is the
-  /// whole reason it is a separate method.
-  ///
-  /// ⚠️ **The audit is not about existence disclosure; it is about an operator leaving a
-  /// record of having looked.** `Receipt` embeds the whole `Order`, so an *unaudited*
-  /// admin path returns exactly what `admin_order` returns with no trace — which makes
-  /// `admin_order`'s audit **bypassable by calling the other method**. Reading an operator
-  /// read as harmless because the data is reachable elsewhere is the mistake to avoid.
-  ///
-  /// ⚠️ **A separate method rather than a branch, because auditing writes state.** An
-  /// audited read cannot be a `query`, and folding this into `receipt` would make **every
-  /// buyer's** receipt read an update — the common path through consensus to serve the
-  /// rare one.
-  ///
-  /// ⚠️ **Auditing is the mitigation for lifting the owner boundary at all.** A path that
-  /// lifts it without the audit is not a smaller version of the change; it is the change
-  /// without its safeguard.
-  public shared ({ caller }) func admin_receipt(id : Types.OrderId) : async ?Receipt {
+  public shared ({ caller }) func admin_receipt(id : Types.OrderId) : async ?Receipts.Receipt {
     requireAdmin(caller);
     let ?order = Orders.get(orderStore, id) else {
       // Audited on a miss too, like `admin_order`: an id probe by an operator is exactly
@@ -3148,23 +2855,9 @@ persistent actor CyclesGateway {
     };
     auditAdmin(caller, "order.adminRead", order.id # " (receipt)");
     let journal = deliveryJournal.get(id);
-    ?receiptOf(order, journal);
+    ?Receipts.of(order, journal);
   };
 
-  /// Everything the **buyer** needs to verify their own purchase (§2 authz:
-  /// `caller == order.owner`).
-  ///
-  /// The buyer can **check** the claim rather than take it: recompute the quote from the
-  /// two recorded rate inputs, and look up the block index on the ledger.
-  /// ⚠️ **Owner-only, and a `query`, which is why the admin path is a separate method.**
-  /// See `admin_receipt`. Auditing writes state, so an audited read cannot be a query —
-  /// and folding the admin case in here would have made **every buyer's** receipt read
-  /// an update, putting the common path through consensus to serve the rare one.
-  public shared query ({ caller }) func receipt(id : Types.OrderId) : async ?Receipt {
-    let ?order = Orders.getOwned(orderStore, id, caller) else return null;
-    let journal = deliveryJournal.get(id);
-    ?receiptOf(order, journal);
-  };
 
   /// Money-out journal for one order (admin, §4.2) — intent, block_index, cycles
   /// delivered, retries.
@@ -3919,6 +3612,22 @@ persistent actor CyclesGateway {
   // and the expensive one: wrapping changes the actor's stable shape, and with no
   // migration chain (#32) that means a reinstall. Closures are parameters, never stable
   // state, so `deployed/backend.most` does not move for this split.
+  include OrdersMixin(
+    orderStore,
+    deliveryJournal,
+    cancelRequests,
+    {
+      audit;
+      auditAdmin;
+      noteStripeApiFailed;
+      tryTransition;
+      expireStripeSession;
+      processDelivery;
+      isGrantedAdmin;
+      deliveryInFlight = func(id : Types.OrderId) = deliveriesInFlight.contains(id);
+    },
+  );
+
   include ConfigMixin(
     orderStore,
     rateCache,

@@ -607,23 +607,6 @@ service : {
   /// the intended use, and if it becomes one the list inherits the audit.
   admin_orders: (filter: Filter, afterId: opt OrderId, limit: nat) ->
    (Page__1) query;
-  /// The same receipt, for **any** order (admin, #38) — and **audited**, which is the
-  /// whole reason it is a separate method.
-  /// 
-  /// ⚠️ **The audit is not about existence disclosure; it is about an operator leaving a
-  /// record of having looked.** `Receipt` embeds the whole `Order`, so an *unaudited*
-  /// admin path returns exactly what `admin_order` returns with no trace — which makes
-  /// `admin_order`'s audit **bypassable by calling the other method**. Reading an operator
-  /// read as harmless because the data is reachable elsewhere is the mistake to avoid.
-  /// 
-  /// ⚠️ **A separate method rather than a branch, because auditing writes state.** An
-  /// audited read cannot be a `query`, and folding this into `receipt` would make **every
-  /// buyer's** receipt read an update — the common path through consensus to serve the
-  /// rare one.
-  /// 
-  /// ⚠️ **Auditing is the mitigation for lifting the owner boundary at all.** A path that
-  /// lifts it without the audit is not a smaller version of the change; it is the change
-  /// without its safeguard.
   admin_receipt: (id: OrderId) -> (opt Receipt);
   /// "Is MY principal granted?" — public and caller-scoped.
   /// 
@@ -659,20 +642,6 @@ service : {
   /// `reserve_status` already publishes. Answered for the *calling* principal,
   /// so the open-order cap it reports is the caller's own.
   can_purchase: (usdCents: nat) -> (Result_15) query;
-  /// Let a buyer give up on their own unpaid order (owner-scoped).
-  /// 
-  /// ⚠️ **Load-bearing on the open-order cap**, whose refusal tells the buyer to pay or
-  /// abandon one — advice they cannot follow without this, since `abandon_order` is
-  /// admin-only and takes *paid* orders. Remove it and a buyer who opened the cap's worth
-  /// of checkouts is locked out until their sessions expire.
-  /// 
-  /// ⚠️ **Nothing is stranded, and the reason is the ORDERING**: the session is expired
-  /// on Stripe *before* the order moves, so an in-flight payment either wins that race
-  /// (and the order is not cancelled at all) or it cannot start. `#cancelled → #paid` is
-  /// absent from the matrix, so a cancelled order is unpayable by construction.
-  /// 
-  /// No problem filed: nothing is owed, and filing an obligation for an order where no
-  /// money moved is exactly the noise the worklist must not accumulate.
   cancel_order: (id: OrderId) -> (Result_12);
   /// Public — the frontend renders the amount tiles from this. There is no link
   /// to render: the canister creates a session per order (#33).
@@ -742,10 +711,10 @@ service : {
   /// whose buyer just paid would strand a real payment. Let the webhook (or the sweep)
   /// settle it on Stripe's answer.
   expire_order: (id: OrderId) -> (Result_12);
-  /// §2 query authz: `caller == order.owner`, null otherwise — existence is
-  /// not revealed to non-owners. Anonymous callers own nothing by
-  /// construction (create_order rejects them), so they always get null.
   get_order: (id: OrderId) -> (opt Order) query;
+  /// Refresh cadence. Derived from the staleness window rather than configured
+  /// separately, so the two can never be set inconsistently — a cadence longer
+  /// than the window would let the cache lapse between ticks and refuse orders.
   health: () -> (bool) query;
   /// §6.0 query half: the boundary node calls this first; a matched
   /// upgrade route answers `upgrade = ?true` and the gateway re-issues the
@@ -760,20 +729,6 @@ service : {
       delivery: Config__2;
       gate: Config__1;
     }) query;
-  /// Order history for the caller (§2, fixes the lost-receipt problem).
-  /// The caller's own orders, **paginated** (#38).
-  /// 
-  /// ⚠️ **This was a latent trap on the BUYER path, not an ergonomic wart.** It returned
-  /// every order the caller owns, unbounded, and a query response is capped at ~2 MB —
-  /// so an oversized read does not degrade, it **traps**. The open-order cap of 1 means
-  /// a buyer accumulates them slowly, but nothing bounded it, and nothing drops orders
-  /// under #37.
-  /// 
-  /// ⚠️ **Paging bounded the RESPONSE; `Orders.ownerPage` bounds the WORK (#70).** The
-  /// admin pager's owner filter walks every principal's orders to find one principal's,
-  /// so this used to cost O(all orders ever created) in a single message — a page cap on
-  /// a ~2 MB response, against a limit that is actually instructions. `ownerPage` walks
-  /// the caller's own index from the cursor instead, and its cost is that buyer's page.
   list_orders: (afterId: opt OrderId, limit: nat) -> (Page__1) query;
   operator_summary: () ->
    (record {
@@ -837,26 +792,6 @@ service : {
                           orders: nat;
                           unresolved: nat;
                         }) query;
-  /// Manual delivery kick — **admin, or the order's own owner** (#30 PR-B).
-  /// 
-  /// Safe to spam by construction: every step is journalled, deduplicated, idempotent
-  /// and single-flighted. A page refresh heals a stuck order in seconds rather than
-  /// waiting a sweep interval.
-  /// 
-  /// ⚠️ **Owner-scoped, not public.** `getOwned` is the guard, so a caller can only kick
-  /// their OWN order — one order per kick, serialised, on an order they paid real money
-  /// to create. *Unauthenticated* traffic triggering a sweep over **every** order is a
-  /// different shape and stays refused.
-  /// 
-  /// ⚠️ **This does not replace the recovery sweep and must not be read as making it
-  /// optional.** The sweep is the *guarantee* — we took the money, so we deliver whether
-  /// or not the buyer comes back; this is the *latency fix*. A retry that only exists in
-  /// the UI makes fulfilling an obligation depend on the buyer returning, and whoever
-  /// closed the tab is exactly who most needs us to finish.
-  /// 
-  /// ⚠️ **An owner kicking their own order is NOT audited**, because the log drops
-  /// nothing (#37) and a refresh loop would be permanent state growth driven by a
-  /// caller. An admin kick is audited — it is an ops action on someone else's order.
   process_order: (id: OrderId) -> (Result_13);
   /// Batch pre-purchase quote, public.
   /// 
@@ -874,15 +809,6 @@ service : {
   /// operator's cost — `docs/DESIGN.md` §3.2 for the split and why a stored copy would
   /// be wrong here.
   quote_previews: (amounts: vec nat) -> (QuotePreviews) query;
-  /// Everything the **buyer** needs to verify their own purchase (§2 authz:
-  /// `caller == order.owner`).
-  /// 
-  /// The buyer can **check** the claim rather than take it: recompute the quote from the
-  /// two recorded rate inputs, and look up the block index on the ledger.
-  /// ⚠️ **Owner-only, and a `query`, which is why the admin path is a separate method.**
-  /// See `admin_receipt`. Auditing writes state, so an audited read cannot be a query —
-  /// and folding the admin case in here would have made **every buyer's** receipt read
-  /// an update, putting the common path through consensus to serve the rare one.
   receipt: (id: OrderId) -> (opt Receipt) query;
   /// Record that an escalated order's cycles **did** reach the buyer (admin, §7).
   /// 
@@ -975,23 +901,18 @@ service : {
   /// gateway refuses every sale against a fully funded reserve and nothing anywhere
   /// says why.
   refresh_reserve: () -> (nat);
+  /// The RULES tier: controller only. Traps rather than returning an error so an
+  /// unauthorized call can never be mistaken for a handled outcome.
+  /// 
+  /// ⚠️ **Everything that changes the rules is here, and `scripts/check-admin-tiers.py`
+  /// is what keeps it that way** — it reads each method's body and fails when the guard it
+  /// calls is not the one its tier declares. A table alone would prove the list complete
+  /// and say nothing about whether the code honours it.
   refusal_counts: () ->
    (record {
       counts: RefusalCounts;
       refusingNow: RailStateLatch;
     }) query;
-  /// §7 secret two: the Stripe **API key** that creates Checkout Sessions (#33).
-  /// 
-  /// Same store, same posture, same never-readable-back guarantee. Use a
-  /// **restricted key** (`rk_...`) with *Checkout Sessions = Write* and everything else
-  /// None: a leaked key at that scope can create sessions that pay us and read sessions
-  /// back, which is materially different from one that can also issue refunds.
-  /// ⚠️ **Write rather than Read, because both are needed** — the rail creates sessions
-  /// and the recovery sweep retrieves one to settle a stranded order (#52). Stripe's
-  /// permissions are escalating per resource, so Write is the single level that covers
-  /// both. Stripe's
-  /// IP/ASN access policies are not usable here — a subnet's replicas have many
-  /// changing addresses.
   remove_admin: (p: principal) -> (Result_11);
   remove_allowed_buyer: (p: principal) -> (Result_11);
   reserve_status: () ->
