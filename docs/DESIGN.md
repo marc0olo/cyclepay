@@ -455,7 +455,7 @@ composition root is `reviewing-motoko` A1.
 decides the shape of every mixin here:
 
 - **A record or collection passes directly.** `Set`, `Map`, `Orders.Store`,
-  `Secret.Store` and the six `*State` records are heap objects, so the mixin and the actor
+  `Secret.Store` and the seven `*State` records are heap objects, so the mixin and the actor
   share one and writes go through.
 - **A bare `var` must NOT be passed.** The mixin would receive a snapshot from install
   time: its writes would land on a copy and its reads would never move. This is silent —
@@ -467,7 +467,7 @@ by field.** `reserveState`, `gateState`, `pricingState`, `stripeState`, `tierSta
 slice it uses. The alternative — an accessor closure per field — needs no shape change,
 and it is what the three TRANSIENT fields still use, for a sharper reason: they exist to
 answer "has this happened since the canister started", which a value frozen at include
-time answers wrongly and confidently. For the 19 stable fields it would have put plumbing
+time answers wrongly and confidently. For the 21 stable fields it would have put plumbing
 at every include site to work around by-value semantics.
 
 ⚠️ **`webhookPaidOrder` uses a TAKE-ONCE accessor**, not a get/set pair: the dispatcher
@@ -480,8 +480,26 @@ the `cyclesLedger` actor reference are transient `let`s built during initialisat
 is when `include` evaluates its arguments, and none of them ever changes. The rule above
 is about MUTABLE state; a snapshot of an immutable value is the value.
 
+⚠️⚠️ **Grouping also closed those fields to future extension, and THAT cost outlives the
+one-time drop below.** Before the split each of the 21 was an actor-level `var`, and
+adding another was free. Now a new field inside any `*State` record needs the migration
+chain this project has never had (§11 / #32) — measured both ways on the branch that
+introduced them:
+
+| Change | `mops check` |
+|---|---|
+| a field added to `reserveState` | ✗ *"expected field … is missing … Write an explicit migration function"* |
+| a new **actor-level** stable `var` | ✓ *"Stable compatibility check passed"* |
+
+⚠️ **So the cheap route still exists and this rule must not hide it:** new mutable state
+that a mixin needs can be **a new actor-level stable `var` plus an accessor pair at the
+include site** — which is exactly what `stripeState.origin`'s predecessor did, and what
+the transient fields still do. Grouping is the default because it reads better and
+enforces A6; it is not the only option, and reaching for it by reflex is how a routine
+field addition turns into a migration.
+
 ⚠️ **Grouping moved the stable shape, and that was a deliberate call, taken once.**
-Twenty-one stable variables were dropped rather than migrated, across two grouping passes. Legitimate only because
+Twenty-one stable variables were dropped rather than migrated, across two grouping passes — one per `var` field, all seven records. Legitimate only because
 there is no deployment whose data matters: pre-launch, with no migration chain (§11 /
 #32), reinstall is the documented loop. `scripts/check-stable-promotion.sh` refuses such
 a promotion unless `--accept-reinstall` is passed, and prints which variables are lost —

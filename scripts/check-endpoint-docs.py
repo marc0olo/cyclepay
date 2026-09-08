@@ -126,7 +126,11 @@ def main():
             file=sys.stderr,
         )
         return 1
-    print(f"   {total} public endpoints across {len(files)} file(s): every one documented")
+    # ⚠️ Counts the files that HOLD endpoints, not the files scanned. `Main.mo` is in the
+    # scan list and declares none since #120, so reporting the scan size would read as
+    # though the composition root still had some.
+    holders = sum(1 for f in files if ENDPOINT.search(open(f).read()))
+    print(f"   {total} public endpoints across {holders} file(s): every one documented")
     return 0
 
 

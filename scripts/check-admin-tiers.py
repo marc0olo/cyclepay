@@ -141,6 +141,15 @@ def guarded_methods(text):
         nxt = [b for b in bounds if b > i]
         body = "\n".join(lines[i:(nxt[0] if nxt else len(lines))])
         code = "\n".join(l for l in body.split("\n") if not l.strip().startswith("//"))
+        # ⚠️ **The `\s*\(` is load-bearing since #120, not tidiness.** Bodies are sliced
+        # out of `Main.mo` and the nine mixins CONCATENATED, so the last endpoint in one
+        # file has a body that runs on into the next file's preamble — which for a mixin
+        # is its parameter list, and every one of those declares
+        # `requireController : (Principal) -> ()`. Requiring an open paren immediately
+        # after the name is the only thing that stops a type annotation being read as a
+        # guard CALL, i.e. an authz hole reported as covered. Mutation-tested: dropping
+        # `ops.requireAdmin(caller)` from the last endpoint in `AdminOrders.mo` still
+        # fails this check.
         found = {tier for g, tier in GUARDS.items() if re.search(r"\b%s\s*\(" % g, code)}
         if len(found) > 1:
             out[name] = "BOTH"

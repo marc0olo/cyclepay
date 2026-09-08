@@ -415,29 +415,6 @@ export interface _SERVICE {
   'card_tiers' : ActorMethod<[], Array<Tier>>,
   'create_order' : ActorMethod<[Amount, Destination, [] | [bigint]], Result_14>,
   'cycles_status' : ActorMethod<[], { 'floor' : bigint, 'balance' : bigint }>,
-  /**
-   * / Which XRC this gateway prices from.
-   * /
-   * / Read **lazily on every use, never cached at init**, per the icp-cli guidance:
-   * / on a first deploy a sibling canister may not exist yet when this one
-   * / initialises, and `--mode reinstall` wipes anything held in state while the
-   * / automatic variables are re-stamped on every deploy. A lazy read self-heals.
-   * /
-   * / Absent variable → the mainnet XRC, so a production deploy that injects
-   * / nothing is correct by default.
-   * / The id the last refresh actually used, for `pricing_status`.
-   * /
-   * / Mirrored into a var because reading an environment variable needs the
-   * / `system` capability, which a query does not have — and "which XRC am I
-   * / pricing from?" has to be answerable from a query, since a mainnet deploy
-   * / wrongly pointed at a mock is otherwise completely silent.
-   * /
-   * / **Null until an XRC call has actually resolved the id**, and transient, so it
-   * / is null again after every upgrade until the refresh timer warms (seconds).
-   * / Defaulting it to the mainnet id instead would make the one signal that
-   * / detects a mock read *all-clear* during exactly the window an operator checks
-   * / a fresh deploy — an alert that is silent when unverified is worse than none.
-   */
   'delayed_deliveries' : ActorMethod<
     [[] | [OrderId], bigint],
     { 'entries' : Array<DelayedDelivery>, 'nextCursor' : [] | [OrderId] }
