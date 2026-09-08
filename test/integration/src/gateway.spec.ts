@@ -2967,13 +2967,22 @@ test('67b — the reserve hold exists BEFORE the session outcall, not after it',
   // parked. Every other deferred-create scenario parks and then asserts things about the
   // ANSWER, so this is the only place the intermediate state is observed at all.
   //
-  // ⚠️ **What this is NOT, measured rather than claimed.** Removing the hold from commit
-  // fails this test — and 23 others — so this is not the sole guard against that. And
-  // the tidier-looking reorder (session first, then commit) is already unreachable: the
-  // order id IS the `client_reference_id`, so it must exist before the body is built,
-  // and four scenarios parse the id back out of that body. The residual risk this covers
-  // is narrower than "the ordering": it is the hold being registered SEPARATELY from the
-  // commit, after the await, which leaves every final-state assertion intact.
+  // ⚠️ **This is NOT the sole guard, and it does not need to be — it is the only one
+  // that NAMES the cause.** Measured, with the hold actually moved to after the outcall
+  // (registered once, on the success branch, so the final state is unchanged):
+  // **17 scenarios fail.** This one fails in 145 ms with
+  //
+  //     AssertionError: expected 0n to be 3500000000000n
+  //
+  // while 68 fails by timing out after 300 s and the other fifteen fail with downstream
+  // symptoms — a delivery manufacturing capacity, a reconcile that will not unblock, an
+  // admin lever misbehaving — none of which mention the hold or the outcall. Diagnosis
+  // rather than detection is the reason to keep this test.
+  //
+  // The tidier-looking reorder (session first, then commit) is already unreachable, and
+  // structurally rather than by test count: the order id IS the `client_reference_id`,
+  // so it must exist before a request body can name it. The residual risk is the hold
+  // being registered SEPARATELY from the commit, after the await.
   //
   // Nothing about scarcity is needed, which is why this is a state assertion rather than
   // a second create: the hold either exists at this moment or it does not.
@@ -2983,13 +2992,19 @@ test('67b — the reserve hold exists BEFORE the session outcall, not after it',
   const settle = await gw.deferredUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []);
   const outcall = await awaitPendingOutcall(gw);
 
+  // ⚠️ **Exact, in all three, and the reason is the defect this test exists to catch.**
+  // The likeliest extraction bug is a DOUBLE-registered hold — register at the new site,
+  // forget to remove the old one — which gives `+2 × TIER_LOCKED_CYCLES` and two holders
+  // and sails through every `toBeGreaterThanOrEqual`. Exactness costs nothing here: the
+  // §3 vector makes `TIER_LOCKED_CYCLES` exact (see the note above), and a holder count
+  // needs no slack from any timer.
   const parked = await gw.asAnon.reserve_status();
-  expect(parked.promisedTotal - before.promisedTotal).toBeGreaterThanOrEqual(TIER_LOCKED_CYCLES);
-  expect(parked.promiseHolders).toBeGreaterThan(before.promiseHolders);
+  expect(parked.promisedTotal - before.promisedTotal).toBe(TIER_LOCKED_CYCLES);
+  expect(parked.promiseHolders).toBe(before.promiseHolders + 1n);
   // The complement, and the half that actually oversells: the capacity is gone from
   // `availableToSell` while the outcall is still in flight, so a concurrent create is
   // quoted against what is LEFT rather than against the pre-hold figure.
-  expect(parked.availableToSell).toBeLessThanOrEqual(before.availableToSell - TIER_LOCKED_CYCLES);
+  expect(before.availableToSell - parked.availableToSell).toBe(TIER_LOCKED_CYCLES);
 
   // And the order itself is committed, not merely planned — the id is already in the
   // outcall body, which is only possible because it exists.
