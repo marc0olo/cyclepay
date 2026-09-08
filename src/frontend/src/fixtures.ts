@@ -20,7 +20,7 @@
 /// bundle for the hook's name to keep that claim true rather than assumed.
 import { Principal } from "@icp-sdk/core/principal";
 import type { Identity } from "@icp-sdk/core/agent";
-import type { Backend, CyclesLedger, Order } from "./actor";
+import type { Backend, CyclesIndex, CyclesLedger, Order } from "./actor";
 import { cyclesForCents } from "./format";
 
 /// The seams main.ts hands over. Deliberately narrow: fixtures may choose what
@@ -31,6 +31,12 @@ export type FixtureHost = {
   /// this point, including the one `setIdentity` rebuilds on sign-in.
   useBackend(factory: (identity: Identity | null) => Backend): void;
   useCyclesLedger(factory: () => CyclesLedger): void;
+  /// The cycles-ledger INDEX, for the dashboard's transaction list.
+  useCyclesIndex(factory: () => CyclesIndex): void;
+  /// Which principal counts as the gateway. Needed because the ledger list's order
+  /// cross-reference is gated on the sender, so this is the one seam that decides
+  /// whether that column renders anything.
+  useGatewayPrincipal(id: string): void;
   /// The app's own `setIdentity`.
   signIn(identity: Identity | null): void;
   /// The app's own `openOrder` — routes, renders and starts the poll.
@@ -71,6 +77,11 @@ const DEPOSIT_FEE = 100_000_000n;
 /// Fixed, because an order id appears on screen and a screenshot baseline cannot
 /// tolerate a fresh one per run.
 const ORDER_ID = "f1c7ea0b9d2e4a6580b3c1d7e9f20a4b";
+/// The gateway's own principal, as this fixture pretends it. The order cross-reference
+/// on a ledger transfer is gated on the SENDER being this, so a fixture that could not
+/// name it could not exercise the gate at all: every row would read "-" and the browser
+/// suite would pass while the column did nothing.
+const GATEWAY = Principal.selfAuthenticating(new Uint8Array(32).fill(9));
 const CREATED_AT_NS = 1_770_000_000_000_000_000n;
 /// Fixed like the order id, and far enough ahead that the order is payable no
 /// matter when the suite runs — the order view renders expiry from this rather
@@ -153,6 +164,8 @@ export function installFixtures(host: FixtureHost): void {
 
   const identity = { getPrincipal: () => BUYER } as unknown as Identity;
 
+  host.useGatewayPrincipal(GATEWAY.toText());
+
   // Only the methods the UI actually calls, answering only the fields it reads.
   // Cast once, here, with the reason stated: the generated actor type carries
   // admin methods and config records this surface never touches, and stubbing
@@ -167,6 +180,76 @@ export function installFixtures(host: FixtureHost): void {
     // realistic figure, not zero: a fixture showing "0 cycles" beside a delivered
     // order reads as a bug in the very thing the balance exists to demonstrate.
     icrc1_balance_of: async () => 7_338_461_538_461n,
+  };
+
+  /// The account's ledger history, from the INDEX. One row per shape the render has to
+  /// tell apart, because a single direction proves nothing: a `transfer` is money in or
+  /// out depending on which side the caller is, and every BURN carries the same
+  /// `op`/`kind`/`from`, so only the memo separates a canister creation from a top-up.
+  ///
+  /// The two burn memos are the bytes a real cycles ledger wrote, captured from a local
+  /// create and a local withdraw against the same target canister.
+  const cyclesIndex: CyclesIndex = {
+    get_account_transactions: async () => ({
+      Ok: {
+        balance: 7_338_461_538_461n,
+        transactions: [
+          {
+            id: 4_812n,
+            transaction: {
+              kind: "transfer",
+              timestamp: 1_760_000_000_000_000_000n,
+              transfer: [{
+                from: { owner: GATEWAY.toText(), subaccount: [] },
+                to: { owner: BUYER, subaccount: [] },
+                amount: 7_338_461_538_461n,
+                fee: [],
+                // Delivery.mo sets the memo to the order id as UTF-8.
+                memo: [new TextEncoder().encode(ORDER_ID)],
+              }],
+              mint: [],
+              burn: [],
+              approve: [],
+            },
+          },
+          {
+            id: 4_901n,
+            transaction: {
+              kind: "burn",
+              timestamp: 1_760_000_600_000_000_000n,
+              transfer: [],
+              mint: [],
+              burn: [{
+                from: { owner: BUYER, subaccount: [] },
+                amount: 500_000_000_000n,
+                // CBOR: 0x81 array(1), 0x4a bytes(10), then the target canister.
+                memo: [new Uint8Array([
+                  0x81, 0x4a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0x3d, 0xae, 0x01, 0x01,
+                ])],
+              }],
+              approve: [],
+            },
+          },
+          {
+            id: 4_902n,
+            transaction: {
+              kind: "burn",
+              timestamp: 1_760_000_900_000_000_000n,
+              transfer: [],
+              mint: [],
+              burn: [{
+                from: { owner: BUYER, subaccount: [] },
+                amount: 2_000_000_000_000n,
+                // The creation sentinel: 32 bytes of 0xFE, carrying no canister id.
+                memo: [new Uint8Array(32).fill(0xfe)],
+              }],
+              approve: [],
+            },
+          },
+        ],
+        oldest_tx_id: [],
+      },
+    }),
   };
 
   const stub = {
@@ -463,11 +546,13 @@ export function installFixtures(host: FixtureHost): void {
     async useBackend() {
       host.useBackend(() => fixtureBackend);
       host.useCyclesLedger(() => cyclesLedger);
+      host.useCyclesIndex(() => cyclesIndex);
       await host.reloadMarket();
     },
     async signIn() {
       host.useBackend(() => fixtureBackend);
       host.useCyclesLedger(() => cyclesLedger);
+      host.useCyclesIndex(() => cyclesIndex);
       host.signIn(identity);
       await host.reloadMarket();
     },

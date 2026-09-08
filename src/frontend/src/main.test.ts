@@ -22,6 +22,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 // types are still what the stub is checked against.
 import { Principal } from "@icp-sdk/core/principal";
 import type { Backend } from "./actor";
+import { shortPrincipal } from "./format";
 
 type OrphanPage = Awaited<ReturnType<Backend["orphans_unresolved"]>>;
 type DelayedPage = Awaited<ReturnType<Backend["delayed_deliveries"]>>;
@@ -52,6 +53,13 @@ const state = {
   ledgerBalance: 3_400_000_000_000n,
   /// Whether the ledger balance read fails, for the dashboard's honest-failure path.
   ledgerBalanceError: false,
+  /// The ledger history the INDEX reports, and its two failure modes.
+  ledgerTxs: [] as Array<{ id: bigint; transaction: unknown }>,
+  /// The oldest block the index holds FOR THIS ACCOUNT, which is what decides whether
+  /// a full page has anything behind it. Null means the account has no history.
+  ledgerOldestTxId: null as bigint | null,
+  indexError: false,
+  indexRefusal: null as string | null,
   /// Whether `lifecycle_config` fails, for the console's cannot-read path (#97).
   lifecycleError: false,
   /// The rail settings the console's configuration surface reads (#97).
@@ -333,6 +341,23 @@ vi.mock("./actor", () => ({
   // to the public dashboard, and a test asserting that URL is asserting the ledger a
   // buyer would actually check.
   cyclesLedgerCanisterId: "um5iw-rqaaa-aaaaq-qaaba-cai",
+  cyclesIndexCanisterId: "ul4oc-4iaaa-aaaaq-qaabq-cai",
+  // The account's ledger history. `state.ledgerTxs` drives it; `state.indexError` and
+  // `state.indexRefusal` drive the two ways it fails — an unreachable canister, and an
+  // index that answers with a message rather than a reject.
+  makeCyclesIndex: () => ({
+    get_account_transactions: async () => {
+      if (state.indexError) throw new Error("index unreachable");
+      if (state.indexRefusal !== null) return { Err: { message: state.indexRefusal } };
+      return {
+        Ok: {
+          balance: state.ledgerBalance,
+          transactions: state.ledgerTxs,
+          oldest_tx_id: state.ledgerOldestTxId === null ? [] : [state.ledgerOldestTxId],
+        },
+      };
+    },
+  }),
   makeBackend: () => backend,
   // #30 PR-A: the ledger's fee is read from the LEDGER, not disclosed by
   // `quote_previews`. `state.transferFee` still drives it, so every existing
@@ -488,6 +513,10 @@ async function settle(): Promise<void> {
 beforeEach(() => {
   state.ledgerBalance = 3_400_000_000_000n;
   state.ledgerBalanceError = false;
+  state.ledgerTxs = [];
+  state.ledgerOldestTxId = null;
+  state.indexError = false;
+  state.indexRefusal = null;
   state.lifecycleError = false;
   state.expectedLivemode = false;
   state.stripeOrigin = "https://gateway.example";
@@ -2146,5 +2175,358 @@ describe("the dashboard: balance, then history", () => {
     await openDashboard();
     expect(document.querySelector(".buy-again")).toBeNull();
     expect(document.getElementById("orders")!.textContent).not.toMatch(/buy again/i);
+  });
+});
+
+describe("the cycles ledger's own record, from the index canister", () => {
+  const ME = FULL_PRINCIPAL;
+  const acct = (owner: string) => ({ owner, subaccount: [] as [] });
+  const tx = (kind: string, body: Record<string, unknown>) => ({
+    kind,
+    timestamp: 1_760_000_000_000_000_000n,
+    transfer: [] as unknown[],
+    mint: [] as unknown[],
+    burn: [] as unknown[],
+    approve: [] as unknown[],
+    ...body,
+  });
+
+  /// ⚠️ Opens the LEDGER tab, not the bare dashboard hash. The two records are
+  /// separate tabs now, and `refreshLedgerHistory` only runs for the visible one, so
+  /// mounting at `#/history` would leave every assertion below looking at a hidden
+  /// panel that was never populated.
+  async function openDashboard(): Promise<void> {
+    state.order = anOrder("delivered");
+    await mount("landing", "#/history/ledger");
+    await settle();
+  }
+
+  test("⚠️ direction comes from the ACCOUNTS, not from the kind", async () => {
+    // The one formatting choice here that could mislead about money: a `transfer` is
+    // in or out depending on which side the caller is, and an unsigned "0.5 T
+    // transfer" would let a buyer read a payment as a charge.
+    state.ledgerTxs = [
+      { id: 10n, transaction: tx("transfer", { transfer: [{ from: acct("gateway-x"), to: acct(ME), amount: 500_000_000_000n, fee: [] }] }) },
+      { id: 11n, transaction: tx("transfer", { transfer: [{ from: acct(ME), to: acct("canister-y"), amount: 200_000_000_000n, fee: [] }] }) },
+    ];
+    await openDashboard();
+    const rows = document.querySelectorAll("#ledger-history tbody tr");
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.textContent).toContain("Received");
+    expect(rows[0]!.textContent).toContain("+500");
+    expect(rows[1]!.textContent).toContain("Sent");
+    expect(rows[1]!.textContent).toContain("-200");
+  });
+
+  test("every row links to the public ledger entry", async () => {
+    // The point of showing this at all: the entries are checkable somewhere that is
+    // not us.
+    state.ledgerTxs = [
+      { id: 4812n, transaction: tx("transfer", { transfer: [{ from: acct("g"), to: acct(ME), amount: 1n, fee: [] }] }) },
+    ];
+    await openDashboard();
+    const link = document.querySelector<HTMLAnchorElement>("#ledger-history a")!;
+    expect(link.getAttribute("href"))
+      .toBe("https://dashboard.internetcomputer.org/tokens/um5iw-rqaaa-aaaaq-qaaba-cai/transaction/4812");
+  });
+
+  describe("the truncation line", () => {
+    // ⚠️ Both directions, because the interesting one is the FALSE case: the line used
+    // to fire on a full page alone, so an account holding exactly 25 transactions was
+    // told the rest were somewhere else. Pinned by driving `oldest_tx_id`, which the
+    // rest of this suite leaves empty.
+    const page = (): Array<{ id: bigint; transaction: unknown }> =>
+      Array.from({ length: 25 }, (_, n) => ({
+        id: BigInt(100 - n),
+        transaction: tx("transfer", {
+          transfer: [{ from: acct("g"), to: acct(ME), amount: 1n, fee: [] }],
+        }),
+      }));
+
+    test("a full page whose last row IS the oldest claims nothing more", async () => {
+      state.ledgerTxs = page();
+      state.ledgerOldestTxId = 76n; // the id of the 25th row
+      await openDashboard();
+      const text = document.getElementById("ledger-history")!.textContent ?? "";
+      expect(document.querySelectorAll("#ledger-history tbody tr").length).toBe(25);
+      expect(text).not.toContain("Showing the 25 most recent");
+    });
+
+    test("a full page with an older block behind it says so", async () => {
+      state.ledgerTxs = page();
+      state.ledgerOldestTxId = 3n;
+      await openDashboard();
+      const text = document.getElementById("ledger-history")!.textContent ?? "";
+      expect(text).toContain("Showing the 25 most recent");
+    });
+  });
+
+  test("mint, burn and approve each read as what they are", async () => {
+    // A burn is the row a buyer sees after deploying: cycles leaving for their actual
+    // purpose. Labelling it "transfer" would make spending look like a loss.
+    state.ledgerTxs = [
+      { id: 1n, transaction: tx("mint", { mint: [{ to: acct(ME), amount: 10n }] }) },
+      { id: 2n, transaction: tx("burn", { burn: [{ from: acct(ME), amount: 20n, memo: [] }] }) },
+      { id: 3n, transaction: tx("approve", { approve: [{ from: acct(ME), spender: acct("s"), amount: 30n }] }) },
+    ];
+    await openDashboard();
+    const text = document.getElementById("ledger-history")!.textContent ?? "";
+    expect(text).toContain("Added");
+    expect(text).toContain("Spent");
+    expect(text).toContain("Approved");
+  });
+
+  test("a burn's memo says whether it created a canister or topped one up", async () => {
+    // ⚠️ Both rows are `1burn` with op "burn" and `from` = this account. The ledger
+    // declares four block types and gives neither operation its own, so without the
+    // memo these two are indistinguishable and both read "Spent".
+    const TOPUP = new Uint8Array([
+      0x81, 0x4a, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xa0, 0x00, 0x05, 0x01, 0x01,
+    ]);
+    state.ledgerTxs = [
+      { id: 20n, transaction: tx("burn", { burn: [{ from: acct(ME), amount: 20n, memo: [TOPUP] }] }) },
+      { id: 21n, transaction: tx("burn", { burn: [{ from: acct(ME), amount: 30n, memo: [new Uint8Array(32).fill(0xfe)] }] }) },
+    ];
+    await openDashboard();
+    const rows = document.querySelectorAll("#ledger-history tbody tr");
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.textContent).toContain("Canister top-up");
+    // The target canister is named, and linked where it can be inspected.
+    const canisterLink = rows[0]!.querySelector<HTMLAnchorElement>('a[href*="/canister/"]')!;
+    expect(canisterLink.getAttribute("href"))
+      .toBe("https://dashboard.internetcomputer.org/canister/4xhad-gd777-77775-aaacq-cai");
+    expect(rows[1]!.textContent).toContain("Canister creation");
+    // ⚠️ No canister on a creation, and the absence is the finding: the created id is
+    // returned by the method and never written into the block.
+    expect(rows[1]!.querySelector('a[href*="/canister/"]')).toBeNull();
+  });
+
+  test("⚠️ a refund mint is NOT labelled a refund", async () => {
+    // A failed creation refunds with memo `FD * 32` and a failed withdraw with `FF * 32`,
+    // but both are MINTS and `deposit` takes a caller-supplied memo, so naming them would
+    // let anyone deposit memoed `FF * 32` and fake a refund row. The pair still reads
+    // correctly: the charge above, the money back below.
+    state.ledgerTxs = [
+      { id: 30n, transaction: tx("burn", { burn: [{ from: acct(ME), amount: 2_000_000_000_000n, memo: [new Uint8Array(32).fill(0xfe)] }] }) },
+      { id: 31n, transaction: tx("mint", { mint: [{ to: acct(ME), amount: 1_999_800_000_000n }] }) },
+    ];
+    await openDashboard();
+    const rows = document.querySelectorAll("#ledger-history tbody tr");
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.textContent).toContain("Canister creation");
+    expect(rows[1]!.textContent).toContain("Added");
+    const text = document.getElementById("ledger-history")!.textContent ?? "";
+    expect(text).not.toMatch(/refund/i);
+  });
+
+  test("⚠️ neither burn label claims the operation succeeded", async () => {
+    // Both memos are exactly what a FAILED create and a FAILED withdraw wrote, so a label
+    // asserting an outcome would be false on this very input.
+    state.ledgerTxs = [
+      { id: 32n, transaction: tx("burn", { burn: [{ from: acct(ME), amount: 20n, memo: [new Uint8Array(32).fill(0xfe)] }] }) },
+      { id: 33n, transaction: tx("burn", { burn: [{ from: acct(ME), amount: 30n, memo: [new Uint8Array([0x81, 0x4a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01])] }] }) },
+    ];
+    await openDashboard();
+    const text = document.getElementById("ledger-history")!.textContent ?? "";
+    expect(text).not.toContain("Created a canister");
+    expect(text).not.toContain("Topped up");
+    expect(text).toContain("Canister creation");
+    expect(text).toContain("Canister top-up");
+  });
+
+  test("⚠️ a burn never shows the viewer as the other party", async () => {
+    // `burn.from` IS this account, so putting it in the counterparty column rendered
+    // the viewer their own principal under "Other party".
+    //
+    // ⚠️ **Asserts on the CELL, against the RENDERED form.** The first version of this
+    // test asked whether the row text contained `ME.slice(0, 10)`, and it could never
+    // fail: the column renders `shortPrincipal(ME)`, which is `eoyfw…m-4qe`, so a
+    // ten-character slice of the full principal is not a substring of anything on the
+    // page. Restoring the bug left the suite green.
+    state.ledgerTxs = [
+      { id: 22n, transaction: tx("burn", { burn: [{ from: acct(ME), amount: 20n, memo: [] }] }) },
+    ];
+    await openDashboard();
+    const cells = document.querySelectorAll("#ledger-history tbody tr td");
+    expect(cells.length).toBe(6);
+    expect(cells[2]!.textContent).toContain("Spent");
+    // The rendered form of this account, which is what would actually appear.
+    expect(shortPrincipal(ME)).toBe("eoyfw…m-4qe");
+    expect(cells[4]!.textContent).toBe("-");
+    expect(cells[4]!.textContent).not.toBe(shortPrincipal(ME));
+  });
+
+  test("the ledger table cross-references the order a delivery paid out", async () => {
+    // Delivery.mo memoes the transfer with the order id, and the receipt's own docs
+    // name that as the proof. The gateway in these tests is `backendCanisterId`.
+    state.ledgerTxs = [
+      { id: 40n, transaction: tx("transfer", { transfer: [{
+        from: acct("aaaaa-aa"), to: acct(ME), amount: 500_000_000_000n, fee: [],
+        memo: [new TextEncoder().encode("f22bd6dc4932a8480f3cee3669a48cc6")],
+      }] }) },
+    ];
+    await openDashboard();
+    const link = document.querySelector<HTMLAnchorElement>(
+      '#ledger-history a[href^="#/order/"]',
+    )!;
+    expect(link).not.toBeNull();
+    expect(link.getAttribute("href")).toBe("#/order/f22bd6dc4932a8480f3cee3669a48cc6");
+  });
+
+  test("⚠️ a memo from anyone BUT the gateway is not read as an order", async () => {
+    // Transfer memos are CALLER-supplied. Ungated, a stranger could send one cycle
+    // memoed with a real order id and put a false order reference in this list. The
+    // memo below is byte-identical to the passing case above; only the sender differs,
+    // so nothing but the gate can be making the difference.
+    state.ledgerTxs = [
+      { id: 41n, transaction: tx("transfer", { transfer: [{
+        from: acct(FULL_PRINCIPAL.replace(/^e/, "d")), to: acct(ME),
+        amount: 1n, fee: [],
+        memo: [new TextEncoder().encode("f22bd6dc4932a8480f3cee3669a48cc6")],
+      }] }) },
+    ];
+    await openDashboard();
+    expect(document.querySelectorAll("#ledger-history tbody tr").length).toBe(1);
+    expect(document.querySelector('#ledger-history a[href^="#/order/"]')).toBeNull();
+    // Present as a row, just not attributed: dropping it would make the list wrong.
+    expect(document.getElementById("ledger-history")!.textContent).toContain("Received");
+  });
+
+  test("a transfer with no memo is simply unattributed", async () => {
+    state.ledgerTxs = [
+      { id: 42n, transaction: tx("transfer", { transfer: [{
+        from: acct("aaaaa-aa"), to: acct(ME), amount: 1n, fee: [], memo: [],
+      }] }) },
+    ];
+    await openDashboard();
+    expect(document.querySelector('#ledger-history a[href^="#/order/"]')).toBeNull();
+  });
+
+  test("⚠️ a gateway memo that is not an order id does not reach the href", async () => {
+    // The sender gate passes here: this IS from the gateway. What stops it is the shape
+    // check. Without one, whatever the memo decoded to would be interpolated straight
+    // into a link, and `parseRoute` would not resolve it either. Mutation-checked:
+    // removing the hex validation leaves the rest of the suite green.
+    state.ledgerTxs = [
+      { id: 43n, transaction: tx("transfer", { transfer: [{
+        from: acct("aaaaa-aa"), to: acct(ME), amount: 1n, fee: [],
+        memo: [new TextEncoder().encode("../../etc/passwd?x=1")],
+      }] }) },
+      { id: 44n, transaction: tx("transfer", { transfer: [{
+        from: acct("aaaaa-aa"), to: acct(ME), amount: 1n, fee: [],
+        // Right character set, far too short to be an order id.
+        memo: [new TextEncoder().encode("ab")],
+      }] }) },
+    ];
+    await openDashboard();
+    expect(document.querySelectorAll("#ledger-history tbody tr").length).toBe(2);
+    expect(document.querySelector('#ledger-history a[href^="#/order/"]')).toBeNull();
+    expect(document.getElementById("ledger-history")!.textContent)
+      .not.toContain("etc/passwd");
+  });
+
+  test("a memo that is not valid UTF-8 is not attributed", async () => {
+    state.ledgerTxs = [
+      { id: 45n, transaction: tx("transfer", { transfer: [{
+        from: acct("aaaaa-aa"), to: acct(ME), amount: 1n, fee: [],
+        memo: [new Uint8Array([0xff, 0xfe, 0xfd])],
+      }] }) },
+    ];
+    await openDashboard();
+    expect(document.querySelector('#ledger-history a[href^="#/order/"]')).toBeNull();
+  });
+
+  test("⚠️ an unrecognised kind is NAMED, not dropped", async () => {
+    // A row the ledger recorded and this page cannot classify still belongs in a list
+    // a buyer reconciles a balance against. Dropping it makes the list quietly wrong.
+    state.ledgerTxs = [{ id: 9n, transaction: tx("somethingNew", {}) }];
+    await openDashboard();
+    expect(document.querySelectorAll("#ledger-history tbody tr").length).toBe(1);
+    expect(document.getElementById("ledger-history")!.textContent).toContain("somethingNew");
+  });
+
+  test("an empty history says what would appear here", async () => {
+    await openDashboard();
+    expect(document.getElementById("ledger-history")!.textContent)
+      .toMatch(/no ledger activity yet/i);
+  });
+
+  test("⚠️ the two failure modes read differently", async () => {
+    // The index answers with a MESSAGE rather than a reject when it cannot serve the
+    // account, so folding both into one line would discard the only diagnosis there is.
+    state.indexError = true;
+    await openDashboard();
+    expect(document.getElementById("ledger-history")!.textContent)
+      .toMatch(/could not reach the cycles ledger index/i);
+    // ...and it says the balance above is unaffected, because a failed list beside a
+    // real balance otherwise reads as the money being gone.
+    expect(document.getElementById("ledger-history")!.textContent).toMatch(/unaffected/i);
+
+    state.indexError = false;
+    state.indexRefusal = "account not indexed";
+    await openDashboard();
+    expect(document.getElementById("ledger-history")!.textContent)
+      .toContain("account not indexed");
+  });
+
+  test("signed out, it invites a sign-in", async () => {
+    await openDashboard();
+    el<HTMLButtonElement>("sign-out").click();
+    await settle();
+    expect(document.getElementById("ledger-history")!.textContent)
+      .toMatch(/sign in to see your ledger activity/i);
+  });
+});
+
+describe("the dashboard's two records are tabs", () => {
+  async function openTab(hash: string): Promise<void> {
+    state.order = anOrder("delivered");
+    await mount("landing", hash);
+    await settle();
+  }
+
+  test("the bare hash opens the orders record", async () => {
+    await openTab("#/history");
+    expect(el("panel-orders").hidden).toBe(false);
+    expect(el("panel-ledger").hidden).toBe(true);
+  });
+
+  test("the ledger hash opens the ledger record", async () => {
+    await openTab("#/history/ledger");
+    expect(el("panel-orders").hidden).toBe(true);
+    expect(el("panel-ledger").hidden).toBe(false);
+  });
+
+  test("⚠️ exactly ONE tab is marked current, in both directions", async () => {
+    // `aria-current="false"` still reads as present to some assistive tech, so the
+    // attribute is removed rather than written false. Asserting only the selected tab
+    // would pass with both marked, which announces two current tabs.
+    await openTab("#/history");
+    expect(el("tab-orders").getAttribute("aria-current")).toBe("true");
+    expect(el("tab-ledger").hasAttribute("aria-current")).toBe(false);
+    await openTab("#/history/ledger");
+    expect(el("tab-ledger").getAttribute("aria-current")).toBe("true");
+    expect(el("tab-orders").hasAttribute("aria-current")).toBe(false);
+  });
+
+  test("⚠️ the ledger index is NOT queried for a panel nobody opened", async () => {
+    // 25 index rows for a hidden panel is work with no reader. The index mock throws
+    // if `state.indexError` is set, so a fetch on the orders tab would surface as the
+    // unreachable message inside the panel rather than as silence.
+    state.indexError = true;
+    state.ledgerTxs = [];
+    await openTab("#/history");
+    expect(el("ledger-history").textContent).toBe("");
+    // And it IS queried once its own tab is open, so the assertion above is not just
+    // measuring a render that never happens.
+    await openTab("#/history/ledger");
+    expect(el("ledger-history").textContent).toMatch(/could not reach/i);
+  });
+
+  test("the balance loads on either tab, because it belongs to neither record", async () => {
+    await openTab("#/history");
+    expect(el("ledger-balance").textContent).not.toMatch(/reading the ledger/i);
+    await openTab("#/history/ledger");
+    expect(el("ledger-balance").textContent).not.toMatch(/reading the ledger/i);
   });
 });

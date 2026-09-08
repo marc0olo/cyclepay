@@ -1,5 +1,7 @@
 // Pure presentation/encoding helpers. No DOM, no agent, unit-tested.
 
+import { Principal } from "@icp-sdk/core/principal";
+
 import type { CreateOrderError, OrderStatus, Reason } from "./bindings/backend";
 
 /// OrderStatus variant keys, DERIVED from the generated enum.
@@ -566,3 +568,109 @@ export const CREATE_ORDER_ERROR_KEYS: Record<CreateOrderError["__kind__"], true>
   tierBelowFees: true,
   unknownTier: true,
 };
+
+/// What a cycles-ledger BURN was actually for.
+///
+/// The ledger records `create_canister` and `withdraw` as the same `1burn` block with the
+/// same `op = "burn"` and the same `from` (the caller), so the memo is the only
+/// discriminator. It declares four block types and neither operation gets its own.
+///
+/// ⚠️ **Only ever call this on a BURN, and the reason is spoofing, not tidiness.**
+/// `WithdrawArgs` and `CreateCanisterArgs` have no `memo` field, so on those paths the
+/// LEDGER writes the memo and a caller cannot forge it. `TransferArgs` and `DepositArgs`
+/// do take a caller-supplied memo. Decoding memos wherever they appear would let anyone
+/// send this account a transfer memoed `FE * 32` and have this app announce "Created a
+/// canister" in a history the buyer reconciles against.
+///
+/// ⚠️ **A creation tells you THAT, never WHICH.** The created id comes back in
+/// `CreateCanisterSuccess.canister_id`, the method reply, and never enters the block. So
+/// `#creation` carries no principal and no later read can recover one.
+///
+/// ⚠️ **ATTEMPTED, not succeeded, and the names say so deliberately.** A `create_canister`
+/// that FAILS writes the same `FE * 32` burn (`CreateCanisterError.FailedToCreate` carries
+/// a `fee_block`), and a `withdraw` that fails writes the same `CBOR[target]` burn
+/// (`FailedToWithdraw.fee_block`). Both were measured, against a nonexistent subnet and a
+/// nonexistent canister. The burn is the CHARGE, not the outcome, so labelling either
+/// "Created" or "Topped up" claims an outcome the block cannot support.
+///
+/// The outcome shows only in the REFUND that follows: a failed creation mints back with
+/// memo `FD * 32`, a failed withdraw with `FF * 32`. This module deliberately does NOT
+/// decode those. `DepositArgs` takes a caller-supplied memo and a deposit IS a mint, so
+/// anyone could deposit memoed `FF * 32` and forge a refund row. Burns are safe precisely
+/// because none of the four burn paths accepts a memo argument.
+export type BurnPurpose =
+  | { kind: "creation" }
+  | { kind: "topUp"; canister: string }
+  | { kind: "unknown" };
+
+/// The sentinel the ledger writes for a canister creation: 32 bytes of 0xFE. Verified
+/// against two creations of different canisters, whose memos were byte-identical (so it
+/// carries no per-canister data), and against a creation that FAILED, which wrote the
+/// same bytes.
+const CREATE_SENTINEL_BYTE = 0xfe;
+const CREATE_SENTINEL_LEN = 32;
+
+export function decodeBurnMemo(memo: [] | [Uint8Array]): BurnPurpose {
+  if (memo.length === 0) return { kind: "unknown" };
+  const raw = memo[0]!;
+  if (
+    raw.length === CREATE_SENTINEL_LEN
+    && raw.every((b) => b === CREATE_SENTINEL_BYTE)
+  ) {
+    return { kind: "creation" };
+  }
+  // A withdraw's memo is CBOR: 0x81 = array(1), 0x4a = byte string of length 10, then a
+  // 10-byte canister principal. Matched exactly rather than by prefix, so a longer or
+  // shorter payload falls through to `unknown` instead of decoding a truncated id.
+  if (raw.length === 12 && raw[0] === 0x81 && raw[1] === 0x4a) {
+    try {
+      return { kind: "topUp", canister: Principal.fromUint8Array(raw.slice(2)).toText() };
+    } catch {
+      // A blob that is the right shape but not a valid principal is data this app does
+      // not understand, not a reason to drop the row.
+      return { kind: "unknown" };
+    }
+  }
+  return { kind: "unknown" };
+}
+
+/// The order a delivery transfer paid out, from its memo.
+///
+/// `Delivery.mo` sets the transfer's memo to the order id as UTF-8, and the receipt's
+/// own documentation names that as the proof: the block is checkable against the ledger
+/// "by the order id in the transfer's memo".
+///
+/// ⚠️ **Gated on the SENDER, and that gate is the whole safety argument.**
+/// `TransferArgs` carries a caller-supplied memo, so any stranger can transfer one
+/// cycle to a buyer with a memo naming a real order. Ungated, this page would print
+/// "Order f22bd6dc" on a row the gateway had nothing to do with, inside the list a
+/// buyer reconciles their money against. Only a transfer FROM the gateway's own
+/// account can carry a claim about a gateway order.
+///
+/// Contrast `decodeBurnMemo`: no burn path accepts a memo argument, so those need no
+/// sender gate. This one does precisely because transfers do.
+export function decodeOrderMemo(
+  memo: [] | [Uint8Array],
+  fromOwner: string,
+  gatewayPrincipal: string | undefined,
+): string | null {
+  // No configured gateway means no trusted sender, so nothing is attributable.
+  if (gatewayPrincipal === undefined || gatewayPrincipal === "") return null;
+  if (fromOwner !== gatewayPrincipal) return null;
+  if (memo.length === 0) return null;
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(memo[0]!);
+  } catch {
+    return null;
+  }
+  // Order ids are hex. Validated rather than trusted so a memo that decodes to text
+  // cannot put arbitrary characters into a link's href, and so the value is one
+  // `parseRoute` will actually resolve.
+  //
+  // ⚠️ **This check, not the `fatal` flag above, is what makes the result safe.**
+  // Non-fatal decoding would yield replacement characters, which fail here too, so
+  // `fatal: true` is redundant belt-and-braces: removing it does not fail the suite.
+  // Removing THIS line does.
+  return /^[0-9a-f]{8,64}$/.test(text) ? text : null;
+}

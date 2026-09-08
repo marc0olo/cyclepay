@@ -5,8 +5,12 @@
 import type { Identity } from "@icp-sdk/core/agent";
 import {
   makeBackend,
+  backendCanisterId,
   cyclesLedgerCanisterId,
+  makeCyclesIndex,
   makeCyclesLedger,
+  type CyclesIndex,
+  type IndexTransaction,
   type CyclesLedger,
   type PricingStatus,
   makeBackendAt,
@@ -45,7 +49,7 @@ import {
   parseIcEnvCookies,
   resolveLiveBackendId,
 } from "./ic-env";
-import { type View, type Route, parseRoute, routeHash, TOUR_STEPS, stepStates } from "./view";
+import { type View, type Route, type HistoryTab, parseRoute, routeHash, TOUR_STEPS, stepStates } from "./view";
 import {
   RATE_LOCK_NOTE,
   formatAgo,
@@ -62,6 +66,8 @@ import {
   lockedVsEstimate,
   minAcceptableCycles,
   quoteChangedMessage,
+  decodeBurnMemo,
+  decodeOrderMemo,
   formatCycles,
   formatUsdCents,
   parseUsdAmount,
@@ -111,6 +117,7 @@ let liveBackendId: string | null = null;
 /// sign-in.
 let backendFactory: ((who: Identity | null) => Backend) | null = null;
 let cyclesLedgerFactory: (() => CyclesLedger) | null = null;
+let cyclesIndexFactory: (() => CyclesIndex) | null = null;
 
 /// The one place a cycles-ledger actor is built (#30 PR-A).
 ///
@@ -120,6 +127,11 @@ let cyclesLedgerFactory: (() => CyclesLedger) | null = null;
 function buildCyclesLedger(): CyclesLedger {
   if (cyclesLedgerFactory !== null) return cyclesLedgerFactory();
   return makeCyclesLedger();
+}
+
+function buildCyclesIndex(): CyclesIndex {
+  if (cyclesIndexFactory !== null) return cyclesIndexFactory();
+  return makeCyclesIndex();
 }
 
 /// The buyer's own cycles balance, read from the LEDGER.
@@ -153,6 +165,235 @@ async function refreshLedgerBalance(): Promise<void> {
     node.textContent = "could not read the ledger";
     note.textContent = "The balance is unchanged; only this page could not fetch it.";
   }
+}
+
+/// One account's cycles-ledger history, from the index canister.
+///
+/// ⚠️ **Read on-chain, and every row links out.** The gateway's own record shows the
+/// orders it delivered; this shows what the LEDGER says happened, which is a superset
+/// and is not ours to edit. A buyer reconciling a balance needs the second one.
+async function refreshLedgerHistory(): Promise<void> {
+  const host = document.getElementById("ledger-history");
+  if (!host) return;
+  // ⚠️ **Every path below ends in ONE `replaceChildren`, never clear-then-append.**
+  // `renderView` fires this more than once per navigation, so two runs overlap: with
+  // a clear at the top and an append at the bottom, both appended and the page showed
+  // the list TWICE. Building the nodes first and writing once at the end makes the
+  // last writer authoritative instead of additive.
+  if (identity === null) {
+    host.replaceChildren(mutedLine("Sign in to see your ledger activity."));
+    return;
+  }
+  const me = identity.getPrincipal().toText();
+  let result: Awaited<ReturnType<CyclesIndex["get_account_transactions"]>>;
+  try {
+    result = await buildCyclesIndex().get_account_transactions({
+      account: { owner: identity.getPrincipal(), subaccount: [] },
+      start: [],
+      // A page, not everything: an account with a long history would otherwise render
+      // thousands of rows nobody scrolls to.
+      max_results: 25n,
+    });
+  } catch {
+    host.replaceChildren(mutedLine(
+      "Could not reach the cycles ledger index. Your balance and orders above are"
+      + " unaffected; only this list could not be fetched.",
+    ));
+    return;
+  }
+  if ("Err" in result) {
+    // The index answers with a message rather than a reject when it cannot serve the
+    // account, so it is reported rather than swallowed into the same generic line.
+    host.replaceChildren(mutedLine(`The ledger index refused: ${result.Err.message}`));
+    return;
+  }
+  const rows = result.Ok.transactions;
+  if (rows.length === 0) {
+    host.replaceChildren(mutedLine(
+      "No ledger activity yet. A delivered order appears here as a transfer in.",
+    ));
+    return;
+  }
+
+  const table = document.createElement("table");
+  table.className = "orders-table";
+  const head = document.createElement("thead");
+  head.innerHTML =
+    "<tr><th>When</th><th>Block</th><th>What</th><th>Amount</th><th>Counterparty</th>"
+    + "<th>Order</th></tr>";
+  const body = document.createElement("tbody");
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    const described = describeLedgerTx(row.transaction, me);
+    const when = document.createElement("td");
+    when.textContent = new Date(Number(row.transaction.timestamp / 1_000_000n)).toLocaleString();
+    const block = document.createElement("td");
+    const link = document.createElement("a");
+    link.href =
+      `https://dashboard.internetcomputer.org/tokens/${cyclesLedgerCanisterId}`
+      + `/transaction/${row.id}`;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.className = "order-link mono";
+    link.textContent = row.id.toString();
+    block.append(link);
+    const what = document.createElement("td");
+    what.textContent = described.what;
+    const amount = document.createElement("td");
+    amount.className = "mono";
+    amount.textContent = described.amount;
+    const other = document.createElement("td");
+    other.className = "mono";
+    if (described.canister !== undefined) {
+      const canisterLink = document.createElement("a");
+      canisterLink.href =
+        `https://dashboard.internetcomputer.org/canister/${described.canister}`;
+      canisterLink.target = "_blank";
+      canisterLink.rel = "noopener noreferrer";
+      canisterLink.className = "order-link mono";
+      canisterLink.textContent = described.counterparty;
+      other.append(canisterLink);
+    } else {
+      other.textContent = described.counterparty;
+    }
+    // ⚠️ **Header and cell in one change.** This table once shipped six headers and
+    // five cells, which shifted every column after the gap and made the whole row read
+    // wrong. A column is added in both places or neither.
+    const order = document.createElement("td");
+    if (described.orderId === undefined) {
+      order.textContent = "-";
+    } else {
+      const orderLink = document.createElement("a");
+      orderLink.href = `#/order/${described.orderId}`;
+      orderLink.className = "order-link mono";
+      orderLink.textContent = shortPrincipal(described.orderId);
+      order.append(orderLink);
+    }
+    tr.append(when, block, what, amount, other, order);
+    body.append(tr);
+  }
+  table.append(head, body);
+  const out: HTMLElement[] = [table];
+  // ⚠️ **Compared against the account's OLDEST id, not against the page size.** A full
+  // page is not evidence that anything was left out: an account with exactly 25
+  // transactions filled one and was told the rest were elsewhere. The index reports the
+  // oldest id it holds for the account, so the last row reaching it means this page is
+  // the whole history.
+  const oldest = result.Ok.oldest_tx_id[0];
+  if (oldest !== undefined && rows[rows.length - 1]!.id > oldest) {
+    out.push(mutedLine("Showing the 25 most recent. Older entries are on the dashboard."));
+  }
+  host.replaceChildren(...out);
+}
+
+function mutedLine(text: string): HTMLElement {
+  const p = document.createElement("p");
+  p.className = "muted";
+  p.textContent = text;
+  return p;
+}
+
+/// Show one dashboard record and mark which tab is selected.
+///
+/// ⚠️ **The selected tab must be distinguishable without colour.** `aria-current`
+/// carries it for assistive tech, and the stylesheet keys its weight and underline off
+/// the same attribute, so the highlight is never colour alone. A tab styled only by a
+/// hue fails for the colour-blind reader and disappears entirely in forced-colours
+/// mode, and this control is the only thing telling you which of two similar tables
+/// you are looking at.
+function renderRecordTabs(tab: HistoryTab): void {
+  show("panel-orders", tab === "orders");
+  show("panel-ledger", tab === "ledger");
+  for (const [id, owns] of [
+    ["tab-orders", tab === "orders"],
+    ["tab-ledger", tab === "ledger"],
+  ] as const) {
+    const node = document.getElementById(id);
+    if (node === null) continue;
+    // Set/removed rather than written as "false": `aria-current="false"` still reads as
+    // present to some assistive tech, which would announce both tabs as current.
+    if (owns) node.setAttribute("aria-current", "true");
+    else node.removeAttribute("aria-current");
+  }
+}
+
+/// One ledger transaction, in the buyer's terms.
+///
+/// ⚠️ **Direction is computed from the ACCOUNTS, not from the kind.** A `transfer` is
+/// money in or money out depending on which side the caller is, and rendering "0.5 T
+/// transfer" without a sign is the one formatting choice here that could make a buyer
+/// think they were charged when they were paid.
+function describeLedgerTx(
+  tx: IndexTransaction,
+  me: string,
+): { what: string; amount: string; counterparty: string; canister?: string; orderId?: string } {
+  const short = (a: { owner: unknown }) => shortPrincipal(String(a.owner));
+  if (tx.transfer.length > 0) {
+    const t = tx.transfer[0]!;
+    const outgoing = String(t.from.owner) === me;
+    // A delivery arrives as a transfer FROM the gateway, and its memo is the order id.
+    // Gated on the sender inside `decodeOrderMemo`, because transfer memos are
+    // caller-supplied and an ungated read would let a stranger name one of our orders.
+    const orderId = decodeOrderMemo(
+      t.memo,
+      String(t.from.owner),
+      liveBackendId ?? backendCanisterId,
+    );
+    return {
+      what: outgoing ? "Sent" : "Received",
+      amount: `${outgoing ? "-" : "+"}${formatCycles(t.amount)}`,
+      counterparty: outgoing ? short(t.to) : short(t.from),
+      ...(orderId === null ? {} : { orderId }),
+    };
+  }
+  if (tx.mint.length > 0) {
+    const m = tx.mint[0]!;
+    // ⚠️ **Not "minted from ICP", and deliberately not labelled from its memo either.**
+    // Cycles recovered from a deleted canister arrive as a mint, and so do the refunds of
+    // a failed creation (memo `FD * 32`) and a failed withdraw (memo `FF * 32`). Naming
+    // those would be forgeable: `deposit` takes a CALLER-supplied memo and a deposit is a
+    // mint, so anyone could deposit memoed `FF * 32` and fake a refund row here. Burns
+    // are safe to decode because no burn path accepts a memo. This label therefore states
+    // only what is observable: cycles entered the account from outside it. A delivered
+    // order is a transfer from the gateway, not a mint, so it is not this row.
+    return { what: "Added", amount: `+${formatCycles(m.amount)}`, counterparty: "-" };
+  }
+  if (tx.burn.length > 0) {
+    const b = tx.burn[0]!;
+    // ⚠️ **`b.from` is the VIEWER, so it must not go in the counterparty column** — it
+    // rendered their own principal under "Other party". What is useful sits in the memo,
+    // which only a burn's memo can be trusted for: see `decodeBurnMemo`.
+    const amount = `-${formatCycles(b.amount)}`;
+    const purpose = decodeBurnMemo(b.memo);
+    // ⚠️ **Both labels name the CHARGE, not an outcome.** A create and a withdraw that
+    // FAIL write the same burn as one that succeeds, and the refund that reveals the
+    // failure is a separate later row. "Created a canister" / "Topped up" would assert
+    // something the block does not carry.
+    if (purpose.kind === "topUp") {
+      return {
+        what: "Canister top-up",
+        amount,
+        counterparty: shortPrincipal(purpose.canister),
+        canister: purpose.canister,
+      };
+    }
+    if (purpose.kind === "creation") {
+      // No principal: the ledger does not record which canister a creation made.
+      return { what: "Canister creation", amount, counterparty: "-" };
+    }
+    return { what: "Spent", amount, counterparty: "-" };
+  }
+  if (tx.approve.length > 0) {
+    const a = tx.approve[0]!;
+    return {
+      what: "Approved",
+      amount: formatCycles(a.amount),
+      counterparty: short(a.spender),
+    };
+  }
+  // An unrecognised kind is NAMED rather than dropped: a row the ledger recorded and
+  // this page cannot classify still belongs in a list the buyer reconciles against.
+  return { what: tx.kind, amount: "-", counterparty: "-" };
 }
 
 /// The one place a backend actor is built.
@@ -304,6 +545,9 @@ function renderStaleCookieNotice(into: HTMLElement): void {
 
 /// One view owns the screen at a time. See view.ts for why.
 let currentView: View = "landing";
+/// Which dashboard record is showing. Mirrors the hash, so a reload or a Back lands
+/// on the same panel rather than snapping to the default.
+let currentHistoryTab: HistoryTab = "orders";
 /// Orders this principal has, so the header link can hide when there are none.
 let orderCount = 0;
 
@@ -398,7 +642,14 @@ function renderView(): void {
     renderAdminIdentity();
     renderOperatorSummary();
   }
-  if (effective === "history") void refreshLedgerBalance();
+  if (effective === "history") {
+    // The balance is above the tabs and belongs to neither record, so it loads either
+    // way. The ledger list is only fetched when its panel is actually showing:
+    // 25 index rows for a panel nobody opened is work with no reader.
+    void refreshLedgerBalance();
+    renderRecordTabs(currentHistoryTab);
+    if (currentHistoryTab === "ledger") void refreshLedgerHistory();
+  }
   show("history-link", orderCount > 0 && identity !== null);
   if ((onOrder || onNext) && !ready) renderOrderMissing();
 
@@ -1198,6 +1449,7 @@ function applyRoute(route: Route): void {
   if (route.view !== "order" && pollOrderId !== null) stopPolling();
 
   currentView = route.view;
+  if (route.view === "history") currentHistoryTab = route.tab;
   if (route.view === "admin") {
     // Worklists depend on the grant, so they follow the status read rather than racing it.
     void loadAdminStatus().then(async () => {
@@ -2798,7 +3050,7 @@ async function init(): Promise<void> {
   el("history-link").onclick = () => {
     // The anchor already sets the hash; this only stops a same-hash click from
     // being a no-op after the view moved on.
-    applyRoute({ view: "history" });
+    applyRoute({ view: "history", tab: "orders" });
   };
 
   // Test-only, and gone from a production build: `__FIXTURES__` is replaced with
@@ -2814,6 +3066,14 @@ async function init(): Promise<void> {
       },
       useCyclesLedger: (factory) => {
         cyclesLedgerFactory = factory;
+      },
+      useCyclesIndex: (factory) => {
+        cyclesIndexFactory = factory;
+      },
+      // Safe despite also being the actor's id: `backendFactory` is set above and
+      // short-circuits `buildBackend`, so this only ever feeds the sender gate.
+      useGatewayPrincipal: (id) => {
+        liveBackendId = id;
       },
       signIn: setIdentity,
       openOrder,

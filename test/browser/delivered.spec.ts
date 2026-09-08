@@ -184,3 +184,74 @@ test.describe("one view owns the screen, under a live poll", () => {
     await expect(page.locator("#view-landing")).toBeHidden();
   });
 });
+
+test.describe("the dashboard's two records, in a real browser", () => {
+  /// ⚠️ **The only place the whole chain runs unmocked.** jsdom can assert that a
+  /// panel's `hidden` flag flipped; it cannot tell you the tab highlight is visible or
+  /// that clicking the link navigates. Both of those are what a buyer actually uses to
+  /// tell two similar tables apart.
+  test("clicking a tab switches the record and moves the highlight", async ({ page }) => {
+    await page.goto("/#/history");
+    await signInAsFixtureBuyer(page);
+
+    // The bare hash is the orders record.
+    await expect(page.locator("#panel-orders")).toBeVisible();
+    await expect(page.locator("#panel-ledger")).toBeHidden();
+    await expect(page.locator("#tab-orders")).toHaveAttribute("aria-current", "true");
+    await expect(page.locator("#tab-ledger")).not.toHaveAttribute("aria-current", "true");
+
+    await page.locator("#tab-ledger").click();
+
+    // The tab is a LINK, so the selection is in the address bar and Back works.
+    await expect(page).toHaveURL(/#\/history\/ledger$/);
+    await expect(page.locator("#panel-ledger")).toBeVisible();
+    await expect(page.locator("#panel-orders")).toBeHidden();
+    await expect(page.locator("#tab-ledger")).toHaveAttribute("aria-current", "true");
+    await expect(page.locator("#tab-orders")).not.toHaveAttribute("aria-current", "true");
+
+    // ⚠️ The highlight must be more than a colour: the selected tab carries a rule and
+    // heavier text, so it survives a colour-blind reader and forced-colours mode.
+    const selectedWeight = await page.locator("#tab-ledger").evaluate(
+      (n) => getComputedStyle(n).fontWeight,
+    );
+    const otherWeight = await page.locator("#tab-orders").evaluate(
+      (n) => getComputedStyle(n).fontWeight,
+    );
+    expect(Number(selectedWeight)).toBeGreaterThan(Number(otherWeight));
+
+    await page.goBack();
+    await expect(page.locator("#panel-orders")).toBeVisible();
+  });
+
+  test("a delivery row in the ledger links back to its order", async ({ page }) => {
+    // The fixture's delivery transfer is sent FROM the gateway principal and memoed
+    // with the order id, which is the only combination the cross-reference trusts.
+    //
+    // The order is opened first because `get_order` answers with whatever order the
+    // fixture is standing in: without one, the link would resolve to the missing-order
+    // view and this would prove only that the href was well-formed.
+    await page.goto("/");
+    await signInAsFixtureBuyer(page);
+    await openFixtureOrder(page, { status: "delivered" });
+
+    await page.locator("#history-link").click();
+    await page.locator("#tab-ledger").click();
+    await expect(page.locator("#panel-ledger")).toBeVisible();
+
+    const orderLink = page.locator('#ledger-history a[href^="#/order/"]').first();
+    await expect(orderLink).toBeVisible();
+    await orderLink.click();
+    // It resolves: the id in the memo is one the router and the backend both accept.
+    await expect(page.locator("#active-order")).toBeVisible();
+  });
+
+  test("the ledger table's column count matches its headers", async ({ page }) => {
+    // Regression guard: this table once shipped six headers and five cells, which
+    // shifted every column after the gap so each row read one field to the left.
+    await page.goto("/#/history/ledger");
+    await signInAsFixtureBuyer(page);
+    const headers = await page.locator("#ledger-history thead th").count();
+    const cells = await page.locator("#ledger-history tbody tr").first().locator("td").count();
+    expect(cells).toBe(headers);
+  });
+});

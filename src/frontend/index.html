@@ -20,7 +20,7 @@
         <span class="eyebrow">Internet Computer</span>
       </a>
       <div class="header-actions">
-        <a id="history-link" class="header-link" href="#/history" hidden>Your orders</a>
+        <a id="history-link" class="header-link" href="#/history" hidden>Dashboard</a>
         <!-- NOTE: Shown ONLY to a granted admin or a controller, from `admin_status` -
              which is a public, caller-scoped query, so asking costs nothing and
              reveals nothing about anyone else. That conditionality is what makes the
@@ -29,7 +29,7 @@
              them. Before this, an operator had to know to type `#/admin`. -->
         <a id="admin-nav" class="header-link" href="#/admin" hidden>Admin</a>
         <!-- Icon, and the glyph is set by `renderTheme` because it depends on which
-             theme is active. NOTE: "Your orders" and "Sign out" stay as WORDS: this
+             theme is active. NOTE: "Dashboard" and "Sign out" stay as WORDS: this
              audience is buying cycles with a card for the first time, and an all-icon
              header makes them guess. Icons where the meaning is universal, words
              where it is not. -->
@@ -419,7 +419,7 @@
       <section id="order-missing" class="view" hidden>
         <h2 class="section-h">We could not find that order</h2>
         <p id="order-missing-detail"></p>
-        <p><a href="#/history">Your orders</a></p>
+        <p><a href="#/history">Back to your dashboard</a></p>
       </section>
 
       <section id="history" class="view" hidden>
@@ -438,7 +438,18 @@
           </div>
         </dl>
 
-        <h3 class="section-h">Order history</h3>
+        <!-- Two RECORDS of the same money, one tab each. NOTE: the balance above sits
+             outside the tabs because it belongs to neither record, and the tabs are
+             LINKS rather than an ARIA tab widget because the selection is in the hash:
+             deep-linkable, survives a reload, and Back works. Faking `role="tab"` over
+             a router gives the keyboard two conflicting models. -->
+        <nav class="record-tabs" aria-label="Which record to show">
+          <a id="tab-orders" class="record-tab" href="#/history">Your orders</a>
+          <a id="tab-ledger" class="record-tab" href="#/history/ledger">Cycles ledger activity</a>
+        </nav>
+
+        <div id="panel-orders" class="record-panel">
+        <p class="muted">This gateway's own record of what you bought.</p>
         <table class="orders-table">
           <thead>
             <tr>
@@ -454,6 +465,20 @@
           <tbody id="orders"></tbody>
         </table>
         <p class="muted">Select a row to see the order and its receipt.</p>
+        </div>
+
+        <!-- The ledger's own record for this account, from the cycles-ledger INDEX
+             canister. NOTE: from a canister rather than the dashboard's REST API, because
+             this page's claim is that its figures come from canisters anyone can
+             query. Every row links to the public dashboard so the entry can be read
+             somewhere that is not us. -->
+        <div id="panel-ledger" class="record-panel" hidden>
+          <p class="muted">
+            The cycles ledger's own record for your account, which anyone can verify.
+            It includes transfers this gateway had nothing to do with.
+          </p>
+          <div id="ledger-history"></div>
+        </div>
       </section>
 
       <!-- The operator console (#68). Reached at #/admin only: no nav link, because a

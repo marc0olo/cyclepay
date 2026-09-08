@@ -35,13 +35,25 @@ export type View =
   | "history"
   | "admin";
 
+/// Which record the dashboard is showing.
+///
+/// ⚠️ **A TAB, not a view.** The balance sits above both panels and belongs to
+/// neither record, so the page is one view whose panel changes. Modelling the ledger
+/// as its own view would duplicate the balance's load and let the two drift.
+///
+/// In the hash, so a tab is deep-linkable, survives a reload and works with Back.
+/// That is also why the tabs are links with `aria-current` rather than an ARIA tab
+/// widget: faking `role="tab"` over a router gives the keyboard two conflicting
+/// models (arrow keys vs. Back) and the URL stops describing the page.
+export type HistoryTab = "orders" | "ledger";
+
 /// A parsed location hash.
 export type Route =
   | { view: "landing" }
   | { view: "buy" }
   | { view: "order"; orderId: string }
   | { view: "next"; orderId: string }
-  | { view: "history" }
+  | { view: "history"; tab: HistoryTab }
   | { view: "admin" };
 
 /// Parse `window.location.hash`.
@@ -55,7 +67,13 @@ export type Route =
 export function parseRoute(hash: string): Route {
   const clean = hash.replace(/^#\/?/, "");
   if (clean === "buy") return { view: "buy" };
-  if (clean === "history") return { view: "history" };
+  // ⚠️ The tabbed forms BEFORE the bare one is not required here (these are exact
+  // equalities, not prefixes) but the bare form must keep meaning the default tab:
+  // every link and test written before tabs existed points at `#/history`.
+  if (clean === "history" || clean === "history/orders") {
+    return { view: "history", tab: "orders" };
+  }
+  if (clean === "history/ledger") return { view: "history", tab: "ledger" };
   if (clean === "admin") return { view: "admin" };
   // ⚠️ The longer pattern first: `order/<id>/next` also matches the order pattern's
   // prefix, and a route table that tests the shorter one first sends every next-steps
@@ -74,7 +92,8 @@ export function routeHash(route: Route): string {
     case "buy":
       return "#/buy";
     case "history":
-      return "#/history";
+      // The default tab keeps the bare hash, so existing links stay canonical.
+      return route.tab === "ledger" ? "#/history/ledger" : "#/history";
     case "admin":
       return "#/admin";
     case "order":
