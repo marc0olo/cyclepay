@@ -110,7 +110,13 @@ def leaked_docs(did_text):
     if service is None:
         sys.exit(f"ABORT: no `service` block in {DID} — cannot pass vacuously")
     out = []
-    for i in range(service, len(lines)):
+    # ⚠️ **`service + 1`, and the `+ 1` is load-bearing since #133.** `service : {`
+    # matches `DID_METHOD` itself — moc's space before the colon is the only thing that
+    # stops it — and #133 parked the actor's service doc permanently on the line directly
+    # above. So scanning from `service` would report `service` as an endpoint carrying a
+    # neighbour's doc the day moc emits `service: {`, a red gate nobody would connect
+    # back to a compiler's whitespace. Same shape as `check-admin-tiers.py`'s `\s*\(`.
+    for i in range(service + 1, len(lines)):
         m = DID_METHOD.match(lines[i])
         if m and i > 0 and lines[i - 1].strip().startswith("///"):
             out.append(m.group(1))
@@ -146,6 +152,18 @@ def self_test():
     got = leaked_docs(did)
     if got != ["get_order"]:
         sys.exit(f"ABORT: self-test expected ['get_order'] leaked, got {got}")
+
+    # ⚠️ The service line itself, spelled without moc's space, must not read as an
+    # endpoint — see the note in `leaked_docs`. This case is what pins the `+ 1`.
+    tight = "\n".join([
+        "/// The actor's own doc, which moc DOES emit.",
+        "service: {",
+        "  health: () -> (Health) query;",
+        "}",
+    ])
+    got = leaked_docs(tight)
+    if got != []:
+        sys.exit(f"ABORT: self-test — the service line read as an endpoint: {got}")
 
 
 def main():

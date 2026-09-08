@@ -24,10 +24,11 @@ line responsible and needs no rebuild to fire. `leaked_docs()` stays as the back
 whatever this cannot see.
 
 **The one legitimate `///`: the file's leading block.** moc emits it as the service
-documentation — verified in `backend.did`, which opens the service with "Fully on-chain
-cycles gateway — composition root." It sits above the first `import` rather than above
-`persistent actor`, which is why this check is positional rather than looking for the
-actor line.
+documentation — verified in `backend.did`, where it sits directly above `service : {`,
+not at the top of the file. In the source it sits above the first `import` rather than
+above `persistent actor`, which is why this check is positional rather than looking for
+the actor line. ⚠️ That placement is what `leaked_docs()`'s `service + 1` accounts for:
+the emitted doc is permanently the line before the service line.
 
 ⚠️ **What this does NOT reach**, stated because a check implying more than it verifies is
 worse than no check:
@@ -37,6 +38,13 @@ worse than no check:
     leaked. Only the composition root has a service to leak ONTO.
   - **Whether the comment is any good.** `//` and `///` are equally unpublished here, so
     this is purely about where moc may send the text.
+  - ⚠️ **The cost this does impose, stated rather than waved away.** `///` is what a
+    Motoko LSP surfaces on hover, and `//` is not — so the 742 converted blocks lose
+    hover, and only that. Nothing *publishes* them (no `mo-doc` or `mops docs` here, and
+    `backend.did` never carried the text), and they document actor-private declarations,
+    so anyone reading them is already in the file. If moc stops aliasing docs onto
+    unrelated endpoints, converting back is one `sed` — which is how this direction was
+    proven in the first place.
 """
 
 import re
