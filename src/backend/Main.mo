@@ -1881,21 +1881,6 @@ persistent actor CyclesGateway {
   transient var expiryScanCursor : Text = "";
 
 
-  /// How often the sweep reconciles the per-status tallies against the order
-  /// store. Daily, not per-sweep: the reconcile is O(orders) while the tallies
-  /// exist precisely so the hot queries are O(1), and drift can only come from a
-  /// bookkeeping bug, which does not need a 15-minute detection window.
-  let countReconcileIntervalNs : Nat = 24 * 3_600 * 1_000_000_000;
-
-
-  /// How often the sweep reconciles the reserve floor against the cycles ledger.
-  ///
-  /// Hourly rather than per-sweep because it costs a ledger round trip plus two
-  /// journal scans, and because what it detects — an unobserved top-up — is an
-  /// operator action that has `refresh_reserve` for immediacy. The cost of the delay
-  /// is bounded and one-directional: a floor below the truth under-sells, never over-
-  /// sells.
-  let reserveReconcileIntervalNs : Nat = 3_600 * 1_000_000_000;
 
 
 
@@ -2307,7 +2292,7 @@ persistent actor CyclesGateway {
       // visibly stale `lastCountReconcile` (RUNBOOK §8), which is the right
       // signal — the tallies are unverified, not known-wrong.
       let now = Time.now();
-      if (Recovery.reconcileDue(recoveryState.lastCountReconcileAttemptNs, now, countReconcileIntervalNs)) {
+      if (Recovery.reconcileDue(recoveryState.lastCountReconcileAttemptNs, now, Recovery.countReconcileIntervalNs)) {
         recoveryState.lastCountReconcileAttemptNs := now;
         ignore async { reconcileCounts() };
       };
@@ -2357,7 +2342,7 @@ persistent actor CyclesGateway {
       // catching instead: a ledger that will not answer is a skipped reconcile, and
       // the floor it leaves standing is a lower bound, so nothing unsafe follows.
       let now2 = Time.now();
-      if (Recovery.reconcileDue(recoveryState.lastReserveReconcileAttemptNs, now2, reserveReconcileIntervalNs)) {
+      if (Recovery.reconcileDue(recoveryState.lastReserveReconcileAttemptNs, now2, Recovery.reserveReconcileIntervalNs)) {
         recoveryState.lastReserveReconcileAttemptNs := now2;
         try { ignore (await* observeReserve()).observed } catch (e) {
           audit("reserve.observeFailed", "could not read the reserve balance: " # e.message() # " — the floor stands, so the gateway under-sells until the next attempt");

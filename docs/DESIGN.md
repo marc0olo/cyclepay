@@ -467,7 +467,7 @@ by field.** `reserveState`, `gateState`, `pricingState`, `stripeState`, `tierSta
 slice it uses. The alternative — an accessor closure per field — needs no shape change,
 and it is what the three TRANSIENT fields still use, for a sharper reason: they exist to
 answer "has this happened since the canister started", which a value frozen at include
-time answers wrongly and confidently. For the 21 stable fields it would have put plumbing
+time answers wrongly and confidently. For the 19 stable fields it would have put plumbing
 at every include site to work around by-value semantics.
 
 ⚠️ **`webhookPaidOrder` uses a TAKE-ONCE accessor**, not a get/set pair: the dispatcher
@@ -481,7 +481,7 @@ is when `include` evaluates its arguments, and none of them ever changes. The ru
 is about MUTABLE state; a snapshot of an immutable value is the value.
 
 ⚠️⚠️ **Grouping also closed those fields to future extension, and THAT cost outlives the
-one-time drop below.** Before the split each of the 21 was an actor-level `var`, and
+one-time drop below.** Before the split each of the 19 was an actor-level `var`, and
 adding another was free. Now a new field inside any `*State` record needs the migration
 chain this project has never had (§11 / #32) — measured both ways on the branch that
 introduced them:
