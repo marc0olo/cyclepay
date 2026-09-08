@@ -18,10 +18,16 @@ jobs:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
       - uses: caffeinelabs/setup-mops@v1
         with:
-          mops-version: 2
+          # Matches the CLI that writes `mops.lock` locally. It was pinned to 2 while the
+          # committed lock was format 3, so CI regenerated it on every run and the
+          # lockfile guaranteed nothing here.
+          mops-version: 3
 
       - name: install mops packages
-        run: mops install
+        # `--locked`: fail rather than silently rewrite the lock. CI is the one place
+        # that must build from exactly what was committed, and a lock nothing enforces
+        # is a lock in name only.
+        run: mops install --locked
 
       # -Werror: M0145 (non-exhaustive match) is a warning, so without this a new
       # `Types.Owner` case compiles green and traps at runtime on the authz path.
@@ -117,10 +123,16 @@ jobs:
           node-version: '22'
       - uses: caffeinelabs/setup-mops@v1
         with:
-          mops-version: 2
+          # Matches the CLI that writes `mops.lock` locally. It was pinned to 2 while the
+          # committed lock was format 3, so CI regenerated it on every run and the
+          # lockfile guaranteed nothing here.
+          mops-version: 3
 
       - name: install mops packages
-        run: mops install
+        # `--locked`: fail rather than silently rewrite the lock. CI is the one place
+        # that must build from exactly what was committed, and a lock nothing enforces
+        # is a lock in name only.
+        run: mops install --locked
 
       - name: install integration deps
         run: npm --prefix test/integration ci
