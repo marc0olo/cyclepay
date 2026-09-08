@@ -110,12 +110,21 @@ def leaked_docs(did_text):
     if service is None:
         sys.exit(f"ABORT: no `service` block in {DID} — cannot pass vacuously")
     out = []
-    # ⚠️ **`service + 1`, and the `+ 1` is load-bearing since #133.** `service : {`
-    # matches `DID_METHOD` itself — moc's space before the colon is the only thing that
-    # stops it — and #133 parked the actor's service doc permanently on the line directly
-    # above. So scanning from `service` would report `service` as an endpoint carrying a
-    # neighbour's doc the day moc emits `service: {`, a red gate nobody would connect
-    # back to a compiler's whitespace. Same shape as `check-admin-tiers.py`'s `\s*\(`.
+    # ⚠️ **`service + 1`, and the `+ 1` is load-bearing.** `service : {` matches
+    # `DID_METHOD` itself — moc's space before the colon is the only thing that stops it —
+    # and the line directly above it is `Main.mo`'s file header, which moc emits as the
+    # service doc. So scanning from `service` reports `service` as an endpoint carrying a
+    # neighbour's doc the day moc emits `service: {`: a red gate nobody would connect back
+    # to a compiler's whitespace.
+    #
+    # ⚠️ **This shipped WITH `leaked_docs()` and survived two PRs and two reviews** — the
+    # header has been the line before `service : {` since a128982, the commit that added
+    # this function. #133 did not create it; banning `///` elsewhere in `Main.mo` forced
+    # the header's placement to be stated precisely, which is what put the two facts next
+    # to each other. **The lesson is the one that generalises: a check written to detect
+    # positional aliasing was one character of compiler whitespace from a false positive,
+    # and reading the regex is not enough to see it — you have to ask what the invariant
+    # RESTS on.** Same shape as `check-admin-tiers.py`'s `\s*\(`.
     for i in range(service + 1, len(lines)):
         m = DID_METHOD.match(lines[i])
         if m and i > 0 and lines[i - 1].strip().startswith("///"):
