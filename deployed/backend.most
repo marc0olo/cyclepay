@@ -214,26 +214,6 @@ actor {
       var latch : RailStateLatch__373298532;
       var refusals : RefusalCounts__727691946
     };
-  stable var indexScanCursor : ?OrderId__370787278;
-  stable var indexScanCycle :
-    {ordersRead : Nat; repairs : Nat; startedAtNs : Int};
-  stable var lastCountReconcile :
-    ?{
-       atNs : Int;
-       drift : [Drift__505569657];
-       ordersRead : Nat;
-       refused : [Drift__505569657]
-     };
-  stable var lastCountReconcileAttemptNs : Int;
-  stable var lastIndexScanCycle :
-    ?{
-       completedAtNs : Int;
-       ordersRead : Nat;
-       repairs : Nat;
-       startedAtNs : Int
-     };
-  stable var lastRecoverySweep : ?{atNs : Int; pending : Nat};
-  stable var lastReserveReconcileAttemptNs : Int;
   stable orderStore :
     {
       counts : Map__386906547<Text, Nat>;
@@ -263,7 +243,30 @@ actor {
       var lastAttempt : ?{atNs : Int; detail : Text; ok : Bool}
     };
   stable rateCache : {var rates : ?Rates__1063802498};
-  stable var recoverySweepIntervalNs : Nat;
+  stable recoveryState :
+    {
+      var indexScanCursor : ?OrderId__370787278;
+      var indexScanCycle :
+        {ordersRead : Nat; repairs : Nat; startedAtNs : Int};
+      var lastCountReconcile :
+        ?{
+           atNs : Int;
+           drift : [Drift__505569657];
+           ordersRead : Nat;
+           refused : [Drift__505569657]
+         };
+      var lastCountReconcileAttemptNs : Int;
+      var lastIndexScanCycle :
+        ?{
+           completedAtNs : Int;
+           ordersRead : Nat;
+           repairs : Nat;
+           startedAtNs : Int
+         };
+      var lastReserveReconcileAttemptNs : Int;
+      var lastSweep : ?{atNs : Int; pending : Nat};
+      var sweepIntervalNs : Nat
+    };
   stable reserveReconcileIntervalNs : Nat;
   stable reserveState :
     {

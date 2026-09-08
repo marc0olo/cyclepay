@@ -698,20 +698,6 @@ service : {
   /// ever protect the buyer. `null` opts out entirely.
   create_order: (amount: Amount, destination: Destination, minCycles:
    opt nat) -> (Result_14);
-  /// §5.2 liveness observability, public (operational transparency, same stance as
-  /// `reserve_status`): cadence + last completed timer sweep. A null or stale
-  /// `lastSweep` means recovery is not running.
-  /// This canister's OWN cycle balance and the floor the admission gate holds it
-  /// against (public — the same operational-transparency stance as `reserve_status`;
-  /// it is visible via `canister_status` regardless).
-  /// 
-  /// ⚠️ **Gas, not stock.** This is what the canister spends to run; the cycles it
-  /// sells live in its cycles-ledger account and are reported by `reserve_status`.
-  /// Below the freezing threshold the canister stops accepting updates; at zero it is
-  /// uninstalled and the order store, journals, and dedup sets go with it. Monitor it
-  /// separately, and alert well above `minCanisterCycles` — that gate stops *sales*,
-  /// it does not stop the burn. A sudden acceleration here is the
-  /// signature of a cycle-drain attempt.
   cycles_status: () -> (record {
                           balance: nat;
                           floor: nat;
@@ -728,45 +714,6 @@ service : {
   /// Money-out journal for one order (admin, §4.2) — intent, block_index, cycles
   /// delivered, retries.
   delivery_journal: (id: OrderId) -> (opt JournalEntry) query;
-  /// The public trust figures (#39) — anonymous, safe on a landing page.
-  /// 
-  /// ⚠️ **The admission test is "what does a POLLER learn from the deltas?", not "does this
-  /// field name a buyer?"** Cumulative counters are differentiable: anyone sampling this
-  /// query recovers each delivery's cycles, USD and timing from the increments. That is
-  /// accepted here because it is not new — `reserve_status` is already public and its
-  /// `promisedTotal` leaks per-order amounts the same way, and USD is near-derivable from
-  /// the public `card_tiers`/`quote_previews` — but the field-level reading of the test is
-  /// what will wave through the field that *does* add something. Do not add a
-  /// most-recent-order field, a largest-purchase field, or anything per-principal.
-  /// 
-  /// ⚠️ **`refusingNow` is REUSED, not re-derived.** It is the same `gateState.latch`
-  /// `refusal_counts` reports, so "is the rail accepting orders" has one definition and
-  /// cannot come out differently on two surfaces.
-  /// 
-  /// ⚠️ **The counters read zero on a fresh install and that is correct, not a bug.**
-  /// Orders are never deleted, but a reinstall replaces the state, so a launch-day figure
-  /// starts at zero whichever way it is built.
-  /// 
-  /// ⚠️ **The renderer must show that zero — do NOT add a threshold.** #39 first said "0
-  /// orders delivered is worse than no badge" and that was rejected: an absent number is
-  /// indistinguishable from a withheld one, and a rule that hides the figure exactly when
-  /// the news is bad is a misleading presentation rather than a neutral one. This comment
-  /// used to instruct the opposite, which would have had a future implementer build the
-  /// thing the decision removed.
-  /// 
-  /// `nullPaid` should always be 0. It counts delivered orders whose `paidUsdCents` was
-  /// unset, which `markPaid` makes unreachable — a non-zero value means the USD total is
-  /// understated and the reason is a bug in this canister, not in the display.
-  /// ⚠️ **One call, because it is the landing page's whole backend.** `availableToSell`
-  /// and `refusingNow` also appear on `reserve_status` and `refusal_counts` — that is
-  /// duplication of the READER, not of the definition: both are read here from the same
-  /// state those queries read, never recomputed. Folding them in keeps a first paint to a
-  /// single round trip and a single mock in the test harness.
-  /// 
-  /// ⚠️ **`availableToSell` leads, and it is a different KIND of number from the
-  /// others.** It is derived from a balance on the cycles ledger that anyone can query
-  /// without this canister's cooperation, so a visitor can check it rather than believe
-  /// it. The delivered totals are ours to report. Do not present them as equivalent.
   delivery_stats: () ->
    (record {
       availableToSell: nat;
@@ -776,11 +723,6 @@ service : {
       nullPaid: nat;
       refusingNow: RailStateLatch;
     }) query;
-  /// Which Stripe mode this gateway declares it serves, or null while unset.
-  /// 
-  /// Public because the page reads it: a sandbox deployment says so on every view, and
-  /// a mismatch against the mode a webhook arrives in is what `Card.handleWebhook`
-  /// refuses on. `set_expected_livemode` is the controller-only setter.
   expected_livemode: () -> (opt bool) query;
   /// **Admin: expire one `#created` order, releasing its reserve capacity** (#52).
   /// 
@@ -804,7 +746,6 @@ service : {
   /// not revealed to non-owners. Anonymous callers own nothing by
   /// construction (create_order rejects them), so they always get null.
   get_order: (id: OrderId) -> (opt Order) query;
-  /// Liveness probe; also used by the scaffold smoke test path.
   health: () -> (bool) query;
   /// §6.0 query half: the boundary node calls this first; a matched
   /// upgrade route answers `upgrade = ?true` and the gateway re-issues the
@@ -849,55 +790,6 @@ service : {
   /// a ~2 MB response, against a limit that is actually instructions. `ownerPage` walks
   /// the caller's own index from the cursor instead, and its cost is that buyer's page.
   list_orders: (afterId: opt OrderId, limit: nat) -> (Page__1) query;
-  /// "Is anything wrong right now" in ONE call (#68).
-  /// 
-  /// ⚠️ **Public is a decision, not a default: #3's alerting needs no credentials.** What
-  /// reaches a human at 03:00 is a cron on the public queries, and an admin-gated summary
-  /// would put that back on a credentialed cron. Everything here is a COUNT, never an
-  /// entry, and `reserve_status` already publishes `totalOrders`, `openOrders`,
-  /// `expiredOrders`, `promisedTotal` and `availableToSell` — so there is no new exposure
-  /// class, only one fewer round trip.
-  /// 
-  /// ⚠️ **The two delivery numbers are measured over DIFFERENT populations, and neither
-  /// contains the other.** `deliveriesOutstanding` means a transfer has been ISSUED, so it
-  /// needs the journal entry that records the intent. `deliveriesDelayed` reads the
-  /// ORDER's own clock and needs neither.
-  /// 
-  /// Both directions are reachable, so `deliveriesDelayed` is **not** a subset:
-  ///   - outstanding, not delayed: a transfer issued seconds ago.
-  ///   - delayed, not outstanding: a delivery that bailed before issuing — short reserve,
-  ///     stale rate, gas floor — so there is no intent to be outstanding about.
-  ///   - both: a transfer issued long enough ago that the clock ran out, including one that
-  ///     landed without its block recorded.
-  /// 
-  /// ⚠️ That last case is the CANONICAL outstanding shape (`intent` set, `blockIndex`
-  /// null), not a delayed-only one — it is what `unsettledDeliveries` exists to detect and
-  /// what freezes the reconcile's quiet window. Filing it under "delayed, not outstanding"
-  /// would tell an operator that `outstanding = 0` means no transfer is in flight, when a
-  /// transfer of unknown fate is exactly what it means.
-  /// 
-  /// ⚠️ So `outstanding = 0, delayed = 1` is a real state, not the summary contradicting
-  /// itself — and a UI that presented one as a subset of the other would be wrong exactly
-  /// where it matters.
-  /// 
-  /// They also differ in what they ask of a human: `deliveriesOutstanding` self-clears —
-  /// it is money-out in flight and the answer is wait — while `ordersNeedingReview`,
-  /// `orphansUnresolved` and `problemsUnresolved` are the three that mean a human is
-  /// needed. A summary that flattened those would make waiting look like work.
-  /// 
-  /// ⚠️ **`deliveriesOutstanding` is exactly the reserve reconcile's quiet-window
-  /// predicate**, deliberately: it is also the answer to "why does the reconcile keep
-  /// skipping", and sharing the definition means the number an operator reads cannot
-  /// disagree with the number the reconcile acted on.
-  /// 
-  /// **What bounds each number, stated because "bounded" alone would hide a difference:**
-  /// `ordersNeedingReview`, `ordersWithProblems` and `availableToSell` are O(1) tallies.
-  /// `deliveriesOutstanding` and `deliveriesDelayed` are bounded by `promiseHolders`, i.e.
-  /// by flow (§5.4). ⚠️ `problemsUnresolved` is bounded by the unresolved-problem index and
-  /// `orphansUnresolved` walks retained orphan history — both grow only while obligations
-  /// go uncleared, and an orphan costs a real payment or the signing secret to create
-  /// (`Orphans.add`), so neither is attacker-inflatable. Not O(1), and not the
-  /// grows-with-successful-business shape #69 and #70 removed.
   operator_summary: () ->
    (record {
       availableToSell: nat;
@@ -915,12 +807,6 @@ service : {
   /// order it funded. Null means the payment was never attributed to an order
   /// here — check the order's problems and the orphan list for an obligation carrying it.
   order_for_payment: (paymentRef: text) -> (opt OrderId) query;
-  /// Open-obligation depth, public.
-  /// 
-  /// Nothing is evicted, so this only comes down by the operator working it. A climbing
-  /// value means dollars are arriving that nobody has dealt with — the most important
-  /// operational number on the money path, and public because operational state is not
-  /// secret (§8).
   orphan_depth: () -> (record {
                          retained: nat;
                          unresolved: nat;
@@ -934,9 +820,6 @@ service : {
   /// mattered most. Pass `null` to start; feed `nextCursor` back until it is
   /// null. `limit` is capped at `Orphans.maxPageSize`.
   orphans: (afterId: opt nat, limit: nat) -> (Page) query;
-  /// The operator worklist: open obligations only, paged. Filtered server-side
-  /// so a large body of resolved history never stands between the operator and
-  /// the dollars that still need an answer.
   orphans_unresolved: (afterId: opt nat, limit: nat) -> (Page) query;
   /// Every delivery with money-out work outstanding, right now (admin).
   /// 
@@ -954,9 +837,6 @@ service : {
   /// orders are included because an operator asking "what is wrong right now" wants them,
   /// and they are deliberately NOT in that predicate — see `unsettledDeliveries`.
   pending_deliveries: () -> (vec JournalEntry) query;
-  /// Rates + params + refresh liveness, public: both rates are market data any
-  /// third party can query for themselves, and the fee formula is what users
-  /// are charged. Nothing here is secret, and reproducibility is the point.
   pricing_status: () ->
    (record {
       config: Config;
@@ -968,16 +848,6 @@ service : {
       rates: opt Rates;
       xrcCanisterId: opt text;
     }) query;
-  /// How much is outstanding, as two numbers rather than a collection (#38).
-  /// 
-  /// ⚠️ **The shape to poll, and the reason it exists separately from the list.** A
-  /// paginated detail query needs a cheap total beside it or a monitor pages through
-  /// everything to learn one number — the same split `orphan_depth` already has, and
-  /// the same reason RUNBOOK says to alert on the depth and fetch details only when it
-  /// fires.
-  /// 
-  /// ⚠️ **`unresolved` is NOT `orders`.** One order can carry several problems, so a
-  /// caller reading the order count undercounts the work.
   problem_depth: () -> (record {
                           orders: nat;
                           unresolved: nat;
@@ -1069,11 +939,6 @@ service : {
                                text;
                                nat;
                              });
-  /// The recovery machinery's own clocks and its last findings, public.
-  /// 
-  /// Four independent passes report here — the stranded sweep, the tally reconcile, the
-  /// reserve reconcile and the rotating index scan — because each can stop running
-  /// without any of the others noticing. RUNBOOK §8 alerts on the gaps between them.
   recovery_status: () ->
    (record {
       indexScan:
@@ -1125,16 +990,6 @@ service : {
   /// gateway refuses every sale against a fully funded reserve and nothing anywhere
   /// says why.
   refresh_reserve: () -> (nat);
-  /// Refusal tallies, and whether the gate is refusing right now (#61).
-  /// 
-  /// ⚠️ **Public, like every other monitoring surface here** — operational state
-  /// is public by design; the webhook secret is the only secret in the system.
-  /// 
-  /// ⚠️ **This query is the point of the counters.** A tally nobody reads is the
-  /// `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
-  /// per counter with the response — the counters mean different things:
-  /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
-  /// `reserveShort` climbing is a refill. Same shape, opposite actions.
   refusal_counts: () ->
    (record {
       counts: RefusalCounts;
@@ -1142,21 +997,6 @@ service : {
     }) query;
   remove_admin: (p: principal) -> (Result_11);
   remove_allowed_buyer: (p: principal) -> (Result_11);
-  /// Reserve solvency and order counters, public (#30 PR-B).
-  /// 
-  /// `reserveFloor` − `promisedTotal` = `availableToSell`, in one answer, so "the ledger
-  /// says 100 T and the gateway will sell 0" is diagnosable at a glance (§3.2).
-  /// 
-  /// ⚠️ **`reserveFloor` is a maintained lower BOUND, not the balance, and must not cache
-  /// one.** Caching invents a staleness class over a number the caller can read from the
-  /// source. A floor far below the ledger's balance means nothing has reconciled since the
-  /// last top-up — `reserveObservedAtNs` says when it last did, `refresh_reserve` is the
-  /// lever.
-  /// 
-  /// ⚠️ **Uncertified query answers, and nothing may be wired to decide on them.**
-  /// `create_order` decides solvency from the same state *synchronously*, inside the
-  /// order-creating message; that is what stops the decision being raced into an
-  /// over-sale.
   reserve_status: () ->
    (record {
       availableToSell: nat;
@@ -1270,6 +1110,13 @@ service : {
      context: blob;
      response: HttpRequestResult;
    }) -> (HttpRequestResult) query;
+  /// Stripe's two operator-set values: where buyers are returned, and which mode
+  /// this deployment serves.
+  /// ⚠️ **A record rather than loose `var` fields, because `include` passes by value**
+  /// (#120): a mixin handed a bare `var` gets a snapshot from install time, so its
+  /// writes land on a copy and its reads never move. A record is a heap object, so the
+  /// mixin and the actor share one. Grouped by subsystem, which is the slice a mixin
+  /// asks for (`reviewing-motoko` A6) rather than an accessor per field.
   webhook_secret_status: () -> (Status) query;
   /// Return the reserve to the caller, refusing while anything is owed (#103).
   /// 

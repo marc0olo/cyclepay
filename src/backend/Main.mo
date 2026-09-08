@@ -41,6 +41,7 @@ import Reserve "Reserve";
 import Card "rails/Card";
 import SecretsMixin "mixins/Secrets";
 import PrincipalsMixin "mixins/Principals";
+import MonitoringMixin "mixins/Monitoring";
 import Session "rails/Session";
 import Secret "Secret";
 import Tiers "Tiers";
@@ -553,30 +554,6 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Rates + params + refresh liveness, public: both rates are market data any
-  /// third party can query for themselves, and the fee formula is what users
-  /// are charged. Nothing here is secret, and reproducibility is the point.
-  public query func pricing_status() : async {
-    rates : ?Pricing.Rates;
-    config : Pricing.Config;
-    lastAttempt : ?{ atNs : Int; ok : Bool; detail : Text };
-    /// Which Exchange Rate Canister the last refresh actually priced from. On
-    /// mainnet this MUST read `uf6dk-hyaaa-aaaaq-qaaaq-cai`; anything else means
-    /// the deploy injected `PUBLIC_CANISTER_ID:xrc` and prices are coming from
-    /// somewhere else. Alert on it (RUNBOOK §8).
-    ///
-    /// **Null means no refresh has resolved it yet** — not that it is the mainnet
-    /// canister. Null is the expected reading for the first seconds after an
-    /// install or upgrade, and it is a "check again", never a pass.
-    xrcCanisterId : ?Text;
-  } {
-    {
-      rates = Pricing.lastRates(rateCache);
-      config = pricingState.config;
-      lastAttempt = pricingState.lastAttempt;
-      xrcCanisterId = lastXrcCanisterId;
-    };
-  };
 
   /// Force a rate refresh now (admin) — the ops lever after retuning config or
   /// while diagnosing a stale rate, without waiting for the next tick.
@@ -1342,14 +1319,6 @@ persistent actor CyclesGateway {
     #ok;
   };
 
-  /// Which Stripe mode this gateway declares it serves, or null while unset.
-  ///
-  /// Public because the page reads it: a sandbox deployment says so on every view, and
-  /// a mismatch against the mode a webhook arrives in is what `Card.handleWebhook`
-  /// refuses on. `set_expected_livemode` is the controller-only setter.
-  public query func expected_livemode() : async ?Bool {
-    stripeState.expectLivemode;
-  };
 
   /// Adjust the admission gate (§7): open-order cap, own-cycles floor,
   /// per-purchase ceiling. Validated atomically — a bad config never partially
@@ -1709,57 +1678,8 @@ persistent actor CyclesGateway {
     Orders.page(orderStore, filter, afterId, limit);
   };
 
-  /// How much is outstanding, as two numbers rather than a collection (#38).
-  ///
-  /// ⚠️ **The shape to poll, and the reason it exists separately from the list.** A
-  /// paginated detail query needs a cheap total beside it or a monitor pages through
-  /// everything to learn one number — the same split `orphan_depth` already has, and
-  /// the same reason RUNBOOK says to alert on the depth and fetch details only when it
-  /// fires.
-  ///
-  /// ⚠️ **`unresolved` is NOT `orders`.** One order can carry several problems, so a
-  /// caller reading the order count undercounts the work.
-  public query func problem_depth() : async { unresolved : Nat; orders : Nat } {
-    {
-      unresolved = Orders.unresolvedProblemCount(orderStore);
-      // ⚠️ O(1) — the index's size. This built the whole worklist as an array to read its
-      // length, on a query anyone can call.
-      orders = Orders.unresolvedProblemOrderCount(orderStore);
-    };
-  };
 
-  /// Refusal tallies, and whether the gate is refusing right now (#61).
-  ///
-  /// ⚠️ **Public, like every other monitoring surface here** — operational state
-  /// is public by design; the webhook secret is the only secret in the system.
-  ///
-  /// ⚠️ **This query is the point of the counters.** A tally nobody reads is the
-  /// `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
-  /// per counter with the response — the counters mean different things:
-  /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
-  /// `reserveShort` climbing is a refill. Same shape, opposite actions.
-  public query func refusal_counts() : async {
-    counts : Gate.RefusalCounts;
-    /// True while that rail-state condition is refusing. Each flips to true with
-    /// exactly one `gate.startedRefusing` audit line and clears on the next
-    /// successful admission.
-    refusingNow : Gate.RailStateLatch;
-  } {
-    { counts = gateState.refusals; refusingNow = gateState.latch };
-  };
 
-  /// Open-obligation depth, public.
-  ///
-  /// Nothing is evicted, so this only comes down by the operator working it. A climbing
-  /// value means dollars are arriving that nobody has dealt with — the most important
-  /// operational number on the money path, and public because operational state is not
-  /// secret (§8).
-  public query func orphan_depth() : async { unresolved : Nat; retained : Nat } {
-    {
-      unresolved = Orphans.unresolvedCount(orphanStore);
-      retained = Orphans.size(orphanStore);
-    };
-  };
 
   /// §4.1 retained history, oldest first, **paged**. Admin: entries carry
   /// payment references and claimed-but-bogus URL params.
@@ -1777,16 +1697,6 @@ persistent actor CyclesGateway {
     Orphans.page(orphanStore, afterId, limit);
   };
 
-  /// The operator worklist: open obligations only, paged. Filtered server-side
-  /// so a large body of resolved history never stands between the operator and
-  /// the dollars that still need an answer.
-  public shared query ({ caller }) func orphans_unresolved(
-    afterId : ?Nat,
-    limit : Nat,
-  ) : async Orphans.Page {
-    requireAdmin(caller);
-    Orphans.unresolvedPage(orphanStore, afterId, limit);
-  };
 
   /// Manual resolution (§4.1/§7) — the operator marking an obligation settled after
   /// acting off-chain: a refund issued in the Stripe Dashboard, or a delivery whose
@@ -3022,85 +2932,6 @@ persistent actor CyclesGateway {
     #transferFailed : Text;
   };
 
-  /// Reserve solvency and order counters, public (#30 PR-B).
-  ///
-  /// `reserveFloor` − `promisedTotal` = `availableToSell`, in one answer, so "the ledger
-  /// says 100 T and the gateway will sell 0" is diagnosable at a glance (§3.2).
-  ///
-  /// ⚠️ **`reserveFloor` is a maintained lower BOUND, not the balance, and must not cache
-  /// one.** Caching invents a staleness class over a number the caller can read from the
-  /// source. A floor far below the ledger's balance means nothing has reconciled since the
-  /// last top-up — `reserveObservedAtNs` says when it last did, `refresh_reserve` is the
-  /// lever.
-  ///
-  /// ⚠️ **Uncertified query answers, and nothing may be wired to decide on them.**
-  /// `create_order` decides solvency from the same state *synchronously*, inside the
-  /// order-creating message; that is what stops the decision being raced into an
-  /// over-sale.
-  public query func reserve_status() : async {
-    reserveFloor : Nat;
-    promisedTotal : Nat;
-    /// How many orders still hold a promise — `promiseHolders.size()`, O(1).
-    ///
-    /// ⚠️ **This is what `withdraw_reserve` guards on, so it must be readable before
-    /// calling it** (#103): the refusal names a count an operator then has to go and
-    /// find, and a decommissioning lever that cannot tell you what is blocking it is a
-    /// dead end.
-    ///
-    /// ⚠️ **It is also the direct read on a saturated tally.** `promisedTotal` clamps to
-    /// zero on release when it has diverged low, so `promisedTotal == 0` with
-    /// `promiseHolders > 0` is exactly the state `tallySaturations` counts — visible here
-    /// side by side rather than inferred from a counter.
-    promiseHolders : Nat;
-    availableToSell : Nat;
-    reserveObservedAtNs : ?Int;
-    cyclesLedgerFee : Nat;
-    tallySaturations : Nat;
-    reserveAccount : Types.Account;
-    canisterCycles : Nat;
-    minCanisterCycles : Nat;
-    openOrders : Nat;
-    expiredOrders : Nat;
-    totalOrders : Nat;
-    paidIntentsIndexed : Nat;
-  } {
-    {
-      reserveFloor = reserveState.floor;
-      promiseHolders = Orders.promiseHolderCount(orderStore);
-      /// Null means **no reconcile has ever run**, which is also why a freshly
-      /// installed canister sells nothing until the operator refreshes: the floor
-      /// starts at zero and only a look at the ledger can raise it.
-      reserveObservedAtNs = reserveState.observedAtNs;
-      /// Exactly what the gate computes, from the same two numbers, so a refused
-      /// sale and this figure can never tell different stories.
-      availableToSell = Reserve.available(reserveState.floor, Orders.promised(orderStore));
-      /// The fee the NEXT delivery will use, and the only way to see that `#BadFee`
-      /// self-correction actually happened (#30 PR-B). ⚠️ Nothing but the ledger
-      /// writes it — there is deliberately no admin lever — so a value at or above an
-      /// order's locked quantity stalls delivery loudly and the answer is a redeploy;
-      /// at that fee the rail cannot sell anyway.
-      cyclesLedgerFee = reserveState.cyclesLedgerFee;
-      // O(1): maintained counters, not a scan of the order store.
-      openOrders = Orders.countOf(orderStore, #created);
-      expiredOrders = Orders.countOf(orderStore, #expired);
-      totalOrders = orderStore.orders.size();
-      paidIntentsIndexed = paidIntents.size();
-      promisedTotal = Orders.promised(orderStore);
-      /// ⚠️ **Any non-zero value means the tally has diverged.** A saturation is a
-      /// release asking to remove more than was held, so it says the tally was
-      /// already wrong *before* that order got there — strictly worse than a fault
-      /// in the order being released. The daily recount reports drift's SIZE; this
-      /// reports its EXISTENCE, same day. RUNBOOK §8 alerts on any increment.
-      tallySaturations = orderStore.tallySaturations;
-      // Named so an operator (or the frontend) can point a ledger query at the
-      // right account without reconstructing it.
-      reserveAccount = Delivery.reserveAccount(selfPrincipal());
-      // The gas half, which is a different pot from the reserve: what the canister
-      // spends to run, gated by `minCanisterCycles`.
-      canisterCycles = Cycles.balance();
-      minCanisterCycles = gateState.config.minCanisterCycles;
-    };
-  };
 
   /// Which order did this Stripe `payment_intent` pay for (admin, §4.2)? The
   /// reconciliation lookup: given a charge in the Stripe Dashboard, find the
@@ -3579,10 +3410,95 @@ persistent actor CyclesGateway {
 
   // ── Recovery timer (task 11, §5.2) ──────────────────────────────────────
 
-  /// §5.2 sweep cadence. Persistent — an operator-tuned cadence survives
-  /// upgrades; the transient timer below re-arms at this value. Bounded by
-  /// Recovery.validateInterval (≪ the §5.1 ledger dedup window).
-  var recoverySweepIntervalNs : Nat = Recovery.defaultIntervalNs;
+  /// The recovery machinery's mutable state, as ONE record (#120, docs/DESIGN.md §9.1).
+  ///
+  /// ⚠️ Four independent passes write here — the stranded sweep, the tally reconcile, the
+  /// reserve reconcile and the rotating index scan — and `recovery_status` reads all of
+  /// them. Grouped so a mixin receives one slice rather than eight fields, and shared by
+  /// reference because `include` passes by value.
+  let recoveryState : {
+    /// §5.2 sweep cadence. Persistent — an operator-tuned cadence survives
+    /// upgrades; the transient timer below re-arms at this value. Bounded by
+    /// Recovery.validateInterval (≪ the §5.1 ledger dedup window).
+    var sweepIntervalNs : Nat;
+    /// Last *completed* timer sweep — recovery liveness for ops (the §5.2
+    /// timer is the backstop for every detached webhook kick that dies, so
+    /// "is it actually firing" must be observable).
+    var lastSweep : ?{ atNs : Int; pending : Nat };
+    /// When the tallies were last **successfully** reconciled, and what the pass found.
+    /// Surfaced on `recovery_status` so "the counts are trustworthy" is an observable
+    /// fact rather than an assumption. Written only on success, so it falling behind
+    /// while `lastSweep` advances is the signal that the reconcile itself is failing
+    /// (RUNBOOK §8).
+    ///
+    /// ⚠️ **`drift` and `refused` are different verdicts and are reported separately**
+    /// (#63): `drift` is a tally that was raised to the recount and is now correct, while
+    /// `refused` is one the pass would not touch because the recount came out lower — see
+    /// `Orders.adoptOnlyIncreases`. A monitor that alerts on the pair as if they were one
+    /// number cannot tell "repaired" from "still suspect".
+    ///
+    /// `ordersRead` is how much work the pass did. It is bounded by the two index sizes,
+    /// so watching it grow with lifetime sales would mean the bound had broken.
+    var lastCountReconcile : ?{
+      atNs : Int;
+      drift : [Orders.Drift];
+      refused : [Orders.Drift];
+      ordersRead : Nat;
+    };
+    /// When the reserve reconcile was last *attempted*. Same attempt-vs-success split
+    /// as the count reconcile below, for the same reason: `reserveState.observedAtNs` records
+    /// success, and gating the cadence on that alone would retry a failing (or
+    /// perpetually non-quiet) read on every single tick.
+    var lastReserveReconcileAttemptNs : Int;
+    /// When a reconcile was last *attempted*, which is what gates the cadence.
+    ///
+    /// Separate from the success timestamp on purpose. A trap rolls back every
+    /// state change in its own message, so a reconcile that traps cannot record
+    /// that it ran — gating on success alone would leave it due on the next tick
+    /// and every tick after, trapping forever. This is written by the **sweep's**
+    /// message, which commits regardless of what the detached reconcile does.
+    var lastCountReconcileAttemptNs : Int;
+    /// Where the current coverage cycle has reached. `null` means a cycle is about to
+    /// start from the beginning of the store.
+    ///
+    /// ⚠️ **Persistent, because the coverage claim is what this state is for.** A
+    /// transient cursor would silently restart every cycle on every upgrade, so
+    /// `lastIndexScanCycle` would report a completed pass that an upgrade had truncated —
+    /// a green check that means nothing.
+    var indexScanCursor : ?Types.OrderId;
+    /// The cycle in progress: when it began, how many orders it has read, and how many
+    /// disagreements it has repaired so far.
+    var indexScanCycle : { startedAtNs : Int; ordersRead : Nat; repairs : Nat };
+    /// The last **completed** cycle — the only thing that licenses reading a clean scan
+    /// as evidence about the whole store.
+    ///
+    /// ⚠️ **This field IS the third state.** `orders.problemIndexDrift` and
+    /// `orders.unindexedHolders` only mean "a writer bypassed the maintaining functions"
+    /// if the absence of those lines means "we looked". Without a completed-cycle stamp,
+    /// silence means either *verified clean* or *not yet visited*, which are two readings
+    /// with opposite responses — find the bug, versus wait for the next pass. So the three
+    /// states are: an audit line (verified, disagreed), silence with a recent
+    /// `completedAtNs` (verified, clean), and silence without one (unverified).
+    var lastIndexScanCycle : ?{
+      startedAtNs : Int;
+      completedAtNs : Int;
+      ordersRead : Nat;
+      repairs : Nat;
+    };
+  } = {
+    var sweepIntervalNs = Recovery.defaultIntervalNs;
+    var lastSweep = null;
+    var lastCountReconcile = null;
+    var lastReserveReconcileAttemptNs = 0;
+    var lastCountReconcileAttemptNs = 0;
+    var indexScanCursor = null;
+    var indexScanCycle = {
+      startedAtNs = 0;
+      ordersRead = 0;
+      repairs = 0;
+    };
+    var lastIndexScanCycle = null;
+  };
 
   /// §5.2 single-flight guard: a sweep slower than the interval must skip
   /// the next firing, never pile up. Transient on purpose — a persistent
@@ -3622,10 +3538,6 @@ persistent actor CyclesGateway {
   /// applies to the expensive half.
   transient var expiryScanCursor : Text = "";
 
-  /// Last *completed* timer sweep — recovery liveness for ops (the §5.2
-  /// timer is the backstop for every detached webhook kick that dies, so
-  /// "is it actually firing" must be observable).
-  var lastRecoverySweep : ?{ atNs : Int; pending : Nat } = null;
 
   /// How often the sweep reconciles the per-status tallies against the order
   /// store. Daily, not per-sweep: the reconcile is O(orders) while the tallies
@@ -3633,26 +3545,6 @@ persistent actor CyclesGateway {
   /// bookkeeping bug, which does not need a 15-minute detection window.
   let countReconcileIntervalNs : Nat = 24 * 3_600 * 1_000_000_000;
 
-  /// When the tallies were last **successfully** reconciled, and what the pass found.
-  /// Surfaced on `recovery_status` so "the counts are trustworthy" is an observable
-  /// fact rather than an assumption. Written only on success, so it falling behind
-  /// while `lastSweep` advances is the signal that the reconcile itself is failing
-  /// (RUNBOOK §8).
-  ///
-  /// ⚠️ **`drift` and `refused` are different verdicts and are reported separately**
-  /// (#63): `drift` is a tally that was raised to the recount and is now correct, while
-  /// `refused` is one the pass would not touch because the recount came out lower — see
-  /// `Orders.adoptOnlyIncreases`. A monitor that alerts on the pair as if they were one
-  /// number cannot tell "repaired" from "still suspect".
-  ///
-  /// `ordersRead` is how much work the pass did. It is bounded by the two index sizes,
-  /// so watching it grow with lifetime sales would mean the bound had broken.
-  var lastCountReconcile : ?{
-    atNs : Int;
-    drift : [Orders.Drift];
-    refused : [Orders.Drift];
-    ordersRead : Nat;
-  } = null;
 
   /// How often the sweep reconciles the reserve floor against the cycles ledger.
   ///
@@ -3663,20 +3555,7 @@ persistent actor CyclesGateway {
   /// sells.
   let reserveReconcileIntervalNs : Nat = 3_600 * 1_000_000_000;
 
-  /// When the reserve reconcile was last *attempted*. Same attempt-vs-success split
-  /// as the count reconcile below, for the same reason: `reserveState.observedAtNs` records
-  /// success, and gating the cadence on that alone would retry a failing (or
-  /// perpetually non-quiet) read on every single tick.
-  var lastReserveReconcileAttemptNs : Int = 0;
 
-  /// When a reconcile was last *attempted*, which is what gates the cadence.
-  ///
-  /// Separate from the success timestamp on purpose. A trap rolls back every
-  /// state change in its own message, so a reconcile that traps cannot record
-  /// that it ran — gating on success alone would leave it due on the next tick
-  /// and every tick after, trapping forever. This is written by the **sweep's**
-  /// message, which commits regardless of what the detached reconcile does.
-  var lastCountReconcileAttemptNs : Int = 0;
 
   /// Report what a bounded reconcile pass found (#63), shared by the timer and the
   /// admin lever so the two cannot report differently.
@@ -3793,7 +3672,7 @@ persistent actor CyclesGateway {
     // Stamped from inside, not handed the sweep's clock: this message runs after the
     // one that scheduled it, and the two timestamps are compared against each other
     // (attempt vs success) to tell a failing reconcile from a due one.
-    lastCountReconcile := ?{
+    recoveryState.lastCountReconcile := ?{
       atNs = Time.now();
       drift = report.adopted;
       refused = report.refused;
@@ -3804,39 +3683,8 @@ persistent actor CyclesGateway {
 
   // ── The rotating index scan (#63) ───────────────────────────────────────
 
-  /// Where the current coverage cycle has reached. `null` means a cycle is about to
-  /// start from the beginning of the store.
-  ///
-  /// ⚠️ **Persistent, because the coverage claim is what this state is for.** A
-  /// transient cursor would silently restart every cycle on every upgrade, so
-  /// `lastIndexScanCycle` would report a completed pass that an upgrade had truncated —
-  /// a green check that means nothing.
-  var indexScanCursor : ?Types.OrderId = null;
 
-  /// The cycle in progress: when it began, how many orders it has read, and how many
-  /// disagreements it has repaired so far.
-  var indexScanCycle : { startedAtNs : Int; ordersRead : Nat; repairs : Nat } = {
-    startedAtNs = 0;
-    ordersRead = 0;
-    repairs = 0;
-  };
 
-  /// The last **completed** cycle — the only thing that licenses reading a clean scan
-  /// as evidence about the whole store.
-  ///
-  /// ⚠️ **This field IS the third state.** `orders.problemIndexDrift` and
-  /// `orders.unindexedHolders` only mean "a writer bypassed the maintaining functions"
-  /// if the absence of those lines means "we looked". Without a completed-cycle stamp,
-  /// silence means either *verified clean* or *not yet visited*, which are two readings
-  /// with opposite responses — find the bug, versus wait for the next pass. So the three
-  /// states are: an audit line (verified, disagreed), silence with a recent
-  /// `completedAtNs` (verified, clean), and silence without one (unverified).
-  var lastIndexScanCycle : ?{
-    startedAtNs : Int;
-    completedAtNs : Int;
-    ordersRead : Nat;
-    repairs : Nat;
-  } = null;
 
   /// The expected time for one full coverage cycle, hence the detection latency for the
   /// outside direction. The arithmetic is `Recovery.indexScanCycleNs`, which is pure and
@@ -3845,7 +3693,7 @@ persistent actor CyclesGateway {
     Recovery.indexScanCycleNs(
       Orders.storedCount(orderStore),
       Orders.scanChunkSize,
-      recoverySweepIntervalNs,
+      recoveryState.sweepIntervalNs,
     );
   };
 
@@ -3874,18 +3722,18 @@ persistent actor CyclesGateway {
   /// `await`, so its own state commits or rolls back as a unit.
   func scanIndexChunk() {
     let now = Time.now();
-    let starting = indexScanCursor == null;
+    let starting = recoveryState.indexScanCursor == null;
     if (starting) {
-      indexScanCycle := { startedAtNs = now; ordersRead = 0; repairs = 0 };
+      recoveryState.indexScanCycle := { startedAtNs = now; ordersRead = 0; repairs = 0 };
     };
-    let chunk = Orders.scanChunk(orderStore, indexScanCursor, Orders.scanChunkSize);
+    let chunk = Orders.scanChunk(orderStore, recoveryState.indexScanCursor, Orders.scanChunkSize);
     let repairs = chunk.unindexedHolders.size() + chunk.unindexedProblems.size();
-    indexScanCycle := {
-      indexScanCycle with
-      ordersRead = indexScanCycle.ordersRead + chunk.visited;
-      repairs = indexScanCycle.repairs + repairs;
+    recoveryState.indexScanCycle := {
+      recoveryState.indexScanCycle with
+      ordersRead = recoveryState.indexScanCycle.ordersRead + chunk.visited;
+      repairs = recoveryState.indexScanCycle.repairs + repairs;
     };
-    indexScanCursor := chunk.nextCursor;
+    recoveryState.indexScanCursor := chunk.nextCursor;
     if (chunk.unindexedHolders.size() > 0) {
       audit(
         "orders.unindexedHolders",
@@ -3915,11 +3763,11 @@ persistent actor CyclesGateway {
     // land behind the cursor and wait for the next one — which is why the claim is
     // "every order that existed when this cycle began", and not "every order".
     if (chunk.nextCursor == null) {
-      lastIndexScanCycle := ?{
-        startedAtNs = indexScanCycle.startedAtNs;
+      recoveryState.lastIndexScanCycle := ?{
+        startedAtNs = recoveryState.indexScanCycle.startedAtNs;
         completedAtNs = Time.now();
-        ordersRead = indexScanCycle.ordersRead;
-        repairs = indexScanCycle.repairs;
+        ordersRead = recoveryState.indexScanCycle.ordersRead;
+        repairs = recoveryState.indexScanCycle.repairs;
       };
     };
   };
@@ -4117,8 +3965,8 @@ persistent actor CyclesGateway {
       // visibly stale `lastCountReconcile` (RUNBOOK §8), which is the right
       // signal — the tallies are unverified, not known-wrong.
       let now = Time.now();
-      if (Recovery.reconcileDue(lastCountReconcileAttemptNs, now, countReconcileIntervalNs)) {
-        lastCountReconcileAttemptNs := now;
+      if (Recovery.reconcileDue(recoveryState.lastCountReconcileAttemptNs, now, countReconcileIntervalNs)) {
+        recoveryState.lastCountReconcileAttemptNs := now;
         ignore async { reconcileCounts() };
       };
       // ── One chunk of the rotating index scan (#63) ──────────────────────────
@@ -4135,7 +3983,7 @@ persistent actor CyclesGateway {
       // re-scanning from the start or skipping forward.
       ignore async { scanIndexChunk() };
       let pending = await* sweepDeliverable();
-      lastRecoverySweep := ?{ atNs = Time.now(); pending };
+      recoveryState.lastSweep := ?{ atNs = Time.now(); pending };
       // ── Stranded `#created` capacity (#52) ──────────────────────────────────
       //
       // **Detached, like the count reconcile and for the same reason**: it reads the
@@ -4167,8 +4015,8 @@ persistent actor CyclesGateway {
       // catching instead: a ledger that will not answer is a skipped reconcile, and
       // the floor it leaves standing is a lower bound, so nothing unsafe follows.
       let now2 = Time.now();
-      if (Recovery.reconcileDue(lastReserveReconcileAttemptNs, now2, reserveReconcileIntervalNs)) {
-        lastReserveReconcileAttemptNs := now2;
+      if (Recovery.reconcileDue(recoveryState.lastReserveReconcileAttemptNs, now2, reserveReconcileIntervalNs)) {
+        recoveryState.lastReserveReconcileAttemptNs := now2;
         try { ignore (await* observeReserve()).observed } catch (e) {
           audit("reserve.observeFailed", "could not read the reserve balance: " # e.message() # " — the floor stands, so the gateway under-sells until the next attempt");
         };
@@ -4186,7 +4034,7 @@ persistent actor CyclesGateway {
     switch (Recovery.validateInterval(intervalNs, Delivery.ledgerDedupWindowNs)) {
       case (#err(e)) #err(e);
       case (#ok) {
-        recoverySweepIntervalNs := intervalNs;
+        recoveryState.sweepIntervalNs := intervalNs;
         Timer.cancelTimer(recoveryTimerId);
         recoveryTimerId := Timer.recurringTimer<system>(#nanoseconds(intervalNs), recoverySweep);
         // ⚠️ **This knob also sets the index scan's coverage window (#63), which its
@@ -4208,240 +4056,9 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// §5.2 liveness observability, public (operational transparency, same stance as
-  /// `reserve_status`): cadence + last completed timer sweep. A null or stale
-  /// `lastSweep` means recovery is not running.
-  /// This canister's OWN cycle balance and the floor the admission gate holds it
-  /// against (public — the same operational-transparency stance as `reserve_status`;
-  /// it is visible via `canister_status` regardless).
-  ///
-  /// ⚠️ **Gas, not stock.** This is what the canister spends to run; the cycles it
-  /// sells live in its cycles-ledger account and are reported by `reserve_status`.
-  /// Below the freezing threshold the canister stops accepting updates; at zero it is
-  /// uninstalled and the order store, journals, and dedup sets go with it. Monitor it
-  /// separately, and alert well above `minCanisterCycles` — that gate stops *sales*,
-  /// it does not stop the burn. A sudden acceleration here is the
-  /// signature of a cycle-drain attempt.
-  public query func cycles_status() : async { balance : Nat; floor : Nat } {
-    { balance = Cycles.balance(); floor = gateState.config.minCanisterCycles };
-  };
 
-  /// The public trust figures (#39) — anonymous, safe on a landing page.
-  ///
-  /// ⚠️ **The admission test is "what does a POLLER learn from the deltas?", not "does this
-  /// field name a buyer?"** Cumulative counters are differentiable: anyone sampling this
-  /// query recovers each delivery's cycles, USD and timing from the increments. That is
-  /// accepted here because it is not new — `reserve_status` is already public and its
-  /// `promisedTotal` leaks per-order amounts the same way, and USD is near-derivable from
-  /// the public `card_tiers`/`quote_previews` — but the field-level reading of the test is
-  /// what will wave through the field that *does* add something. Do not add a
-  /// most-recent-order field, a largest-purchase field, or anything per-principal.
-  ///
-  /// ⚠️ **`refusingNow` is REUSED, not re-derived.** It is the same `gateState.latch`
-  /// `refusal_counts` reports, so "is the rail accepting orders" has one definition and
-  /// cannot come out differently on two surfaces.
-  ///
-  /// ⚠️ **The counters read zero on a fresh install and that is correct, not a bug.**
-  /// Orders are never deleted, but a reinstall replaces the state, so a launch-day figure
-  /// starts at zero whichever way it is built.
-  ///
-  /// ⚠️ **The renderer must show that zero — do NOT add a threshold.** #39 first said "0
-  /// orders delivered is worse than no badge" and that was rejected: an absent number is
-  /// indistinguishable from a withheld one, and a rule that hides the figure exactly when
-  /// the news is bad is a misleading presentation rather than a neutral one. This comment
-  /// used to instruct the opposite, which would have had a future implementer build the
-  /// thing the decision removed.
-  ///
-  /// `nullPaid` should always be 0. It counts delivered orders whose `paidUsdCents` was
-  /// unset, which `markPaid` makes unreachable — a non-zero value means the USD total is
-  /// understated and the reason is a bug in this canister, not in the display.
-  /// ⚠️ **One call, because it is the landing page's whole backend.** `availableToSell`
-  /// and `refusingNow` also appear on `reserve_status` and `refusal_counts` — that is
-  /// duplication of the READER, not of the definition: both are read here from the same
-  /// state those queries read, never recomputed. Folding them in keeps a first paint to a
-  /// single round trip and a single mock in the test harness.
-  ///
-  /// ⚠️ **`availableToSell` leads, and it is a different KIND of number from the
-  /// others.** It is derived from a balance on the cycles ledger that anyone can query
-  /// without this canister's cooperation, so a visitor can check it rather than believe
-  /// it. The delivered totals are ours to report. Do not present them as equivalent.
-  public query func delivery_stats() : async {
-    availableToSell : Nat;
-    deliveredOrders : Nat;
-    deliveredCycles : Nat;
-    deliveredUsdCents : Nat;
-    nullPaid : Nat;
-    refusingNow : Gate.RailStateLatch;
-  } {
-    let totals = Orders.deliveryTotals(orderStore);
-    {
-      availableToSell = Reserve.available(reserveState.floor, Orders.promised(orderStore));
-      deliveredOrders = totals.orders;
-      deliveredCycles = totals.cycles;
-      deliveredUsdCents = totals.usdCents;
-      nullPaid = totals.nullPaid;
-      refusingNow = gateState.latch;
-    };
-  };
 
-  /// "Is anything wrong right now" in ONE call (#68).
-  ///
-  /// ⚠️ **Public is a decision, not a default: #3's alerting needs no credentials.** What
-  /// reaches a human at 03:00 is a cron on the public queries, and an admin-gated summary
-  /// would put that back on a credentialed cron. Everything here is a COUNT, never an
-  /// entry, and `reserve_status` already publishes `totalOrders`, `openOrders`,
-  /// `expiredOrders`, `promisedTotal` and `availableToSell` — so there is no new exposure
-  /// class, only one fewer round trip.
-  ///
-  /// ⚠️ **The two delivery numbers are measured over DIFFERENT populations, and neither
-  /// contains the other.** `deliveriesOutstanding` means a transfer has been ISSUED, so it
-  /// needs the journal entry that records the intent. `deliveriesDelayed` reads the
-  /// ORDER's own clock and needs neither.
-  ///
-  /// Both directions are reachable, so `deliveriesDelayed` is **not** a subset:
-  ///   - outstanding, not delayed: a transfer issued seconds ago.
-  ///   - delayed, not outstanding: a delivery that bailed before issuing — short reserve,
-  ///     stale rate, gas floor — so there is no intent to be outstanding about.
-  ///   - both: a transfer issued long enough ago that the clock ran out, including one that
-  ///     landed without its block recorded.
-  ///
-  /// ⚠️ That last case is the CANONICAL outstanding shape (`intent` set, `blockIndex`
-  /// null), not a delayed-only one — it is what `unsettledDeliveries` exists to detect and
-  /// what freezes the reconcile's quiet window. Filing it under "delayed, not outstanding"
-  /// would tell an operator that `outstanding = 0` means no transfer is in flight, when a
-  /// transfer of unknown fate is exactly what it means.
-  ///
-  /// ⚠️ So `outstanding = 0, delayed = 1` is a real state, not the summary contradicting
-  /// itself — and a UI that presented one as a subset of the other would be wrong exactly
-  /// where it matters.
-  ///
-  /// They also differ in what they ask of a human: `deliveriesOutstanding` self-clears —
-  /// it is money-out in flight and the answer is wait — while `ordersNeedingReview`,
-  /// `orphansUnresolved` and `problemsUnresolved` are the three that mean a human is
-  /// needed. A summary that flattened those would make waiting look like work.
-  ///
-  /// ⚠️ **`deliveriesOutstanding` is exactly the reserve reconcile's quiet-window
-  /// predicate**, deliberately: it is also the answer to "why does the reconcile keep
-  /// skipping", and sharing the definition means the number an operator reads cannot
-  /// disagree with the number the reconcile acted on.
-  ///
-  /// **What bounds each number, stated because "bounded" alone would hide a difference:**
-  /// `ordersNeedingReview`, `ordersWithProblems` and `availableToSell` are O(1) tallies.
-  /// `deliveriesOutstanding` and `deliveriesDelayed` are bounded by `promiseHolders`, i.e.
-  /// by flow (§5.4). ⚠️ `problemsUnresolved` is bounded by the unresolved-problem index and
-  /// `orphansUnresolved` walks retained orphan history — both grow only while obligations
-  /// go uncleared, and an orphan costs a real payment or the signing secret to create
-  /// (`Orphans.add`), so neither is attacker-inflatable. Not O(1), and not the
-  /// grows-with-successful-business shape #69 and #70 removed.
-  public query func operator_summary() : async {
-    deliveriesOutstanding : Nat;
-    deliveriesDelayed : Nat;
-    ordersNeedingReview : Nat;
-    orphansUnresolved : Nat;
-    problemsUnresolved : Nat;
-    ordersWithProblems : Nat;
-    refusingNow : Gate.RailStateLatch;
-    availableToSell : Nat;
-    reserveObservedAtNs : ?Int;
-  } {
-    {
-      deliveriesOutstanding = unsettledDeliveries();
-      deliveriesDelayed = delayedDeliveryCount(Time.now());
-      ordersNeedingReview = Orders.countOf(orderStore, #needsReview);
-      orphansUnresolved = Orphans.unresolvedCount(orphanStore);
-      problemsUnresolved = Orders.unresolvedProblemCount(orderStore);
-      ordersWithProblems = Orders.unresolvedProblemOrderCount(orderStore);
-      refusingNow = gateState.latch;
-      availableToSell = Reserve.available(reserveState.floor, Orders.promised(orderStore));
-      reserveObservedAtNs = reserveState.observedAtNs;
-    };
-  };
 
-  /// The recovery machinery's own clocks and its last findings, public.
-  ///
-  /// Four independent passes report here — the stranded sweep, the tally reconcile, the
-  /// reserve reconcile and the rotating index scan — because each can stop running
-  /// without any of the others noticing. RUNBOOK §8 alerts on the gaps between them.
-  public query func recovery_status() : async {
-    intervalNs : Nat;
-    lastSweep : ?{ atNs : Int; pending : Nat };
-    sweepInFlight : Bool;
-    /// Last **successful** tally reconciliation. A non-empty `drift` means the
-    /// incremental counts had diverged and were **raised** to the recount — the tallies
-    /// are correct again, but the bug that moved them is not fixed. A non-empty
-    /// `refused` means the recount came out **lower** and the pass would not adopt it,
-    /// so those tallies are still suspect (#63). `recount_orders` is the on-demand form
-    /// of the same pass, with the same rule.
-    lastCountReconcile : ?{
-      atNs : Int;
-      drift : [Orders.Drift];
-      refused : [Orders.Drift];
-      ordersRead : Nat;
-    };
-    /// When one was last *attempted*. Reported alongside the success timestamp so
-    /// "due tomorrow" and "attempted today and failed" are distinguishable without
-    /// correlating against the sweep clock: an attempt materially newer than the
-    /// success means the reconcile is trapping (RUNBOOK §8).
-    lastCountReconcileAttemptNs : Int;
-    /// When the RESERVE reconcile was last attempted (#30 PR-B). Its success clock
-    /// is `reserve_status.reserveObservedAtNs`, and the two diverging is the one
-    /// signal that says "the floor is stale on purpose": either the ledger read is
-    /// failing, or every attempt has landed on a non-quiet window. Both under-sell
-    /// rather than over-sell, so this is a P3 that explains refusals — not an
-    /// incident.
-    lastReserveReconcileAttemptNs : Int;
-    /// The rotating index scan's **coverage** (#63) — the reader without which a clean
-    /// scan says nothing.
-    ///
-    /// ⚠️ **Read `lastCompletedCycle` before reading the absence of an audit line as
-    /// "no drift".** The scan verifies the one property that needs every order — that
-    /// nothing *outside* an index satisfies the index's predicate — so it can only
-    /// speak for what it has visited. Silence plus a recent `completedAtNs` means
-    /// verified clean; silence with no completed cycle, or one much older than the
-    /// window below, means **unverified**, which is not the same thing and carries the
-    /// opposite response: wait for the pass rather than hunt for a writer.
-    ///
-    /// `inFlightCycle.ordersRead` against `storedOrders` is how far the current cycle
-    /// has walked. `chunkSize` and the sweep interval give the expected window:
-    /// `storedOrders ÷ (chunkSize × sweeps per day)` days per full cycle.
-    indexScan : {
-      chunkSize : Nat;
-      storedOrders : Nat;
-      /// How long a full coverage cycle is **expected** to take at the current store
-      /// size and the current sweep cadence.
-      ///
-      /// ⚠️ **Computed, not configured, so it moves when either input does** — and the
-      /// sweep cadence is one `set_recovery_interval` away from 24× the default. This is
-      /// the detection latency for `orders.unindexedHolders`, which is a money finding,
-      /// so it is reported rather than left as arithmetic an operator has to know to do.
-      /// Compare `lastCompletedCycle.completedAtNs` against this: much older means the
-      /// scan is behind its own expectation, not merely mid-cycle.
-      expectedFullCycleNs : Nat;
-      inFlightCycle : { startedAtNs : Int; ordersRead : Nat; repairs : Nat };
-      lastCompletedCycle : ?{
-        startedAtNs : Int;
-        completedAtNs : Int;
-        ordersRead : Nat;
-        repairs : Nat;
-      };
-    };
-  } {
-    {
-      intervalNs = recoverySweepIntervalNs;
-      lastSweep = lastRecoverySweep;
-      sweepInFlight = recoverySweepInFlight;
-      lastCountReconcile;
-      lastCountReconcileAttemptNs;
-      lastReserveReconcileAttemptNs;
-      indexScan = {
-        chunkSize = Orders.scanChunkSize;
-        storedOrders = Orders.storedCount(orderStore);
-        expectedFullCycleNs = expectedIndexScanCycleNs();
-        inFlightCycle = indexScanCycle;
-        lastCompletedCycle = lastIndexScanCycle;
-      };
-    };
-  };
 
   // ── HTTP ingress ────────────────────────────────────────────────────────
 
@@ -4516,10 +4133,6 @@ persistent actor CyclesGateway {
     response;
   };
 
-  /// Liveness probe; also used by the scaffold smoke test path.
-  public query func health() : async Bool {
-    true;
-  };
 
   /// §5.2 the timer itself. Transient initializer = runs on install AND on
   /// every upgrade (postupgrade re-initialization), so a deploy can never
@@ -4530,7 +4143,7 @@ persistent actor CyclesGateway {
   /// init and `recoverySweep` reaches the order store and the delivery journal,
   /// both of which must already be initialized (M0016 otherwise).
   transient var recoveryTimerId : Timer.TimerId =
-    Timer.recurringTimer<system>(#nanoseconds(recoverySweepIntervalNs), recoverySweep);
+    Timer.recurringTimer<system>(#nanoseconds(recoveryState.sweepIntervalNs), recoverySweep);
 
   /// §3 rate refresh. Same transient-initializer pattern as the recovery timer:
   /// it runs on install AND on every upgrade, which is what the IC requires
@@ -4570,6 +4183,28 @@ persistent actor CyclesGateway {
   // and the expensive one: wrapping changes the actor's stable shape, and with no
   // migration chain (#32) that means a reinstall. Closures are parameters, never stable
   // state, so `deployed/backend.most` does not move for this split.
+  include MonitoringMixin(
+    orderStore,
+    dedup,
+    orphanStore,
+    paidIntents,
+    rateCache,
+    reserveState,
+    gateState,
+    pricingState,
+    stripeState,
+    recoveryState,
+    {
+      requireAdmin;
+      selfPrincipal;
+      unsettledDeliveries;
+      delayedDeliveryCount;
+      expectedIndexScanCycleNs;
+      lastXrcCanisterId = func() = lastXrcCanisterId;
+      recoverySweepInFlight = func() = recoverySweepInFlight;
+    },
+  );
+
   include PrincipalsMixin(
     adminPrincipals,
     allowedBuyers,
