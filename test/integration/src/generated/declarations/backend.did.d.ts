@@ -302,7 +302,10 @@ export interface Request {
 export type ResolveError = { 'alreadyResolved' : bigint } |
   { 'notFound' : bigint };
 export type ResolveProblemError = {
-    'referenceNotFound' : { 'tag' : ProblemKindTag, 'reference' : string }
+    'referenceNotFound' : {
+      'tag' : ProblemKindTag,
+      'reference' : [] | [string],
+    }
   } |
   { 'noSuchProblem' : { 'tag' : ProblemKindTag } } |
   { 'noSuchOrder' : { 'orderId' : string } } |

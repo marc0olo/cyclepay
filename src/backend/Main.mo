@@ -1994,9 +1994,9 @@ persistent actor CyclesGateway {
     );
     if (closed == 0) {
       // Reachable only with a reference given: the no-reference path either found one
-      // candidate or refused as ambiguous above.
-      let reference = paymentRef ?? "";
-      return #err(#referenceNotFound({ tag; reference }));
+      // candidate or refused as ambiguous above. Passed as the option it is, so the
+      // error cannot report an empty string as though one had been supplied.
+      return #err(#referenceNotFound({ tag; reference = paymentRef }));
     };
     auditAdmin(
       caller,

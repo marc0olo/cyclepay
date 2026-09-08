@@ -304,7 +304,7 @@ export const idlFactory = ({ IDL }) => {
   const ResolveProblemError = IDL.Variant({
     'referenceNotFound' : IDL.Record({
       'tag' : ProblemKindTag,
-      'reference' : IDL.Text,
+      'reference' : IDL.Opt(IDL.Text),
     }),
     'noSuchProblem' : IDL.Record({ 'tag' : ProblemKindTag }),
     'noSuchOrder' : IDL.Record({ 'orderId' : IDL.Text }),

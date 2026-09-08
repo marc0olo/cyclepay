@@ -151,7 +151,7 @@ type ResolveProblemError =
    noSuchOrder: record {orderId: text;};
    noSuchProblem: record {tag: ProblemKindTag;};
    referenceNotFound: record {
-                        reference: text;
+                        reference: opt text;
                         tag: ProblemKindTag;
                       };
  };

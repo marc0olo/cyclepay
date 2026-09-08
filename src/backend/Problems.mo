@@ -192,7 +192,11 @@ module {
     /// Several unresolved problems of that kind, so resolving without a reference would
     /// close all of them. The identifying reference of each candidate, in store order.
     #ambiguous : { tag : Types.ProblemKindTag; candidates : [Text] };
-    #referenceNotFound : { tag : Types.ProblemKindTag; reference : Text };
+    /// ⚠️ **`?Text`, not `Text`.** This arm is only reachable WITH a reference — the
+    /// no-reference path either found one candidate or refused as `#ambiguous` — so an
+    /// empty string here would be a fact that is false rather than one that is missing.
+    /// An option cannot lie about it, and costs nothing.
+    #referenceNotFound : { tag : Types.ProblemKindTag; reference : ?Text };
   };
 
   /// The kind's discriminator, payload dropped (#122).

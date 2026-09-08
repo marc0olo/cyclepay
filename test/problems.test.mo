@@ -1,3 +1,4 @@
+import Array "mo:core/Array";
 import { test; suite } "mo:test";
 import Problems "../src/backend/Problems";
 import Types "../src/backend/Types";
@@ -158,13 +159,26 @@ suite("the kind's tag (#122)", func() {
     };
   });
 
-  test("every tag is produced by some kind", func() {
-    // The other direction: a tag no kind maps to would be an argument the operator can
-    // send and nothing can ever match.
+  test("⚠️ every tag IS produced by some kind, so none is unmatchable", func() {
+    // The other direction, and it has to be stated as COVERAGE. An earlier version of
+    // this test asserted `tagToText(t).size() > 0` for each tag, which passes for any
+    // total function and says nothing about `tagOf`'s image — a tag no kind maps to
+    // would still be an argument the operator can send that nothing can ever match.
+    //
+    // So: collect what `tagOf` actually produces over every kind, and check each tag is
+    // in it. Mutation: collapse `tagOf`'s `#paidNotCredited` arm onto `#duplicate` and
+    // this fails, where the old assertion passed.
+    let kinds : [Types.ProblemKind] = [
+      #duplicate({ paymentRef = "pi_1" }),
+      #deliveryStuck({ stage = "staleIntent" }),
+      #refundAfterDelivery({ paymentRef = "pi_2"; cycles = 1; refundedCents = 2; fullRefund = true }),
+      #paidNotCredited({ paymentRef = "pi_3"; sessionId = "cs_1" }),
+    ];
+    let produced = kinds.map(Problems.tagOf);
     let tags : [Types.ProblemKindTag] = [#duplicate, #deliveryStuck, #refundAfterDelivery, #paidNotCredited];
-    for (t in tags.values()) {
-      assert Problems.tagToText(t).size() > 0;
-    };
     assert tags.size() == 4;
+    for (t in tags.values()) {
+      assert produced.any(func p = p == t);
+    };
   });
 });

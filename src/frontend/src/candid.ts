@@ -64,6 +64,8 @@ export function tag(value: string): string {
   return `variant { ${value} }`;
 }
 
+/// ⚠️ **`principal "..."` is required, unlike other annotations.** Measured: a bare
+/// string in a principal position is refused with a type mismatch rather than coerced.
 export function principal(value: Principal | string): string {
   return `principal ${text(typeof value === "string" ? value : value.toText())}`;
 }
