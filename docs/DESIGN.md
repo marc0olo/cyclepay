@@ -456,16 +456,27 @@ decides the shape of every mixin here:
   time: its writes would land on a copy and its reads would never move. This is silent —
   it compiles, and the getter simply answers the initial value forever.
 
-⚠️ **So mutable state is grouped into subsystem records rather than passed field by
-field.** `reserveState`, `gateState`, `pricingState`, `stripeState`, `tierState`,
-`deliveryState`. Grouping is also what A6 asks for: a mixin receives the slice it uses.
-The alternative — an accessor pair (`{ get; set }`) per field — needs no shape change and
-is used for exactly one field, `stripeState.origin`'s predecessor, before the grouping
-landed; at 19 fields it puts plumbing at every include site to work around by-value
-semantics.
+⚠️ **So mutable state is grouped into SEVEN subsystem records rather than passed field
+by field.** `reserveState`, `gateState`, `pricingState`, `stripeState`, `tierState`,
+`deliveryState`, `recoveryState`. Grouping is also what A6 asks for: a mixin receives the
+slice it uses. The alternative — an accessor closure per field — needs no shape change,
+and it is what the three TRANSIENT fields still use, for a sharper reason: they exist to
+answer "has this happened since the canister started", which a value frozen at include
+time answers wrongly and confidently. For the 19 stable fields it would have put plumbing
+at every include site to work around by-value semantics.
+
+⚠️ **`webhookPaidOrder` uses a TAKE-ONCE accessor**, not a get/set pair: the dispatcher
+sets it and the mixin consumes it in the same message, so reading and clearing as one
+operation is what stops a stale value from triggering a second delivery kick — on the one
+route that is unauthenticated by necessity.
+
+⚠️ **An immutable transient value passes directly.** `routes`, `maxRequestBodyBytes` and
+the `cyclesLedger` actor reference are transient `let`s built during initialisation, which
+is when `include` evaluates its arguments, and none of them ever changes. The rule above
+is about MUTABLE state; a snapshot of an immutable value is the value.
 
 ⚠️ **Grouping moved the stable shape, and that was a deliberate call, taken once.**
-Thirteen stable variables were dropped rather than migrated. Legitimate only because
+Twenty-one stable variables were dropped rather than migrated, across two grouping passes. Legitimate only because
 there is no deployment whose data matters: pre-launch, with no migration chain (§11 /
 #32), reinstall is the documented loop. `scripts/check-stable-promotion.sh` refuses such
 a promotion unless `--accept-reinstall` is passed, and prints which variables are lost —
@@ -488,6 +499,13 @@ keeping, this is no longer available** and a change of this shape needs the chai
 Candid signatures must be identical with doc comments stripped. It has already caught
 what review would not — **Candid records argument names**, so a mixin parameter that
 forces an endpoint's parameter to be renamed moves the published signature.
+
+⚠️ **Three more invariants belong to the same pass, because a textual rename breaks all
+of them silently:** the audit tag literals (RUNBOOK §8 alerts on exact text, and one
+rename hit 34 of them), that every endpoint still carries a doc, and that each guarded
+method still calls the guard its tier declares. `check-endpoint-docs.py`,
+`check-admin-tiers.py` and a tag diff cover those; run them per group, not once at the
+end.
 
 ## §11 — Deferred
 
