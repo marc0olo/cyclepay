@@ -533,13 +533,22 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   // Closing "the duplicate" would mark settled a payment the operator has not
   // refunded — the automatic closer matches on the reference and is exact, so only the
   // manual lever could ever guess, and it declines instead.
-  const ambiguous = expectErr(await gw.asAdmin.resolve_problem(orderA.id, 'duplicate', []));
-  expect(ambiguous).toMatch(/2 unresolved duplicate problems/);
-  expect(ambiguous).toContain('pi_a_double');
-  expect(ambiguous).toContain('pi_a_double_2');
+  //
+  // ⚠️ **The candidate list is DATA now (#123), not a sentence to grep.** This used to
+  // assert `/2 unresolved duplicate problems/` and two `toContain`s against one Text —
+  // so the count, the kind and the references were all recovered by matching prose. A
+  // console offering the operator a choice had to do the same.
+  const ambiguous = expectErr(
+    await gw.asAdmin.resolve_problem(orderA.id, { duplicate: null }, []),
+  ) as { ambiguous: { tag: unknown; candidates: string[] } };
+  expect(ambiguous.ambiguous.tag).toHaveProperty('duplicate');
+  expect(ambiguous.ambiguous.candidates).toEqual(
+    expect.arrayContaining(['pi_a_double', 'pi_a_double_2']),
+  );
+  expect(ambiguous.ambiguous.candidates).toHaveLength(2);
 
   // Named precisely, it closes exactly one and leaves the other outstanding.
-  expect(expectOk(await gw.asAdmin.resolve_problem(orderA.id, 'duplicate', ['pi_a_double_2']))).toBe(1n);
+  expect(expectOk(await gw.asAdmin.resolve_problem(orderA.id, { duplicate: null }, ['pi_a_double_2']))).toBe(1n);
   expect(unresolvedProblems(await orderProblems(gw, orderA.id)).filter((p) => 'duplicate' in p.kind))
     .toHaveLength(1);
 
@@ -3939,11 +3948,20 @@ test('91 — a granted admin can end one order and cannot change the rules (#68)
 
     // Granting twice is refused rather than silently idempotent, so a controller cannot
     // mistake "already granted" for "granted now".
-    expect(expectErr(await gw.asAdmin.add_admin(stranger.caller))).toMatch(/already an admin/);
+    //
+    // ⚠️ **Matched on the tag and the principal it carries (#123).** These read
+    // `/already an admin/` and `/anonymous/` against a Text, so the two refusals were
+    // distinguished by wording — and `#alreadyPresent` now names WHICH principal, which
+    // a message could only do by interpolating it into prose the caller then parsed.
+    const twice = expectErr(
+      await gw.asAdmin.add_admin(stranger.caller),
+    ) as { alreadyPresent: { principal: Principal } };
+    expect(twice.alreadyPresent.principal.toText()).toBe(stranger.caller.toText());
     // The anonymous principal can never hold the tier. `Auth.checkAdmin` rejects it before
     // consulting either predicate, so a granted `2vxsx-fae` would be inert — but a list
     // that contains it reads as though it were not.
-    expect(expectErr(await gw.asAdmin.add_admin(Principal.anonymous()))).toMatch(/anonymous/);
+    expect(expectErr(await gw.asAdmin.add_admin(Principal.anonymous())))
+      .toHaveProperty('anonymousNotAllowed');
   } finally {
     expectOk(await gw.asAdmin.remove_admin(stranger.caller));
   }
@@ -3954,5 +3972,6 @@ test('91 — a granted admin can end one order and cannot change the rules (#68)
   expect((await gw.asAdmin.admins()).map((p) => p.toText())).not.toContain(stranger.caller.toText());
   // ⚠️ Distinct from the authz trap's "caller is not an admin" on purpose — this is about
   // the TARGET not being listed, and one wording for both would be unreadable in a log.
-  expect(expectErr(await gw.asAdmin.remove_admin(stranger.caller))).toMatch(/is not on the admin list/);
+  expect(expectErr(await gw.asAdmin.remove_admin(stranger.caller)))
+    .toHaveProperty('notPresent');
 });

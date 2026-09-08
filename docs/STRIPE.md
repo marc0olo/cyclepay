@@ -899,7 +899,7 @@ privileges — any controller can do any of this):
 | `admin_order` / `admin_orders` | read any order, and list with filters + a cursor — the controller-side counterpart to the owner-scoped reads below (#38) |
 | `admin_receipt` | one order's full receipt for any principal. An **update**, not a query, so the read is audited (#38) |
 | `delayed_deliveries` | orders past the 2 h alert threshold, paginated — the worklist between "delivering normally" and "escalated" (#37) |
-| `resolve_problem` | close one obligation on one order. ⚠️ Takes `(orderId, kindTag, paymentRef)` — a **triple**, because an order can carry several problems of one kind and an earlier version closed all of them at once (#37) |
+| `resolve_problem` | close one obligation on one order. ⚠️ Takes `(orderId, tag, paymentRef)` — a **triple**, because an order can carry several problems of one kind and an earlier version closed all of them at once (#37). `tag` is a variant (`variant { duplicate }`), not text (#122) |
 | `orphans_unresolved` | the open subset of the orphan list — payments that could not be attributed to any order |
 | `expire_order` | release a stranded `#created` order's reserve capacity by hand, when Stripe's expiry event never arrived (#52) |
 | `set_recovery_interval` | sweep cadence; bounded above at a quarter of the ledger's dedup window |

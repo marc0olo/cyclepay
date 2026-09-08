@@ -42,6 +42,28 @@ export function bool(value: boolean): string {
   return value ? "true" : "false";
 }
 
+/// A payload-free Candid variant, e.g. `variant { duplicate }`.
+///
+/// ⚠️ **Takes the bindings' ENUM, and that is where the guarantee lives.** The
+/// actor-enabled bindings render a payload-free Candid variant as a TypeScript string
+/// enum (`ProblemKindTag.duplicate === "duplicate"`), so the value is already a string
+/// at runtime — this function only wraps it. What matters is the *type*: a bare
+/// `"refundAfterDelivery"` is not assignable to the enum, so
+/// `renderCall("resolve_problem", id, "refundAfterDelivery", ref)` no longer compiles.
+/// That was the whole point of #122, and it is enforced at the call rather than here.
+///
+/// Typed `string` rather than a union of every enum in the interface: each of those is a
+/// string enum, all are assignable to `string`, and naming them would be a hand-written
+/// mirror of the bindings — the thing this module exists not to do.
+export function tag(value: string): string {
+  // Defensive, because a value that is not a bare tag would render a command that looks
+  // right and means something else. Candid tag names are Motoko identifiers.
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+    throw new Error(`not a bare variant tag: ${JSON.stringify(value)}`);
+  }
+  return `variant { ${value} }`;
+}
+
 /// ⚠️ **`principal "..."` is required, unlike other annotations.** Measured: a bare
 /// string in a principal position is refused with a type mismatch rather than coerced.
 export function principal(value: Principal | string): string {
@@ -164,7 +186,7 @@ export const COMMANDS: { readonly [M in CommandMethod]: Spec<M> } = {
   },
   resolve_problem: {
     args: (orderId, kindTag, paymentRef) =>
-      `${text(orderId)}, ${text(kindTag)}, ${opt(paymentRef, text)}`,
+      `${text(orderId)}, ${tag(kindTag)}, ${opt(paymentRef, text)}`,
     irreversible:
       "Marks an obligation settled. Dropping the payment reference over-resolves:"
       + " one order can carry several unresolved problems of the same kind.",

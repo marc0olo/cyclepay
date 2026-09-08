@@ -151,6 +151,10 @@ export type Kind = {
     'unattributed' : { 'claimedRef' : string, 'paymentRef' : string }
   } |
   { 'unprocessable' : { 'field' : string, 'eventId' : string } };
+export type ListError = { 'notPresent' : { 'principal' : Principal } } |
+  { 'alreadyPresent' : { 'principal' : Principal } } |
+  { 'anonymousNotAllowed' : null };
+export type LivemodeError = { 'simulationDivisorSet' : { 'divisor' : bigint } };
 export interface Order {
   'id' : OrderId,
   'expiresAtNs' : [] | [bigint],
@@ -221,6 +225,10 @@ export type ProblemKind = {
     }
   } |
   { 'duplicate' : { 'paymentRef' : string } };
+export type ProblemKindTag = { 'paidNotCredited' : null } |
+  { 'deliveryStuck' : null } |
+  { 'refundAfterDelivery' : null } |
+  { 'duplicate' : null };
 export type ProcessOrderError = { 'notFound' : null } |
   { 'inFlight' : null };
 export interface Quality {
@@ -293,6 +301,15 @@ export interface Request {
 }
 export type ResolveError = { 'alreadyResolved' : bigint } |
   { 'notFound' : bigint };
+export type ResolveProblemError = {
+    'referenceNotFound' : {
+      'tag' : ProblemKindTag,
+      'reference' : [] | [string],
+    }
+  } |
+  { 'noSuchProblem' : { 'tag' : ProblemKindTag } } |
+  { 'noSuchOrder' : { 'orderId' : string } } |
+  { 'ambiguous' : { 'tag' : ProblemKindTag, 'candidates' : Array<string> } };
 export interface Response {
   'body' : Uint8Array,
   'headers' : Array<HeaderField>,
@@ -305,13 +322,15 @@ export type Result_1 = { 'ok' : null } |
   { 'err' : SetError };
 export type Result_10 = { 'ok' : Entry } |
   { 'err' : ResolveError };
-export type Result_11 = { 'ok' : Order } |
-  { 'err' : string };
+export type Result_11 = { 'ok' : null } |
+  { 'err' : ListError };
 export type Result_12 = { 'ok' : Order } |
+  { 'err' : string };
+export type Result_13 = { 'ok' : Order } |
   { 'err' : ProcessOrderError };
-export type Result_13 = { 'ok' : CreatedOrder } |
+export type Result_14 = { 'ok' : CreatedOrder } |
   { 'err' : CreateOrderError };
-export type Result_14 = { 'ok' : null } |
+export type Result_15 = { 'ok' : null } |
   { 'err' : Reason };
 export type Result_2 = { 'ok' : null } |
   { 'err' : OriginError };
@@ -322,13 +341,13 @@ export type Result_4 = { 'ok' : null } |
 export type Result_5 = { 'ok' : null } |
   { 'err' : ConfigError__1 };
 export type Result_6 = { 'ok' : null } |
-  { 'err' : string };
+  { 'err' : LivemodeError };
 export type Result_7 = { 'ok' : null } |
   { 'err' : ConfigError__2 };
 export type Result_8 = { 'ok' : null } |
   { 'err' : ValidateError };
 export type Result_9 = { 'ok' : bigint } |
-  { 'err' : string };
+  { 'err' : ResolveProblemError };
 export type SetError = { 'tooShort' : { 'min' : bigint, 'size' : bigint } };
 export interface Status {
   'setAtNs' : [] | [bigint],
@@ -391,7 +410,7 @@ export interface _SERVICE {
    * / Only reachable from a pre-delivery money-bearing state. A `#created` order
    * / has taken no money and needs no decision; a `#delivered` one is done.
    */
-  'abandon_order' : ActorMethod<[OrderId, string], Result_11>,
+  'abandon_order' : ActorMethod<[OrderId, string], Result_12>,
   /**
    * / Grant the CASES tier to a principal (controller only, audited).
    * /
@@ -403,12 +422,12 @@ export interface _SERVICE {
    * / (`cli.id.ai`), which is not this app, so the grant would sit on a principal the
    * / admin never sees.
    */
-  'add_admin' : ActorMethod<[Principal], Result_6>,
+  'add_admin' : ActorMethod<[Principal], Result_11>,
   /**
    * / Allow a principal to buy while this gateway accepts free test payments
    * / (controller only, audited).
    */
-  'add_allowed_buyer' : ActorMethod<[Principal], Result_6>,
+  'add_allowed_buyer' : ActorMethod<[Principal], Result_11>,
   /**
    * / Read **any** order by id (admin, #38).
    * /
@@ -510,7 +529,7 @@ export interface _SERVICE {
    * / `reserve_status` already publishes. Answered for the *calling* principal,
    * / so the open-order cap it reports is the caller's own.
    */
-  'can_purchase' : ActorMethod<[bigint], Result_14>,
+  'can_purchase' : ActorMethod<[bigint], Result_15>,
   /**
    * / Let a buyer give up on their own unpaid order (owner-scoped).
    * /
@@ -527,7 +546,7 @@ export interface _SERVICE {
    * / No problem filed: nothing is owed, and filing an obligation for an order where no
    * / money moved is exactly the noise the worklist must not accumulate.
    */
-  'cancel_order' : ActorMethod<[OrderId], Result_11>,
+  'cancel_order' : ActorMethod<[OrderId], Result_12>,
   /**
    * / Public — the frontend renders the amount tiles from this. There is no link
    * / to render: the canister creates a session per order (#33).
@@ -554,7 +573,7 @@ export interface _SERVICE {
    * / favour passes through and they keep the extra cycles. The guard can only
    * / ever protect the buyer. `null` opts out entirely.
    */
-  'create_order' : ActorMethod<[Amount, Destination, [] | [bigint]], Result_13>,
+  'create_order' : ActorMethod<[Amount, Destination, [] | [bigint]], Result_14>,
   /**
    * / §5.2 liveness observability, public (operational transparency, same stance as
    * / `reserve_status`): cadence + last completed timer sweep. A null or stale
@@ -666,7 +685,7 @@ export interface _SERVICE {
    * / whose buyer just paid would strand a real payment. Let the webhook (or the sweep)
    * / settle it on Stripe's answer.
    */
-  'expire_order' : ActorMethod<[OrderId], Result_11>,
+  'expire_order' : ActorMethod<[OrderId], Result_12>,
   /**
    * / §2 query authz: `caller == order.owner`, null otherwise — existence is
    * / not revealed to non-owners. Anonymous callers own nothing by
@@ -900,7 +919,7 @@ export interface _SERVICE {
    * / nothing (#37) and a refresh loop would be permanent state growth driven by a
    * / caller. An admin kick is audited — it is an ops action on someone else's order.
    */
-  'process_order' : ActorMethod<[OrderId], Result_12>,
+  'process_order' : ActorMethod<[OrderId], Result_13>,
   /**
    * / Batch pre-purchase quote, public.
    * /
@@ -952,7 +971,7 @@ export interface _SERVICE {
    * / transfer was issued (rule 2), and this call is the confirmation that the
    * / assumption was right.
    */
-  'record_delivered' : ActorMethod<[OrderId, bigint], Result_11>,
+  'record_delivered' : ActorMethod<[OrderId, bigint], Result_12>,
   /**
    * / Run the reconcile now rather than waiting for the daily one (admin, §7).
    * /
@@ -1050,7 +1069,7 @@ export interface _SERVICE {
   /**
    * / Revoke the CASES tier (controller only, audited).
    */
-  'remove_admin' : ActorMethod<[Principal], Result_6>,
+  'remove_admin' : ActorMethod<[Principal], Result_11>,
   /**
    * / Revoke a buyer's allowance (controller only, audited).
    * /
@@ -1060,7 +1079,7 @@ export interface _SERVICE {
    * / so, because "revoked the last buyer" and "the gateway stopped selling" are
    * / the same event and an operator should not have to connect them later.
    */
-  'remove_allowed_buyer' : ActorMethod<[Principal], Result_6>,
+  'remove_allowed_buyer' : ActorMethod<[Principal], Result_11>,
   /**
    * / Reserve solvency and order counters, public (#30 PR-B).
    * /
@@ -1132,7 +1151,10 @@ export interface _SERVICE {
    * / references so the operator can disambiguate, because declining without a way
    * / through is a dead end rather than a safeguard.
    */
-  'resolve_problem' : ActorMethod<[OrderId, string, [] | [string]], Result_9>,
+  'resolve_problem' : ActorMethod<
+    [OrderId, ProblemKindTag, [] | [string]],
+    Result_9
+  >,
   /**
    * / Replace the card presets (§3/§7 — admin, validated atomically: a bad config
    * / never partially applies).
