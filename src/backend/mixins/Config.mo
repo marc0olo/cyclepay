@@ -3,9 +3,6 @@
 // tier array, `Time.now()` for the validation clock.
 import Array "mo:core/Array";
 import Int "mo:core/Int";
-import Nat "mo:core/Nat";
-import Principal "mo:core/Principal";
-import Text "mo:core/Text";
 import Time "mo:core/Time";
 import Delivery "../Delivery";
 import Gate "../Gate";

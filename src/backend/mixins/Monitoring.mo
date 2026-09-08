@@ -1,6 +1,5 @@
 import Cycles "mo:core/Cycles";
 import Map "mo:core/Map";
-import Principal "mo:core/Principal";
 import Time "mo:core/Time";
 import Delivery "../Delivery";
 import Gate "../Gate";

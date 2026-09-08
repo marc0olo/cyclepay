@@ -1,8 +1,10 @@
 // `Array` for the receiver `.map()` on the amounts a preview is asked for.
 import Array "mo:core/Array";
-import Int "mo:core/Int";
+// ⚠️ `Nat` has no `Nat.` call here and is required: it resolves `.toText()` on a cents
+// figure. Removing it and `Int` and `Principal` together compiled individually and
+// failed as a set — an "unused" verdict per import does not compose, because one module
+// can cover another's receiver methods.
 import Nat "mo:core/Nat";
-import Principal "mo:core/Principal";
 import Result "mo:core/Result";
 import Time "mo:core/Time";
 import Auth "../Auth";

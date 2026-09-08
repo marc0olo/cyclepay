@@ -434,6 +434,11 @@ than a framework, and Candid bindings for the ledgers this canister actually cal
 Modules take their dependencies as records, which is why the whole ingestion path is
 unit-testable with no IC environment.
 
+Inside the backend: `Main.mo` owns state and composes, the public endpoints live in
+`mixins/` split by feature, and the domain logic is flat stateless modules — `Orders`,
+`Delivery`, `Gate`, `Reserve`, `Pricing`, `Receipts`, `rails/Card`. §9.1 has the rules
+the mixin layer rests on.
+
 ⚠️ **The go-live bar is PocketIC, not the unit suites.** Unit tests wherever logic is
 isolable — HMAC, fee and rate arithmetic, parsers, state-machine transitions, dedup — and
 a PocketIC scenario for everything that needs a replica: upgrades mid-delivery, ledger

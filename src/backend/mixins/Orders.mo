@@ -1,9 +1,7 @@
-import Nat "mo:core/Nat";
 import Principal "mo:core/Principal";
 import Result "mo:core/Result";
 import Set "mo:core/Set";
 import Text "mo:core/Text";
-import Time "mo:core/Time";
 import Auth "../Auth";
 import Delivery "../Delivery";
 // `Map` for the receiver `.get()` on the delivery journal's map.

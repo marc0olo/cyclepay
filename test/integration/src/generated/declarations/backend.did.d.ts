@@ -456,6 +456,11 @@ export interface _SERVICE {
   >,
   'expected_livemode' : ActorMethod<[], [] | [boolean]>,
   'expire_order' : ActorMethod<[OrderId], Result_12>,
+  /**
+   * / §7 secret one of TWO: the Stripe webhook signing key. Plaintext by design,
+   * / SEV-SNP posture documented in Secret.mo. Persists across upgrades; rotation
+   * / never requires a redeploy.
+   */
   'get_order' : ActorMethod<[OrderId], [] | [Order]>,
   'health' : ActorMethod<[], boolean>,
   'http_request' : ActorMethod<[Request], Response>,
@@ -583,30 +588,15 @@ export interface _SERVICE {
     [OrderId, ProblemKindTag, [] | [string]],
     Result_9
   >,
-  /**
-   * / Principals allowed to create orders **while this gateway accepts free Stripe
-   * / test payments** (#99 2b).
-   * /
-   * / ⚠️ **Without it a sandbox deployment is a cycles faucet.** Stripe test
-   * / payments are free and unlimited, so `4242 4242 4242 4242` pays any session
-   * / for anyone who reaches the page. The simulation divisor caps the loss *per
-   * / order*; only this list caps the total.
-   * /
-   * / ⚠️ **An EMPTY list is not "refuse everyone" per buyer** — that would refuse
-   * / every buyer on a sandbox deployment before this list is populated, which is
-   * / the state a fresh gateway is configured in. What bounds the empty case is
-   * / `Gate.Reason.unboundedGiveaway`, which refuses the moment there is something
-   * / to sell. So an empty list means unrestricted while the reserve floor is zero
-   * / (where nothing can be sold anyway) and refusing-everyone once it is not.
-   * /
-   * / ⚠️ At go-live (`stripe.expectLivemode == ?true`) it has no effect whatsoever. A list
-   * / that keeps filtering after go-live is an outage nobody would look for.
-   */
   'set_card_tiers' : ActorMethod<[Array<Tier>], Result_8>,
   'set_delivery_config' : ActorMethod<[Config__2], Result_7>,
   'set_expected_livemode' : ActorMethod<[[] | [boolean]], Result_6>,
   'set_gate_config' : ActorMethod<[Config__1], Result_5>,
   'set_pricing_config' : ActorMethod<[Config], Result_4>,
+  /**
+   * / Consecutive refresh failures, for backoff. Transient — an upgrade is a
+   * / fine moment to retry immediately.
+   */
   'set_recovery_interval' : ActorMethod<[bigint], Result_3>,
   'set_stripe_api_key' : ActorMethod<[string], Result_1>,
   'set_stripe_origin' : ActorMethod<[string], Result_2>,
