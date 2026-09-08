@@ -106,48 +106,10 @@ export function routeHash(route: Route): string {
   }
 }
 
-/// The four steps the whole flow is sold as (distinct from format.ts's STEPS, which is
-/// the ORDER pipeline — created, paid, delivered, three of them), and which of them a
-/// given view has already completed.
-///
-/// ⚠️ **The strip is for BUYING, and for the guidance that follows it — not for the
-/// order record.** It used to persist onto the order view, where it competed with the
-/// facts the buyer had opened that page to read. The four steps are a promise about
-/// the purchase journey; an order detail page is a receipt, and a receipt with a
-/// progress bar on it is answering a question nobody asked there.
-export type StepState = "todo" | "current" | "done";
-
-export const TOUR_STEPS = [
-  { n: 1, label: "Sign in" },
-  { n: 2, label: "Pay" },
-  { n: 3, label: "Link the CLI" },
-  { n: 4, label: "Deploy" },
-] as const;
-
-/// Step states for a view.
-///
-/// `signedIn` matters on the buy view only: someone who has signed in but not yet
-/// paid is genuinely past step 1, and showing it as pending would understate
-/// their progress.
-///
-/// A canister top-up has no steps 3 and 4 — the cycles are already where they are
-/// being spent — so the caller omits the strip entirely rather than showing two
-/// steps that will never complete.
-export function stepStates(view: View, signedIn: boolean): StepState[] {
-  switch (view) {
-    case "buy":
-      return [signedIn ? "done" : "current", signedIn ? "current" : "todo", "todo", "todo"];
-    // ⚠️ **No case for the CLI page, deliberately.** The four steps are a promise
-    // about ONE purchase journey, and that page is now reachable from the dashboard by
-    // someone who is not partway through a purchase at all. "Step 3 of 4" there
-    // narrates a journey the visitor may not be on. `renderStepper` omits the strip
-    // for it rather than rendering four steps that mean nothing.
-    case "order":
-    case "delivered":
-      // ⚠️ No strip on the order record. The caller omits it entirely rather than
-      // rendering four steps beside a receipt.
-      return ["todo", "todo", "todo", "todo"];
-    default:
-      return ["todo", "todo", "todo", "todo"];
-  }
-}
+/// ⚠️ **The four-step strip is GONE, and this note is the record of why.** It read
+/// "1 Sign in, 2 Pay, 3 Link the CLI, 4 Deploy" and was carried across the buy view
+/// and the guidance page. Two things killed it: the guidance page is now reachable
+/// from the dashboard by someone who is not partway through a purchase, and on the buy
+/// view it narrated a four-stage journey above a single decision, where the only step
+/// the visitor can act on is the one in front of them. Do not reinstate it without a
+/// stage a buyer can actually be stuck between.

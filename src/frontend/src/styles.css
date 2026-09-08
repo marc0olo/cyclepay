@@ -66,7 +66,6 @@ main,
 .explainer h2,
 .lede,
 .meta-strip,
-.dest-implicit,
 #order-status-line,
 .step-card p {
   max-width: var(--measure);
@@ -218,11 +217,6 @@ a:hover {
   align-items: baseline;
   gap: var(--space-2);
 }
-.step-n {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  color: var(--icp-accent);
-}
 
 /* ── the way in ───────────────────────────────────────────────────────────── */
 
@@ -306,6 +300,19 @@ button,
   background: var(--icp-accent);
   color: #fff;
   border-color: var(--icp-accent);
+}
+
+/* The one control that commits the purchase. It sat at body scale below a section
+   answering a question the buyer could not act on; with that section gone it follows
+   the amount directly and is sized to match what it does. Not full width: a button as
+   wide as the page reads as a banner rather than a target. */
+.cta-buy {
+  /* Above the body scale, which is 1.0625rem here: a "prominent" button set at exactly
+     the size of the prose around it is not prominent, and a browser test comparing the
+     two is what caught that the first attempt matched it to the pixel. */
+  font-size: 1.1875rem;
+  padding: 0.8rem 1.8rem;
+  margin-top: var(--space-5);
 }
 .cta:hover:not(:disabled) {
   background: var(--icp-accent-strong);
@@ -407,6 +414,13 @@ button:disabled {
   border-color: var(--icp-accent);
   background: var(--icp-accent-dim);
 }
+/* Custom is a peer of the presets, so it inherits `.tier` wholesale. It differs only
+   in that its headline is a WORD, which the display face sets better than the mono
+   face the numerals use. */
+.tier-custom .amount {
+  font-family: var(--font-display);
+}
+
 /* Numerals are JetBrains Mono, never Newsreader. */
 .tier .amount {
   display: block;
@@ -424,15 +438,6 @@ button:disabled {
   color: var(--icp-fg-secondary);
 }
 
-/* The custom-amount field (#33). #29 removed the input styles with a note that
-   they "return with the controls" — this is that moment, and it is the only text
-   input on the page. */
-.or-custom {
-  margin-block: var(--space-5) var(--space-2);
-  font-family: var(--font-ui);
-  font-size: 0.9375rem;
-  color: var(--icp-fg-secondary);
-}
 .amount-label {
   display: block;
   font-family: var(--font-ui);
@@ -464,10 +469,7 @@ button:disabled {
   cursor: not-allowed;
 }
 
-.dest-implicit {
-  margin-top: var(--space-5);
-}
-#create-order {
+#custom-panel {
   margin-top: var(--space-4);
 }
 .providers {
@@ -507,39 +509,6 @@ button:disabled {
   border-top: 1px solid var(--icp-rule);
 }
 
-/* The stepper already closes with a rule, so the view below it must not open
-   with a second one: stacked hairlines with a gap between them read as an empty
-   section that failed to render. */
-#stepper:not([hidden]) + #buy-flow,
-#stepper:not([hidden]) ~ #active-order {
-  border-top: 0;
-  padding-top: 0;
-}
-
-.timeline {
-  list-style: none;
-  display: flex;
-  padding: 0;
-  margin-block: var(--space-4);
-  gap: 1px;
-}
-.timeline li {
-  flex: 1;
-  font-family: var(--font-ui);
-  font-size: 0.75rem;
-  text-align: center;
-  color: var(--icp-fg-muted);
-  border-top: 3px solid var(--icp-rule);
-  padding-top: var(--space-2);
-}
-.timeline li.done {
-  border-top-color: var(--icp-ok);
-  color: var(--icp-fg-secondary);
-}
-.timeline li.now {
-  border-top-color: var(--icp-accent);
-  color: var(--icp-accent);
-}
 
 /* ── the purchase head, and status as a badge ─────────────────────────────── */
 
@@ -928,45 +897,6 @@ tbody tr:hover {
   margin-top: var(--space-7);
   padding-block: var(--space-5) var(--space-8);
   border-top: 1px solid var(--icp-rule);
-}
-
-
-/* ── the persistent stepper ───────────────────────────────────────────────── */
-
-.stepper {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2) var(--space-5);
-  list-style: none;
-  padding: var(--space-4) 0;
-  margin: 0 0 var(--space-5);
-  border-bottom: 1px solid var(--icp-rule);
-  font-family: var(--font-ui);
-  font-size: 0.9375rem;
-}
-.stepper .step {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  color: var(--icp-fg-muted);
-}
-.stepper .step .step-n {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-}
-/* Done has to be legible at a glance without a checkmark glyph (banned). Full
-   ink against muted for pending is the distinction; the teal numeral reinforces
-   it for anyone who reads the strip rather than scans it. */
-.stepper .step.done {
-  color: var(--icp-fg);
-}
-.stepper .step.done .step-n {
-  color: var(--icp-ok);
-  font-weight: 500;
-}
-.stepper .step.current {
-  color: var(--icp-accent);
-  font-weight: 500;
 }
 
 /* ── the guided tour ──────────────────────────────────────────────────────── */
