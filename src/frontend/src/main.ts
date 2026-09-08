@@ -147,6 +147,7 @@ async function refreshLedgerBalance(): Promise<void> {
   const note = document.getElementById("ledger-balance-note");
   if (!node || !note) return;
   if (identity === null) {
+    ledgerBalance = null;
     node.textContent = "sign in to see it";
     note.textContent = "";
     return;
@@ -156,6 +157,7 @@ async function refreshLedgerBalance(): Promise<void> {
       owner: identity.getPrincipal(),
       subaccount: [],
     });
+    ledgerBalance = balance;
     node.textContent = `${formatCycles(balance)} cycles`;
     note.textContent =
       "Read from the cycles ledger, which anyone can query. This is your whole balance,"
@@ -163,6 +165,7 @@ async function refreshLedgerBalance(): Promise<void> {
   } catch {
     // ⚠️ Says the read failed rather than printing a zero. A zero is a claim about
     // the buyer's money, and "we could not ask" is a different statement.
+    ledgerBalance = null;
     node.textContent = "could not read the ledger";
     note.textContent = "The balance is unchanged; only this page could not fetch it.";
   }
@@ -432,6 +435,18 @@ let cardFee: FeeConfig | null = null;
 // The cycles ledger's own transfer fee. ⚠️ NOT from `quote_previews` any more —
 // #30 PR-A stopped disclosing it there, so this is read from the ledger directly.
 let transferFee = 0n;
+
+/// The account's balance as the LEDGER last reported it, or null when it has not been
+/// read or the read failed.
+///
+/// ⚠️ **Held here rather than read back out of `#ledger-balance`.** The CLI page states
+/// the balance in its own words, and it used to get it by sniffing that cell's
+/// `textContent` with `/^[\d]/` — deriving render state from the DOM, which
+/// `customChosen` warns about a few hundred lines up for the same reason: the sniff
+/// answers "does this look like a number" instead of "did the read succeed", so a
+/// failure message that happened to start with a digit would be quoted back as a
+/// balance, and the two renderers disagreed about the fallback.
+let ledgerBalance: bigint | null = null;
 // Set when a created order's locked quantity differs from the estimate shown —
 // within tolerance, so the order went through, but the buyer should still hear
 // the real number rather than discover it.
@@ -1476,13 +1491,10 @@ function applyRoute(route: Route): void {
     void loadRefusals();
     void loadAdminConfig();
   }
-  // ⚠️ `next` needs the order too: it renders the quantity and the destination
-  // principal, so a deep link straight to the guidance must fetch rather than render
-  // an empty page.
-  if (
-    route.view === "order"
-    && activeOrder?.id !== route.orderId
-  ) {
+  // The order view is the only route that names an order, so it is the only one that
+  // has to fetch. The CLI page used to be `#/order/<id>/next` and needed the same
+  // order; it is order-free now, which is what collapsed this condition to one term.
+  if (route.view === "order" && activeOrder?.id !== route.orderId) {
     // Deep link or Back into an order we are not currently holding.
     orderLoad = "loading";
     void loadOrderById(route.orderId);
@@ -1501,14 +1513,11 @@ async function loadOrderById(orderId: string): Promise<void> {
     renderView();
     return;
   }
-  // The route may have moved on while the query was in flight.
-  //
-  // ⚠️ **Both views that need this order, not just one.** The guard exists so a query
-  // resolving after the visitor navigated away cannot paint an order over the view
-  // they moved to — still right. But `next` needs the same order, and keyed on
-  // `"order"` alone this returned early on every next-steps deep link: `orderLoad`
-  // never reached `ok`, so the guidance rendered as "we could not find that order"
-  // for an order that had loaded fine.
+  // The route may have moved on while the query was in flight, and a query resolving
+  // after the visitor navigated away must not paint an order over the view they moved
+  // to. Keyed on the ONE view that shows an order: it briefly also had to admit the
+  // next-steps view, which was scoped to an order back then and rendered "we could not
+  // find that order" for an order that had loaded fine. That view no longer takes one.
   if (currentView !== "order") return;
   if (order === null) {
     orderLoad = "missing";
@@ -1517,20 +1526,20 @@ async function loadOrderById(orderId: string): Promise<void> {
   }
   orderLoad = "ok";
   // ⚠️ **Adopt the order without changing the route.** `openOrder` navigates to
-  // `#/order/<id>` with `replaceState`, which is right when a visitor CLICKS a row —
-  // and wrong here: on a `#/order/<id>/next` deep link it rewrote the hash and threw
-  // the `/next` away, so the guidance was unreachable by URL. The route already says
-  // where the visitor is; this only supplies what it needs.
+  // `#/order/<id>` with `replaceState`, which is right when a visitor CLICKS a row and
+  // wrong here: the route already says where the visitor is, so rewriting it can only
+  // lose whatever it said. It did exactly that to the guidance page's deep link while
+  // that page still carried an order id.
   activeOrder = order;
   stopPolling();
   renderOrder(order);
-  if (currentView === "order") {
-    // Polling belongs to the record, which is the view that shows a live status. The
-    // guidance page has nothing that changes.
-    pollOrderId = order.id;
-    lastPolledStatus = statusKeyOf(order);
-    pollTimer = setInterval(() => void pollActiveOrder(), POLL_MS);
-  }
+  // Unconditional: the guard above already returned for every other view, so a second
+  // `currentView === "order"` here could not be false. It was reachable while the
+  // guidance page shared this loader, and reading it as a live condition would suggest
+  // there is still a view that loads an order and does not poll it.
+  pollOrderId = order.id;
+  lastPolledStatus = statusKeyOf(order);
+  pollTimer = setInterval(() => void pollActiveOrder(), POLL_MS);
   renderView();
 }
 
@@ -2601,10 +2610,9 @@ function renderCliSummary(): void {
     node.textContent = "Sign in to see the commands for your account.";
     return;
   }
-  const balance = document.getElementById("ledger-balance")?.textContent ?? "";
-  node.textContent = /^[\d]/.test(balance)
-    ? `${balance} in your account. Two commands and you are deploying.`
-    : "Two commands and you are deploying.";
+  node.textContent = ledgerBalance === null
+    ? "Two commands and you are deploying."
+    : `${formatCycles(ledgerBalance)} cycles in your account. Two commands and you are deploying.`;
 }
 
 async function renderReceipt(order: Order): Promise<void> {

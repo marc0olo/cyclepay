@@ -20,7 +20,7 @@
 /// the link renders only when `admin_status` says the caller is granted or is a
 /// controller, so the visitors it would be noise for never see it. What changed is that
 /// an operator no longer has to know to type `#/admin`.
-/// `next` is the post-delivery guidance: linking the CLI and deploying. It is its own
+/// `cli` is the post-delivery guidance: linking the CLI and deploying. It is its own
 /// view rather than a panel on the order, because those are two different questions.
 /// "What did I buy" is a record with numbers and a receipt; "what do I do now" is a
 /// sequence of commands. The order view previously answered the second one so loudly
