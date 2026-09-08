@@ -302,6 +302,7 @@ thing to expire.
 | `check-design-sections.py` | every `§N` the code cites exists in `docs/DESIGN.md`, and every section is cited | the 697-line spec it replaced rotted by being updated less often than the code |
 | `check-heredocs.sh` | no unquoted heredoc runs its own body | one destroyed a GitHub issue body, one turned a script's notes into an `icp deploy` |
 | `mops check`'s stable check | the actor's stable shape is still compatible with `deployed/backend.most` | an incompatible shape passed every step and was refused at DEPLOY time instead; ⚠️ it also fails when the baseline is missing, which is what stops it self-certifying |
+| `scripts/check-stable-promotion.sh` | ⚠️ not in the gate — it runs at PROMOTION time, which the gate cannot see. Whether a baseline diff is type-hash renumbering or a real shape change | a promotion blessed a real change because the diff looked like compiler noise. 91 of ~260 lines move on a compiler bump alone |
 | `check-bindings.sh` | the suite's committed Candid bindings match the `.did` | the integration CI job installs only that suite's deps and never builds the backend, so it typechecks against whatever is in the checkout |
 | `check-unused-exports.py` | no module exports something nothing calls | a deleted caller leaves an export that reads as live API |
 | `sweep-vocabulary.py` | prints added lines naming a deleted mechanism | ⚠️ **advisory — it passes on hits**; it fails only when it cannot determine a base ref, which is the didn't-run case |
@@ -337,9 +338,28 @@ So the baseline moves whenever the shape moves. One un-promoted compatible chang
 enough to blind the check to the next incompatible one.
 
 ```sh
-mops build && mops deployed        # promotes dist/backend.most → deployed/backend.most
+mops build
+scripts/check-stable-promotion.sh  # what IS this diff? see below — run it BEFORE promoting
+mops deployed                      # promotes dist/backend.most → deployed/backend.most
 git add deployed/backend.most      # committed in the SAME PR as the shape change
 ```
+
+⚠️ **Read the diff with the script, never with your eyes.** A compiler upgrade renumbers
+every type hash in the file: moc 1.9.0 → 1.15.1 moved **91 of ~260 lines** without
+changing a single field. A real schema change lands in the same file, in the same shape of
+diff, and is invisible inside that noise — which is the mirror image of the stale-baseline
+hole above, and just as green.
+
+`scripts/check-stable-promotion.sh` decides it instead, by running
+`moc --stable-compatible` **both ways**. Mutual compatibility means the two signatures are
+mutual subtypes, i.e. equivalent, so the diff is pure renumbering. Its three verdicts, each
+probed against a deliberate mutation rather than assumed:
+
+| Verdict | Means | Do |
+|---|---|---|
+| `REPRESENTATION-ONLY` | both directions pass — equivalent signatures | promote without review; note the compiler bump in the commit |
+| `REAL shape change (upgrade-compatible)` | forward only — a field was added or widened | promote deliberately, and **name what moved** in the commit |
+| `NOT upgrade-compatible` | forward fails — a deployed canister cannot take it | not a promotion. Reinstall pre-launch, or write the migration (#32) |
 
 ⚠️ **This is correct ONLY while the shape change is accompanied by a reinstall — and
 nothing in the toolchain will tell you when that stops being true.** Pre-launch,

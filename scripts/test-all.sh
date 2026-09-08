@@ -248,6 +248,15 @@ step=$((step + 1))
 printf '\n\033[1m── %d. %s\033[0m\n' "$step" "docs match the canister's actual surface"
 scripts/check-doc-surface.py
 
+# ⚠️ **Same file, a different question, and after it for the same reason.** The step above
+# asks whether the DOCS list the methods the interface has; this asks whether every method
+# in the interface carries documentation at all. The second is what catches a doc block
+# absorbed by a neighbouring declaration — five instances in this repo, every one found by
+# a human reading, because the orphan is undetectable and only its victim is.
+step=$((step + 1))
+printf '\n\033[1m── %d. %s\033[0m\n' "$step" "every interface method is documented"
+scripts/check-did-docs.py
+
 # ⚠️ **After the `.did` regeneration too, and for the same reason as the step above:** it
 # reads the interface, so it must read the current one. A config parameter with no reader
 # cannot be checked by an operator or shown by a UI, and `set_delivery_config` was exactly
