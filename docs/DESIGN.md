@@ -464,19 +464,19 @@ decides the shape of every mixin here:
 ⚠️ **So mutable state is grouped into SEVEN subsystem records rather than passed field
 by field.** `reserveState`, `gateState`, `pricingState`, `stripeState`, `tierState`,
 `deliveryState`, `recoveryState`. Grouping is also what A6 asks for: a mixin receives the
-slice it uses.
-
-⚠️ **Two counts in this section have different denominators, so each is stated with its
-instrument.** The seven records hold **21 `var` fields** between them — that is the number
-every claim below is about. `deployed/backend.most` separately declares **19 top-level
-stable names**, of which seven are those records; the two figures moved independently
-(#130 removed two standalone stable `let`s that were never in a record, changing the
-second and not the first). A bare number here is how an edit lands on the quantity nobody
-measured. The alternative — an accessor closure per field — needs no shape change,
+slice it uses. The alternative — an accessor closure per field — needs no shape change,
 and it is what the three TRANSIENT fields still use, for a sharper reason: they exist to
 answer "has this happened since the canister started", which a value frozen at include
 time answers wrongly and confidently. For the 21 grouped `var` fields it would have put
 plumbing at every include site to work around by-value semantics.
+
+⚠️ **Two counts in this section have different denominators, so each is stated with its
+instrument.** The seven records hold **21 `var` fields** between them — that is the
+number every claim in this section is about. `deployed/backend.most` separately declares
+**19 top-level stable names**, of which seven are those records; the figures moved
+independently (#130 removed two standalone stable `let`s that were never in a record,
+changing the second and not the first). A bare number here is how an edit lands on the
+quantity nobody measured.
 
 ⚠️ **`webhookPaidOrder` uses a TAKE-ONCE accessor**, not a get/set pair: the dispatcher
 sets it and the mixin consumes it in the same message, so reading and clearing as one
