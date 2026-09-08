@@ -40,6 +40,7 @@ import Orders "Orders";
 import Recovery "Recovery";
 import Reserve "Reserve";
 import Card "rails/Card";
+import SecretsMixin "mixins/Secrets";
 import Session "rails/Session";
 import Secret "Secret";
 import Tiers "Tiers";
@@ -265,92 +266,6 @@ persistent actor CyclesGateway {
   public shared query ({ caller }) func allowed_buyers() : async [Principal] {
     requireController(caller);
     allowedBuyers.values().toArray();
-  };
-
-  /// Provision or rotate the Stripe webhook signing secret (§7). Pass the
-  /// full `whsec_...` string from the Stripe dashboard — the whole string,
-  /// prefix included, is the HMAC key. NOTE: the argument transits the
-  /// TLS-terminating boundary node as plain ingress (§7 provisioning
-  /// exposure); rotate after provisioning over an untrusted path.
-  public shared ({ caller }) func set_webhook_secret(secret : Text) : async Result.Result<(), Secret.SetError> {
-    requireController(caller);
-    let result = Secret.set(webhookSecret, secret.encodeUtf8(), Time.now());
-    switch (result) {
-      case (#ok) {
-        // The secret itself is never logged — only that it changed, by whom,
-        // and to which generation, which is what a rotation audit needs.
-        auditAdmin(caller, "secret.set", "generation " # Secret.status(webhookSecret).generation.toText());
-      };
-      case (#err(_)) auditAdmin(caller, "secret.setRejected", "rejected as too short; the working secret is untouched");
-    };
-    result;
-  };
-
-  /// Provisioning state only — the secret itself is never readable back
-  /// out, even by controllers. `generation` confirms a rotation landed.
-  public shared query ({ caller }) func webhook_secret_status() : async Secret.Status {
-    requireAdmin(caller);
-    Secret.status(webhookSecret);
-  };
-
-  /// Provision or rotate the Stripe API key (#33) — admin, mirroring
-  /// `set_webhook_secret` in every respect including the provisioning caveat:
-  /// the argument transits the TLS-terminating boundary node as plain ingress.
-  /// #11 covers vetKeys for encrypted delivery, and now applies to two secrets.
-  public shared ({ caller }) func set_stripe_api_key(key : Text) : async Result.Result<(), Secret.SetError> {
-    requireController(caller);
-    let result = Secret.set(stripeApiKey, key.encodeUtf8(), Time.now());
-    switch (result) {
-      case (#ok) auditAdmin(caller, "stripe.apiKeySet", "generation " # Secret.status(stripeApiKey).generation.toText());
-      case (#err(_)) auditAdmin(caller, "stripe.apiKeyRejected", "rejected as too short; the working key is untouched");
-    };
-    result;
-  };
-
-  /// Whether the restricted Stripe key is provisioned — **never the key**.
-  ///
-  /// The console offers this read and no command for the setter: a rendered
-  /// `set_stripe_api_key` would put the key in a page's DOM and clipboard, which is what
-  /// `scripts/check-admin-commands.py` fails on. Admin-gated like every other read of
-  /// operational state that names a secret's presence.
-  public shared query ({ caller }) func stripe_api_key_status() : async Secret.Status {
-    requireAdmin(caller);
-    Secret.status(stripeApiKey);
-  };
-
-  public type OriginError = {
-    /// Anything but `https://`. A plain-HTTP return URL after a card payment is
-    /// not a thing to offer, and Stripe would render it.
-    #notHttps;
-    /// A query string or fragment would collide with the `#/order/<id>` route
-    /// appended to it, producing a URL that does not resolve to the order.
-    #hasQueryOrFragment;
-    #empty;
-  };
-
-  /// Set the origin Stripe returns buyers to (#33) — admin.
-  ///
-  /// Validated at set time rather than at session-create time, so a bad value
-  /// fails in front of the operator who typed it instead of breaking every
-  /// purchase later. Until a domain is chosen (#40/#23) this is the canister's
-  /// own asset origin.
-  public shared ({ caller }) func set_stripe_origin(origin : Text) : async Result.Result<(), OriginError> {
-    requireController(caller);
-    if (origin.size() == 0) return #err(#empty);
-    if (not origin.startsWith(#text "https://")) return #err(#notHttps);
-    if (origin.contains(#char '?') or origin.contains(#char '#')) return #err(#hasQueryOrFragment);
-    // Trailing slash trimmed here rather than at every use site, so
-    // `origin # "/#/order/" # id` cannot produce a double slash.
-    let trimmed = origin.trimEnd(#char '/');
-    stripeOrigin := ?trimmed;
-    auditAdmin(caller, "stripe.originSet", trimmed);
-    #ok;
-  };
-
-  /// The origin, readable back because it is not a secret — it is the URL
-  /// buyers are sent to, and an operator needs to confirm it.
-  public shared query func stripe_origin() : async ?Text {
-    stripeOrigin;
   };
 
   // ── Order + tier state (task 6) ─────────────────────────────────────────
@@ -4656,4 +4571,33 @@ persistent actor CyclesGateway {
   /// alike.
   transient let _rateWarmup : Timer.TimerId =
     Timer.setTimer<system>(#nanoseconds(0), rateTimerJob);
+
+  // ── Endpoints, by feature (#120) ────────────────────────────────────────────
+  //
+  // ⚠️ **Every `include` sits at the END of the actor body, and that is required rather
+  // than tidy.** Its arguments are evaluated once, right here, so each must name a field
+  // or helper already declared above — `auditAdmin` is defined ~2,000 lines up. An
+  // include placed where the endpoints used to be would capture bindings that do not
+  // exist yet.
+  //
+  // ⚠️ **A `var` field is passed as an ACCESSOR PAIR, never as the field.** `include`
+  // takes its arguments by value, so handing over `stripeOrigin` would give the mixin a
+  // snapshot from install time: the setter would mutate a copy and the getter would
+  // answer that snapshot forever. Records and collections (`Secret.Store`,
+  // `Orders.Store`, the maps and sets) are heap objects, so those pass directly and
+  // write through.
+  //
+  // ⚠️ **Accessors rather than wrapping the `var` in a record**, which is the other fix
+  // and the expensive one: wrapping changes the actor's stable shape, and with no
+  // migration chain (#32) that means a reinstall. Closures are parameters, never stable
+  // state, so `deployed/backend.most` does not move for this split.
+  include SecretsMixin(
+    webhookSecret,
+    stripeApiKey,
+    { get = func() = stripeOrigin; set = func(v : ?Text) { stripeOrigin := v } },
+    requireController,
+    requireAdmin,
+    auditAdmin,
+    func() = Time.now(),
+  );
 };

@@ -39,11 +39,16 @@ blocks may omit the HTTP-gateway plumbing (`http_request`, `http_request_update`
 so adding a method never silently lands in it.
 """
 
+import glob
 import re
 import sys
 
 DID = "src/backend/dist/backend.did"
-MAIN = "src/backend/Main.mo"
+# ⚠️ **Endpoints live in `Main.mo` AND in `mixins/*.mo` since #120.** Scanning only the
+# composition root made this abort with "parser is wrong" the moment the first endpoint
+# moved — correctly, because a check that cannot find what it is checking must not report
+# a clean scan. Both are read as one body of source.
+ENDPOINT_SOURCES = ("src/backend/Main.mo", "src/backend/mixins/*.mo")
 
 # Public, but not part of any documented "queries you can poll" list. Explicit, so a
 # newly added method is a failure rather than something that quietly qualifies.
@@ -77,7 +82,10 @@ def real_surface():
     names = sorted(set(re.findall(r"^  ([a-z_][a-z0-9_]*):", open(DID).read(), re.M)))
     if not names:
         sys.exit(f"ABORT: parsed no methods out of {DID} — the check would pass vacuously")
-    lines = open(MAIN).read().split("\n")
+    lines = []
+    for pattern in ENDPOINT_SOURCES:
+        for f in sorted(glob.glob(pattern)):
+            lines.extend(open(f).read().split("\n"))
     decls = []
     for i, l in enumerate(lines):
         m = re.search(r"\bpublic\b.*\bfunc\s+([a-z_][A-Za-z0-9_]*)\s*[(<]", l)
@@ -88,7 +96,7 @@ def real_surface():
     out = {}
     for n in names:
         if n not in by:
-            sys.exit(f"ABORT: {n} is in {DID} but no public func in {MAIN} — parser is wrong")
+            sys.exit(f"ABORT: {n} is in {DID} but no public func in {ENDPOINT_SOURCES} — parser is wrong")
         i = by[n]
         nxt = [s for s in starts if s > i]
         body = "\n".join(lines[i:(nxt[0] if nxt else len(lines))])

@@ -29,10 +29,15 @@ the operator reads and the idempotent levers are the CASES tier: an admin can en
 order and cannot upgrade the canister.
 """
 
+import glob
 import re
 import sys
 
-MAIN = "src/backend/Main.mo"
+# ⚠️ **Endpoints live in `Main.mo` AND in `mixins/*.mo` since #120.** Scanning only the
+# composition root made this abort with "parser is wrong" the moment the first endpoint
+# moved — correctly, because a check that cannot find what it is checking must not report
+# a clean scan. Both are read as one body of source.
+ENDPOINT_SOURCES = ("src/backend/Main.mo", "src/backend/mixins/*.mo")
 GUARDS = {"requireController": "controller", "requireAdmin": "admin"}
 
 # A top-level declaration in the actor: two-space indent, `func` anywhere after it.
@@ -188,10 +193,14 @@ def _self_test():
 
 def main() -> int:
     _self_test()
-    text = open(MAIN).read()
+    text = "\n".join(
+        open(f).read()
+        for pattern in ENDPOINT_SOURCES
+        for f in sorted(glob.glob(pattern))
+    )
     actual = guarded_methods(text)
     if not actual:
-        sys.exit(f"ABORT: found no guarded methods in {MAIN} — the parser is wrong")
+        sys.exit(f"ABORT: found no guarded methods in {ENDPOINT_SOURCES} — the parser is wrong")
 
     fail = []
     for name, tier in sorted(actual.items()):
@@ -210,7 +219,7 @@ def main() -> int:
             )
     for name in sorted(set(TIERS) - set(actual)):
         fail.append(
-            f"TIERS names {name}, which calls no guard in {MAIN} — either it lost its "
+            f"TIERS names {name}, which calls no guard in {ENDPOINT_SOURCES} — either it lost its "
             f"guard (an authz hole) or the entry is stale"
         )
 

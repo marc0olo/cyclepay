@@ -1212,42 +1212,12 @@ export interface _SERVICE {
    * / the ledger dedup window or replay loses its safety margin.
    */
   'set_recovery_interval' : ActorMethod<[bigint], Result_3>,
-  /**
-   * / Provision or rotate the Stripe API key (#33) — admin, mirroring
-   * / `set_webhook_secret` in every respect including the provisioning caveat:
-   * / the argument transits the TLS-terminating boundary node as plain ingress.
-   * / #11 covers vetKeys for encrypted delivery, and now applies to two secrets.
-   */
   'set_stripe_api_key' : ActorMethod<[string], Result_1>,
-  /**
-   * / Set the origin Stripe returns buyers to (#33) — admin.
-   * /
-   * / Validated at set time rather than at session-create time, so a bad value
-   * / fails in front of the operator who typed it instead of breaking every
-   * / purchase later. Until a domain is chosen (#40/#23) this is the canister's
-   * / own asset origin.
-   */
   'set_stripe_origin' : ActorMethod<[string], Result_2>,
-  /**
-   * / Provision or rotate the Stripe webhook signing secret (§7). Pass the
-   * / full `whsec_...` string from the Stripe dashboard — the whole string,
-   * / prefix included, is the HMAC key. NOTE: the argument transits the
-   * / TLS-terminating boundary node as plain ingress (§7 provisioning
-   * / exposure); rotate after provisioning over an untrusted path.
-   */
   'set_webhook_secret' : ActorMethod<[string], Result_1>,
-  /**
-   * / Whether the restricted Stripe key is provisioned — **never the key**.
-   * /
-   * / The console offers this read and no command for the setter: a rendered
-   * / `set_stripe_api_key` would put the key in a page's DOM and clipboard, which is what
-   * / `scripts/check-admin-commands.py` fails on. Admin-gated like every other read of
-   * / operational state that names a secret's presence.
-   */
   'stripe_api_key_status' : ActorMethod<[], Status>,
   /**
-   * / The origin, readable back because it is not a secret — it is the URL
-   * / buyers are sent to, and an operator needs to confirm it.
+   * / The CASES tier: a controller, or a principal a controller has granted.
    */
   'stripe_origin' : ActorMethod<[], [] | [string]>,
   /**
@@ -1264,10 +1234,6 @@ export interface _SERVICE {
     [{ 'context' : Uint8Array, 'response' : HttpRequestResult }],
     HttpRequestResult
   >,
-  /**
-   * / Provisioning state only — the secret itself is never readable back
-   * / out, even by controllers. `generation` confirms a rotation landed.
-   */
   'webhook_secret_status' : ActorMethod<[], Status>,
   /**
    * / Return the reserve to the caller, refusing while anything is owed (#103).
