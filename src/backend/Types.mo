@@ -214,6 +214,27 @@ module {
 
   /// An order-bound problem. The order it hangs off supplies the identity, so no arm
   /// carries an `orderId`.
+  /// Which KIND of problem, without its payload — the discriminator on its own.
+  ///
+  /// ⚠️ **Tag-only, and that asymmetry is the design.** `ProblemKind`'s cases carry
+  /// different payloads: `#deliveryStuck` a stage, the other three a `paymentRef` plus
+  /// figures. A caller naming *which kind to resolve* has none of that — and
+  /// `resolve_problem` already takes the reference as its own parameter — so mirroring
+  /// the full variant would demand data the caller cannot have.
+  ///
+  /// ⚠️ **This replaces a `Text` argument (#122).** The set is closed and always was:
+  /// `Problems.kindToText` rendered these four names and `Orders.unresolvedOfKind`
+  /// compared against that rendering, so a misspelled tag resolved nothing and said so.
+  /// Fail-closed, but the compiler checked nothing — now a wrong tag cannot be encoded
+  /// at all, and the operator console types its command off the actor rather than
+  /// composing a string.
+  public type ProblemKindTag = {
+    #duplicate;
+    #deliveryStuck;
+    #refundAfterDelivery;
+    #paidNotCredited;
+  };
+
   public type ProblemKind = {
     /// Refund-resolvable — a genuine second, distinct payment for an order already
     /// handled.

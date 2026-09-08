@@ -137,6 +137,24 @@ persistent actor CyclesGateway {
     adminPrincipals.contains(p);
   };
 
+  /// Why a principal could not be added to, or removed from, one of the two lists
+  /// (#123).
+  ///
+  /// ⚠️ **One type for both lists and both directions**, because the four methods refuse
+  /// for exactly these three reasons and a caller acts on the reason, not on which list
+  /// it was. `#alreadyPresent` and `#notPresent` carry the principal so a console can
+  /// name it without re-deriving it from the argument it just sent.
+  ///
+  /// ⚠️ **`#anonymousNotAllowed` is not "invalid input".** The anonymous principal is a
+  /// real, callable identity that every unauthenticated caller shares, so granting it
+  /// admin would grant the world admin, and allow-listing it would let anyone buy while
+  /// test payments are on. It is refused for a specific reason, and the tag says which.
+  public type ListError = {
+    #anonymousNotAllowed;
+    #alreadyPresent : { principal : Principal };
+    #notPresent : { principal : Principal };
+  };
+
   /// Grant the CASES tier to a principal (controller only, audited).
   ///
   /// ⚠️ **The grant is on a PRINCIPAL, and an admin's principal comes from the origin
@@ -146,24 +164,24 @@ persistent actor CyclesGateway {
   /// `--app` the CLI links a principal derived from the auth domain's own default
   /// (`cli.id.ai`), which is not this app, so the grant would sit on a principal the
   /// admin never sees.
-  public shared ({ caller }) func add_admin(p : Principal) : async Result.Result<(), Text> {
+  public shared ({ caller }) func add_admin(p : Principal) : async Result.Result<(), ListError> {
     requireController(caller);
     // Belt and braces: `Auth.checkAdmin` rejects anonymous before consulting either
     // predicate, so a granted `2vxsx-fae` would be inert — but a list that contains it
     // reads as though it were not.
-    if (p.isAnonymous()) return #err("the anonymous principal cannot be an admin");
-    if (adminPrincipals.contains(p)) return #err("already an admin: " # p.toText());
+    if (p.isAnonymous()) return #err(#anonymousNotAllowed);
+    if (adminPrincipals.contains(p)) return #err(#alreadyPresent({ principal = p }));
     adminPrincipals.add(p);
     auditAdmin(caller, "admin.granted", p.toText());
     #ok;
   };
 
   /// Revoke the CASES tier (controller only, audited).
-  public shared ({ caller }) func remove_admin(p : Principal) : async Result.Result<(), Text> {
+  public shared ({ caller }) func remove_admin(p : Principal) : async Result.Result<(), ListError> {
     requireController(caller);
     // ⚠️ Not "not an admin": that is the authz trap's wording, and an operator reading it
     // back cannot tell whether THEY were refused or the target simply was not listed.
-    if (not adminPrincipals.contains(p)) return #err(p.toText() # " is not on the admin list");
+    if (not adminPrincipals.contains(p)) return #err(#notPresent({ principal = p }));
     adminPrincipals.remove(p);
     auditAdmin(caller, "admin.revoked", p.toText());
     #ok;
@@ -204,13 +222,13 @@ persistent actor CyclesGateway {
 
   /// Allow a principal to buy while this gateway accepts free test payments
   /// (controller only, audited).
-  public shared ({ caller }) func add_allowed_buyer(p : Principal) : async Result.Result<(), Text> {
+  public shared ({ caller }) func add_allowed_buyer(p : Principal) : async Result.Result<(), ListError> {
     requireController(caller);
     // The anonymous principal is a shared identity: `create_order` rejects it
     // before the gate, so a listed `2vxsx-fae` would be inert — but a list that
     // contains it reads as though it were not.
-    if (p.isAnonymous()) return #err("the anonymous principal cannot be an allowed buyer");
-    if (allowedBuyers.contains(p)) return #err("already an allowed buyer: " # p.toText());
+    if (p.isAnonymous()) return #err(#anonymousNotAllowed);
+    if (allowedBuyers.contains(p)) return #err(#alreadyPresent({ principal = p }));
     allowedBuyers.add(p);
     auditAdmin(caller, "buyer.allowed", p.toText());
     #ok;
@@ -223,9 +241,9 @@ persistent actor CyclesGateway {
   /// `Gate.Reason.unboundedGiveaway`, which refuses everyone. The audit line says
   /// so, because "revoked the last buyer" and "the gateway stopped selling" are
   /// the same event and an operator should not have to connect them later.
-  public shared ({ caller }) func remove_allowed_buyer(p : Principal) : async Result.Result<(), Text> {
+  public shared ({ caller }) func remove_allowed_buyer(p : Principal) : async Result.Result<(), ListError> {
     requireController(caller);
-    if (not allowedBuyers.contains(p)) return #err(p.toText() # " is not on the buyer allow-list");
+    if (not allowedBuyers.contains(p)) return #err(#notPresent({ principal = p }));
     allowedBuyers.remove(p);
     let emptied = allowedBuyers.size() == 0;
     auditAdmin(
@@ -1409,6 +1427,20 @@ persistent actor CyclesGateway {
     };
   };
 
+  /// Why the expected Stripe mode could not be set (#123).
+  ///
+  /// ⚠️ **One case, and it stays a variant rather than collapsing to `()`.** The refusal
+  /// is not "bad argument" — it is a *conflict with another setting*, and the caller
+  /// needs the conflicting value to explain it. A second reason to refuse is plausible
+  /// (a live mode with no key provisioned, say), and a variant admits one without
+  /// changing the shape callers already match on.
+  public type LivemodeError = {
+    /// A simulation divisor is set, so only `?false` is accepted: taking live or
+    /// either-mode payments while scaling cycles down would short a paying buyer.
+    /// Clearing the divisor needs a reinstall — see `set_pricing_config`.
+    #simulationDivisorSet : { divisor : Nat };
+  };
+
   /// Declare which Stripe mode this gateway serves (controller only).
   ///
   /// Set it to `?true` before taking real payments and `?false` on a sandbox
@@ -1421,15 +1453,12 @@ persistent actor CyclesGateway {
   /// takes real money and delivers scaled cycles, and `null` accepts live
   /// payments too. Mutual, so **neither order of operations** reaches the state
   /// that shorts a paying buyer — it is unrepresentable rather than discouraged.
-  public shared ({ caller }) func set_expected_livemode(expected : ?Bool) : async Result.Result<(), Text> {
+  public shared ({ caller }) func set_expected_livemode(expected : ?Bool) : async Result.Result<(), LivemodeError> {
     requireController(caller);
     if (expected != ?false and pricingConfig.divisor > 1) {
-      return #err(
-        "refused: a simulation divisor of " # pricingConfig.divisor.toText()
-        # " is set, so only ?false is accepted here — accepting live or either-mode"
-        # " payments while scaling cycles down would short a paying buyer."
-        # " Clear the divisor first (which needs a reinstall, see set_pricing_config)."
-      );
+      // The divisor travels as DATA (#123): a console can say which value is blocking
+      // this without parsing it back out of a sentence, and the remedy is one lever.
+      return #err(#simulationDivisorSet({ divisor = pricingConfig.divisor }));
     };
     expectLivemode := expected;
     auditAdmin(
@@ -1924,30 +1953,27 @@ persistent actor CyclesGateway {
   /// through is a dead end rather than a safeguard.
   public shared ({ caller }) func resolve_problem(
     orderId : Types.OrderId,
-    kindTag : Text,
+    tag : Types.ProblemKindTag,
     /// Which one, when the kind can have several. `#deliveryStuck` never can — it is
     /// matched on the discriminator alone — so null is always right for it.
     paymentRef : ?Text,
-  ) : async Result.Result<Nat, Text> {
+  ) : async Result.Result<Nat, Problems.ResolveProblemError> {
     requireAdmin(caller);
-    let candidates = Orders.unresolvedOfKind(orderStore, orderId, kindTag);
-    if (candidates.size() == 0) {
-      return #err(
-        "no unresolved " # kindTag # " problem on order " # orderId
-        # " — check the tag against the order's own problems, and note a resolved one stays on the order rather than disappearing"
-      );
-    };
+    // Separated from "nothing to resolve" (#123): an unknown id used to answer the same
+    // way as a known order with nothing open, so a mistyped id read as "already done".
+    if (Orders.get(orderStore, orderId) == null) return #err(#noSuchOrder({ orderId }));
+    let candidates = Orders.unresolvedOfKind(orderStore, orderId, tag);
+    if (candidates.size() == 0) return #err(#noSuchProblem({ tag }));
     switch (paymentRef) {
       case null {
         if (candidates.size() > 1) {
+          // ⚠️ The candidate list travels as DATA now, not inside a sentence. It is what
+          // the operator disambiguates with, and a caller had to parse it back out of
+          // the prose to offer a choice.
           let refs = candidates.map(
             func(c) = switch (c.ref) { case (?r) r; case null "(none)" }
           );
-          return #err(
-            candidates.size().toText() # " unresolved " # kindTag # " problems on order "
-            # orderId # ", so this would close all of them — pass the payment reference for the one you dealt with. Candidates: "
-            # refs.values().join(", ")
-          );
+          return #err(#ambiguous({ tag; candidates = refs }));
         };
       };
       case (?_) {};
@@ -1956,7 +1982,7 @@ persistent actor CyclesGateway {
       orderStore,
       orderId,
       func(k) {
-        Problems.kindToText(k) == kindTag
+        Problems.tagOf(k) == tag
         and (
           switch (paymentRef) {
             case null true; // exactly one candidate, checked above
@@ -1967,15 +1993,15 @@ persistent actor CyclesGateway {
       Time.now(),
     );
     if (closed == 0) {
-      return #err(
-        "no unresolved " # kindTag # " problem on order " # orderId
-        # " with that payment reference — the candidates are listed by resolve_problem with no reference given"
-      );
+      // Reachable only with a reference given: the no-reference path either found one
+      // candidate or refused as ambiguous above.
+      let reference = paymentRef ?? "";
+      return #err(#referenceNotFound({ tag; reference }));
     };
     auditAdmin(
       caller,
       "order.problemResolved",
-      orderId # ": " # kindTag
+      orderId # ": " # Problems.tagToText(tag)
       # (switch (paymentRef) { case (?r) " (" # r # ")"; case null "" })
       # " — " # closed.toText() # " closed",
     );

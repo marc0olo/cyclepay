@@ -901,15 +901,21 @@ icp canister call backend admin_orders '(record { status = null; owner = null; c
 # Read ONE order's receipt, whoever owns it. Audited, like admin_order.
 icp canister call backend admin_receipt '("<orderId>")'
 
-# Close one. The third argument selects WHICH, by payment reference.
-icp canister call backend resolve_problem '("<orderId>", "duplicate", opt "pi_...")'
+# Close one. The second argument is a VARIANT, not a string (#122) — a misspelled
+# tag is now refused by the decoder instead of matching nothing. The third selects
+# WHICH problem, by payment reference.
+icp canister call backend resolve_problem '("<orderId>", variant { duplicate }, opt "pi_...")'
 
 # `deliveryStuck` can only ever have one per order, so null is always right:
-icp canister call backend resolve_problem '("<orderId>", "deliveryStuck", null)'
+icp canister call backend resolve_problem '("<orderId>", variant { deliveryStuck }, null)'
 ```
 
+The four tags are `duplicate`, `deliveryStuck`, `refundAfterDelivery` and
+`paidNotCredited` — the same four `admin_order` reports on the order's own problems.
+
 ⚠️ **Passing `null` when the order has several problems of that kind is REFUSED, and
-the refusal lists the references.** A buyer who pays three times files three
+the refusal carries the references as data** (`#ambiguous`, with a `candidates` list —
+#123, where it used to be a sentence to read them out of). A buyer who pays three times files three
 `#duplicate` problems, and closing "the duplicate" would mark settled a payment you
 have not refunded. Refunding one and closing another is the mistake this refusal
 exists to prevent — the error message is the disambiguation step, not an obstacle.

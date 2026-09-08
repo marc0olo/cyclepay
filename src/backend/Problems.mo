@@ -176,4 +176,49 @@ module {
     };
   };
 
+  /// Why `resolve_problem` refused (#123).
+  ///
+  /// ⚠️ **A variant, because the three refusals need three different actions** and a
+  /// caller could previously tell them apart only by matching prose. `#ambiguous` is the
+  /// one that carries data the operator must act on — the candidate references — and as
+  /// a `Text` message that list had to be parsed back out of a sentence.
+  ///
+  /// `#noSuchOrder` is new information rather than a rename: an unknown id used to
+  /// produce the same "no unresolved problem" answer as a known order with nothing to
+  /// close, so a typo in the id read as "already dealt with".
+  public type ResolveProblemError = {
+    #noSuchOrder : { orderId : Text };
+    #noSuchProblem : { tag : Types.ProblemKindTag };
+    /// Several unresolved problems of that kind, so resolving without a reference would
+    /// close all of them. The identifying reference of each candidate, in store order.
+    #ambiguous : { tag : Types.ProblemKindTag; candidates : [Text] };
+    #referenceNotFound : { tag : Types.ProblemKindTag; reference : Text };
+  };
+
+  /// The kind's discriminator, payload dropped (#122).
+  ///
+  /// ⚠️ **Exhaustive by construction, unlike the `Text` comparison it replaces.** This
+  /// switch and `kindToText` are the same shape, but only this one is checked: adding a
+  /// fifth `ProblemKind` case makes both a compile error here, where the old
+  /// `kindToText(kind) == kindTag` comparison would have silently answered false for the
+  /// new kind and reported "no unresolved problem of that kind".
+  public func tagOf(kind : Kind) : Types.ProblemKindTag {
+    switch (kind) {
+      case (#duplicate(_)) #duplicate;
+      case (#deliveryStuck(_)) #deliveryStuck;
+      case (#refundAfterDelivery(_)) #refundAfterDelivery;
+      case (#paidNotCredited(_)) #paidNotCredited;
+    };
+  };
+
+  /// The tag as text, for an audit line or an error message.
+  public func tagToText(tag : Types.ProblemKindTag) : Text {
+    switch (tag) {
+      case (#duplicate) "duplicate";
+      case (#deliveryStuck) "deliveryStuck";
+      case (#refundAfterDelivery) "refundAfterDelivery";
+      case (#paidNotCredited) "paidNotCredited";
+    };
+  };
+
 };

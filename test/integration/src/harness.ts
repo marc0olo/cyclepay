@@ -142,10 +142,15 @@ export const stranger = createIdentity('cyclepay integration stranger');
 export async function allowTestBuyers(gw: Gateway): Promise<void> {
   for (const identity of [user, stranger, admin]) {
     const result = await gw.asAdmin.add_allowed_buyer(identity.getPrincipal());
-    // Idempotent by intent: a suite that provisions twice must not fail on
-    // "already an allowed buyer".
-    if ('err' in result && !result.err.includes('already an allowed buyer')) {
-      throw new Error(`add_allowed_buyer failed: ${result.err}`);
+    // Idempotent by intent: a suite that provisions twice must not fail on a principal
+    // that is already listed.
+    //
+    // ⚠️ **Matched on the TAG, not on a substring (#123).** This read
+    // `.err.includes('already an allowed buyer')`, so rewording that sentence would have
+    // turned an idempotent provision step into a thrown error in every suite — and the
+    // message is buyer-facing prose nobody would think of as an API.
+    if ('err' in result && !('alreadyPresent' in result.err)) {
+      throw new Error(`add_allowed_buyer failed: ${JSON.stringify(result.err)}`);
     }
   }
 }

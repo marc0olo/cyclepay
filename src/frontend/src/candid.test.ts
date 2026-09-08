@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { Principal } from "@icp-sdk/core/principal";
 import { COMMANDS, renderCall, irreversibleNote, type CommandMethod } from "./candid";
+import { ProblemKindTag } from "./bindings/backend";
 
 /// A minimal Candid **text** reader, for the one assertion #97 actually asks for:
 /// that the rendered command PARSED equals the tuple the backend expects.
@@ -52,6 +53,18 @@ function parseCandid(src: string): unknown {
       return out;
     }
     if (peek("opt")) { eat("opt"); return { some: value() }; }
+    // A payload-free variant, `variant { tag }`. Returned as a wrapper rather than a
+    // bare string so an assertion cannot confuse it with the text `"duplicate"` — which
+    // is exactly the confusion #122 removed from the interface.
+    if (peek("variant")) {
+      eat("variant");
+      eat("{");
+      ws();
+      const name = /^\w+/.exec(src.slice(i))![0];
+      i += name.length;
+      eat("}");
+      return { variant: name };
+    }
     if (peek("null")) { eat("null"); return null; }
     if (peek("true")) { eat("true"); return true; }
     if (peek("false")) { eat("false"); return false; }
@@ -152,16 +165,30 @@ describe("the rendered command is what the canister expects (#97)", () => {
   });
 
   test("⚠️ resolve_problem keeps its three arguments in ORDER and shape", () => {
-    // The one #97 singles out: `kindTag` is TEXT and must match a problem kind exactly,
-    // and dropping `paymentRef` over-resolves because one order can carry several
-    // unresolved problems of the same kind. A swap here closes the wrong obligation and
-    // the record then says an obligation was handled that was not.
-    const rendered = renderCall("resolve_problem", "abc123", "refundAfterDelivery", "pi_9");
+    // The one #97 singles out: dropping `paymentRef` over-resolves, because one order
+    // can carry several unresolved problems of the same kind. A swap here closes the
+    // wrong obligation and the record then says an obligation was handled that was not.
+    //
+    // ⚠️ **The kind is a VARIANT now (#122), and that is visible in this test as a
+    // type rather than an assertion.** It used to be `text`, so `"refundAfterDelivery"`
+    // was a valid argument and a typo was a runtime miss. The enum below is the whole
+    // guarantee: passing the string fails to compile, which no runtime assertion here
+    // could have caught.
+    const rendered = renderCall("resolve_problem", "abc123", ProblemKindTag.refundAfterDelivery, "pi_9");
     expect(parseCandid(argsOf(rendered)))
-      .toEqual(["abc123", "refundAfterDelivery", { some: "pi_9" }]);
+      .toEqual(["abc123", { variant: "refundAfterDelivery" }, { some: "pi_9" }]);
     // And absent, which is the correct call for a kind that can only occur once.
-    expect(parseCandid(argsOf(renderCall("resolve_problem", "abc123", "deliveryStuck", null))))
-      .toEqual(["abc123", "deliveryStuck", null]);
+    expect(parseCandid(argsOf(renderCall("resolve_problem", "abc123", ProblemKindTag.deliveryStuck, null))))
+      .toEqual(["abc123", { variant: "deliveryStuck" }, null]);
+  });
+
+  test("a bare variant is rendered as a tag, never as text", () => {
+    // `text(tag)` would render `"duplicate"` — accepted by Candid as a *string* and
+    // refused as a variant, so the command would fail at the CLI rather than silently
+    // do the wrong thing. Pinned anyway: the two spellings differ by one function call.
+    const rendered = renderCall("resolve_problem", "abc123", ProblemKindTag.duplicate, null);
+    expect(rendered).toContain("variant { duplicate }");
+    expect(rendered).not.toContain('"duplicate"');
   });
 
   test("record_delivered pairs a text id with a nat block, not two of either", () => {

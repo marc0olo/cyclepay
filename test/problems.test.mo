@@ -139,3 +139,32 @@ suite("resolving", func() {
     assert ps[0].resolvedAtNs == ?200;
   });
 });
+
+suite("the kind's tag (#122)", func() {
+  test("⚠️ tagOf and kindToText cannot drift, because they agree on every kind", func() {
+    // Two switches over the same variant, and only one of them is reachable from the
+    // public interface now. Pinning them against each other is what makes adding a
+    // fifth `ProblemKind` a compile error in both rather than a silent false in one.
+    let kinds : [Types.ProblemKind] = [
+      #duplicate({ paymentRef = "pi_1" }),
+      #deliveryStuck({ stage = "staleIntent" }),
+      #refundAfterDelivery({ paymentRef = "pi_2"; cycles = 1; refundedCents = 2; fullRefund = true }),
+      #paidNotCredited({ paymentRef = "pi_3"; sessionId = "cs_1" }),
+    ];
+    // Non-empty, so a future edit that empties the list cannot make this vacuous.
+    assert kinds.size() == 4;
+    for (k in kinds.values()) {
+      assert Problems.tagToText(Problems.tagOf(k)) == Problems.kindToText(k);
+    };
+  });
+
+  test("every tag is produced by some kind", func() {
+    // The other direction: a tag no kind maps to would be an argument the operator can
+    // send and nothing can ever match.
+    let tags : [Types.ProblemKindTag] = [#duplicate, #deliveryStuck, #refundAfterDelivery, #paidNotCredited];
+    for (t in tags.values()) {
+      assert Problems.tagToText(t).size() > 0;
+    };
+    assert tags.size() == 4;
+  });
+});

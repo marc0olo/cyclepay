@@ -1104,12 +1104,16 @@ module {
   public func unresolvedOfKind(
     store : Store,
     id : Types.OrderId,
-    kindTag : Text,
+    tag : Types.ProblemKindTag,
   ) : [{ kind : Types.ProblemKind; detail : Text; ref : ?Text }] {
     let ?order = store.orders.get(id) else return [];
     let out = List.empty<{ kind : Types.ProblemKind; detail : Text; ref : ?Text }>();
     for (p in order.problems.values()) {
-      if (Problems.isUnresolved(p) and Problems.kindToText(p.kind) == kindTag) {
+      // ⚠️ Compared as TAGS, not as rendered text (#122). The old
+      // `kindToText(p.kind) == kindTag` could never be wrong about a kind it knew, but
+      // it also could not be wrong about one it did not — a fifth `ProblemKind` would
+      // have compared false here and reported "nothing to resolve".
+      if (Problems.isUnresolved(p) and Problems.tagOf(p.kind) == tag) {
         out.add({ kind = p.kind; detail = p.detail; ref = Problems.identifyingRef(p.kind) });
       };
     };

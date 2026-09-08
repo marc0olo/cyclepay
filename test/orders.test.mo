@@ -1125,7 +1125,7 @@ suite("#37 — resolving a problem is precise, and refuses when it cannot be", f
     let o = orderWith(store, "multi");
     assert Orders.fileProblem(store, o.id, #duplicate({ paymentRef = "pi_a" }), "2nd", 200);
     assert Orders.fileProblem(store, o.id, #duplicate({ paymentRef = "pi_b" }), "3rd", 210);
-    assert Orders.unresolvedOfKind(store, o.id, "duplicate").size() == 2;
+    assert Orders.unresolvedOfKind(store, o.id, #duplicate).size() == 2;
   });
 
   test("resolving by ref closes exactly one, leaving the other outstanding", func() {
@@ -1139,7 +1139,7 @@ suite("#37 — resolving a problem is precise, and refuses when it cannot be", f
       300,
     );
     assert closed == 1;
-    let left = Orders.unresolvedOfKind(store, o.id, "duplicate");
+    let left = Orders.unresolvedOfKind(store, o.id, #duplicate);
     assert left.size() == 1;
     assert left[0].ref == ?"pi_b";
     // The order is still on the worklist, because one problem is still open.
@@ -1153,7 +1153,7 @@ suite("#37 — resolving a problem is precise, and refuses when it cannot be", f
     let o = orderWith(store, "stuck-once");
     assert Orders.fileProblem(store, o.id, #deliveryStuck({ stage = "staleIntent" }), "a", 200);
     assert not Orders.fileProblem(store, o.id, #deliveryStuck({ stage = "transferRejected" }), "b", 210);
-    assert Orders.unresolvedOfKind(store, o.id, "deliveryStuck").size() == 1;
+    assert Orders.unresolvedOfKind(store, o.id, #deliveryStuck).size() == 1;
     assert Problems.identifyingRef(#deliveryStuck({ stage = "x" })) == null;
   });
 
