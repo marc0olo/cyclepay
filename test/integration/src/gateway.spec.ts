@@ -1986,6 +1986,62 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
   expect(JSON.stringify(againstMine[0]!.kind)).toContain('pi_cancel_race');
 });
 
+test('42b — a 400 that is NOT "already settled" leaves the order payable, and says so', async () => {
+  // ⚠️ **The buyer-facing arm of `#notOpen`, which had no scenario at all.** Keying the
+  // expire outcome on the STATUS rather than Stripe's prose is right — the prose the old
+  // matcher looked for is not what Stripe sends — but it buckets three causes into one
+  // 400: the session completed, the session had already expired, and OUR request was
+  // malformed. Only the third leaves the order payable, and the answer used to assert
+  // "already settled or has expired" for all three. A buyer then refreshed onto an order
+  // that was still there and clicked again.
+  await setCmcRate(gw);
+  await ensureRates(gw);
+
+  const live = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
+  const openBefore = (await gw.asAdmin.reserve_status()).openOrders;
+  const logBefore = (await allAuditEvents(gw)).length;
+
+  // A 400 whose body is a request-level complaint, not a session-state one.
+  const refused = expectErr(await cancelOrderWithExpire(gw, live.order.id, {
+    expireStatus: 400,
+    expireBody: JSON.stringify({
+      error: { type: 'invalid_request_error', message: 'Unrecognized request URL' },
+    }),
+  }));
+  // Says what is true of every cause, and claims no diagnosis: the order may be paid,
+  // may expire on its own, and the page is where the buyer finds out which.
+  expect(refused).not.toMatch(/already settled/i);
+  expect(refused).toMatch(/would not close the payment session/i);
+  expect(refused).toMatch(/refresh the page/i);
+
+  // Unchanged and still payable, which is the half the message used to contradict.
+  expect(await orderStatus(gw, live.order.id)).toBe('created');
+  expect((await gw.asAdmin.reserve_status()).openOrders).toBe(openBefore);
+
+  // ⚠️ **And no audit line, deliberately** — a buyer can retry this, so it is
+  // caller-bounded, and `AuditLog.mo`'s rule gives that a counter rather than a line.
+  // Pinned because restoring one here is the obvious "fix" for the finding this
+  // scenario came from, and it would be permanent stable growth at zero cost.
+  expect((await allAuditEvents(gw)).length).toBe(logBefore);
+
+  // The operator's lever instead: the admin path takes the SAME outcome and does audit
+  // Stripe's body, because its caller is authenticated. That is what makes one manual
+  // run the diagnostic (RUNBOOK §8).
+  const settle = await gw.deferredAdmin.expire_order(live.order.id);
+  const outcall = await awaitPendingOutcall(gw);
+  await answerOutcall(gw, outcall, 400, JSON.stringify({
+    error: { type: 'invalid_request_error', message: 'Unrecognized request URL' },
+  }));
+  expectErr(await settle());
+  const log = await allAuditEvents(gw);
+  const raced = log.find((e) => e.tag === 'order.expireRaced' && e.detail.includes(live.order.id));
+  expect(raced).toBeDefined();
+  expect(raced!.detail).toContain('Unrecognized request URL');
+
+  // Left as it was found: the order is still payable, so hand the slot back.
+  expectOk(await cancelOrderWithExpire(gw, live.order.id));
+});
+
 test('43 — a partial refund never settles a full obligation', async () => {
   // Stripe fires charge.refunded for ANY refund, so reading it as "settled"
   // means a $5 courtesy refund would auto-resolve a $500 obligation and the
@@ -2790,16 +2846,18 @@ test('66 — cancelling is ATOMIC with Stripe: never half-cancelled (#33)', asyn
   const still = (await gw.asUser.get_order(stubborn.order.id))[0]!;
   expect(still.stripeSessionUrl).toHaveLength(1);
 
-  // ── "Not open" is its own outcome, not a failure. Two causes — the session
-  // completed, or it expired already — and we must not guess between them from
-  // our clock. Change nothing; let the webhook resolve it.
+  // ── "Not open" is its own outcome, not a failure. Change nothing; let the webhook
+  // resolve it. The answer names no cause because this 400 has three — the session
+  // completed, it had already expired, or the request was malformed — and only the last
+  // leaves the order payable. Scenario 42b is that third case.
   const raced = expectErr(
     await cancelOrderWithExpire(gw, stubborn.order.id, {
       expireStatus: 400,
       expireBody: '{"error":{"message":"You cannot expire a Checkout Session in a status of complete."}}',
     }),
   );
-  expect(raced).toContain('already settled');
+  expect(raced).toContain('would not close the payment session');
+  expect(raced).not.toContain('try again');
   expect(await orderStatus(gw, stubborn.order.id)).toBe('created');
 
   // ── A successful expire cancels. Only now.

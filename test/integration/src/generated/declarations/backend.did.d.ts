@@ -538,6 +538,22 @@ export interface _SERVICE {
    * / so the open-order cap it reports is the caller's own.
    */
   'can_purchase' : ActorMethod<[bigint], Result_14>,
+  /**
+   * / Let a buyer give up on their own unpaid order (owner-scoped).
+   * /
+   * / ⚠️ **Load-bearing on the open-order cap**, whose refusal tells the buyer to pay or
+   * / abandon one — advice they cannot follow without this, since `abandon_order` is
+   * / admin-only and takes *paid* orders. Remove it and a buyer who opened the cap's worth
+   * / of checkouts is locked out until their sessions expire.
+   * /
+   * / ⚠️ **Nothing is stranded, and the reason is the ORDERING**: the session is expired
+   * / on Stripe *before* the order moves, so an in-flight payment either wins that race
+   * / (and the order is not cancelled at all) or it cannot start. `#cancelled → #paid` is
+   * / absent from the matrix, so a cancelled order is unpayable by construction.
+   * /
+   * / No problem filed: nothing is owed, and filing an obligation for an order where no
+   * / money moved is exactly the noise the worklist must not accumulate.
+   */
   'cancel_order' : ActorMethod<[OrderId], Result_11>,
   /**
    * / Public — the frontend renders the amount tiles from this. There is no link
@@ -646,20 +662,6 @@ export interface _SERVICE {
   >,
   'expected_livemode' : ActorMethod<[], [] | [boolean]>,
   /**
-   * / Let a buyer give up on their own unpaid order (owner-scoped).
-   * /
-   * / ⚠️ **Load-bearing on the open-order cap**, whose refusal tells the buyer to pay or
-   * / abandon one — advice they cannot follow without this, since `abandon_order` is
-   * / admin-only and takes *paid* orders. Remove it and a buyer who opened the cap's worth
-   * / of checkouts is locked out until their sessions expire.
-   * /
-   * / ⚠️ **Nothing is stranded, and the reason is the ORDERING**: the session is expired
-   * / on Stripe *before* the order moves, so an in-flight payment either wins that race
-   * / (and the order is not cancelled at all) or it cannot start. `#cancelled → #paid` is
-   * / absent from the matrix, so a cancelled order is unpayable by construction.
-   * /
-   * / No problem filed: nothing is owed, and filing an obligation for an order where no
-   * / money moved is exactly the noise the worklist must not accumulate.
    * / **Admin: expire one `#created` order, releasing its reserve capacity** (#52).
    * /
    * / ⚠️ **The lever for the class the sweep structurally CANNOT see**, so do not delete it

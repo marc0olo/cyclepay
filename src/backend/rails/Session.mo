@@ -390,10 +390,19 @@ module {
   /// string Stripe never sends. A matcher can only be tested against prose if the prose
   /// is real; a status code needs no such faith.
   ///
-  /// 4xx that is not 401/403 is Stripe understanding the request and refusing it, and
-  /// the expire endpoint has exactly two reasons to do that. The body travels in
-  /// `#notOpen` so an operator can see what Stripe actually said without this module
-  /// having to guess it in advance.
+  /// ⚠️ **400 and 404 specifically, not "4xx that is not 401/403".** Those two are the
+  /// expire endpoint understanding the request and declining it — no such session, or a
+  /// session that is no longer open — and every other 4xx must stay `#failed` so the
+  /// order remains payable. A 429 is the case that makes it matter: a rate limit says
+  /// nothing about the session, and bucketing it as `#notOpen` would tell a buyer their
+  /// live order was settled.
+  ///
+  /// ⚠️ **A 400 is not proof of the session's state either.** A malformed request from
+  /// this module would answer 400 as well, and this function cannot separate the two.
+  /// The body travels in `#notOpen` so a caller that is allowed to log it can record
+  /// what Stripe actually said, rather than this module guessing the wording in
+  /// advance — see `Main.expire_order`, and `cancel_order` for why the buyer-facing
+  /// arm claims no diagnosis.
   public func expireOutcome(status : Nat, body : Blob) : ExpireOutcome {
     if (status == 200) return #ok;
     if (status == 401 or status == 403) return #unauthorized;
