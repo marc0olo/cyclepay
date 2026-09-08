@@ -2956,6 +2956,59 @@ test('67 — checkout.session.expired is the only thing that expires an order (#
   expect(log.some((e) => e.tag === 'stripe.disputeCreated' && e.detail.includes('pi_disputed'))).toBe(true);
 });
 
+test('67b — the reserve hold exists BEFORE the session outcall, not after it', async () => {
+  // The order is committed and its cycles promised in a block with no `await` in it,
+  // and only THEN does the Stripe outcall happen. If the hold were registered after the
+  // outcall instead, two concurrent creates could promise the same cycles — and no
+  // fresher balance read fixes that: an awaited value is historical the moment the
+  // continuation resumes.
+  //
+  // ⚠️ **Asserted at the one instant that can tell the difference**: while the call is
+  // parked. Every other deferred-create scenario parks and then asserts things about the
+  // ANSWER, so this is the only place the intermediate state is observed at all.
+  //
+  // ⚠️ **What this is NOT, measured rather than claimed.** Removing the hold from commit
+  // fails this test — and 23 others — so this is not the sole guard against that. And
+  // the tidier-looking reorder (session first, then commit) is already unreachable: the
+  // order id IS the `client_reference_id`, so it must exist before the body is built,
+  // and four scenarios parse the id back out of that body. The residual risk this covers
+  // is narrower than "the ordering": it is the hold being registered SEPARATELY from the
+  // commit, after the await, which leaves every final-state assertion intact.
+  //
+  // Nothing about scarcity is needed, which is why this is a state assertion rather than
+  // a second create: the hold either exists at this moment or it does not.
+  await ensureRates(gw);
+  const before = await gw.asAnon.reserve_status();
+
+  const settle = await gw.deferredUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []);
+  const outcall = await awaitPendingOutcall(gw);
+
+  const parked = await gw.asAnon.reserve_status();
+  expect(parked.promisedTotal - before.promisedTotal).toBeGreaterThanOrEqual(TIER_LOCKED_CYCLES);
+  expect(parked.promiseHolders).toBeGreaterThan(before.promiseHolders);
+  // The complement, and the half that actually oversells: the capacity is gone from
+  // `availableToSell` while the outcall is still in flight, so a concurrent create is
+  // quoted against what is LEFT rather than against the pre-hold figure.
+  expect(parked.availableToSell).toBeLessThanOrEqual(before.availableToSell - TIER_LOCKED_CYCLES);
+
+  // And the order itself is committed, not merely planned — the id is already in the
+  // outcall body, which is only possible because it exists.
+  const orderId = decodeURIComponent(
+    /client_reference_id=([^&]+)/.exec(outcallBody(outcall))![1]!,
+  ).split('_').pop()!;
+  expect(await orderStatus(gw, orderId)).toBe('created');
+
+  await answerOutcall(gw, outcall, 200, sessionCreatedBody({
+    id: 'cs_hold_before_outcall',
+    expiresAtSeconds: Number(await nowSeconds(gw.pic)) + 2_100,
+  }));
+  expectOk(await settle());
+  // ⚠️ Through the helper, because this order now HAS a session: a bare `cancel_order`
+  // fires a Stripe expire outcall that nothing answers, which wedges every scenario
+  // after it. (Learned by wedging 17 of them.)
+  expectOk(await cancelOrderWithExpire(gw, orderId));
+});
+
 test('68 — a cancel racing session creation cannot leave a payable URL behind (#33)', async () => {
   // THE INTERLEAVING the continuation re-check exists for, and it had no test —
   // the same shape as #46's untested `attach_payment` guard, so it gets one now.
