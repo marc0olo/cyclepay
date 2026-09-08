@@ -19,13 +19,23 @@ import {
 import { currentIdentity, signIn, signOut } from "./auth";
 import { linkIdentityCommand, verifyIdentityCommand } from "./config";
 import {
+  DELIVERY_FIELDS,
+  GATE_FIELDS,
   ORDER_STATUS_HINTS,
   ORPHAN_KIND_HINTS,
+  PRICING_FIELDS,
   PROBLEM_KIND_HINTS,
   REFUSAL_HINTS,
+  type FieldDoc,
   type Hint,
   type RefusalTag,
 } from "./operator";
+import {
+  renderCall,
+  irreversibleNote,
+  type ArgumentFreeMethod,
+  type CommandMethod,
+} from "./candid";
 import {
   clearIcEnvCookies,
   distinctBackendIds,
@@ -358,6 +368,43 @@ function renderView(): void {
 /// and this panel could not tell "not granted" from "not reachable".
 let adminStatus: Awaited<ReturnType<typeof backend.admin_status>> | null = null;
 
+/// The gate and delivery configs, for the console's configuration surface.
+///
+/// ⚠️ Read on the admin route rather than at load: it is an operator's question, and
+/// the buy view already reads what it needs from `lifecycle_config` separately.
+let lifecycleConfig: Awaited<ReturnType<typeof backend.lifecycle_config>> | null = null;
+
+/// The scalar settings, each of which is one call rather than a record.
+let expectedLivemode: boolean | null = null;
+let stripeOrigin: string | null = null;
+let cardTiersConfig: Awaited<ReturnType<typeof backend.card_tiers>> = [];
+let secretStatus: { apiKey: boolean; webhook: boolean } | null = null;
+
+async function loadAdminConfig(): Promise<void> {
+  try {
+    const [lifecycle, pricing, livemode, origin, tiers, apiKey, webhook] = await Promise.all([
+      backend.lifecycle_config(),
+      backend.pricing_status(),
+      backend.expected_livemode(),
+      backend.stripe_origin(),
+      backend.card_tiers(),
+      backend.stripe_api_key_status(),
+      backend.webhook_secret_status(),
+    ]);
+    lifecycleConfig = lifecycle;
+    lastPricing = pricing;
+    expectedLivemode = livemode;
+    stripeOrigin = origin;
+    cardTiersConfig = tiers;
+    secretStatus = { apiKey: apiKey.isSet, webhook: webhook.isSet };
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("could not read the configuration", error);
+    lifecycleConfig = null;
+  }
+  if (currentView === "admin") renderAdminConfig();
+}
+
 async function loadAdminStatus(): Promise<void> {
   try {
     adminStatus = await backend.admin_status();
@@ -385,6 +432,314 @@ function renderAdminNav(): void {
   if (!link) return;
   const operator = adminStatus !== null && (adminStatus.granted || adminStatus.isController);
   link.hidden = !operator;
+}
+
+/// One configuration group: the values, what each means, and the command that changes
+/// them pre-filled with what is set NOW.
+///
+/// ⚠️ **Pre-filled from the current values, not from blanks.** #97's point is that the
+/// failure mode in these calls is transcription: the config setters take whole Candid
+/// records, and hand-authoring one while omitting a field silently changes a live
+/// parameter. Rendering the current record means an operator edits one number in a
+/// command that is otherwise already correct.
+function renderConfigGroup<T extends object>(
+  title: string,
+  note: string,
+  config: T,
+  docs: Record<keyof T, FieldDoc>,
+  method: CommandMethod,
+  command: string,
+): HTMLElement {
+  const section = document.createElement("section");
+  section.className = "config-group";
+  const h = document.createElement("h4");
+  h.className = "summary-h";
+  h.textContent = title;
+  section.append(h);
+  const intro = document.createElement("p");
+  intro.className = "muted";
+  intro.textContent = note;
+  section.append(intro);
+
+  const list = document.createElement("dl");
+  list.className = "config-fields";
+  // ⚠️ Iterating the DOCS, not the config: the docs are the exhaustive table, so a
+  // field the canister added and nobody explained is a typecheck failure rather than a
+  // row that renders with an empty description.
+  for (const key of Object.keys(docs) as Array<keyof T & string>) {
+    const doc = docs[key];
+    const dt = document.createElement("dt");
+    dt.textContent = doc.label;
+    const dd = document.createElement("dd");
+    dd.className = "config-value";
+    dd.dataset.field = key;
+    dd.textContent = formatConfigValue(key, config[key]);
+    const why = document.createElement("dd");
+    why.className = "muted config-doc";
+    why.textContent = `${doc.means} ${doc.effect}${doc.bound ? ` Bound: ${doc.bound}` : ""}`;
+    list.append(dt, dd, why);
+  }
+  section.append(list);
+
+  const cmd = document.createElement("div");
+  cmd.className = "cmd";
+  const code = document.createElement("code");
+  code.className = "mono";
+  code.id = `config-cmd-${title.toLowerCase().replace(/[^a-z]+/g, "-")}`;
+  code.textContent = command;
+  const copy = copyButton(command, `Copy the command that changes ${title.toLowerCase()}`);
+  cmd.append(code, copy);
+  section.append(cmd);
+  // ⚠️ **The irreversible note is the reason this is a command and not a button.** A
+  // button removes the wrong half of the interaction: the machine should do the exact
+  // arguments, and the human should read what cannot be undone before running it.
+  const danger = irreversibleNote(method);
+  if (danger !== undefined) {
+    const warn = document.createElement("p");
+    warn.className = "config-danger";
+    warn.textContent = danger;
+    section.append(warn);
+  }
+  return section;
+}
+
+/// The argument-free operator actions, each as one command.
+///
+/// ⚠️ **Rendered even though they take no arguments**, because the value is not only
+/// transcription: `withdraw_reserve` and `recount_orders` are levers an operator has no
+/// way to discover otherwise. The console previously listed none of them, so knowing
+/// they existed meant reading the source.
+const ARGUMENT_FREE_ACTIONS: ReadonlyArray<{ method: ArgumentFreeMethod; what: string }> = [
+  {
+    method: "refresh_reserve",
+    what:
+      "Observe the reserve balance now. REQUIRED after a top-up: the floor only learns"
+      + " about incoming cycles by looking, so without this the gateway refuses every"
+      + " sale against a fully funded reserve and nothing says why.",
+  },
+  {
+    method: "refresh_rates",
+    what: "Force a rate refresh now instead of waiting for the timer.",
+  },
+  {
+    method: "recount_orders",
+    what:
+      "Run the tally reconcile now. Not a stronger repair than the timer's: a recount"
+      + " BELOW the maintained tally is refused rather than adopted, because an"
+      + " incomplete index and a lost adjustment are indistinguishable from here.",
+  },
+  {
+    method: "withdraw_reserve",
+    what:
+      "Return the reserve to the caller. Refused while any order still holds a promise,"
+      + " so nothing owed to a buyer can leave.",
+  },
+];
+
+function renderAdminActions(): void {
+  const host = document.getElementById("action-list");
+  if (!host) return;
+  host.replaceChildren();
+  for (const action of ARGUMENT_FREE_ACTIONS) {
+    const wrap = document.createElement("section");
+    wrap.className = "config-group";
+    const h = document.createElement("h4");
+    h.className = "summary-h";
+    h.textContent = action.method;
+    const what = document.createElement("p");
+    what.className = "muted";
+    what.textContent = action.what;
+    wrap.append(h, what);
+
+    const command = renderCall(action.method);
+    const cmd = document.createElement("div");
+    cmd.className = "cmd";
+    const code = document.createElement("code");
+    code.className = "mono";
+    code.textContent = command;
+    cmd.append(code, copyButton(command, `Copy the ${action.method} command`));
+    wrap.append(cmd);
+
+    const danger = irreversibleNote(action.method);
+    if (danger !== undefined) {
+      const warn = document.createElement("p");
+      warn.className = "config-danger";
+      warn.textContent = danger;
+      wrap.append(warn);
+    }
+    host.append(wrap);
+  }
+}
+
+/// The settings that are one call rather than a record, plus the two secrets that are
+/// deliberately NOT offered as a command.
+function renderScalarConfig(host: HTMLElement): void {
+  const section = document.createElement("section");
+  section.className = "config-group";
+  const h = document.createElement("h4");
+  h.className = "summary-h";
+  h.textContent = "Rail and identity";
+  section.append(h);
+
+  const rows: Array<{ doc: FieldDoc; value: string; command?: string }> = [
+    {
+      doc: {
+        label: "Stripe mode",
+        means:
+          expectedLivemode === null
+            ? "Unset, which means EITHER mode is accepted. This is the default, and it only makes sense while nothing of value is at stake."
+            : expectedLivemode
+              ? "Live. Only live-mode payments deliver."
+              : "Test. Only test-mode payments deliver.",
+        effect:
+          "Checked twice: at session creation against what Stripe returns, and again on"
+          + " the webhook. A live payment arriving at a test-configured gateway becomes an"
+          + " obligation rather than a delivery.",
+        bound:
+          "Anything but test is refused while a simulation divisor is set, so neither"
+          + " order of operations reaches a state that takes real money at a scaled"
+          + " cycle quantity.",
+      },
+      value:
+        expectedLivemode === null ? "unset (either mode)" : expectedLivemode ? "live" : "test",
+      command: renderCall("set_expected_livemode", expectedLivemode),
+    },
+    {
+      doc: {
+        label: "Stripe return origin",
+        means: "Where Stripe sends the buyer back after paying.",
+        effect:
+          "A wrong origin still takes the payment and returns the buyer to a page that"
+          + " is not this one. The webhook still delivers.",
+        bound: "https, no query and no fragment. A caller-supplied one is deliberately impossible.",
+      },
+      value: stripeOrigin ?? "not set: the card rail is closed",
+      command: renderCall("set_stripe_origin", stripeOrigin ?? "https://example.invalid"),
+    },
+    {
+      doc: {
+        label: "Card presets",
+        means: `${cardTiersConfig.length} preset amount(s) offered as tiles.`,
+        effect:
+          "An empty list shows no tiles and does NOT close the rail: the switch is the two"
+          + " Stripe secrets. A custom amount is bounded by the gate, not by this list.",
+        bound: "Every preset must sit within the purchase floor and ceiling.",
+      },
+      value:
+        cardTiersConfig.length === 0
+          ? "none"
+          : cardTiersConfig.map((t) => `${t.id} = ${formatUsdCents(t.usdCents)}`).join(", "),
+      command: renderCall("set_card_tiers", cardTiersConfig),
+    },
+    {
+      doc: {
+        label: "Stripe secrets",
+        means: `API key ${secretStatus?.apiKey ? "set" : "NOT set"}, webhook secret ${secretStatus?.webhook ? "set" : "NOT set"}. The rail is live only while both are.`,
+        effect:
+          "Rotating the webhook secret closes the rail until the new one is set, which is"
+          + " the lever for stopping new orders during an incident.",
+        bound:
+          "No command is offered for either, and that is permanent: a rendered command"
+          + " containing a key would land in this page's DOM and clipboard. Set them from a"
+          + " terminal. Whoever can set the webhook secret can sign a payment event and take"
+          + " delivery having paid nothing.",
+      },
+      value: secretStatus === null
+        ? "unknown"
+        : `${secretStatus.apiKey ? "key set" : "key missing"}, ${secretStatus.webhook ? "webhook set" : "webhook missing"}`,
+    },
+  ];
+
+  const list = document.createElement("dl");
+  list.className = "config-fields";
+  for (const row of rows) {
+    const dt = document.createElement("dt");
+    dt.textContent = row.doc.label;
+    const dd = document.createElement("dd");
+    dd.className = "config-value";
+    dd.textContent = row.value;
+    const why = document.createElement("dd");
+    why.className = "muted config-doc";
+    why.textContent =
+      `${row.doc.means} ${row.doc.effect}${row.doc.bound ? ` Bound: ${row.doc.bound}` : ""}`;
+    list.append(dt, dd, why);
+    if (row.command !== undefined) {
+      const cmdWrap = document.createElement("dd");
+      const cmd = document.createElement("div");
+      cmd.className = "cmd";
+      const code = document.createElement("code");
+      code.className = "mono";
+      code.textContent = row.command;
+      cmd.append(code, copyButton(row.command, `Copy the command that changes ${row.doc.label.toLowerCase()}`));
+      cmdWrap.append(cmd);
+      list.append(cmdWrap);
+    }
+  }
+  section.append(list);
+  host.append(section);
+}
+
+/// Values in an operator's units rather than the canister's.
+///
+/// ⚠️ Nanoseconds and basis points are the two that mislead when printed raw: a
+/// 7,200,000,000,000 is not a number anyone reads as two hours, and 290 is not a
+/// number anyone reads as 2.9%.
+function formatConfigValue(key: string, value: unknown): string {
+  if (typeof value !== "bigint") return String(value);
+  // ⚠️ `formatDuration` takes MILLISECONDS. Handing it nanoseconds prints a duration
+  // a million times too long, which is exactly the kind of unit slip a raw value would
+  // at least have made obvious.
+  if (key.endsWith("Ns")) return `${formatDuration(Number(value / 1_000_000n))} (${value} ns)`;
+  if (key.endsWith("Bps")) return `${Number(value) / 100}% (${value} bps)`;
+  if (key.endsWith("UsdCents")) return `${formatUsdCents(value)} (${value} cents)`;
+  if (key === "minCanisterCycles") return `${formatCycles(value)} cycles`;
+  if (key === "divisor") {
+    return value === 1n ? "1 (production)" : `${value} (simulation: 1/${value} delivered)`;
+  }
+  return value.toString();
+}
+
+/// The configuration surface, and the answer to "what can I change here".
+function renderAdminConfig(): void {
+  const host = document.getElementById("config-groups");
+  if (!host) return;
+  host.replaceChildren();
+  const pricing = lastPricing?.config;
+  if (pricing === undefined || lifecycleConfig === null) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    // Says which read failed rather than rendering an empty table, which would read
+    // as "nothing is configured".
+    p.textContent = "Could not read the configuration. The canister may be unreachable.";
+    host.append(p);
+    return;
+  }
+  host.append(renderConfigGroup(
+    "Pricing and simulation",
+    "How dollars become cycles, and whether this gateway is scaled.",
+    pricing,
+    PRICING_FIELDS,
+    "set_pricing_config",
+    renderCall("set_pricing_config", pricing),
+  ));
+  host.append(renderConfigGroup(
+    "Admission gate",
+    "What the gateway will and will not sell.",
+    lifecycleConfig.gate,
+    GATE_FIELDS,
+    "set_gate_config",
+    renderCall("set_gate_config", lifecycleConfig.gate),
+  ));
+  host.append(renderConfigGroup(
+    "Delivery timeline",
+    "When a slow delivery is reported, and when it escalates to a person.",
+    lifecycleConfig.delivery,
+    DELIVERY_FIELDS,
+    "set_delivery_config",
+    renderCall("set_delivery_config", lifecycleConfig.delivery),
+  ));
+  renderScalarConfig(host);
+  renderAdminActions();
 }
 
 function renderAdminIdentity(): void {
@@ -788,6 +1143,7 @@ function applyRoute(route: Route): void {
     });
     void loadOperatorSummary();
     void loadRefusals();
+    void loadAdminConfig();
   }
   if (route.view === "order" && activeOrder?.id !== route.orderId) {
     // Deep link or Back into an order we are not currently holding.

@@ -195,3 +195,116 @@ export const REFUSAL_HINTS: Record<RefusalTag, Hint> = {
     urgency: "wait",
   },
 };
+
+// ── Configuration: what an operator can change, and what each value means ──────
+//
+// ⚠️ **The console showed NONE of this before.** Its sections were identity, "right
+// now", worklists, refusals and order history — all STATE. Nine setters existed and
+// the console displayed the current value of not one of them, nor said what any of
+// them did. An operator could not answer "what mode is this gateway in" or "what is
+// the divisor" from the page; the only route was reading the source.
+//
+// ⚠️ **Keyed on the config records' own field names, so a new field is a COMPILE
+// ERROR here.** Same construction as the hint tables above, and for the same reason:
+// a field that ships without an explanation is a value an operator is invited to
+// change while guessing what it does.
+
+/// What one configuration field is, and what moving it does.
+export type FieldDoc = {
+  /// The label, in an operator's words rather than the field's name.
+  readonly label: string;
+  /// What the value controls.
+  readonly means: string;
+  /// ⚠️ What happens when you change it — the half a bare value cannot give you.
+  /// Every one of these is a live parameter on a money path.
+  readonly effect: string;
+  /// The bound the canister enforces, or undefined when it enforces none. Stated so
+  /// an operator learns it here rather than from a refusal.
+  readonly bound?: string;
+};
+
+/// The pricing config, from `pricing_status().config`.
+export type PricingConfig = Awaited<ReturnType<Backend["pricing_status"]>>["config"];
+
+/// The gate and delivery configs, from `lifecycle_config()`.
+type Lifecycle = Awaited<ReturnType<Backend["lifecycle_config"]>>;
+export type GateConfig = Lifecycle["gate"];
+export type DeliveryConfig = Lifecycle["delivery"];
+
+export const PRICING_FIELDS: Record<keyof PricingConfig, FieldDoc> = {
+  feeBps: {
+    label: "Processing fee, basis points",
+    means: "The percentage part of what a card charge costs, recovered at cost.",
+    effect: "Changes what every future quote nets. Orders already created keep their locked quantity.",
+    bound: "Under 10,000. A fee at or above 100% can never net out.",
+  },
+  feeFixedCents: {
+    label: "Processing fee, fixed part",
+    means: "The flat cents added to the percentage, matching the card processor's own fixed fee.",
+    effect: "Same as the percentage: future quotes only.",
+  },
+  maxAgeNs: {
+    label: "Rate staleness window",
+    means: "How long a cached exchange rate may price orders before the gateway refuses to quote.",
+    effect: "A security control, not a tuning knob: the refresh runs on a timer, and a stale cache refusing to price is what makes a dead timer safe. Widening it lets orders be priced off a frozen rate.",
+    bound: "At most one hour, and above zero. A zero window would refresh on every order.",
+  },
+  maxRateDeltaBps: {
+    label: "Accepted rate move",
+    means: "The largest relative jump accepted against the last good price, in basis points.",
+    effect: "A refreshed rate outside this is rejected and the previous one keeps serving until it goes stale. Too tight and every refresh is rejected; too loose and a source glitch prices real orders.",
+    bound: "Above zero. Zero would reject every refresh after the first.",
+  },
+  minRateSources: {
+    label: "Minimum rate sources",
+    means: "How many exchanges must have answered for a price to be usable.",
+    effect: "This is the only guard that sees the degenerate one-exchange case, because a single rate cannot disagree with itself. Raising it buys confidence and costs availability, since falling short means refusing to quote.",
+    bound: "Above zero.",
+  },
+  divisor: {
+    label: "Simulation divisor",
+    means: "1 is production. Anything greater delivers 1/n of the cycles a purchase buys, and IS the simulation-mode signal: there is no second flag.",
+    effect: "Scales the quote, the locked quantity, the promise and the transfer together. The buyer still pays the full charge, and the cycles-ledger deposit fee does not scale.",
+    bound: "Accepted only while the Stripe mode is exactly test, and it cannot CHANGE while any order is stored, so a reinstall is the only way back to 1. Also refused if it would scale the smallest purchase below ten times the ledger's deposit fee.",
+  },
+};
+
+export const GATE_FIELDS: Record<keyof GateConfig, FieldDoc> = {
+  minPurchaseUsdCents: {
+    label: "Minimum purchase",
+    means: "The smallest amount the gateway will sell.",
+    effect: "Refuses smaller amounts before any money moves. It also bounds the simulation divisor, because the divisor guard asks whether the SMALLEST purchase still clears the ledger fee: lowering the floor lowers the usable divisor with it.",
+    bound: "Must sit below the ceiling, and no registered tier may fall below it.",
+  },
+  maxPurchaseUsdCents: {
+    label: "Maximum purchase",
+    means: "The per-purchase ceiling.",
+    effect: "The blast radius of a single forged payment. Lowering it below an existing tier leaves that tier sellable but unpayable: the buyer completes checkout and the webhook files a refundable obligation, and since there is no attach lever the only remedy is a refund.",
+    bound: "Above zero, above the floor, and at or above every registered tier.",
+  },
+  maxOpenOrdersPerPrincipal: {
+    label: "Open orders per buyer",
+    means: "How many unpaid orders one principal may hold at once.",
+    effect: "Each open order holds reserve capacity until it is paid, cancelled or expires. Raising it lets one buyer hold more of the reserve; at 1 a buyer must settle before starting another.",
+    bound: "Above zero.",
+  },
+  minCanisterCycles: {
+    label: "Own-gas floor",
+    means: "The canister's own cycle balance below which it stops accepting new orders. It does not gate delivery: an order already paid for is still delivered, and cancellation and the Stripe webhook keep working below the floor.",
+    effect: "A global lever: raising it above the current balance refuses EVERY buyer until it is lowered or the canister is topped up, and nothing reverts it. This is the gas the canister spends to run, not the reserve it sells. Its job is to close the rail before a gas drain empties it (a revoked Stripe key retrying its outcall, or orders flooded from rotating principals), so lowering it widens that window.",
+    bound: "Any value. Zero disables the check, and order floods from rotating principals are then bounded only by the canister freezing, which stops delivery as well as sales.",
+  },
+};
+
+export const DELIVERY_FIELDS: Record<keyof DeliveryConfig, FieldDoc> = {
+  alertAfterNs: {
+    label: "Delivery alert threshold",
+    means: "How long a delivery may be outstanding before it appears on the delayed worklist.",
+    effect: "Only changes when you are TOLD about a slow delivery. It does not change any deadline the buyer has, and the list clears itself when the delivery lands.",
+  },
+  maxHoldNs: {
+    label: "Delivery hold limit",
+    means: "How long an undelivered order is held before it escalates for review.",
+    effect: "Escalation is what asks a person to establish the delivery's fate on the ledger. Shortening it escalates healthy-but-slow deliveries; lengthening it delays the only signal that a buyer paid and got nothing.",
+  },
+};

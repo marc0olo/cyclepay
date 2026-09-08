@@ -260,6 +260,10 @@ run "every config setter has a reader" scripts/check-config-readers.py
 # complete and say nothing about whether the code honours it, and a method filed
 # controller-only whose body calls the delegable guard would pass such a table.
 run "admin tiers are enforced, not just listed" scripts/check-admin-tiers.py
+# Every mutating admin method is offered as a command or excluded on purpose (#97).
+# TypeScript makes a missing RENDERER a compile error and can say nothing about a method
+# that never entered the union, which is what this covers.
+run "every write is offered as a command, or excluded on purpose" scripts/check-admin-commands.py
 
 # ⚠️ **The decision record is enforced, not trusted.** Its predecessor was a 697-line
 # spec that rotted by being updated less often than the code — 67 mentions of deleted

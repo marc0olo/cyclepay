@@ -437,6 +437,38 @@
              property, so it is asserted in the Chromium suite. Note this comment itself
              tripped the pictograph check: it reads all of index.html, comments included,
              unlike the CSS check which strips them. -->
+        <!-- Configuration. NOTE: the console had no config surface at all before this:
+             nine setters existed and it showed the current value of none of them, nor
+             what any of them did. Reading the source was the only route to "what mode
+             is this gateway in".
+
+             Each row is value + meaning + what changing it does + the bound the
+             canister enforces, and every field is documented in a table keyed on the
+             config record's own field names, so a new field cannot ship unexplained.
+             The command to change it is rendered beneath, pre-filled with the CURRENT
+             values, because the failure mode in these calls is transcription. -->
+        <section id="admin-config">
+          <h3 class="section-h">Configuration</h3>
+          <p class="muted">
+            What this gateway is set to, what each value does, and the command that
+            changes it. Edit the value in the command before running it.
+          </p>
+          <div id="config-groups"></div>
+        </section>
+
+        <!-- The operator ACTIONS that take no row: each is one command, rendered
+             whole, with what it cannot undo beside it. The row-scoped ones
+             (abandon, record_delivered, resolve_problem, resolve_orphan) attach to
+             their worklist rows instead, where the arguments come from. -->
+        <section id="admin-actions">
+          <h3 class="section-h">Actions</h3>
+          <p class="muted">
+            Commands that take no argument from a row. Read what each one cannot undo
+            before running it.
+          </p>
+          <div id="action-list"></div>
+        </section>
+
         <section id="admin-summary">
           <h3 class="section-h">Right now</h3>
           <p id="summary-headline"></p>
