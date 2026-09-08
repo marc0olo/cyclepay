@@ -618,7 +618,7 @@ export interface _SERVICE {
    * / what will wave through the field that *does* add something. Do not add a
    * / most-recent-order field, a largest-purchase field, or anything per-principal.
    * /
-   * / ⚠️ **`refusingNow` is REUSED, not re-derived.** It is the same `railStateLatch`
+   * / ⚠️ **`refusingNow` is REUSED, not re-derived.** It is the same `gateState.latch`
    * / `refusal_counts` reports, so "is the rail accepting orders" has one definition and
    * / cannot come out differently on two surfaces.
    * /
@@ -1216,9 +1216,6 @@ export interface _SERVICE {
   'set_stripe_origin' : ActorMethod<[string], Result_2>,
   'set_webhook_secret' : ActorMethod<[string], Result_1>,
   'stripe_api_key_status' : ActorMethod<[], Status>,
-  /**
-   * / The CASES tier: a controller, or a principal a controller has granted.
-   */
   'stripe_origin' : ActorMethod<[], [] | [string]>,
   /**
    * / The outcall transform (#33). Referenced by name in the request, so it has to

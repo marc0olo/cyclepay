@@ -1,5 +1,22 @@
 // Version: 1.0.0
 type Account__101895817 = {owner : Principal; subaccount : ?Blob};
+type Config__571484609 =
+  {
+    divisor : Nat;
+    feeBps : Nat;
+    feeFixedCents : Nat;
+    maxAgeNs : Int;
+    maxRateDeltaBps : Nat;
+    minRateSources : Nat
+  };
+type Config__862746442 = {alertAfterNs : Int; maxHoldNs : Int};
+type Config__877538123 =
+  {
+    maxOpenOrdersPerPrincipal : Nat;
+    maxPurchaseUsdCents : Nat;
+    minCanisterCycles : Nat;
+    minPurchaseUsdCents : Nat
+  };
 type Data__265875254<K, V> = {var count : Nat__58649523; kvs : [var ?(K, V)]};
 type Data__859131645<T> = {var count : Nat__58649523; elements : [var ?T]};
 type Destination__693442483 = {#cyclesLedgerAccount : Account__101895817};
@@ -128,6 +145,14 @@ type Queue__594378947<T> =
     var front : ?Node__671611173<T>;
     var size : Nat__58649523
   };
+type RailStateLatch__373298532 =
+  {
+    canisterCyclesLow : Bool;
+    railClosed : Bool;
+    reserveShort : Bool;
+    stripeApiFailing : Bool;
+    unboundedGiveaway : Bool
+  };
 type Rail__555097943 = {#card};
 type Rates__1063802498 =
   {
@@ -135,6 +160,18 @@ type Rates__1063802498 =
     quality : Quality__631647963;
     usdPerIcpMicros : Nat;
     xdrPermyriadPerIcp : Nat
+  };
+type RefusalCounts__727691946 =
+  {
+    amountAboveMax : Nat;
+    amountBelowMin : Nat;
+    buyerNotAllowed : Nat;
+    canisterCyclesLow : Nat;
+    railClosed : Nat;
+    reserveShort : Nat;
+    stripeApiFailed : Nat;
+    tooManyOpenOrders : Nat;
+    unboundedGiveaway : Nat
   };
 type Set__195681557<T> = Set__29061695<T>;
 type Set__29061695<T> =
@@ -159,27 +196,23 @@ actor {
       var root : Node__1045371124<OrderId__370787278>;
       var size : Nat__58649523
     };
-  stable var cardTiers : [Tier__1004729360];
   stable countReconcileIntervalNs : Nat;
-  stable var cyclesLedgerFee : Nat;
   stable dedup :
     {
       stripeEvents : Map__386906547<Text, Int>;
       stripeIntents : Map__386906547<Text, Int>
     };
-  stable var deliveryConfig : {alertAfterNs : Int; maxHoldNs : Int};
   stable deliveryJournal :
     {
       var root : Node__430031793<OrderId__370787278, JournalEntry__248943069>;
       var size : Nat__58649523
     };
-  stable var expectLivemode : ?Bool;
-  stable var gateConfig :
+  stable deliveryState : {var config : Config__862746442};
+  stable gateState :
     {
-      maxOpenOrdersPerPrincipal : Nat;
-      maxPurchaseUsdCents : Nat;
-      minCanisterCycles : Nat;
-      minPurchaseUsdCents : Nat
+      var config : Config__877538123;
+      var latch : RailStateLatch__373298532;
+      var refusals : RefusalCounts__727691946
     };
   stable var indexScanCursor : ?OrderId__370787278;
   stable var indexScanCycle :
@@ -199,7 +232,6 @@ actor {
        repairs : Nat;
        startedAtNs : Int
      };
-  stable var lastRateAttempt : ?{atNs : Int; detail : Text; ok : Bool};
   stable var lastRecoverySweep : ?{atNs : Int; pending : Nat};
   stable var lastReserveReconcileAttemptNs : Int;
   stable orderStore :
@@ -220,49 +252,30 @@ actor {
     };
   stable orphanStore :
     {entries : Map__386906547<Nat, Entry__161555541>; var nextId : Nat};
-  stable var outflowsIssued : Nat;
   stable paidIntents :
     {
       var root : Node__430031793<Text, OrderId__370787278>;
       var size : Nat__58649523
     };
-  stable var pricingConfig :
+  stable pricingState :
     {
-      divisor : Nat;
-      feeBps : Nat;
-      feeFixedCents : Nat;
-      maxAgeNs : Int;
-      maxRateDeltaBps : Nat;
-      minRateSources : Nat
-    };
-  stable var railStateLatch :
-    {
-      canisterCyclesLow : Bool;
-      railClosed : Bool;
-      reserveShort : Bool;
-      stripeApiFailing : Bool;
-      unboundedGiveaway : Bool
+      var config : Config__571484609;
+      var lastAttempt : ?{atNs : Int; detail : Text; ok : Bool}
     };
   stable rateCache : {var rates : ?Rates__1063802498};
   stable var recoverySweepIntervalNs : Nat;
-  stable var refusalCounts :
-    {
-      amountAboveMax : Nat;
-      amountBelowMin : Nat;
-      buyerNotAllowed : Nat;
-      canisterCyclesLow : Nat;
-      railClosed : Nat;
-      reserveShort : Nat;
-      stripeApiFailed : Nat;
-      tooManyOpenOrders : Nat;
-      unboundedGiveaway : Nat
-    };
-  stable var reserveFloor : Nat;
-  stable var reserveObservedAtNs : ?Int;
   stable reserveReconcileIntervalNs : Nat;
+  stable reserveState :
+    {
+      var cyclesLedgerFee : Nat;
+      var floor : Nat;
+      var observedAtNs : ?Int;
+      var outflowsIssued : Nat
+    };
   stable stripeApiKey :
     {var generation : Nat; var secret : ?Blob; var setAtNs : ?Int};
-  stable var stripeOrigin : ?Text;
+  stable stripeState : {var expectLivemode : ?Bool; var origin : ?Text};
+  stable tierState : {var cards : [Tier__1004729360]};
   stable webhookSecret :
     {var generation : Nat; var secret : ?Blob; var setAtNs : ?Int}
 };

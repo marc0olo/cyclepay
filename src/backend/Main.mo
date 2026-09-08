@@ -67,19 +67,44 @@ persistent actor CyclesGateway {
   /// changing addresses.
   let stripeApiKey : Secret.Store = Secret.emptyStore();
 
-  /// The asset origin Stripe returns the buyer to, e.g.
-  /// `https://<canister>.icp0.io`. Null until an admin sets it, and
-  /// `create_order` fails closed rather than creating a sessionless order.
-  ///
-  /// ⚠️ **Admin config, never a `create_order` parameter.** A caller-supplied
-  /// `success_url` is an open redirect that Stripe renders *after a real
-  /// payment* — a phishing primitive wearing a genuine receipt page.
-  ///
-  /// ⚠️ Changing it later invalidates nothing already paid, but Internet Identity
-  /// derives a principal **per origin**, so an origin change is a user-visible
-  /// migration rather than a config tweak: existing buyers get new principals and
-  /// cannot see their old orders. Choose it once (#40/#23).
-  var stripeOrigin : ?Text = null;
+  /// Stripe's two operator-set values: where buyers are returned, and which mode
+  /// this deployment serves.
+  /// ⚠️ **A record rather than loose `var` fields, because `include` passes by value**
+  /// (#120): a mixin handed a bare `var` gets a snapshot from install time, so its
+  /// writes land on a copy and its reads never move. A record is a heap object, so the
+  /// mixin and the actor share one. Grouped by subsystem, which is the slice a mixin
+  /// asks for (`reviewing-motoko` A6) rather than an accessor per field.
+  let stripeState : {
+    /// The asset origin Stripe returns the buyer to, e.g.
+    /// `https://<canister>.icp0.io`. Null until an admin sets it, and
+    /// `create_order` fails closed rather than creating a sessionless order.
+    ///
+    /// ⚠️ **Admin config, never a `create_order` parameter.** A caller-supplied
+    /// `success_url` is an open redirect that Stripe renders *after a real
+    /// payment* — a phishing primitive wearing a genuine receipt page.
+    ///
+    /// ⚠️ Changing it later invalidates nothing already paid, but Internet Identity
+    /// derives a principal **per origin**, so an origin change is a user-visible
+    /// migration rather than a config tweak: existing buyers get new principals and
+    /// cannot see their old orders. Choose it once (#40/#23).
+    var origin : ?Text;
+    /// Which Stripe world this gateway belongs to, or null for "not declared".
+    ///
+    /// A test-mode webhook secret provisioned against a canister holding a funded
+    /// reserve would deliver real cycles for payments that never happened — the secret
+    /// is the only thing separating the two, and provisioning the wrong one is an
+    /// ordinary operator slip. Declaring the expectation lets the canister
+    /// refuse the mismatch instead of trusting that nobody pasted the wrong value.
+    ///
+    /// Null rather than `?true` by default so a fresh local install works against
+    /// a Stripe sandbox without configuration. The go-live checklist sets it, and
+    /// until it is set every honoured payment records `stripe.livemodeUnset` — a
+    /// nudge that stops as soon as the expectation is declared.
+    var expectLivemode : ?Bool;
+  } = {
+    var origin = null;
+    var expectLivemode = null;
+  };
 
   /// Principals granted the CASES tier (#68). Controllers are not listed here and do not
   /// need to be — `Auth.checkAdmin` passes them anyway.
@@ -106,7 +131,7 @@ persistent actor CyclesGateway {
   /// to sell. So an empty list means unrestricted while the reserve floor is zero
   /// (where nothing can be sold anyway) and refusing-everyone once it is not.
   ///
-  /// ⚠️ At go-live (`expectLivemode == ?true`) it has no effect whatsoever. A list
+  /// ⚠️ At go-live (`stripe.expectLivemode == ?true`) it has no effect whatsoever. A list
   /// that keeps filtering after go-live is an outage nobody would look for.
   let allowedBuyers = Set.empty<Principal>();
 
@@ -252,7 +277,7 @@ persistent actor CyclesGateway {
       "buyer.disallowed",
       p.toText()
       # (
-        if (emptied and expectLivemode != ?true and reserveFloor > 0) {
+        if (emptied and stripeState.expectLivemode != ?true and reserveState.floor > 0) {
           " — ⚠️ the list is now EMPTY against a funded reserve, so the gateway refuses every buyer (unboundedGiveaway)";
         } else if (emptied) { " — the list is now empty" } else { "" }
       ),
@@ -273,18 +298,49 @@ persistent actor CyclesGateway {
   /// §4.2 order store: `orders` + `principalsToOrders` history.
   let orderStore : Orders.Store = Orders.emptyStore();
 
-  /// §3 fixed card tiers. Operator config (§7): controllers create the
-  /// amounts the UI offers as tiles. Presentational since #33: a buyer can order
-  /// any amount between the gate's floor and ceiling, so an empty list means "no
-  /// tiles", not "rail off". Empty
-  /// until first `set_card_tiers` — no made-up default prices.
-  var cardTiers : [Tiers.Tier] = [];
+  /// The price tiles, as one record.
+  /// ⚠️ **A record rather than loose `var` fields, because `include` passes by value**
+  /// (#120): a mixin handed a bare `var` gets a snapshot from install time, so its
+  /// writes land on a copy and its reads never move. A record is a heap object, so the
+  /// mixin and the actor share one. Grouped by subsystem, which is the slice a mixin
+  /// asks for (`reviewing-motoko` A6) rather than an accessor per field.
+  let tierState : {
+    /// §3 fixed card tiers. Operator config (§7): controllers create the
+    /// amounts the UI offers as tiles. Presentational since #33: a buyer can order
+    /// any amount between the gate's floor and ceiling, so an empty list means "no
+    /// tiles", not "rail off". Empty
+    /// until first `set_card_tiers` — no made-up default prices.
+    var cards : [Tiers.Tier];
+  } = {
+    var cards = [];
+  };
 
-  /// Pre-creation admission policy (Gate.mo) — open-order cap, own-cycles
-  /// floor, per-purchase ceiling. These default to real
-  /// values: they are safety limits, and a zero default would brick the
-  /// canister rather than protect it.
-  var gateConfig : Gate.Config = Gate.defaultConfig();
+  /// The admission gate's mutable state, as ONE record (#120).
+  ///
+  /// ⚠️ **A record rather than three `var` fields, because `include` passes by value** —
+  /// a mixin handed a bare `var` gets a snapshot from install time, so its writes land
+  /// on a copy and its reads never move. A record is a heap object, so the mixin and the
+  /// actor share it. Grouped by subsystem rather than one wrapper per field: that is the
+  /// slice a mixin asks for (`reviewing-motoko` A6), and it keeps the include sites from
+  /// carrying an accessor per field.
+  let gateState : {
+    /// Pre-creation admission policy (Gate.mo) — open-order cap, own-cycles
+    /// floor, per-purchase ceiling. These default to real
+    /// values: they are safety limits, and a zero default would brick the
+    /// canister rather than protect it.
+    var config : Gate.Config;
+    /// Refusal tallies and the rail-state latch (#61).
+    ///
+    /// ⚠️ **Stable, because they replace an audit line.** These carry the content
+    /// of the per-attempt `order.notAdmitted` line that #61 removed, and losing
+    /// them on upgrade would lose the volume signal the monitoring rows read.
+    var refusals : Gate.RefusalCounts;
+    var latch : Gate.RailStateLatch;
+  } = {
+    var config = Gate.defaultConfig();
+    var refusals = Gate.noRefusals();
+    var latch = Gate.admitting();
+  };
 
   /// `payment_intent` → the order it paid for. Financial record, never pruned;
   /// the only way `charge.refunded` can tell whether the refunded payment had
@@ -298,25 +354,27 @@ persistent actor CyclesGateway {
   /// staleness window, which the one-shot refresh below covers.
   let rateCache : Pricing.Cache = Pricing.emptyCache();
 
-  /// §3 fee formula + staleness window + the delta guard. Admin-adjustable
-  /// without a redeploy. There is deliberately no rate-source setting: the XRC
-  /// and CMC ids are pinned in their modules, because a settable rate source is
-  /// a money lever that does not look like one.
-  var pricingConfig : Pricing.Config = Pricing.defaultConfig();
+  /// Pricing policy and the last refresh attempt, as one record.
+  /// ⚠️ **A record rather than loose `var` fields, because `include` passes by value**
+  /// (#120): a mixin handed a bare `var` gets a snapshot from install time, so its
+  /// writes land on a copy and its reads never move. A record is a heap object, so the
+  /// mixin and the actor share one. Grouped by subsystem, which is the slice a mixin
+  /// asks for (`reviewing-motoko` A6) rather than an accessor per field.
+  let pricingState : {
+    /// §3 fee formula + staleness window + the delta guard. Admin-adjustable
+    /// without a redeploy. There is deliberately no rate-source setting: the XRC
+    /// and CMC ids are pinned in their modules, because a settable rate source is
+    /// a money lever that does not look like one.
+    var config : Pricing.Config;
+    /// Liveness for ops. A stale rate is ambiguous between "the timer is dead"
+    /// and "XRC is erroring", and those want different responses — so both the
+    /// last attempt and the last error are recorded.
+    var lastAttempt : ?{ atNs : Int; ok : Bool; detail : Text };
+  } = {
+    var config = Pricing.defaultConfig();
+    var lastAttempt = null;
+  };
 
-  /// Which Stripe world this gateway belongs to, or null for "not declared".
-  ///
-  /// A test-mode webhook secret provisioned against a canister holding a funded
-  /// reserve would deliver real cycles for payments that never happened — the secret
-  /// is the only thing separating the two, and provisioning the wrong one is an
-  /// ordinary operator slip. Declaring the expectation lets the canister
-  /// refuse the mismatch instead of trusting that nobody pasted the wrong value.
-  ///
-  /// Null rather than `?true` by default so a fresh local install works against
-  /// a Stripe sandbox without configuration. The go-live checklist sets it, and
-  /// until it is set every honoured payment records `stripe.livemodeUnset` — a
-  /// nudge that stops as soon as the expectation is declared.
-  var expectLivemode : ?Bool = null;
 
   /// Which XRC this gateway prices from.
   ///
@@ -366,10 +424,6 @@ persistent actor CyclesGateway {
   /// Remaining ticks to skip before the next attempt.
   transient var rateTicksToSkip : Nat = 0;
 
-  /// Liveness for ops. A stale rate is ambiguous between "the timer is dead"
-  /// and "XRC is erroring", and those want different responses — so both the
-  /// last attempt and the last error are recorded.
-  var lastRateAttempt : ?{ atNs : Int; ok : Bool; detail : Text } = null;
 
   /// Is the rail live enough to be worth spending cycles keeping a rate warm?
   /// A dark gateway refreshes nothing.
@@ -383,7 +437,7 @@ persistent actor CyclesGateway {
   ///   and we cannot credit them.
   ///
   /// Neither state can complete a purchase, so neither should accept one. This
-  /// used to read `cardTiers.size() > 0`, which was a proxy inherited from the
+  /// used to read `tiers.cards.size() > 0`, which was a proxy inherited from the
   /// Payment Link design — and with custom amounts it would stop nothing.
   ///
   /// It gates the rate-refresh timer, so this also fixes a real waste: a gateway
@@ -393,7 +447,7 @@ persistent actor CyclesGateway {
   };
 
   func recordRateAttempt(ok : Bool, detail : Text) {
-    lastRateAttempt := ?{ atNs = Time.now(); ok; detail };
+    pricingState.lastAttempt := ?{ atNs = Time.now(); ok; detail };
     if (ok) {
       rateRefreshFailures := 0;
     } else {
@@ -440,12 +494,12 @@ persistent actor CyclesGateway {
       // The one-exchange case: XRC's own consistency check cannot catch it,
       // because a single rate cannot disagree with itself.
       let quality = Xrc.qualityOf(rate);
-      if (quality.receivedRates < pricingConfig.minRateSources) {
+      if (quality.receivedRates < pricingState.config.minRateSources) {
         recordRateAttempt(
           false,
           "too few rate sources: " # quality.receivedRates.toText() # " of "
           # quality.queriedSources.toText() # " answered, need "
-          # pricingConfig.minRateSources.toText(),
+          # pricingState.config.minRateSources.toText(),
         );
         return;
       };
@@ -459,11 +513,11 @@ persistent actor CyclesGateway {
       // refresh would be rejected against an ancient price that itself can never
       // be replaced, so orders stay refused until an operator widens the config.
       // Guarding a move only makes sense between two observations close in time.
-      let previous = switch (Pricing.freshRates(rateCache, pricingConfig.maxAgeNs, Time.now())) {
+      let previous = switch (Pricing.freshRates(rateCache, pricingState.config.maxAgeNs, Time.now())) {
         case (?prior) ?prior.usdPerIcpMicros;
         case null null;
       };
-      if (not Pricing.withinDelta(previous, usdPerIcpMicros, pricingConfig.maxRateDeltaBps)) {
+      if (not Pricing.withinDelta(previous, usdPerIcpMicros, pricingState.config.maxRateDeltaBps)) {
         recordRateAttempt(false, "ICP price moved beyond the delta guard: " # usdPerIcpMicros.toText() # " micro-USD");
         return;
       };
@@ -539,7 +593,7 @@ persistent actor CyclesGateway {
   /// separately, so the two can never be set inconsistently — a cadence longer
   /// than the window would let the cache lapse between ticks and refuse orders.
   func rateIntervalNs() : Nat {
-    let half = Int.abs(pricingConfig.maxAgeNs) / 2;
+    let half = Int.abs(pricingState.config.maxAgeNs) / 2;
     if (half < 30_000_000_000) 30_000_000_000 else half;
   };
 
@@ -554,13 +608,13 @@ persistent actor CyclesGateway {
     // it accepts live payments — and `null` is the default. A guard keyed on
     // `?true` would leave the state every freshly installed canister is in wide
     // open, and that state takes real money and under-delivers.
-    if (config.divisor > 1 and expectLivemode != ?false) {
-      return #err(#divisorNeedsSandbox({ expectLivemode }));
+    if (config.divisor > 1 and stripeState.expectLivemode != ?false) {
+      return #err(#divisorNeedsSandbox({ expectLivemode = stripeState.expectLivemode }));
     };
     // 2. The divisor is global, so it must not move under stored orders — every
     // earlier receipt would recompute against the new value and report a
     // mismatch. `storedCount` is `orders.size()`, so this costs one comparison.
-    if (config.divisor != pricingConfig.divisor) {
+    if (config.divisor != pricingState.config.divisor) {
       let stored = Orders.storedCount(orderStore);
       if (stored > 0) return #err(#divisorChangeWithOrders({ stored }));
     };
@@ -571,9 +625,9 @@ persistent actor CyclesGateway {
       Pricing.divisorDeliverable(
         rateCache,
         { feeBps = config.feeBps; feeFixedCents = config.feeFixedCents },
-        gateConfig.minPurchaseUsdCents,
+        gateState.config.minPurchaseUsdCents,
         config.divisor,
-        cyclesLedgerFee,
+        reserveState.cyclesLedgerFee,
       )
     ) {
       case (#err(e)) return #err(e);
@@ -581,7 +635,7 @@ persistent actor CyclesGateway {
     };
     switch (Pricing.validateConfig(config)) {
       case (#ok) {
-        pricingConfig := config;
+        pricingState.config := config;
         // The cadence is derived from maxAgeNs, so re-arm rather than waiting
         // for the old interval to elapse under the new window.
         Timer.cancelTimer(rateTimerId);
@@ -618,8 +672,8 @@ persistent actor CyclesGateway {
   } {
     {
       rates = Pricing.lastRates(rateCache);
-      config = pricingConfig;
-      lastAttempt = lastRateAttempt;
+      config = pricingState.config;
+      lastAttempt = pricingState.lastAttempt;
       xrcCanisterId = lastXrcCanisterId;
     };
   };
@@ -762,7 +816,7 @@ persistent actor CyclesGateway {
   func sessionConfig() : { #ok : { apiKey : Text; origin : Text }; #err : SessionError } {
     let ?apiKey = Secret.get(stripeApiKey) else return #err(#railClosed);
     let ?keyText = apiKey.decodeUtf8() else return #err(#railClosed);
-    let ?origin = stripeOrigin else return #err(#originUnset);
+    let ?origin = stripeState.origin else return #err(#originUnset);
     #ok({ apiKey = keyText; origin });
   };
 
@@ -812,7 +866,7 @@ persistent actor CyclesGateway {
         // Checked HERE rather than at webhook time: with two mode-bearing
         // secrets — this key and the webhook secret — they can disagree, and
         // catching it at session creation is before any money moves.
-        switch (expectLivemode) {
+        switch (stripeState.expectLivemode) {
           case (?expected) {
             if (created.livemode != expected) {
               return #err(#livemodeMismatch({ sessionLivemode = created.livemode; expected }));
@@ -937,7 +991,7 @@ persistent actor CyclesGateway {
   /// user-facing method from being able to trigger a paid XRC request.
   ///
   /// The fee is a parameter because each rail prices with its own formula (card
-  /// = the Stripe formula in `pricingConfig`) over
+  /// = the Stripe formula in `pricing.config`) over
   /// the one shared rate cache.
   func quoteCents(fee : { feeBps : Nat; feeFixedCents : Nat }, usdCents : Nat) : {
     #ok : (Nat, Types.Pricing);
@@ -948,11 +1002,11 @@ persistent actor CyclesGateway {
       Pricing.quote(
         rateCache,
         fee,
-        pricingConfig.maxAgeNs,
+        pricingState.config.maxAgeNs,
         usdCents,
         Time.now(),
-        pricingConfig.divisor,
-        cyclesLedgerFee,
+        pricingState.config.divisor,
+        reserveState.cyclesLedgerFee,
       )
     ) {
       case (#stale) #stale;
@@ -991,11 +1045,11 @@ persistent actor CyclesGateway {
       // The maintained floor, read synchronously like everything else here. Used
       // by the faucet check as `> 0` only — never as a solvency input, which is
       // decided separately in `admitOrder`. See `Gate.Observation.reserveFloor`.
-      reserveFloor;
+      reserveFloor = reserveState.floor;
       // ⚠️ `!= ?true`, so `null` ("either mode") counts as accepting test
       // payments. It is also the DEFAULT, so a freshly installed canister is in
       // this state — a predicate keyed on `?false` would miss exactly that.
-      acceptsTestPayments = expectLivemode != ?true;
+      acceptsTestPayments = stripeState.expectLivemode != ?true;
       buyerAllowlistEmpty = allowedBuyers.size() == 0;
       // ⚠️ **The anonymous principal is EXEMPT from the list, and the exemption
       // cannot widen anything.** `create_order` rejects `#anonymous` through
@@ -1017,7 +1071,7 @@ persistent actor CyclesGateway {
   /// discovering it at delivery time. Audited on refusal — a rail that has quietly
   /// stopped selling is something the operator must be able to see.
   func admit(caller : Principal, usdCents : Nat) : Result.Result<(), Gate.Reason> {
-    switch (Gate.admit(gateConfig, gateObservation(caller), usdCents)) {
+    switch (Gate.admit(gateState.config, gateObservation(caller), usdCents)) {
       case (#ok) #ok;
       case (#err(reason)) {
         noteRefusal(reason);
@@ -1047,7 +1101,7 @@ persistent actor CyclesGateway {
       case (#err(reason)) return #err(reason);
       case (#ok) {};
     };
-    // ⚠️ **Synchronous, and that is the whole design.** `reserveFloor` is a
+    // ⚠️ **Synchronous, and that is the whole design.** `reserveState.floor` is a
     // maintained lower bound on the ledger balance, moved only by our own
     // outflows — so there is no awaited value to go stale and nothing to pair
     // across an await. `Reserve.mo`'s floor section carries the asymmetry this
@@ -1058,7 +1112,7 @@ persistent actor CyclesGateway {
     // `available` optimistic by a full order at the ceiling. The fix was not a
     // fresher read — any awaited value is historical by the time it is used — it
     // was removing the read from the decision.
-    switch (Gate.solvent(reserveFloor, Orders.promised(orderStore), lockedCycles)) {
+    switch (Gate.solvent(reserveState.floor, Orders.promised(orderStore), lockedCycles)) {
       case (#err(reason)) {
         noteRefusal(reason);
         #err(reason);
@@ -1070,7 +1124,7 @@ persistent actor CyclesGateway {
         // say — returns before the reserve is ever consulted, so it is not
         // evidence that the reserve recovered; clearing on it would drop the
         // latch and re-announce on the next genuine refusal.
-        railStateLatch := Gate.latchAdmission(railStateLatch);
+        gateState.latch := Gate.latchAdmission(gateState.latch);
         #ok;
       };
     };
@@ -1175,7 +1229,7 @@ persistent actor CyclesGateway {
     // variant: one quote path, one gate, one session.
     let (usdCents, quoteLabel) = switch (amount) {
       case (#tier(tierId)) {
-        let ?tier = Tiers.find(cardTiers, tierId) else return #err(#unknownTier(tierId));
+        let ?tier = Tiers.find(tierState.cards, tierId) else return #err(#unknownTier(tierId));
         (tier.usdCents, tierId);
       };
       // NOT validated against the presets: a custom amount is any amount the
@@ -1195,7 +1249,7 @@ persistent actor CyclesGateway {
       case (#err(reason)) return #err(#notAdmitted(reason));
       case (#ok) {};
     };
-    let fee = { feeBps = pricingConfig.feeBps; feeFixedCents = pricingConfig.feeFixedCents };
+    let fee = { feeBps = pricingState.config.feeBps; feeFixedCents = pricingState.config.feeFixedCents };
     let (lockedCycles, pricing) = switch (quoteCents(fee, usdCents)) {
       case (#ok(quoted)) quoted;
       case (#unpriceable(#stripeFee)) return #err(#tierBelowFees(quoteLabel));
@@ -1215,7 +1269,7 @@ persistent actor CyclesGateway {
     // ── The order, held against the reserve floor ────────────────────────────
     //
     // ⚠️ **No ledger call here, and the decision must stay synchronous.**
-    // `reserveFloor` is a maintained lower bound moved only by our own outflows
+    // `reserveState.floor` is a maintained lower bound moved only by our own outflows
     // (§5.4), so the check and the hold sit in ONE block inside
     // `createOrderWithFreshId` with no await between them. Motoko messages do not
     // interleave except at an await, so whichever block runs second sees the first
@@ -1260,7 +1314,7 @@ persistent actor CyclesGateway {
         // evidence that bears on `#stripeApiFailing` — `latchAdmission` cannot
         // clear it, because admission runs *before* this call and says nothing
         // about it (#37 §2c).
-        railStateLatch := Gate.latchStripeApiOk(railStateLatch);
+        gateState.latch := Gate.latchStripeApiOk(gateState.latch);
         // ⚠️ Re-check the status before storing. `create_order` committed the
         // order as `#created` and then awaited, so `cancel_order` from a second
         // tab can have run in between — its sessionless branch fires, because no
@@ -1332,9 +1386,9 @@ persistent actor CyclesGateway {
   /// provisioned; `railsLive` is where that lives.
   public shared ({ caller }) func set_card_tiers(tiers : [Tiers.Tier]) : async Result.Result<(), Tiers.ValidateError> {
     requireController(caller);
-    switch (Tiers.validate(tiers, gateConfig.minPurchaseUsdCents, gateConfig.maxPurchaseUsdCents)) {
+    switch (Tiers.validate(tiers, gateState.config.minPurchaseUsdCents, gateState.config.maxPurchaseUsdCents)) {
       case (#ok) {
-        cardTiers := tiers;
+        tierState.cards := tiers;
         auditAdmin(caller, "tiers.set", tiers.size().toText() # " preset(s)" # (if (tiers.size() == 0) " — no presets shown; the rail is unaffected" else ""));
         #ok;
       };
@@ -1370,12 +1424,12 @@ persistent actor CyclesGateway {
   /// that shorts a paying buyer — it is unrepresentable rather than discouraged.
   public shared ({ caller }) func set_expected_livemode(expected : ?Bool) : async Result.Result<(), LivemodeError> {
     requireController(caller);
-    if (expected != ?false and pricingConfig.divisor > 1) {
+    if (expected != ?false and pricingState.config.divisor > 1) {
       // The divisor travels as DATA (#123): a console can say which value is blocking
       // this without parsing it back out of a sentence, and the remedy is one lever.
-      return #err(#simulationDivisorSet({ divisor = pricingConfig.divisor }));
+      return #err(#simulationDivisorSet({ divisor = pricingState.config.divisor }));
     };
-    expectLivemode := expected;
+    stripeState.expectLivemode := expected;
     auditAdmin(
       caller,
       "stripe.expectLivemodeSet",
@@ -1394,7 +1448,7 @@ persistent actor CyclesGateway {
   /// a mismatch against the mode a webhook arrives in is what `Card.handleWebhook`
   /// refuses on. `set_expected_livemode` is the controller-only setter.
   public query func expected_livemode() : async ?Bool {
-    expectLivemode;
+    stripeState.expectLivemode;
   };
 
   /// Adjust the admission gate (§7): open-order cap, own-cycles floor,
@@ -1407,7 +1461,7 @@ persistent actor CyclesGateway {
     requireController(caller);
     // Cross-check against live tiers: lowering the ceiling under a registered tier
     // would leave it sellable but unpayable (see Gate.ConfigError.tierAboveCeiling).
-    let tierPrices = cardTiers.map(func(t) = (t.id, t.usdCents));
+    let tierPrices = tierState.cards.map(func(t) = (t.id, t.usdCents));
     // ⚠️ **The divisor's ceiling is a function of the FLOOR, so lowering the floor
     // has to be checked against the divisor** (#99). `set_pricing_config` refuses a
     // divisor the current minimum purchase cannot survive; without this, the same
@@ -1417,20 +1471,20 @@ persistent actor CyclesGateway {
     //
     // Checked before anything writes, and only when a divisor is actually set, so a
     // production gateway's gate config is unaffected.
-    if (pricingConfig.divisor > 1) {
+    if (pricingState.config.divisor > 1) {
       switch (
         Pricing.divisorDeliverable(
           rateCache,
-          { feeBps = pricingConfig.feeBps; feeFixedCents = pricingConfig.feeFixedCents },
+          { feeBps = pricingState.config.feeBps; feeFixedCents = pricingState.config.feeFixedCents },
           config.minPurchaseUsdCents,
-          pricingConfig.divisor,
-          cyclesLedgerFee,
+          pricingState.config.divisor,
+          reserveState.cyclesLedgerFee,
         )
       ) {
         case (#err(#divisorUndeliverable({ scaledCycles; ledgerFee }))) {
           return #err(#floorUndeliverableAtDivisor({
             minUsdCents = config.minPurchaseUsdCents;
-            divisor = pricingConfig.divisor;
+            divisor = pricingState.config.divisor;
             scaledCycles;
             ledgerFee;
           }));
@@ -1469,7 +1523,7 @@ persistent actor CyclesGateway {
     };
     switch (Gate.validateConfig(config, tierPrices)) {
       case (#ok) {
-        gateConfig := config;
+        gateState.config := config;
         auditAdmin(caller, "gate.configSet", "openOrderCap=" # config.maxOpenOrdersPerPrincipal.toText()
           # " minCycles=" # config.minCanisterCycles.toText()
           # " maxPurchaseCents=" # config.maxPurchaseUsdCents.toText());
@@ -1498,7 +1552,7 @@ persistent actor CyclesGateway {
     gate : Gate.Config;
     delivery : Delivery.Config;
   } {
-    { gate = gateConfig; delivery = deliveryConfig };
+    { gate = gateState.config; delivery = deliveryState.config };
   };
 
   /// Admission preflight, public: lets the frontend disable the buy button with
@@ -1511,13 +1565,13 @@ persistent actor CyclesGateway {
   /// `reserve_status` already publishes. Answered for the *calling* principal,
   /// so the open-order cap it reports is the caller's own.
   public shared query ({ caller }) func can_purchase(usdCents : Nat) : async Result.Result<(), Gate.Reason> {
-    Gate.admit(gateConfig, gateObservation(caller), usdCents);
+    Gate.admit(gateState.config, gateObservation(caller), usdCents);
   };
 
   /// Public — the frontend renders the amount tiles from this. There is no link
   /// to render: the canister creates a session per order (#33).
   public query func card_tiers() : async [Tiers.Tier] {
-    cardTiers;
+    tierState.cards;
   };
 
   /// What a given amount buys right now (§3), before anyone commits to an order.
@@ -1557,8 +1611,8 @@ persistent actor CyclesGateway {
   /// be wrong here.
   public query func quote_previews(amounts : [Nat]) : async QuotePreviews {
     let fee : { feeBps : Nat; feeFixedCents : Nat } = {
-      feeBps = pricingConfig.feeBps;
-      feeFixedCents = pricingConfig.feeFixedCents;
+      feeBps = pricingState.config.feeBps;
+      feeFixedCents = pricingState.config.feeFixedCents;
     };
     let quotes = amounts.map(
       func(usdCents) {
@@ -1594,13 +1648,6 @@ persistent actor CyclesGateway {
   /// financial record (orders, their problems and the orphan list are the records of money).
   let auditLog : AuditLog.Log = AuditLog.emptyLog();
 
-  /// Refusal tallies and the rail-state latch (#61).
-  ///
-  /// ⚠️ **Stable, because they replace an audit line.** These carry the content
-  /// of the per-attempt `order.notAdmitted` line that #61 removed, and losing
-  /// them on upgrade would lose the volume signal the monitoring rows read.
-  var refusalCounts : Gate.RefusalCounts = Gate.noRefusals();
-  var railStateLatch : Gate.RailStateLatch = Gate.admitting();
 
   /// Tally a refusal, and write an audit line **only** on the transition into a
   /// rail-state condition (#61).
@@ -1612,9 +1659,9 @@ persistent actor CyclesGateway {
   /// ring. The audit log is the only structure here whose growth is not
   /// attacker-priced, which is why this is a counter and not a line.
   func noteRefusal(reason : Gate.Reason) {
-    refusalCounts := Gate.countRefusal(refusalCounts, reason);
-    let latched = Gate.latchRefusal(railStateLatch, reason);
-    railStateLatch := latched.latch;
+    gateState.refusals := Gate.countRefusal(gateState.refusals, reason);
+    let latched = Gate.latchRefusal(gateState.latch, reason);
+    gateState.latch := latched.latch;
     if (latched.announce) {
       audit("gate.startedRefusing", Gate.reasonToText(reason));
     };
@@ -1654,11 +1701,11 @@ persistent actor CyclesGateway {
   /// prescribes provisioning the secrets last, so a freshly deployed gateway sits
   /// in exactly this state by design.
   func noteRailClosed(e : SessionError) {
-    refusalCounts := Gate.countRailClosed(refusalCounts);
+    gateState.refusals := Gate.countRailClosed(gateState.refusals);
     switch (railClosureCondition(e)) {
       case (?condition) {
-        let latched = Gate.latchCondition(railStateLatch, condition);
-        railStateLatch := latched.latch;
+        let latched = Gate.latchCondition(gateState.latch, condition);
+        gateState.latch := latched.latch;
         if (latched.announce) {
           audit("gate.startedRefusing", "railClosed: " # sessionErrorToText(e));
         };
@@ -1690,9 +1737,9 @@ persistent actor CyclesGateway {
   /// and Stripe is refusing it. The remedy differs too (rotate versus provision), so
   /// squeezing three call sites through one enum produced a confident wrong sentence.
   func noteStripeApiFailed(detail : Text) {
-    refusalCounts := Gate.countStripeApiFailed(refusalCounts);
-    let latched = Gate.latchCondition(railStateLatch, #stripeApiFailing);
-    railStateLatch := latched.latch;
+    gateState.refusals := Gate.countStripeApiFailed(gateState.refusals);
+    let latched = Gate.latchCondition(gateState.latch, #stripeApiFailing);
+    gateState.latch := latched.latch;
     if (latched.announce) {
       audit("gate.startedRefusing", "stripeApiFailing: " # detail);
     };
@@ -1708,10 +1755,10 @@ persistent actor CyclesGateway {
       orders = orderStore;
       dedup;
       orphanStore;
-      expectLivemode;
+      expectLivemode = stripeState.expectLivemode;
       auditLog;
       paidIntents;
-      maxPurchaseUsdCents = gateConfig.maxPurchaseUsdCents;
+      maxPurchaseUsdCents = gateState.config.maxPurchaseUsdCents;
     };
   };
 
@@ -1798,7 +1845,7 @@ persistent actor CyclesGateway {
     /// successful admission.
     refusingNow : Gate.RailStateLatch;
   } {
-    { counts = refusalCounts; refusingNow = railStateLatch };
+    { counts = gateState.refusals; refusingNow = gateState.latch };
   };
 
   /// Open-obligation depth, public.
@@ -1957,57 +2004,79 @@ persistent actor CyclesGateway {
 
   // ── Delivery from the reserve (§5/§5.1) ─────────────────────────────────
 
-  /// #30 PR-B — a maintained **lower bound** on the reserve's ledger balance.
+  /// The reserve's own mutable state, as ONE record (#120).
   ///
-  /// Sound because the balance can only fall when we transfer out — delivery to a
-  /// buyer, or `withdraw_reserve` to a controller (#103), both of which decrement this
-  /// floor before issuing; no allowance exists for anyone to pull from the account, and
-  /// the ledger's own `withdraw` is owner-only and not declared. It can only rise on a
-  /// top-up we cannot see until we look. So every unobserved change is in our favour. `Reserve.mo`'s floor section has the
-  /// full argument and the three maintenance rules.
+  /// ⚠️ **A record rather than four `var` fields, because `include` passes by value.**
+  /// A mixin handed `var reserveState.floor` would get a snapshot from install time — its
+  /// writes would land on a copy and its reads would never move. A record is a heap
+  /// object, so the mixin and the actor share it. The alternative, an accessor closure
+  /// per field, puts four of them at every include site to work around the same
+  /// semantics; grouping by subsystem is also what `reviewing-motoko` A6 asks for —
+  /// a mixin receives the slice it uses, not the fields one at a time.
   ///
-  /// ⚠️ It is a bound, not the balance. The **actual** reserve is a public account
-  /// on a public ledger that anyone — the operator, the frontend, monitoring — can
-  /// read for free without asking this canister. `reserve_status` reports all three
-  /// figures so "the ledger says 100 T and the gateway will sell 0" is diagnosable
-  /// at a glance rather than a mystery.
-  var reserveFloor : Nat = 0;
+  /// ⚠️ **This moved the stable shape**, deliberately and once: pre-launch, with no
+  /// migration chain (#32), a reinstall is the documented loop and there is no data to
+  /// preserve. `deployed/backend.most` is promoted in the same commit, and
+  /// `scripts/check-stable-promotion.sh` reports it as a REAL shape change rather than
+  /// renumbering — which is the distinction that makes the promotion reviewable.
+  let reserveState : {
+    /// #30 PR-B — a maintained **lower bound** on the reserve's ledger balance.
+    ///
+    /// Sound because the balance can only fall when we transfer out — delivery to a
+    /// buyer, or `withdraw_reserve` to a controller (#103), both of which decrement this
+    /// floor before issuing; no allowance exists for anyone to pull from the account, and
+    /// the ledger's own `withdraw` is owner-only and not declared. It can only rise on a
+    /// top-up we cannot see until we look. So every unobserved change is in our favour. `Reserve.mo`'s floor section has the
+    /// full argument and the three maintenance rules.
+    ///
+    /// ⚠️ It is a bound, not the balance. The **actual** reserve is a public account
+    /// on a public ledger that anyone — the operator, the frontend, monitoring — can
+    /// read for free without asking this canister. `reserve_status` reports all three
+    /// figures so "the ledger says 100 T and the gateway will sell 0" is diagnosable
+    /// at a glance rather than a mystery.
+    var floor : Nat;
 
-  /// Monotone count of transfers ISSUED out of the reserve. Only purpose: letting a
-  /// reconcile prove no outflow happened across its balance read (see
-  /// `refresh_reserve`). Transient is wrong here — an upgrade mid-reconcile would
-  /// make the counter look unchanged — so it is stable.
-  var outflowsIssued : Nat = 0;
+    /// Monotone count of transfers ISSUED out of the reserve. Only purpose: letting a
+    /// reconcile prove no outflow happened across its balance read (see
+    /// `refresh_reserve`). Transient is wrong here — an upgrade mid-reconcile would
+    /// make the counter look unchanged — so it is stable.
+    var outflowsIssued : Nat;
 
-  /// When `reserveFloor` was last reconciled against the ledger, so staleness is
-  /// legible rather than invisible. Null until the first observation — which is
-  /// also why a fresh canister sells nothing until the operator refreshes.
-  var reserveObservedAtNs : ?Int = null;
+    /// When `reserveState.floor` was last reconciled against the ledger, so staleness is
+    /// legible rather than invisible. Null until the first observation — which is
+    /// also why a fresh canister sells nothing until the operator refreshes.
+    var observedAtNs : ?Int;
 
-  /// The cycles ledger's transfer fee, as last learned from the ledger (#30 PR-B).
-  ///
-  /// ⚠️ **Stored rather than awaited, and `#BadFee` is why that is safe.** An ICRC-1
-  /// ledger rejects a wrong fee **definitively and reports the expected one**, so a stale
-  /// value costs one rejected call, self-corrects in the same message, and is persisted
-  /// for every later order. In exchange the delivery path loses an await — and with it
-  /// the failure mode where a ledger hiccup on a *read* stalled a delivery that was fully
-  /// funded and ready.
-  ///
-  /// ⚠️ **No admin lever writes this** — `#BadFee` is the only writer, which is what
-  /// keeps it honest. See `delivery.feeExceedsOrder` for the one state that cannot
-  /// self-correct, and why a lever for it was deleted rather than kept.
-  ///
-  /// ⚠️ **A fee DECREASE shorts that one buyer by the delta.** `amount = locked −
-  /// fee_stored`, so if the ledger has become cheaper than our copy, the first order
-  /// after the change delivers a little less than it could have, and the reserve
-  /// keeps the difference. The correction cannot recover it, because raising a
-  /// committed intent's *amount* would be rebuilding the intent — which is the
-  /// double-pay this whole path is built to avoid. Bounded by one fee-delta on one
-  /// order, and it self-corrects for every order after it.
-  ///
-  /// An increase is the harmless direction: the reserve absorbs `delta` and the
-  /// buyer gets exactly what was quoted (see the `#badFee` arm).
-  var cyclesLedgerFee : Nat = Delivery.cyclesLedgerDefaultFee;
+    /// The cycles ledger's transfer fee, as last learned from the ledger (#30 PR-B).
+    ///
+    /// ⚠️ **Stored rather than awaited, and `#BadFee` is why that is safe.** An ICRC-1
+    /// ledger rejects a wrong fee **definitively and reports the expected one**, so a stale
+    /// value costs one rejected call, self-corrects in the same message, and is persisted
+    /// for every later order. In exchange the delivery path loses an await — and with it
+    /// the failure mode where a ledger hiccup on a *read* stalled a delivery that was fully
+    /// funded and ready.
+    ///
+    /// ⚠️ **No admin lever writes this** — `#BadFee` is the only writer, which is what
+    /// keeps it honest. See `delivery.feeExceedsOrder` for the one state that cannot
+    /// self-correct, and why a lever for it was deleted rather than kept.
+    ///
+    /// ⚠️ **A fee DECREASE shorts that one buyer by the delta.** `amount = locked −
+    /// fee_stored`, so if the ledger has become cheaper than our copy, the first order
+    /// after the change delivers a little less than it could have, and the reserve
+    /// keeps the difference. The correction cannot recover it, because raising a
+    /// committed intent's *amount* would be rebuilding the intent — which is the
+    /// double-pay this whole path is built to avoid. Bounded by one fee-delta on one
+    /// order, and it self-corrects for every order after it.
+    ///
+    /// An increase is the harmless direction: the reserve absorbs `delta` and the
+    /// buyer gets exactly what was quoted (see the `#badFee` arm).
+    var cyclesLedgerFee : Nat;
+  } = {
+    var floor = 0;
+    var outflowsIssued = 0;
+    var observedAtNs = null;
+    var cyclesLedgerFee = Delivery.cyclesLedgerDefaultFee;
+  };
 
   /// §4.2 `journal : Map<OrderId, JournalEntry>` — the money-out record:
   /// transfer intent (written *before* the ledger call, §5.1), block_index,
@@ -2094,8 +2163,18 @@ persistent actor CyclesGateway {
 
   // ── Delivery timeline config (§5.3) ─────────────────────────────────────
 
-  /// The two thresholds the delivery timeline reads: alert at 2 h, terminate at 72 h.
-  var deliveryConfig : Delivery.Config = Delivery.defaultConfig();
+  /// Delivery policy, as one record.
+  /// ⚠️ **A record rather than loose `var` fields, because `include` passes by value**
+  /// (#120): a mixin handed a bare `var` gets a snapshot from install time, so its
+  /// writes land on a copy and its reads never move. A record is a heap object, so the
+  /// mixin and the actor share one. Grouped by subsystem, which is the slice a mixin
+  /// asks for (`reviewing-motoko` A6) rather than an accessor per field.
+  let deliveryState : {
+    /// The two thresholds the delivery timeline reads: alert at 2 h, terminate at 72 h.
+    var config : Delivery.Config;
+  } = {
+    var config = Delivery.defaultConfig();
+  };
 
   /// Tune the delivery timeline (admin, §7).
   ///
@@ -2108,7 +2187,7 @@ persistent actor CyclesGateway {
       case (#err(e)) return #err(e);
       case (#ok) {};
     };
-    deliveryConfig := config;
+    deliveryState.config := config;
     auditAdmin(caller, "delivery.configSet", "alert after " # config.alertAfterNs.toText() # " ns, terminate after " # config.maxHoldNs.toText() # " ns");
     #ok;
   };
@@ -2193,7 +2272,7 @@ persistent actor CyclesGateway {
       // and leave the order `#paid` for the next sweep, which is right for a transient
       // fault and would park an order forever on a persistent one.
       if (order.status == #paid) {
-        switch (Delivery.waitStage(order.updatedAtNs, Time.now(), deliveryConfig)) {
+        switch (Delivery.waitStage(order.updatedAtNs, Time.now(), deliveryState.config)) {
           case (#retry) {};
           case (#alert) {
             // Tell someone while the cause is still fixable, and keep retrying: most
@@ -2260,7 +2339,7 @@ persistent actor CyclesGateway {
           // ⚠️ **The fee is READ FROM STATE, and this whole case is now
           // synchronous (#30 PR-B).** It used to `await icrc1_fee()` here; that
           // await is gone because `#BadFee` is the ledger telling us the fee, which
-          // makes a stored copy self-correcting. See `cyclesLedgerFee`.
+          // makes a stored copy self-correcting. See `reserveState.cyclesLedgerFee`.
           //
           // ⚠️ **Do not put an await back between here and the transfer issue.** Two
           // things depend on there being none: the post-await re-read this case used
@@ -2268,7 +2347,7 @@ persistent actor CyclesGateway {
           // and `unsettledDeliveries` — the reconcile's quiet-window predicate —
           // relies on an intent never being visible without its transfer having been
           // issued in the same message. Its doc spells that out.
-          let fee = cyclesLedgerFee;
+          let fee = reserveState.cyclesLedgerFee;
           let ?amount = Delivery.deliverableCycles(order.lockedCycles, fee) else {
             // Unreachable under the $10 floor (~7 T cycles against a 100 M fee),
             // and audited rather than silent so that a future move in either
@@ -2333,8 +2412,8 @@ persistent actor CyclesGateway {
           // (A controlled upgrade cannot do that — `stop_canister` drains outstanding
           // callbacks first.)
           let debited = intent.amountCycles + fee;
-          reserveFloor := Reserve.floorAfterOutflow(reserveFloor, debited);
-          outflowsIssued += 1;
+          reserveState.floor := Reserve.floorAfterOutflow(reserveState.floor, debited);
+          reserveState.outflowsIssued += 1;
           let result = try { await cyclesLedger.icrc1_transfer(Delivery.deliveryArgs(intent, fee)) } catch (e) {
             // ⚠️ The floor is NOT credited back. A call that failed without a reply
             // tells us nothing about whether the ledger acted, and rule 2 exists to
@@ -2355,7 +2434,7 @@ persistent actor CyclesGateway {
             // arms would refund a real debit (optimistic); crediting on neither
             // would under-count every healed replay by a whole order.
             case (#deduplicated(block)) {
-              reserveFloor += debited;
+              reserveState.floor += debited;
               deliveryBlockedAudited.remove(orderId);
               ignore tryTransition(orderId, #delivered);
               Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false; lastError = null }, Time.now());
@@ -2388,17 +2467,17 @@ persistent actor CyclesGateway {
               // the ledger tells us its fee, so persisting here bounds the cost of a
               // stale copy to one rejected call. It does **not** change this order's
               // intent — rebuilding that is the double-pay this path exists to avoid.
-              cyclesLedgerFee := expected;
+              reserveState.cyclesLedgerFee := expected;
               audit("delivery.feeChanged", orderId # ": ledger expects " # expected.toText() # " (intent implies " # fee.toText() # "); reserve absorbs the difference, and " # expected.toText() # " is now the stored fee");
               // ── Rule 3 (§5.4): a DEFINITIVE rejection credits the floor back ──
               // `#BadFee` means the ledger processed the call and refused it, so nothing
               // moved and rule 2's decrement was not a real debit.
               // ⚠️ If the re-issue then fails with no reply, the LARGER decrement stands
               // — correctly pessimistic.
-              reserveFloor += debited;
+              reserveState.floor += debited;
               let reDebited = intent.amountCycles + expected;
-              reserveFloor := Reserve.floorAfterOutflow(reserveFloor, reDebited);
-              outflowsIssued += 1;
+              reserveState.floor := Reserve.floorAfterOutflow(reserveState.floor, reDebited);
+              reserveState.outflowsIssued += 1;
               let retried = try {
                 await cyclesLedger.icrc1_transfer(Delivery.deliveryArgs(intent, expected));
               } catch (e) {
@@ -2409,7 +2488,7 @@ persistent actor CyclesGateway {
               switch (Delivery.interpretTransfer(retried)) {
                 case (#deduplicated(block)) {
                   // An earlier attempt had already landed: this one moved nothing.
-                  reserveFloor += reDebited;
+                  reserveState.floor += reDebited;
                   deliveryBlockedAudited.remove(orderId);
                   ignore tryTransition(orderId, #delivered);
                   Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false; lastError = null }, Time.now());
@@ -2441,7 +2520,7 @@ persistent actor CyclesGateway {
               // ledger processed the call and declined it, so nothing moved and rule
               // 2's decrement was not a debit. (Contrast the `catch` arm above: no
               // reply means no knowledge, so that decrement stands.)
-              reserveFloor += debited;
+              reserveState.floor += debited;
               // `#InsufficientFunds` should be unreachable — the gate reserved this
               // quantity — and if it does fire, the floor and the ledger disagree.
               // Check `reserve_status.tallySaturations` and the last reconcile before
@@ -2465,7 +2544,7 @@ persistent actor CyclesGateway {
               // eventually absorbs whichever way it went. Do not "fix" the apparent
               // asymmetry by also crediting the original attempt — that is the
               // optimistic direction.
-              reserveFloor += debited;
+              reserveState.floor += debited;
               escalateDelivery(order, "transferRejected", detail);
               return;
             };
@@ -2706,7 +2785,7 @@ persistent actor CyclesGateway {
   /// order normally has its entry and intent immediately.)
   func deliveryStage(order : Types.Order, nowNs : Int) : ?{ #retry; #alert; #terminate } {
     if (order.status != #paid) return null;
-    ?Delivery.waitStage(order.updatedAtNs, nowNs, deliveryConfig);
+    ?Delivery.waitStage(order.updatedAtNs, nowNs, deliveryState.config);
   };
 
   /// Which stages are worth an operator's attention — **the one definition**, shared by
@@ -2837,21 +2916,21 @@ persistent actor CyclesGateway {
   /// it is established. Passing `true` loosely reintroduces the bug this design
   /// exists to remove.
   func reconcileReserve(observed : Nat, quiet : Bool) {
-    let adopted = Reserve.adoptObservation(reserveFloor, observed, quiet);
+    let adopted = Reserve.adoptObservation(reserveState.floor, observed, quiet);
     if (not adopted.adopted) {
-      audit("reserve.reconcileSkipped", "deliveries were in flight across the balance read; keeping the maintained floor of " # reserveFloor.toText());
+      audit("reserve.reconcileSkipped", "deliveries were in flight across the balance read; keeping the maintained floor of " # reserveState.floor.toText());
       return;
     };
     if (adopted.unexplainedShortfall > 0) {
       audit(
         "reserve.unexplainedShortfall",
         "ledger holds " # observed.toText() # " but the floor said at least "
-        # reserveFloor.toText() # " — short by " # adopted.unexplainedShortfall.toText()
+        # reserveState.floor.toText() # " — short by " # adopted.unexplainedShortfall.toText()
         # ". No outflow but ours is possible, so treat this as a bookkeeping breach and reconcile before selling more.",
       );
     };
-    reserveFloor := adopted.floor;
-    reserveObservedAtNs := ?Time.now();
+    reserveState.floor := adopted.floor;
+    reserveState.observedAtNs := ?Time.now();
   };
 
   /// Read the ledger balance and reconcile the floor against it — the ONE place
@@ -2875,9 +2954,9 @@ persistent actor CyclesGateway {
   /// question.
   func observeReserve() : async* { observed : Nat; quiet : Bool; holdersAfter : Nat } {
     let unsettledBefore = unsettledDeliveries();
-    let issuedBefore = outflowsIssued;
+    let issuedBefore = reserveState.outflowsIssued;
     let observed = await cyclesLedger.icrc1_balance_of(Delivery.reserveAccount(selfPrincipal()));
-    let quiet = unsettledBefore == 0 and unsettledDeliveries() == 0 and outflowsIssued == issuedBefore;
+    let quiet = unsettledBefore == 0 and unsettledDeliveries() == 0 and reserveState.outflowsIssued == issuedBefore;
     reconcileReserve(observed, quiet);
     ({ observed; quiet; holdersAfter = Orders.promiseHolderCount(orderStore) });
   };
@@ -2957,8 +3036,8 @@ persistent actor CyclesGateway {
         promised = Orders.promised(orderStore);
       }));
     };
-    let debited = reserveFloor;
-    let fee = cyclesLedgerFee;
+    let debited = reserveState.floor;
+    let fee = reserveState.cyclesLedgerFee;
     if (debited == 0) return #err(#nothingToWithdraw);
     // Draining means transferring `debited - fee`, because the ledger charges the fee
     // on top. Below the fee there is nothing recoverable at all.
@@ -2979,8 +3058,8 @@ persistent actor CyclesGateway {
     // alone would leave the floor overstating the account by exactly the fee, and the
     // next observation would report an unexplained shortfall: the one signal that is
     // supposed to mean an outflow we did not cause.
-    reserveFloor := Reserve.floorAfterOutflow(reserveFloor, amount + fee);
-    outflowsIssued += 1;
+    reserveState.floor := Reserve.floorAfterOutflow(reserveState.floor, amount + fee);
+    reserveState.outflowsIssued += 1;
     let result = try {
       await cyclesLedger.icrc1_transfer(
         Delivery.withdrawArgs(to, amount, fee, Time.now())
@@ -3086,21 +3165,21 @@ persistent actor CyclesGateway {
     paidIntentsIndexed : Nat;
   } {
     {
-      reserveFloor;
+      reserveFloor = reserveState.floor;
       promiseHolders = Orders.promiseHolderCount(orderStore);
       /// Null means **no reconcile has ever run**, which is also why a freshly
       /// installed canister sells nothing until the operator refreshes: the floor
       /// starts at zero and only a look at the ledger can raise it.
-      reserveObservedAtNs;
+      reserveObservedAtNs = reserveState.observedAtNs;
       /// Exactly what the gate computes, from the same two numbers, so a refused
       /// sale and this figure can never tell different stories.
-      availableToSell = Reserve.available(reserveFloor, Orders.promised(orderStore));
+      availableToSell = Reserve.available(reserveState.floor, Orders.promised(orderStore));
       /// The fee the NEXT delivery will use, and the only way to see that `#BadFee`
       /// self-correction actually happened (#30 PR-B). ⚠️ Nothing but the ledger
       /// writes it — there is deliberately no admin lever — so a value at or above an
       /// order's locked quantity stalls delivery loudly and the answer is a redeploy;
       /// at that fee the rail cannot sell anyway.
-      cyclesLedgerFee;
+      cyclesLedgerFee = reserveState.cyclesLedgerFee;
       // O(1): maintained counters, not a scan of the order store.
       openOrders = Orders.countOf(orderStore, #created);
       expiredOrders = Orders.countOf(orderStore, #expired);
@@ -3119,7 +3198,7 @@ persistent actor CyclesGateway {
       // The gas half, which is a different pot from the reserve: what the canister
       // spends to run, gated by `minCanisterCycles`.
       canisterCycles = Cycles.balance();
-      minCanisterCycles = gateConfig.minCanisterCycles;
+      minCanisterCycles = gateState.config.minCanisterCycles;
     };
   };
 
@@ -3685,7 +3764,7 @@ persistent actor CyclesGateway {
   let reserveReconcileIntervalNs : Nat = 3_600 * 1_000_000_000;
 
   /// When the reserve reconcile was last *attempted*. Same attempt-vs-success split
-  /// as the count reconcile below, for the same reason: `reserveObservedAtNs` records
+  /// as the count reconcile below, for the same reason: `reserveState.observedAtNs` records
   /// success, and gating the cadence on that alone would retry a failing (or
   /// perpetually non-quiet) read on every single tick.
   var lastReserveReconcileAttemptNs : Int = 0;
@@ -4244,7 +4323,7 @@ persistent actor CyclesGateway {
   /// it does not stop the burn. A sudden acceleration here is the
   /// signature of a cycle-drain attempt.
   public query func cycles_status() : async { balance : Nat; floor : Nat } {
-    { balance = Cycles.balance(); floor = gateConfig.minCanisterCycles };
+    { balance = Cycles.balance(); floor = gateState.config.minCanisterCycles };
   };
 
   /// The public trust figures (#39) — anonymous, safe on a landing page.
@@ -4258,7 +4337,7 @@ persistent actor CyclesGateway {
   /// what will wave through the field that *does* add something. Do not add a
   /// most-recent-order field, a largest-purchase field, or anything per-principal.
   ///
-  /// ⚠️ **`refusingNow` is REUSED, not re-derived.** It is the same `railStateLatch`
+  /// ⚠️ **`refusingNow` is REUSED, not re-derived.** It is the same `gateState.latch`
   /// `refusal_counts` reports, so "is the rail accepting orders" has one definition and
   /// cannot come out differently on two surfaces.
   ///
@@ -4296,12 +4375,12 @@ persistent actor CyclesGateway {
   } {
     let totals = Orders.deliveryTotals(orderStore);
     {
-      availableToSell = Reserve.available(reserveFloor, Orders.promised(orderStore));
+      availableToSell = Reserve.available(reserveState.floor, Orders.promised(orderStore));
       deliveredOrders = totals.orders;
       deliveredCycles = totals.cycles;
       deliveredUsdCents = totals.usdCents;
       nullPaid = totals.nullPaid;
-      refusingNow = railStateLatch;
+      refusingNow = gateState.latch;
     };
   };
 
@@ -4372,9 +4451,9 @@ persistent actor CyclesGateway {
       orphansUnresolved = Orphans.unresolvedCount(orphanStore);
       problemsUnresolved = Orders.unresolvedProblemCount(orderStore);
       ordersWithProblems = Orders.unresolvedProblemOrderCount(orderStore);
-      refusingNow = railStateLatch;
-      availableToSell = Reserve.available(reserveFloor, Orders.promised(orderStore));
-      reserveObservedAtNs;
+      refusingNow = gateState.latch;
+      availableToSell = Reserve.available(reserveState.floor, Orders.promised(orderStore));
+      reserveObservedAtNs = reserveState.observedAtNs;
     };
   };
 
@@ -4581,7 +4660,7 @@ persistent actor CyclesGateway {
   // exist yet.
   //
   // ⚠️ **A `var` field is passed as an ACCESSOR PAIR, never as the field.** `include`
-  // takes its arguments by value, so handing over `stripeOrigin` would give the mixin a
+  // takes its arguments by value, so handing over `stripe.origin` would give the mixin a
   // snapshot from install time: the setter would mutate a copy and the getter would
   // answer that snapshot forever. Records and collections (`Secret.Store`,
   // `Orders.Store`, the maps and sets) are heap objects, so those pass directly and
@@ -4594,7 +4673,7 @@ persistent actor CyclesGateway {
   include SecretsMixin(
     webhookSecret,
     stripeApiKey,
-    { get = func() = stripeOrigin; set = func(v : ?Text) { stripeOrigin := v } },
+    { get = func() = stripeState.origin; set = func(v : ?Text) { stripeState.origin := v } },
     requireController,
     requireAdmin,
     auditAdmin,
