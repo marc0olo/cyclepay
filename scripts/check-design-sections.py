@@ -42,7 +42,7 @@ import re
 import sys
 
 SPEC = "docs/DESIGN.md"
-CODE_GLOBS = ("src/backend/*.mo", "test/*.mo")
+CODE_GLOBS = ("src/backend/*.mo", "src/backend/mixins/*.mo", "test/*.mo")
 SECTION = re.compile(r"§([0-9][0-9a-z]*(?:\.[0-9a-z]+)*)")
 # ⚠️ An issue's OWN sections are written `#37 §2c` and are not design-record sections.
 # The `#NN ` prefix is the disambiguator, and it is required: a bare `§2c` is

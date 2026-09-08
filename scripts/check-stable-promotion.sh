@@ -37,14 +37,44 @@
 #   1 → 2 fails → the change is NOT upgrade-compatible. Promoting it strands every
 #                deployed canister; that needs a migration chain (#32), not a promotion.
 #
-# Usage: scripts/check-stable-promotion.sh [canister]   (default: backend)
+# ⚠️ **`--accept-reinstall` is the one deliberate override**, and it exists because
+# "not upgrade-compatible" is a legitimate answer pre-launch: with no migration chain
+# (#32) and no data worth preserving, a reinstall is the documented loop and the baseline
+# should then describe the NEW shape. The flag does not weaken the check — it still
+# refuses silently-wrong promotions — it makes the operator say the words, and it prints
+# **which stable variables are dropped**, because "what state is lost" is the reviewable
+# fact in that decision. Never pass it once real data exists.
+#
+# Usage: scripts/check-stable-promotion.sh [canister] [--accept-reinstall] [--no-build]
 set -euo pipefail
+
+accept_reinstall=0
+do_build=1
+args=()
+for arg in "$@"; do
+  case "$arg" in
+    --accept-reinstall) accept_reinstall=1 ;;
+    --no-build) do_build=0 ;;
+    *) args+=("$arg") ;;
+  esac
+done
+set -- "${args[@]+"${args[@]}"}"
 
 canister="${1:-backend}"
 baseline="deployed/${canister}.most"
 built="src/backend/dist/${canister}.most"
 
 [ -f "$baseline" ] || { echo "no committed baseline at $baseline — nothing to compare" >&2; exit 1; }
+
+# ⚠️ **Builds first, because a STALE build reads as "nothing to promote".** `mops check`
+# does not write the `.most`, so after a shape change the file on disk still describes the
+# previous shape — and this script would compare the baseline against a copy of itself and
+# report a clean all-clear. Measured: it did exactly that, on the change this flag was
+# added for. Slow is the right trade at promotion time; `--no-build` skips it when the
+# build is known current.
+if [ "$do_build" = "1" ]; then
+  mops build >/dev/null 2>&1 || { echo "mops build failed — fix that before promoting" >&2; exit 1; }
+fi
 [ -f "$built" ] || { echo "no build output at $built — run \`mops build\` first" >&2; exit 1; }
 
 moc="$(mops toolchain bin moc)"
@@ -82,10 +112,34 @@ forward=0; "$moc" --stable-compatible "$baseline" "$built" >/dev/null 2>&1 || fo
 reverse=0; "$moc" --stable-compatible "$built" "$baseline" >/dev/null 2>&1 || reverse=$?
 
 if [ "$forward" -ne 0 ]; then
+  diagnostic="$("$moc" --stable-compatible "$baseline" "$built" 2>&1 || true)"
+  # The reviewable fact: which stable variables the new shape no longer carries.
+  dropped="$(printf '%s\n' "$diagnostic" \
+    | sed -n 's/.*stable variable `\([A-Za-z0-9_]*\)`.*cannot be implicitly discarded.*/\1/p' \
+    | sort -u)"
+
+  if [ "$accept_reinstall" = "1" ]; then
+    printf '\033[33m⚠️  %s: NOT upgrade-compatible — accepted as a REINSTALL\033[0m\n' "$canister"
+    if [ -n "$dropped" ]; then
+      printf '   stable state dropped by this shape change:\n'
+      printf '%s\n' "$dropped" | sed 's/^/     - /'
+    else
+      printf '   (no dropped variables named; the change is a type change, not a removal)\n'
+      printf '%s\n' "$diagnostic" | sed 's/^/     /'
+    fi
+    printf '   A deployed canister CANNOT take this as an upgrade. Reinstall, then reseed.\n'
+    exit 0
+  fi
+
   printf '\033[31m✗ %s: the built signature is NOT upgrade-compatible with the baseline\033[0m\n' "$canister" >&2
-  "$moc" --stable-compatible "$baseline" "$built" 2>&1 | sed 's/^/    /' >&2
-  printf '\n  A deployed canister cannot take this upgrade. This needs an explicit migration\n' >&2
-  printf '  (see #32 and the `migrating-motoko-actors` skill), not a promotion.\n' >&2
+  printf '%s\n' "$diagnostic" | sed 's/^/    /' >&2
+  if [ -n "$dropped" ]; then
+    printf '\n  Stable state this would drop:\n' >&2
+    printf '%s\n' "$dropped" | sed 's/^/    - /' >&2
+  fi
+  printf '\n  A deployed canister cannot take this upgrade. Either write the migration\n' >&2
+  printf '  (#32, and the `migrating-motoko-actors` skill), or — pre-launch only, with no\n' >&2
+  printf '  data worth keeping — re-run with `--accept-reinstall` to say so deliberately.\n' >&2
   exit 1
 fi
 

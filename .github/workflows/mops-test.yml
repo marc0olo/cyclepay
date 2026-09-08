@@ -63,7 +63,7 @@ jobs:
         run: |
           scripts/check-heredocs.sh
           scripts/check-doc-surface.py
-          scripts/check-did-docs.py
+          scripts/check-endpoint-docs.py
           scripts/check-config-readers.py
           scripts/check-admin-tiers.py
           scripts/check-admin-commands.py

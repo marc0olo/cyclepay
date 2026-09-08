@@ -79,7 +79,7 @@ CMC for XDR/ICP (§8). There is no operator-settable rate source to audit.
  operator ──▶ set_stripe_api_key + set_stripe_origin (+ optional price tiles)
                        │  no Dashboard objects exist for this rail
                        ▼
- user ──II login──▶ create_order(amount, destination)         Main.mo
+ user ──II login──▶ create_order(amount, destination)         mixins/Buying.mo
                        │  rail provisioned?                    Main.mo → Secret.mo
                        │  admission gate                       Main.mo → Gate.mo
                        │  quote: lock the CYCLE QUANTITY       Pricing.mo (cached XRC+CMC)
@@ -98,8 +98,8 @@ CMC for XDR/ICP (§8). There is no operator-settable rate source to audit.
                        │
  Stripe ───────────────┤ POST /webhook/stripe   (anonymous principal)
                        ▼
-                    http_request  → upgrade = ?true            Main.mo
-                    http_request_update → route table          Main.mo
+                    http_request  → upgrade = ?true            mixins/Webhook.mo
+                    http_request_update → route table          mixins/Webhook.mo
                        ▼
                     Card.handleWebhook                          Card.mo
                        │ 1. secret provisioned?      → else 503 (Stripe retries)
@@ -137,7 +137,7 @@ That forces exactly two ingress paths:
 | **One HTTP route** | HMAC over the payload | `POST /webhook/stripe` only |
 
 `Http.mo` dispatches off a route *table* with a per-route `upgrade` flag
-(`Main.mo`). The query half returns `upgrade = ?true` **without running the
+(`mixins/Webhook.mo`). The query half returns `upgrade = ?true` **without running the
 handler** — the gateway discards that response and re-issues the request to
 `http_request_update` through consensus, so response certification is moot.
 
@@ -145,7 +145,7 @@ Two details that matter:
 
 - `http_request_update` is **callable directly via Candid by anyone**, so the
   dispatcher re-applies every guard rather than trusting that the query half ran
-  first (`Main.mo`).
+  first (`mixins/Webhook.mo`).
 - `Http.pathOf` strips the query string before matching (`Http.mo`), so a
   gateway URL carrying `?canisterId=…` still routes — which is what makes §15's
   local setup work.
@@ -415,7 +415,7 @@ spec §8 — a gateway confirming its own arithmetic proves nothing.
 ## 9. Admission: the pre-creation gate
 
 `create_order` refuses before quoting when fulfilment is already impossible
-(`Main.mo` → `Gate.mo`). Checked cheapest-first, before any pricing work:
+(`mixins/Buying.mo` → `Gate.mo`). Checked cheapest-first, before any pricing work:
 
 | Check | Refusal | Meaning |
 |---|---|---|
@@ -838,7 +838,7 @@ What actually protects it:
 | **Provisioning channel** | Known-exposed: the argument to `set_webhook_secret` / `set_stripe_api_key` transits the TLS-terminating boundary node as ordinary ingress. Treat the first set over any untrusted path as burned and rotate. |
 | **Reserve size** | The always-on control, independent of SEV. A forger drains at most what the reserve holds, so it is sized to what a leak could cost. |
 
-Interface (`Main.mo`):
+Interface (`mixins/Secrets.mo`):
 
 - `set_webhook_secret(text)` — controller-only, traps otherwise. Rejects under
   16 bytes and leaves a working secret untouched on rejection, so a
@@ -918,7 +918,7 @@ plus `expire_order` from #52, plus the two secret-status queries §13 tells you 
 to confirm a rotation. A list of plausible method names reads as complete, so nothing
 short of comparing it against the interface could tell. `scripts/check-doc-surface.py`
 runs in the gate and diffs the marked blocks here against the committed `.did` plus
-`Main.mo`'s guards. ⚠️ It compares **names only** — a stale *description* is still on a
+the guards in `Main.mo` and `mixins/`. ⚠️ It compares **names only** — a stale *description* is still on a
 human, which is how `recount_orders` kept describing the pass #63 deleted.
 
 ⚠️ **`delivery_stats` (#39) is public and anonymous** — cumulative delivered orders,

@@ -60,25 +60,29 @@ recorded reasoning — don't "fix" them without reading the rationale:
   and `docs/STRIPE.md` §7. Confidentiality comes from the SEV-SNP subnet, and the
   **reserve balance is the blast radius** — a forged webhook delivers from it, and
   nothing caps that, so the reserve is sized to what a leak could cost.
-- **`writing-motoko` architecture pattern**, and ⚠️ **only the `lib/` half of it.**
-  Measured 2026-09-08, because this entry used to claim the whole pattern was covered:
+- **`writing-motoko` architecture pattern — now followed, with one naming difference.**
+  ⚠️ **This entry used to claim a departure that no longer exists**, so read the shape in
+  the code rather than a memory of this file:
 
-  - **`lib/` — genuinely equivalent.** Domain logic lives in stateless modules that
-    take state as a parameter (`Orders`, `Delivery`, `Gate`, `Reserve`, `rails/Card`
-    with its explicit `Card.Deps`), which is what lets the whole ingestion path
-    unit-test with no IC environment. Deliberately chosen, and it holds.
-  - **`mixins/` — NOT covered, and the testability argument above does not bear on
-    it.** All **61** public methods sit in `Main.mo` alongside the state they own, which
-    is 4,633 lines: skill findings A1 (a public method in `main.mo`) and A2 (a
-    monolithic file). `Card.Deps` is the `lib/` pattern; mixins would leave it
-    untouched. Tracked in #120 — and probed rather than assumed: `mixin`/`include`
-    compile on the pinned `moc`, and need no migration chain, so #32 does not gate it.
+  - **Endpoints are in `src/backend/mixins/`**, nine of them split by feature, and
+    `Main.mo` declares **no public methods** (#120). `docs/DESIGN.md` §9.1 has the rules
+    that split rests on — chiefly that `include` passes its arguments **by value**, so
+    mutable state is grouped into records and transient state arrives as closures.
+  - **The `lib/` layer is flat modules rather than a `lib/` directory**, and that is the
+    remaining difference: `Orders`, `Delivery`, `Gate`, `Reserve`, `Pricing`, `Receipts`,
+    `rails/Card` with its explicit `Card.Deps`. Stateless, state as a parameter, which is
+    what lets the whole ingestion path unit-test with no IC environment. Equivalent
+    separation under a different filename; nothing about it is a departure in substance.
+  - **What is NOT done: A3.** Endpoints moved but their bodies were moved *verbatim*, so
+    several still hold logic rather than authorize → delegate → map. That is the next
+    refactor, not something this file excuses.
 
-  ⚠️ **A recorded departure is a claim with a scope.** This one was written about `lib/`
-  and then read as covering the monolith too, which is how an agent skips a finding
-  nobody decided to accept. When a skill and this file disagree, the skill wins unless
-  the reasoning here says why *for that specific finding* — and if the reasoning has
-  expired, fix this file rather than working around it.
+  ⚠️ **A recorded departure is a claim with a scope, and it expires.** The previous
+  version of this entry was written about `lib/` and then read as covering the monolith
+  too, which is how an agent skips a finding nobody decided to accept. When a skill and
+  this file disagree, the skill wins unless the reasoning here says why *for that
+  specific finding* — and if the reasoning has expired, fix this file rather than working
+  around it.
 
 ## Running it locally
 

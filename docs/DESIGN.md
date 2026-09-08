@@ -434,11 +434,101 @@ than a framework, and Candid bindings for the ledgers this canister actually cal
 Modules take their dependencies as records, which is why the whole ingestion path is
 unit-testable with no IC environment.
 
+Inside the backend: `Main.mo` owns state and composes, the public endpoints live in
+`mixins/` split by feature, and the domain logic is flat stateless modules — `Orders`,
+`Delivery`, `Gate`, `Reserve`, `Pricing`, `Receipts`, `rails/Card`. §9.1 has the rules
+the mixin layer rests on.
+
 ⚠️ **The go-live bar is PocketIC, not the unit suites.** Unit tests wherever logic is
 isolable — HMAC, fee and rate arithmetic, parsers, state-machine transitions, dedup — and
 a PocketIC scenario for everything that needs a replica: upgrades mid-delivery, ledger
 outages, real HTTP ingress, the §5.1 replay contract. A change is not done on a build or a
 unit pass alone. `test/integration/README.md` maps the scenarios to the items here.
+
+### §9.1 — Endpoints live in mixins, and how state reaches them
+
+`main.mo` owns state and composes; the public endpoints live in `mixins/`, split by
+feature. That is the `writing-motoko` architecture, and a public method in the
+composition root is `reviewing-motoko` A1.
+
+⚠️ **`include` evaluates its arguments ONCE and passes them by value.** That single fact
+decides the shape of every mixin here:
+
+- **A record or collection passes directly.** `Set`, `Map`, `Orders.Store`,
+  `Secret.Store` and the seven `*State` records are heap objects, so the mixin and the actor
+  share one and writes go through.
+- **A bare `var` must NOT be passed.** The mixin would receive a snapshot from install
+  time: its writes would land on a copy and its reads would never move. This is silent —
+  it compiles, and the getter simply answers the initial value forever.
+
+⚠️ **So mutable state is grouped into SEVEN subsystem records rather than passed field
+by field.** `reserveState`, `gateState`, `pricingState`, `stripeState`, `tierState`,
+`deliveryState`, `recoveryState`. Grouping is also what A6 asks for: a mixin receives the
+slice it uses. The alternative — an accessor closure per field — needs no shape change,
+and it is what the three TRANSIENT fields still use, for a sharper reason: they exist to
+answer "has this happened since the canister started", which a value frozen at include
+time answers wrongly and confidently. For the 21 stable fields it would have put plumbing
+at every include site to work around by-value semantics.
+
+⚠️ **`webhookPaidOrder` uses a TAKE-ONCE accessor**, not a get/set pair: the dispatcher
+sets it and the mixin consumes it in the same message, so reading and clearing as one
+operation is what stops a stale value from triggering a second delivery kick — on the one
+route that is unauthenticated by necessity.
+
+⚠️ **An immutable transient value passes directly.** `routes`, `maxRequestBodyBytes` and
+the `cyclesLedger` actor reference are transient `let`s built during initialisation, which
+is when `include` evaluates its arguments, and none of them ever changes. The rule above
+is about MUTABLE state; a snapshot of an immutable value is the value.
+
+⚠️⚠️ **Grouping also closed those fields to future extension, and THAT cost outlives the
+one-time drop below.** Before the split each of the 21 was an actor-level `var`, and
+adding another was free. Now a new field inside any `*State` record needs the migration
+chain this project has never had (§11 / #32) — measured both ways on the branch that
+introduced them:
+
+| Change | `mops check` |
+|---|---|
+| a field added to `reserveState` | ✗ *"expected field … is missing … Write an explicit migration function"* |
+| a new **actor-level** stable `var` | ✓ *"Stable compatibility check passed"* |
+
+⚠️ **So the cheap route still exists and this rule must not hide it:** new mutable state
+that a mixin needs can be **a new actor-level stable `var` plus an accessor pair at the
+include site** — which is exactly what `stripeState.origin`'s predecessor did, and what
+the transient fields still do. Grouping is the default because it reads better and
+enforces A6; it is not the only option, and reaching for it by reflex is how a routine
+field addition turns into a migration.
+
+⚠️ **Grouping moved the stable shape, and that was a deliberate call, taken once.**
+Twenty-one stable variables were dropped rather than migrated, across two grouping passes — one per `var` field, all seven records. Legitimate only because
+there is no deployment whose data matters: pre-launch, with no migration chain (§11 /
+#32), reinstall is the documented loop. `scripts/check-stable-promotion.sh` refuses such
+a promotion unless `--accept-reinstall` is passed, and prints which variables are lost —
+so the decision is stated rather than absorbed. **After the first deployment worth
+keeping, this is no longer available** and a change of this shape needs the chain.
+
+⚠️ **Two costs of mixins, both measured rather than assumed:**
+
+1. **`moc` does not emit doc comments for mixin members** (1.15.1; identical under
+   `mops build`, `moc --idl` and `mops generate candid`). So a relocated endpoint loses
+   its documentation from `backend.did` and from the generated TypeScript bindings — ~6
+   lines per endpoint. `scripts/check-endpoint-docs.py` therefore reads the SOURCE, not
+   the interface, so the invariant survives; it is tracked upstream and reverses on its
+   own if moc changes.
+2. **Only imports may precede a `mixin` block** (M0228), so a type the mixin's interface
+   needs is declared inside the block — never moved to `Types.mo`, because Candid type
+   names come from the declaration and renaming one moves the published interface.
+
+⚠️ **The acceptance test for a relocation is `scripts/check-did-signatures.sh`**: the
+Candid signatures must be identical with doc comments stripped. It has already caught
+what review would not — **Candid records argument names**, so a mixin parameter that
+forces an endpoint's parameter to be renamed moves the published signature.
+
+⚠️ **Three more invariants belong to the same pass, because a textual rename breaks all
+of them silently:** the audit tag literals (RUNBOOK §8 alerts on exact text, and one
+rename hit 34 of them), that every endpoint still carries a doc, and that each guarded
+method still calls the guard its tier declares. `check-endpoint-docs.py`,
+`check-admin-tiers.py` and a tag diff cover those; run them per group, not once at the
+end.
 
 ## §11 — Deferred
 

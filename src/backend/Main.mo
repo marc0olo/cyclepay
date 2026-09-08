@@ -4,13 +4,11 @@
 /// Reserve.mo, Gate.mo, Problems.mo, Orphans.mo, Auth.mo, Card.mo, Http.mo.
 /// Decision record for the `§N` comments: `docs/DESIGN.md`.
 import Array "mo:core/Array";
-import Problems "Problems";
 import Cycles "mo:core/Cycles";
 import Error "mo:core/Error";
 // ⚠️ Referenced only through dot-notation sugar (`someIter.toArray()`), which resolves
 // via the imported module — so this reads as an unused import and is not. Removing it
 // fails with M0072 "field toArray does not exist", nowhere near the import.
-import Iter "mo:core/Iter";
 import Int "mo:core/Int";
 import List "mo:core/List";
 import Map "mo:core/Map";
@@ -25,7 +23,6 @@ import Timer "mo:core/Timer";
 // `Call.httpRequest` attaches the exact `ic0.cost_http_request` price; `IC` is
 // imported for the request/response types the transform signature needs.
 import Call "mo:ic/Call";
-import IC "mo:ic/Types";
 import AuditLog "AuditLog";
 import Auth "Auth";
 import Cmc "Cmc";
@@ -40,6 +37,15 @@ import Orders "Orders";
 import Recovery "Recovery";
 import Reserve "Reserve";
 import Card "rails/Card";
+import SecretsMixin "mixins/Secrets";
+import PrincipalsMixin "mixins/Principals";
+import MonitoringMixin "mixins/Monitoring";
+import ConfigMixin "mixins/Config";
+import OrdersMixin "mixins/Orders";
+import WebhookMixin "mixins/Webhook";
+import BuyingMixin "mixins/Buying";
+import AdminOrdersMixin "mixins/AdminOrders";
+import MaintenanceMixin "mixins/Maintenance";
 import Session "rails/Session";
 import Secret "Secret";
 import Tiers "Tiers";
@@ -47,9 +53,9 @@ import Types "Types";
 
 persistent actor CyclesGateway {
 
-  /// §7 secret one of TWO: the Stripe webhook signing key. Plaintext by design,
-  /// SEV-SNP posture documented in Secret.mo. Persists across upgrades; rotation
-  /// never requires a redeploy.
+  // §7 secret one of TWO: the Stripe webhook signing key. Plaintext by design,
+  // SEV-SNP posture documented in Secret.mo. Persists across upgrades; rotation
+  // never requires a redeploy.
   let webhookSecret : Secret.Store = Secret.emptyStore();
 
   /// §7 secret two: the Stripe **API key** that creates Checkout Sessions (#33).
@@ -66,19 +72,44 @@ persistent actor CyclesGateway {
   /// changing addresses.
   let stripeApiKey : Secret.Store = Secret.emptyStore();
 
-  /// The asset origin Stripe returns the buyer to, e.g.
-  /// `https://<canister>.icp0.io`. Null until an admin sets it, and
-  /// `create_order` fails closed rather than creating a sessionless order.
-  ///
-  /// ⚠️ **Admin config, never a `create_order` parameter.** A caller-supplied
-  /// `success_url` is an open redirect that Stripe renders *after a real
-  /// payment* — a phishing primitive wearing a genuine receipt page.
-  ///
-  /// ⚠️ Changing it later invalidates nothing already paid, but Internet Identity
-  /// derives a principal **per origin**, so an origin change is a user-visible
-  /// migration rather than a config tweak: existing buyers get new principals and
-  /// cannot see their old orders. Choose it once (#40/#23).
-  var stripeOrigin : ?Text = null;
+  /// Stripe's two operator-set values: where buyers are returned, and which mode
+  /// this deployment serves.
+  /// ⚠️ **A record rather than loose `var` fields, because `include` passes by value**
+  /// (#120): a mixin handed a bare `var` gets a snapshot from install time, so its
+  /// writes land on a copy and its reads never move. A record is a heap object, so the
+  /// mixin and the actor share one. Grouped by subsystem, which is the slice a mixin
+  /// asks for (`reviewing-motoko` A6) rather than an accessor per field.
+  let stripeState : {
+    /// The asset origin Stripe returns the buyer to, e.g.
+    /// `https://<canister>.icp0.io`. Null until an admin sets it, and
+    /// `create_order` fails closed rather than creating a sessionless order.
+    ///
+    /// ⚠️ **Admin config, never a `create_order` parameter.** A caller-supplied
+    /// `success_url` is an open redirect that Stripe renders *after a real
+    /// payment* — a phishing primitive wearing a genuine receipt page.
+    ///
+    /// ⚠️ Changing it later invalidates nothing already paid, but Internet Identity
+    /// derives a principal **per origin**, so an origin change is a user-visible
+    /// migration rather than a config tweak: existing buyers get new principals and
+    /// cannot see their old orders. Choose it once (#40/#23).
+    var origin : ?Text;
+    /// Which Stripe world this gateway belongs to, or null for "not declared".
+    ///
+    /// A test-mode webhook secret provisioned against a canister holding a funded
+    /// reserve would deliver real cycles for payments that never happened — the secret
+    /// is the only thing separating the two, and provisioning the wrong one is an
+    /// ordinary operator slip. Declaring the expectation lets the canister
+    /// refuse the mismatch instead of trusting that nobody pasted the wrong value.
+    ///
+    /// Null rather than `?true` by default so a fresh local install works against
+    /// a Stripe sandbox without configuration. The go-live checklist sets it, and
+    /// until it is set every honoured payment records `stripe.livemodeUnset` — a
+    /// nudge that stops as soon as the expectation is declared.
+    var expectLivemode : ?Bool;
+  } = {
+    var origin = null;
+    var expectLivemode = null;
+  };
 
   /// Principals granted the CASES tier (#68). Controllers are not listed here and do not
   /// need to be — `Auth.checkAdmin` passes them anyway.
@@ -90,23 +121,23 @@ persistent actor CyclesGateway {
   /// principal — they do not retroactively fix principals derived before one was declared.
   let adminPrincipals = Set.empty<Principal>();
 
-  /// Principals allowed to create orders **while this gateway accepts free Stripe
-  /// test payments** (#99 2b).
-  ///
-  /// ⚠️ **Without it a sandbox deployment is a cycles faucet.** Stripe test
-  /// payments are free and unlimited, so `4242 4242 4242 4242` pays any session
-  /// for anyone who reaches the page. The simulation divisor caps the loss *per
-  /// order*; only this list caps the total.
-  ///
-  /// ⚠️ **An EMPTY list is not "refuse everyone" per buyer** — that would refuse
-  /// every buyer on a sandbox deployment before this list is populated, which is
-  /// the state a fresh gateway is configured in. What bounds the empty case is
-  /// `Gate.Reason.unboundedGiveaway`, which refuses the moment there is something
-  /// to sell. So an empty list means unrestricted while the reserve floor is zero
-  /// (where nothing can be sold anyway) and refusing-everyone once it is not.
-  ///
-  /// ⚠️ At go-live (`expectLivemode == ?true`) it has no effect whatsoever. A list
-  /// that keeps filtering after go-live is an outage nobody would look for.
+  // Principals allowed to create orders **while this gateway accepts free Stripe
+  // test payments** (#99 2b).
+  //
+  // ⚠️ **Without it a sandbox deployment is a cycles faucet.** Stripe test
+  // payments are free and unlimited, so `4242 4242 4242 4242` pays any session
+  // for anyone who reaches the page. The simulation divisor caps the loss *per
+  // order*; only this list caps the total.
+  //
+  // ⚠️ **An EMPTY list is not "refuse everyone" per buyer** — that would refuse
+  // every buyer on a sandbox deployment before this list is populated, which is
+  // the state a fresh gateway is configured in. What bounds the empty case is
+  // `Gate.Reason.unboundedGiveaway`, which refuses the moment there is something
+  // to sell. So an empty list means unrestricted while the reserve floor is zero
+  // (where nothing can be sold anyway) and refusing-everyone once it is not.
+  //
+  // ⚠️ At go-live (`stripe.expectLivemode == ?true`) it has no effect whatsoever. A list
+  // that keeps filtering after go-live is an outage nobody would look for.
   let allowedBuyers = Set.empty<Principal>();
 
   /// The RULES tier: controller only. Traps rather than returning an error so an
@@ -137,82 +168,9 @@ persistent actor CyclesGateway {
     adminPrincipals.contains(p);
   };
 
-  /// Why a principal could not be added to, or removed from, one of the two lists
-  /// (#123).
-  ///
-  /// ⚠️ **One type for both lists and both directions**, because the four methods refuse
-  /// for exactly these three reasons and a caller acts on the reason, not on which list
-  /// it was. `#alreadyPresent` and `#notPresent` carry the principal so a console can
-  /// name it without re-deriving it from the argument it just sent.
-  ///
-  /// ⚠️ **`#anonymousNotAllowed` is not "invalid input".** The anonymous principal is a
-  /// real, callable identity that every unauthenticated caller shares, so granting it
-  /// admin would grant the world admin, and allow-listing it would let anyone buy while
-  /// test payments are on. It is refused for a specific reason, and the tag says which.
-  public type ListError = {
-    #anonymousNotAllowed;
-    #alreadyPresent : { principal : Principal };
-    #notPresent : { principal : Principal };
-  };
 
-  /// Grant the CASES tier to a principal (controller only, audited).
-  ///
-  /// ⚠️ **The grant is on a PRINCIPAL, and an admin's principal comes from the origin
-  /// they signed in at.** The flow is: the admin reads their own principal from
-  /// `admin_status`, gives it to a controller, and then acts from a CLI identity linked to
-  /// the same Internet Identity — `icp identity link web <name> --app <origin>`. ⚠️ Without
-  /// `--app` the CLI links a principal derived from the auth domain's own default
-  /// (`cli.id.ai`), which is not this app, so the grant would sit on a principal the
-  /// admin never sees.
-  public shared ({ caller }) func add_admin(p : Principal) : async Result.Result<(), ListError> {
-    requireController(caller);
-    // Belt and braces: `Auth.checkAdmin` rejects anonymous before consulting either
-    // predicate, so a granted `2vxsx-fae` would be inert — but a list that contains it
-    // reads as though it were not.
-    if (p.isAnonymous()) return #err(#anonymousNotAllowed);
-    if (adminPrincipals.contains(p)) return #err(#alreadyPresent({ principal = p }));
-    adminPrincipals.add(p);
-    auditAdmin(caller, "admin.granted", p.toText());
-    #ok;
-  };
 
-  /// Revoke the CASES tier (controller only, audited).
-  public shared ({ caller }) func remove_admin(p : Principal) : async Result.Result<(), ListError> {
-    requireController(caller);
-    // ⚠️ Not "not an admin": that is the authz trap's wording, and an operator reading it
-    // back cannot tell whether THEY were refused or the target simply was not listed.
-    if (not adminPrincipals.contains(p)) return #err(#notPresent({ principal = p }));
-    adminPrincipals.remove(p);
-    auditAdmin(caller, "admin.revoked", p.toText());
-    #ok;
-  };
 
-  /// Who holds the CASES tier (controller only).
-  ///
-  /// ⚠️ Controllers are NOT listed — they pass `checkAdmin` without being granted, so an
-  /// empty list does not mean nobody can act.
-  public shared query ({ caller }) func admins() : async [Principal] {
-    requireController(caller);
-    adminPrincipals.values().toArray();
-  };
-
-  /// "Is MY principal granted?" — public and caller-scoped.
-  ///
-  /// ⚠️ **Deliberately ungated.** An admin who is NOT yet granted has to be able to read
-  /// their own principal and see that it is not granted; a guarded version would reject
-  /// exactly the caller who needs the answer, and the UI could not tell "not granted" from
-  /// "not reachable". It discloses nothing about anyone else: the answer is about `caller`.
-  public shared query ({ caller }) func admin_status() : async {
-    caller : Principal;
-    granted : Bool;
-    isController : Bool;
-  } {
-    {
-      caller;
-      granted = isGrantedAdmin(caller);
-      isController = caller.isController();
-    };
-  };
 
   // ── The buyer allow-list (#99 2b) ────────────────────────────────────────
   //
@@ -220,156 +178,57 @@ persistent actor CyclesGateway {
   // decides who may take cycles out of a funded reserve for free test money, so
   // it is not a per-case decision an admin makes — it is a rule.
 
-  /// Allow a principal to buy while this gateway accepts free test payments
-  /// (controller only, audited).
-  public shared ({ caller }) func add_allowed_buyer(p : Principal) : async Result.Result<(), ListError> {
-    requireController(caller);
-    // The anonymous principal is a shared identity: `create_order` rejects it
-    // before the gate, so a listed `2vxsx-fae` would be inert — but a list that
-    // contains it reads as though it were not.
-    if (p.isAnonymous()) return #err(#anonymousNotAllowed);
-    if (allowedBuyers.contains(p)) return #err(#alreadyPresent({ principal = p }));
-    allowedBuyers.add(p);
-    auditAdmin(caller, "buyer.allowed", p.toText());
-    #ok;
-  };
 
-  /// Revoke a buyer's allowance (controller only, audited).
-  ///
-  /// ⚠️ **Removing the LAST entry does not open the gateway up — it closes it.**
-  /// An empty list plus a funded reserve plus test payments is
-  /// `Gate.Reason.unboundedGiveaway`, which refuses everyone. The audit line says
-  /// so, because "revoked the last buyer" and "the gateway stopped selling" are
-  /// the same event and an operator should not have to connect them later.
-  public shared ({ caller }) func remove_allowed_buyer(p : Principal) : async Result.Result<(), ListError> {
-    requireController(caller);
-    if (not allowedBuyers.contains(p)) return #err(#notPresent({ principal = p }));
-    allowedBuyers.remove(p);
-    let emptied = allowedBuyers.size() == 0;
-    auditAdmin(
-      caller,
-      "buyer.disallowed",
-      p.toText()
-      # (
-        if (emptied and expectLivemode != ?true and reserveFloor > 0) {
-          " — ⚠️ the list is now EMPTY against a funded reserve, so the gateway refuses every buyer (unboundedGiveaway)";
-        } else if (emptied) { " — the list is now empty" } else { "" }
-      ),
-    );
-    #ok;
-  };
 
-  /// Who may buy while test payments are accepted (controller only).
-  ///
-  /// ⚠️ An empty list does not mean "everyone" — see `allowedBuyers`.
-  public shared query ({ caller }) func allowed_buyers() : async [Principal] {
-    requireController(caller);
-    allowedBuyers.values().toArray();
-  };
-
-  /// Provision or rotate the Stripe webhook signing secret (§7). Pass the
-  /// full `whsec_...` string from the Stripe dashboard — the whole string,
-  /// prefix included, is the HMAC key. NOTE: the argument transits the
-  /// TLS-terminating boundary node as plain ingress (§7 provisioning
-  /// exposure); rotate after provisioning over an untrusted path.
-  public shared ({ caller }) func set_webhook_secret(secret : Text) : async Result.Result<(), Secret.SetError> {
-    requireController(caller);
-    let result = Secret.set(webhookSecret, secret.encodeUtf8(), Time.now());
-    switch (result) {
-      case (#ok) {
-        // The secret itself is never logged — only that it changed, by whom,
-        // and to which generation, which is what a rotation audit needs.
-        auditAdmin(caller, "secret.set", "generation " # Secret.status(webhookSecret).generation.toText());
-      };
-      case (#err(_)) auditAdmin(caller, "secret.setRejected", "rejected as too short; the working secret is untouched");
-    };
-    result;
-  };
-
-  /// Provisioning state only — the secret itself is never readable back
-  /// out, even by controllers. `generation` confirms a rotation landed.
-  public shared query ({ caller }) func webhook_secret_status() : async Secret.Status {
-    requireAdmin(caller);
-    Secret.status(webhookSecret);
-  };
-
-  /// Provision or rotate the Stripe API key (#33) — admin, mirroring
-  /// `set_webhook_secret` in every respect including the provisioning caveat:
-  /// the argument transits the TLS-terminating boundary node as plain ingress.
-  /// #11 covers vetKeys for encrypted delivery, and now applies to two secrets.
-  public shared ({ caller }) func set_stripe_api_key(key : Text) : async Result.Result<(), Secret.SetError> {
-    requireController(caller);
-    let result = Secret.set(stripeApiKey, key.encodeUtf8(), Time.now());
-    switch (result) {
-      case (#ok) auditAdmin(caller, "stripe.apiKeySet", "generation " # Secret.status(stripeApiKey).generation.toText());
-      case (#err(_)) auditAdmin(caller, "stripe.apiKeyRejected", "rejected as too short; the working key is untouched");
-    };
-    result;
-  };
-
-  /// Whether the restricted Stripe key is provisioned — **never the key**.
-  ///
-  /// The console offers this read and no command for the setter: a rendered
-  /// `set_stripe_api_key` would put the key in a page's DOM and clipboard, which is what
-  /// `scripts/check-admin-commands.py` fails on. Admin-gated like every other read of
-  /// operational state that names a secret's presence.
-  public shared query ({ caller }) func stripe_api_key_status() : async Secret.Status {
-    requireAdmin(caller);
-    Secret.status(stripeApiKey);
-  };
-
-  public type OriginError = {
-    /// Anything but `https://`. A plain-HTTP return URL after a card payment is
-    /// not a thing to offer, and Stripe would render it.
-    #notHttps;
-    /// A query string or fragment would collide with the `#/order/<id>` route
-    /// appended to it, producing a URL that does not resolve to the order.
-    #hasQueryOrFragment;
-    #empty;
-  };
-
-  /// Set the origin Stripe returns buyers to (#33) — admin.
-  ///
-  /// Validated at set time rather than at session-create time, so a bad value
-  /// fails in front of the operator who typed it instead of breaking every
-  /// purchase later. Until a domain is chosen (#40/#23) this is the canister's
-  /// own asset origin.
-  public shared ({ caller }) func set_stripe_origin(origin : Text) : async Result.Result<(), OriginError> {
-    requireController(caller);
-    if (origin.size() == 0) return #err(#empty);
-    if (not origin.startsWith(#text "https://")) return #err(#notHttps);
-    if (origin.contains(#char '?') or origin.contains(#char '#')) return #err(#hasQueryOrFragment);
-    // Trailing slash trimmed here rather than at every use site, so
-    // `origin # "/#/order/" # id` cannot produce a double slash.
-    let trimmed = origin.trimEnd(#char '/');
-    stripeOrigin := ?trimmed;
-    auditAdmin(caller, "stripe.originSet", trimmed);
-    #ok;
-  };
-
-  /// The origin, readable back because it is not a secret — it is the URL
-  /// buyers are sent to, and an operator needs to confirm it.
-  public shared query func stripe_origin() : async ?Text {
-    stripeOrigin;
-  };
 
   // ── Order + tier state (task 6) ─────────────────────────────────────────
 
   /// §4.2 order store: `orders` + `principalsToOrders` history.
   let orderStore : Orders.Store = Orders.emptyStore();
 
-  /// §3 fixed card tiers. Operator config (§7): controllers create the
-  /// amounts the UI offers as tiles. Presentational since #33: a buyer can order
-  /// any amount between the gate's floor and ceiling, so an empty list means "no
-  /// tiles", not "rail off". Empty
-  /// until first `set_card_tiers` — no made-up default prices.
-  var cardTiers : [Tiers.Tier] = [];
+  // The price tiles, as one record.
+  // ⚠️ **A record rather than loose `var` fields, because `include` passes by value**
+  // (#120): a mixin handed a bare `var` gets a snapshot from install time, so its
+  // writes land on a copy and its reads never move. A record is a heap object, so the
+  // mixin and the actor share one. Grouped by subsystem, which is the slice a mixin
+  // asks for (`reviewing-motoko` A6) rather than an accessor per field.
+  let tierState : {
+    /// §3 fixed card tiers. Operator config (§7): controllers create the
+    /// amounts the UI offers as tiles. Presentational since #33: a buyer can order
+    /// any amount between the gate's floor and ceiling, so an empty list means "no
+    /// tiles", not "rail off". Empty
+    /// until first `set_card_tiers` — no made-up default prices.
+    var cards : [Tiers.Tier];
+  } = {
+    var cards = [];
+  };
 
-  /// Pre-creation admission policy (Gate.mo) — open-order cap, own-cycles
-  /// floor, per-purchase ceiling. These default to real
-  /// values: they are safety limits, and a zero default would brick the
-  /// canister rather than protect it.
-  var gateConfig : Gate.Config = Gate.defaultConfig();
+  /// The admission gate's mutable state, as ONE record (#120).
+  ///
+  /// ⚠️ **A record rather than three `var` fields, because `include` passes by value** —
+  /// a mixin handed a bare `var` gets a snapshot from install time, so its writes land
+  /// on a copy and its reads never move. A record is a heap object, so the mixin and the
+  /// actor share it. Grouped by subsystem rather than one wrapper per field: that is the
+  /// slice a mixin asks for (`reviewing-motoko` A6), and it keeps the include sites from
+  /// carrying an accessor per field.
+  let gateState : {
+    /// Pre-creation admission policy (Gate.mo) — open-order cap, own-cycles
+    /// floor, per-purchase ceiling. These default to real
+    /// values: they are safety limits, and a zero default would brick the
+    /// canister rather than protect it.
+    var config : Gate.Config;
+    /// Refusal tallies and the rail-state latch (#61).
+    ///
+    /// ⚠️ **Stable, because they replace an audit line.** These carry the content
+    /// of the per-attempt `order.notAdmitted` line that #61 removed, and losing
+    /// them on upgrade would lose the volume signal the monitoring rows read.
+    var refusals : Gate.RefusalCounts;
+    var latch : Gate.RailStateLatch;
+  } = {
+    var config = Gate.defaultConfig();
+    var refusals = Gate.noRefusals();
+    var latch = Gate.admitting();
+  };
 
   /// `payment_intent` → the order it paid for. Financial record, never pruned;
   /// the only way `charge.refunded` can tell whether the refunded payment had
@@ -383,25 +242,27 @@ persistent actor CyclesGateway {
   /// staleness window, which the one-shot refresh below covers.
   let rateCache : Pricing.Cache = Pricing.emptyCache();
 
-  /// §3 fee formula + staleness window + the delta guard. Admin-adjustable
-  /// without a redeploy. There is deliberately no rate-source setting: the XRC
-  /// and CMC ids are pinned in their modules, because a settable rate source is
-  /// a money lever that does not look like one.
-  var pricingConfig : Pricing.Config = Pricing.defaultConfig();
+  /// Pricing policy and the last refresh attempt, as one record.
+  /// ⚠️ **A record rather than loose `var` fields, because `include` passes by value**
+  /// (#120): a mixin handed a bare `var` gets a snapshot from install time, so its
+  /// writes land on a copy and its reads never move. A record is a heap object, so the
+  /// mixin and the actor share one. Grouped by subsystem, which is the slice a mixin
+  /// asks for (`reviewing-motoko` A6) rather than an accessor per field.
+  let pricingState : {
+    /// §3 fee formula + staleness window + the delta guard. Admin-adjustable
+    /// without a redeploy. There is deliberately no rate-source setting: the XRC
+    /// and CMC ids are pinned in their modules, because a settable rate source is
+    /// a money lever that does not look like one.
+    var config : Pricing.Config;
+    /// Liveness for ops. A stale rate is ambiguous between "the timer is dead"
+    /// and "XRC is erroring", and those want different responses — so both the
+    /// last attempt and the last error are recorded.
+    var lastAttempt : ?{ atNs : Int; ok : Bool; detail : Text };
+  } = {
+    var config = Pricing.defaultConfig();
+    var lastAttempt = null;
+  };
 
-  /// Which Stripe world this gateway belongs to, or null for "not declared".
-  ///
-  /// A test-mode webhook secret provisioned against a canister holding a funded
-  /// reserve would deliver real cycles for payments that never happened — the secret
-  /// is the only thing separating the two, and provisioning the wrong one is an
-  /// ordinary operator slip. Declaring the expectation lets the canister
-  /// refuse the mismatch instead of trusting that nobody pasted the wrong value.
-  ///
-  /// Null rather than `?true` by default so a fresh local install works against
-  /// a Stripe sandbox without configuration. The go-live checklist sets it, and
-  /// until it is set every honoured payment records `stripe.livemodeUnset` — a
-  /// nudge that stops as soon as the expectation is declared.
-  var expectLivemode : ?Bool = null;
 
   /// Which XRC this gateway prices from.
   ///
@@ -439,8 +300,8 @@ persistent actor CyclesGateway {
   /// upgrade mid-call would deadlock refreshes forever.
   transient var rateRefreshInFlight = false;
 
-  /// Consecutive refresh failures, for backoff. Transient — an upgrade is a
-  /// fine moment to retry immediately.
+  // Consecutive refresh failures, for backoff. Transient — an upgrade is a
+  // fine moment to retry immediately.
   transient var rateRefreshFailures : Nat = 0;
 
   /// Ticks to skip after a failure, doubling to this cap. XRC answers
@@ -451,10 +312,6 @@ persistent actor CyclesGateway {
   /// Remaining ticks to skip before the next attempt.
   transient var rateTicksToSkip : Nat = 0;
 
-  /// Liveness for ops. A stale rate is ambiguous between "the timer is dead"
-  /// and "XRC is erroring", and those want different responses — so both the
-  /// last attempt and the last error are recorded.
-  var lastRateAttempt : ?{ atNs : Int; ok : Bool; detail : Text } = null;
 
   /// Is the rail live enough to be worth spending cycles keeping a rate warm?
   /// A dark gateway refreshes nothing.
@@ -468,7 +325,7 @@ persistent actor CyclesGateway {
   ///   and we cannot credit them.
   ///
   /// Neither state can complete a purchase, so neither should accept one. This
-  /// used to read `cardTiers.size() > 0`, which was a proxy inherited from the
+  /// used to read `tiers.cards.size() > 0`, which was a proxy inherited from the
   /// Payment Link design — and with custom amounts it would stop nothing.
   ///
   /// It gates the rate-refresh timer, so this also fixes a real waste: a gateway
@@ -478,7 +335,7 @@ persistent actor CyclesGateway {
   };
 
   func recordRateAttempt(ok : Bool, detail : Text) {
-    lastRateAttempt := ?{ atNs = Time.now(); ok; detail };
+    pricingState.lastAttempt := ?{ atNs = Time.now(); ok; detail };
     if (ok) {
       rateRefreshFailures := 0;
     } else {
@@ -525,12 +382,12 @@ persistent actor CyclesGateway {
       // The one-exchange case: XRC's own consistency check cannot catch it,
       // because a single rate cannot disagree with itself.
       let quality = Xrc.qualityOf(rate);
-      if (quality.receivedRates < pricingConfig.minRateSources) {
+      if (quality.receivedRates < pricingState.config.minRateSources) {
         recordRateAttempt(
           false,
           "too few rate sources: " # quality.receivedRates.toText() # " of "
           # quality.queriedSources.toText() # " answered, need "
-          # pricingConfig.minRateSources.toText(),
+          # pricingState.config.minRateSources.toText(),
         );
         return;
       };
@@ -544,11 +401,11 @@ persistent actor CyclesGateway {
       // refresh would be rejected against an ancient price that itself can never
       // be replaced, so orders stay refused until an operator widens the config.
       // Guarding a move only makes sense between two observations close in time.
-      let previous = switch (Pricing.freshRates(rateCache, pricingConfig.maxAgeNs, Time.now())) {
+      let previous = switch (Pricing.freshRates(rateCache, pricingState.config.maxAgeNs, Time.now())) {
         case (?prior) ?prior.usdPerIcpMicros;
         case null null;
       };
-      if (not Pricing.withinDelta(previous, usdPerIcpMicros, pricingConfig.maxRateDeltaBps)) {
+      if (not Pricing.withinDelta(previous, usdPerIcpMicros, pricingState.config.maxRateDeltaBps)) {
         recordRateAttempt(false, "ICP price moved beyond the delta guard: " # usdPerIcpMicros.toText() # " micro-USD");
         return;
       };
@@ -624,98 +481,12 @@ persistent actor CyclesGateway {
   /// separately, so the two can never be set inconsistently — a cadence longer
   /// than the window would let the cache lapse between ticks and refuse orders.
   func rateIntervalNs() : Nat {
-    let half = Int.abs(pricingConfig.maxAgeNs) / 2;
+    let half = Int.abs(pricingState.config.maxAgeNs) / 2;
     if (half < 30_000_000_000) 30_000_000_000 else half;
   };
 
-  /// Adjust pricing params (§7): fee formula, staleness window, delta guard.
-  /// Validated atomically — a bad config never partially applies.
-  /// ⚠️ **Three divisor guards live here rather than in `Pricing.validateConfig`,
-  /// because each needs context that module cannot see** (#99). All three are
-  /// checked before anything is written, so a bad config never partially applies.
-  public shared ({ caller }) func set_pricing_config(config : Pricing.Config) : async Result.Result<(), Pricing.ConfigError> {
-    requireController(caller);
-    // 1. ⚠️ **`?false` EXACTLY, not `!= ?true`.** `null` means "either mode", so
-    // it accepts live payments — and `null` is the default. A guard keyed on
-    // `?true` would leave the state every freshly installed canister is in wide
-    // open, and that state takes real money and under-delivers.
-    if (config.divisor > 1 and expectLivemode != ?false) {
-      return #err(#divisorNeedsSandbox({ expectLivemode }));
-    };
-    // 2. The divisor is global, so it must not move under stored orders — every
-    // earlier receipt would recompute against the new value and report a
-    // mismatch. `storedCount` is `orders.size()`, so this costs one comparison.
-    if (config.divisor != pricingConfig.divisor) {
-      let stored = Orders.storedCount(orderStore);
-      if (stored > 0) return #err(#divisorChangeWithOrders({ stored }));
-    };
-    // 3. Would the smallest purchase we sell still clear the ledger's flat
-    // deposit fee at this divisor? Advisory-at-set-time only: `Pricing.quote`
-    // re-checks every order, because this one goes stale as rates move.
-    switch (
-      Pricing.divisorDeliverable(
-        rateCache,
-        { feeBps = config.feeBps; feeFixedCents = config.feeFixedCents },
-        gateConfig.minPurchaseUsdCents,
-        config.divisor,
-        cyclesLedgerFee,
-      )
-    ) {
-      case (#err(e)) return #err(e);
-      case (#ok) {};
-    };
-    switch (Pricing.validateConfig(config)) {
-      case (#ok) {
-        pricingConfig := config;
-        // The cadence is derived from maxAgeNs, so re-arm rather than waiting
-        // for the old interval to elapse under the new window.
-        Timer.cancelTimer(rateTimerId);
-        rateTimerId := Timer.recurringTimer<system>(#nanoseconds(rateIntervalNs()), rateTimerJob);
-        auditAdmin(
-          caller,
-          "rates.configSet",
-          "maxAgeNs=" # config.maxAgeNs.toText()
-          # " deltaBps=" # config.maxRateDeltaBps.toText()
-          # " divisor=" # config.divisor.toText(),
-        );
-        #ok;
-      };
-      case (#err(e)) #err(e);
-    };
-  };
 
-  /// Rates + params + refresh liveness, public: both rates are market data any
-  /// third party can query for themselves, and the fee formula is what users
-  /// are charged. Nothing here is secret, and reproducibility is the point.
-  public query func pricing_status() : async {
-    rates : ?Pricing.Rates;
-    config : Pricing.Config;
-    lastAttempt : ?{ atNs : Int; ok : Bool; detail : Text };
-    /// Which Exchange Rate Canister the last refresh actually priced from. On
-    /// mainnet this MUST read `uf6dk-hyaaa-aaaaq-qaaaq-cai`; anything else means
-    /// the deploy injected `PUBLIC_CANISTER_ID:xrc` and prices are coming from
-    /// somewhere else. Alert on it (RUNBOOK §8).
-    ///
-    /// **Null means no refresh has resolved it yet** — not that it is the mainnet
-    /// canister. Null is the expected reading for the first seconds after an
-    /// install or upgrade, and it is a "check again", never a pass.
-    xrcCanisterId : ?Text;
-  } {
-    {
-      rates = Pricing.lastRates(rateCache);
-      config = pricingConfig;
-      lastAttempt = lastRateAttempt;
-      xrcCanisterId = lastXrcCanisterId;
-    };
-  };
 
-  /// Force a rate refresh now (admin) — the ops lever after retuning config or
-  /// while diagnosing a stale rate, without waiting for the next tick.
-  public shared ({ caller }) func refresh_rates() : async ?Pricing.Rates {
-    requireAdmin(caller);
-    await* refreshRates();
-    Pricing.lastRates(rateCache);
-  };
 
   // ── Orders: create/query (task 6) ───────────────────────────────────────
 
@@ -729,100 +500,9 @@ persistent actor CyclesGateway {
   /// the entropy source is broken, not that we're unlucky.
   transient let maxIdAttempts : Nat = 3;
 
-  public type CreateOrderError = {
-    /// Anonymous principal — a shared identity can't own orders (§7).
-    #anonymous;
-    /// No configured preset with this id. Only reachable for `#tier`.
-    #unknownTier : Text;
-    /// §3 fee formula swallows the tier's gross amount — a tier/fee config
-    /// problem for the operator, not something a retry fixes.
-    ///
-    /// ⚠️ **The buyer's fix is "pick a larger amount", which is why the
-    /// simulation-scale case below is NOT folded in here.** Telling a buyer that
-    /// payment processing is too large, when the cause is this gateway's
-    /// simulation divisor, names the wrong party and prescribes a fix that may
-    /// not work (#99 review finding 2).
-    #tierBelowFees : Text;
-    /// The SCALED cycles would not clear the flat cycles-ledger deposit fee: this
-    /// gateway's simulation divisor is too large for this purchase (#99 2d).
-    ///
-    /// Not the buyer's fault and not fixable by them — it is an operator's
-    /// configuration. Carries both figures so the refusal is diagnosable.
-    #simulationScaleTooSmall : { scaledCycles : Nat; ledgerFee : Nat };
-    /// #30 PR-B: the reserve balance could not be read, so solvency is unknown.
-    /// Fails closed on purpose — selling against an unknown balance is exactly
-    /// what the check exists to prevent. (A short reserve is reported through
-    /// `#notAdmitted(#reserveShort)`, which carries both figures.)
-    #reserveUnavailable;
-    /// §3.1 fail-closed: no fresh rate and the refresh failed (or one is
-    /// already in flight), so no price, so no order. Retry shortly.
-    #rateUnavailable;
-    /// The caller pinned a minimum cycle quantity and the current rate no
-    /// longer clears it. Carries what the amount buys now, so the caller can
-    /// show the buyer the real figure and let them decide.
-    #quoteChanged : { quoted : Nat; minimum : Nat };
-    /// Entropy source misbehaved (short blob or repeated collisions).
-    #idGeneration;
-    /// Gate.mo admission refusal — carries the observed value and the bound so
-    /// the frontend can say *why* rather than failing generically.
-    #notAdmitted : Gate.Reason;
-    /// The destination is not the caller's own default-subaccount cycles-ledger
-    /// account. Cycles go to the buyer and nowhere else, and that is a property
-    /// of the canister rather than of whichever frontend called it (#29).
-    #destinationNotOwned;
-    /// No payable Checkout Session could be created (#33): the API key or the
-    /// origin is unset, Stripe refused, or the outcall failed. Carries a reason
-    /// so the operator can tell "not provisioned yet" from "Stripe is down"
-    /// without reading the audit log. The order was created and then failed, so
-    /// the buyer's open-order slot is already free — they retry, they do not wait.
-    ///
-    /// Deliberately distinct from `#notAdmitted`: this is the operator's problem,
-    /// that one is the buyer's.
-    #sessionUnavailable : Text;
-    /// The order was cancelled from another tab while its session was being
-    /// created. The session exists at Stripe but its URL never left the canister,
-    /// so it is unreachable and dies at its own `expires_at`.
-    #cancelledDuringCreation;
-  };
 
-  /// What the buyer is paying for: a preset, or an amount they typed (#33).
-  ///
-  /// A variant rather than a second method, so the quote, the gate and the
-  /// session path stay single. Everything downstream keys off gross USD cents,
-  /// which is what both cases resolve to — the floor and the ceiling then apply
-  /// uniformly instead of one bound per entry point.
-  public type Amount = {
-    #tier : Text;
-    /// Gross USD cents, straight from the buyer. Bounded by
-    /// `Gate.Config`'s floor and ceiling like any other amount — and bounded
-    /// **here**, not only in the frontend, because a frontend-only bound is not a
-    /// bound.
-    #custom : Nat;
-  };
 
-  public type CreatedOrder = {
-    /// The order, carrying `stripeSessionUrl` — which is the only thing the
-    /// caller needs to send the buyer to Stripe.
-    ///
-    /// ⚠️ `clientReferenceId` used to be here. It existed so the frontend could
-    /// append `?client_reference_id=` to a **Payment Link URL**; the canister now
-    /// sets it through the API, so it was a Payment-Link relic sitting in a public
-    /// response type (#33). It is derivable — `<principal>_<orderId>` — and the
-    /// frontend computes it for the receipt field rather than being handed it.
-    order : Types.Order;
-  };
 
-  /// The outcall transform (#33). Referenced by name in the request, so it has to
-  /// be a public `shared query` on the actor even though nothing should ever call
-  /// it directly.
-  ///
-  /// Its whole job is `Session.strip`: **remove every response header.** Stripe
-  /// returns a unique `request-id` per HTTP request, and each replica issues its
-  /// own request — so passing headers through fails consensus on *every* call, not
-  /// occasionally. Replication-count independent: any `n > 1` breaks.
-  public shared query func transform_stripe_response(args : { context : Blob; response : IC.HttpRequestResult }) : async IC.HttpRequestResult {
-    Session.strip(args.response);
-  };
 
   /// Create the Checkout Session for a freshly committed order (#33).
   ///
@@ -844,10 +524,10 @@ persistent actor CyclesGateway {
   ///
   /// #33's own finding 1 says it: *fail closed rather than creating a sessionless
   /// order.*
-  func sessionConfig() : { #ok : { apiKey : Text; origin : Text }; #err : SessionError } {
+  func sessionConfig() : { #ok : { apiKey : Text; origin : Text }; #err : Session.Error } {
     let ?apiKey = Secret.get(stripeApiKey) else return #err(#railClosed);
     let ?keyText = apiKey.decodeUtf8() else return #err(#railClosed);
-    let ?origin = stripeOrigin else return #err(#originUnset);
+    let ?origin = stripeState.origin else return #err(#originUnset);
     #ok({ apiKey = keyText; origin });
   };
 
@@ -856,7 +536,7 @@ persistent actor CyclesGateway {
     orderId : Types.OrderId,
     clientReferenceId : Text,
     usdCents : Nat,
-  ) : async* { #ok : Session.Created; #err : SessionError } {
+  ) : async* { #ok : Session.Created; #err : Session.Error } {
     let keyText = config.apiKey;
     let origin = config.origin;
     // Stripe evaluates the 30-minute floor against ITS clock on receipt, so the
@@ -897,7 +577,7 @@ persistent actor CyclesGateway {
         // Checked HERE rather than at webhook time: with two mode-bearing
         // secrets — this key and the webhook secret — they can disagree, and
         // catching it at session creation is before any money moves.
-        switch (expectLivemode) {
+        switch (stripeState.expectLivemode) {
           case (?expected) {
             if (created.livemode != expected) {
               return #err(#livemodeMismatch({ sessionLivemode = created.livemode; expected }));
@@ -980,19 +660,8 @@ persistent actor CyclesGateway {
     #ok(Session.classify(response.body));
   };
 
-  public type SessionError = {
-    /// The API key is not provisioned. The rail cannot produce a payable session.
-    #railClosed;
-    /// No origin set, so there is no URL to return the buyer to.
-    #originUnset;
-    #outcallFailed : Text;
-    #stripeRejected : { status : Nat };
-    #unparseableResponse;
-    #missingField : Text;
-    #livemodeMismatch : { sessionLivemode : Bool; expected : Bool };
-  };
 
-  func sessionErrorToText(e : SessionError) : Text {
+  func sessionErrorToText(e : Session.Error) : Text {
     switch (e) {
       case (#railClosed) "the Stripe API key is not provisioned";
       case (#originUnset) "no return origin is configured";
@@ -1009,60 +678,6 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// One quote = one consistent epoch: the caller snapshots the rail's fee
-  /// formula *before* any await, and both rates are read once from the cache
-  /// here. The §6.1 pricing snapshot persisted on the order carries both rate
-  /// inputs from that same epoch — which is what a buyer recomputes their own
-  /// price from, and what a delivered order is auditable against. (It was also
-  /// what the webhook repriced a mismatched paid amount from, until #33 made a
-  /// mismatch deliver nothing.)
-  ///
-  /// Synchronous and awaitless by design: the rates come from the cache the
-  /// refresh timer maintains, never from a call. That is what keeps a
-  /// user-facing method from being able to trigger a paid XRC request.
-  ///
-  /// The fee is a parameter because each rail prices with its own formula (card
-  /// = the Stripe formula in `pricingConfig`) over
-  /// the one shared rate cache.
-  func quoteCents(fee : { feeBps : Nat; feeFixedCents : Nat }, usdCents : Nat) : {
-    #ok : (Nat, Types.Pricing);
-    #stale;
-    #unpriceable : Pricing.Unpriceable;
-  } {
-    switch (
-      Pricing.quote(
-        rateCache,
-        fee,
-        pricingConfig.maxAgeNs,
-        usdCents,
-        Time.now(),
-        pricingConfig.divisor,
-        cyclesLedgerFee,
-      )
-    ) {
-      case (#stale) #stale;
-      case (#unpriceable(cause)) #unpriceable(cause);
-      case (#ok({ cycles; rates })) {
-        #ok((
-          cycles,
-          {
-            usdCents;
-            usdPerIcpMicros = rates.usdPerIcpMicros;
-            xdrPermyriadPerIcp = rates.xdrPermyriadPerIcp;
-            rateStandardDeviation = rates.quality.standardDeviation;
-            rateReceivedRates = rates.quality.receivedRates;
-            rateQueriedSources = rates.quality.queriedSources;
-            feeBps = fee.feeBps;
-            feeFixedCents = fee.feeFixedCents;
-            // The one field of `Pricing.Rates` this copy used to drop. Without
-            // it `createdAtNs` is the only timestamp on the record, and it is
-            // not when these rates were read (#34).
-            ratesFetchedAtNs = rates.fetchedAtNs;
-          },
-        ));
-      };
-    };
-  };
 
   /// Read every admission input, synchronously, immediately before deciding —
   /// no awaits in between, so there is no TOCTOU window between observing and
@@ -1076,11 +691,11 @@ persistent actor CyclesGateway {
       // The maintained floor, read synchronously like everything else here. Used
       // by the faucet check as `> 0` only — never as a solvency input, which is
       // decided separately in `admitOrder`. See `Gate.Observation.reserveFloor`.
-      reserveFloor;
+      reserveFloor = reserveState.floor;
       // ⚠️ `!= ?true`, so `null` ("either mode") counts as accepting test
       // payments. It is also the DEFAULT, so a freshly installed canister is in
       // this state — a predicate keyed on `?false` would miss exactly that.
-      acceptsTestPayments = expectLivemode != ?true;
+      acceptsTestPayments = stripeState.expectLivemode != ?true;
       buyerAllowlistEmpty = allowedBuyers.size() == 0;
       // ⚠️ **The anonymous principal is EXEMPT from the list, and the exemption
       // cannot widen anything.** `create_order` rejects `#anonymous` through
@@ -1102,7 +717,7 @@ persistent actor CyclesGateway {
   /// discovering it at delivery time. Audited on refusal — a rail that has quietly
   /// stopped selling is something the operator must be able to see.
   func admit(caller : Principal, usdCents : Nat) : Result.Result<(), Gate.Reason> {
-    switch (Gate.admit(gateConfig, gateObservation(caller), usdCents)) {
+    switch (Gate.admit(gateState.config, gateObservation(caller), usdCents)) {
       case (#ok) #ok;
       case (#err(reason)) {
         noteRefusal(reason);
@@ -1132,7 +747,7 @@ persistent actor CyclesGateway {
       case (#err(reason)) return #err(reason);
       case (#ok) {};
     };
-    // ⚠️ **Synchronous, and that is the whole design.** `reserveFloor` is a
+    // ⚠️ **Synchronous, and that is the whole design.** `reserveState.floor` is a
     // maintained lower bound on the ledger balance, moved only by our own
     // outflows — so there is no awaited value to go stale and nothing to pair
     // across an await. `Reserve.mo`'s floor section carries the asymmetry this
@@ -1143,7 +758,7 @@ persistent actor CyclesGateway {
     // `available` optimistic by a full order at the ceiling. The fix was not a
     // fresher read — any awaited value is historical by the time it is used — it
     // was removing the read from the decision.
-    switch (Gate.solvent(reserveFloor, Orders.promised(orderStore), lockedCycles)) {
+    switch (Gate.solvent(reserveState.floor, Orders.promised(orderStore), lockedCycles)) {
       case (#err(reason)) {
         noteRefusal(reason);
         #err(reason);
@@ -1155,7 +770,7 @@ persistent actor CyclesGateway {
         // say — returns before the reserve is ever consulted, so it is not
         // evidence that the reserve recovered; clearing on it would drop the
         // latch and re-announce on the next genuine refusal.
-        railStateLatch := Gate.latchAdmission(railStateLatch);
+        gateState.latch := Gate.latchAdmission(gateState.latch);
         #ok;
       };
     };
@@ -1207,462 +822,18 @@ persistent actor CyclesGateway {
     #err(#idGeneration);
   };
 
-  /// Create a card-rail order: II caller becomes the owner (ownership is
-  /// captured here at the API edge, seam §11.1.3), the tier's USD amount is
-  /// quoted into a locked cycle *quantity* (§3, net of fees at the cached
-  /// rate — a stale cache refreshes lazily, a failed refresh fails closed
-  /// §3.1), and the ID comes from raw_rand. The fee config is snapshotted
-  /// before the refresh await, so one order is always priced from one
-  /// consistent epoch even when a refresh interleaves with a config change;
-  /// the store write after the awaits is atomic.
-  /// `minCycles` pins the quantity the caller was shown (§3).
-  ///
-  /// The rate refresh runs on a timer, so a figure quoted to a buyer can move
-  /// before they commit — and a client-side re-check cannot close that window,
-  /// because a query and this update are separate messages. Pinning the
-  /// expectation here makes the check atomic with the lock, so no order can ever
-  /// be created at a quantity the buyer was not shown.
-  ///
-  /// A **minimum**, deliberately, not an equality: a rate move in the buyer's
-  /// favour passes through and they keep the extra cycles. The guard can only
-  /// ever protect the buyer. `null` opts out entirely.
-  public shared ({ caller }) func create_order(
-    amount : Amount,
-    destination : Types.Destination,
-    minCycles : ?Nat,
-  ) : async Result.Result<CreatedOrder, CreateOrderError> {
-    switch (Auth.checkUser(caller)) {
-      case (#err(#anonymous)) return #err(#anonymous);
-      case (#ok) {};
-    };
-    // Argument validation before any work, and before the gate: cycles go to the
-    // caller's own account or the order is not created (#29). Checked HERE
-    // rather than in the frontend, because a hand-crafted call reaches this
-    // method too — "the cycles come to you" is only true if the gateway enforces
-    // it.
-    if (not Types.isOwnDestination(destination, caller)) {
-      return #err(#destinationNotOwned);
-    };
-    // The rail's own state, before anything about this particular request. If no
-    // session can be created then no tier matters, and "card payments are not
-    // available yet" is a more useful answer than "unknown tier" — as well as a
-    // cheaper one. Ordering: caller, then arguments that depend only on the
-    // caller, then the RAIL, then this request's tier and admission.
-    let config = switch (sessionConfig()) {
-      case (#ok(c)) c;
-      case (#err(e)) {
-        noteRailClosed(e);
-        return #err(#sessionUnavailable(sessionErrorToText(e)));
-      };
-    };
-    // Both cases collapse to gross USD cents here, and everything after this is
-    // identical for a preset and a typed amount — which is the point of the
-    // variant: one quote path, one gate, one session.
-    let (usdCents, quoteLabel) = switch (amount) {
-      case (#tier(tierId)) {
-        let ?tier = Tiers.find(cardTiers, tierId) else return #err(#unknownTier(tierId));
-        (tier.usdCents, tierId);
-      };
-      // NOT validated against the presets: a custom amount is any amount the
-      // gate admits, and the gate is the only bound. Checking it against the
-      // tier list would make presets a constraint again.
-      case (#custom(cents)) (cents, cents.toText() # " cents");
-    };
-    // A cheap PRE-REFUSAL before any await, so a spamming principal is turned
-    // away before it can make the canister do work (`canister-security`: anyone
-    // can burn your cycles with update calls). The floor and ceiling are enforced
-    // here, for both cases alike.
-    //
-    // ⚠️ **This can only refuse, never admit.** The authoritative decision is
-    // `admitOrder` inside the create block below, which additionally checks
-    // solvency. Two calls, one decision — do not read this as the gate.
-    switch (admit(caller, usdCents)) {
-      case (#err(reason)) return #err(#notAdmitted(reason));
-      case (#ok) {};
-    };
-    let fee = { feeBps = pricingConfig.feeBps; feeFixedCents = pricingConfig.feeFixedCents };
-    let (lockedCycles, pricing) = switch (quoteCents(fee, usdCents)) {
-      case (#ok(quoted)) quoted;
-      case (#unpriceable(#stripeFee)) return #err(#tierBelowFees(quoteLabel));
-      case (#unpriceable(#simulationScale(figures))) {
-        return #err(#simulationScaleTooSmall(figures));
-      };
-      case (#stale) return #err(#rateUnavailable);
-    };
-    switch (minCycles) {
-      case (?minimum) if (lockedCycles < minimum) {
-        return #err(#quoteChanged({ quoted = lockedCycles; minimum }));
-      };
-      case null {};
-    };
-    let owner : Types.Owner = #ii(caller);
 
-    // ── The order, held against the reserve floor ────────────────────────────
-    //
-    // ⚠️ **No ledger call here, and the decision must stay synchronous.**
-    // `reserveFloor` is a maintained lower bound moved only by our own outflows
-    // (§5.4), so the check and the hold sit in ONE block inside
-    // `createOrderWithFreshId` with no await between them. Motoko messages do not
-    // interleave except at an await, so whichever block runs second sees the first
-    // one's hold. **Splitting them across an await lets two concurrent creates
-    // promise the same cycles** — which is what an earlier version did, and no
-    // fresher balance read can fix it: an awaited value is historical the moment
-    // the continuation resumes.
-    let order = switch (
-      await* createOrderWithFreshId(caller, usdCents, owner, #card, destination, lockedCycles, pricing)
-    ) {
-      case (#ok(o)) o;
-      case (#err(#idGeneration)) return #err(#idGeneration);
-      case (#err(#notAdmitted(reason))) return #err(#notAdmitted(reason));
-    };
-    let clientReferenceId = Orders.clientReferenceId(owner, order.id);
 
-    // ── The session, after the order exists ─────────────────────────────────
-    // The ordering is forced: the order id IS the `client_reference_id`, so the
-    // order must be committed before the session can name it. Which means an
-    // await sits between them, and everything below is about that gap.
-    switch (await* createStripeSession(config, order.id, clientReferenceId, order.pricing.usdCents)) {
-      case (#err(e)) {
-        // Fail the order in the same call and let the buyer start over. There is
-        // no retry method by design: a `payment_session(orderId)` retry was the
-        // only thing that created orders in a sessionless state, and every
-        // downstream complication chained off that — a promise no
-        // `checkout.session.expired` can release, a sweep promoted into a release
-        // path, a per-attempt idempotency key Stripe rejects on a changed body.
-        //
-        // ⚠️ Through `expireWithCause`, never a direct status write: a second tab
-        // may have cancelled this order while the outcall was in flight, and the
-        // matrix no-ops `#cancelled → #expired` for free.
-        switch (Orders.expireWithCause(orderStore, order.id, #sessionFailed, Time.now())) {
-          case (#ok(_)) {};
-          case (#err(_)) {}; // already cancelled or gone; nothing to undo
-        };
-        noteStripeApiFailed("create: " # sessionErrorToText(e));
-        return #err(#sessionUnavailable(sessionErrorToText(e)));
-      };
-      case (#ok(created)) {
-        // Stripe answered, so the outcall is working again. This is the ONLY
-        // evidence that bears on `#stripeApiFailing` — `latchAdmission` cannot
-        // clear it, because admission runs *before* this call and says nothing
-        // about it (#37 §2c).
-        railStateLatch := Gate.latchStripeApiOk(railStateLatch);
-        // ⚠️ Re-check the status before storing. `create_order` committed the
-        // order as `#created` and then awaited, so `cancel_order` from a second
-        // tab can have run in between — its sessionless branch fires, because no
-        // session id existed yet. Storing the URL anyway would hand the buyer a
-        // payable link for an order they were told was cancelled. Money-safe (the
-        // matrix rejects `#cancelled → #paid`) but it recreates exactly the
-        // "told cancelled, tab still charges" wart atomic cancellation exists to
-        // eliminate. `attachSession` enforces this; the branch below reports it.
-        switch (
-          Orders.attachSession(
-            orderStore,
-            order.id,
-            created.id,
-            created.url,
-            Session.secondsToNs(created.expiresAtSeconds),
-            Time.now(),
-          )
-        ) {
-          case (#ok(withSession)) #ok({ order = withSession });
-          case (#err(_)) {
-            // The session is unreachable either way: its URL never left the
-            // canister, so nobody can pay it, and it dies at its own expires_at.
-            audit("stripe.sessionOrphaned", order.id # ": cancelled during creation; session " # created.id # " left to expire");
-            #err(#cancelledDuringCreation);
-          };
-        };
-      };
-    };
-  };
 
-  /// §2 query authz: `caller == order.owner`, null otherwise — existence is
-  /// not revealed to non-owners. Anonymous callers own nothing by
-  /// construction (create_order rejects them), so they always get null.
-  public shared query ({ caller }) func get_order(id : Types.OrderId) : async ?Types.Order {
-    Orders.getOwned(orderStore, id, caller);
-  };
 
-  /// Order history for the caller (§2, fixes the lost-receipt problem).
-  /// The caller's own orders, **paginated** (#38).
-  ///
-  /// ⚠️ **This was a latent trap on the BUYER path, not an ergonomic wart.** It returned
-  /// every order the caller owns, unbounded, and a query response is capped at ~2 MB —
-  /// so an oversized read does not degrade, it **traps**. The open-order cap of 1 means
-  /// a buyer accumulates them slowly, but nothing bounded it, and nothing drops orders
-  /// under #37.
-  ///
-  /// ⚠️ **Paging bounded the RESPONSE; `Orders.ownerPage` bounds the WORK (#70).** The
-  /// admin pager's owner filter walks every principal's orders to find one principal's,
-  /// so this used to cost O(all orders ever created) in a single message — a page cap on
-  /// a ~2 MB response, against a limit that is actually instructions. `ownerPage` walks
-  /// the caller's own index from the cursor instead, and its cost is that buyer's page.
-  public shared query ({ caller }) func list_orders(
-    afterId : ?Types.OrderId,
-    limit : Nat,
-  ) : async Orders.Page {
-    // ⚠️ The SAME function the unit test's `scanned` bound is asserted on, with the
-    // count projected away here (#70). A separate uninstrumented path for production
-    // would put that bound on code nobody runs.
-    Orders.ownerPage(orderStore, caller, afterId, limit).page;
-  };
 
-  /// Replace the card presets (§3/§7 — admin, validated atomically: a bad config
-  /// never partially applies).
-  ///
-  /// ⚠️ **This is no longer the rail's on/off switch.** An empty list used to
-  /// pause the rail, and the audit line said "CARD RAIL PAUSED". With custom
-  /// amounts (#33) a buyer can order without any preset, so an empty list stops
-  /// nothing — it just shows no tiles. The switch is both Stripe secrets being
-  /// provisioned; `railsLive` is where that lives.
-  public shared ({ caller }) func set_card_tiers(tiers : [Tiers.Tier]) : async Result.Result<(), Tiers.ValidateError> {
-    requireController(caller);
-    switch (Tiers.validate(tiers, gateConfig.minPurchaseUsdCents, gateConfig.maxPurchaseUsdCents)) {
-      case (#ok) {
-        cardTiers := tiers;
-        auditAdmin(caller, "tiers.set", tiers.size().toText() # " preset(s)" # (if (tiers.size() == 0) " — no presets shown; the rail is unaffected" else ""));
-        #ok;
-      };
-      case (#err(e)) #err(e);
-    };
-  };
 
-  /// Why the expected Stripe mode could not be set (#123).
-  ///
-  /// ⚠️ **One case, and it stays a variant rather than collapsing to `()`.** The refusal
-  /// is not "bad argument" — it is a *conflict with another setting*, and the caller
-  /// needs the conflicting value to explain it. A second reason to refuse is plausible
-  /// (a live mode with no key provisioned, say), and a variant admits one without
-  /// changing the shape callers already match on.
-  public type LivemodeError = {
-    /// A simulation divisor is set, so only `?false` is accepted: taking live or
-    /// either-mode payments while scaling cycles down would short a paying buyer.
-    /// Clearing the divisor needs a reinstall — see `set_pricing_config`.
-    #simulationDivisorSet : { divisor : Nat };
-  };
 
-  /// Declare which Stripe mode this gateway serves (controller only).
-  ///
-  /// Set it to `?true` before taking real payments and `?false` on a sandbox
-  /// deployment. `null` restores "accept either", which only makes sense while
-  /// nothing of value is at stake — and it is the default, so a fresh canister
-  /// starts there.
-  ///
-  /// ⚠️ **The other half of the divisor's mutual refusal (#99 2a).** While a
-  /// simulation divisor is set, this refuses anything but `?false`: live mode
-  /// takes real money and delivers scaled cycles, and `null` accepts live
-  /// payments too. Mutual, so **neither order of operations** reaches the state
-  /// that shorts a paying buyer — it is unrepresentable rather than discouraged.
-  public shared ({ caller }) func set_expected_livemode(expected : ?Bool) : async Result.Result<(), LivemodeError> {
-    requireController(caller);
-    if (expected != ?false and pricingConfig.divisor > 1) {
-      // The divisor travels as DATA (#123): a console can say which value is blocking
-      // this without parsing it back out of a sentence, and the remedy is one lever.
-      return #err(#simulationDivisorSet({ divisor = pricingConfig.divisor }));
-    };
-    expectLivemode := expected;
-    auditAdmin(
-      caller,
-      "stripe.expectLivemodeSet",
-      switch (expected) {
-        case (?true) "true — only live-mode payments deliver";
-        case (?false) "false — only test-mode payments deliver";
-        case null "unset — either mode delivers";
-      },
-    );
-    #ok;
-  };
 
-  /// Which Stripe mode this gateway declares it serves, or null while unset.
-  ///
-  /// Public because the page reads it: a sandbox deployment says so on every view, and
-  /// a mismatch against the mode a webhook arrives in is what `Card.handleWebhook`
-  /// refuses on. `set_expected_livemode` is the controller-only setter.
-  public query func expected_livemode() : async ?Bool {
-    expectLivemode;
-  };
 
-  /// Adjust the admission gate (§7): open-order cap, own-cycles floor,
-  /// per-purchase ceiling. Validated atomically — a bad config never partially
-  /// applies. Lowering `maxPurchaseUsdCents` below an existing tier does NOT
-  /// retroactively invalidate that tier's registration, but the next
-  /// `set_card_tiers` will reject it and the webhook will refuse to deliver a
-  /// payment above the new ceiling.
-  public shared ({ caller }) func set_gate_config(config : Gate.Config) : async Result.Result<(), Gate.ConfigError> {
-    requireController(caller);
-    // Cross-check against live tiers: lowering the ceiling under a registered tier
-    // would leave it sellable but unpayable (see Gate.ConfigError.tierAboveCeiling).
-    let tierPrices = cardTiers.map(func(t) = (t.id, t.usdCents));
-    // ⚠️ **The divisor's ceiling is a function of the FLOOR, so lowering the floor
-    // has to be checked against the divisor** (#99). `set_pricing_config` refuses a
-    // divisor the current minimum purchase cannot survive; without this, the same
-    // configuration is reachable from the other direction — set the divisor at a
-    // $10 floor, then drop the floor to $1. Mutual, like the livemode guard, so
-    // neither order of operations gets there.
-    //
-    // Checked before anything writes, and only when a divisor is actually set, so a
-    // production gateway's gate config is unaffected.
-    if (pricingConfig.divisor > 1) {
-      switch (
-        Pricing.divisorDeliverable(
-          rateCache,
-          { feeBps = pricingConfig.feeBps; feeFixedCents = pricingConfig.feeFixedCents },
-          config.minPurchaseUsdCents,
-          pricingConfig.divisor,
-          cyclesLedgerFee,
-        )
-      ) {
-        case (#err(#divisorUndeliverable({ scaledCycles; ledgerFee }))) {
-          return #err(#floorUndeliverableAtDivisor({
-            minUsdCents = config.minPurchaseUsdCents;
-            divisor = pricingConfig.divisor;
-            scaledCycles;
-            ledgerFee;
-          }));
-        };
-        // ⚠️ **Every other `Pricing.ConfigError` is DROPPED here, and each by name so
-        // the discard is a decision rather than a catch-all.** A bare `case (#err(_))
-        // {}` is the shape this repo has removed four times from the seed script,
-        // where a swallowed reason was the whole defect.
-        //
-        // - `#zeroDivisor` — unreachable: the divisor is already stored, and
-        //   `set_pricing_config` refused zero before storing it.
-        // - `#divisorNeedsSandbox`, `#divisorChangeWithOrders` — not this setter's
-        //   questions. Both are about *changing the divisor*, which is not happening.
-        // - `#divisorUndeliverable` is handled above; it is the only one that is
-        //   about the floor.
-        //
-        // ⚠️ **And `divisorDeliverable` returns `#ok` when the floor is below the
-        // STRIPE fee**, because there is then no net amount to scale and it declines
-        // to judge. That is deliberately NOT refused here: a floor that cannot clear
-        // the processing fee is not a divisor problem, and `Pricing.quote` refuses
-        // such an order at creation with `#unpriceable(#stripeFee)`. Worth knowing,
-        // because a test that used a 2-cent floor passed for exactly this reason
-        // while looking like it exercised the guard.
-        case (#err(#zeroDivisor or #divisorNeedsSandbox(_) or #divisorChangeWithOrders(_))) {};
-        // The five fee/rate cases are `validateConfig`'s, and `divisorDeliverable`
-        // never returns one — it does not look at the fee formula or the rate bounds.
-        // Listed rather than wildcarded so a new `ConfigError` has to decide here too.
-        case (
-          #err(
-            #feeBpsTooHigh or #nonPositiveMaxAge or #maxAgeTooLong(_)
-            or #zeroRateDelta or #zeroRateSources
-          )
-        ) {};
-        case (#ok) {};
-      };
-    };
-    switch (Gate.validateConfig(config, tierPrices)) {
-      case (#ok) {
-        gateConfig := config;
-        auditAdmin(caller, "gate.configSet", "openOrderCap=" # config.maxOpenOrdersPerPrincipal.toText()
-          # " minCycles=" # config.minCanisterCycles.toText()
-          # " maxPurchaseCents=" # config.maxPurchaseUsdCents.toText());
-        #ok;
-      };
-      case (#err(e)) #err(e);
-    };
-  };
 
-  /// Public: the frontend needs the bounds to size its amount input and to say
-  /// what it will accept before the buyer types. Same transparency stance as
-  /// `pricing_status` and `reserve_status` — these are the rules users are held
-  /// to, not secrets.
-  ///
-  /// ⚠️ **`delivery` is here because `set_delivery_config` had NO reader at all.**
-  /// `maxHoldNs` decides when a paid order escalates to `#needsReview` and `alertAfterNs`
-  /// is the delay-alert threshold — both global policy of ours, and both write-only until
-  /// now: they appeared in the setter's argument and its error variant and in no return
-  /// type anywhere, so an operator could set them and never read them back.
-  ///
-  /// The comment this replaces said there was "no lifecycle *policy* of ours to add" —
-  /// true of an order's DEADLINE, which is the Stripe session's `expires_at` and lives on
-  /// the order, and untrue as the general claim it had become. `scripts/check-config-readers.py`
-  /// is what stops the next write-only parameter, rather than this comment.
-  public query func lifecycle_config() : async {
-    gate : Gate.Config;
-    delivery : Delivery.Config;
-  } {
-    { gate = gateConfig; delivery = deliveryConfig };
-  };
 
-  /// Admission preflight, public: lets the frontend disable the buy button with
-  /// a real reason (and lets an operator ask "would a purchase go through right
-  /// now?") without creating an order. `usdCents` is the gross amount to test.
-  ///
-  /// The answer is advisory — it can go stale between this call and
-  /// `create_order`, which re-checks. It is not an authorization decision, so
-  /// anonymous callers may ask: it reveals only operational state that
-  /// `reserve_status` already publishes. Answered for the *calling* principal,
-  /// so the open-order cap it reports is the caller's own.
-  public shared query ({ caller }) func can_purchase(usdCents : Nat) : async Result.Result<(), Gate.Reason> {
-    Gate.admit(gateConfig, gateObservation(caller), usdCents);
-  };
 
-  /// Public — the frontend renders the amount tiles from this. There is no link
-  /// to render: the canister creates a session per order (#33).
-  public query func card_tiers() : async [Tiers.Tier] {
-    cardTiers;
-  };
-
-  /// What a given amount buys right now (§3), before anyone commits to an order.
-  public type QuotePreview = {
-    usdCents : Nat;
-    /// Payment-processing fee at the rail's current formula, rounded up.
-    feeCents : Nat;
-    /// What is left to buy cycles with. Null when the fee swallows the amount.
-    netCents : ?Nat;
-    /// The §3 quantity this amount would lock. Null exactly when `create_order`
-    /// would refuse to price it — no rates, stale rates, or fee-swallowed — so a
-    /// caller that shows `cycles` never promises a purchase that cannot happen.
-    cycles : ?Nat;
-  };
-
-  public type QuotePreviews = {
-    quotes : [QuotePreview];
-    /// The rate pair the quotes came from, so a caller can reproduce the
-    /// arithmetic without a second call. Null when nothing usable is cached.
-    rates : ?Pricing.Rates;
-  };
-
-  /// Batch pre-purchase quote, public.
-  ///
-  /// ⚠️ **The price a buyer is shown is computed by the SAME function that prices the
-  /// order.** A client reimplementing the formula would be one refactor away from quoting
-  /// a number the gateway does not honour, with no way for the buyer to tell which was
-  /// wrong. Batched because the tier grid needs every price in one round trip.
-  ///
-  /// **Unbounded input on purpose**, unlike the paged queries. The work is constant
-  /// per element the caller already transmitted — no state scan, no amplification — so
-  /// the ingress size limit already bounds it. A cap would only buy **silent truncation**,
-  /// which is worse than what it prevents.
-  ///
-  /// Does not disclose the cycles-ledger fee: that is the ledger's number and the
-  /// operator's cost — `docs/DESIGN.md` §3.2 for the split and why a stored copy would
-  /// be wrong here.
-  public query func quote_previews(amounts : [Nat]) : async QuotePreviews {
-    let fee : { feeBps : Nat; feeFixedCents : Nat } = {
-      feeBps = pricingConfig.feeBps;
-      feeFixedCents = pricingConfig.feeFixedCents;
-    };
-    let quotes = amounts.map(
-      func(usdCents) {
-        {
-          usdCents;
-          feeCents = Pricing.feeCents(fee, usdCents);
-          netCents = Pricing.netCents(fee, usdCents);
-          cycles = switch (quoteCents(fee, usdCents)) {
-            case (#ok((cycles, _))) ?cycles;
-            case (#stale or #unpriceable(_)) null;
-          };
-        };
-      },
-    );
-    {
-      quotes;
-      rates = Pricing.lastRates(rateCache);
-    };
-  };
 
   // ── Webhook ingestion state (task 8, §4.1/§4.2) ─────────────────────────
 
@@ -1679,13 +850,6 @@ persistent actor CyclesGateway {
   /// financial record (orders, their problems and the orphan list are the records of money).
   let auditLog : AuditLog.Log = AuditLog.emptyLog();
 
-  /// Refusal tallies and the rail-state latch (#61).
-  ///
-  /// ⚠️ **Stable, because they replace an audit line.** These carry the content
-  /// of the per-attempt `order.notAdmitted` line that #61 removed, and losing
-  /// them on upgrade would lose the volume signal the monitoring rows read.
-  var refusalCounts : Gate.RefusalCounts = Gate.noRefusals();
-  var railStateLatch : Gate.RailStateLatch = Gate.admitting();
 
   /// Tally a refusal, and write an audit line **only** on the transition into a
   /// rail-state condition (#61).
@@ -1697,9 +861,9 @@ persistent actor CyclesGateway {
   /// ring. The audit log is the only structure here whose growth is not
   /// attacker-priced, which is why this is a counter and not a line.
   func noteRefusal(reason : Gate.Reason) {
-    refusalCounts := Gate.countRefusal(refusalCounts, reason);
-    let latched = Gate.latchRefusal(railStateLatch, reason);
-    railStateLatch := latched.latch;
+    gateState.refusals := Gate.countRefusal(gateState.refusals, reason);
+    let latched = Gate.latchRefusal(gateState.latch, reason);
+    gateState.latch := latched.latch;
     if (latched.announce) {
       audit("gate.startedRefusing", Gate.reasonToText(reason));
     };
@@ -1709,12 +873,12 @@ persistent actor CyclesGateway {
   /// about this gateway rather than anything about the request.
   ///
   /// ⚠️ **Exhaustive on purpose.** `sessionConfig` can only produce the first two
-  /// today, but a new `SessionError` must decide whether it is a persistent
+  /// today, but a new `Session.Error` must decide whether it is a persistent
   /// configuration state (latch it, announce once) or a transient outcall failure
   /// (do not latch — a transient that latched would be cleared by the next
   /// success anyway, but announcing it as "the rail started refusing" would be a
   /// false report).
-  func railClosureCondition(e : SessionError) : ?Gate.RailCondition {
+  func railClosureCondition(e : Session.Error) : ?Gate.RailCondition {
     switch (e) {
       // Either the key and origin are provisioned or they are not.
       case (#railClosed or #originUnset) ?#railClosed;
@@ -1738,12 +902,12 @@ persistent actor CyclesGateway {
   /// a counter set covering only `Gate.Reason` would record nothing. RUNBOOK §1
   /// prescribes provisioning the secrets last, so a freshly deployed gateway sits
   /// in exactly this state by design.
-  func noteRailClosed(e : SessionError) {
-    refusalCounts := Gate.countRailClosed(refusalCounts);
+  func noteRailClosed(e : Session.Error) {
+    gateState.refusals := Gate.countRailClosed(gateState.refusals);
     switch (railClosureCondition(e)) {
       case (?condition) {
-        let latched = Gate.latchCondition(railStateLatch, condition);
-        railStateLatch := latched.latch;
+        let latched = Gate.latchCondition(gateState.latch, condition);
+        gateState.latch := latched.latch;
         if (latched.announce) {
           audit("gate.startedRefusing", "railClosed: " # sessionErrorToText(e));
         };
@@ -1768,16 +932,16 @@ persistent actor CyclesGateway {
   /// the `client_reference_id` — so no pre-commit check can cover this branch. A
   /// circuit breaker is deferred behind the evidence #37 §2c asks for; this fixes the
   /// audit half, which is the half that becomes permanent when the ring comes out.
-  /// ⚠️ **Takes a DETAIL rather than a `SessionError`, because the callers know
+  /// ⚠️ **Takes a DETAIL rather than a `Session.Error`, because the callers know
   /// different things.** It used to render `sessionErrorToText(e)`, and the retrieve
-  /// path's `#unauthorized` has no honest `SessionError` to pass: `#railClosed` renders
+  /// path's `#unauthorized` has no honest `Session.Error` to pass: `#railClosed` renders
   /// as "the API key is not provisioned", which is exactly wrong — the key is present
   /// and Stripe is refusing it. The remedy differs too (rotate versus provision), so
   /// squeezing three call sites through one enum produced a confident wrong sentence.
   func noteStripeApiFailed(detail : Text) {
-    refusalCounts := Gate.countStripeApiFailed(refusalCounts);
-    let latched = Gate.latchCondition(railStateLatch, #stripeApiFailing);
-    railStateLatch := latched.latch;
+    gateState.refusals := Gate.countStripeApiFailed(gateState.refusals);
+    let latched = Gate.latchCondition(gateState.latch, #stripeApiFailing);
+    gateState.latch := latched.latch;
     if (latched.announce) {
       audit("gate.startedRefusing", "stripeApiFailing: " # detail);
     };
@@ -1793,306 +957,98 @@ persistent actor CyclesGateway {
       orders = orderStore;
       dedup;
       orphanStore;
-      expectLivemode;
+      expectLivemode = stripeState.expectLivemode;
       auditLog;
       paidIntents;
-      maxPurchaseUsdCents = gateConfig.maxPurchaseUsdCents;
+      maxPurchaseUsdCents = gateState.config.maxPurchaseUsdCents;
     };
   };
 
-  /// Read **any** order by id (admin, #38).
-  ///
-  /// ⚠️ **A deliberate exception to §2's "existence is not revealed to non-owners", so it
-  /// audits itself on every use.** `get_order` is owner-scoped with no admin bypass, so
-  /// without this an operator could identify *which* order a Stripe receipt named and
-  /// then not look at it.
-  ///
-  /// ⚠️ **The audit line is the price of the exception, not decoration.** It is an
-  /// `auditAdmin` write, so it names *who* looked, and it fires on the read whether or
-  /// not the order exists — a probe for existence is exactly what §2 withholds from
-  /// everyone else, so a miss has to be as visible as a hit.
-  public shared ({ caller }) func admin_order(id : Types.OrderId) : async ?Types.Order {
-    requireAdmin(caller);
-    let found = Orders.get(orderStore, id);
-    auditAdmin(
-      caller,
-      "order.adminRead",
-      id # (switch (found) { case (?_) ""; case null " (no such order)" }),
-    );
-    found;
-  };
 
-  /// Filtered, cursor-paginated order list (admin, #38).
-  ///
-  /// ⚠️ **Do not sort by `createdAtNs`.** Ordering is by order id, which is arbitrary
-  /// because ids are random — and time-ordering would mean materialising the filtered set
-  /// first, which is the unbounded scan #63 removed. Narrow with `createdFromNs` instead.
-  ///
-  /// ⚠️ **Deliberately NOT audited, unlike `admin_order` and `admin_receipt` — do not
-  /// "fix" the inconsistency.** Their line records *"an operator looked at THIS person's
-  /// order"*, and that targeted act is the accountable one; a line per page would record
-  /// the work rather than the intrusion and bury the targeted reads. It would also make
-  /// this an update, since audits write state, on the call an operator makes repeatedly.
-  /// Same reasoning keeps `orphans`, `orphan_depth` and `problem_depth` unaudited.
-  ///
-  /// ⚠️ **What would change that:** a filter narrowing to a *single named principal* as
-  /// the normal way to drive this. `owner : ?Principal` makes it possible today; it is not
-  /// the intended use, and if it becomes one the list inherits the audit.
-  public shared query ({ caller }) func admin_orders(
-    filter : Orders.Filter,
-    afterId : ?Types.OrderId,
-    limit : Nat,
-  ) : async Orders.Page {
-    requireAdmin(caller);
-    Orders.page(orderStore, filter, afterId, limit);
-  };
 
-  /// How much is outstanding, as two numbers rather than a collection (#38).
-  ///
-  /// ⚠️ **The shape to poll, and the reason it exists separately from the list.** A
-  /// paginated detail query needs a cheap total beside it or a monitor pages through
-  /// everything to learn one number — the same split `orphan_depth` already has, and
-  /// the same reason RUNBOOK says to alert on the depth and fetch details only when it
-  /// fires.
-  ///
-  /// ⚠️ **`unresolved` is NOT `orders`.** One order can carry several problems, so a
-  /// caller reading the order count undercounts the work.
-  public query func problem_depth() : async { unresolved : Nat; orders : Nat } {
-    {
-      unresolved = Orders.unresolvedProblemCount(orderStore);
-      // ⚠️ O(1) — the index's size. This built the whole worklist as an array to read its
-      // length, on a query anyone can call.
-      orders = Orders.unresolvedProblemOrderCount(orderStore);
-    };
-  };
 
-  /// Refusal tallies, and whether the gate is refusing right now (#61).
-  ///
-  /// ⚠️ **Public, like every other monitoring surface here** — operational state
-  /// is public by design; the webhook secret is the only secret in the system.
-  ///
-  /// ⚠️ **This query is the point of the counters.** A tally nobody reads is the
-  /// `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
-  /// per counter with the response — the counters mean different things:
-  /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
-  /// `reserveShort` climbing is a refill. Same shape, opposite actions.
-  public query func refusal_counts() : async {
-    counts : Gate.RefusalCounts;
-    /// True while that rail-state condition is refusing. Each flips to true with
-    /// exactly one `gate.startedRefusing` audit line and clears on the next
-    /// successful admission.
-    refusingNow : Gate.RailStateLatch;
-  } {
-    { counts = refusalCounts; refusingNow = railStateLatch };
-  };
 
-  /// Open-obligation depth, public.
-  ///
-  /// Nothing is evicted, so this only comes down by the operator working it. A climbing
-  /// value means dollars are arriving that nobody has dealt with — the most important
-  /// operational number on the money path, and public because operational state is not
-  /// secret (§8).
-  public query func orphan_depth() : async { unresolved : Nat; retained : Nat } {
-    {
-      unresolved = Orphans.unresolvedCount(orphanStore);
-      retained = Orphans.size(orphanStore);
-    };
-  };
 
-  /// §4.1 retained history, oldest first, **paged**. Admin: entries carry
-  /// payment references and claimed-but-bogus URL params.
-  ///
-  /// Paged because unresolved obligations are never evicted, so the queue can
-  /// grow — and an unpaginated read would eventually exceed Candid's 2 MB
-  /// message limit, i.e. the record would become unreadable exactly when it
-  /// mattered most. Pass `null` to start; feed `nextCursor` back until it is
-  /// null. `limit` is capped at `Orphans.maxPageSize`.
-  public shared query ({ caller }) func orphans(
-    afterId : ?Nat,
-    limit : Nat,
-  ) : async Orphans.Page {
-    requireAdmin(caller);
-    Orphans.page(orphanStore, afterId, limit);
-  };
 
-  /// The operator worklist: open obligations only, paged. Filtered server-side
-  /// so a large body of resolved history never stands between the operator and
-  /// the dollars that still need an answer.
-  public shared query ({ caller }) func orphans_unresolved(
-    afterId : ?Nat,
-    limit : Nat,
-  ) : async Orphans.Page {
-    requireAdmin(caller);
-    Orphans.unresolvedPage(orphanStore, afterId, limit);
-  };
 
-  /// Manual resolution (§4.1/§7) — the operator marking an obligation settled after
-  /// acting off-chain: a refund issued in the Stripe Dashboard, or a delivery whose
-  /// fate they established on the cycles ledger.
-  ///
-  /// ⚠️ **This closes ORPHAN entries only — `#unattributed` and `#unprocessable`.**
-  /// Everything order-bound moved onto the orders in #37 and is closed by
-  /// `resolve_problem`; pointing an operator here for those would be pointing them at the
-  /// wrong method. Resolving an entry never transitions the order — see `Orphans`'s
-  /// header.
-  /// Close **one** order-bound problem an operator has dealt with (#37).
-  ///
-  /// ⚠️ **`paymentRef` is the selector, and dropping it over-resolves.** `sameShape`
-  /// deliberately allows two unresolved `#duplicate` problems on one order with different
-  /// payment references (a buyer who pays three times), so closing by tag alone marks an
-  /// obligation settled that nobody has settled.
-  ///
-  /// ⚠️ **Problems in an array have no stable handle, so the dedup key IS the handle** —
-  /// `(kindTag, identifyingRef)`, the same pair `sameShape` uses. One definition, both
-  /// users.
-  ///
-  /// ⚠️ **And it refuses rather than guesses when the selector is ambiguous**, which is
-  /// this codebase's posture wherever a lever might act on the wrong thing — the
-  /// abandon guard and `cancel_order`'s `#notOpen` do the same. The refusal lists the
-  /// references so the operator can disambiguate, because declining without a way
-  /// through is a dead end rather than a safeguard.
-  public shared ({ caller }) func resolve_problem(
-    orderId : Types.OrderId,
-    tag : Types.ProblemKindTag,
-    /// Which one, when the kind can have several. `#deliveryStuck` never can — it is
-    /// matched on the discriminator alone — so null is always right for it.
-    paymentRef : ?Text,
-  ) : async Result.Result<Nat, Problems.ResolveProblemError> {
-    requireAdmin(caller);
-    // Separated from "nothing to resolve" (#123): an unknown id used to answer the same
-    // way as a known order with nothing open, so a mistyped id read as "already done".
-    if (Orders.get(orderStore, orderId) == null) return #err(#noSuchOrder({ orderId }));
-    let candidates = Orders.unresolvedOfKind(orderStore, orderId, tag);
-    if (candidates.size() == 0) return #err(#noSuchProblem({ tag }));
-    switch (paymentRef) {
-      case null {
-        if (candidates.size() > 1) {
-          // ⚠️ The candidate list travels as DATA now, not inside a sentence. It is what
-          // the operator disambiguates with, and a caller had to parse it back out of
-          // the prose to offer a choice.
-          let refs = candidates.map(
-            func(c) = switch (c.ref) { case (?r) r; case null "(none)" }
-          );
-          return #err(#ambiguous({ tag; candidates = refs }));
-        };
-      };
-      case (?_) {};
-    };
-    let closed = Orders.resolveProblems(
-      orderStore,
-      orderId,
-      func(k) {
-        Problems.tagOf(k) == tag
-        and (
-          switch (paymentRef) {
-            case null true; // exactly one candidate, checked above
-            case (?want) Problems.identifyingRef(k) == ?want;
-          }
-        );
-      },
-      Time.now(),
-    );
-    if (closed == 0) {
-      // Reachable only with a reference given: the no-reference path either found one
-      // candidate or refused as ambiguous above. Passed as the option it is, so the
-      // error cannot report an empty string as though one had been supplied.
-      return #err(#referenceNotFound({ tag; reference = paymentRef }));
-    };
-    auditAdmin(
-      caller,
-      "order.problemResolved",
-      orderId # ": " # Problems.tagToText(tag)
-      # (switch (paymentRef) { case (?r) " (" # r # ")"; case null "" })
-      # " — " # closed.toText() # " closed",
-    );
-    #ok(closed);
-  };
 
-  /// Mark one orphaned payment settled off-chain (admin, §4.1).
-  ///
-  /// The operator has dealt with it in Stripe; this records that they did. Audited with
-  /// the entry's own detail, because nothing else in the system can tell afterwards that
-  /// the obligation was met rather than forgotten. Nothing re-opens it.
-  public shared ({ caller }) func resolve_orphan(id : Nat) : async Result.Result<Orphans.Entry, Orphans.ResolveError> {
-    requireAdmin(caller);
-    let resolved = Orphans.resolve(orphanStore, id, Time.now());
-    switch (resolved) {
-      case (#ok(entry)) auditAdmin(caller, "orphanStore.resolved", "entry " # id.toText() # ": " # entry.detail);
-      case (#err(_)) {};
-    };
-    resolved;
-  };
 
-  /// The operational trail, **paginated** (#38).
-  ///
-  /// ⚠️ **Pagination became necessary the moment #37 removed the ring.** The bound used
-  /// to be the 4,096-entry ring, so the response size took care of itself; retention is
-  /// now total. Removing the cap moved the problem from *"history is lossy"* to *"the
-  /// query cannot answer"* — both real, and removing the ring only fixed the first.
-  ///
-  /// Cursor on `seq`, which now has **no gaps**: gaps used to be how a reader detected
-  /// drops, and there are no drops.
-  public shared query ({ caller }) func audit_log(
-    afterSeq : ?Nat,
-    limit : Nat,
-  ) : async AuditLog.Page {
-    requireAdmin(caller);
-    AuditLog.page(auditLog, afterSeq, limit);
-  };
 
   // ── Delivery from the reserve (§5/§5.1) ─────────────────────────────────
 
-  /// #30 PR-B — a maintained **lower bound** on the reserve's ledger balance.
+  /// The reserve's own mutable state, as ONE record (#120).
   ///
-  /// Sound because the balance can only fall when we transfer out — delivery to a
-  /// buyer, or `withdraw_reserve` to a controller (#103), both of which decrement this
-  /// floor before issuing; no allowance exists for anyone to pull from the account, and
-  /// the ledger's own `withdraw` is owner-only and not declared. It can only rise on a
-  /// top-up we cannot see until we look. So every unobserved change is in our favour. `Reserve.mo`'s floor section has the
-  /// full argument and the three maintenance rules.
+  /// ⚠️ **A record rather than four `var` fields, because `include` passes by value.**
+  /// A mixin handed `var reserveState.floor` would get a snapshot from install time — its
+  /// writes would land on a copy and its reads would never move. A record is a heap
+  /// object, so the mixin and the actor share it. The alternative, an accessor closure
+  /// per field, puts four of them at every include site to work around the same
+  /// semantics; grouping by subsystem is also what `reviewing-motoko` A6 asks for —
+  /// a mixin receives the slice it uses, not the fields one at a time.
   ///
-  /// ⚠️ It is a bound, not the balance. The **actual** reserve is a public account
-  /// on a public ledger that anyone — the operator, the frontend, monitoring — can
-  /// read for free without asking this canister. `reserve_status` reports all three
-  /// figures so "the ledger says 100 T and the gateway will sell 0" is diagnosable
-  /// at a glance rather than a mystery.
-  var reserveFloor : Nat = 0;
+  /// ⚠️ **This moved the stable shape**, deliberately and once: pre-launch, with no
+  /// migration chain (#32), a reinstall is the documented loop and there is no data to
+  /// preserve. `deployed/backend.most` is promoted in the same commit, and
+  /// `scripts/check-stable-promotion.sh` reports it as a REAL shape change rather than
+  /// renumbering — which is the distinction that makes the promotion reviewable.
+  let reserveState : {
+    /// #30 PR-B — a maintained **lower bound** on the reserve's ledger balance.
+    ///
+    /// Sound because the balance can only fall when we transfer out — delivery to a
+    /// buyer, or `withdraw_reserve` to a controller (#103), both of which decrement this
+    /// floor before issuing; no allowance exists for anyone to pull from the account, and
+    /// the ledger's own `withdraw` is owner-only and not declared. It can only rise on a
+    /// top-up we cannot see until we look. So every unobserved change is in our favour. `Reserve.mo`'s floor section has the
+    /// full argument and the three maintenance rules.
+    ///
+    /// ⚠️ It is a bound, not the balance. The **actual** reserve is a public account
+    /// on a public ledger that anyone — the operator, the frontend, monitoring — can
+    /// read for free without asking this canister. `reserve_status` reports all three
+    /// figures so "the ledger says 100 T and the gateway will sell 0" is diagnosable
+    /// at a glance rather than a mystery.
+    var floor : Nat;
 
-  /// Monotone count of transfers ISSUED out of the reserve. Only purpose: letting a
-  /// reconcile prove no outflow happened across its balance read (see
-  /// `refresh_reserve`). Transient is wrong here — an upgrade mid-reconcile would
-  /// make the counter look unchanged — so it is stable.
-  var outflowsIssued : Nat = 0;
+    /// Monotone count of transfers ISSUED out of the reserve. Only purpose: letting a
+    /// reconcile prove no outflow happened across its balance read (see
+    /// `refresh_reserve`). Transient is wrong here — an upgrade mid-reconcile would
+    /// make the counter look unchanged — so it is stable.
+    var outflowsIssued : Nat;
 
-  /// When `reserveFloor` was last reconciled against the ledger, so staleness is
-  /// legible rather than invisible. Null until the first observation — which is
-  /// also why a fresh canister sells nothing until the operator refreshes.
-  var reserveObservedAtNs : ?Int = null;
+    /// When `reserveState.floor` was last reconciled against the ledger, so staleness is
+    /// legible rather than invisible. Null until the first observation — which is
+    /// also why a fresh canister sells nothing until the operator refreshes.
+    var observedAtNs : ?Int;
 
-  /// The cycles ledger's transfer fee, as last learned from the ledger (#30 PR-B).
-  ///
-  /// ⚠️ **Stored rather than awaited, and `#BadFee` is why that is safe.** An ICRC-1
-  /// ledger rejects a wrong fee **definitively and reports the expected one**, so a stale
-  /// value costs one rejected call, self-corrects in the same message, and is persisted
-  /// for every later order. In exchange the delivery path loses an await — and with it
-  /// the failure mode where a ledger hiccup on a *read* stalled a delivery that was fully
-  /// funded and ready.
-  ///
-  /// ⚠️ **No admin lever writes this** — `#BadFee` is the only writer, which is what
-  /// keeps it honest. See `delivery.feeExceedsOrder` for the one state that cannot
-  /// self-correct, and why a lever for it was deleted rather than kept.
-  ///
-  /// ⚠️ **A fee DECREASE shorts that one buyer by the delta.** `amount = locked −
-  /// fee_stored`, so if the ledger has become cheaper than our copy, the first order
-  /// after the change delivers a little less than it could have, and the reserve
-  /// keeps the difference. The correction cannot recover it, because raising a
-  /// committed intent's *amount* would be rebuilding the intent — which is the
-  /// double-pay this whole path is built to avoid. Bounded by one fee-delta on one
-  /// order, and it self-corrects for every order after it.
-  ///
-  /// An increase is the harmless direction: the reserve absorbs `delta` and the
-  /// buyer gets exactly what was quoted (see the `#badFee` arm).
-  var cyclesLedgerFee : Nat = Delivery.cyclesLedgerDefaultFee;
+    /// The cycles ledger's transfer fee, as last learned from the ledger (#30 PR-B).
+    ///
+    /// ⚠️ **Stored rather than awaited, and `#BadFee` is why that is safe.** An ICRC-1
+    /// ledger rejects a wrong fee **definitively and reports the expected one**, so a stale
+    /// value costs one rejected call, self-corrects in the same message, and is persisted
+    /// for every later order. In exchange the delivery path loses an await — and with it
+    /// the failure mode where a ledger hiccup on a *read* stalled a delivery that was fully
+    /// funded and ready.
+    ///
+    /// ⚠️ **No admin lever writes this** — `#BadFee` is the only writer, which is what
+    /// keeps it honest. See `delivery.feeExceedsOrder` for the one state that cannot
+    /// self-correct, and why a lever for it was deleted rather than kept.
+    ///
+    /// ⚠️ **A fee DECREASE shorts that one buyer by the delta.** `amount = locked −
+    /// fee_stored`, so if the ledger has become cheaper than our copy, the first order
+    /// after the change delivers a little less than it could have, and the reserve
+    /// keeps the difference. The correction cannot recover it, because raising a
+    /// committed intent's *amount* would be rebuilding the intent — which is the
+    /// double-pay this whole path is built to avoid. Bounded by one fee-delta on one
+    /// order, and it self-corrects for every order after it.
+    ///
+    /// An increase is the harmless direction: the reserve absorbs `delta` and the
+    /// buyer gets exactly what was quoted (see the `#badFee` arm).
+    var cyclesLedgerFee : Nat;
+  } = {
+    var floor = 0;
+    var outflowsIssued = 0;
+    var observedAtNs = null;
+    var cyclesLedgerFee = Delivery.cyclesLedgerDefaultFee;
+  };
 
   /// §4.2 `journal : Map<OrderId, JournalEntry>` — the money-out record:
   /// transfer intent (written *before* the ledger call, §5.1), block_index,
@@ -2179,24 +1135,19 @@ persistent actor CyclesGateway {
 
   // ── Delivery timeline config (§5.3) ─────────────────────────────────────
 
-  /// The two thresholds the delivery timeline reads: alert at 2 h, terminate at 72 h.
-  var deliveryConfig : Delivery.Config = Delivery.defaultConfig();
-
-  /// Tune the delivery timeline (admin, §7).
-  ///
-  /// ⚠️ Validated rather than trusted: an alert at or after the terminal bound would
-  /// tell the operator at the moment the decision was already taken, and a
-  /// non-positive bound would escalate every order instantly.
-  public shared ({ caller }) func set_delivery_config(config : Delivery.Config) : async Result.Result<(), Delivery.ConfigError> {
-    requireController(caller);
-    switch (Delivery.validateConfig(config)) {
-      case (#err(e)) return #err(e);
-      case (#ok) {};
-    };
-    deliveryConfig := config;
-    auditAdmin(caller, "delivery.configSet", "alert after " # config.alertAfterNs.toText() # " ns, terminate after " # config.maxHoldNs.toText() # " ns");
-    #ok;
+  /// Delivery policy, as one record.
+  /// ⚠️ **A record rather than loose `var` fields, because `include` passes by value**
+  /// (#120): a mixin handed a bare `var` gets a snapshot from install time, so its
+  /// writes land on a copy and its reads never move. A record is a heap object, so the
+  /// mixin and the actor share one. Grouped by subsystem, which is the slice a mixin
+  /// asks for (`reviewing-motoko` A6) rather than an accessor per field.
+  let deliveryState : {
+    /// The two thresholds the delivery timeline reads: alert at 2 h, terminate at 72 h.
+    var config : Delivery.Config;
+  } = {
+    var config = Delivery.defaultConfig();
   };
+
 
   func audit(tag : Text, detail : Text) {
     ignore AuditLog.append(auditLog, Time.now(), tag, detail);
@@ -2278,7 +1229,7 @@ persistent actor CyclesGateway {
       // and leave the order `#paid` for the next sweep, which is right for a transient
       // fault and would park an order forever on a persistent one.
       if (order.status == #paid) {
-        switch (Delivery.waitStage(order.updatedAtNs, Time.now(), deliveryConfig)) {
+        switch (Delivery.waitStage(order.updatedAtNs, Time.now(), deliveryState.config)) {
           case (#retry) {};
           case (#alert) {
             // Tell someone while the cause is still fixable, and keep retrying: most
@@ -2345,7 +1296,7 @@ persistent actor CyclesGateway {
           // ⚠️ **The fee is READ FROM STATE, and this whole case is now
           // synchronous (#30 PR-B).** It used to `await icrc1_fee()` here; that
           // await is gone because `#BadFee` is the ledger telling us the fee, which
-          // makes a stored copy self-correcting. See `cyclesLedgerFee`.
+          // makes a stored copy self-correcting. See `reserveState.cyclesLedgerFee`.
           //
           // ⚠️ **Do not put an await back between here and the transfer issue.** Two
           // things depend on there being none: the post-await re-read this case used
@@ -2353,7 +1304,7 @@ persistent actor CyclesGateway {
           // and `unsettledDeliveries` — the reconcile's quiet-window predicate —
           // relies on an intent never being visible without its transfer having been
           // issued in the same message. Its doc spells that out.
-          let fee = cyclesLedgerFee;
+          let fee = reserveState.cyclesLedgerFee;
           let ?amount = Delivery.deliverableCycles(order.lockedCycles, fee) else {
             // Unreachable under the $10 floor (~7 T cycles against a 100 M fee),
             // and audited rather than silent so that a future move in either
@@ -2418,8 +1369,8 @@ persistent actor CyclesGateway {
           // (A controlled upgrade cannot do that — `stop_canister` drains outstanding
           // callbacks first.)
           let debited = intent.amountCycles + fee;
-          reserveFloor := Reserve.floorAfterOutflow(reserveFloor, debited);
-          outflowsIssued += 1;
+          reserveState.floor := Reserve.floorAfterOutflow(reserveState.floor, debited);
+          reserveState.outflowsIssued += 1;
           let result = try { await cyclesLedger.icrc1_transfer(Delivery.deliveryArgs(intent, fee)) } catch (e) {
             // ⚠️ The floor is NOT credited back. A call that failed without a reply
             // tells us nothing about whether the ledger acted, and rule 2 exists to
@@ -2440,7 +1391,7 @@ persistent actor CyclesGateway {
             // arms would refund a real debit (optimistic); crediting on neither
             // would under-count every healed replay by a whole order.
             case (#deduplicated(block)) {
-              reserveFloor += debited;
+              reserveState.floor += debited;
               deliveryBlockedAudited.remove(orderId);
               ignore tryTransition(orderId, #delivered);
               Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false; lastError = null }, Time.now());
@@ -2473,17 +1424,17 @@ persistent actor CyclesGateway {
               // the ledger tells us its fee, so persisting here bounds the cost of a
               // stale copy to one rejected call. It does **not** change this order's
               // intent — rebuilding that is the double-pay this path exists to avoid.
-              cyclesLedgerFee := expected;
+              reserveState.cyclesLedgerFee := expected;
               audit("delivery.feeChanged", orderId # ": ledger expects " # expected.toText() # " (intent implies " # fee.toText() # "); reserve absorbs the difference, and " # expected.toText() # " is now the stored fee");
               // ── Rule 3 (§5.4): a DEFINITIVE rejection credits the floor back ──
               // `#BadFee` means the ledger processed the call and refused it, so nothing
               // moved and rule 2's decrement was not a real debit.
               // ⚠️ If the re-issue then fails with no reply, the LARGER decrement stands
               // — correctly pessimistic.
-              reserveFloor += debited;
+              reserveState.floor += debited;
               let reDebited = intent.amountCycles + expected;
-              reserveFloor := Reserve.floorAfterOutflow(reserveFloor, reDebited);
-              outflowsIssued += 1;
+              reserveState.floor := Reserve.floorAfterOutflow(reserveState.floor, reDebited);
+              reserveState.outflowsIssued += 1;
               let retried = try {
                 await cyclesLedger.icrc1_transfer(Delivery.deliveryArgs(intent, expected));
               } catch (e) {
@@ -2494,7 +1445,7 @@ persistent actor CyclesGateway {
               switch (Delivery.interpretTransfer(retried)) {
                 case (#deduplicated(block)) {
                   // An earlier attempt had already landed: this one moved nothing.
-                  reserveFloor += reDebited;
+                  reserveState.floor += reDebited;
                   deliveryBlockedAudited.remove(orderId);
                   ignore tryTransition(orderId, #delivered);
                   Delivery.patch(deliveryJournal, orderId, { status = ?#delivered; blockIndex = ?block; cyclesDelivered = ?intent.amountCycles; bumpRetries = false; lastError = null }, Time.now());
@@ -2526,7 +1477,7 @@ persistent actor CyclesGateway {
               // ledger processed the call and declined it, so nothing moved and rule
               // 2's decrement was not a debit. (Contrast the `catch` arm above: no
               // reply means no knowledge, so that decrement stands.)
-              reserveFloor += debited;
+              reserveState.floor += debited;
               // `#InsufficientFunds` should be unreachable — the gate reserved this
               // quantity — and if it does fire, the floor and the ledger disagree.
               // Check `reserve_status.tallySaturations` and the last reconcile before
@@ -2550,7 +1501,7 @@ persistent actor CyclesGateway {
               // eventually absorbs whichever way it went. Do not "fix" the apparent
               // asymmetry by also crediting the original attempt — that is the
               // optimistic direction.
-              reserveFloor += debited;
+              reserveState.floor += debited;
               escalateDelivery(order, "transferRejected", detail);
               return;
             };
@@ -2614,73 +1565,8 @@ persistent actor CyclesGateway {
     Orders.countOf(orderStore, #paid);
   };
 
-  public type ProcessOrderError = { #notFound; #inFlight };
 
-  /// Manual delivery kick — **admin, or the order's own owner** (#30 PR-B).
-  ///
-  /// Safe to spam by construction: every step is journalled, deduplicated, idempotent
-  /// and single-flighted. A page refresh heals a stuck order in seconds rather than
-  /// waiting a sweep interval.
-  ///
-  /// ⚠️ **Owner-scoped, not public.** `getOwned` is the guard, so a caller can only kick
-  /// their OWN order — one order per kick, serialised, on an order they paid real money
-  /// to create. *Unauthenticated* traffic triggering a sweep over **every** order is a
-  /// different shape and stays refused.
-  ///
-  /// ⚠️ **This does not replace the recovery sweep and must not be read as making it
-  /// optional.** The sweep is the *guarantee* — we took the money, so we deliver whether
-  /// or not the buyer comes back; this is the *latency fix*. A retry that only exists in
-  /// the UI makes fulfilling an obligation depend on the buyer returning, and whoever
-  /// closed the tab is exactly who most needs us to finish.
-  ///
-  /// ⚠️ **An owner kicking their own order is NOT audited**, because the log drops
-  /// nothing (#37) and a refresh loop would be permanent state growth driven by a
-  /// caller. An admin kick is audited — it is an ops action on someone else's order.
-  public shared ({ caller }) func process_order(id : Types.OrderId) : async Result.Result<Types.Order, ProcessOrderError> {
-    let isAdmin = Auth.checkAdmin(caller, Principal.isController, isGrantedAdmin).isOk();
-    if (isAdmin) {
-      auditAdmin(caller, "delivery.manualKick", id);
-    } else {
-      // Not an admin, so this must be the owner's own order. `getOwned` answers
-      // "not found" for someone else's, which is also the right answer to give:
-      // whether an id exists is not a stranger's business. No separate anonymous
-      // check is needed — `create_order` refuses the anonymous principal, so it
-      // owns no order and every id answers `#notFound` for it.
-      if (Orders.getOwned(orderStore, id, caller) == null) return #err(#notFound);
-    };
-    if (Orders.get(orderStore, id) == null) return #err(#notFound);
-    if (deliveriesInFlight.contains(id)) return #err(#inFlight);
-    await* processDelivery(id);
-    switch (Orders.get(orderStore, id)) {
-      case (?order) #ok(order);
-      case null #err(#notFound);
-    };
-  };
 
-  /// Run the reconcile now rather than waiting for the daily one (admin, §7).
-  ///
-  /// The tallies are maintained incrementally so the public status queries stay O(1);
-  /// this is the on-demand lever for the case where they are ever suspected of having
-  /// drifted. Returns the counts as they stand after the pass.
-  ///
-  /// ⚠️ **It is the same bounded pass the timer runs, with the same one-directional
-  /// rule — it is NOT a stronger repair, and an operator must not reach for it as one.**
-  /// `Orders.adoptOnlyIncreases` refuses a recount lower than the maintained tally,
-  /// here exactly as on the timer, because a lower recount is indistinguishable from an
-  /// incomplete index and adopting it is the only way an index bug could oversell the
-  /// reserve. There is deliberately **no** force flag and no full-scan rebuild: a lever
-  /// for adopting the unsafe direction would be a lever for the bug.
-  ///
-  /// ⚠️ **No longer the expensive path**, and it stays admin-only anyway — it writes
-  /// tallies the gate reads.
-  public shared ({ caller }) func recount_orders() : async [(Text, Nat)] {
-    requireAdmin(caller);
-    let report = Orders.reconcileBounded(orderStore);
-    reportReconciliation(report);
-    let rendered = report.counts.map(func((status, n)) = status # "=" # n.toText());
-    auditAdmin(caller, "orders.recounted", rendered.values().join(", "));
-    report.counts;
-  };
 
   /// The journal half of the quiet-window predicate: a transfer issued and no block
   /// recorded. Says nothing about status on purpose — the ORDER supplies that, and
@@ -2744,33 +1630,6 @@ persistent actor CyclesGateway {
     n;
   };
 
-  /// Deliveries outstanding past `alertAfterNs` — a **reading**, not an obligation, which
-  /// is why it is a query rather than a filed problem.
-  ///
-  /// ⚠️ **`alertAfterNs` is this predicate's THRESHOLD, not a trigger.** Lowering a
-  /// filter costs nothing; lowering a trigger would file worklist entries for orders that
-  /// deliver themselves.
-  /// One delayed delivery, as `delayed_deliveries` reports it (#37, paginated by #38).
-  ///
-  /// ⚠️ **`pastMaxHold` is a transient window, at most one sweep interval wide** — past
-  /// `maxHoldNs` the next sweep escalates the order out of `#paid` and out of this set.
-  /// Useful to read; **do not assert it in an integration scenario**, because pinning
-  /// that window without ticking the clock is the shape that produces a flaky test. The
-  /// boundary is unit-pinned on `Delivery.waitStage`, which is where it belongs.
-  type DelayedDelivery = {
-    orderId : Types.OrderId;
-    status : Types.OrderStatus;
-    /// `order.updatedAtNs` — retries deliberately do not move it, so the clock is
-    /// pinned to the moment the order entered its current state.
-    heldSinceNs : Int;
-    waitedNs : Int;
-    /// How many times delivery has already failed. `0` is an order simply waiting.
-    retries : Nat;
-    pastMaxHold : Bool;
-    /// When it FIRST crossed the threshold, read off the order — the permanent record,
-    /// where every other field here is a live reading.
-    delayedAtNs : ?Int;
-  };
 
   /// How long a `#paid` order has waited, as a stage; `null` for any other status.
   ///
@@ -2791,7 +1650,7 @@ persistent actor CyclesGateway {
   /// order normally has its entry and intent immediately.)
   func deliveryStage(order : Types.Order, nowNs : Int) : ?{ #retry; #alert; #terminate } {
     if (order.status != #paid) return null;
-    ?Delivery.waitStage(order.updatedAtNs, nowNs, deliveryConfig);
+    ?Delivery.waitStage(order.updatedAtNs, nowNs, deliveryState.config);
   };
 
   /// Which stages are worth an operator's attention — **the one definition**, shared by
@@ -2826,117 +1685,28 @@ persistent actor CyclesGateway {
     n;
   };
 
-  /// Orders past `alertAfterNs` and still undelivered (admin, paged by #38).
-  ///
-  /// The worklist behind `operator_summary.deliveriesDelayed`: one entry per order,
-  /// with the journal figures a human needs to decide whether it is stuck or slow.
-  public shared query ({ caller }) func delayed_deliveries(
-    afterId : ?Types.OrderId,
-    limit : Nat,
-  ) : async {
-    entries : [DelayedDelivery];
-    nextCursor : ?Types.OrderId;
-  } {
-    requireAdmin(caller);
-    // ⚠️ **Bounded by the non-terminal index, not by lifetime sales (#63).** `#paid`
-    // holds its promise, so the index is a superset of the population and the filter is
-    // exact — and the index is capped by the reserve rather than growing with sales.
-    //
-    // ⚠️ **The page bounds the RESPONSE; the index bounds the WORK. Both are needed
-    // and they are different limits** — ~2 MB for the response, instructions per
-    // message for the walk — which is why paginating this in #38 did not make it
-    // bounded and the comment here said so until now.
-    let capped = if (limit == 0 or limit > Orders.maxPageSize) Orders.maxPageSize else limit;
-    let now = Time.now();
-    let collected = List.empty<DelayedDelivery>();
-    var last : ?Types.OrderId = null;
-    // Seek in O(log n); `valuesFrom` is inclusive, so the `id > cursor` test below is
-    // what skips the cursor itself.
-    let ids = switch (afterId) {
-      case (?cursor) Orders.promiseHolderIdsFrom(orderStore, cursor);
-      case null Orders.promiseHolderIds(orderStore);
-    };
-    label scan for (id in ids) {
-      let ?order = Orders.get(orderStore, id) else continue scan;
-      let past = switch (afterId) { case (?cursor) id > cursor; case null true };
-      // ⚠️ `deliveryDelayed` is the ONLY status gate here. An outer `order.status == #paid`
-      // survived alongside it and made the claim of one shared definition false: widening
-      // the predicate changed this page and the summary's count differently, so the two
-      // could disagree while both were "using the predicate".
-      if (not past) continue scan;
-      let ?stage = deliveryStage(order, now) else continue scan;
-      if (stageIsDelayed(stage)) {
-        if (collected.size() == capped) {
-          return { entries = collected.toArray(); nextCursor = last };
-        };
-        collected.add({
-          orderId = order.id;
-          status = order.status;
-          heldSinceNs = order.updatedAtNs;
-          waitedNs = now - order.updatedAtNs;
-          retries = switch (deliveryJournal.get(order.id)) {
-            case (?entry) entry.retries;
-            case null 0;
-          };
-          pastMaxHold = stage == #terminate;
-          delayedAtNs = order.delayedAtNs;
-        });
-        last := ?order.id;
-      };
-    };
-    { entries = collected.toArray(); nextCursor = null };
-  };
 
-  /// Every delivery with money-out work outstanding, right now (admin).
-  ///
-  /// The immediate answer to "is a delivery failing?", and it **self-clears by
-  /// construction** — an entry leaves the moment delivery lands, because landing records
-  /// the block and moves the status. No resolve step to forget. Read `retries` as "how
-  /// many times this has already failed"; `0` is a first attempt, not a problem.
-  ///
-  /// ⚠️ **Admin even now that it is bounded.** A public version would hand an
-  /// unauthenticated caller the operator's in-flight worklist; `reserve_status` is the
-  /// public answer, and O(1) on purpose.
-  ///
-  /// ⚠️ The `#paid` subset is **exactly** the reconcile's quiet-window predicate, so this
-  /// is also how "the reserve reconcile keeps skipping" gets diagnosed. `#needsReview`
-  /// orders are included because an operator asking "what is wrong right now" wants them,
-  /// and they are deliberately NOT in that predicate — see `unsettledDeliveries`.
-  public shared query ({ caller }) func pending_deliveries() : async [Types.JournalEntry] {
-    requireAdmin(caller);
-    let out = List.empty<Types.JournalEntry>();
-    forEachPromisedDelivery(
-      func(order, entry) {
-        switch (order.status) {
-          case (#paid) { if (openTransfer(entry)) out.add(entry) };
-          case (#needsReview) { if (entry.blockIndex == null) out.add(entry) };
-          case (_) {};
-        };
-      }
-    );
-    out.toArray();
-  };
 
   /// ⚠️ `quiet` must mean "no outflow could have moved the balance between the read
   /// and this call" — see `Reserve.adoptObservation`, and `refresh_reserve` for how
   /// it is established. Passing `true` loosely reintroduces the bug this design
   /// exists to remove.
   func reconcileReserve(observed : Nat, quiet : Bool) {
-    let adopted = Reserve.adoptObservation(reserveFloor, observed, quiet);
+    let adopted = Reserve.adoptObservation(reserveState.floor, observed, quiet);
     if (not adopted.adopted) {
-      audit("reserve.reconcileSkipped", "deliveries were in flight across the balance read; keeping the maintained floor of " # reserveFloor.toText());
+      audit("reserve.reconcileSkipped", "deliveries were in flight across the balance read; keeping the maintained floor of " # reserveState.floor.toText());
       return;
     };
     if (adopted.unexplainedShortfall > 0) {
       audit(
         "reserve.unexplainedShortfall",
         "ledger holds " # observed.toText() # " but the floor said at least "
-        # reserveFloor.toText() # " — short by " # adopted.unexplainedShortfall.toText()
+        # reserveState.floor.toText() # " — short by " # adopted.unexplainedShortfall.toText()
         # ". No outflow but ours is possible, so treat this as a bookkeeping breach and reconcile before selling more.",
       );
     };
-    reserveFloor := adopted.floor;
-    reserveObservedAtNs := ?Time.now();
+    reserveState.floor := adopted.floor;
+    reserveState.observedAtNs := ?Time.now();
   };
 
   /// Read the ledger balance and reconcile the floor against it — the ONE place
@@ -2960,735 +1730,117 @@ persistent actor CyclesGateway {
   /// question.
   func observeReserve() : async* { observed : Nat; quiet : Bool; holdersAfter : Nat } {
     let unsettledBefore = unsettledDeliveries();
-    let issuedBefore = outflowsIssued;
+    let issuedBefore = reserveState.outflowsIssued;
     let observed = await cyclesLedger.icrc1_balance_of(Delivery.reserveAccount(selfPrincipal()));
-    let quiet = unsettledBefore == 0 and unsettledDeliveries() == 0 and outflowsIssued == issuedBefore;
+    let quiet = unsettledBefore == 0 and unsettledDeliveries() == 0 and reserveState.outflowsIssued == issuedBefore;
     reconcileReserve(observed, quiet);
     ({ observed; quiet; holdersAfter = Orders.promiseHolderCount(orderStore) });
   };
 
-  /// On-demand reserve refresh (admin — a public one would let anyone spend our
-  /// cycles on ledger calls). The sweep does this hourly; this is the lever for
-  /// right after `icp cycles transfer`, so a top-up is sellable immediately.
-  ///
-  /// ⚠️ **`scripts/local-dev-seed.sh` and RUNBOOK's top-up step call this**, and
-  /// forgetting it is invisible to every typecheck: the floor stays at zero, so the
-  /// gateway refuses every sale against a fully funded reserve and nothing anywhere
-  /// says why.
-  public shared ({ caller }) func refresh_reserve() : async Nat {
-    requireAdmin(caller);
-    (await* observeReserve()).observed;
-  };
 
-  /// Return the reserve to the caller, refusing while anything is owed (#103).
-  ///
-  /// ⚠️ **Why this exists at all.** #30 recorded no withdraw lever because *"the app is
-  /// not in production and an over-funded local reserve costs nothing"* — true then, and
-  /// false the moment the reserve is funded on mainnet, where it is real money in a
-  /// ledger account with no way back. Decommissioning, or over-funding once, was a
-  /// permanent loss.
-  ///
-  /// ⚠️ **It grants a controller NO new capability, which is what makes it safe.** A
-  /// controller can install arbitrary code, so they can already move the reserve
-  /// anywhere by upgrading — `Auth.mo`'s tier note says exactly that. There is a cheaper
-  /// existing path too: rotate the webhook secret, sign a completed-session event for an
-  /// order you created, and take delivery having paid nothing. The trust boundary does
-  /// not move; an off-the-books capability becomes **one audited call**, which is more
-  /// visible than a wasm deploy and more visible than a run of forged orders.
-  ///
-  /// ⚠️ **A DECOMMISSIONING lever, not an incident lever, and the guard is why.** During
-  /// a forged-webhook drain the forged orders are open, so this refuses. The evacuation
-  /// path is three steps, not one: rotate the webhook secret (which closes the rail to
-  /// new orders), `abandon_order` the ones in flight (releasing their promises), then
-  /// withdraw. RUNBOOK's suspected-leak section carries that sequence.
-  public shared ({ caller }) func withdraw_reserve() : async Result.Result<Withdrawn, WithdrawError> {
-    requireController(caller);
-    // ⚠️ **The INDEX, not the tally.** `Reserve.applyDelta` clamps a release to zero
-    // when the tally has diverged low, so `promised` can read 0 while promise-holders
-    // still exist — the state `tallySaturations` exists to surface. Guarding on the
-    // tally would permit a withdraw with live orders outstanding, which is the one
-    // thing this guard is for. `promiseHolderCount` is `Set.size`: O(1), and set
-    // emptiness cannot saturate.
-    //
-    // The index is authoritative here for the same reason `reconcileBounded` treats it
-    // that way — a recount over `promiseHolders` is exact if the index is complete and
-    // too low otherwise, never too high.
-    let holders = Orders.promiseHolderCount(orderStore);
-    if (holders > 0) {
-      return #err(#ordersOutstanding({ holders; promised = Orders.promised(orderStore) }));
-    };
-    // Observe before withdrawing, or an unobserved top-up is stranded — which defeats
-    // the lever. ⚠️ **And an empty promise index is exactly what makes the observation
-    // adoptable**: `unsettledDeliveries` is a walk over `promiseHolders` (#69), so no
-    // holders means no unsettled deliveries means the reconcile's quiet window holds.
-    // The withdraw guard and the observation guard are the same structure, so they
-    // cannot disagree.
-    // ⚠️ **RE-CHECK, because `observeReserve` contains an await and the floor is still
-    // FULL across it.** The decrement below is what refuses a concurrent create, and it
-    // has not happened yet — so a `create_order` queued during the balance read sees a
-    // full reserve, `Gate.solvent` admits it, and the buyer walks away with a payable
-    // session against a reserve that is about to leave. If they pay, they have paid for
-    // cycles that are gone.
-    //
-    // ⚠️ **The count comes BACK from the observe rather than being re-read here**, so
-    // the guard cannot be forgotten by anyone editing this function: `observeReserve`
-    // computes it after its own await, alongside the `quiet` flag it computes for the
-    // same reason. A comment saying "re-read this" would be the weakest guard available,
-    // and comments are exactly what this codebase keeps finding insufficient.
-    let { holdersAfter } = await* observeReserve();
-    if (holdersAfter > 0) {
-      return #err(#ordersOutstanding({
-        holders = holdersAfter;
-        promised = Orders.promised(orderStore);
-      }));
-    };
-    let debited = reserveFloor;
-    let fee = cyclesLedgerFee;
-    if (debited == 0) return #err(#nothingToWithdraw);
-    // Draining means transferring `debited - fee`, because the ledger charges the fee
-    // on top. Below the fee there is nothing recoverable at all.
-    let ?amount = Delivery.deliverableCycles(debited, fee) else {
-      return #err(#belowLedgerFee({ floor = debited; fee }));
-    };
-    let to : Types.Account = { owner = caller; subaccount = null };
-    // ── Rule 2 (§5.4): the floor drops when the transfer is ISSUED ──────────
-    //
-    // ⚠️ **Synchronously, before the await, or this is a TOCTOU on the money path.**
-    // `create_order` interleaves on the await below: it would check `Gate.solvent`
-    // against a reserve being emptied, admit an order, and leave a buyer paying for
-    // cycles that are gone. With the floor at zero first, every concurrent create
-    // refuses for free — no new lock and no new lever.
-    //
-    // ⚠️ **By `amount + fee`, not `amount`** — the figure actually debited, the same
-    // correction §5.4 carries for delivery. Decrementing by the transferred amount
-    // alone would leave the floor overstating the account by exactly the fee, and the
-    // next observation would report an unexplained shortfall: the one signal that is
-    // supposed to mean an outflow we did not cause.
-    reserveFloor := Reserve.floorAfterOutflow(reserveFloor, amount + fee);
-    outflowsIssued += 1;
-    let result = try {
-      await cyclesLedger.icrc1_transfer(
-        Delivery.withdrawArgs(to, amount, fee, Time.now())
-      );
-    } catch (e) {
-      // ⚠️ The floor is NOT credited back. A call that failed without a reply says
-      // nothing about whether the ledger acted, and rule 2 exists to be pessimistic
-      // about exactly that; a reconcile heals it if the transfer never happened.
-      auditAdmin(caller, "reserve.withdrawFailed", "to " # to.owner.toText() # ": " # e.message());
-      return #err(#transferFailed(e.message()));
-    };
-    switch (result) {
-      case (#Ok(block)) {
-        // ⚠️ The destination is IN the audit line, not just the fact of a withdrawal.
-        // A controller destination is the new class in this whole design, so a record
-        // that omits it is weaker than it looks.
-        auditAdmin(
-          caller,
-          "reserve.withdrawn",
-          amount.toText() # " cycles to " # to.owner.toText()
-          # " (debited " # (amount + fee).toText() # " incl. fee " # fee.toText()
-          # ", block " # block.toText() # ")",
-        );
-        #ok({ withdrawn = amount; debited = amount + fee; to });
-      };
-      case (#Err(e)) {
-        // ⚠️ **The floor stays decremented here, and that is safe and self-correcting
-        // rather than a bookkeeping hole.** Understating the floor only ever sells
-        // *less*, and adoption is increase-only, so the next quiet observation raises it
-        // back to the real balance. Crediting it back would be the unsafe direction: a
-        // refusal we misread as definitive would leave the floor optimistic with nothing
-        // left to re-decrement it.
-        let detail = Delivery.transferErrorToText(e);
-        auditAdmin(caller, "reserve.withdrawRefused", "to " # to.owner.toText() # ": " # detail);
-        #err(#transferFailed(detail));
-      };
-    };
-  };
 
-  /// What a withdrawal moved. `debited` is `withdrawn + fee` — the figure the reserve
-  /// actually fell by, which is what reconciles against the ledger.
-  public type Withdrawn = { withdrawn : Nat; debited : Nat; to : Types.Account };
 
-  public type WithdrawError = {
-    /// Cycles are still owed: at least one order is non-terminal, so a buyer either
-    /// holds a payable session or has paid and not been delivered.
-    ///
-    /// ⚠️ Carries the holder COUNT and the tally so an operator knows what to clear —
-    /// a bare refusal on a decommissioning lever is a dead end. The two figures
-    /// disagreeing is itself the signal that the tally has saturated.
-    #ordersOutstanding : { holders : Nat; promised : Nat };
-    /// The observed floor is zero. Not an error state, but distinguishable from a
-    /// successful withdrawal of nothing.
-    #nothingToWithdraw;
-    /// The whole floor would not clear the ledger's flat deposit fee, so there is
-    /// nothing recoverable.
-    #belowLedgerFee : { floor : Nat; fee : Nat };
-    /// The ledger refused or the call failed. ⚠️ The floor has already been decremented
-    /// and is deliberately not restored — see the call site.
-    #transferFailed : Text;
-  };
 
-  /// Reserve solvency and order counters, public (#30 PR-B).
-  ///
-  /// `reserveFloor` − `promisedTotal` = `availableToSell`, in one answer, so "the ledger
-  /// says 100 T and the gateway will sell 0" is diagnosable at a glance (§3.2).
-  ///
-  /// ⚠️ **`reserveFloor` is a maintained lower BOUND, not the balance, and must not cache
-  /// one.** Caching invents a staleness class over a number the caller can read from the
-  /// source. A floor far below the ledger's balance means nothing has reconciled since the
-  /// last top-up — `reserveObservedAtNs` says when it last did, `refresh_reserve` is the
-  /// lever.
-  ///
-  /// ⚠️ **Uncertified query answers, and nothing may be wired to decide on them.**
-  /// `create_order` decides solvency from the same state *synchronously*, inside the
-  /// order-creating message; that is what stops the decision being raced into an
-  /// over-sale.
-  public query func reserve_status() : async {
-    reserveFloor : Nat;
-    promisedTotal : Nat;
-    /// How many orders still hold a promise — `promiseHolders.size()`, O(1).
-    ///
-    /// ⚠️ **This is what `withdraw_reserve` guards on, so it must be readable before
-    /// calling it** (#103): the refusal names a count an operator then has to go and
-    /// find, and a decommissioning lever that cannot tell you what is blocking it is a
-    /// dead end.
-    ///
-    /// ⚠️ **It is also the direct read on a saturated tally.** `promisedTotal` clamps to
-    /// zero on release when it has diverged low, so `promisedTotal == 0` with
-    /// `promiseHolders > 0` is exactly the state `tallySaturations` counts — visible here
-    /// side by side rather than inferred from a counter.
-    promiseHolders : Nat;
-    availableToSell : Nat;
-    reserveObservedAtNs : ?Int;
-    cyclesLedgerFee : Nat;
-    tallySaturations : Nat;
-    reserveAccount : Types.Account;
-    canisterCycles : Nat;
-    minCanisterCycles : Nat;
-    openOrders : Nat;
-    expiredOrders : Nat;
-    totalOrders : Nat;
-    paidIntentsIndexed : Nat;
-  } {
-    {
-      reserveFloor;
-      promiseHolders = Orders.promiseHolderCount(orderStore);
-      /// Null means **no reconcile has ever run**, which is also why a freshly
-      /// installed canister sells nothing until the operator refreshes: the floor
-      /// starts at zero and only a look at the ledger can raise it.
-      reserveObservedAtNs;
-      /// Exactly what the gate computes, from the same two numbers, so a refused
-      /// sale and this figure can never tell different stories.
-      availableToSell = Reserve.available(reserveFloor, Orders.promised(orderStore));
-      /// The fee the NEXT delivery will use, and the only way to see that `#BadFee`
-      /// self-correction actually happened (#30 PR-B). ⚠️ Nothing but the ledger
-      /// writes it — there is deliberately no admin lever — so a value at or above an
-      /// order's locked quantity stalls delivery loudly and the answer is a redeploy;
-      /// at that fee the rail cannot sell anyway.
-      cyclesLedgerFee;
-      // O(1): maintained counters, not a scan of the order store.
-      openOrders = Orders.countOf(orderStore, #created);
-      expiredOrders = Orders.countOf(orderStore, #expired);
-      totalOrders = orderStore.orders.size();
-      paidIntentsIndexed = paidIntents.size();
-      promisedTotal = Orders.promised(orderStore);
-      /// ⚠️ **Any non-zero value means the tally has diverged.** A saturation is a
-      /// release asking to remove more than was held, so it says the tally was
-      /// already wrong *before* that order got there — strictly worse than a fault
-      /// in the order being released. The daily recount reports drift's SIZE; this
-      /// reports its EXISTENCE, same day. RUNBOOK §8 alerts on any increment.
-      tallySaturations = orderStore.tallySaturations;
-      // Named so an operator (or the frontend) can point a ledger query at the
-      // right account without reconstructing it.
-      reserveAccount = Delivery.reserveAccount(selfPrincipal());
-      // The gas half, which is a different pot from the reserve: what the canister
-      // spends to run, gated by `minCanisterCycles`.
-      canisterCycles = Cycles.balance();
-      minCanisterCycles = gateConfig.minCanisterCycles;
-    };
-  };
 
-  /// Which order did this Stripe `payment_intent` pay for (admin, §4.2)? The
-  /// reconciliation lookup: given a charge in the Stripe Dashboard, find the
-  /// order it funded. Null means the payment was never attributed to an order
-  /// here — check the order's problems and the orphan list for an obligation carrying it.
-  public shared query ({ caller }) func order_for_payment(paymentRef : Text) : async ?Types.OrderId {
-    requireAdmin(caller);
-    paidIntents.get(paymentRef);
-  };
 
-  /// **Admin: expire one `#created` order, releasing its reserve capacity** (#52).
-  ///
-  /// ⚠️ **The lever for the class the sweep structurally CANNOT see**, so do not delete it
-  /// as redundant with the sweep: an order whose session-create response was lost carries
-  /// neither `expiresAtNs` (nothing to trigger on) nor `stripeSessionId` (nothing to query
-  /// with), and Stripe's session list cannot be filtered by `client_reference_id`.
-  ///
-  /// ⚠️ **Expire-first, exactly as `cancel_order` does, and for exactly that reason.**
-  /// Nothing is ever half-expired: if the session is still live on Stripe, the order does
-  /// not move. A successful expire is what makes "expired" mean *provably unpayable*
-  /// rather than assumed, because Stripe guarantees a session ends in exactly one of
-  /// completed/expired.
-  ///
-  /// ⚠️ **`#notOpen` changes nothing, and that is not timidity.** It means the session
-  /// completed or already expired, and those demand opposite actions — expiring an order
-  /// whose buyer just paid would strand a real payment. Let the webhook (or the sweep)
-  /// settle it on Stripe's answer.
-  public shared ({ caller }) func expire_order(id : Types.OrderId) : async Result.Result<Types.Order, Text> {
-    requireAdmin(caller);
-    let ?order = Orders.get(orderStore, id) else return #err("no order " # id);
-    switch (order.status) {
-      case (#created) {};
-      case (#expired) return #ok(order); // idempotent
-      case (status) {
-        return #err(
-          "order " # id # " is " # Types.statusToText(status)
-          # "; only a #created order can be expired. A paid order delivers or escalates; use abandon_order for a paid one you have refunded"
-        );
-      };
-    };
-    switch (order.stripeSessionId) {
-      case (?sessionId) {
-        switch (await* expireStripeSession(sessionId)) {
-          case (#ok) {};
-          case (#notOpen(detail)) {
-            // The body travels into the audit line because this module deliberately
-            // does not guess Stripe's wording: recording what it actually said is how
-            // the next reader learns it. See `Session.expireOutcome`.
-            audit("order.expireRaced", id # ": session " # sessionId # " is no longer open. Stripe said: " # detail);
-            return #err(
-              "order " # id # "'s session is already settled or expired — the webhook or the recovery sweep will resolve it on Stripe's answer, which is the only authority on which of the two happened"
-            );
-          };
-          case (#unauthorized) {
-            // ⚠️ 401/403 is the ONE expire answer that means "rotate the key", so it is
-            // the only one that latches. A 400 latched it before, which filed a P1
-            // saying the key was refused for a key that was fine.
-            noteStripeApiFailed(
-              "expire REFUSED (401/403): the restricted key needs WRITE on Checkout Sessions — rotate it"
-            );
-            return #err("Stripe refused our credentials while cancelling order " # id # " — an operator has been notified");
-          };
-          case (#failed(detail)) {
-            audit("order.expireFailed", id # ": " # detail);
-            return #err("could not expire the Stripe session for order " # id # ": " # detail);
-          };
-        };
-      };
-      case null {
-        // The residue class this method exists for. No session id means no URL ever left
-        // the canister, so the order is provably unpayable with no outcall needed.
-        audit("order.expiredSessionless", id # " had no session; expired without an outcall");
-      };
-    };
-    // Through the machinery, never a status write: a second tab may have cancelled this
-    // order while the outcall was in flight, and the matrix no-ops `#cancelled → #expired`
-    // for free — which is what keeps the buyer's own decision, and its `expiredBy`
-    // provenance, from being overwritten.
-    switch (Orders.settleUnpayable(orderStore, cancelRequests, id, #sessionExpired, Time.now())) {
-      case (#ok(updated)) {
-        auditAdmin(caller, "order.expiredByAdmin", id # ": reserve capacity released");
-        #ok(updated);
-      };
-      case (#err(_)) {
-        let ?fresh = Orders.get(orderStore, id) else return #err("no order " # id);
-        #err("order " # id # " moved to " # Types.statusToText(fresh.status) # " while the Stripe call was in flight; nothing was changed");
-      };
-    };
-  };
 
-  /// Let a buyer give up on their own unpaid order (owner-scoped).
-  ///
-  /// ⚠️ **Load-bearing on the open-order cap**, whose refusal tells the buyer to pay or
-  /// abandon one — advice they cannot follow without this, since `abandon_order` is
-  /// admin-only and takes *paid* orders. Remove it and a buyer who opened the cap's worth
-  /// of checkouts is locked out until their sessions expire.
-  ///
-  /// ⚠️ **Nothing is stranded, and the reason is the ORDERING**: the session is expired
-  /// on Stripe *before* the order moves, so an in-flight payment either wins that race
-  /// (and the order is not cancelled at all) or it cannot start. `#cancelled → #paid` is
-  /// absent from the matrix, so a cancelled order is unpayable by construction.
-  ///
-  /// No problem filed: nothing is owed, and filing an obligation for an order where no
-  /// money moved is exactly the noise the worklist must not accumulate.
-  public shared ({ caller }) func cancel_order(id : Types.OrderId) : async Result.Result<Types.Order, Text> {
-    let ?order = Orders.getOwned(orderStore, id, caller) else return #err("no order " # id);
-    switch (order.status) {
-      case (#created) {};
-      case (#cancelled) return #ok(order); // idempotent: already given up on
-      // Named separately because the catch-all's wording is about a PAID order, and an
-      // expired one is the opposite case: nothing was charged and nothing will deliver.
-      // A stale tab is enough to reach it.
-      case (#expired) {
-        return #err("order " # id # " has already expired, so there is nothing to cancel");
-      };
-      case (status) {
-        return #err(
-          "order " # id # " is " # Types.statusToText(status)
-          # "; a paid order cannot be cancelled — it will deliver, or contact support"
-        );
-      };
-    };
-    // `#cancelled`, not `#expired`: the buyer's own decision is a distinct state,
-    // so a reload shows them "Cancelled" rather than telling them their order
-    // expired (#34). And `#cancelled → #paid` is absent from the matrix, which is
-    // what makes a cancelled order unpayable by construction rather than by a
-    // runtime check somebody has to remember.
-    //
-    // ── Atomic with Stripe (#33, option B) ──────────────────────────────────
-    // Expire the session FIRST, then mark the order. Nothing is ever *half*
-    // cancelled: if the session is still live on Stripe, the order is not
-    // cancelled. That ordering is the whole reason `#cancelled → #paid` never
-    // needs to be legal — Stripe guarantees a session ends in exactly one of
-    // completed/expired, so a successful expire proves no payment completed.
-    //
-    // An earlier draft made this outcall non-fatal (audit and return success
-    // anyway). Rejected: it recreates the half-cancelled state — order says
-    // cancelled, session still charges the buyer — that `#cancelled` exists to
-    // eliminate.
-    switch (order.stripeSessionId) {
-      case null {
-        // No session ever existed, so no URL left the canister and the order is
-        // provably unpayable. This is the residue case: a trap or upgrade landed
-        // between the order commit and the outcall response, so the in-call
-        // failure handler never ran. Cancel with no outcall.
-        audit("order.cancelledSessionless", id # " had no session; cancelled without an outcall");
-      };
-      case (?sessionId) {
-        // ⚠️ Recorded BEFORE the await, and deliberately NOT cleared in a `finally`:
-        // this is the buyer's intent, not a lock. If this call traps, the intent has to
-        // survive, because that is the window in which some other writer settles the
-        // order. It is pruned once the order is terminal.
-        cancelRequests.add(id);
-        switch (await* expireStripeSession(sessionId)) {
-          case (#ok) {};
-          case (#notOpen(_)) {
-            // THREE causes, and this arm cannot tell them apart: the session completed
-            // (the payment won the race), it had already expired, or Stripe refused the
-            // request itself. The first two settle without us, so the right move is to
-            // change nothing and let the incoming `checkout.session.completed` or
-            // `checkout.session.expired` resolve it.
-            //
-            // ⚠️ **The third cause is why this no longer claims a diagnosis.** A
-            // malformed request also answers 400, and "already settled or has expired"
-            // is then false: the order is still `#created` and payable, so the buyer
-            // refreshes onto an order that is still there and clicks again. The wording
-            // below is true of all three, and it names what happens next in each case
-            // instead of asserting which one it was.
-            //
-            // ⚠️ **No audit line, and the earlier reason for that was WRONG.** It said
-            // the information exists in the resolving event — true of the first two
-            // causes, and there is no resolving event for the third. The rule that does
-            // apply is `AuditLog.mo`'s, which is explicit about this shape: a buyer can
-            // retry, so "a caller decides" how often it fires, and that is a counter
-            // with a monitoring row rather than a line. `Gate.RefusalCounts` cannot gain
-            // one without an upgrade-incompatible change to the stable shape, so the
-            // counter waits for a change entitled to make one.
-            //
-            // Until then the operator's lever is `expire_order`, which takes this same
-            // path, is admin-authenticated — so the same rule admits its line — and
-            // audits Stripe's body verbatim as `order.expireRaced`. A malformed request
-            // is not per-order: it fails every cancel, so running it once against a live
-            // `#created` order surfaces the cause. RUNBOOK §8 carries the row.
-            return #err(
-              "Stripe would not close the payment session for order " # id
-              # ". If it was paid it will deliver; if not it expires on its own. Refresh"
-              # " the page to see which"
-            );
-          };
-          case (#failed(detail)) {
-            // The order stays payable and uncancelled, which is the safe side:
-            // the buyer can retry, or it expires on its own.
-            //
-            // ⚠️ **And because the buyer CAN retry, this line was caller-bounded** —
-            // the comment above invites exactly the loop that made it fail
-            // `AuditLog.mo`'s admission rule. It is the same Stripe-API-failing
-            // condition `create_order` latches, with the same cause and the same lever,
-            // so it routes through the same latch: one line when the API starts
-            // refusing us, a counter for the volume.
-            noteStripeApiFailed("expire: " # detail);
-            // ⚠️ **NOT "could not reach Stripe".** This arm is now only genuine unknowns
-            // (a 5xx, or the outcall itself failing), and a 5xx means Stripe was reached
-            // and something went wrong at its end. The old wording claimed a diagnosis
-            // this arm does not have, and it was the wording a buyer saw for an
-            // already-paid order, which took a different branch entirely.
-            return #err(
-              "could not cancel order " # id # " at Stripe — try again, or it expires on its own"
-            );
-          };
-          case (#unauthorized) {
-            // ⚠️ The one expire answer that means "rotate the key", and the only one
-            // that should latch. A 400 latched this before, filing a P1 that said the
-            // key was refused when the key was fine.
-            noteStripeApiFailed(
-              "expire REFUSED (401/403): the restricted key needs WRITE on Checkout Sessions — rotate it"
-            );
-            return #err(
-              "could not cancel order " # id # ": Stripe refused our credentials. An operator has been notified; the order expires on its own if it is not paid"
-            );
-          };
-        };
-      };
-    };
-    let ?cancelled = tryTransition(id, #cancelled) else {
-      // ⚠️ **Reaching here now means the race was WON by someone else and settled
-      // correctly**, which is the normal path rather than a failure: the
-      // `checkout.session.expired` webhook Stripe fires from our own expire call
-      // routinely lands first, reads `cancelRequests`, and records `#cancelled`. So
-      // report the buyer's own order back to them rather than an error.
-      let ?fresh = Orders.get(orderStore, id) else return #err("no order " # id);
-      switch (fresh.status) {
-        case (#cancelled) {
-          cancelRequests.remove(id);
-          audit("order.cancelled", id # " cancelled by owner (settled by the expiry event)");
-          return #ok(fresh);
-        };
-        case (_) {
-          // Genuinely something else: paid in the window, or an admin ended it. The
-          // page re-renders from this response, so it shows what actually happened.
-          cancelRequests.remove(id);
-          return #err(
-            "order " # id # " was already settled while this was in flight — the status above is current"
-          );
-        };
-      };
-    };
-    cancelRequests.remove(id);
-    audit("order.cancelled", id # " cancelled by owner");
-    #ok(cancelled);
-  };
 
-  /// Stop trying to deliver an order (admin, §7) — **the only path to a
-  /// terminal non-delivered state.**
-  ///
-  /// Nothing in the system gives up on a purchase automatically: a delay raises
-  /// `delayed_deliveries` and keeps retrying, because its causes are all
-  /// operator-fixable. This is the deliberate human decision that a purchase
-  /// will not be completed, and it demands a reason so the trail records *why*
-  /// alongside *who*.
-  ///
-  /// Only reachable from a pre-delivery money-bearing state. A `#created` order
-  /// has taken no money and needs no decision; a `#delivered` one is done.
-  public shared ({ caller }) func abandon_order(
-    id : Types.OrderId,
-    reason : Text,
-  ) : async Result.Result<Types.Order, Text> {
-    requireAdmin(caller);
-    let ?order = Orders.get(orderStore, id) else return #err("no order " # id);
-    switch (order.status) {
-      case (#paid or #needsReview) {};
-      case (status) {
-        return #err("order " # id # " is " # Types.statusToText(status) # "; only a paid or under-review order can be abandoned");
-      };
-    };
-    // ── ⚠️ A PAID order with an unsettled delivery cannot be abandoned ────────
-    //
-    // **Otherwise this lever pays the buyer twice.** The order is `#paid` with a
-    // transfer issued and no block recorded, so the money position is UNKNOWN.
-    // Abandoning releases the promise and files a refund-by-hand obligation, while
-    // the transfer either lands afterwards or has already landed with its reply
-    // lost — and after `#abandoned` nothing sweeps the order, so nothing ever
-    // discovers which. The buyer keeps the cycles and gets the refund.
-    //
-    // ⚠️ It is not only a race with a call in flight. The wider case is the one that
-    // needs no timing at all: an intent whose transfer executed and whose reply was
-    // lost looks exactly like one that never executed, and this lever would decide
-    // between them by guessing. **Deciding an unknown money position is precisely
-    // what `#needsReview` exists to prevent**, and without this guard
-    // `abandon_order` reached the same outcome directly from `#paid`, skipping it.
-    //
-    // Second symptom, worth knowing for the post-mortem: the late reply patches the
-    // journal to `#delivered` while `tryTransition` no-ops against `#abandoned`, so
-    // the journal and the order end up contradicting each other.
-    //
-    // **Bounded, so this is a wait and not a refusal:** the ~24 h dedup fuse moves
-    // such an order to `#needsReview` on its own, where abandonment is allowed and
-    // the documented procedure is establish-the-fate-first. `#needsReview` is
-    // therefore untouched by this guard — escalation implies no outstanding call.
-    //
-    // ⚠️ **`unsettledDeliveries` now depends on this refusal for its completeness**, so
-    // this guard holds up more than the double-payout it was added for (#69). It is what
-    // keeps a transfer-in-flight order inside `promiseHolders`; relaxing it for operator
-    // ergonomics would let the quiet window read quiet across an in-flight transfer,
-    // which is the oversell direction. Integration scenario 78 owns it.
-    if (order.status == #paid) {
-      switch (deliveryJournal.get(id)) {
-        case (?entry) {
-          if (openTransfer(entry)) {
-            return #err(
-              "order " # id # " has a delivery outstanding, so whether its cycles moved is not yet known — abandoning it now would refund a buyer who may already hold them. "
-              # "Check `pending_deliveries` for its state. Either it settles (and needs no refund), or the ~24 h dedup window escalates it to needsReview, where the ledger is the source of truth and the order id is in the transfer's memo."
-            );
-          };
-        };
-        case null {};
-      };
-    };
-    if (reason.size() == 0) return #err("a reason is required — the audit trail must record why");
-    // Status and reason in one step, so they cannot diverge — an `#abandoned` order
-    // with no explanation is the gap the dropped queue entry used to paper over.
-    let abandoned = switch (Orders.abandonWithReason(orderStore, id, reason, Time.now())) {
-      case (#ok(o)) o;
-      case (#err(_)) return #err("order " # id # " refused the transition to abandoned");
-    };
-    Delivery.patch(deliveryJournal, id, { status = ?#abandoned; blockIndex = null; cyclesDelivered = null; bumpRetries = false; lastError = null }, Time.now());
-    // ⚠️ **No queue entry.** It was the fourth copy of one decision — the status, the
-    // journal patch and this audit line already carry it, and nothing about it was
-    // outstanding. Review established the refund is tracked separately, via
-    // `stripe.refundOfEscalated` on the `charge.refunded` for the intent.
-    auditAdmin(caller, "order.abandoned", id # ": " # reason);
-    #ok(abandoned);
-  };
 
-  /// Record that an escalated order's cycles **did** reach the buyer (admin, §7).
-  ///
-  /// The counterpart to `abandon_order`, and the reason #30 PR-B added the
-  /// `#needsReview → #delivered` edge. `#needsReview` means "we could not establish
-  /// whether the transfer landed"; when the operator establishes on the cycles
-  /// ledger that it did, this is how they say so. Without it their only lever was
-  /// `abandon_order`, which files a delivered order as abandoned and audits a refund
-  /// that never happened.
-  ///
-  /// ⚠️ **The block index is required, and it is not decoration.** It is the evidence
-  /// that this call is a *finding* rather than a guess, it goes into the journal so
-  /// the receipt shows the same proof any other delivered order shows, and demanding
-  /// it means the operator has actually looked. The order id is in the transfer's
-  /// memo, so the lookup is a search on the ledger, not a reconstruction.
-  ///
-  /// ⚠️ It moves no money and must not: the cycles are already gone. It also does not
-  /// credit the reserve floor back — the floor already assumed the debit when the
-  /// transfer was issued (rule 2), and this call is the confirmation that the
-  /// assumption was right.
-  public shared ({ caller }) func record_delivered(
-    id : Types.OrderId,
-    blockIndex : Nat,
-  ) : async Result.Result<Types.Order, Text> {
-    requireAdmin(caller);
-    let ?order = Orders.get(orderStore, id) else return #err("no order " # id);
-    switch (order.status) {
-      case (#needsReview) {};
-      case (#delivered) return #ok(order); // idempotent: already recorded
-      case (status) {
-        return #err(
-          "order " # id # " is " # Types.statusToText(status)
-          # "; only an under-review order can be recorded as delivered — a live order delivers on its own"
-        );
-      };
-    };
-    let ?delivered = tryTransition(id, #delivered) else {
-      return #err("order " # id # " refused the transition to delivered");
-    };
-    Delivery.patch(deliveryJournal, id, { status = ?#delivered; blockIndex = ?blockIndex; cyclesDelivered = null; bumpRetries = false; lastError = null }, Time.now());
-    auditAdmin(caller, "order.recordedDelivered", id # ": operator confirmed cycles-ledger block " # blockIndex.toText());
-    #ok(delivered);
-  };
 
-  public type Receipt = {
-    order : Types.Order;
-    /// What the buyer actually paid, if they have.
-    paidUsdCents : ?Nat;
-    /// The **cycles-ledger** block the delivery transfer landed in — the on-chain
-    /// proof, checkable by anyone against that ledger by the order id in the
-    /// transfer's memo.
-    deliveryBlockIndex : ?Nat;
-    /// Cycles delivered to the buyer's account.
-    cyclesDelivered : ?Nat;
-    /// Recompute the quote from these and it must equal `order.lockedCycles`:
-    ///   netCents × xdrPermyriadPerIcp × 10¹² / usdPerIcpMicros
-    /// where netCents = usdCents − (⌈usdCents·feeBps/10⁴⌉ + feeFixedCents).
-    /// Both rate inputs are queryable from the XRC and the CMC, so the price is
-    /// reproducible from first principles rather than merely asserted by us.
-    verification : {
-      netCents : ?Nat;
-      usdPerIcpMicros : Nat;
-      xdrPermyriadPerIcp : Nat;
-      rateReceivedRates : Nat;
-      rateQueriedSources : Nat;
-    };
-  };
 
-  /// One receipt, from an order and its journal entry.
-  ///
-  /// ⚠️ **One owner, because there are two endpoints and they must not drift.** `receipt`
-  /// and `admin_receipt` differ only in who may call and whether the read is audited —
-  /// the record itself is the same object, and it was built twice, field for field. A
-  /// verification figure that disagreed between the buyer's copy and the operator's copy
-  /// would be the worst possible place for a copy-paste divergence.
-  func receiptOf(order : Types.Order, journal : ?Types.JournalEntry) : Receipt {
-    {
-      order;
-      paidUsdCents = order.paidUsdCents;
-      deliveryBlockIndex = switch (journal) { case (?entry) entry.blockIndex; case null null };
-      cyclesDelivered = switch (journal) { case (?entry) entry.cyclesDelivered; case null null };
-      verification = {
-        // `??`, because the fallback is exactly "unpaid, so quote the order's own figure".
-        netCents = Pricing.netCents(order.pricing, order.paidUsdCents ?? order.pricing.usdCents);
-        usdPerIcpMicros = order.pricing.usdPerIcpMicros;
-        xdrPermyriadPerIcp = order.pricing.xdrPermyriadPerIcp;
-        rateReceivedRates = order.pricing.rateReceivedRates;
-        rateQueriedSources = order.pricing.rateQueriedSources;
-      };
-    };
-  };
 
-  /// The same receipt, for **any** order (admin, #38) — and **audited**, which is the
-  /// whole reason it is a separate method.
-  ///
-  /// ⚠️ **The audit is not about existence disclosure; it is about an operator leaving a
-  /// record of having looked.** `Receipt` embeds the whole `Order`, so an *unaudited*
-  /// admin path returns exactly what `admin_order` returns with no trace — which makes
-  /// `admin_order`'s audit **bypassable by calling the other method**. Reading an operator
-  /// read as harmless because the data is reachable elsewhere is the mistake to avoid.
-  ///
-  /// ⚠️ **A separate method rather than a branch, because auditing writes state.** An
-  /// audited read cannot be a `query`, and folding this into `receipt` would make **every
-  /// buyer's** receipt read an update — the common path through consensus to serve the
-  /// rare one.
-  ///
-  /// ⚠️ **Auditing is the mitigation for lifting the owner boundary at all.** A path that
-  /// lifts it without the audit is not a smaller version of the change; it is the change
-  /// without its safeguard.
-  public shared ({ caller }) func admin_receipt(id : Types.OrderId) : async ?Receipt {
-    requireAdmin(caller);
-    let ?order = Orders.get(orderStore, id) else {
-      // Audited on a miss too, like `admin_order`: an id probe by an operator is exactly
-      // what §2 withholds from everyone else, so a miss must be as visible as a hit.
-      auditAdmin(caller, "order.adminRead", id # " (receipt; no such order)");
-      return null;
-    };
-    auditAdmin(caller, "order.adminRead", order.id # " (receipt)");
-    let journal = deliveryJournal.get(id);
-    ?receiptOf(order, journal);
-  };
-
-  /// Everything the **buyer** needs to verify their own purchase (§2 authz:
-  /// `caller == order.owner`).
-  ///
-  /// The buyer can **check** the claim rather than take it: recompute the quote from the
-  /// two recorded rate inputs, and look up the block index on the ledger.
-  /// ⚠️ **Owner-only, and a `query`, which is why the admin path is a separate method.**
-  /// See `admin_receipt`. Auditing writes state, so an audited read cannot be a query —
-  /// and folding the admin case in here would have made **every buyer's** receipt read
-  /// an update, putting the common path through consensus to serve the rare one.
-  public shared query ({ caller }) func receipt(id : Types.OrderId) : async ?Receipt {
-    let ?order = Orders.getOwned(orderStore, id, caller) else return null;
-    let journal = deliveryJournal.get(id);
-    ?receiptOf(order, journal);
-  };
-
-  /// Money-out journal for one order (admin, §4.2) — intent, block_index, cycles
-  /// delivered, retries.
-  public shared query ({ caller }) func delivery_journal(id : Types.OrderId) : async ?Types.JournalEntry {
-    requireAdmin(caller);
-    deliveryJournal.get(id);
-  };
 
   // ── Recovery timer (task 11, §5.2) ──────────────────────────────────────
 
-  /// §5.2 sweep cadence. Persistent — an operator-tuned cadence survives
-  /// upgrades; the transient timer below re-arms at this value. Bounded by
-  /// Recovery.validateInterval (≪ the §5.1 ledger dedup window).
-  var recoverySweepIntervalNs : Nat = Recovery.defaultIntervalNs;
+  /// The recovery machinery's mutable state, as ONE record (#120, docs/DESIGN.md §9.1).
+  ///
+  /// ⚠️ Four independent passes write here — the stranded sweep, the tally reconcile, the
+  /// reserve reconcile and the rotating index scan — and `recovery_status` reads all of
+  /// them. Grouped so a mixin receives one slice rather than eight fields, and shared by
+  /// reference because `include` passes by value.
+  let recoveryState : {
+    /// §5.2 sweep cadence. Persistent — an operator-tuned cadence survives
+    /// upgrades; the transient timer below re-arms at this value. Bounded by
+    /// Recovery.validateInterval (≪ the §5.1 ledger dedup window).
+    var sweepIntervalNs : Nat;
+    /// Last *completed* timer sweep — recovery liveness for ops (the §5.2
+    /// timer is the backstop for every detached webhook kick that dies, so
+    /// "is it actually firing" must be observable).
+    var lastSweep : ?{ atNs : Int; pending : Nat };
+    /// When the tallies were last **successfully** reconciled, and what the pass found.
+    /// Surfaced on `recovery_status` so "the counts are trustworthy" is an observable
+    /// fact rather than an assumption. Written only on success, so it falling behind
+    /// while `lastSweep` advances is the signal that the reconcile itself is failing
+    /// (RUNBOOK §8).
+    ///
+    /// ⚠️ **`drift` and `refused` are different verdicts and are reported separately**
+    /// (#63): `drift` is a tally that was raised to the recount and is now correct, while
+    /// `refused` is one the pass would not touch because the recount came out lower — see
+    /// `Orders.adoptOnlyIncreases`. A monitor that alerts on the pair as if they were one
+    /// number cannot tell "repaired" from "still suspect".
+    ///
+    /// `ordersRead` is how much work the pass did. It is bounded by the two index sizes,
+    /// so watching it grow with lifetime sales would mean the bound had broken.
+    var lastCountReconcile : ?{
+      atNs : Int;
+      drift : [Orders.Drift];
+      refused : [Orders.Drift];
+      ordersRead : Nat;
+    };
+    /// When the reserve reconcile was last *attempted*. Same attempt-vs-success split
+    /// as the count reconcile below, for the same reason: `reserveState.observedAtNs` records
+    /// success, and gating the cadence on that alone would retry a failing (or
+    /// perpetually non-quiet) read on every single tick.
+    var lastReserveReconcileAttemptNs : Int;
+    /// When a reconcile was last *attempted*, which is what gates the cadence.
+    ///
+    /// Separate from the success timestamp on purpose. A trap rolls back every
+    /// state change in its own message, so a reconcile that traps cannot record
+    /// that it ran — gating on success alone would leave it due on the next tick
+    /// and every tick after, trapping forever. This is written by the **sweep's**
+    /// message, which commits regardless of what the detached reconcile does.
+    var lastCountReconcileAttemptNs : Int;
+    /// Where the current coverage cycle has reached. `null` means a cycle is about to
+    /// start from the beginning of the store.
+    ///
+    /// ⚠️ **Persistent, because the coverage claim is what this state is for.** A
+    /// transient cursor would silently restart every cycle on every upgrade, so
+    /// `lastIndexScanCycle` would report a completed pass that an upgrade had truncated —
+    /// a green check that means nothing.
+    var indexScanCursor : ?Types.OrderId;
+    /// The cycle in progress: when it began, how many orders it has read, and how many
+    /// disagreements it has repaired so far.
+    var indexScanCycle : { startedAtNs : Int; ordersRead : Nat; repairs : Nat };
+    /// The last **completed** cycle — the only thing that licenses reading a clean scan
+    /// as evidence about the whole store.
+    ///
+    /// ⚠️ **This field IS the third state.** `orders.problemIndexDrift` and
+    /// `orders.unindexedHolders` only mean "a writer bypassed the maintaining functions"
+    /// if the absence of those lines means "we looked". Without a completed-cycle stamp,
+    /// silence means either *verified clean* or *not yet visited*, which are two readings
+    /// with opposite responses — find the bug, versus wait for the next pass. So the three
+    /// states are: an audit line (verified, disagreed), silence with a recent
+    /// `completedAtNs` (verified, clean), and silence without one (unverified).
+    var lastIndexScanCycle : ?{
+      startedAtNs : Int;
+      completedAtNs : Int;
+      ordersRead : Nat;
+      repairs : Nat;
+    };
+  } = {
+    var sweepIntervalNs = Recovery.defaultIntervalNs;
+    var lastSweep = null;
+    var lastCountReconcile = null;
+    var lastReserveReconcileAttemptNs = 0;
+    var lastCountReconcileAttemptNs = 0;
+    var indexScanCursor = null;
+    var indexScanCycle = {
+      startedAtNs = 0;
+      ordersRead = 0;
+      repairs = 0;
+    };
+    var lastIndexScanCycle = null;
+  };
 
   /// §5.2 single-flight guard: a sweep slower than the interval must skip
   /// the next firing, never pile up. Transient on purpose — a persistent
@@ -3728,10 +1880,6 @@ persistent actor CyclesGateway {
   /// applies to the expensive half.
   transient var expiryScanCursor : Text = "";
 
-  /// Last *completed* timer sweep — recovery liveness for ops (the §5.2
-  /// timer is the backstop for every detached webhook kick that dies, so
-  /// "is it actually firing" must be observable).
-  var lastRecoverySweep : ?{ atNs : Int; pending : Nat } = null;
 
   /// How often the sweep reconciles the per-status tallies against the order
   /// store. Daily, not per-sweep: the reconcile is O(orders) while the tallies
@@ -3739,26 +1887,6 @@ persistent actor CyclesGateway {
   /// bookkeeping bug, which does not need a 15-minute detection window.
   let countReconcileIntervalNs : Nat = 24 * 3_600 * 1_000_000_000;
 
-  /// When the tallies were last **successfully** reconciled, and what the pass found.
-  /// Surfaced on `recovery_status` so "the counts are trustworthy" is an observable
-  /// fact rather than an assumption. Written only on success, so it falling behind
-  /// while `lastSweep` advances is the signal that the reconcile itself is failing
-  /// (RUNBOOK §8).
-  ///
-  /// ⚠️ **`drift` and `refused` are different verdicts and are reported separately**
-  /// (#63): `drift` is a tally that was raised to the recount and is now correct, while
-  /// `refused` is one the pass would not touch because the recount came out lower — see
-  /// `Orders.adoptOnlyIncreases`. A monitor that alerts on the pair as if they were one
-  /// number cannot tell "repaired" from "still suspect".
-  ///
-  /// `ordersRead` is how much work the pass did. It is bounded by the two index sizes,
-  /// so watching it grow with lifetime sales would mean the bound had broken.
-  var lastCountReconcile : ?{
-    atNs : Int;
-    drift : [Orders.Drift];
-    refused : [Orders.Drift];
-    ordersRead : Nat;
-  } = null;
 
   /// How often the sweep reconciles the reserve floor against the cycles ledger.
   ///
@@ -3769,20 +1897,7 @@ persistent actor CyclesGateway {
   /// sells.
   let reserveReconcileIntervalNs : Nat = 3_600 * 1_000_000_000;
 
-  /// When the reserve reconcile was last *attempted*. Same attempt-vs-success split
-  /// as the count reconcile below, for the same reason: `reserveObservedAtNs` records
-  /// success, and gating the cadence on that alone would retry a failing (or
-  /// perpetually non-quiet) read on every single tick.
-  var lastReserveReconcileAttemptNs : Int = 0;
 
-  /// When a reconcile was last *attempted*, which is what gates the cadence.
-  ///
-  /// Separate from the success timestamp on purpose. A trap rolls back every
-  /// state change in its own message, so a reconcile that traps cannot record
-  /// that it ran — gating on success alone would leave it due on the next tick
-  /// and every tick after, trapping forever. This is written by the **sweep's**
-  /// message, which commits regardless of what the detached reconcile does.
-  var lastCountReconcileAttemptNs : Int = 0;
 
   /// Report what a bounded reconcile pass found (#63), shared by the timer and the
   /// admin lever so the two cannot report differently.
@@ -3899,7 +2014,7 @@ persistent actor CyclesGateway {
     // Stamped from inside, not handed the sweep's clock: this message runs after the
     // one that scheduled it, and the two timestamps are compared against each other
     // (attempt vs success) to tell a failing reconcile from a due one.
-    lastCountReconcile := ?{
+    recoveryState.lastCountReconcile := ?{
       atNs = Time.now();
       drift = report.adopted;
       refused = report.refused;
@@ -3910,39 +2025,8 @@ persistent actor CyclesGateway {
 
   // ── The rotating index scan (#63) ───────────────────────────────────────
 
-  /// Where the current coverage cycle has reached. `null` means a cycle is about to
-  /// start from the beginning of the store.
-  ///
-  /// ⚠️ **Persistent, because the coverage claim is what this state is for.** A
-  /// transient cursor would silently restart every cycle on every upgrade, so
-  /// `lastIndexScanCycle` would report a completed pass that an upgrade had truncated —
-  /// a green check that means nothing.
-  var indexScanCursor : ?Types.OrderId = null;
 
-  /// The cycle in progress: when it began, how many orders it has read, and how many
-  /// disagreements it has repaired so far.
-  var indexScanCycle : { startedAtNs : Int; ordersRead : Nat; repairs : Nat } = {
-    startedAtNs = 0;
-    ordersRead = 0;
-    repairs = 0;
-  };
 
-  /// The last **completed** cycle — the only thing that licenses reading a clean scan
-  /// as evidence about the whole store.
-  ///
-  /// ⚠️ **This field IS the third state.** `orders.problemIndexDrift` and
-  /// `orders.unindexedHolders` only mean "a writer bypassed the maintaining functions"
-  /// if the absence of those lines means "we looked". Without a completed-cycle stamp,
-  /// silence means either *verified clean* or *not yet visited*, which are two readings
-  /// with opposite responses — find the bug, versus wait for the next pass. So the three
-  /// states are: an audit line (verified, disagreed), silence with a recent
-  /// `completedAtNs` (verified, clean), and silence without one (unverified).
-  var lastIndexScanCycle : ?{
-    startedAtNs : Int;
-    completedAtNs : Int;
-    ordersRead : Nat;
-    repairs : Nat;
-  } = null;
 
   /// The expected time for one full coverage cycle, hence the detection latency for the
   /// outside direction. The arithmetic is `Recovery.indexScanCycleNs`, which is pure and
@@ -3951,7 +2035,7 @@ persistent actor CyclesGateway {
     Recovery.indexScanCycleNs(
       Orders.storedCount(orderStore),
       Orders.scanChunkSize,
-      recoverySweepIntervalNs,
+      recoveryState.sweepIntervalNs,
     );
   };
 
@@ -3980,18 +2064,18 @@ persistent actor CyclesGateway {
   /// `await`, so its own state commits or rolls back as a unit.
   func scanIndexChunk() {
     let now = Time.now();
-    let starting = indexScanCursor == null;
+    let starting = recoveryState.indexScanCursor == null;
     if (starting) {
-      indexScanCycle := { startedAtNs = now; ordersRead = 0; repairs = 0 };
+      recoveryState.indexScanCycle := { startedAtNs = now; ordersRead = 0; repairs = 0 };
     };
-    let chunk = Orders.scanChunk(orderStore, indexScanCursor, Orders.scanChunkSize);
+    let chunk = Orders.scanChunk(orderStore, recoveryState.indexScanCursor, Orders.scanChunkSize);
     let repairs = chunk.unindexedHolders.size() + chunk.unindexedProblems.size();
-    indexScanCycle := {
-      indexScanCycle with
-      ordersRead = indexScanCycle.ordersRead + chunk.visited;
-      repairs = indexScanCycle.repairs + repairs;
+    recoveryState.indexScanCycle := {
+      recoveryState.indexScanCycle with
+      ordersRead = recoveryState.indexScanCycle.ordersRead + chunk.visited;
+      repairs = recoveryState.indexScanCycle.repairs + repairs;
     };
-    indexScanCursor := chunk.nextCursor;
+    recoveryState.indexScanCursor := chunk.nextCursor;
     if (chunk.unindexedHolders.size() > 0) {
       audit(
         "orders.unindexedHolders",
@@ -4021,11 +2105,11 @@ persistent actor CyclesGateway {
     // land behind the cursor and wait for the next one — which is why the claim is
     // "every order that existed when this cycle began", and not "every order".
     if (chunk.nextCursor == null) {
-      lastIndexScanCycle := ?{
-        startedAtNs = indexScanCycle.startedAtNs;
+      recoveryState.lastIndexScanCycle := ?{
+        startedAtNs = recoveryState.indexScanCycle.startedAtNs;
         completedAtNs = Time.now();
-        ordersRead = indexScanCycle.ordersRead;
-        repairs = indexScanCycle.repairs;
+        ordersRead = recoveryState.indexScanCycle.ordersRead;
+        repairs = recoveryState.indexScanCycle.repairs;
       };
     };
   };
@@ -4223,8 +2307,8 @@ persistent actor CyclesGateway {
       // visibly stale `lastCountReconcile` (RUNBOOK §8), which is the right
       // signal — the tallies are unverified, not known-wrong.
       let now = Time.now();
-      if (Recovery.reconcileDue(lastCountReconcileAttemptNs, now, countReconcileIntervalNs)) {
-        lastCountReconcileAttemptNs := now;
+      if (Recovery.reconcileDue(recoveryState.lastCountReconcileAttemptNs, now, countReconcileIntervalNs)) {
+        recoveryState.lastCountReconcileAttemptNs := now;
         ignore async { reconcileCounts() };
       };
       // ── One chunk of the rotating index scan (#63) ──────────────────────────
@@ -4241,7 +2325,7 @@ persistent actor CyclesGateway {
       // re-scanning from the start or skipping forward.
       ignore async { scanIndexChunk() };
       let pending = await* sweepDeliverable();
-      lastRecoverySweep := ?{ atNs = Time.now(); pending };
+      recoveryState.lastSweep := ?{ atNs = Time.now(); pending };
       // ── Stranded `#created` capacity (#52) ──────────────────────────────────
       //
       // **Detached, like the count reconcile and for the same reason**: it reads the
@@ -4273,8 +2357,8 @@ persistent actor CyclesGateway {
       // catching instead: a ledger that will not answer is a skipped reconcile, and
       // the floor it leaves standing is a lower bound, so nothing unsafe follows.
       let now2 = Time.now();
-      if (Recovery.reconcileDue(lastReserveReconcileAttemptNs, now2, reserveReconcileIntervalNs)) {
-        lastReserveReconcileAttemptNs := now2;
+      if (Recovery.reconcileDue(recoveryState.lastReserveReconcileAttemptNs, now2, reserveReconcileIntervalNs)) {
+        recoveryState.lastReserveReconcileAttemptNs := now2;
         try { ignore (await* observeReserve()).observed } catch (e) {
           audit("reserve.observeFailed", "could not read the reserve balance: " # e.message() # " — the floor stands, so the gateway under-sells until the next attempt");
         };
@@ -4284,270 +2368,10 @@ persistent actor CyclesGateway {
     };
   };
 
-  /// Tune the sweep cadence (admin, §7) — re-arms immediately, no redeploy.
-  /// Validated against the §5.1 bound: the cadence must stay well inside
-  /// the ledger dedup window or replay loses its safety margin.
-  public shared ({ caller }) func set_recovery_interval(intervalNs : Nat) : async Result.Result<(), Recovery.IntervalError> {
-    requireController(caller);
-    switch (Recovery.validateInterval(intervalNs, Delivery.ledgerDedupWindowNs)) {
-      case (#err(e)) #err(e);
-      case (#ok) {
-        recoverySweepIntervalNs := intervalNs;
-        Timer.cancelTimer(recoveryTimerId);
-        recoveryTimerId := Timer.recurringTimer<system>(#nanoseconds(intervalNs), recoverySweep);
-        // ⚠️ **This knob also sets the index scan's coverage window (#63), which its
-        // name does not say.** The rotating scan runs one chunk per sweep, so coarsening
-        // the cadence multiplies the detection latency for `orders.unindexedHolders` —
-        // a finding that means the reserve was oversellable. Audited with the resulting
-        // window so the consequence is in the same line as the cause, rather than
-        // something an operator has to go and derive.
-        auditAdmin(
-          caller,
-          "recovery.intervalSet",
-          "sweep cadence set to " # intervalNs.toText() # " ns."
-          # " The #63 index scan rides this cadence, so a full coverage cycle now takes about "
-          # (expectedIndexScanCycleNs() / 1_000_000_000 / 3_600).toText()
-          # " h at the current store size — that is the detection latency for orders.unindexedHolders.",
-        );
-        #ok;
-      };
-    };
-  };
 
-  /// §5.2 liveness observability, public (operational transparency, same stance as
-  /// `reserve_status`): cadence + last completed timer sweep. A null or stale
-  /// `lastSweep` means recovery is not running.
-  /// This canister's OWN cycle balance and the floor the admission gate holds it
-  /// against (public — the same operational-transparency stance as `reserve_status`;
-  /// it is visible via `canister_status` regardless).
-  ///
-  /// ⚠️ **Gas, not stock.** This is what the canister spends to run; the cycles it
-  /// sells live in its cycles-ledger account and are reported by `reserve_status`.
-  /// Below the freezing threshold the canister stops accepting updates; at zero it is
-  /// uninstalled and the order store, journals, and dedup sets go with it. Monitor it
-  /// separately, and alert well above `minCanisterCycles` — that gate stops *sales*,
-  /// it does not stop the burn. A sudden acceleration here is the
-  /// signature of a cycle-drain attempt.
-  public query func cycles_status() : async { balance : Nat; floor : Nat } {
-    { balance = Cycles.balance(); floor = gateConfig.minCanisterCycles };
-  };
 
-  /// The public trust figures (#39) — anonymous, safe on a landing page.
-  ///
-  /// ⚠️ **The admission test is "what does a POLLER learn from the deltas?", not "does this
-  /// field name a buyer?"** Cumulative counters are differentiable: anyone sampling this
-  /// query recovers each delivery's cycles, USD and timing from the increments. That is
-  /// accepted here because it is not new — `reserve_status` is already public and its
-  /// `promisedTotal` leaks per-order amounts the same way, and USD is near-derivable from
-  /// the public `card_tiers`/`quote_previews` — but the field-level reading of the test is
-  /// what will wave through the field that *does* add something. Do not add a
-  /// most-recent-order field, a largest-purchase field, or anything per-principal.
-  ///
-  /// ⚠️ **`refusingNow` is REUSED, not re-derived.** It is the same `railStateLatch`
-  /// `refusal_counts` reports, so "is the rail accepting orders" has one definition and
-  /// cannot come out differently on two surfaces.
-  ///
-  /// ⚠️ **The counters read zero on a fresh install and that is correct, not a bug.**
-  /// Orders are never deleted, but a reinstall replaces the state, so a launch-day figure
-  /// starts at zero whichever way it is built.
-  ///
-  /// ⚠️ **The renderer must show that zero — do NOT add a threshold.** #39 first said "0
-  /// orders delivered is worse than no badge" and that was rejected: an absent number is
-  /// indistinguishable from a withheld one, and a rule that hides the figure exactly when
-  /// the news is bad is a misleading presentation rather than a neutral one. This comment
-  /// used to instruct the opposite, which would have had a future implementer build the
-  /// thing the decision removed.
-  ///
-  /// `nullPaid` should always be 0. It counts delivered orders whose `paidUsdCents` was
-  /// unset, which `markPaid` makes unreachable — a non-zero value means the USD total is
-  /// understated and the reason is a bug in this canister, not in the display.
-  /// ⚠️ **One call, because it is the landing page's whole backend.** `availableToSell`
-  /// and `refusingNow` also appear on `reserve_status` and `refusal_counts` — that is
-  /// duplication of the READER, not of the definition: both are read here from the same
-  /// state those queries read, never recomputed. Folding them in keeps a first paint to a
-  /// single round trip and a single mock in the test harness.
-  ///
-  /// ⚠️ **`availableToSell` leads, and it is a different KIND of number from the
-  /// others.** It is derived from a balance on the cycles ledger that anyone can query
-  /// without this canister's cooperation, so a visitor can check it rather than believe
-  /// it. The delivered totals are ours to report. Do not present them as equivalent.
-  public query func delivery_stats() : async {
-    availableToSell : Nat;
-    deliveredOrders : Nat;
-    deliveredCycles : Nat;
-    deliveredUsdCents : Nat;
-    nullPaid : Nat;
-    refusingNow : Gate.RailStateLatch;
-  } {
-    let totals = Orders.deliveryTotals(orderStore);
-    {
-      availableToSell = Reserve.available(reserveFloor, Orders.promised(orderStore));
-      deliveredOrders = totals.orders;
-      deliveredCycles = totals.cycles;
-      deliveredUsdCents = totals.usdCents;
-      nullPaid = totals.nullPaid;
-      refusingNow = railStateLatch;
-    };
-  };
 
-  /// "Is anything wrong right now" in ONE call (#68).
-  ///
-  /// ⚠️ **Public is a decision, not a default: #3's alerting needs no credentials.** What
-  /// reaches a human at 03:00 is a cron on the public queries, and an admin-gated summary
-  /// would put that back on a credentialed cron. Everything here is a COUNT, never an
-  /// entry, and `reserve_status` already publishes `totalOrders`, `openOrders`,
-  /// `expiredOrders`, `promisedTotal` and `availableToSell` — so there is no new exposure
-  /// class, only one fewer round trip.
-  ///
-  /// ⚠️ **The two delivery numbers are measured over DIFFERENT populations, and neither
-  /// contains the other.** `deliveriesOutstanding` means a transfer has been ISSUED, so it
-  /// needs the journal entry that records the intent. `deliveriesDelayed` reads the
-  /// ORDER's own clock and needs neither.
-  ///
-  /// Both directions are reachable, so `deliveriesDelayed` is **not** a subset:
-  ///   - outstanding, not delayed: a transfer issued seconds ago.
-  ///   - delayed, not outstanding: a delivery that bailed before issuing — short reserve,
-  ///     stale rate, gas floor — so there is no intent to be outstanding about.
-  ///   - both: a transfer issued long enough ago that the clock ran out, including one that
-  ///     landed without its block recorded.
-  ///
-  /// ⚠️ That last case is the CANONICAL outstanding shape (`intent` set, `blockIndex`
-  /// null), not a delayed-only one — it is what `unsettledDeliveries` exists to detect and
-  /// what freezes the reconcile's quiet window. Filing it under "delayed, not outstanding"
-  /// would tell an operator that `outstanding = 0` means no transfer is in flight, when a
-  /// transfer of unknown fate is exactly what it means.
-  ///
-  /// ⚠️ So `outstanding = 0, delayed = 1` is a real state, not the summary contradicting
-  /// itself — and a UI that presented one as a subset of the other would be wrong exactly
-  /// where it matters.
-  ///
-  /// They also differ in what they ask of a human: `deliveriesOutstanding` self-clears —
-  /// it is money-out in flight and the answer is wait — while `ordersNeedingReview`,
-  /// `orphansUnresolved` and `problemsUnresolved` are the three that mean a human is
-  /// needed. A summary that flattened those would make waiting look like work.
-  ///
-  /// ⚠️ **`deliveriesOutstanding` is exactly the reserve reconcile's quiet-window
-  /// predicate**, deliberately: it is also the answer to "why does the reconcile keep
-  /// skipping", and sharing the definition means the number an operator reads cannot
-  /// disagree with the number the reconcile acted on.
-  ///
-  /// **What bounds each number, stated because "bounded" alone would hide a difference:**
-  /// `ordersNeedingReview`, `ordersWithProblems` and `availableToSell` are O(1) tallies.
-  /// `deliveriesOutstanding` and `deliveriesDelayed` are bounded by `promiseHolders`, i.e.
-  /// by flow (§5.4). ⚠️ `problemsUnresolved` is bounded by the unresolved-problem index and
-  /// `orphansUnresolved` walks retained orphan history — both grow only while obligations
-  /// go uncleared, and an orphan costs a real payment or the signing secret to create
-  /// (`Orphans.add`), so neither is attacker-inflatable. Not O(1), and not the
-  /// grows-with-successful-business shape #69 and #70 removed.
-  public query func operator_summary() : async {
-    deliveriesOutstanding : Nat;
-    deliveriesDelayed : Nat;
-    ordersNeedingReview : Nat;
-    orphansUnresolved : Nat;
-    problemsUnresolved : Nat;
-    ordersWithProblems : Nat;
-    refusingNow : Gate.RailStateLatch;
-    availableToSell : Nat;
-    reserveObservedAtNs : ?Int;
-  } {
-    {
-      deliveriesOutstanding = unsettledDeliveries();
-      deliveriesDelayed = delayedDeliveryCount(Time.now());
-      ordersNeedingReview = Orders.countOf(orderStore, #needsReview);
-      orphansUnresolved = Orphans.unresolvedCount(orphanStore);
-      problemsUnresolved = Orders.unresolvedProblemCount(orderStore);
-      ordersWithProblems = Orders.unresolvedProblemOrderCount(orderStore);
-      refusingNow = railStateLatch;
-      availableToSell = Reserve.available(reserveFloor, Orders.promised(orderStore));
-      reserveObservedAtNs;
-    };
-  };
 
-  /// The recovery machinery's own clocks and its last findings, public.
-  ///
-  /// Four independent passes report here — the stranded sweep, the tally reconcile, the
-  /// reserve reconcile and the rotating index scan — because each can stop running
-  /// without any of the others noticing. RUNBOOK §8 alerts on the gaps between them.
-  public query func recovery_status() : async {
-    intervalNs : Nat;
-    lastSweep : ?{ atNs : Int; pending : Nat };
-    sweepInFlight : Bool;
-    /// Last **successful** tally reconciliation. A non-empty `drift` means the
-    /// incremental counts had diverged and were **raised** to the recount — the tallies
-    /// are correct again, but the bug that moved them is not fixed. A non-empty
-    /// `refused` means the recount came out **lower** and the pass would not adopt it,
-    /// so those tallies are still suspect (#63). `recount_orders` is the on-demand form
-    /// of the same pass, with the same rule.
-    lastCountReconcile : ?{
-      atNs : Int;
-      drift : [Orders.Drift];
-      refused : [Orders.Drift];
-      ordersRead : Nat;
-    };
-    /// When one was last *attempted*. Reported alongside the success timestamp so
-    /// "due tomorrow" and "attempted today and failed" are distinguishable without
-    /// correlating against the sweep clock: an attempt materially newer than the
-    /// success means the reconcile is trapping (RUNBOOK §8).
-    lastCountReconcileAttemptNs : Int;
-    /// When the RESERVE reconcile was last attempted (#30 PR-B). Its success clock
-    /// is `reserve_status.reserveObservedAtNs`, and the two diverging is the one
-    /// signal that says "the floor is stale on purpose": either the ledger read is
-    /// failing, or every attempt has landed on a non-quiet window. Both under-sell
-    /// rather than over-sell, so this is a P3 that explains refusals — not an
-    /// incident.
-    lastReserveReconcileAttemptNs : Int;
-    /// The rotating index scan's **coverage** (#63) — the reader without which a clean
-    /// scan says nothing.
-    ///
-    /// ⚠️ **Read `lastCompletedCycle` before reading the absence of an audit line as
-    /// "no drift".** The scan verifies the one property that needs every order — that
-    /// nothing *outside* an index satisfies the index's predicate — so it can only
-    /// speak for what it has visited. Silence plus a recent `completedAtNs` means
-    /// verified clean; silence with no completed cycle, or one much older than the
-    /// window below, means **unverified**, which is not the same thing and carries the
-    /// opposite response: wait for the pass rather than hunt for a writer.
-    ///
-    /// `inFlightCycle.ordersRead` against `storedOrders` is how far the current cycle
-    /// has walked. `chunkSize` and the sweep interval give the expected window:
-    /// `storedOrders ÷ (chunkSize × sweeps per day)` days per full cycle.
-    indexScan : {
-      chunkSize : Nat;
-      storedOrders : Nat;
-      /// How long a full coverage cycle is **expected** to take at the current store
-      /// size and the current sweep cadence.
-      ///
-      /// ⚠️ **Computed, not configured, so it moves when either input does** — and the
-      /// sweep cadence is one `set_recovery_interval` away from 24× the default. This is
-      /// the detection latency for `orders.unindexedHolders`, which is a money finding,
-      /// so it is reported rather than left as arithmetic an operator has to know to do.
-      /// Compare `lastCompletedCycle.completedAtNs` against this: much older means the
-      /// scan is behind its own expectation, not merely mid-cycle.
-      expectedFullCycleNs : Nat;
-      inFlightCycle : { startedAtNs : Int; ordersRead : Nat; repairs : Nat };
-      lastCompletedCycle : ?{
-        startedAtNs : Int;
-        completedAtNs : Int;
-        ordersRead : Nat;
-        repairs : Nat;
-      };
-    };
-  } {
-    {
-      intervalNs = recoverySweepIntervalNs;
-      lastSweep = lastRecoverySweep;
-      sweepInFlight = recoverySweepInFlight;
-      lastCountReconcile;
-      lastCountReconcileAttemptNs;
-      lastReserveReconcileAttemptNs;
-      indexScan = {
-        chunkSize = Orders.scanChunkSize;
-        storedOrders = Orders.storedCount(orderStore);
-        expectedFullCycleNs = expectedIndexScanCycleNs();
-        inFlightCycle = indexScanCycle;
-        lastCompletedCycle = lastIndexScanCycle;
-      };
-    };
-  };
 
   // ── HTTP ingress ────────────────────────────────────────────────────────
 
@@ -4589,43 +2413,8 @@ persistent actor CyclesGateway {
     },
   ];
 
-  /// §6.0 query half: the boundary node calls this first; a matched
-  /// upgrade route answers `upgrade = ?true` and the gateway re-issues the
-  /// request to `http_request_update` through consensus.
-  public query func http_request(req : Http.Request) : async Http.Response {
-    Http.handleQuery(routes, req, maxRequestBodyBytes);
-  };
 
-  /// §6.0 update half. Anyone can call this directly via Candid, so the
-  /// dispatcher re-applies every guard; the route handlers themselves are
-  /// payload-authenticated (HMAC), never caller-authenticated.
-  public func http_request_update(req : Http.Request) : async Http.Response {
-    let response = Http.handleUpdate(routes, req, maxRequestBodyBytes);
-    // Kick money-out (§5) as a detached self-message ONLY when this delivery
-    // actually marked an order #paid, and drive just that order rather than
-    // sweeping every one. `webhookPaidOrder` is set inside the dispatch above
-    // and consumed here.
-    //
-    // This route is unauthenticated by necessity (Stripe cannot sign in), so
-    // anything it triggers is free for anyone on the internet to invoke. A
-    // sweep over all orders — which makes paid inter-canister calls per
-    // sweepable order — must therefore never be reachable from a 404, a bad
-    // signature, or an unprovisioned-secret 503. The §5.2 recovery timer
-    // remains the backstop if this detached message dies.
-    switch (webhookPaidOrder) {
-      case (?orderId) {
-        webhookPaidOrder := null;
-        ignore async { await* processDelivery(orderId) };
-      };
-      case null {};
-    };
-    response;
-  };
 
-  /// Liveness probe; also used by the scaffold smoke test path.
-  public query func health() : async Bool {
-    true;
-  };
 
   /// §5.2 the timer itself. Transient initializer = runs on install AND on
   /// every upgrade (postupgrade re-initialization), so a deploy can never
@@ -4636,7 +2425,7 @@ persistent actor CyclesGateway {
   /// init and `recoverySweep` reaches the order store and the delivery journal,
   /// both of which must already be initialized (M0016 otherwise).
   transient var recoveryTimerId : Timer.TimerId =
-    Timer.recurringTimer<system>(#nanoseconds(recoverySweepIntervalNs), recoverySweep);
+    Timer.recurringTimer<system>(#nanoseconds(recoveryState.sweepIntervalNs), recoverySweep);
 
   /// §3 rate refresh. Same transient-initializer pattern as the recovery timer:
   /// it runs on install AND on every upgrade, which is what the IC requires
@@ -4656,4 +2445,178 @@ persistent actor CyclesGateway {
   /// alike.
   transient let _rateWarmup : Timer.TimerId =
     Timer.setTimer<system>(#nanoseconds(0), rateTimerJob);
+
+  // ── Endpoints, by feature (#120; the rules are docs/DESIGN.md §9.1) ─────────
+  //
+  // ⚠️ **Every `include` sits at the END of the actor body, and that is required rather
+  // than tidy.** Its arguments are evaluated once, right here, so each must name a field
+  // or helper already declared above — `auditAdmin` is defined ~2,000 lines up. An
+  // include placed where the endpoints used to be would capture bindings that do not
+  // exist yet.
+  //
+  // ⚠️ **A `var` field is passed as an ACCESSOR PAIR, never as the field.** `include`
+  // takes its arguments by value, so handing over `stripe.origin` would give the mixin a
+  // snapshot from install time: the setter would mutate a copy and the getter would
+  // answer that snapshot forever. Records and collections (`Secret.Store`,
+  // `Orders.Store`, the maps and sets) are heap objects, so those pass directly and
+  // write through.
+  //
+  // ⚠️ **Accessors rather than wrapping the `var` in a record**, which is the other fix
+  // and the expensive one: wrapping changes the actor's stable shape, and with no
+  // migration chain (#32) that means a reinstall. Closures are parameters, never stable
+  // state, so `deployed/backend.most` does not move for this split.
+  include MaintenanceMixin(
+    orderStore,
+    rateCache,
+    cyclesLedger,
+    reserveState,
+    {
+      auditAdmin;
+      requireAdmin;
+      requireController;
+      refreshRates;
+      observeReserve;
+      reportReconciliation;
+    },
+  );
+
+  include AdminOrdersMixin(
+    orderStore,
+    dedup,
+    orphanStore,
+    auditLog,
+    deliveryJournal,
+    paidIntents,
+    cancelRequests,
+    {
+      audit;
+      auditAdmin;
+      requireAdmin;
+      isGrantedAdmin;
+      noteStripeApiFailed;
+      tryTransition;
+      expireStripeSession;
+      deliveryStage;
+      stageIsDelayed;
+      openTransfer;
+      forEachPromisedDelivery;
+    },
+  );
+
+  include BuyingMixin(
+    orderStore,
+    rateCache,
+    reserveState,
+    gateState,
+    pricingState,
+    tierState,
+    {
+      audit;
+      admit;
+      gateObservation;
+      admitOrder;
+      noteStripeApiFailed;
+      sessionConfig;
+      createStripeSession;
+      createOrderWithFreshId;
+      noteRailClosed;
+      sessionErrorToText;
+    },
+  );
+
+  include WebhookMixin(
+    routes,
+    maxRequestBodyBytes,
+    {
+      // Read and cleared as one step, so a stale value cannot trigger a second kick.
+      take = func() : ?Types.OrderId {
+        let taken = webhookPaidOrder;
+        webhookPaidOrder := null;
+        taken;
+      };
+    },
+    { processDelivery },
+  );
+
+  include OrdersMixin(
+    orderStore,
+    deliveryJournal,
+    cancelRequests,
+    {
+      audit;
+      auditAdmin;
+      noteStripeApiFailed;
+      tryTransition;
+      expireStripeSession;
+      processDelivery;
+      isGrantedAdmin;
+      deliveryInFlight = func(id : Types.OrderId) = deliveriesInFlight.contains(id);
+    },
+  );
+
+  include ConfigMixin(
+    orderStore,
+    rateCache,
+    reserveState,
+    gateState,
+    pricingState,
+    stripeState,
+    tierState,
+    deliveryState,
+    recoveryState,
+    {
+      requireController;
+      auditAdmin;
+      expectedIndexScanCycleNs;
+      rearmRateTimer = func<system>() {
+        Timer.cancelTimer(rateTimerId);
+        rateTimerId := Timer.recurringTimer<system>(#nanoseconds(rateIntervalNs()), rateTimerJob);
+      };
+      rearmRecoveryTimer = func<system>(intervalNs : Nat) {
+        Timer.cancelTimer(recoveryTimerId);
+        recoveryTimerId := Timer.recurringTimer<system>(#nanoseconds(intervalNs), recoverySweep);
+      };
+    },
+  );
+
+  include MonitoringMixin(
+    orderStore,
+    dedup,
+    orphanStore,
+    paidIntents,
+    rateCache,
+    reserveState,
+    gateState,
+    pricingState,
+    stripeState,
+    recoveryState,
+    {
+      requireAdmin;
+      selfPrincipal;
+      unsettledDeliveries;
+      delayedDeliveryCount;
+      expectedIndexScanCycleNs;
+      lastXrcCanisterId = func() = lastXrcCanisterId;
+      recoverySweepInFlight = func() = recoverySweepInFlight;
+    },
+  );
+
+  include PrincipalsMixin(
+    adminPrincipals,
+    allowedBuyers,
+    reserveState,
+    stripeState,
+    requireController,
+    auditAdmin,
+  );
+
+  include SecretsMixin(
+    webhookSecret,
+    stripeApiKey,
+    { get = func() = stripeState.origin; set = func(v : ?Text) { stripeState.origin := v } },
+    requireController,
+    requireAdmin,
+    auditAdmin,
+    func() = Time.now(),
+  );
 };

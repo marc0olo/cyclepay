@@ -29,10 +29,15 @@ the operator reads and the idempotent levers are the CASES tier: an admin can en
 order and cannot upgrade the canister.
 """
 
+import glob
 import re
 import sys
 
-MAIN = "src/backend/Main.mo"
+# ⚠️ **Endpoints live in `Main.mo` AND in `mixins/*.mo` since #120.** Scanning only the
+# composition root made this abort with "parser is wrong" the moment the first endpoint
+# moved — correctly, because a check that cannot find what it is checking must not report
+# a clean scan. Both are read as one body of source.
+ENDPOINT_SOURCES = ("src/backend/Main.mo", "src/backend/mixins/*.mo")
 GUARDS = {"requireController": "controller", "requireAdmin": "admin"}
 
 # A top-level declaration in the actor: two-space indent, `func` anywhere after it.
@@ -136,6 +141,15 @@ def guarded_methods(text):
         nxt = [b for b in bounds if b > i]
         body = "\n".join(lines[i:(nxt[0] if nxt else len(lines))])
         code = "\n".join(l for l in body.split("\n") if not l.strip().startswith("//"))
+        # ⚠️ **The `\s*\(` is load-bearing since #120, not tidiness.** Bodies are sliced
+        # out of `Main.mo` and the nine mixins CONCATENATED, so the last endpoint in one
+        # file has a body that runs on into the next file's preamble — which for a mixin
+        # is its parameter list, and every one of those declares
+        # `requireController : (Principal) -> ()`. Requiring an open paren immediately
+        # after the name is the only thing that stops a type annotation being read as a
+        # guard CALL, i.e. an authz hole reported as covered. Mutation-tested: dropping
+        # `ops.requireAdmin(caller)` from the last endpoint in `AdminOrders.mo` still
+        # fails this check.
         found = {tier for g, tier in GUARDS.items() if re.search(r"\b%s\s*\(" % g, code)}
         if len(found) > 1:
             out[name] = "BOTH"
@@ -188,10 +202,14 @@ def _self_test():
 
 def main() -> int:
     _self_test()
-    text = open(MAIN).read()
+    text = "\n".join(
+        open(f).read()
+        for pattern in ENDPOINT_SOURCES
+        for f in sorted(glob.glob(pattern))
+    )
     actual = guarded_methods(text)
     if not actual:
-        sys.exit(f"ABORT: found no guarded methods in {MAIN} — the parser is wrong")
+        sys.exit(f"ABORT: found no guarded methods in {ENDPOINT_SOURCES} — the parser is wrong")
 
     fail = []
     for name, tier in sorted(actual.items()):
@@ -210,7 +228,7 @@ def main() -> int:
             )
     for name in sorted(set(TIERS) - set(actual)):
         fail.append(
-            f"TIERS names {name}, which calls no guard in {MAIN} — either it lost its "
+            f"TIERS names {name}, which calls no guard in {ENDPOINT_SOURCES} — either it lost its "
             f"guard (an authz hole) or the entry is stale"
         )
 
