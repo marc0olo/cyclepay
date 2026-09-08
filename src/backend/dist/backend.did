@@ -95,15 +95,30 @@ type Result_2 =
    err: OriginError;
    ok;
  };
-type Result_15 = 
+type Result_18 = 
+ variant {
+   err: AbandonError;
+   ok: Order;
+ };
+type Result_17 = 
  variant {
    err: Reason;
    ok;
  };
-type Result_14 = 
+type Result_16 = 
+ variant {
+   err: text;
+   ok: Order;
+ };
+type Result_15 = 
  variant {
    err: CreateOrderError;
    ok: CreatedOrder;
+ };
+type Result_14 = 
+ variant {
+   err: ExpireError;
+   ok: Order;
  };
 type Result_13 = 
  variant {
@@ -112,7 +127,7 @@ type Result_13 =
  };
 type Result_12 = 
  variant {
-   err: text;
+   err: RecordDeliveredError;
    ok: Order;
  };
 type Result_11 = 
@@ -178,6 +193,15 @@ type RefusalCounts =
    stripeApiFailed: nat;
    tooManyOpenOrders: nat;
    unboundedGiveaway: nat;
+ };
+type RecordDeliveredError = 
+ variant {
+   notFound: OrderId;
+   notUnderReview: record {
+                     id: OrderId;
+                     status: OrderStatus;
+                   };
+   transitionRefused: OrderId;
  };
 type Receipt = 
  record {
@@ -418,6 +442,24 @@ type ExpiredBy =
    sessionExpired;
    sessionFailed;
  };
+type ExpireError = 
+ variant {
+   movedInFlight: record {
+                    id: OrderId;
+                    status: OrderStatus;
+                  };
+   notCreated: record {
+                 id: OrderId;
+                 status: OrderStatus;
+               };
+   notFound: OrderId;
+   sessionNotOpen: OrderId;
+   stripeFailed: record {
+                   detail: text;
+                   id: OrderId;
+                 };
+   stripeUnauthorized: OrderId;
+ };
 type Event = 
  record {
    atNs: int;
@@ -557,13 +599,24 @@ type Account =
    owner: principal;
    subaccount: opt blob;
  };
+type AbandonError = 
+ variant {
+   deliveryOutstanding: OrderId;
+   notAbandonable: record {
+                     id: OrderId;
+                     status: OrderStatus;
+                   };
+   notFound: OrderId;
+   reasonRequired;
+   transitionRefused: OrderId;
+ };
 /// Fully on-chain cycles gateway — composition root.
 /// 
 /// The module layout this actor composes: Orders.mo, Delivery.mo, Pricing.mo,
 /// Reserve.mo, Gate.mo, Problems.mo, Orphans.mo, Auth.mo, Card.mo, Http.mo.
 /// Decision record for the `§N` comments: `docs/DESIGN.md`.
 service : {
-  abandon_order: (id: OrderId, reason: text) -> (Result_12);
+  abandon_order: (id: OrderId, reason: text) -> (Result_18);
   add_admin: (p: principal) -> (Result_11);
   add_allowed_buyer: (p: principal) -> (Result_11);
   admin_order: (id: OrderId) -> (opt Order);
@@ -579,11 +632,11 @@ service : {
   admins: () -> (vec principal) query;
   allowed_buyers: () -> (vec principal) query;
   audit_log: (afterSeq: opt nat, limit: nat) -> (Page__2) query;
-  can_purchase: (usdCents: nat) -> (Result_15) query;
-  cancel_order: (id: OrderId) -> (Result_12);
+  can_purchase: (usdCents: nat) -> (Result_17) query;
+  cancel_order: (id: OrderId) -> (Result_16);
   card_tiers: () -> (vec Tier) query;
   create_order: (amount: Amount, destination: Destination, minCycles:
-   opt nat) -> (Result_14);
+   opt nat) -> (Result_15);
   cycles_status: () -> (record {
                           balance: nat;
                           floor: nat;
@@ -604,7 +657,7 @@ service : {
       refusingNow: RailStateLatch;
     }) query;
   expected_livemode: () -> (opt bool) query;
-  expire_order: (id: OrderId) -> (Result_12);
+  expire_order: (id: OrderId) -> (Result_14);
   get_order: (id: OrderId) -> (opt Order) query;
   health: () -> (bool) query;
   http_request: (req: Request) -> (Response) query;

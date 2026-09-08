@@ -399,17 +399,14 @@ mixin (
   /// completed or already expired, and those demand opposite actions — expiring an order
   /// whose buyer just paid would strand a real payment. Let the webhook (or the sweep)
   /// settle it on Stripe's answer.
-  public shared ({ caller }) func expire_order(id : Types.OrderId) : async Result.Result<Types.Order, Text> {
+  public shared ({ caller }) func expire_order(id : Types.OrderId) : async Result.Result<Types.Order, Orders.ExpireError> {
     ops.requireAdmin(caller);
-    let ?order = Orders.get(orderStore, id) else return #err("no order " # id);
+    let ?order = Orders.get(orderStore, id) else return #err(#notFound(id));
     switch (order.status) {
       case (#created) {};
       case (#expired) return #ok(order); // idempotent
       case (status) {
-        return #err(
-          "order " # id # " is " # Types.statusToText(status)
-          # "; only a #created order can be expired. A paid order delivers or escalates; use abandon_order for a paid one you have refunded"
-        );
+        return #err(#notCreated({ id; status }));
       };
     };
     switch (order.stripeSessionId) {
@@ -421,9 +418,7 @@ mixin (
             // does not guess Stripe's wording: recording what it actually said is how
             // the next reader learns it. See `Session.expireOutcome`.
             ops.audit("order.expireRaced", id # ": session " # sessionId # " is no longer open. Stripe said: " # detail);
-            return #err(
-              "order " # id # "'s session is already settled or expired — the webhook or the recovery sweep will resolve it on Stripe's answer, which is the only authority on which of the two happened"
-            );
+            return #err(#sessionNotOpen(id));
           };
           case (#unauthorized) {
             // ⚠️ 401/403 is the ONE expire answer that means "rotate the key", so it is
@@ -432,11 +427,11 @@ mixin (
             ops.noteStripeApiFailed(
               "expire REFUSED (401/403): the restricted key needs WRITE on Checkout Sessions — rotate it"
             );
-            return #err("Stripe refused our credentials while cancelling order " # id # " — an operator has been notified");
+            return #err(#stripeUnauthorized(id));
           };
           case (#failed(detail)) {
             ops.audit("order.expireFailed", id # ": " # detail);
-            return #err("could not expire the Stripe session for order " # id # ": " # detail);
+            return #err(#stripeFailed({ id; detail }));
           };
         };
       };
@@ -456,8 +451,8 @@ mixin (
         #ok(updated);
       };
       case (#err(_)) {
-        let ?fresh = Orders.get(orderStore, id) else return #err("no order " # id);
-        #err("order " # id # " moved to " # Types.statusToText(fresh.status) # " while the Stripe call was in flight; nothing was changed");
+        let ?fresh = Orders.get(orderStore, id) else return #err(#notFound(id));
+        #err(#movedInFlight({ id; status = fresh.status }));
       };
     };
   };
@@ -476,13 +471,13 @@ mixin (
   public shared ({ caller }) func abandon_order(
     id : Types.OrderId,
     reason : Text,
-  ) : async Result.Result<Types.Order, Text> {
+  ) : async Result.Result<Types.Order, Orders.AbandonError> {
     ops.requireAdmin(caller);
-    let ?order = Orders.get(orderStore, id) else return #err("no order " # id);
+    let ?order = Orders.get(orderStore, id) else return #err(#notFound(id));
     switch (order.status) {
       case (#paid or #needsReview) {};
       case (status) {
-        return #err("order " # id # " is " # Types.statusToText(status) # "; only a paid or under-review order can be abandoned");
+        return #err(#notAbandonable({ id; status }));
       };
     };
     // ── ⚠️ A PAID order with an unsettled delivery cannot be abandoned ────────
@@ -519,21 +514,18 @@ mixin (
       switch (deliveryJournal.get(id)) {
         case (?entry) {
           if (ops.openTransfer(entry)) {
-            return #err(
-              "order " # id # " has a delivery outstanding, so whether its cycles moved is not yet known — abandoning it now would refund a buyer who may already hold them. "
-              # "Check `pending_deliveries` for its state. Either it settles (and needs no refund), or the ~24 h dedup window escalates it to needsReview, where the ledger is the source of truth and the order id is in the transfer's memo."
-            );
+            return #err(#deliveryOutstanding(id));
           };
         };
         case null {};
       };
     };
-    if (reason.size() == 0) return #err("a reason is required — the audit trail must record why");
+    if (reason.size() == 0) return #err(#reasonRequired);
     // Status and reason in one step, so they cannot diverge — an `#abandoned` order
     // with no explanation is the gap the dropped queue entry used to paper over.
     let abandoned = switch (Orders.abandonWithReason(orderStore, id, reason, Time.now())) {
       case (#ok(o)) o;
-      case (#err(_)) return #err("order " # id # " refused the transition to abandoned");
+      case (#err(_)) return #err(#transitionRefused(id));
     };
     Delivery.patch(deliveryJournal, id, { status = ?#abandoned; blockIndex = null; cyclesDelivered = null; bumpRetries = false; lastError = null }, Time.now());
     // ⚠️ **No queue entry.** It was the fourth copy of one decision — the status, the
@@ -566,21 +558,18 @@ mixin (
   public shared ({ caller }) func record_delivered(
     id : Types.OrderId,
     blockIndex : Nat,
-  ) : async Result.Result<Types.Order, Text> {
+  ) : async Result.Result<Types.Order, Orders.RecordDeliveredError> {
     ops.requireAdmin(caller);
-    let ?order = Orders.get(orderStore, id) else return #err("no order " # id);
+    let ?order = Orders.get(orderStore, id) else return #err(#notFound(id));
     switch (order.status) {
       case (#needsReview) {};
       case (#delivered) return #ok(order); // idempotent: already recorded
       case (status) {
-        return #err(
-          "order " # id # " is " # Types.statusToText(status)
-          # "; only an under-review order can be recorded as delivered — a live order delivers on its own"
-        );
+        return #err(#notUnderReview({ id; status }));
       };
     };
     let ?delivered = ops.tryTransition(id, #delivered) else {
-      return #err("order " # id # " refused the transition to delivered");
+      return #err(#transitionRefused(id));
     };
     Delivery.patch(deliveryJournal, id, { status = ?#delivered; blockIndex = ?blockIndex; cyclesDelivered = null; bumpRetries = false; lastError = null }, Time.now());
     ops.auditAdmin(caller, "order.recordedDelivered", id # ": operator confirmed cycles-ledger block " # blockIndex.toText());
