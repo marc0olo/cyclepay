@@ -1214,16 +1214,6 @@ module {
     withUnresolvedProblems : Bool;
   };
 
-  public func noFilter() : Filter {
-    ({
-      status = null;
-      owner = null;
-      createdFromNs = null;
-      createdToNs = null;
-      withUnresolvedProblems = false;
-    });
-  };
-
   /// ⚠️ **Ordered by order ID, which is NOT time order — and that is deliberate.**
   /// Order ids are random hex, so id order is arbitrary. Sorting the filtered set by
   /// `createdAtNs` would mean materialising it first, which is the unbounded scan #63
@@ -1567,15 +1557,6 @@ module {
   /// everything or say nothing.
   public func all(store : Store) : [Types.Order] {
     store.orders.values().toArray();
-  };
-
-  public func ordersFor(store : Store, caller : Principal) : [Types.Order] {
-    switch (store.principalsToOrders.get(caller)) {
-      case null [];
-      case (?ids) {
-        ids.values().filterMap(func(id) = store.orders.get(id)).toArray();
-      };
-    };
   };
 
 };

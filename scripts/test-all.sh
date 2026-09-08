@@ -257,6 +257,13 @@ step=$((step + 1))
 printf '\n\033[1m── %d. %s\033[0m\n' "$step" "every public endpoint is documented"
 scripts/check-endpoint-docs.py
 
+# ⚠️ **Refuses the INPUT the step above detects the output of.** `Main.mo` emits nothing
+# to candid except its service doc, so a `///` on anything else there has no destination
+# and moc gives it the nearest one it can find — an unrelated endpoint, which the
+# interface then documents with the wrong contract. Four such leaks were live before this.
+# Source-only, so it needs no build and names the line responsible.
+run "Main.mo uses /// only where candid emits it" scripts/check-main-doc-comments.py
+
 # ⚠️ **After the `.did` regeneration too, and for the same reason as the step above:** it
 # reads the interface, so it must read the current one. A config parameter with no reader
 # cannot be checked by an operator or shown by a UI, and `set_delivery_config` was exactly
@@ -289,6 +296,12 @@ scripts/check-design-sections.py
 step=$((step + 1))
 printf '\n\033[1m── %d. %s\033[0m\n' "$step" "no frontend export is referenced only by tests"
 scripts/check-unused-exports.py
+
+# ⚠️ **The Motoko half of the step above, and the compiler covers NONE of it:** M0194
+# fires only in the canister's main file, so a module of dead exports compiles clean
+# under -Werror. Four instances were live when this was added, one of them a renderer
+# propping up a test that asserted a sentence nothing produced.
+run "no module function is called only by its tests" scripts/check-unused-motoko.py
 
 # ⚠️ **After the .did check, and before the integration typecheck.** The suite's decoders
 # are generated FROM that file, so this only means anything once it is known current — and

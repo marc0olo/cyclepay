@@ -47,7 +47,7 @@ jobs:
           mops build
           git diff --exit-code -- src/backend/dist/backend.did
 
-      # ⚠️ **These eight ran ONLY in `scripts/test-all.sh` until now, so none of them
+      # ⚠️ **These ran ONLY in `scripts/test-all.sh` until now, so none of them
       # could block a merge.** Every one exists because something slipped past a review:
       # a config setter with no reader, an admin method offered no command, a §N citing a
       # deleted section, an export whose only caller was its own test, a doc block
@@ -69,6 +69,8 @@ jobs:
           scripts/check-admin-commands.py
           scripts/check-design-sections.py
           scripts/check-unused-exports.py
+          scripts/check-main-doc-comments.py
+          scripts/check-unused-motoko.py
 
   frontend:
     runs-on: ubuntu-latest
