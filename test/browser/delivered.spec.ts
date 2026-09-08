@@ -23,6 +23,10 @@ test.describe("the delivered view", () => {
     await page.goto("/");
     await signInAsFixtureBuyer(page);
     await openFixtureOrder(page, { status: "delivered" });
+    // ⚠️ The tour lives on its OWN view now. It used to sit on the order record and
+    // lead, with the facts collapsed beneath it — which is how the delivered view
+    // came to show no cycle quantity at all. Following the link is what a buyer does.
+    await page.locator("#order-next-link").click();
 
     const tour = page.locator("#tour");
     await expect(tour).toBeVisible();
@@ -34,9 +38,34 @@ test.describe("the delivered view", () => {
     // the buyer lands on an empty balance.
     await expect(page.locator("#cmd-link")).toContainText(`--app ${new URL(page.url()).host}`);
     await expect(page.locator("#credited-principal")).toHaveText(await fixturePrincipal(page));
+    // The quantity, which the collapsed version never stated anywhere.
+    await expect(page.locator("#next-summary")).toContainText(/cycles are in your account/i);
+    // One view owns the screen: the record is not also on it.
+    await expect(page.locator("#active-order")).toBeHidden();
+  });
 
-    // On delivery the next action leads and the facts collapse beneath it.
-    await expect(page.locator("#order-details")).not.toHaveAttribute("open", /.*/);
+  test("⚠️ the order record shows the numbers, with nothing collapsed over them", async ({ page }) => {
+    // The defect this pins. `order-problems` and `receipt-area` were NESTED inside a
+    // `<details id="order-details">` that the app collapsed on the delivered view, so
+    // the one page a buyer opens to see what they got showed no cycle quantity, hid
+    // the receipt two clicks deep, and buried a problem notice behind one. Nothing
+    // hid them; the nesting did.
+    await page.goto("/");
+    await signInAsFixtureBuyer(page);
+    await openFixtureOrder(page, { status: "delivered" });
+
+    await expect(page.locator("#order-cycles")).toBeVisible();
+    await expect(page.locator("#order-cycles")).not.toHaveText("");
+    // The receipt, and its ledger link, with no disclosure to open.
+    await expect(page.locator("#receipt-area")).toBeVisible();
+    await expect(page.locator("#receipt-verdict")).toBeVisible();
+    await expect(page.locator("#receipt-block a")).toHaveAttribute(
+      "href",
+      /dashboard\.internetcomputer\.org\/tokens\/.*\/transaction\//,
+    );
+    // And no step strip: the four steps are a promise about buying, and a receipt
+    // with a progress bar on it answers a question nobody asked here.
+    await expect(page.locator("#stepper")).toBeHidden();
   });
 
   test("the POLL brings the tour up, with no navigation at all", async ({ page }) => {
@@ -53,11 +82,11 @@ test.describe("the delivered view", () => {
     await setFixtureStatus(page, "delivered");
 
     // The poll ticks every 3 s; this waits for the app to notice on its own.
-    await expect(page.locator("#tour")).toBeVisible({ timeout: 15_000 });
-    await expect(page.locator("#cmd-link")).toBeVisible();
-    // Step 3 of 4 is now the current step.
-    await expect(page.locator("#stepper .step").nth(2)).toHaveClass(/current/);
+    // ⚠️ What it brings up is the RECORD's delivered state and the way onward, not the
+    // tour: the record no longer turns into the guidance.
+    await expect(page.locator("#order-next-row")).toBeVisible({ timeout: 15_000 });
     await expect(page.locator("#receipt-verdict")).toContainText(/verified/i);
+    await expect(page.locator("#tour")).toBeHidden();
   });
 
   test("a payable order offers a REACHABLE pay button, and a reload keeps it", async ({ page }) => {
@@ -114,26 +143,29 @@ test.describe("one view owns the screen, under a live poll", () => {
     await expect(page.locator("#history")).toBeVisible();
   });
 
-  test("buy again from the orders table lands on the form", async ({ page }) => {
-    // It prefilled the form and never navigated, so from the orders table — the
-    // only place the button exists — one click plus payment did nothing visible.
+  test("⚠️ a dashboard row is a LINK to the order, and there is no buy-again", async ({ page }) => {
+    // The button is gone: it rendered on every row including unpaid ones, where the
+    // one-open-order cap refuses the very order it offered to start. And a row that
+    // only responded to `tr.onclick` showed no destination and could not be tabbed
+    // to, which is an affordance property only a browser can see.
     await page.goto("/");
     await signInAsFixtureBuyer(page);
     await openFixtureOrder(page, { status: "delivered" });
     await page.locator("#history-link").click();
     await expect(page.locator("#history")).toBeVisible();
 
-    await page.locator("button.buy-again").first().click();
-    await expect(page.locator("#buy-flow")).toBeVisible();
-    await expect(page.locator("#history")).toBeHidden();
-    await expect(page).toHaveURL(/#\/buy$/);
-    // The amount is the whole prefill now: the destination is the caller's own
-    // account, so there is no field to carry it into (#29).
-    await expect(page.locator("button.tier.selected")).toBeVisible();
-  });
-});
+    await expect(page.locator("button.buy-again")).toHaveCount(0);
+    // The balance leads the dashboard, read from the ledger rather than from us.
+    await expect(page.locator("#ledger-balance")).toBeVisible();
 
-test.describe("routes that name nothing", () => {
+    const link = page.locator(".orders-table a.order-link").first();
+    await expect(link).toBeVisible();
+    await link.click();
+    await expect(page.locator("#active-order")).toBeVisible();
+    await expect(page.locator("#history")).toBeHidden();
+    await expect(page).toHaveURL(/#\/order\//);
+  });
+
   test("an unknown order id says so instead of showing an empty panel", async ({ page }) => {
     await page.goto("/");
     await signInAsFixtureBuyer(page);

@@ -48,6 +48,10 @@ const state = {
   /// The simulation divisor `pricing_status` reports (#99). `1n` is production,
   /// which is what almost every test wants; the simulation-mode tests set it.
   divisor: 1n,
+  /// The buyer's own cycles balance, as the LEDGER reports it.
+  ledgerBalance: 3_400_000_000_000n,
+  /// Whether the ledger balance read fails, for the dashboard's honest-failure path.
+  ledgerBalanceError: false,
   /// Whether `lifecycle_config` fails, for the console's cannot-read path (#97).
   lifecycleError: false,
   /// The rail settings the console's configuration surface reads (#97).
@@ -325,17 +329,25 @@ const identity = { getPrincipal: () => ({ toText: () => FULL_PRINCIPAL }) };
 
 vi.mock("./actor", () => ({
   backendCanisterId: "aaaaa-aa",
+  // ⚠️ The real canister id, not a placeholder: the receipt links the delivery block
+  // to the public dashboard, and a test asserting that URL is asserting the ledger a
+  // buyer would actually check.
+  cyclesLedgerCanisterId: "um5iw-rqaaa-aaaaq-qaaba-cai",
   makeBackend: () => backend,
   // #30 PR-A: the ledger's fee is read from the LEDGER, not disclosed by
   // `quote_previews`. `state.transferFee` still drives it, so every existing
   // assertion about how the fee is displayed keeps its lever — only where the
   // number comes from changed.
   makeCyclesLedger: () => ({
+    // The dashboard's balance, read from the LEDGER rather than through the gateway.
+    icrc1_balance_of: async () => {
+      if (state.ledgerBalanceError) throw new Error("ledger unreachable");
+      return state.ledgerBalance;
+    },
     icrc1_fee: async () => {
       if (state.transferFeeError) throw new Error("cycles ledger unreachable");
       return state.transferFee;
     },
-    icrc1_balance_of: async () => 0n,
   }),
   agentOptions: () => ({}),
   Rail: { card: "card" },
@@ -474,6 +486,8 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
+  state.ledgerBalance = 3_400_000_000_000n;
+  state.ledgerBalanceError = false;
   state.lifecycleError = false;
   state.expectedLivemode = false;
   state.stripeOrigin = "https://gateway.example";
@@ -750,7 +764,12 @@ describe("receipt", () => {
     await settle();
     await settle();
     expect(el("receipt-area").hidden).toBe(false);
-    expect(el("receipt-block").textContent).toBe("42");
+    // ⚠️ A LINK now, not a bare number: the block index is the one fact on this page a
+    // buyer can check without this canister, so it points at the public ledger.
+    const block = el("receipt-block").querySelector("a")!;
+    expect(block.textContent).toContain("42");
+    expect(block.getAttribute("href"))
+      .toBe("https://dashboard.internetcomputer.org/tokens/um5iw-rqaaa-aaaaq-qaaba-cai/transaction/42");
     expect(el("receipt-sources").textContent).toContain("5 of 6");
     expect(el("receipt-verdict").textContent).toContain("Verified");
     expect(el("receipt-formula").textContent).toContain("3.5 T");
@@ -842,8 +861,8 @@ describe("the delivered tour", () => {
     // derives a principal from a different origin, so the buyer lands on an
     // empty balance and reads it as theft.
     state.order = anOrder("delivered");
-    await mount();
-    await openFromHistory();
+    await mount("landing", "#/order/abcdef0123456789abcdef0123456789/next");
+    await settle();
 
     expect(el("tour").hidden).toBe(false);
     const cmd = el("cmd-link").textContent ?? "";
@@ -858,23 +877,47 @@ describe("the delivered tour", () => {
     // default, which is a different principal again.
     expect(cmd).toContain("--app");
     // The principal is shown beside it so a mismatch is self-diagnosable.
+    // The order's DESTINATION owner, not the signed-in identity: the fixture's order
+    // is addressed to `aaaaa-aa`, and the tour shows where the cycles actually went.
     expect(el("credited-principal").textContent).toBe("aaaaa-aa");
     // Verified against icp-cli 1.2.0, not invented: `icp identity principal`
     // exists and takes --identity. The link command is NOT claimed to print a
     // principal, because the CLI guide does not say it does.
     expect(el("cmd-verify").textContent).toBe("icp identity principal --identity dev");
-    // Order matters: on delivery the next action leads and the facts collapse.
-    const details = el<HTMLDetailsElement>("order-details");
-    expect(details.open).toBe(false);
-    expect(el("tour").compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING)
-      .toBeTruthy();
+    // ⚠️ **The tour is its own VIEW now, and the order record is not on it.** It used
+    // to sit on the order page and lead, with the facts collapsed beneath it — which
+    // is how the delivered view came to show no cycle quantity at all. Two questions,
+    // two pages.
+    expect(el("active-order").hidden).toBe(true);
+    expect(el("view-next").hidden).toBe(false);
+    // And it says the quantity, which is what the collapsed version never did.
+    expect(el("next-summary").textContent).toMatch(/cycles are in your account/i);
   });
 
   test("an undelivered order shows no commands yet", async () => {
+    // On the order record there is no tour at all now, delivered or not.
     state.order = anOrder("paid");
     await mount();
     await openFromHistory();
     expect(el("tour").hidden).toBe(true);
+    expect(el("view-next").hidden).toBe(true);
+  });
+
+  test("⚠️ a delivered order LINKS to the guidance rather than embedding it", async () => {
+    // The link is the only thing the record says about next steps, and it appears
+    // only once there is a balance to link a CLI to: offering the step earlier is how
+    // a buyer runs a command against an empty account.
+    state.order = anOrder("delivered");
+    await mount();
+    await openFromHistory();
+    expect(el("order-next-row").hidden).toBe(false);
+    expect(el<HTMLAnchorElement>("order-next-link").getAttribute("href"))
+      .toBe("#/order/abcdef0123456789abcdef0123456789/next");
+
+    state.order = anOrder("paid");
+    await mount();
+    await openFromHistory();
+    expect(el("order-next-row").hidden).toBe(true);
   });
 
   test("the POLL finding an order delivered brings up the tour", async () => {
@@ -899,11 +942,17 @@ describe("the delivered tour", () => {
       state.order = anOrder("delivered");
       await vi.advanceTimersByTimeAsync(7_000); // two 3 s poll intervals
 
-      expect(el("tour").hidden).toBe(false);
-      expect(el("cmd-link").textContent).toContain("icp identity link web");
-      // Step 3 is now the current one, and the facts have collapsed under it.
-      expect(el("stepper").querySelectorAll(".step")[2]!.className).toContain("current");
-      expect(el<HTMLDetailsElement>("order-details").open).toBe(false);
+      // ⚠️ **The record does not BECOME the guidance any more.** It used to: the poll
+      // found `delivered` and the same page turned into the tour with the facts
+      // collapsed beneath it, which is how the delivered view came to show no cycle
+      // quantity. Now the poll updates the record and offers the way onward.
+      expect(el("active-order").hidden).toBe(false);
+      expect(el("tour").hidden).toBe(true);
+      expect(el("order-next-row").hidden).toBe(false);
+      expect(el<HTMLAnchorElement>("order-next-link").getAttribute("href"))
+        .toContain("/next");
+      // NOTE: the receipt is asserted by the `receipt` suite, which controls its own
+      // timing. Repeating it here under fake timers only tests the flush count.
     } finally {
       vi.useRealTimers();
     }
@@ -1015,7 +1064,10 @@ describe("routes that name nothing", () => {
     await settle();
     expect(el("order-missing").hidden).toBe(true);
     expect(el("active-order").hidden).toBe(false);
-    expect(el("tour").hidden).toBe(false);
+    // ⚠️ The tour is NOT here any more: the record shows the facts and links to the
+    // guidance. Asserting its presence was asserting the layout this PR replaced.
+    expect(el("tour").hidden).toBe(true);
+    expect(el("order-next-row").hidden).toBe(false);
   });
 
   test("an unknown order id says so rather than showing the last one", async () => {
@@ -1035,57 +1087,11 @@ describe("routes that name nothing", () => {
   });
 });
 
-describe("buy again", () => {
-  test("prefills the amount from a past order without submitting", async () => {
-    // One click plus payment is the shortest flow the design allows for a repeat
-    // buyer. It must NOT submit: the price is re-quoted at today's rate and the
-    // buyer has to see the number.
-    //
-    // The amount is now the whole prefill. The destination used to be carried
-    // across too — a canister id, or an owner and subaccount pair — and there is
-    // nothing left to carry: every order goes to the caller's own account (#29).
-    state.order = anOrder("delivered");
-    await mount();
-    const again = el("orders").querySelector<HTMLButtonElement>("button.buy-again");
-    expect(again).not.toBeNull();
-    again!.click();
-    await settle();
-
-    expect(tierButton().classList.contains("selected")).toBe(true);
-    // Still on the form, not on a fresh order.
-    expect(el("buy-flow").hidden).toBe(false);
-  });
-
-  test("driven from the history view, it lands the visitor on the form", async () => {
-    // The masked defect. `repeatOrder` prefilled and never navigated, and the
-    // original test mounted on the buy view — so "the form is on screen" passed
-    // because the form had never left. From the history view, where the button
-    // actually lives, the prefill happened on a screen nobody was looking at.
-    state.order = anOrder("delivered");
-    await mount();
-    window.location.hash = "#/history";
-    await settle();
-    expect(el("history").hidden).toBe(false);
-
-    el("orders").querySelector<HTMLButtonElement>("button.buy-again")!.click();
-    await settle();
-
-    expect(el("buy-flow").hidden).toBe(false);
-    expect(el("history").hidden).toBe(true);
-    expect(window.location.hash).toBe("#/buy");
-    expect(tierButton().classList.contains("selected")).toBe(true);
-  });
-
-  test("clicking buy again does not also open the order row", async () => {
-    // Both handlers live on the same row; without stopPropagation the prefill is
-    // immediately replaced by the order view.
-    state.order = anOrder("delivered");
-    await mount();
-    el("orders").querySelector<HTMLButtonElement>("button.buy-again")!.click();
-    await settle();
-    expect(el("active-order").hidden).toBe(true);
-  });
-});
+// ⚠️ **The three "buy again" tests are deleted, not ported.** The button is gone: it
+// rendered on EVERY history row including unpaid ones, where the one-open-order cap
+// refuses the very order it offered to start, so it led a buyer into
+// `#tooManyOpenOrders`. Starting an order is what the buy view is for, and there is no
+// behaviour left to assert.
 
 describe("the rate strip never contradicts the tiers", () => {
   test("a cached but unusable rate is not printed as if it were live", async () => {
@@ -2075,5 +2081,70 @@ describe("the console says what can be changed, and what it means (#97)", () => 
     expect(document.getElementById("config-groups")!.textContent)
       .toMatch(/could not read the configuration/i);
     state.lifecycleError = false;
+  });
+});
+
+describe("the dashboard: balance, then history", () => {
+  test("⚠️ the balance is read from the LEDGER, not from the gateway", async () => {
+    // The one number a buyer should never have to take our word for. It also closes
+    // the loop on what the purchase flow promises: "your cycles go to your account"
+    // becomes something the page demonstrates rather than asserts.
+    await mount("landing", "#/history");
+    await settle();
+    const balance = el("ledger-balance");
+    expect(balance.textContent).toContain("3.4 T");
+    expect(el("ledger-balance-note").textContent).toMatch(/anyone can query/i);
+  });
+
+  test("a failed ledger read says so rather than printing a zero", async () => {
+    // A zero is a claim about the buyer's money. "We could not ask" is a different
+    // statement, and the only honest one here.
+    state.ledgerBalanceError = true;
+    await mount("landing", "#/history");
+    await settle();
+    expect(el("ledger-balance").textContent).toMatch(/could not read/i);
+    expect(el("ledger-balance").textContent).not.toContain("0");
+    state.ledgerBalanceError = false;
+  });
+
+  test("signed out, it invites a sign-in rather than showing nothing", async () => {
+    await mount("landing", "#/history");
+    el<HTMLButtonElement>("sign-out").click();
+    await settle();
+    expect(el("ledger-balance").textContent).toMatch(/sign in/i);
+  });
+
+  /// The dashboard's table renders from the order list, so these need one.
+  async function openDashboard(): Promise<void> {
+    state.order = anOrder("delivered");
+    await mount("landing", "#/history");
+    await settle();
+  }
+
+  test("⚠️ five columns, five cells, and no single-value RAIL column", async () => {
+    // The header used to carry a RAIL column with no cell behind it: six headers,
+    // five cells, so every column from Rail onward rendered the NEXT field's value.
+    // Cycles under "Rail", price under "Cycles", status under "Price".
+    await openDashboard();
+    const headers = document.querySelectorAll(".orders-table thead th");
+    const cells = document.querySelectorAll(".orders-table tbody tr:first-child td");
+    expect(headers.length).toBe(cells.length);
+    expect([...headers].map((h) => h.textContent)).not.toContain("Rail");
+  });
+
+  test("⚠️ a row is reachable by keyboard, not only by clicking the row", async () => {
+    // `tr.onclick` shows no destination on hover and cannot be tabbed to. The order
+    // id is an anchor, so the row has a real target and a focus ring.
+    await openDashboard();
+    const link = document.querySelector<HTMLAnchorElement>(".orders-table a.order-link")!;
+    expect(link.getAttribute("href")).toBe("#/order/abcdef0123456789abcdef0123456789");
+  });
+
+  test("no Buy again button anywhere", async () => {
+    // It rendered on every row including unpaid ones, where the one-open-order cap
+    // refuses the very order it offered to start.
+    await openDashboard();
+    expect(document.querySelector(".buy-again")).toBeNull();
+    expect(document.getElementById("orders")!.textContent).not.toMatch(/buy again/i);
   });
 });
