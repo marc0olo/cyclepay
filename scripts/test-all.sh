@@ -254,8 +254,8 @@ scripts/check-doc-surface.py
 # absorbed by a neighbouring declaration — five instances in this repo, every one found by
 # a human reading, because the orphan is undetectable and only its victim is.
 step=$((step + 1))
-printf '\n\033[1m── %d. %s\033[0m\n' "$step" "every interface method is documented"
-scripts/check-did-docs.py
+printf '\n\033[1m── %d. %s\033[0m\n' "$step" "every public endpoint is documented"
+scripts/check-endpoint-docs.py
 
 # ⚠️ **After the `.did` regeneration too, and for the same reason as the step above:** it
 # reads the interface, so it must read the current one. A config parameter with no reader
