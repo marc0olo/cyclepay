@@ -45,7 +45,7 @@ purchases, $5 and $20, both credited to the buyer's cycles-ledger account and sp
 | Gap | Where |
 |---|---|
 | ⚠️ **The buyer's cycles-ledger balance, read from the LEDGER, on a reserve delivery.** The 08-28 run confirmed the order view said `delivered` and an audit line recorded a block index — which is *the canister's own account* of the transfer, not an independent observation of the destination. The 08-13 run did read the balance directly, but under the mint path. **One command, not a re-run:** `icp cycles balance --of-principal <buyer>` before and after | group H below |
-| The CLI handoff — `icp identity link web` was never run, so "the cycles are reachable from the CLI" is still unproven | group H below |
+| The CLI handoff — `icp identity link web` was never run, so "the cycles are reachable from the CLI" is still unproven. ⚠️ Doubly unproven since the page gained the id.ai prerequisite and the set-default step: without either, the commands run as the wrong identity against an empty balance | group H below, H4 |
 | Fixture capture — real payloads committed by #4; the parity test in `test/integration/src/fixtures.spec.ts` compares them against the crafted builder | group I, #4 (closed) |
 | Async payment methods | ⚠️ **Not applicable** — `payment_method_types[]=card` is pinned, so a delayed method is unreachable |
 | Disputes | group G |
@@ -212,14 +212,28 @@ Then, in the browser at the frontend URL `icp deploy` printed
    `audit_log` is the diagnostic that separates these: a verified-but-unactionable
    event, a bad signature and an event that never arrived all look identical from
    the UI, and all three read differently there.
-6. **Follow the tour.** Copy `icp identity link web dev --app <host>`, run it, then
-   `icp identity principal --identity dev` and compare with the principal the page
-   printed. **They must match.** A mismatch means the `--app` value did not match
-   this origin, and the balance will look empty.
+6. **Follow the CLI page** at `#/cli` — from the delivered order's next-step link, or
+   from the dashboard. It is five numbered steps and the order is load-bearing:
+
+   ```sh
+   # Step 1 is a SETTING, not a command: turn CLI access on at https://id.ai →
+   # settings. Without it the next command's sign-in page says "CLI access not
+   # enabled" and never returns an identity.
+   icp identity link web cyclepay-id --app <host>   # 2 — bare domain, port included
+   icp identity default cyclepay-id                 # 3 — what makes the rest act as it
+   icp identity principal                           # 4 — must equal the page's principal
+   icp cycles balance                               # 4 — must equal the page's figure
+   icp deploy -e ic                                 # 5 — the buyer's own project
+   ```
+
+   **The principal must match.** A mismatch means the `--app` value did not match this
+   origin, and the balance will look empty. ⚠️ **No `--identity` flag on the two verify
+   commands, deliberately** — step 3 made it the default, and passing the flag would
+   verify an identity that `icp deploy` will not use.
 7. **Prove the cycles exist.**
 
    ```sh
-   icp cycles balance --of-principal <the principal from step 6>
+   icp cycles balance --of-principal <the principal from step 6>  # from any identity
    ```
 
    This is the end of the flow the product promises, and the one thing no suite in
@@ -484,7 +498,7 @@ exists for the PocketIC sandbox script.)
 
 The frontend's *state logic* is covered headlessly by `main.test.ts` (jsdom) and its
 *rendering* by `test/browser/` in Chromium, so what a human adds here is the real
-login, the real Checkout page, the deployed-cookie path, and whether the tour's
+login, the real Checkout page, the deployed-cookie path, and whether the CLI page's
 commands land on the right principal.
 
 **Nothing in this plan requires a mainnet deploy.** Only live-mode Stripe behaviour
@@ -637,7 +651,7 @@ Automated, and where — do **not** repeat these manually:
 | H5 a moved quote asks for confirmation, and the second click goes through | `main.test.ts` |
 | H6 cancel appears only pre-payment | `main.test.ts` |
 | H7 the receipt recomputes and reports a match | `main.test.ts` + `delivered.spec.ts` |
-| the delivered tour, the stepper, the collapsed facts, buy-again, unknown order ids | `delivered.spec.ts`, through a fixture that replaces only the backend |
+| the delivered view, the CLI page and its five commands, unknown order ids | `delivered.spec.ts`, through a fixture that replaces only the backend. ⚠️ The step strip, the collapsed facts and "buy again" are **gone**, not covered — asserted absent rather than hidden |
 | paint: same-colour text, occlusion, opacity | five screenshot baselines, zero tolerance |
 
 Still needs a human, and this is the list to work:
@@ -647,7 +661,7 @@ Still needs a human, and this is the list to work:
 | H1 | **Real sign-in**, local Internet Identity at `http://id.ai.localhost:8000` | a passkey registers and the header shows a shortened principal. No suite can drive a passkey | ✅ |
 | H2 | **The deployed asset canister**, not a static build | the page reads its backend id and root key from the real `ic_env` cookie and prices from the real canister. The browser suite serves `dist-fixtures` over a static server, so this path is only ever exercised by hand | ✅ |
 | H3 | **The real Stripe hosted Checkout page** | Stripe has no headless path; `stripe trigger` gets you a signed event but never the page | ✅ |
-| H4 | **The tour's commands actually work** | copy `icp identity link web dev --app <host>` from the delivered view, run it, then `icp identity principal --identity dev` and compare to the principal printed beside it. They must match, or the balance looks empty | ❌ **not run** — no `dev` identity exists |
+| H4 | **The CLI page's commands actually work** | five steps at `#/cli`, reached from `#order-next-link` on a delivered order or from the dashboard. Run them in order and stop at the first that does not do what the page says. ⚠️ **Step 1 is a prerequisite, not advice:** turn CLI access on at [id.ai](https://id.ai) → settings, or step 2's sign-in page answers "CLI access not enabled" and never returns an identity. Then `icp identity link web cyclepay-id --app <host>`, `icp identity default cyclepay-id`, `icp identity principal` (must equal the principal beside it), `icp cycles balance` (must equal the figure beside it), `icp deploy -e ic`. ⚠️ **No `--identity` flag on the verify commands, and that is the point** — step 2 made it the default, and passing the flag would verify an identity the later commands do not use | ❌ **not run** — supersedes the `dev`-identity version of this row, which named an identity and a route that no longer exist |
 | H5 | **The cycles are really there** | `icp cycles balance --of-principal <that principal>` shows the delivered quantity | ✅ 18.2 T for two orders |
 | H6 | Order history across a **real** sign-out and sign-in | the table repopulates; a reopened order still shows its timeline | not run |
 | H7 | Typography, hierarchy, and the italic rule | `brand-lint.sh` covers banned characters, vocabulary and hardcoded colour. The rest needs eyes | not run |
@@ -655,7 +669,13 @@ Still needs a human, and this is the list to work:
 **H4 is the one that still matters most.** H5 proves the cycles exist at the
 buyer's principal; H4 is what proves a buyer can *become* that principal from the
 CLI and spend them. Until it passes, the last step of the product's promise —
-"link the CLI, deploy" — is unverified end to end, and it is two commands.
+"link the CLI, deploy" — is unverified end to end.
+
+⚠️ **Two of its steps are unverifiable by any suite, which is why it is here and not
+automated.** The id.ai CLI-access switch is a setting in someone else's product, and the
+delegation the link command returns needs a real browser sign-in. The page's own
+assertions cover only that the right commands are rendered, in order, with the values
+this page shows.
 
 ## I. Fixture capture — do this while you are in there
 

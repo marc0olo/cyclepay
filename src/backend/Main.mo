@@ -2075,7 +2075,7 @@ persistent actor CyclesGateway {
   transient let expiryChecksInFlight = Set.empty<Types.OrderId>();
   transient var lastExpiryScanAtNs : Int = 0;
 
-  /// Orders whose OWNER has asked to cancel, recorded before the Stripe outcall.
+  /// Orders whose OWNER has asked to cancel, recorded before the Stripe outcall (§4.3).
   ///
   /// ⚠️ **`cancel_order` expires the session at Stripe BEFORE recording the cancel**
   /// (#33 option B: nothing is ever half-cancelled). Between those two steps the order
@@ -2096,7 +2096,27 @@ persistent actor CyclesGateway {
   /// ⚠️ **Stable, because a trap or an upgrade mid-cancel must not lose the intent** —
   /// that is precisely the window where the order settles without the buyer. A new
   /// stable var is upgrade-compatible; this is not a field on an existing record.
-  /// Pruned when the order goes terminal, so it holds only cancels in progress.
+  ///
+  /// ⚠️ **Membership implies `#created`, and every exit from `#created` removes.** That
+  /// is the bound, and it has to be enumerated rather than asserted, because the earlier
+  /// claim here — "pruned when the order goes terminal" — was simply not true of the
+  /// paths that return an error. `isLegalTransition` gives `#created` three exits:
+  ///
+  ///  * `#cancelled` and `#expired` — every writer goes through `Orders.settleUnpayable`
+  ///    or `Orders.expireBySession`, which remove the id in the act of deciding with it,
+  ///    plus `cancel_order`'s own success and already-settled returns below.
+  ///  * `#paid` — one writer, `Orders.markPaid`, called only from `rails/Card.mo`, which
+  ///    removes it there: the payment won, and `#cancelled` is unreachable from `#paid`,
+  ///    so nothing could honour the intent afterwards.
+  ///
+  /// `expireWithCause` is the apparent fourth writer and needs no removal: it fires only
+  /// for an order whose session never attached, and `cancel_order` records nothing for
+  /// one of those — with no session id it takes the sessionless branch.
+  ///
+  /// ⚠️ **A stale entry could never mis-attribute even so**, because a delivered or paid
+  /// order cannot transition to `#cancelled`. The reason to bound it is stable growth,
+  /// not correctness — which is why the fix is one removal at the third exit rather than
+  /// threading the set through every status writer.
   let cancelRequests = Set.empty<Types.OrderId>();
 
   /// Orders already audited for a blocked delivery this session, so a stuck

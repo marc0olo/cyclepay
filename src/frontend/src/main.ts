@@ -659,8 +659,14 @@ function renderView(): void {
   // which is the fix the collapse was standing in for.
   renderCliSteps(onCli);
   if (onCli) {
-    // The balance drives the summary, so it must be read on this view too.
-    void refreshLedgerBalance().then(renderCliSummary);
+    // ⚠️ **BOTH renderers re-run when the read lands, not just the summary.** They
+    // state the same balance in two places — the lede, and the figure step 3 tells the
+    // buyer to expect — and re-rendering one left the other saying "the balance above"
+    // about a number the page had by then.
+    void refreshLedgerBalance().then(() => {
+      renderCliSummary();
+      renderCliSteps(onCli);
+    });
     renderCliSummary();
   }
 
@@ -2696,8 +2702,9 @@ function renderCliSteps(onCli: boolean): void {
   el<HTMLAnchorElement>("cli-settings").href = IDENTITY_SETTINGS;
   // The balance to compare against comes from the same ledger read the heading uses,
   // so the page cannot tell a buyer to expect a figure it is not itself showing.
-  const shown = document.getElementById("ledger-balance")?.textContent ?? "";
-  el("cli-expect-balance").textContent = /^[\d]/.test(shown) ? shown : "the balance above";
+  el("cli-expect-balance").textContent = ledgerBalance === null
+    ? "the balance above"
+    : `${formatCycles(ledgerBalance)} cycles`;
   node.hidden = false;
 }
 
@@ -2716,8 +2723,8 @@ function renderCliSummary(): void {
     return;
   }
   node.textContent = ledgerBalance === null
-    ? "One setting and four commands to deploy."
-    : `${formatCycles(ledgerBalance)} cycles in your account. One setting and four commands to deploy.`;
+    ? "One setting and four steps to deploy."
+    : `${formatCycles(ledgerBalance)} cycles in your account. One setting and four steps to deploy.`;
 }
 
 async function renderReceipt(order: Order): Promise<void> {

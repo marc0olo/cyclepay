@@ -118,7 +118,11 @@ itself. **A fresh manual run is owed before go-live**, and it is the reason
 
 - **The CLI handoff.** `icp identity link web` was never run, so "the cycles are
   reachable from the CLI" — the last step the product promises — is unproven. Group
-  H4.
+  H4. ⚠️ **Two of its five steps are unreachable by any suite here**, which is why no
+  amount of frontend testing closes it: the id.ai CLI-access switch is a setting in
+  another product, and the delegation the link command returns needs a real browser
+  sign-in. What the suites do cover is that the page renders the right commands, in
+  order, against the values it is itself showing.
 - **Real Stripe payload capture.** 3 of 8 fixtures are committed; five integration
   tests stay skipped until the rest are captured (#4, group I). The suite prints
   which are missing on every run rather than hiding it.

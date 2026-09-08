@@ -21,6 +21,13 @@ const TOKENS = readFileSync(
 );
 
 /// The light palette is the bare `:root` block; dark redefines a subset below it.
+///
+/// ⚠️ **The split is asserted, because failing to find it fails SILENTLY in the
+/// direction that passes.** At -1, `LIGHT` becomes the whole file, `DARK` becomes one
+/// character, `themed` falls back to light for every token, and all four dark
+/// assertions re-test the light palette and pass — a contrast suite that checks one
+/// theme twice, in the file whose whole reason for existing is that a palette failure
+/// was invisible. Changing the selector's quotes is enough to do it.
 const DARK_AT = TOKENS.indexOf(":root[data-theme='dark']");
 const LIGHT = TOKENS.slice(0, DARK_AT);
 const DARK = TOKENS.slice(DARK_AT);
@@ -63,6 +70,13 @@ const THEMES = [
 ] as const;
 
 describe("every text token is readable on its own ground", () => {
+  test("⚠️ the theme blocks were actually found", () => {
+    // Guards every assertion below: see the note at `DARK_AT`.
+    expect(DARK_AT).toBeGreaterThan(0);
+    expect(LIGHT.length).toBeGreaterThan(200);
+    expect(DARK.length).toBeGreaterThan(200);
+  });
+
   /// ⚠️ **`icp-accent` is NOT in this list, and the omission is stated rather than
   /// silent.** It is 4.31:1 on the dark ground — under the 4.5 body bar, over the 3.0
   /// large-text one — and it is the brand's identity colour, so darkening it is a

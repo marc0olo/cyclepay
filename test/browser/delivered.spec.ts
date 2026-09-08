@@ -82,7 +82,10 @@ test.describe("the delivered view", () => {
     );
     // And no step strip: the four steps are a promise about buying, and a receipt
     // with a progress bar on it answers a question nobody asked here.
-    await expect(page.locator("#stepper")).toBeHidden();
+    // `toHaveCount(0)`, the sibling suite's idiom: the element is DELETED, and
+    // `toBeHidden` passes for an id that never existed, so it would also pass if this
+    // assertion were pointed at a typo.
+    await expect(page.locator("#stepper")).toHaveCount(0);
   });
 
   test("the POLL brings the tour up, with no navigation at all", async ({ page }) => {
@@ -289,8 +292,9 @@ test.describe("the CLI page is reachable without an order", () => {
     await expect(page.locator("#cmd-link")).toContainText("icp identity link web");
     // Never the missing-order page, which is what an order-scoped route showed here.
     await expect(page.locator("#order-missing")).toBeHidden();
-    // And no numbered journey: the visitor may not be on one.
-    await expect(page.locator("#stepper")).toBeHidden();
+    // And no numbered journey: the visitor may not be on one. Absence, not
+    // hidden-ness — the element is gone from the markup.
+    await expect(page.locator("#stepper")).toHaveCount(0);
   });
 
   test("a deep link to it works cold, with no navigation history", async ({ page }) => {

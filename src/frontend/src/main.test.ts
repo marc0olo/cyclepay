@@ -3301,8 +3301,14 @@ describe("the CLI page is a numbered sequence", () => {
     // so the page cannot tell a buyer to expect a figure it is not itself showing.
     await openCli();
     expect(el("credited-principal").textContent).toBe(FULL_PRINCIPAL);
-    expect(el("cli-expect-balance").textContent).not.toBe("");
-    expect(el("cli-summary").textContent).toMatch(/One setting and four commands/);
+    // The FIGURE, not "the balance above": the page has the number, so it states it.
+    expect(el("cli-expect-balance").textContent).toMatch(/^[\d.]+ [KMGT]? ?cycles$/);
+    // ⚠️ Steps, not commands. The page renders four numbered steps holding five
+    // commands — step 3 verifies twice — and calling them four commands was a count of
+    // the wrong thing in the copy that introduces the sequence.
+    expect(el("cli-summary").textContent).toMatch(/One setting and four steps/);
+    expect(el("cli-steps").querySelectorAll(":scope > li").length).toBe(5);
+    expect(el("cli-summary").textContent).not.toMatch(/four commands/);
   });
 
   test("every command has a copy button wired to its own id", async () => {

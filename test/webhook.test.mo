@@ -1115,6 +1115,47 @@ suite("a buyer's cancel is not a system expiry, THROUGH the webhook", func() {
     assert not deps.cancelRequests.contains(orderId);
   });
 
+  test("⚠️ the PAYMENT winning drops the intent, because nothing can honour it", func() {
+    // The third and last exit from `#created`, and the one that leaked: `cancel_order`
+    // records the intent, Stripe answers the expire 400 *because* this session
+    // completed, and the cancel returns without removing it. `#cancelled` is
+    // unreachable from `#paid`, so the entry could never be honoured and would sit in
+    // stable memory for the life of the canister.
+    let deps = freshDeps();
+    withOrder(deps, #card);
+    deps.cancelRequests.add(orderId);
+
+    assert deliver(deps, paidBody("evt_paid_cancel", "pi_paid_cancel", ?goodRef, 500)).status_code == 200;
+
+    let ?settled = Orders.get(deps.orders, orderId) else Runtime.trap("order vanished");
+    // The payment is what happened, and the intent did not change that.
+    assert settled.status == #paid;
+    assert not deps.cancelRequests.contains(orderId);
+  });
+
+  test("⚠️ a REFUSED payment leaves the intent alone, so the expiry can still honour it", func() {
+    // The other half: only a payment that actually took the order removes the intent.
+    // An amount that does not match the quote is refused as `#unattributed`, the order
+    // stays `#created`, and the buyer's cancel is still live — so a handler that pruned
+    // on every completed event would lose the attribution for the one case where the
+    // order remains cancellable.
+    let deps = freshDeps();
+    withOrder(deps, #card);
+    deps.cancelRequests.add(orderId);
+
+    assert deliver(deps, paidBody("evt_wrong_amount", "pi_wrong_amount", ?goodRef, 499)).status_code == 200;
+
+    let ?stayed = Orders.get(deps.orders, orderId) else Runtime.trap("order vanished");
+    assert stayed.status == #created;
+    assert deps.cancelRequests.contains(orderId);
+
+    // And the expiry that follows still records the buyer's own decision.
+    assert deliver(deps, expiredBody("evt_after_refusal", ?goodRef)).status_code == 200;
+    let ?settled = Orders.get(deps.orders, orderId) else Runtime.trap("order vanished");
+    assert settled.status == #cancelled;
+    assert not deps.cancelRequests.contains(orderId);
+  });
+
   test("⚠️ and with no request it is still a real expiry, with its cause", func() {
     // The other half. Without it, the assertion above is satisfied by a handler that
     // cancels every expired session, which would record every abandoned checkout as

@@ -839,6 +839,22 @@ module {
         // Link the payment to the order it funded, so a later refund of this
         // intent can tell whether cycles were already delivered.
         deps.paidIntents.add(session.paymentIntent, orderId);
+        // ⚠️ **The payment won, so a pending cancel intent is dead.** `#cancelled` is
+        // reachable only from `#created`, so once an order is `#paid` nothing can honour
+        // the intent and the entry would sit in stable memory for the life of the
+        // canister. `cancel_order`'s `#notOpen` arm is exactly how one gets here: the
+        // expire answered 400 *because* this session completed.
+        //
+        // ⚠️ **This is the third and last exit from `#created`, which is what bounds the
+        // set.** The matrix gives `#created` three: `#cancelled` and `#expired`, both
+        // settled through `Orders.settleUnpayable` / `expireBySession`, which remove the
+        // id as they decide with it — and `#paid`, whose only writer is this call. So
+        // membership implies `#created`, and the `#created` set is bounded by the gate's
+        // own-order cap and the reserve. `expireWithCause` needs no removal for a
+        // matching reason: it fires only for an order whose session never attached, and
+        // `cancel_order` cannot record an intent for one of those (no session id, so it
+        // takes the sessionless branch without adding).
+        deps.cancelRequests.remove(orderId);
         // ⚠️ **Close any `#paidNotCredited` obligation for this order (#52).** The
         // recovery sweep files that when Stripe reports a paid session we never
         // credited; this is the resend landing, which is the remedy the entry asks for.

@@ -24,7 +24,10 @@ export function canonicalAppDomain(): string {
 /// site a stored identity came from once someone has linked two.
 export const CLI_IDENTITY = "cyclepay-id";
 
-/// ⚠️ **These four commands are an ORDERED sequence, and the order is load-bearing.**
+/// ⚠️ **These five commands are an ORDERED sequence, and the order is load-bearing.**
+/// Five commands in four numbered steps — step 3 verifies twice, the principal and the
+/// balance — which is why the page's summary counts steps and this list counts
+/// functions. Counting the same things differently is how it came to say four of both.
 /// `identityDefaultCommand` is what makes `icp identity principal`, `icp cycles
 /// balance` and `icp deploy` act as the linked identity. Without it a buyer links
 /// successfully, verifies with an explicit `--identity` flag, sees a match, and then

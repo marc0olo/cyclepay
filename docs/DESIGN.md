@@ -4,7 +4,7 @@
 this says *why it is that way*. When those disagree, the code is right and this file is a
 bug — fix it in the same change.
 
-⚠️ **This file is load-bearing and enforced.** `scripts/check-spec-glossary.py` runs in
+⚠️ **This file is load-bearing and enforced.** `scripts/check-design-sections.py` runs in
 the verification gate and fails if a `§N` cited in the backend or the tests has no section
 here, or if a section here is cited by nothing. It cannot check whether a section is
 *true* — that is the obligation below.
@@ -164,6 +164,35 @@ identifies the incident.
 
 One `persistent actor`. Orders are never deleted, which is what makes every index over
 them a projection that can be rebuilt rather than a second source of truth.
+
+### §4.3 — Cancellation is attributed, not raced
+
+`Cancelled` and `Expired` are both terminal and unpayable, so they differ in exactly one
+thing: **who decided**. The buyer needs that difference — being told their order expired
+when they cancelled it is the defect #34 exists to fix — and `expiredBy` is where it is
+recorded.
+
+⚠️ **The write is racy by construction and that is not a bug to remove.** Cancelling
+expires the session at Stripe first, so Stripe fires `checkout.session.expired`
+immediately, and three writers can reach the order before the cancel is recorded: that
+webhook, the recovery sweep (§5.2), and the admin expire.
+
+⚠️ **So the buyer's INTENT is recorded before the outcall, and whoever wins reads it.**
+Not a lock. A lock needs every writer to remember a guard, and the first attempt at this
+proved the point twice: a transient set the webhook's module could not see, then an
+attribution the sweep and the admin expire used while the webhook — the writer that
+actually wins — went on without it. `Orders.settleUnpayable` owns the
+`Cancelled`-versus-`Expired` decision, so the race stops mattering instead of being
+prevented.
+
+Two consequences worth stating, because both look like oversights:
+
+- The intent is **stable** and deliberately not cleared in a `finally`. A trap or an
+  upgrade mid-cancel is precisely the window in which another writer settles the order,
+  which is when the intent has to survive.
+- It is **not** pruned "when the order goes terminal". Membership implies `Created`, and
+  it is removed at each of that status's three exits — the enumeration is in
+  `Main.cancelRequests`, and it is what bounds the set.
 
 ## §5 — Money-out
 
