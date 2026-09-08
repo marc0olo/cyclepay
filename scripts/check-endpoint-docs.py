@@ -100,8 +100,10 @@ def leaked_docs(did_text):
     4 of that file's 786 `///` lines leaked, onto endpoints they have no relation to,
     by position aliasing inside the compiler that source-side scanning cannot see.
 
-    So if this ever fires legitimately, it is because a documented endpoint was declared
-    in `Main.mo` — and that broke the architecture rule before it broke this check.
+    ⚠️ **The one case that would make this unsound — a documented endpoint declared in
+    `Main.mo` — is refused by `main()` before the scan runs**, with its own message. That
+    check is what turns the premise above from prose into an invariant; without it, the
+    remedy printed below ("make it `//`") would be handed to a case it destroys.
     """
     lines = did_text.split("\n")
     service = next((i for i, l in enumerate(lines) if l.startswith("service")), None)
@@ -182,6 +184,29 @@ def main():
     # ⚠️ Counts the files that HOLD endpoints, not the files scanned. `Main.mo` is in the
     # scan list and declares none since #120, so reporting the scan size would read as
     # though the composition root still had some.
+    # ⚠️ **`leaked_docs()`'s soundness rests on this, so it is asserted, not asserted-in-
+    # prose.** "Any doc in the service block floated there" is only true while no endpoint
+    # is declared in the composition root — and one that IS declared there arrives with a
+    # legitimate doc, which the leak scan would then report with a remedy that strips it
+    # (#89's shape: an unrecognised case handed the wrong fix). Checked first, so that
+    # case gets its own message and never reaches the other one.
+    root = "src/backend/Main.mo"
+    root_endpoints = len(ENDPOINT.findall(open(root).read())) if root in files else 0
+    if root_endpoints:
+        print(
+            f"\n\033[31m✗ {root} declares {root_endpoints} public endpoint(s)\033[0m",
+            file=sys.stderr,
+        )
+        print(
+            "\n  The composition root holds state and `include`s, no endpoints\n"
+            "  (`reviewing-motoko` A1). Move it to the mixin that owns the feature.\n"
+            "  This also keeps the .did leak scan below sound: it reads any doc in the\n"
+            "  service block as floated off private state, which stops being true the\n"
+            "  moment a documented endpoint is declared here.",
+            file=sys.stderr,
+        )
+        return 1
+
     leaked = leaked_docs(open(DID).read())
     if leaked:
         print(
