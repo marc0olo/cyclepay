@@ -30,7 +30,12 @@ import {
   type Hint,
   type RefusalTag,
 } from "./operator";
-import { renderCall, irreversibleNote, type CommandMethod } from "./candid";
+import {
+  renderCall,
+  irreversibleNote,
+  type ArgumentFreeMethod,
+  type CommandMethod,
+} from "./candid";
 import {
   clearIcEnvCookies,
   distinctBackendIds,
@@ -504,7 +509,7 @@ function renderConfigGroup<T extends object>(
 /// transcription: `withdraw_reserve` and `recount_orders` are levers an operator has no
 /// way to discover otherwise. The console previously listed none of them, so knowing
 /// they existed meant reading the source.
-const ARGUMENT_FREE_ACTIONS: ReadonlyArray<{ method: CommandMethod; what: string }> = [
+const ARGUMENT_FREE_ACTIONS: ReadonlyArray<{ method: ArgumentFreeMethod; what: string }> = [
   {
     method: "refresh_reserve",
     what:
@@ -546,7 +551,7 @@ function renderAdminActions(): void {
     what.textContent = action.what;
     wrap.append(h, what);
 
-    const command = renderCall(action.method as "refresh_reserve");
+    const command = renderCall(action.method);
     const cmd = document.createElement("div");
     cmd.className = "cmd";
     const code = document.createElement("code");

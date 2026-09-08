@@ -87,11 +87,40 @@ function parseCandid(src: string): unknown {
   return args;
 }
 
-/// The `'(…)'` payload out of a full command line.
+/// The Candid payload **a shell would hand the CLI**, out of a full command line.
+///
+/// ⚠️ **De-quoted the way `sh` does, rather than sliced between the outer quotes.**
+/// `renderCall` escapes an apostrophe as `'\''` — close, literal, reopen — and slicing
+/// would hide exactly the bug that escaping exists to prevent. Reading it as the shell
+/// does also asserts the payload is ONE word: unquoted whitespace throws here, which is
+/// the claim the quoting is for.
 function argsOf(command: string): string {
-  const m = /'(\(.*\))'$/.exec(command);
-  if (!m) throw new Error(`no quoted argument list in: ${command}`);
-  return m[1]!;
+  const head = /^icp canister call backend \w+ /.exec(command);
+  if (!head) throw new Error(`not a canister call: ${command}`);
+  let i = head[0].length;
+  let out = "";
+  let quoted = false;
+  while (i < command.length) {
+    const c = command[i]!;
+    if (quoted) {
+      if (c === "'") quoted = false;
+      else out += c;
+      i += 1;
+    } else if (c === "'") {
+      quoted = true;
+      i += 1;
+    } else if (c === "\\") {
+      out += command[i + 1] ?? "";
+      i += 2;
+    } else if (/\s/.test(c)) {
+      throw new Error(`more than one shell word in: ${command}`);
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  if (quoted) throw new Error(`unterminated quote in: ${command}`);
+  return out;
 }
 
 describe("the rendered command is what the canister expects (#97)", () => {
@@ -197,6 +226,18 @@ describe("the rendered command is what the canister expects (#97)", () => {
     expect(rendered).toBe(
       `icp canister call backend set_stripe_origin '("https://example.com")'`,
     );
+  });
+
+  test("⚠️ an apostrophe survives the SHELL as well as Candid", () => {
+    // Two escapings, and passing one proves nothing about the other: `text()` escapes
+    // for Candid, the single quotes are for the shell. A tier id carrying an apostrophe
+    // used to close the quoting early, so what reached the CLI was neither the command
+    // nor an error — it was a different, shorter command.
+    const tiers = [{ id: "o'brien", usdCents: 1_000n }];
+    const rendered = renderCall("set_card_tiers", tiers);
+    expect(parseCandid(argsOf(rendered))).toEqual([tiers]);
+    // The POSIX idiom, spelled out so a "simplification" back to a bare quote fails.
+    expect(rendered).toContain(`o'\\''brien`);
   });
 });
 

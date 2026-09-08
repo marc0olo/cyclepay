@@ -191,16 +191,35 @@ export const COMMANDS: { readonly [M in CommandMethod]: Spec<M> } = {
   },
 };
 
+/// The methods that take no arguments, derived from the actor rather than listed.
+///
+/// ⚠️ **The one place a string could have laundered the union.** The console renders
+/// these from a table of its own, and a table typed as `CommandMethod` needed a cast at
+/// the call — `renderCall(m as "refresh_reserve")` — which is a hand-written claim that
+/// the method takes nothing. Adding an argument-bearing method to that table then
+/// compiled, and rendered `abandon_order '()'`: a command that runs and does the wrong
+/// thing, the exact failure `Parameters<Backend[M]>` exists to make impossible.
+export type ArgumentFreeMethod = {
+  [M in CommandMethod]: Parameters<Backend[M]> extends readonly [] ? M : never;
+}[CommandMethod];
+
 /// The full command line, ready to paste.
 ///
 /// `'(…)'` single-quoted as one shell word, because Candid text contains double quotes
 /// and braces that a shell would otherwise eat.
+///
+/// ⚠️ **An apostrophe inside the payload is escaped, not assumed absent.** The Candid
+/// escaping in `text()` is correct for Candid and says nothing about the shell: a single
+/// quote in a tier id or an origin would close the quoting early and hand the shell a
+/// broken command, in the one surface whose entire purpose is a command that is already
+/// right. `'\''` is the POSIX idiom: close, literal quote, reopen.
 export function renderCall<M extends CommandMethod>(
   method: M,
   ...args: Parameters<Backend[M]>
 ): string {
   const body = (COMMANDS[method].args as (...a: unknown[]) => string)(...args);
-  return `icp canister call backend ${method} '(${body})'`;
+  const word = `(${body})`.replace(/'/g, `'\\''`);
+  return `icp canister call backend ${method} '${word}'`;
 }
 
 export function irreversibleNote(method: CommandMethod): string | undefined {
