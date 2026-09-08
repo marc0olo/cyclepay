@@ -234,35 +234,119 @@
       </div>
 
       <section id="active-order" hidden>
-        <h2 class="section-h">Order <span id="order-id-short" class="mono"></span></h2>
+        <!-- IMPORTANT: **The heading is the PURCHASE, not the id.** An order id led this page
+             as an h2, which put an opaque identifier where a buyer looks for what they
+             are being asked to authorise. The id is a support handle: demoted to a
+             muted line, truncated, and copyable, which is the only thing anyone
+             actually does with it. Status-neutral wording, because this one section
+             serves every status the order can be in. -->
+        <!-- IMPORTANT: The status is a BADGE beside the heading, and the three-step
+             timeline it replaces is gone. A progress bar for a three-state pipeline
+             whose state is already named in words, next to the one action that state
+             allows, is decoration: on a delivered order every segment was lit and it
+             carried nothing. Status has one owner now. What is lost: a paid order no
+             longer shows "1 of 3 done" graphically, and reads "Paid" instead. -->
+        <!-- IMPORTANT: The heading is the OUTCOME, and the badge that used to sit in
+             the far corner is gone rather than relocated. "Your purchase" plus a small
+             DELIVERED pill answered the one question a buyer has - did I get my cycles -
+             three times and prominently zero times: the pill, a receipt row, and a
+             block index. `statusInfo(...).headline` names the state and the quantity in
+             one statement, so the page announces itself. -->
+        <h2 id="order-headline" class="section-h"></h2>
+        <p class="order-ident muted">
+          Order <span id="order-id-short" class="mono"></span>
+        </p>
         <p id="order-lock-notice" class="notice" hidden></p>
-        <!-- A live countdown, not a static "reserved until 14:32": thirty-five
-             minutes is short enough that a stale timestamp misleads a buyer who
-             looked away. Rendered from `expiresAtNs`, which is Stripe's own
-             deadline. -->
-        <p id="order-deadline" class="muted" hidden></p>
-        <ol id="timeline" class="timeline"></ol>
-        <p id="order-status-line"></p>
-        <div id="pay-area" hidden>
-          <a id="pay-link" target="_blank" rel="noopener noreferrer" class="cta">Pay with card ↗</a>
-          <p class="muted">
-            Opens Stripe in a new tab. Keep this one open: it updates the moment
-            the payment clears.
+        <!-- IMPORTANT: **Only for a status the timeline CANNOT express.** This printed the same
+             label as the timeline's current step, so an awaiting-payment order said so
+             twice in adjacent lines. The timeline covers created, paid and delivered;
+             cancelled, expired, abandoned and needsReview are outside it, and there
+             this line is the only statement of what happened. See `renderOrder`. -->
+        <p id="order-status-line" hidden></p>
+
+        <!-- IMPORTANT: **The amounts lead, and the reading order was the bug.** A buyer was
+             asked to click "Pay with card" some 350px above learning the charge was
+             $10.00: the figures sat in a monospace list BELOW both buttons, every row
+             at one weight, so the price had exactly the prominence of a 90-character
+             support identifier. A checkout states what is being authorised, then
+             offers the control. -->
+        <div class="checkout-summary">
+          <dl class="checkout-amounts">
+            <div>
+              <!-- Tense follows the order: see `amountLabels`. Two independent facts,
+                   because a paid order has paid but has not yet received. -->
+              <dt id="order-pay-label">You pay</dt>
+              <dd id="order-price" class="amount"></dd>
+            </div>
+            <div>
+              <dt id="order-receive-label">You receive</dt>
+              <dd id="order-cycles" class="amount"></dd>
+            </div>
+          </dl>
+          <!-- IMPORTANT: **Kept, though it is detail.** Why the credited figure is smaller than
+               the quantity bought is the one arithmetic gap that reads as being
+               short-changed if left unexplained, so it stays: as a sub-line under the
+               figure it explains, not as prose inside a value cell. -->
+          <p id="order-cycles-note" class="muted fee-note" hidden></p>
+          <!-- IMPORTANT: The receipt's own facts live HERE, not in a second list
+               below. "You pay $10.00" and "You paid $10.00" were the same number
+               rendered twice by two code paths, as were the cycles; the block index and
+               the source count had no reason to sit apart from the terms they belong
+               to. What stays below is the arithmetic, which answers a different
+               question: these are the facts, that is the proof. -->
+          <dl class="checkout-terms">
+            <div><dt>Rate</dt><dd id="order-rate" class="mono"></dd></div>
+            <div><dt>Destination</dt><dd id="order-dest"></dd></div>
+            <div id="term-block" hidden><dt>Cycles ledger block</dt><dd id="receipt-block"></dd></div>
+            <div id="term-sources" hidden><dt>Priced from</dt><dd id="receipt-sources"></dd></div>
+          </dl>
+          <!-- A live countdown, not a static "reserved until 14:32": thirty-five
+               minutes is short enough that a stale timestamp misleads a buyer who
+               looked away. Rendered from `expiresAtNs`, which is Stripe's own
+               deadline. Inside the summary because it is a term of this price. -->
+          <p id="order-deadline" class="muted" hidden></p>
+
+          <!-- IMPORTANT: In the card, because it is an order FACT like the block index.
+               Outside it, it was one more line of prose under a tidy frame. -->
+          <p class="order-ref muted">
+            Payment reference <span id="client-ref" class="mono"></span>
           </p>
+
+          <!-- IMPORTANT: The next step is ANCHORED in the card, not floating below it.
+               It was a two-word label on an 870px button between the frame and a wall
+               of prose, with its own explanation underneath, so the pair anchored to
+               nothing. The card is what a buyer reads and trusts; the action belongs at
+               its end, the same reasoning as the landing hero.
+
+               "Spend them" was wrong: cycles pay for CREATING and running canisters,
+               which is what the caption says now. -->
+          <div id="order-next-row" class="card-action" hidden>
+            <p class="muted">Create and deploy canisters from your terminal.</p>
+            <a id="order-next-link" class="cta" href="#/">Link ICP CLI</a>
+          </div>
         </div>
-        <div id="cancel-area" hidden>
-          <button id="cancel-order" type="button" class="ghost">Cancel this order</button>
-          <!-- This sentence is a promise made at the moment it matters, so it has
-               to match the transition matrix: `#cancelled → #paid` does not exist
-               (#34), so a payment arriving after a cancel is refunded rather than
-               applied. It said the opposite until #34 made expiry terminal. -->
-          <p class="muted">
-            Frees the slot so you can start another. Only cancel if you have not
-            paid: a payment that arrives after this cannot be applied to the
-            order, and would have to be refunded instead.
-          </p>
-          <p id="cancel-status" class="error" hidden></p>
+
+        <!-- IMPORTANT: **The two actions are ALTERNATIVES, so they share a row.** Each used to
+             be followed by its own explanatory paragraph, which put sixty words between
+             them and made two choices read as two unrelated controls. Cancel keeps a
+             destructive tint rather than a filled fill: filled red beside a filled
+             accent gives a page two loud buttons and shouts the option a buyer is less
+             likely to want. -->
+        <div class="order-actions">
+          <div id="pay-area" hidden>
+            <a id="pay-link" target="_blank" rel="noopener noreferrer" class="cta">Pay with card ↗</a>
+          </div>
+          <div id="cancel-area" hidden>
+            <button id="cancel-order" type="button" class="ghost danger">Cancel this order</button>
+          </div>
         </div>
+        <!-- IMPORTANT: Shown by the SAME predicate as `#pay-area` (see `renderOrder`): it is a
+             note about that button, and a note outliving its control is a claim about a
+             control that is not there. -->
+        <p id="pay-note" class="muted" hidden>
+          Opens Stripe in a new tab. This page updates when the payment clears.
+        </p>
+        <p id="cancel-status" class="error" hidden></p>
 
         <!-- The guided tour. On delivery this is the point of the page: the two
              commands ARE the deliverable, so they lead and the order facts
@@ -281,14 +365,6 @@
              The order view is now a record: what you bought, what went wrong if
              anything, and the arithmetic you can check. The next action lives on its
              own page. -->
-        <dl class="order-facts">
-          <dt>Cycles</dt><dd id="order-cycles"></dd>
-          <dt>Price</dt><dd id="order-price"></dd>
-          <dt>Destination</dt><dd id="order-dest"></dd>
-          <dt>Locked rate</dt><dd id="order-rate"></dd>
-          <dt>Payment reference</dt><dd id="client-ref" class="wrap"></dd>
-        </dl>
-
         <!-- Problems attached to this order (#37/#38). Hidden when there are none,
              which is the normal case: an empty panel headed "Problems" reads as a
              fault on every healthy order. -->
@@ -302,16 +378,30 @@
              putting it behind a disclosure on the order page made the claim true and
              the artefact hidden. -->
         <section id="receipt-area" hidden>
-          <h3 class="section-h">Receipt and price verification</h3>
-          <dl class="order-facts">
-            <dt>You paid</dt><dd id="receipt-paid"></dd>
-            <dt>Cycles delivered</dt><dd id="receipt-delivered"></dd>
-            <dt>Cycles ledger block</dt><dd id="receipt-block"></dd>
-            <dt>Rate sources</dt><dd id="receipt-sources"></dd>
-          </dl>
-          <p id="receipt-formula" class="mono"></p>
+          <!-- IMPORTANT: The PROOF collapses; the FACTS do not, and that distinction is
+               the whole reason this is allowed to be a disclosure.
+
+               The rule this file carries is that the receipt must not sit behind one.
+               That rule exists because `order-problems` and `receipt-area` were once
+               nested inside a collapsed `<details>`, so the one page a buyer opens to
+               see what they got showed no cycle quantity at all and hid a problem
+               notice. Every one of those facts is now in the summary card above, open
+               and unconditional: the amounts, the rate, the destination, the ledger
+               block, the source count, the reference. What closes here is the
+               arithmetic a sceptic recomputes - long, secondary, and the only part of
+               this page a buyer can reasonably skip.
+
+               `#order-problems` stays OUTSIDE, open, for the same reason it was pulled
+               out: a fault must never need a click. -->
+          <!-- IMPORTANT: The VERDICT stays outside the disclosure, and a browser test
+               is why. "Verified: recomputed from these inputs, the price matches" is
+               the reassurance, not the arithmetic: collapsing it hid the trust signal
+               while leaving the long proof behind the same click, which is a strictly
+               worse trade. What closes is the formula and the how-to-check-it prose. -->
           <p id="receipt-verdict"></p>
-          <p id="receipt-simulation-note" class="notice" hidden></p>
+          <details id="receipt-details">
+            <summary>Show the arithmetic</summary>
+          <p id="receipt-formula" class="mono"></p>
           <p class="muted">
             Both rates come from canisters you can query yourself: the
             <a href="https://dashboard.internetcomputer.org/canister/uf6dk-hyaaa-aaaaq-qaaaq-cai"
@@ -319,13 +409,15 @@
             for USD/ICP and the Cycles Minting Canister for XDR/ICP. Recompute the
             line above and it must match the cycles this order locked.
           </p>
+          </details>
         </section>
 
-        <!-- Where a delivered order goes next. A LINK, not the guidance itself: the
-             commands are a page of their own. -->
-        <p id="order-next-row" hidden>
-          <a id="order-next-link" class="cta" href="#/">What to do next</a>
-        </p>
+        <!-- The quiet route out, matching the CLI page. NOT a prominent Dashboard
+             button: the header carries Dashboard on every page, so a loud one here
+             would duplicate the nav. -->
+        <p><a id="order-back" href="#/history">Back to your dashboard</a></p>
+
+
       </section>
 
       <!-- The next-steps view (#/order/<id>/next). NOTE: the tour used to live on the

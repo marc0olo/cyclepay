@@ -21,6 +21,34 @@ export type StatusKey = `${OrderStatus}`;
 
 export interface StatusInfo {
   label: string;
+  /// What the page LEADS with: the outcome, in the buyer's terms.
+  ///
+  /// ⚠️ **The heading used to be status-neutral ("Your purchase") with the status in a
+  /// badge in the far corner, and that neutrality is what made the page mute.** The one
+  /// question a buyer has on a delivered order is "did I get my cycles", and it was
+  /// answered three times and prominently zero times: a small pill, a receipt row, and
+  /// a block index. A page should announce its own state.
+  ///
+  /// Takes the credited quantity where the status has one to name, so the outcome and
+  /// the amount are one statement rather than a label and a lookup.
+  headline: (cycles?: string) => string;
+  /// The one thing to DO about this status, or nothing.
+  ///
+  /// ⚠️ **Explicit, replacing a `label !== pill` string comparison.** That heuristic
+  /// worked while the page led with a badge; with a headline it broke, because the
+  /// headline and the label differ in wording for every status, so the line reappeared
+  /// under a headline that already said it. Four statuses have nothing to add and three
+  /// carry an instruction: that is a fact about the statuses, not about how two strings
+  /// happen to compare, so it is stated once here and switched exhaustively.
+  guidance?: string;
+  /// The status as a badge: two or three words, never a sentence.
+  ///
+  /// ⚠️ **Separate from `label` so the two can never say the same thing twice.** The
+  /// order page shows this always and shows `label` only when it says MORE, which is
+  /// exactly the statuses whose label carries an instruction ("Expired. This order can
+  /// no longer be paid"). One field, one place, and the page needs no list of which
+  /// statuses are wordy.
+  pill: string;
   /// Index into STEPS for the progress timeline; -1 = off the happy path.
   step: number;
   /// Stop polling: the backend will never move this order again.
@@ -43,27 +71,27 @@ export const STEPS = ["Awaiting payment", "Paid", "Delivered"] as const;
 export function statusInfo(key: StatusKey): StatusInfo {
   switch (key) {
     case "created":
-      return { label: "Awaiting payment", step: 0, terminal: false, tone: "active" };
+      return { label: "Awaiting payment", pill: "Awaiting payment", headline: () => "Awaiting your payment", step: 0, terminal: false, tone: "active" };
     case "cancelled":
       // The buyer's own decision, and its own status — so a reload no longer
       // tells someone who cancelled that their order "expired" (#34).
-      return { label: "Cancelled", step: -1, terminal: true, tone: "warn" };
+      return { label: "Cancelled", pill: "Cancelled", headline: () => "You cancelled this order", step: -1, terminal: true, tone: "warn" };
     case "expired":
       // TERMINAL as of #34, which deleted `#expired → #paid`. It used to say a
       // completed payment still went through; that is no longer true, and a
       // payment arriving now becomes an operator obligation to refund rather
       // than cycles.
-      return { label: "Expired. This order can no longer be paid", step: -1, terminal: true, tone: "warn" };
+      return { label: "Expired. This order can no longer be paid", pill: "Expired", headline: () => "This order expired", guidance: "This order can no longer be paid.", step: -1, terminal: true, tone: "warn" };
     case "paid":
-      return { label: "Payment received", step: 1, terminal: false, tone: "active" };
+      return { label: "Payment received", pill: "Paid", headline: () => "Payment received, delivering now", step: 1, terminal: false, tone: "active" };
     case "delivered":
-      return { label: "Delivered", step: 2, terminal: true, tone: "ok" };
+      return { label: "Delivered", pill: "Delivered", headline: (cycles) => cycles === undefined ? "Delivered" : `${cycles} delivered`, step: 2, terminal: true, tone: "ok" };
     case "needsReview":
       // NOT terminal: the operator can still end it, and until they do the order
       // holds its promise. Polling continues so the buyer sees that happen.
-      return { label: "Needs operator attention. Contact support", step: -1, terminal: false, tone: "err" };
+      return { label: "Needs operator attention. Contact support", pill: "Needs attention", headline: () => "This order needs attention", guidance: "Contact support.", step: -1, terminal: false, tone: "err" };
     case "abandoned":
-      return { label: "Ended by support. Contact us about a refund", step: -1, terminal: true, tone: "err" };
+      return { label: "Ended by support. Contact us about a refund", pill: "Ended", headline: () => "This order was ended by support", guidance: "Contact us about a refund.", step: -1, terminal: true, tone: "err" };
   }
 }
 
@@ -170,20 +198,40 @@ export function cyclesCredited(cycles: bigint | null, transferFee: bigint): bigi
 /// arrives for a different amount than quoted, the quantity is re-derived at
 /// that same locked rate. Saying "cycles are locked" would be wrong in that one
 /// case; saying the rate is locked is always true.
+/// The credited quantity, and separately why it differs from what was bought.
+///
+/// ⚠️ **The FIGURE and its explanation are separate values, because the checkout puts
+/// them in different places.** They used to exist only glued into one sentence, so the
+/// order page rendered a hundred-character line of prose inside a value cell where a
+/// buyer was looking for a number. `estimateLine` is now built from this, so the two
+/// renderings cannot drift: one primitive, two presentations.
+///
+/// `note` is null when the two figures do not READ differently. `formatCycles` shows
+/// three decimals, so on a multi-trillion order the 100 M transfer fee rounds away and
+/// "3.5 T credited, 3.5 T sent less the 100 M fee" reads as a contradiction rather
+/// than a disclosure.
+export function creditedSplit(
+  cycles: bigint,
+  transferFee: bigint,
+): { figure: string; note: string | null } {
+  const credited = formatCycles(cyclesCredited(cycles, transferFee)!);
+  const sent = formatCycles(cycles);
+  return {
+    figure: `${credited} cycles`,
+    note: credited === sent
+      ? null
+      : `${sent} sent, less the cycles ledger's ${formatCycles(transferFee)} transfer fee`,
+  };
+}
+
 export function estimateLine(cycles: bigint | null, transferFee: bigint): string {
   if (cycles === null) {
     return "No exchange rate available right now. Orders are paused until one is.";
   }
+  const { figure, note } = creditedSplit(cycles, transferFee);
   const shown = formatCycles(cyclesCredited(cycles, transferFee)!);
-  // Only spell out the split when the two figures actually *read* differently.
-  // `formatCycles` shows three decimals, so on a multi-trillion order the 100 M
-  // transfer fee rounds away entirely, and "3.5 T credited (3.5 T sent, less the
-  // 100 M transfer fee)" reads as a contradiction rather than a disclosure.
-  if (shown !== formatCycles(cycles)) {
-    return (
-      `≈ ${shown} cycles credited ` +
-      `(${formatCycles(cycles)} sent, less the cycles ledger's ${formatCycles(transferFee)} transfer fee)`
-    );
+  if (note !== null) {
+    return `≈ ${figure.replace(" cycles", "")} cycles credited (${note})`;
   }
   // Just the number that lands. The fee is disclosed once, in `#dest-fee-note`
   // under the destination; naming it here as well puts the same parenthetical on
@@ -673,4 +721,17 @@ export function decodeOrderMemo(
   // `fatal: true` is redundant belt-and-braces: removing it does not fail the suite.
   // Removing THIS line does.
   return /^[0-9a-f]{8,64}$/.test(text) ? text : null;
+}
+
+/// The amount labels, in the tense the order has actually reached.
+///
+/// ⚠️ **Two independent tenses, not one.** A `#paid` order HAS paid but has NOT yet
+/// received, so a single "is it done" flag would print "You received" beside cycles
+/// that have not moved. Each label follows its own fact.
+export function amountLabels(key: StatusKey): { pay: string; receive: string } {
+  const paid = key === "paid" || key === "delivered";
+  return {
+    pay: paid ? "You paid" : "You pay",
+    receive: key === "delivered" ? "You received" : "You receive",
+  };
 }

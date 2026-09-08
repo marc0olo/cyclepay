@@ -357,6 +357,20 @@ button:disabled {
   border-color: var(--icp-fg-muted);
 }
 
+/* ⚠️ A destructive TINT, not a filled red button. Filled red beside the filled
+   accent CTA gives the page two loud controls and shouts the choice a buyer is less
+   likely to want. The border carries it as well as the text, so the signal is not
+   colour alone, and `:hover` commits further rather than being the first hint. */
+.ghost.danger {
+  color: var(--icp-err);
+  border-color: var(--icp-err-edge);
+}
+.ghost.danger:hover {
+  color: var(--icp-err);
+  border-color: var(--icp-err);
+  background: var(--icp-err-wash);
+}
+
 .linklike {
   background: none;
   border: 0;
@@ -525,6 +539,185 @@ button:disabled {
 .timeline li.now {
   border-top-color: var(--icp-accent);
   color: var(--icp-accent);
+}
+
+/* ── the purchase head, and status as a badge ─────────────────────────────── */
+
+.purchase-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.purchase-head h2 {
+  margin: 0;
+}
+
+/* IMPORTANT: the tone class supplies the colour, and the border picks it up through
+   `currentColor`, so the badge is never colour on its own: it has an outline, a
+   background wash and uppercase tracking. A delivered order and a failed one differ
+   in shape as well as hue. */
+.status-pill {
+  margin: 0;
+  align-self: center;
+  font-family: var(--font-ui);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-pill);
+  background: var(--icp-bg-elev);
+  white-space: nowrap;
+}
+
+/* The next step, sitting with the purchase rather than under the arithmetic. */
+/* ⚠️ **`inline-flex`, not `grid`, and that was a real bug.** As a grid the child
+   stretched to the 34rem cap, so a two-word link rendered as an 870px bordered box -
+   and `a.ghost` inherited the global anchor underline on top, giving one control two
+   fighting affordances: a box that also looks like a link. */
+.next-step {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-5) 0;
+}
+
+/* A ghost anchor is a BUTTON that happens to be a link, so it does not take the
+   underline every other anchor gets. */
+a.ghost {
+  text-decoration: none;
+}
+a.ghost:hover {
+  text-decoration: none;
+}
+
+/* The action anchored inside the receipt card: caption, then the control. Separated
+   by a rule so it reads as the card's footer rather than another fact row. */
+.card-action {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--icp-rule);
+}
+
+.card-action p {
+  margin: 0;
+}
+
+/* The collapsed proof. `summary` carries the heading face, and the marker stays so the
+   control reads as openable. */
+#receipt-details > summary {
+  cursor: pointer;
+  margin-bottom: var(--space-4);
+}
+
+.next-step p {
+  margin: 0;
+}
+
+/* ── the checkout summary ─────────────────────────────────────────────────── */
+
+.checkout-summary {
+  background: var(--icp-bg-elev);
+  border: 1px solid var(--icp-rule);
+  border-radius: var(--radius-md);
+  padding: var(--space-5);
+  margin: var(--space-5) 0;
+  /* Its own measure: the two amount rows read as a pair, and a card as wide as the
+     page puts label and figure too far apart to associate. */
+  max-width: 34rem;
+}
+
+.checkout-amounts {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.checkout-amounts > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.checkout-amounts dt {
+  font-family: var(--font-ui);
+  color: var(--icp-fg-secondary);
+}
+
+/* The two figures a buyer is deciding on. Deliberately the largest text in the
+   section: they used to sit at body weight in a list below both buttons. */
+.checkout-amounts .amount {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.375rem;
+  color: var(--icp-fg);
+  margin: 0;
+  text-align: right;
+}
+
+.fee-note {
+  /* Hangs under the figure it explains, right-aligned to sit with it rather than
+     with the label on the other side of the row. */
+  text-align: right;
+  font-size: 0.8125rem;
+  margin: calc(var(--space-2) * -1) 0 0;
+}
+
+.checkout-terms {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 0;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--icp-rule);
+  font-size: 0.9375rem;
+}
+
+.checkout-terms > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.checkout-terms dt {
+  font-family: var(--font-ui);
+  color: var(--icp-fg-secondary);
+}
+
+.checkout-terms dd {
+  margin: 0;
+  text-align: right;
+}
+
+/* The two actions on one row, wrapping on a narrow screen rather than forcing the
+   page sideways. `align-items: center` because the CTA is a pill and the cancel a
+   rectangle: matching their vertical centres reads level, matching their boxes does
+   not. */
+.order-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+  margin: var(--space-5) 0 var(--space-3);
+}
+
+.order-ident,
+.order-ref {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.875rem;
+}
+
+.order-ref {
+  margin-top: var(--space-6);
 }
 
 .order-facts {

@@ -54,11 +54,12 @@ import {
   RATE_LOCK_NOTE,
   formatAgo,
   formatDuration,
-  STEPS,
   checkReceipt,
   createOrderErrorMessage,
   PRE_ANNOUNCED_GATE_REASONS,
   type GateReason,
+  amountLabels,
+  creditedSplit,
   estimateLine,
   type FeeConfig,
   feeBreakdown,
@@ -668,6 +669,9 @@ function renderView(): void {
   // there is nothing to link the CLI to, and offering the step early is how a buyer
   // ends up running a command against an empty balance.
   show("order-next-row", delivered && order !== null);
+  // Still order-scoped at this layer. The page's content is identity-derived, so the
+  // parameter is unused and it makes the page unreachable from the dashboard: that is
+  // the next change, not this one.
   const nextLink = document.getElementById("order-next-link") as HTMLAnchorElement | null;
   if (nextLink && order !== null) {
     nextLink.href = routeHash({ view: "next", orderId: order.id });
@@ -1895,12 +1899,15 @@ function renderSimulationNote(): void {
     `Simulation mode: this gateway is running against Stripe's test environment, ` +
     `and it delivers 1/${divisor} of the cycles a purchase would buy in production. ` +
     `The card charge is real inside the sandbox; no money moves.`;
-  for (const id of ["simulation-note", "receipt-simulation-note"]) {
-    const node = document.getElementById(id);
-    if (!node) continue;
-    node.textContent = text;
-    node.hidden = divisor === 1n;
-  }
+  // ⚠️ **ONE element, and the loop over two was the bug.** This same sentence was
+  // written into the page banner AND into the receipt, so a delivered order stated
+  // simulation mode twice on one screen. The banner is the right home: it is a fact
+  // about the gateway, not about this order, and the divisor already appears inside
+  // the receipt's formula as one of its terms.
+  const node = document.getElementById("simulation-note");
+  if (node === null) return;
+  node.textContent = text;
+  node.hidden = divisor === 1n;
 }
 
 function renderTiers(): void {
@@ -2304,6 +2311,11 @@ function describeDestination(order: Order): string {
 /// Only while the order is still payable: on a paid or delivered order the
 /// deadline is history, and showing a timer next to "Delivered" would read as
 /// something still being at risk.
+/// When the deadline advice stops being noise and starts being useful. Five minutes,
+/// because that is the span in which "start now" changes what a buyer does: above it
+/// the caution qualifies a price nobody is about to lose.
+const URGENT_WINDOW_MS = 5 * 60 * 1000;
+
 function renderDeadline(order: Order): void {
   const node = document.getElementById("order-deadline");
   if (!node) return;
@@ -2319,9 +2331,19 @@ function renderDeadline(order: Order): void {
     show("order-deadline", false);
     return;
   }
-  node.textContent =
-    `This price is held for ${left}. Start paying with a few minutes to spare: `
-    + `a payment still in flight when the window closes fails, and you are not charged.`;
+  // ⚠️ **The warning fires on the CLOCK, not on every render.** The advice
+  // ("start with minutes to spare, an in-flight payment fails at the window") is worth
+  // reading at four minutes and is noise at thirty-four, where it was a hundred and
+  // forty characters of caution above the price it qualified. Progressive disclosure
+  // driven by state rather than by a click, so nobody has to open anything to be
+  // warned at the moment it matters.
+  const msLeft = nsToMillis(deadline) - Date.now();
+  const urgent = msLeft <= URGENT_WINDOW_MS;
+  node.textContent = urgent
+    ? `Price held for ${left}. Start now: a payment still in flight when the window `
+      + `closes fails, and you are not charged.`
+    : `Price held for ${left}.`;
+  node.classList.toggle("tone-warn", urgent);
   show("order-deadline", true);
 }
 
@@ -2393,10 +2415,23 @@ function renderOrder(order: Order): void {
   // navigated, so without this a tick could refill and re-reveal the order panel
   // underneath the history table or the buy form.
   if (currentView !== "order") return;
-  el("order-id-short").textContent = `${order.id.slice(0, 8)}…`;
+  const idNode = el("order-id-short");
+  idNode.textContent = `${order.id.slice(0, 8)}…`;
+  // Truncated ids exist to be quoted, so the full one is reachable without a
+  // selection. `replaceChildren` because renderOrder runs on every 3 s poll tick and
+  // appending would stack a copy button per tick.
+  idNode.parentElement?.replaceChildren(
+    document.createTextNode("Order "),
+    idNode,
+    copyButton(order.id, "Copy the full order id"),
+  );
   // No "≈" here: the rate is locked, so this figure is what the order pays out.
-  el("order-cycles").textContent = estimateLine(order.lockedCycles, transferFee)
-    .replace(/^≈ /, "");
+  // ⚠️ The FIGURE alone. The explanation of why it differs from what was bought is a
+  // separate node under it, because a value cell is not where prose belongs.
+  const credited = creditedSplit(order.lockedCycles, transferFee);
+  el("order-cycles").textContent = credited.figure;
+  el("order-cycles-note").textContent = credited.note ?? "";
+  show("order-cycles-note", credited.note !== null);
   el("order-price").textContent = formatUsdCents(order.pricing.usdCents);
   el("order-dest").textContent = describeDestination(order);
   renderDeadline(order);
@@ -2423,21 +2458,30 @@ function renderOrder(order: Order): void {
     ? statusInfo("expired")
     : statusInfo(key);
 
-  const timeline = el("timeline");
-  timeline.replaceChildren();
-  STEPS.forEach((step, index) => {
-    const li = document.createElement("li");
-    li.textContent = step;
-    if (info.step >= 0) {
-      if (index < info.step || (info.terminal && index === info.step)) li.className = "done";
-      else if (index === info.step) li.className = "now";
-    }
-    timeline.append(li);
-  });
+  // ⚠️ **The heading IS the outcome.** The credited quantity is passed in, so a
+  // delivered order reads "7.138 G cycles delivered" rather than a neutral title beside
+  // a badge a buyer has to go looking for.
+  const headline = el("order-headline");
+  const creditedFigure = creditedSplit(order.lockedCycles, transferFee).figure;
+  headline.textContent = info.headline(
+    statusKeyOf(order) === "delivered" ? creditedFigure : undefined,
+  );
+  headline.className = `section-h tone-${info.tone}`;
 
   const statusLine = el("order-status-line");
-  statusLine.textContent = info.label;
+  statusLine.textContent = info.guidance ?? "";
   statusLine.className = `tone-${info.tone}`;
+  // ⚠️ **Shown only when the status has something to DO about it**, which is a fact
+  // about the status rather than a comparison between two of its strings. It used to
+  // print `label` whenever `label !== pill`; with the heading now carrying the outcome,
+  // that fired for every status and repeated what the heading had just said.
+  show("order-status-line", info.guidance !== undefined);
+
+  // Tense follows the order. Two labels, two facts: a paid order HAS paid but has not
+  // yet received, so one "done" flag would promise cycles that have not moved.
+  const labels = amountLabels(key);
+  el("order-pay-label").textContent = labels.pay;
+  el("order-receive-label").textContent = labels.receive;
 
   // `#expired` used to be here, on the §4 grounds that a late payment still
   // completed. #34 deleted `#expired → #paid`, so an expired order is not
@@ -2456,7 +2500,11 @@ function renderOrder(order: Order): void {
   // one-open-order cap the buyer could not even start over. The URL is on the
   // record now (#33/#34), so a reload, a second device and a deep link all work.
   const link = order.stripeSessionUrl;
-  show("pay-area", awaitingPayment && link !== undefined);
+  const payable = awaitingPayment && link !== undefined;
+  show("pay-area", payable);
+  // The note is about that button. One predicate for both, so a note cannot outlive
+  // the control it describes.
+  show("pay-note", payable);
   if (link !== undefined) {
     el<HTMLAnchorElement>("pay-link").href = link;
   }
@@ -2464,7 +2512,14 @@ function renderOrder(order: Order): void {
   // on the buyer's card receipt, so it stays on screen, but it was only ever in
   // the response so the frontend could build a Payment Link URL.
   if (identity !== null) {
-    el("client-ref").textContent = clientReferenceFor(identity.getPrincipal().toText(), order.id);
+    const ref = clientReferenceFor(identity.getPrincipal().toText(), order.id);
+    const refNode = el("client-ref");
+    refNode.textContent = `${ref.slice(0, 12)}…${ref.slice(-6)}`;
+    refNode.parentElement?.replaceChildren(
+      document.createTextNode("Payment reference "),
+      refNode,
+      copyButton(ref, "Copy the payment reference"),
+    );
   }
 
   // Only an unpaid order can be given up on; past payment it is going to
@@ -2553,21 +2608,17 @@ async function renderReceipt(order: Order): Promise<void> {
     return;
   }
   const v = receipt.verification;
-  el("receipt-paid").textContent = receipt.paidUsdCents === undefined
-    ? "not yet"
-    : formatUsdCents(receipt.paidUsdCents);
-  el("receipt-delivered").textContent = receipt.cyclesDelivered === undefined
-    ? "not yet"
-    : formatCycles(receipt.cyclesDelivered);
+  // ⚠️ **`paidUsdCents` and `cyclesDelivered` are NOT rendered here any more.** They
+  // were the same two numbers the summary card already states, written by a second
+  // code path, so the page showed "$10.00" and "7.138 G" twice. The card is the one
+  // owner. This function keeps the facts only the receipt has.
   // ⚠️ **The block index becomes a LINK, because it is the one fact on this page a
   // buyer can check without this canister.** The cycles ledger is public, so the
   // dashboard entry is evidence rather than a convenience: it is where "the cycles
   // arrived" stops being our claim and becomes someone else's record.
   const blockCell = el("receipt-block");
   blockCell.replaceChildren();
-  if (receipt.deliveryBlockIndex === undefined) {
-    blockCell.textContent = "not yet";
-  } else {
+  if (receipt.deliveryBlockIndex !== undefined) {
     const link = document.createElement("a");
     link.href =
       `https://dashboard.internetcomputer.org/tokens/${cyclesLedgerCanisterId}`
@@ -2578,8 +2629,14 @@ async function renderReceipt(order: Order): Promise<void> {
     link.textContent = `${receipt.deliveryBlockIndex} (view on the dashboard)`;
     blockCell.append(link);
   }
-  el("receipt-sources").textContent =
-    rateSourceNote(v.rateReceivedRates, v.rateQueriedSources) || "not yet";
+  const sources = rateSourceNote(v.rateReceivedRates, v.rateQueriedSources);
+  el("receipt-sources").textContent = sources;
+  // These two live in the summary card now, so an empty one is a BLANK ROW in the
+  // middle of the terms rather than a line in a section of its own. Hidden instead of
+  // printing "not yet", which on a delivered order would be a claim, and on an unpaid
+  // one is noise about a fact that cannot exist yet.
+  show("term-block", receipt.deliveryBlockIndex !== undefined);
+  show("term-sources", sources !== "");
 
   // ⚠️ The divisor comes from config, not the order — see `checkReceipt`. In
   // simulation mode `check.recomputed` is what PRODUCTION would have locked, which
@@ -2729,7 +2786,11 @@ async function refreshHistory(): Promise<void> {
       null, // the order id, rendered as a link below
       formatCycles(order.lockedCycles),
       formatUsdCents(order.pricing.usdCents),
-      info.label,
+      // ⚠️ The BADGE form, not the label. This rendered "Expired. This order can no
+      // longer be paid" into a status column: a sentence where two words belong, in a
+      // table whose other cells are a date, an id and two figures. `pill` exists for
+      // exactly this and was only being used on the order page.
+      info.pill,
     ];
     cells.forEach((text, index) => {
       const td = document.createElement("td");

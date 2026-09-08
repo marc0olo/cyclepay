@@ -733,7 +733,10 @@ describe("the active order", () => {
     el("orders").querySelector("tr")!.dispatchEvent(new Event("click"));
     await settle();
     await settle();
-    expect(el("order-status-line").textContent).toContain("Payment received");
+    // The heading carries it now, and there is nothing to DO about a paid order, so
+    // the guidance line stays down.
+    expect(el("order-headline").textContent).toBe("Payment received, delivering now");
+    expect(el("order-status-line").hidden).toBe(true);
     expect(el("cancel-area").hidden).toBe(true);
   });
 
@@ -751,7 +754,10 @@ describe("the active order", () => {
     el("cancel-order").click();
     await settle();
     await settle();
-    expect(el("order-status-line").textContent).toBe("Cancelled");
+    // The heading states it; a cancelled order has nothing to DO about it, so the
+    // guidance line stays down.
+    expect(el("order-headline").textContent).toBe("You cancelled this order");
+    expect(el("order-status-line").hidden).toBe(true);
     expect(el("order-status-line").textContent).not.toMatch(/expired/i);
     expect(el("order-status-line").textContent).not.toMatch(/still goes through/i);
     // Nothing left to cancel, and nothing left to pay.
@@ -942,6 +948,8 @@ describe("the delivered tour", () => {
     expect(el("order-next-row").hidden).toBe(false);
     expect(el<HTMLAnchorElement>("order-next-link").getAttribute("href"))
       .toBe("#/order/abcdef0123456789abcdef0123456789/next");
+    // The label names what it does rather than asking a question.
+    expect(el("order-next-link").textContent).toMatch(/Link ICP CLI/);
 
     state.order = anOrder("paid");
     await mount();
@@ -1187,8 +1195,19 @@ describe("the pay button comes from the ORDER, not from browser memory", () => {
     // so changing the stub identity broke it, which is the mirror this repo keeps
     // removing. The reference is `<principal>_<orderId>` and both halves come from
     // their sources.
-    expect(el("client-ref").textContent)
-      .toBe(`${FULL_PRINCIPAL}_abcdef0123456789abcdef0123456789`);
+    const full = `${FULL_PRINCIPAL}_abcdef0123456789abcdef0123456789`;
+    // ⚠️ **Truncated on screen, but the requirement is that it be OBTAINABLE.** The
+    // full string is ninety characters and was the widest thing on the page, at the
+    // same weight as the price. Quoting it to support is its only use, so the test
+    // asserts what a person can actually get rather than what is painted.
+    expect(el("client-ref").textContent).not.toBe(full);
+    expect(el("client-ref").textContent).toContain(FULL_PRINCIPAL.slice(0, 12));
+    const clip = stubClipboard("ok");
+    const copy = document.querySelector<HTMLButtonElement>(".order-ref button.copy")!;
+    expect(copy).not.toBeNull();
+    copy.click();
+    await settle();
+    expect(clip.last()).toBe(full);
   });
 
   test("no session yet means no button, rather than a broken one", async () => {
@@ -1216,7 +1235,10 @@ describe("expiry renders from the DEADLINE, not the status", () => {
     expect(el("pay-area").hidden).toBe(true);
     // And the page SAYS expired rather than "Awaiting payment", which would tell
     // the buyer to do something that cannot work.
-    expect(el("order-status-line").textContent).toMatch(/expired/i);
+    // ⚠️ Rendered from the DEADLINE while the stored status is still `created`, which
+    // is the point of this test. The heading is what says so now.
+    expect(el("order-headline").textContent).toBe("This order expired");
+    expect(el("order-status-line").textContent).toBe("This order can no longer be paid.");
     // Cancel is hidden too, and that is deliberate rather than incidental:
     // Stripe's expire endpoint accepts open sessions only, so past the deadline
     // `cancel_order` can only fail. A button that always fails is worse than
@@ -1301,18 +1323,35 @@ describe("a buyer can type an amount", () => {
 });
 
 describe("the deadline is a countdown, not a timestamp", () => {
-  test("a payable order shows the time remaining and warns about the edge", async () => {
-    // Thirty-five minutes is short enough that "reserved until 14:32" misleads a
-    // buyer who looked away — and one who starts paying near the deadline loses
-    // the attempt, so the copy has to say so.
+  /// Put a payable order on screen with a chosen amount of time left.
+  async function orderWithTimeLeft(ms: number): Promise<void> {
     const soon = anOrder("created") as Record<string, unknown>;
-    soon.expiresAtNs = BigInt(Date.now() + 10 * 60_000) * 1_000_000n;
+    soon.expiresAtNs = BigInt(Date.now() + ms) * 1_000_000n;
     state.order = soon;
     await mount();
     await openFromHistory();
+  }
+
+  test("a payable order shows the time remaining", async () => {
+    // Thirty-five minutes is short enough that "reserved until 14:32" misleads a
+    // buyer who looked away, so this is a countdown.
+    await orderWithTimeLeft(10 * 60_000);
     expect(el("order-deadline").hidden).toBe(false);
     expect(el("order-deadline").textContent).toMatch(/9 min|10 min/);
+  });
+
+  test("⚠️ the edge warning fires on the CLOCK, not on every render", async () => {
+    // The advice is worth reading at three minutes and is noise at ten, where it was
+    // a hundred and forty characters of caution above the price it qualified. Both
+    // regimes are asserted: a test for the warning alone would pass against copy that
+    // always shows it, which is the behaviour being removed.
+    await orderWithTimeLeft(10 * 60_000);
+    expect(el("order-deadline").textContent).not.toMatch(/not charged/i);
+    expect(el("order-deadline").classList.contains("tone-warn")).toBe(false);
+
+    await orderWithTimeLeft(3 * 60_000);
     expect(el("order-deadline").textContent).toMatch(/not charged/i);
+    expect(el("order-deadline").classList.contains("tone-warn")).toBe(true);
   });
 
   test("no countdown once the order is past payment", async () => {
@@ -1785,27 +1824,32 @@ describe("the gate notice: refusals no amount can fix (#99 2b)", () => {
   });
 });
 
-describe("the signed-in principal is copyable", () => {
-  /// Captures what `navigator.clipboard.writeText` was handed, or makes it reject.
-  function stubClipboard(mode: "ok" | "reject" | "absent"): { last: () => string | undefined } {
-    let last: string | undefined;
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: mode === "absent"
-        ? undefined
-        : {
-          writeText: async (text: string) => {
-            if (mode === "reject") throw new Error("denied");
-            last = text;
-          },
+/// Captures what `navigator.clipboard.writeText` was handed, or makes it reject.
+///
+/// Module scope because more than one surface is copyable now: the principal in the
+/// header and the order id and payment reference on the checkout. A second copy of
+/// this would be the mirror this repo keeps deleting.
+function stubClipboard(mode: "ok" | "reject" | "absent"): { last: () => string | undefined } {
+  let last: string | undefined;
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: mode === "absent"
+      ? undefined
+      : {
+        writeText: async (text: string) => {
+          if (mode === "reject") throw new Error("denied");
+          last = text;
         },
-    });
-    // `execCommand` is the synchronous fallback and jsdom has no implementation, so
-    // it is stubbed to report failure — which is what forces the reject and absent
-    // cases down to the selection path and lets the failure state be observed.
-    (document as unknown as { execCommand: () => boolean }).execCommand = () => false;
-    return { last: () => last };
-  }
+      },
+  });
+  // `execCommand` is the synchronous fallback and jsdom has no implementation, so it
+  // is stubbed to report failure — which is what forces the reject and absent cases
+  // down to the selection path and lets the failure state be observed.
+  (document as unknown as { execCommand: () => boolean }).execCommand = () => false;
+  return { last: () => last };
+}
+
+describe("the signed-in principal is copyable", () => {
 
   function headerCopy(): HTMLButtonElement {
     return document.querySelector<HTMLButtonElement>("#auth-area button.copy")!;
@@ -2528,5 +2572,324 @@ describe("the dashboard's two records are tabs", () => {
     expect(el("ledger-balance").textContent).not.toMatch(/reading the ledger/i);
     await openTab("#/history/ledger");
     expect(el("ledger-balance").textContent).not.toMatch(/reading the ledger/i);
+  });
+});
+
+describe("the order page reads as a checkout", () => {
+  async function openCreated(): Promise<void> {
+    state.order = anOrder("created");
+    await mount();
+    await openFromHistory();
+  }
+
+  test("⚠️ the amounts come BEFORE the actions in the document", async () => {
+    // The reading order was the defect: a buyer was asked to click "Pay with card"
+    // some 350px above learning what the charge was, because the figures sat in a
+    // list below both buttons. Asserted as document order rather than as pixels, so
+    // it holds at any width and cannot be satisfied by styling.
+    await openCreated();
+    // ⚠️ Scoped to the ORDER section, and it must stay scoped. A later layer gives the
+    // buy view's amount detail the same `.checkout-summary` class on purpose — the
+    // preview and the receipt are one object at two moments — so a bare class selector
+    // finds whichever comes first in the document, which is the buy card. Unscoped,
+    // these assertions passed on this layer and failed two layers up.
+    const summary = document.querySelector("#active-order .checkout-summary")!;
+    const actions = document.querySelector(".order-actions")!;
+    expect(summary.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+  });
+
+  test("the two amounts a buyer is deciding on are both present and distinct", async () => {
+    await openCreated();
+    expect(el("order-price").textContent).toBe("$10.00");
+    // The figure ALONE. This used to be a hundred-character sentence in a value cell.
+    expect(el("order-cycles").textContent).toMatch(/^[\d.]+ [GTMK]? ?cycles$/);
+    expect(el("order-cycles").textContent).not.toMatch(/less the|transfer fee/);
+  });
+
+  test("the fee explanation is a sub-line, not prose inside the figure", async () => {
+    // A simulation-scale order, where the 100 M ledger fee is ~1.4% of the delivery
+    // and the two figures genuinely read differently.
+    state.order = anOrder("created", 7_238_461_538n);
+    await mount();
+    await openFromHistory();
+    expect(el("order-cycles-note").hidden).toBe(false);
+    expect(el("order-cycles-note").textContent).toMatch(/transfer fee/);
+    // The figure itself stays a figure.
+    expect(el("order-cycles").textContent).not.toMatch(/transfer fee/);
+  });
+
+  test("⚠️ and the sub-line is SUPPRESSED when the two figures read the same", async () => {
+    // At 3.5 T the 100 M fee rounds away at three decimals, so "3.500 T credited,
+    // 3.500 T sent less the 100 M fee" reads as a contradiction rather than a
+    // disclosure. Without this half, the assertion above would be satisfied by a note
+    // that always shows.
+    await openCreated();
+    expect(el("order-cycles").textContent).toMatch(/3\.5/);
+    expect(el("order-cycles-note").hidden).toBe(true);
+  });
+
+  test("⚠️ both actions sit in ONE row, with nothing between them", async () => {
+    // Each used to be followed by its own paragraph, which put sixty words between
+    // two choices and made them read as unrelated controls.
+    await openCreated();
+    const actions = document.querySelector(".order-actions")!;
+    expect(actions.contains(el("pay-link"))).toBe(true);
+    expect(actions.contains(el("cancel-order"))).toBe(true);
+    expect(actions.querySelector("p")).toBeNull();
+  });
+
+  test("cancel reads as destructive", async () => {
+    await openCreated();
+    expect(el("cancel-order").classList.contains("danger")).toBe(true);
+  });
+
+  test("⚠️ the pay note cannot outlive the pay button", async () => {
+    // One predicate drives both. A note about a control that is not on screen is a
+    // claim about a control that is not there.
+    await openCreated();
+    expect(el("pay-area").hidden).toBe(false);
+    expect(el("pay-note").hidden).toBe(false);
+    state.order = anOrder("delivered");
+    await mount();
+    await openFromHistory();
+    expect(el("pay-area").hidden).toBe(true);
+    expect(el("pay-note").hidden).toBe(true);
+  });
+
+  test("⚠️ the status is stated ONCE, by the heading", async () => {
+    // The page led with a neutral "Your purchase" and a badge in the far corner, and
+    // the line under it repeated the badge. The heading is the statement now.
+    await openCreated();
+    expect(el("order-headline").textContent).toBe("Awaiting your payment");
+    expect(document.getElementById("order-status-pill")).toBeNull();
+    expect(el("order-status-line").hidden).toBe(true);
+  });
+
+  test("⚠️ and it IS stated for a status the timeline has no slot for", async () => {
+    // The other half, without which the assertion above would be satisfied by simply
+    // deleting the line. `step === -1` statuses carry the only information available.
+    state.order = anOrder("expired");
+    await mount();
+    await openFromHistory();
+    // The heading states it; the line adds only the thing to DO about it, and does
+    // not repeat the heading's words.
+    expect(el("order-headline").textContent).toBe("This order expired");
+    expect(el("order-status-line").hidden).toBe(false);
+    expect(el("order-status-line").textContent).toBe("This order can no longer be paid.");
+    expect(el("order-status-line").textContent).not.toMatch(/expired/i);
+  });
+
+  test("the order id is demoted and copyable", async () => {
+    await openCreated();
+    // Not the heading any more: an id is a support handle, not the purpose of a page.
+    expect(document.querySelector("#active-order h2")!.textContent).not.toMatch(/abcdef/);
+    const clip = stubClipboard("ok");
+    const copy = document.querySelector<HTMLButtonElement>(".order-ident button.copy")!;
+    copy.click();
+    await settle();
+    expect(clip.last()).toBe("abcdef0123456789abcdef0123456789");
+  });
+
+  test("⚠️ a second render does not stack a copy button", async () => {
+    // `renderOrder` runs on every 3 s poll tick and these buttons are built there, so
+    // an append would grow one per tick. `replaceChildren` is what keeps it at one.
+    //
+    // ⚠️ **The first version of this test drained `settle()` twice and was vacuous.**
+    // `settle` only flushes microtasks; the 3 s interval never fires under jsdom, so
+    // `renderOrder` ran exactly once and nothing could have stacked. Mutating
+    // `replaceChildren` to `append` left the suite green. This navigates away and back
+    // instead, which really does render the order twice.
+    await openCreated();
+    expect(document.querySelectorAll(".order-ident button.copy").length).toBe(1);
+
+    el("history-link").click();
+    await settle();
+    await openFromHistory();
+
+    expect(document.querySelectorAll(".order-ident button.copy").length).toBe(1);
+    expect(document.querySelectorAll(".order-ref button.copy").length).toBe(1);
+    // And the label is still there exactly once, so the rebuild did not lose it.
+    expect(document.querySelector(".order-ident")!.textContent).toMatch(/^Order /);
+  });
+});
+
+describe("a delivered order states each fact once", () => {
+  async function openDelivered(): Promise<void> {
+    state.order = anOrder("delivered");
+    await mount();
+    await openFromHistory();
+  }
+
+  test("⚠️ the price appears ONCE on the page, not in two lists", async () => {
+    // "You pay $10.00" in the summary and "You paid $10.00" in the receipt were the
+    // same number written by two code paths. Counted across the whole order section,
+    // so a future second list fails this rather than passing quietly.
+    await openDelivered();
+    const text = el("active-order").textContent ?? "";
+    expect(text.match(/\$10\.00/g)?.length).toBe(1);
+  });
+
+  test("⚠️ the cycle figure appears once as a figure", async () => {
+    // Same defect on the other row: "You receive 7.138 G" and "Cycles delivered
+    // 7.138 G". The formula line below restates the arithmetic on purpose, which is a
+    // different claim, so only the FIGURE cells are counted.
+    await openDelivered();
+    const cells = [el("order-cycles").textContent, el("order-price").textContent];
+    expect(cells.every((c) => (c ?? "").length > 0)).toBe(true);
+    expect(document.getElementById("receipt-paid")).toBeNull();
+    expect(document.getElementById("receipt-delivered")).toBeNull();
+  });
+
+  test("⚠️ simulation mode is stated once, not at the top AND in the receipt", async () => {
+    // `renderSimulationNote` looped over two element ids and wrote the same sentence
+    // into both, so this screen said it twice.
+    state.divisor = 1_000n;
+    await openDelivered();
+    const shown = Array.from(document.querySelectorAll("p"))
+      .filter((n) => !(n as HTMLElement).hidden)
+      .filter((n) => /simulation mode/i.test(n.textContent ?? ""));
+    expect(shown.length).toBe(1);
+    expect(shown[0]!.id).toBe("simulation-note");
+  });
+
+  test("the labels are past tense once the order is done", async () => {
+    await openDelivered();
+    expect(el("order-pay-label").textContent).toBe("You paid");
+    expect(el("order-receive-label").textContent).toBe("You received");
+  });
+
+  test("⚠️ a PAID order has paid but not received, and says so", async () => {
+    // One "is it complete" flag would print "You received" beside cycles that have
+    // not moved yet. Two independent tenses.
+    state.order = anOrder("paid");
+    await mount();
+    await openFromHistory();
+    expect(el("order-pay-label").textContent).toBe("You paid");
+    expect(el("order-receive-label").textContent).toBe("You receive");
+  });
+
+  test("an unpaid order keeps both labels in the future", async () => {
+    state.order = anOrder("created");
+    await mount();
+    await openFromHistory();
+    expect(el("order-pay-label").textContent).toBe("You pay");
+    expect(el("order-receive-label").textContent).toBe("You receive");
+  });
+
+  test("⚠️ the heading names the OUTCOME and the quantity together", async () => {
+    // The one question a delivered order has to answer, answered where a reader lands
+    // rather than in a badge in the far corner. The timeline and the badge are both
+    // gone; this is the single statement that replaced them.
+    await openDelivered();
+    expect(document.getElementById("timeline")).toBeNull();
+    expect(document.getElementById("order-status-pill")).toBeNull();
+    expect(el("order-headline").textContent).toMatch(/delivered$/);
+    // The quantity, not a label: it must agree with the card's own figure.
+    expect(el("order-headline").textContent).toContain(el("order-cycles").textContent!.replace("≈ ", ""));
+  });
+
+  test("the CLI step is offered with the purchase, above the arithmetic", async () => {
+    // It was the last element on the page, below the price proof. Asserted as document
+    // order so styling cannot satisfy it.
+    await openDelivered();
+    const next = el("order-next-row");
+    const receipt = el("receipt-area");
+    expect(next.hidden).toBe(false);
+    expect(next.compareDocumentPosition(receipt) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+  });
+});
+
+describe("the delivered page leads with the outcome", () => {
+  async function openDelivered(): Promise<void> {
+    state.order = anOrder("delivered");
+    await mount();
+    await openFromHistory();
+  }
+
+  test("⚠️ every order FACT is in the card, and nothing is left loose around it", async () => {
+    // The complaint this fixes: a tidy frame with a wall of prose outside it. The
+    // reference and the next step were both loose lines below the card; they are rows
+    // and a footer inside it now.
+    await openDelivered();
+    const card = document.querySelector("#active-order .checkout-summary")!;
+    for (const id of ["order-price", "order-cycles", "order-rate", "order-dest",
+                      "client-ref", "order-next-row"]) {
+      expect(card.contains(el(id)), `#${id} should live in the card`).toBe(true);
+    }
+  });
+
+  test("⚠️ the next step is ANCHORED in the card, not floating below it", async () => {
+    await openDelivered();
+    expect(el("order-next-row").hidden).toBe(false);
+    expect(document.querySelector("#active-order .checkout-summary")!.contains(el("order-next-link")))
+      .toBe(true);
+    // Names what cycles are actually for. "Spend them" was wrong: they pay for
+    // creating and running canisters.
+    expect(el("order-next-row").textContent).toMatch(/deploy canisters/i);
+  });
+
+  test("⚠️ the PROOF collapses but every fact stays open", async () => {
+    // The rule this respects: the receipt must not sit behind a disclosure. It exists
+    // because the quantity and a problem notice once hid behind one. Those stay open;
+    // only the arithmetic closes.
+    await openDelivered();
+    const details = document.querySelector<HTMLDetailsElement>("#receipt-details")!;
+    expect(details.open).toBe(false);
+    // The facts are NOT inside it.
+    for (const id of ["order-cycles", "order-price", "client-ref"]) {
+      expect(details.contains(el(id))).toBe(false);
+    }
+    // ⚠️ Nor is the VERDICT. A browser test caught that collapsing it hid the
+    // reassurance while leaving the long proof behind the same click.
+    expect(details.contains(el("receipt-verdict"))).toBe(false);
+    // Its CONTENT is asserted by the browser suite, which drives a real receipt
+    // ("the order record shows the numbers, with nothing collapsed over them" — the
+    // test that caught this). Asserting it here would need that fixture too; what
+    // this test owns is the structure.
+    // The arithmetic itself IS inside.
+    expect(details.contains(el("receipt-formula"))).toBe(true);
+    // And a problem notice never needs a click.
+    expect(details.contains(el("order-problems"))).toBe(false);
+  });
+
+  test("the way out is a quiet link, not a second loud button", async () => {
+    // The header already carries Dashboard on every page, so a prominent one here
+    // would duplicate the nav.
+    await openDelivered();
+    const back = el<HTMLAnchorElement>("order-back");
+    expect(back.getAttribute("href")).toBe("#/history");
+    expect(back.className).not.toContain("cta");
+  });
+});
+
+describe("two rendering bugs found by looking at the page", () => {
+  test("⚠️ the orders table shows the BADGE form, not a sentence", async () => {
+    // It rendered `info.label`, so the status column read "Expired. This order can no
+    // longer be paid" — a sentence in a column whose other cells are a date, an id and
+    // two figures. `pill` existed for this and was only used on the order page.
+    state.order = anOrder("expired");
+    await mount();
+    await settle();
+    const cells = el("orders").querySelectorAll("tr td");
+    const status = cells[cells.length - 1]!.textContent ?? "";
+    expect(status).toBe("Expired");
+    expect(status).not.toMatch(/no longer be paid/);
+  });
+
+  test("⚠️ a ghost anchor takes no underline, so it reads as one control", async () => {
+    // Half of a bug in the dashboard's CLI link: `a.ghost` inherited the global anchor
+    // underline, so a bordered box also looked like a link — two fighting affordances.
+    // Asserted on a ghost anchor that exists on THIS layer; the dashboard's own link
+    // arrives with `#cli-link` one layer up, where the `.next-step` stretch half of the
+    // same bug is asserted.
+    const probe = document.createElement("a");
+    probe.className = "ghost";
+    probe.href = "#/";
+    probe.textContent = "Link ICP CLI";
+    document.body.append(probe);
+    expect(getComputedStyle(probe).textDecorationLine).not.toBe("underline");
+    probe.remove();
   });
 });
