@@ -492,45 +492,9 @@ export interface _SERVICE {
    * / drops, and there are no drops.
    */
   'audit_log' : ActorMethod<[[] | [bigint], bigint], Page__2>,
-  /**
-   * / Admission preflight, public: lets the frontend disable the buy button with
-   * / a real reason (and lets an operator ask "would a purchase go through right
-   * / now?") without creating an order. `usdCents` is the gross amount to test.
-   * /
-   * / The answer is advisory — it can go stale between this call and
-   * / `create_order`, which re-checks. It is not an authorization decision, so
-   * / anonymous callers may ask: it reveals only operational state that
-   * / `reserve_status` already publishes. Answered for the *calling* principal,
-   * / so the open-order cap it reports is the caller's own.
-   */
   'can_purchase' : ActorMethod<[bigint], Result_15>,
   'cancel_order' : ActorMethod<[OrderId], Result_12>,
-  /**
-   * / Public — the frontend renders the amount tiles from this. There is no link
-   * / to render: the canister creates a session per order (#33).
-   */
   'card_tiers' : ActorMethod<[], Array<Tier>>,
-  /**
-   * / Create a card-rail order: II caller becomes the owner (ownership is
-   * / captured here at the API edge, seam §11.1.3), the tier's USD amount is
-   * / quoted into a locked cycle *quantity* (§3, net of fees at the cached
-   * / rate — a stale cache refreshes lazily, a failed refresh fails closed
-   * / §3.1), and the ID comes from raw_rand. The fee config is snapshotted
-   * / before the refresh await, so one order is always priced from one
-   * / consistent epoch even when a refresh interleaves with a config change;
-   * / the store write after the awaits is atomic.
-   * / `minCycles` pins the quantity the caller was shown (§3).
-   * /
-   * / The rate refresh runs on a timer, so a figure quoted to a buyer can move
-   * / before they commit — and a client-side re-check cannot close that window,
-   * / because a query and this update are separate messages. Pinning the
-   * / expectation here makes the check atomic with the lock, so no order can ever
-   * / be created at a quantity the buyer was not shown.
-   * /
-   * / A **minimum**, deliberately, not an equality: a rate move in the buyer's
-   * / favour passes through and they keep the extra cycles. The guard can only
-   * / ever protect the buyer. `null` opts out entirely.
-   */
   'create_order' : ActorMethod<[Amount, Destination, [] | [bigint]], Result_14>,
   'cycles_status' : ActorMethod<[], { 'floor' : bigint, 'balance' : bigint }>,
   /**
@@ -581,11 +545,6 @@ export interface _SERVICE {
    */
   'expire_order' : ActorMethod<[OrderId], Result_12>,
   'get_order' : ActorMethod<[OrderId], [] | [Order]>,
-  /**
-   * / Refresh cadence. Derived from the staleness window rather than configured
-   * / separately, so the two can never be set inconsistently — a cadence longer
-   * / than the window would let the cache lapse between ticks and refuse orders.
-   */
   'health' : ActorMethod<[], boolean>,
   'http_request' : ActorMethod<[Request], Response>,
   'http_request_update' : ActorMethod<[Request], Response>,
@@ -665,23 +624,6 @@ export interface _SERVICE {
     { 'orders' : bigint, 'unresolved' : bigint }
   >,
   'process_order' : ActorMethod<[OrderId], Result_13>,
-  /**
-   * / Batch pre-purchase quote, public.
-   * /
-   * / ⚠️ **The price a buyer is shown is computed by the SAME function that prices the
-   * / order.** A client reimplementing the formula would be one refactor away from quoting
-   * / a number the gateway does not honour, with no way for the buyer to tell which was
-   * / wrong. Batched because the tier grid needs every price in one round trip.
-   * /
-   * / **Unbounded input on purpose**, unlike the paged queries. The work is constant
-   * / per element the caller already transmitted — no state scan, no amplification — so
-   * / the ingress size limit already bounds it. A cap would only buy **silent truncation**,
-   * / which is worse than what it prevents.
-   * /
-   * / Does not disclose the cycles-ledger fee: that is the ledger's number and the
-   * / operator's cost — `docs/DESIGN.md` §3.2 for the split and why a stored copy would
-   * / be wrong here.
-   */
   'quote_previews' : ActorMethod<[Array<bigint>], QuotePreviews>,
   'receipt' : ActorMethod<[OrderId], [] | [Receipt]>,
   /**
@@ -777,15 +719,6 @@ export interface _SERVICE {
    * / says why.
    */
   'refresh_reserve' : ActorMethod<[], bigint>,
-  /**
-   * / The RULES tier: controller only. Traps rather than returning an error so an
-   * / unauthorized call can never be mistaken for a handled outcome.
-   * /
-   * / ⚠️ **Everything that changes the rules is here, and `scripts/check-admin-tiers.py`
-   * / is what keeps it that way** — it reads each method's body and fails when the guard it
-   * / calls is not the one its tier declares. A table alone would prove the list complete
-   * / and say nothing about whether the code honours it.
-   */
   'refusal_counts' : ActorMethod<
     [],
     { 'refusingNow' : RailStateLatch, 'counts' : RefusalCounts }
@@ -850,6 +783,25 @@ export interface _SERVICE {
     [OrderId, ProblemKindTag, [] | [string]],
     Result_9
   >,
+  /**
+   * / Principals allowed to create orders **while this gateway accepts free Stripe
+   * / test payments** (#99 2b).
+   * /
+   * / ⚠️ **Without it a sandbox deployment is a cycles faucet.** Stripe test
+   * / payments are free and unlimited, so `4242 4242 4242 4242` pays any session
+   * / for anyone who reaches the page. The simulation divisor caps the loss *per
+   * / order*; only this list caps the total.
+   * /
+   * / ⚠️ **An EMPTY list is not "refuse everyone" per buyer** — that would refuse
+   * / every buyer on a sandbox deployment before this list is populated, which is
+   * / the state a fresh gateway is configured in. What bounds the empty case is
+   * / `Gate.Reason.unboundedGiveaway`, which refuses the moment there is something
+   * / to sell. So an empty list means unrestricted while the reserve floor is zero
+   * / (where nothing can be sold anyway) and refusing-everyone once it is not.
+   * /
+   * / ⚠️ At go-live (`stripe.expectLivemode == ?true`) it has no effect whatsoever. A list
+   * / that keeps filtering after go-live is an outage nobody would look for.
+   */
   'set_card_tiers' : ActorMethod<[Array<Tier>], Result_8>,
   'set_delivery_config' : ActorMethod<[Config__2], Result_7>,
   'set_expected_livemode' : ActorMethod<[[] | [boolean]], Result_6>,

@@ -25,6 +25,24 @@ import Text "mo:core/Text";
 import Json "../Json";
 
 module {
+  /// Why creating a Checkout Session failed (#33).
+  ///
+  /// ⚠️ **Lives with the rail rather than the composition root**, since #120: it
+  /// describes a Stripe-session failure, and two mixins plus `Main.mo` need to name it.
+  /// Not part of the Candid interface — `create_order` answers with `CreateOrderError`,
+  /// which is the buyer-facing narrowing of this.
+  public type Error = {
+    /// The API key is not provisioned. The rail cannot produce a payable session.
+    #railClosed;
+    /// No origin set, so there is no URL to return the buyer to.
+    #originUnset;
+    #outcallFailed : Text;
+    #stripeRejected : { status : Nat };
+    #unparseableResponse;
+    #missingField : Text;
+    #livemodeMismatch : { sessionLivemode : Bool; expected : Bool };
+  };
+
 
   /// Stripe's Checkout Sessions collection.
   public let createUrl : Text = "https://api.stripe.com/v1/checkout/sessions";
