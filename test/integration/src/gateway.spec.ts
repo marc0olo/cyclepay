@@ -3501,7 +3501,9 @@ test('78 — an order whose delivery is unsettled cannot be abandoned into a dou
     expect(entry?.blockIndex).toHaveLength(0);
     expect(await orderStatus(gw, target.id)).toBe('paid');
 
-    // THE GUARD: the end-it lever refuses, and says what to look at.
+    // THE GUARD: the end-it lever refuses, and names which order it refused for.
+    // ⚠️ It no longer says what to LOOK at — that guidance moved to DESIGN §7.1 with
+    // the prose, so this asserts the refusal and its subject, not advice.
     const refused = expectErr(await gw.asAdmin.abandon_order(target.id, 'operator is impatient'));
     expect(refused).toHaveProperty('deliveryOutstanding', target.id);
     expect(await orderStatus(gw, target.id)).toBe('paid');

@@ -429,9 +429,16 @@ shape `create_order` already used on the money-in path.
 
 ⚠️ **The sentences those methods used to return are gone from the wire, deliberately,
 and this table is where they went.** moc emits no docs for variant arms, so the `.did`
-carries bare tags; and a refusal must NOT write an audit line (#61 — one line per
-attempt is unbounded state fed by retries). So the guidance lives here and in the arm
-docs in `Orders.mo`, and #97's console renders per-case copy off the tag when it lands.
+carries bare tags, and the audit log is not an alternative home for two reasons that are
+not the admissibility rule: an audit line is a record for the operator **later**, not a
+response to the caller **now**, so it cannot be a refusal's message; and `AuditLog.mo`'s
+own caveat — a bound on the *rate* is not a bound *over time* against an unfixed
+condition — makes one line per refused admin attempt the wrong shape for a log that
+never prunes. ⚠️ **These refusals are not inadmissible.** `expire_order` already audits
+two of its own (`order.expireRaced`, `order.expireFailed`): both are admin-gated and
+follow a real outcall, and what the rule excludes is a *pre-commit refusal line fed by a
+free caller*, which is a different thing. So the guidance lives here and in the arm docs
+in `Orders.mo`, and #97's console renders per-case copy off the tag when it lands.
 
 ⚠️ **What an operator loses is advisory only: the refusal IS the guard.** Misreading
 `#deliveryOutstanding` cannot cause the double payout, because the lever has already
