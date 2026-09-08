@@ -6,8 +6,9 @@ import {
   createOrderErrorMessage,
   cyclesCredited,
   cyclesForCents,
+  creditedSplit,
+  depositFeeLine,
   estimateLine,
-  feeBreakdown,
   formatCycles,
   formatUsdCents,
   type GateReason,
@@ -20,7 +21,6 @@ import {
   shortPrincipal,
   statusInfo,
   type StatusKey,
-  STEPS,
   formatAgo,
   timeUntil,
   formatDuration,
@@ -62,24 +62,15 @@ describe("statusInfo", () => {
     expect(statusInfo("expired").terminal).toBe(true);
   });
 
-  test("steps are within the timeline and monotone along the happy path", () => {
-    for (const k of ALL) {
-      const s = statusInfo(k).step;
-      expect(s).toBeGreaterThanOrEqual(-1);
-      expect(s).toBeLessThan(STEPS.length);
-    }
-    // ⚠️ **The happy path is THREE steps, and this pins the count.** Money-out is one
-    // transfer from `paid` to `delivered`, so a fourth segment would be one no buyer
-    // could ever reach — which reads to them as a stuck purchase, not as a shorter
-    // bar. If this fails because a step was added, check that a status maps to it.
-    const happy: StatusKey[] = ["created", "paid", "delivered"];
-    expect(happy.map((k) => statusInfo(k).step)).toEqual([0, 1, 2]);
-    expect(STEPS).toHaveLength(3);
-    // ⚠️ **The three legacy statuses are gone from the type (#36)**, so the
-    // "unreachable but off the happy path" assertions they needed went with them —
-    // and the union being exhaustive is now what makes a bar of the wrong length a
-    // compile error rather than a test failure. Unrepresentability beats a check.
+  test("every status the backend can report has an entry", () => {
+    // ⚠️ **The three legacy statuses are gone from the type (#36)**, so a status the
+    // page cannot describe is a compile error in the switch rather than a test failure
+    // here. This pins the count so a status ADDED to the union is noticed.
     expect(ALL).toHaveLength(7);
+    for (const k of ALL) {
+      expect(statusInfo(k).pill.length).toBeGreaterThan(0);
+      expect(statusInfo(k).headline()).not.toBe("");
+    }
   });
 });
 
@@ -363,6 +354,30 @@ describe("cyclesCredited", () => {
   });
 });
 
+describe("depositFeeLine", () => {
+  test("⚠️ states the fee at a size where the figures read the SAME", () => {
+    // The case that made the disclosure disappear: 3.5 T less 100 M is "3.5 T" at
+    // three decimals, so `creditedSplit.note` is silent and the buy view had nothing
+    // left to say about a charge the buyer pays on every order. Reachable by an
+    // operator raising `maxPurchaseUsdCents`, which the console invites.
+    const line = depositFeeLine(3_500_000_000_000n, 100_000_000n)!;
+    expect(line).toContain("100 M");
+    expect(line).toContain("transfer fee");
+  });
+
+  test("uses the sent-versus-credited wording when the two DO differ", () => {
+    // One owner for the fee's wording: built on `creditedSplit`, so the note and this
+    // line cannot state different fees for one order.
+    expect(depositFeeLine(5_000_000_000n, 100_000_000n))
+      .toBe(creditedSplit(5_000_000_000n, 100_000_000n).note);
+  });
+
+  test("says nothing about a fee it has not been told", () => {
+    // A failed `icrc1_fee` leaves it at zero, and "no fee" would be a promise.
+    expect(depositFeeLine(5_000_000_000n, 0n)).toBeNull();
+  });
+});
+
 describe("estimateLine", () => {
   test("names the transfer fee when it moves the figure, so the gap is never a surprise", () => {
     // ⚠️ It asserted "deposit fee" — the operation the ledger charged for before #30
@@ -379,7 +394,7 @@ describe("estimateLine", () => {
     // 3.5 T less 100 M is still "3.5 T" at three decimals, so a split would read
     // as a contradiction. Repeating the fee here instead put the same
     // parenthetical on every amount tile and in the note below them — the fee is
-    // disclosed once, in `#dest-fee-note`.
+    // stated for the chosen amount by `depositFeeLine`, which is unconditional.
     expect(estimateLine(3_500_000_000_000n, 100_000_000n)).toBe("≈ 3.5 T cycles");
   });
 
@@ -393,27 +408,6 @@ describe("estimateLine", () => {
   });
 });
 
-describe("feeBreakdown", () => {
-  test("accounts for every cent and states the operator takes nothing", () => {
-    const text = feeBreakdown(500n, 345n, 155n, { feeBps: 290n, feeFixedCents: 30n });
-    expect(text).toContain("$5.00 charged");
-    expect(text).toContain("$3.45 payment processing");
-    expect(text).toContain("$1.55 buys cycles");
-    expect(text).toContain("operator margin: none");
-  });
-
-  test("names a zero-fee rail as such instead of printing 0% + $0.00", () => {
-    expect(feeBreakdown(500n, 0n, 500n, { feeBps: 0n, feeFixedCents: 0n })).toContain(
-      "no processor fee",
-    );
-  });
-
-  test("tells the user to pick a larger amount when the fee swallows it", () => {
-    expect(feeBreakdown(30n, 39n, undefined, { feeBps: 290n, feeFixedCents: 30n })).toContain(
-      "larger amount",
-    );
-  });
-});
 
 describe("lockedVsEstimate", () => {
   test("stays silent when the locked quantity is exactly what was shown", () => {

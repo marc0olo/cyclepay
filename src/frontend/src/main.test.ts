@@ -676,6 +676,19 @@ describe("the deposit fee is disclosed on every order", () => {
     expect(note.textContent).toContain("3.5 T sent");
     expect(note.textContent).not.toContain("minted");
   });
+
+  test("⚠️ and the real ledger fee is disclosed even though it rounds away", async () => {
+    // The default `state.transferFee` is the ledger's actual 100 M, which at 3.5 T
+    // does not change the figure at three decimals. This card was the last place the
+    // fee was stated once `renderDestinationNote` went, and the note it used answers
+    // "why do these differ" — so it said nothing at exactly the sizes an operator
+    // reaches by raising the ceiling.
+    await mount();
+    const note = el("detail-fee-note");
+    expect(note.hidden).toBe(false);
+    expect(note.textContent).toContain("transfer fee");
+    expect(note.textContent).toContain("too small to change the figure");
+  });
 });
 
 describe("quote pinning", () => {
@@ -2653,19 +2666,26 @@ describe("the order page reads as a checkout", () => {
     await mount();
     await openFromHistory();
     expect(el("order-cycles-note").hidden).toBe(false);
-    expect(el("order-cycles-note").textContent).toMatch(/transfer fee/);
+    expect(el("order-cycles-note").textContent).toMatch(/sent, less the .* transfer fee/);
     // The figure itself stays a figure.
     expect(el("order-cycles").textContent).not.toMatch(/transfer fee/);
   });
 
-  test("⚠️ and the sub-line is SUPPRESSED when the two figures read the same", async () => {
-    // At 3.5 T the 100 M fee rounds away at three decimals, so "3.500 T credited,
-    // 3.500 T sent less the 100 M fee" reads as a contradiction rather than a
-    // disclosure. Without this half, the assertion above would be satisfied by a note
-    // that always shows.
+  test("⚠️ and it still states the fee where the two figures read the SAME", async () => {
+    // At 3.5 T the 100 M fee rounds away at three decimals, and the sub-line used to
+    // be suppressed here — "3.500 T credited, 3.500 T sent less the 100 M fee" does
+    // read as a contradiction. So the WORDING changes rather than the disclosure
+    // disappearing: above roughly 1 T every order rounds away, which left a charge the
+    // buyer pays on every order stated nowhere.
+    //
+    // Both halves are pinned because neither assertion passes for the other case: the
+    // test above requires the sent-versus-credited wording, this one requires the
+    // rounds-away wording, so a note that always says one thing fails one of them.
     await openCreated();
     expect(el("order-cycles").textContent).toMatch(/3\.5/);
-    expect(el("order-cycles-note").hidden).toBe(true);
+    expect(el("order-cycles-note").hidden).toBe(false);
+    expect(el("order-cycles-note").textContent).toMatch(/too small to change the figure/);
+    expect(el("order-cycles-note").textContent).not.toMatch(/sent, less/);
   });
 
   test("⚠️ both actions sit in ONE row, with nothing between them", async () => {

@@ -49,49 +49,35 @@ export interface StatusInfo {
   /// no longer be paid"). One field, one place, and the page needs no list of which
   /// statuses are wordy.
   pill: string;
-  /// Index into STEPS for the progress timeline; -1 = off the happy path.
-  step: number;
   /// Stop polling: the backend will never move this order again.
   terminal: boolean;
   tone: "pending" | "active" | "ok" | "warn" | "err";
 }
 
-/// The buyer's progress timeline.
-///
-/// ⚠️ **Three steps, and every one of them reachable — that is the invariant.** Money
-/// out is a single transfer from `#paid` to `#delivered`, so there is no intermediate
-/// state for a buyer to sit in and no segment that can never light up. A timeline with
-/// a segment nothing enters is worse than a shorter one: the buyer reads the gap as
-/// their purchase being stuck.
-///
-/// Before adding a step, check a status actually maps to it. Off the happy path is where an unreachable
-/// status belongs.
-export const STEPS = ["Awaiting payment", "Paid", "Delivered"] as const;
-
 export function statusInfo(key: StatusKey): StatusInfo {
   switch (key) {
     case "created":
-      return { label: "Awaiting payment", pill: "Awaiting payment", headline: () => "Awaiting your payment", step: 0, terminal: false, tone: "active" };
+      return { label: "Awaiting payment", pill: "Awaiting payment", headline: () => "Awaiting your payment", terminal: false, tone: "active" };
     case "cancelled":
       // The buyer's own decision, and its own status — so a reload no longer
       // tells someone who cancelled that their order "expired" (#34).
-      return { label: "Cancelled", pill: "Cancelled", headline: () => "You cancelled this order", step: -1, terminal: true, tone: "warn" };
+      return { label: "Cancelled", pill: "Cancelled", headline: () => "You cancelled this order", terminal: true, tone: "warn" };
     case "expired":
       // TERMINAL as of #34, which deleted `#expired → #paid`. It used to say a
       // completed payment still went through; that is no longer true, and a
       // payment arriving now becomes an operator obligation to refund rather
       // than cycles.
-      return { label: "Expired. This order can no longer be paid", pill: "Expired", headline: () => "This order expired", guidance: "This order can no longer be paid.", step: -1, terminal: true, tone: "warn" };
+      return { label: "Expired. This order can no longer be paid", pill: "Expired", headline: () => "This order expired", guidance: "This order can no longer be paid.", terminal: true, tone: "warn" };
     case "paid":
-      return { label: "Payment received", pill: "Paid", headline: () => "Payment received, delivering now", step: 1, terminal: false, tone: "active" };
+      return { label: "Payment received", pill: "Paid", headline: () => "Payment received, delivering now", terminal: false, tone: "active" };
     case "delivered":
-      return { label: "Delivered", pill: "Delivered", headline: (cycles) => cycles === undefined ? "Delivered" : `${cycles} delivered`, step: 2, terminal: true, tone: "ok" };
+      return { label: "Delivered", pill: "Delivered", headline: (cycles) => cycles === undefined ? "Delivered" : `${cycles} delivered`, terminal: true, tone: "ok" };
     case "needsReview":
       // NOT terminal: the operator can still end it, and until they do the order
       // holds its promise. Polling continues so the buyer sees that happen.
-      return { label: "Needs operator attention. Contact support", pill: "Needs attention", headline: () => "This order needs attention", guidance: "Contact support.", step: -1, terminal: false, tone: "err" };
+      return { label: "Needs operator attention. Contact support", pill: "Needs attention", headline: () => "This order needs attention", guidance: "Contact support.", terminal: false, tone: "err" };
     case "abandoned":
-      return { label: "Ended by support. Contact us about a refund", pill: "Ended", headline: () => "This order was ended by support", guidance: "Contact us about a refund.", step: -1, terminal: true, tone: "err" };
+      return { label: "Ended by support. Contact us about a refund", pill: "Ended", headline: () => "This order was ended by support", guidance: "Contact us about a refund.", terminal: true, tone: "err" };
   }
 }
 
@@ -157,16 +143,12 @@ export function cyclesForCents(
   return (net * xdrPermyriadPerIcp * 1_000_000_000_000n) / usdPerIcpMicros;
 }
 
-/// The fee split in words, from the backend's own numbers. Ends with the margin
-/// statement because "what is the operator taking?" is the question a fee line
-/// actually raises. And on this gateway the answer is nothing.
 /// The fee split as ROWS, or the reason the amount cannot carry the fee at all.
 ///
 /// ⚠️ **The rows exist because a dot-separated sentence is not a breakdown.** The buy
 /// view printed all of this as one line of prose, `charged · processing · buys cycles ·
 /// margin`, which is a table written sideways: nothing lines up, the figures cannot be
-/// compared down a column, and it grew to a hundred characters. `feeBreakdown` is built
-/// from this so the one string and the rows cannot drift.
+/// compared down a column, and it grew to a hundred characters.
 ///
 /// The `#tooSmall` case is not a formatting variant: the processor's fee exceeds the
 /// whole amount, so there is no split to show and the buyer has to pick more.
@@ -198,20 +180,6 @@ export function feeRows(
   };
 }
 
-export function feeBreakdown(
-  grossCents: bigint,
-  feeCents: bigint,
-  netCents: bigint | undefined,
-  fee: FeeConfig,
-): string {
-  const rows = feeRows(grossCents, feeCents, netCents, fee);
-  if (rows.kind === "tooSmall") return rows.message;
-  return (
-    `${rows.pay} charged · ${rows.processing.replace(" (", " payment processing (")} · ` +
-    `${rows.net} buys cycles · operator margin: ${rows.margin}`
-  );
-}
-
 /// What actually lands. The cycles ledger charges a flat fee to accept a
 /// deposit, so the buyer receives less than the order locks, on every order.
 /// Not grossed up on-chain by design (covering a per-order fee out of the reserve
@@ -224,14 +192,6 @@ export function cyclesCredited(cycles: bigint | null, transferFee: bigint): bigi
   return cycles > transferFee ? cycles - transferFee : 0n;
 }
 
-/// The line under an amount, stating what arrives and that the rate is now
-/// locked once the order exists.
-///
-/// **The rate is what gets locked, not the quantity.** Money-out never re-reads
-/// a rate, so market movement after creation changes nothing. But if a payment
-/// arrives for a different amount than quoted, the quantity is re-derived at
-/// that same locked rate. Saying "cycles are locked" would be wrong in that one
-/// case; saying the rate is locked is always true.
 /// The credited quantity, and separately why it differs from what was bought.
 ///
 /// ⚠️ **The FIGURE and its explanation are separate values, because the checkout puts
@@ -258,6 +218,14 @@ export function creditedSplit(
   };
 }
 
+/// The line under an amount, stating what arrives and that the rate is now
+/// locked once the order exists.
+///
+/// **The rate is what gets locked, not the quantity.** Money-out never re-reads
+/// a rate, so market movement after creation changes nothing. But if a payment
+/// arrives for a different amount than quoted, the quantity is re-derived at
+/// that same locked rate. Saying "cycles are locked" would be wrong in that one
+/// case; saying the rate is locked is always true.
 export function estimateLine(cycles: bigint | null, transferFee: bigint): string {
   if (cycles === null) {
     return "No exchange rate available right now. Orders are paused until one is.";
@@ -267,12 +235,34 @@ export function estimateLine(cycles: bigint | null, transferFee: bigint): string
   if (note !== null) {
     return `≈ ${figure.replace(" cycles", "")} cycles credited (${note})`;
   }
-  // Just the number that lands. The fee is disclosed once, in `#dest-fee-note`
-  // under the destination; naming it here as well puts the same parenthetical on
-  // every amount tile and in the note below them, three copies of one sentence
-  // around the figure a buyer is choosing between. Visible in a screenshot only —
-  // every assertion passes either way.
+  // Just the number that lands, because this line is the figure a buyer is choosing
+  // BETWEEN — on a tile, or in the "this amount now buys" notice. The fee belongs to
+  // the amount they have chosen, where `depositFeeLine` states it unconditionally;
+  // repeating it here puts the same parenthetical on every tile as well.
   return `≈ ${shown} cycles`;
+}
+
+/// The cycles ledger's fee, stated whether or not it changes the figure.
+///
+/// ⚠️ **Unconditional, because a disclosure that hides itself at scale is not one.**
+/// `creditedSplit.note` answers "why do these two numbers differ", so it is silent
+/// exactly when they read the same — which above roughly 1 T is *always*, since
+/// `formatCycles` shows three decimals and the fee rounds away. The buy view's only
+/// other statement of the fee was `renderDestinationNote`, deleted with the
+/// destination form, and it printed the fee whenever there was one. So raising
+/// `maxPurchaseUsdCents` past the display's resolution silently dropped the last
+/// disclosure of a charge the buyer pays on every order.
+///
+/// Null only when the fee is not KNOWN: a failed `icrc1_fee` read leaves it at zero,
+/// and inventing "no fee" there would promise cycles that will not arrive.
+export function depositFeeLine(cycles: bigint, transferFee: bigint): string | null {
+  if (transferFee === 0n) return null;
+  // Built on `creditedSplit` rather than beside it, so the two cannot state different
+  // fees for one order.
+  const { note } = creditedSplit(cycles, transferFee);
+  return note
+    ?? `Less the cycles ledger's ${formatCycles(transferFee)} transfer fee, too small`
+      + ` to change the figure at this size.`;
 }
 
 /// How long until a deadline, for a live countdown.
@@ -628,6 +618,11 @@ export function createOrderErrorMessage(key: string): string {
 }
 
 /// Every `create_order` variant this build knows about.
+///
+/// `@test-oracle` — no production caller by design: its whole value is that
+/// `format.test.ts` iterates a list DERIVED from the type instead of a hand-written
+/// copy. `scripts/check-unused-exports.py` skips marked exports, because otherwise the
+/// only way to satisfy that check is to delete the guarantee.
 ///
 /// ⚠️ **This exists because the switch above takes a `string`, so a new backend
 /// variant cannot be a compile error there.** Three variants —

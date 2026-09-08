@@ -60,6 +60,7 @@ import {
   type GateReason,
   amountLabels,
   creditedSplit,
+  depositFeeLine,
   type FeeConfig,
   feeRows,
   gateReasonMessage,
@@ -1798,11 +1799,10 @@ async function refreshTierQuotes(): Promise<void> {
 /// cannot await the ledger — a staleness class in exchange for a number this
 /// app can just ask for.
 ///
-/// A failure leaves `transferFee` at 0, which
-/// `estimateLine` already treat as "not known yet": the buyer sees the locked
-/// quantity with no fee note rather than a quantity computed from a guessed fee.
-/// Shown-too-high is the safe direction — the alternative is promising cycles
-/// that will not arrive.
+/// A failure leaves `transferFee` at 0, which `depositFeeLine` and `creditedSplit`
+/// both treat as "not known yet": the buyer sees the locked quantity with no fee note
+/// rather than a quantity computed from a guessed fee. Shown-too-high is the safe
+/// direction — the alternative is promising cycles that will not arrive.
 async function refreshDepositFee(): Promise<void> {
   try {
     transferFee = await buildCyclesLedger().icrc1_fee();
@@ -2037,8 +2037,11 @@ function renderAmountDetail(): void {
   } else {
     const split = creditedSplit(cycles, transferFee);
     el("detail-receive").textContent = `≈ ${split.figure}`;
-    el("detail-fee-note").textContent = split.note ?? "";
-    show("detail-fee-note", split.note !== null);
+    // `depositFeeLine`, not `split.note`: the note is silent when the two figures read
+    // the same, which is every order large enough for the fee to round away.
+    const feeLine = depositFeeLine(cycles, transferFee);
+    el("detail-fee-note").textContent = feeLine ?? "";
+    show("detail-fee-note", feeLine !== null);
   }
   el("rate-lock-note").textContent = RATE_LOCK_NOTE;
   show("rate-lock-note", true);
@@ -2499,8 +2502,9 @@ function renderOrder(order: Order): void {
   // separate node under it, because a value cell is not where prose belongs.
   const credited = creditedSplit(order.lockedCycles, transferFee);
   el("order-cycles").textContent = credited.figure;
-  el("order-cycles-note").textContent = credited.note ?? "";
-  show("order-cycles-note", credited.note !== null);
+  const feeLine = depositFeeLine(order.lockedCycles, transferFee);
+  el("order-cycles-note").textContent = feeLine ?? "";
+  show("order-cycles-note", feeLine !== null);
   el("order-price").textContent = formatUsdCents(order.pricing.usdCents);
   el("order-dest").textContent = describeDestination(order);
   renderDeadline(order);
