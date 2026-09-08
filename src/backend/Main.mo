@@ -53,9 +53,9 @@ import Types "Types";
 
 persistent actor CyclesGateway {
 
-  /// §7 secret one of TWO: the Stripe webhook signing key. Plaintext by design,
-  /// SEV-SNP posture documented in Secret.mo. Persists across upgrades; rotation
-  /// never requires a redeploy.
+  // §7 secret one of TWO: the Stripe webhook signing key. Plaintext by design,
+  // SEV-SNP posture documented in Secret.mo. Persists across upgrades; rotation
+  // never requires a redeploy.
   let webhookSecret : Secret.Store = Secret.emptyStore();
 
   /// §7 secret two: the Stripe **API key** that creates Checkout Sessions (#33).
@@ -121,23 +121,23 @@ persistent actor CyclesGateway {
   /// principal — they do not retroactively fix principals derived before one was declared.
   let adminPrincipals = Set.empty<Principal>();
 
-  /// Principals allowed to create orders **while this gateway accepts free Stripe
-  /// test payments** (#99 2b).
-  ///
-  /// ⚠️ **Without it a sandbox deployment is a cycles faucet.** Stripe test
-  /// payments are free and unlimited, so `4242 4242 4242 4242` pays any session
-  /// for anyone who reaches the page. The simulation divisor caps the loss *per
-  /// order*; only this list caps the total.
-  ///
-  /// ⚠️ **An EMPTY list is not "refuse everyone" per buyer** — that would refuse
-  /// every buyer on a sandbox deployment before this list is populated, which is
-  /// the state a fresh gateway is configured in. What bounds the empty case is
-  /// `Gate.Reason.unboundedGiveaway`, which refuses the moment there is something
-  /// to sell. So an empty list means unrestricted while the reserve floor is zero
-  /// (where nothing can be sold anyway) and refusing-everyone once it is not.
-  ///
-  /// ⚠️ At go-live (`stripe.expectLivemode == ?true`) it has no effect whatsoever. A list
-  /// that keeps filtering after go-live is an outage nobody would look for.
+  // Principals allowed to create orders **while this gateway accepts free Stripe
+  // test payments** (#99 2b).
+  //
+  // ⚠️ **Without it a sandbox deployment is a cycles faucet.** Stripe test
+  // payments are free and unlimited, so `4242 4242 4242 4242` pays any session
+  // for anyone who reaches the page. The simulation divisor caps the loss *per
+  // order*; only this list caps the total.
+  //
+  // ⚠️ **An EMPTY list is not "refuse everyone" per buyer** — that would refuse
+  // every buyer on a sandbox deployment before this list is populated, which is
+  // the state a fresh gateway is configured in. What bounds the empty case is
+  // `Gate.Reason.unboundedGiveaway`, which refuses the moment there is something
+  // to sell. So an empty list means unrestricted while the reserve floor is zero
+  // (where nothing can be sold anyway) and refusing-everyone once it is not.
+  //
+  // ⚠️ At go-live (`stripe.expectLivemode == ?true`) it has no effect whatsoever. A list
+  // that keeps filtering after go-live is an outage nobody would look for.
   let allowedBuyers = Set.empty<Principal>();
 
   /// The RULES tier: controller only. Traps rather than returning an error so an
@@ -186,12 +186,12 @@ persistent actor CyclesGateway {
   /// §4.2 order store: `orders` + `principalsToOrders` history.
   let orderStore : Orders.Store = Orders.emptyStore();
 
-  /// The price tiles, as one record.
-  /// ⚠️ **A record rather than loose `var` fields, because `include` passes by value**
-  /// (#120): a mixin handed a bare `var` gets a snapshot from install time, so its
-  /// writes land on a copy and its reads never move. A record is a heap object, so the
-  /// mixin and the actor share one. Grouped by subsystem, which is the slice a mixin
-  /// asks for (`reviewing-motoko` A6) rather than an accessor per field.
+  // The price tiles, as one record.
+  // ⚠️ **A record rather than loose `var` fields, because `include` passes by value**
+  // (#120): a mixin handed a bare `var` gets a snapshot from install time, so its
+  // writes land on a copy and its reads never move. A record is a heap object, so the
+  // mixin and the actor share one. Grouped by subsystem, which is the slice a mixin
+  // asks for (`reviewing-motoko` A6) rather than an accessor per field.
   let tierState : {
     /// §3 fixed card tiers. Operator config (§7): controllers create the
     /// amounts the UI offers as tiles. Presentational since #33: a buyer can order
@@ -300,8 +300,8 @@ persistent actor CyclesGateway {
   /// upgrade mid-call would deadlock refreshes forever.
   transient var rateRefreshInFlight = false;
 
-  /// Consecutive refresh failures, for backoff. Transient — an upgrade is a
-  /// fine moment to retry immediately.
+  // Consecutive refresh failures, for backoff. Transient — an upgrade is a
+  // fine moment to retry immediately.
   transient var rateRefreshFailures : Nat = 0;
 
   /// Ticks to skip after a failure, doubling to this cap. XRC answers

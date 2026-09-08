@@ -36,6 +36,14 @@ worse than no check:
     WRONG contract passes: it has a doc. This catches the victim, never the thief — so it
     makes the class *detectable*, not impossible. Two glued blocks over one undocumented
     neighbour is the shape it sees.
+  - **A doc absorbed onto an endpoint from a NON-endpoint neighbour.** Invisible in
+    source by construction: the block sits correctly above the state declaration that
+    owns it, and the endpoint has its own `///`, so thief and victim both read clean.
+    Only the `.did` shows it. Four live instances existed at the tip of #120 —
+    `webhookSecret`'s doc published on `get_order`, the price tiles' on
+    `resolve_problem`, `rateRefreshFailures`' on `set_recovery_interval`, and
+    `allowedBuyers`' on `withdraw_reserve` — so `no_leaked_docs()` below covers this
+    one from the `.did` side, which is the only side that can see it.
   - **Types, fields, and private helpers.** Only `public shared` / `public query`
     endpoints are checked.
   - **Doc quality.** A single `///` line satisfies it.
@@ -74,6 +82,39 @@ def undocumented(text):
     return out
 
 
+DID = "src/backend/dist/backend.did"
+
+# A service method plus, on the line before, a doc line.
+DID_METHOD = re.compile(r"^\s*([a-z_][a-z_0-9]*):\s")
+
+
+def leaked_docs(did_text):
+    """Endpoints the `.did` documents, which since #120 means endpoints documented with
+    somebody ELSE's doc.
+
+    ⚠️ **The invariant is "none", and it holds for a mechanical reason.** moc does not
+    emit doc comments for mixin members, and no endpoint lives outside a mixin — A1
+    forbids a public method in the composition root. So every endpoint's own doc is
+    dropped, and any doc that DOES appear in the service block floated there from a
+    declaration candid does not emit: a state `let`/`var` in `Main.mo`. Measured: only
+    4 of that file's 786 `///` lines leaked, onto endpoints they have no relation to,
+    by position aliasing inside the compiler that source-side scanning cannot see.
+
+    So if this ever fires legitimately, it is because a documented endpoint was declared
+    in `Main.mo` — and that broke the architecture rule before it broke this check.
+    """
+    lines = did_text.split("\n")
+    service = next((i for i, l in enumerate(lines) if l.startswith("service")), None)
+    if service is None:
+        sys.exit(f"ABORT: no `service` block in {DID} — cannot pass vacuously")
+    out = []
+    for i in range(service, len(lines)):
+        m = DID_METHOD.match(lines[i])
+        if m and i > 0 and lines[i - 1].strip().startswith("///"):
+            out.append(m.group(1))
+    return out
+
+
 def self_test():
     """⚠️ Unconditional, like the other parsers here. If the scan silently stops matching
     endpoints, this step passes while checking nothing."""
@@ -91,6 +132,18 @@ def self_test():
     got = undocumented(sample)
     if got != ["beta", "delta", "epsilon"]:
         sys.exit(f"ABORT: self-test expected ['beta', 'delta', 'epsilon'], got {got}")
+
+    did = "\n".join([
+        "type Order = record { id : nat };",
+        "service : {",
+        "  /// Somebody else's doc, floated here.",
+        "  get_order: (OrderId) -> (opt Order) query;",
+        "  health: () -> (Health) query;",
+        "}",
+    ])
+    got = leaked_docs(did)
+    if got != ["get_order"]:
+        sys.exit(f"ABORT: self-test expected ['get_order'] leaked, got {got}")
 
 
 def main():
@@ -129,8 +182,32 @@ def main():
     # ⚠️ Counts the files that HOLD endpoints, not the files scanned. `Main.mo` is in the
     # scan list and declares none since #120, so reporting the scan size would read as
     # though the composition root still had some.
+    leaked = leaked_docs(open(DID).read())
+    if leaked:
+        print(
+            "\n\033[31m✗ the .did documents endpoint(s) with a doc that is not theirs\033[0m",
+            file=sys.stderr,
+        )
+        for name in leaked:
+            print(f"    {name}", file=sys.stderr)
+        print(
+            "\n  moc drops mixin members' docs, and every endpoint is in a mixin — so a\n"
+            "  doc in the service block did not come from the endpoint it sits on. It\n"
+            "  floated off a state declaration in Main.mo. Find the block whose text\n"
+            "  matches, and make it `//` instead of `///`: candid emits nothing for\n"
+            "  private state, which is exactly why the doc leaks instead of landing.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # ⚠️ Counts the files that HOLD endpoints, not the files scanned. `Main.mo` is in the
+    # scan list and declares none since #120, so reporting the scan size would read as
+    # though the composition root still had some.
     holders = sum(1 for f in files if ENDPOINT.search(open(f).read()))
-    print(f"   {total} public endpoints across {holders} file(s): every one documented")
+    print(
+        f"   {total} public endpoints across {holders} file(s): every one documented,"
+        " and the .did documents none with a neighbour's"
+    )
     return 0
 
 
