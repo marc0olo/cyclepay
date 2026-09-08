@@ -420,6 +420,50 @@ costs exactly one rejected transfer and the rejection carries the correct value.
 has no such correction — nothing checks the number a buyer was shown — so a stored fee
 there would buy only the staleness.
 
+### §7.1 — A refused operator lever answers with a tag, not a sentence
+
+`expire_order`, `abandon_order` and `record_delivered` return a variant `Err`
+(`Orders.ExpireError` / `AbandonError` / `RecordDeliveredError`), so a caller can tell
+one refusal from another without matching on prose — `reviewing-motoko` T4, and the
+shape `create_order` already used on the money-in path.
+
+⚠️ **The sentences those methods used to return are gone from the wire, deliberately,
+and this table is where they went.** moc emits no docs for variant arms, so the `.did`
+carries bare tags, and the audit log is not an alternative home for two reasons that are
+not the admissibility rule: an audit line is a record for the operator **later**, not a
+response to the caller **now**, so it cannot be a refusal's message; and `AuditLog.mo`'s
+own caveat — a bound on the *rate* is not a bound *over time* against an unfixed
+condition — makes one line per refused admin attempt the wrong shape for a log that
+never prunes. ⚠️ **These refusals are not inadmissible.** `expire_order` already audits
+two of its own (`order.expireRaced`, `order.expireFailed`): both are admin-gated and
+follow a real outcall, and what the rule excludes is a *pre-commit refusal line fed by a
+free caller*, which is a different thing. So the guidance lives here and in the arm docs
+in `Orders.mo`, and #97's console renders per-case copy off the tag when it lands.
+
+⚠️ **What an operator loses is advisory only: the refusal IS the guard.** Misreading
+`#deliveryOutstanding` cannot cause the double payout, because the lever has already
+refused. That is what makes the trade acceptable while there is no console.
+
+| Tag | What it means | What to do |
+|---|---|---|
+| `#notFound` | No such order id | Check the id |
+| `#notCreated` (expire) | Only a `#created` order can be expired; carries the status seen | A paid order delivers or escalates; `abandon_order` is for a paid one you have refunded |
+| `#sessionNotOpen` | Stripe says the session is settled or already expired | Nothing changed. Wait — the webhook or the sweep resolves it on Stripe's answer, the only authority on which of the two happened |
+| `#stripeUnauthorized` | 401/403 | Rotate the key: the restricted key needs **Write** on Checkout Sessions. The latch has already notified |
+| `#stripeFailed` | Carries Stripe's own wording as `detail` | Read the detail; it is not paraphrased |
+| `#movedInFlight` (expire) | A second tab settled the order during the outcall | Nothing changed. Re-read the order |
+| `#notAbandonable` | Only a paid or under-review order can be abandoned | Carries the status seen |
+| `#deliveryOutstanding` | ⚠️ The transfer is outstanding, so whether the cycles moved is **unknown** | **A wait, not a refusal.** Check `pending_deliveries`. Either it settles and needs no refund, or the ~24 h dedup window escalates it to `#needsReview`, where the ledger is the source of truth and the order id is in the transfer's memo |
+| `#reasonRequired` | `abandon_order` was called with an empty reason | The audit trail must record *why* alongside *who* |
+| `#notUnderReview` | Only an under-review order can be recorded as delivered | A live order delivers on its own |
+| `#transitionRefused` | The state machine refused the transition | Re-read the order; something moved it |
+
+`cancel_order` is deliberately **not** in this list. It still returns `Result<Order, Text>`
+because a buyer reads its error verbatim (`main.ts`), and §4.3 / #118 put that sentence in
+the backend on purpose: it must be true of all three causes of a Stripe 400, which are
+known here and not in the UI. Converting it is the open half of #123 and needs the
+"where does buyer copy live" question answered first.
+
 ## §8 — Verifiability
 
 The thesis: **the number an operator monitors is the number a buyer can check.** The

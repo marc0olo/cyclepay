@@ -10,6 +10,11 @@ import type { ActorMethod } from '@icp-sdk/core/agent';
 import type { IDL } from '@icp-sdk/core/candid';
 import type { Principal } from '@icp-sdk/core/principal';
 
+export type AbandonError = { 'transitionRefused' : OrderId } |
+  { 'reasonRequired' : null } |
+  { 'notFound' : OrderId } |
+  { 'notAbandonable' : { 'id' : OrderId, 'status' : OrderStatus } } |
+  { 'deliveryOutstanding' : OrderId };
 export interface Account {
   'owner' : Principal,
   'subaccount' : [] | [Uint8Array],
@@ -117,6 +122,12 @@ export interface Event {
   'atNs' : bigint,
   'detail' : string,
 }
+export type ExpireError = { 'sessionNotOpen' : OrderId } |
+  { 'movedInFlight' : { 'id' : OrderId, 'status' : OrderStatus } } |
+  { 'notFound' : OrderId } |
+  { 'stripeFailed' : { 'id' : OrderId, 'detail' : string } } |
+  { 'stripeUnauthorized' : OrderId } |
+  { 'notCreated' : { 'id' : OrderId, 'status' : OrderStatus } };
 export type ExpiredBy = { 'sessionExpired' : null } |
   { 'sessionFailed' : null };
 export interface Filter {
@@ -282,6 +293,9 @@ export interface Receipt {
   'cyclesDelivered' : [] | [bigint],
   'deliveryBlockIndex' : [] | [bigint],
 }
+export type RecordDeliveredError = { 'transitionRefused' : OrderId } |
+  { 'notFound' : OrderId } |
+  { 'notUnderReview' : { 'id' : OrderId, 'status' : OrderStatus } };
 export interface RefusalCounts {
   'amountAboveMax' : bigint,
   'unboundedGiveaway' : bigint,
@@ -325,13 +339,19 @@ export type Result_10 = { 'ok' : Entry } |
 export type Result_11 = { 'ok' : null } |
   { 'err' : ListError };
 export type Result_12 = { 'ok' : Order } |
-  { 'err' : string };
+  { 'err' : RecordDeliveredError };
 export type Result_13 = { 'ok' : Order } |
   { 'err' : ProcessOrderError };
-export type Result_14 = { 'ok' : CreatedOrder } |
+export type Result_14 = { 'ok' : Order } |
+  { 'err' : ExpireError };
+export type Result_15 = { 'ok' : CreatedOrder } |
   { 'err' : CreateOrderError };
-export type Result_15 = { 'ok' : null } |
+export type Result_16 = { 'ok' : Order } |
+  { 'err' : string };
+export type Result_17 = { 'ok' : null } |
   { 'err' : Reason };
+export type Result_18 = { 'ok' : Order } |
+  { 'err' : AbandonError };
 export type Result_2 = { 'ok' : null } |
   { 'err' : OriginError };
 export type Result_3 = { 'ok' : null } |
@@ -397,7 +417,7 @@ export interface Withdrawn {
  * / Decision record for the `§N` comments: `docs/DESIGN.md`.
  */
 export interface _SERVICE {
-  'abandon_order' : ActorMethod<[OrderId, string], Result_12>,
+  'abandon_order' : ActorMethod<[OrderId, string], Result_18>,
   'add_admin' : ActorMethod<[Principal], Result_11>,
   'add_allowed_buyer' : ActorMethod<[Principal], Result_11>,
   'admin_order' : ActorMethod<[OrderId], [] | [Order]>,
@@ -410,10 +430,10 @@ export interface _SERVICE {
   'admins' : ActorMethod<[], Array<Principal>>,
   'allowed_buyers' : ActorMethod<[], Array<Principal>>,
   'audit_log' : ActorMethod<[[] | [bigint], bigint], Page__2>,
-  'can_purchase' : ActorMethod<[bigint], Result_15>,
-  'cancel_order' : ActorMethod<[OrderId], Result_12>,
+  'can_purchase' : ActorMethod<[bigint], Result_17>,
+  'cancel_order' : ActorMethod<[OrderId], Result_16>,
   'card_tiers' : ActorMethod<[], Array<Tier>>,
-  'create_order' : ActorMethod<[Amount, Destination, [] | [bigint]], Result_14>,
+  'create_order' : ActorMethod<[Amount, Destination, [] | [bigint]], Result_15>,
   'cycles_status' : ActorMethod<[], { 'floor' : bigint, 'balance' : bigint }>,
   'delayed_deliveries' : ActorMethod<
     [[] | [OrderId], bigint],
@@ -432,7 +452,7 @@ export interface _SERVICE {
     }
   >,
   'expected_livemode' : ActorMethod<[], [] | [boolean]>,
-  'expire_order' : ActorMethod<[OrderId], Result_12>,
+  'expire_order' : ActorMethod<[OrderId], Result_14>,
   'get_order' : ActorMethod<[OrderId], [] | [Order]>,
   'health' : ActorMethod<[], boolean>,
   'http_request' : ActorMethod<[Request], Response>,

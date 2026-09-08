@@ -624,6 +624,51 @@ module {
     #illegalTransition : { from : Types.OrderStatus; to : Types.OrderStatus };
   };
 
+  /// Why `expire_order` refused. Operator meaning and action per arm: §7.1. The three Stripe arms are distinct because they
+  /// demand different operator actions: `#sessionNotOpen` says wait, `#stripeUnauthorized`
+  /// says rotate the key, `#stripeFailed` says read the detail.
+  ///
+  /// ⚠️ **`#stripeFailed.detail` stays `Text` on purpose.** It is Stripe's own wording,
+  /// which this codebase deliberately does not paraphrase — an external system owns that
+  /// string, which is the case T1 leaves alone.
+  public type ExpireError = {
+    #notFound : Types.OrderId;
+    /// Only a `#created` order can be expired; `#expired` is idempotent and returns `#ok`.
+    #notCreated : { id : Types.OrderId; status : Types.OrderStatus };
+    /// Stripe says the session is no longer open — completed or already expired, and
+    /// those demand opposite actions, so nothing is changed here.
+    #sessionNotOpen : Types.OrderId;
+    /// 401/403. The restricted key needs WRITE on Checkout Sessions; an operator has
+    /// been notified through the latch.
+    #stripeUnauthorized : Types.OrderId;
+    #stripeFailed : { id : Types.OrderId; detail : Text };
+    /// A second tab settled the order while the outcall was in flight. Nothing changed.
+    #movedInFlight : { id : Types.OrderId; status : Types.OrderStatus };
+  };
+
+  /// Why `abandon_order` refused. Operator meaning and action per arm: §7.1.
+  public type AbandonError = {
+    #notFound : Types.OrderId;
+    /// Only a paid or under-review order can be abandoned.
+    #notAbandonable : { id : Types.OrderId; status : Types.OrderStatus };
+    /// ⚠️ **A wait, not a refusal.** The transfer is outstanding, so whether the cycles
+    /// moved is unknown; abandoning now would refund a buyer who may already hold them.
+    /// The ~24 h dedup fuse escalates it to `#needsReview`, where abandoning is allowed.
+    #deliveryOutstanding : Types.OrderId;
+    /// The audit trail must record *why*, alongside *who*.
+    #reasonRequired;
+    #transitionRefused : Types.OrderId;
+  };
+
+  /// Why `record_delivered` refused. Operator meaning and action per arm: §7.1.
+  public type RecordDeliveredError = {
+    #notFound : Types.OrderId;
+    /// Only an under-review order can be recorded as delivered — a live order delivers
+    /// on its own. `#delivered` is idempotent and returns `#ok`.
+    #notUnderReview : { id : Types.OrderId; status : Types.OrderStatus };
+    #transitionRefused : Types.OrderId;
+  };
+
   /// The §4 diagram plus the escalation edges it implies, all of which land in
   /// `#needsReview` — the order still owes cycles, so its promise stays held.
   ///

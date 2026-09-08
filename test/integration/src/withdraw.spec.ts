@@ -107,7 +107,7 @@ test('103b — refused while a promise is held, through both reachable classes',
   const cannotAbandon = expectErr(
     await gw.asAdmin.abandon_order(order.order.id, 'withdraw spec'),
   );
-  expect(cannotAbandon).toContain('delivery outstanding');
+  expect(cannotAbandon).toHaveProperty('deliveryOutstanding', order.order.id);
 
   // Letting it settle is what clears the promise. `process_order` is the re-drive — a
   // stopped ledger leaves the delivery needing another attempt, and the hourly sweep

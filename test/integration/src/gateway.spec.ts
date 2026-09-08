@@ -1593,7 +1593,7 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
     // guard itself; here it is asserted only to show the ordering — authz first,
     // then the reason, then the money position.
     expect(expectErr(await gw.asAdmin.abandon_order(doomed.id, 'buyer asked to cancel')))
-      .toMatch(/delivery outstanding/);
+      .toHaveProperty('deliveryOutstanding', doomed.id);
     expect(await orderStatus(gw, doomed.id)).toBe('paid');
 
     // The legitimate route: let the 72 h bound escalate it, where the position can be
@@ -3460,8 +3460,10 @@ test('77 — an escalated order whose cycles DID arrive can be recorded, not fil
   // ledger entirely.
   await ensureRates(gw);
   const live = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
+  // ⚠️ The TAG plus the status it refused on: prose could not say which status was
+  // seen, so a regex on it passed for every wrong-status case alike.
   expect(expectErr(await gw.asAdmin.record_delivered(live.order.id, 1n)))
-    .toMatch(/only an under-review order/);
+    .toEqual({ notUnderReview: { id: live.order.id, status: { created: null } } });
   expectOk(await cancelOrderWithExpire(gw, live.order.id));
 });
 
@@ -3499,10 +3501,11 @@ test('78 — an order whose delivery is unsettled cannot be abandoned into a dou
     expect(entry?.blockIndex).toHaveLength(0);
     expect(await orderStatus(gw, target.id)).toBe('paid');
 
-    // THE GUARD: the end-it lever refuses, and says what to look at.
+    // THE GUARD: the end-it lever refuses, and names which order it refused for.
+    // ⚠️ It no longer says what to LOOK at — that guidance moved to DESIGN §7.1 with
+    // the prose, so this asserts the refusal and its subject, not advice.
     const refused = expectErr(await gw.asAdmin.abandon_order(target.id, 'operator is impatient'));
-    expect(refused).toMatch(/delivery outstanding/);
-    expect(refused).toMatch(/pending_deliveries/);
+    expect(refused).toHaveProperty('deliveryOutstanding', target.id);
     expect(await orderStatus(gw, target.id)).toBe('paid');
     // The promise is still held, which is the point — releasing it is the harm.
     expect((await gw.asAnon.reserve_status()).promisedTotal)
