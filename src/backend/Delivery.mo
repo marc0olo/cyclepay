@@ -315,7 +315,7 @@ module {
   public type Journal = Map.Map<Types.OrderId, Types.JournalEntry>;
 
   public func emptyJournal() : Journal {
-    Map.empty<Types.OrderId, Types.JournalEntry>();
+    Map.empty();
   };
 
   /// §5.1 step 1: persist the intent. Written in the same synchronous block as the

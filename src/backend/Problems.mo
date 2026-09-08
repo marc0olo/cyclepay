@@ -92,7 +92,7 @@ module {
   ) : { problems : [Problem]; filed : Bool } {
     var found = false;
     let refreshed = problems.map(
-      func(p : Problem) : Problem {
+      func(p) {
         if (not found and isUnresolved(p) and sameShape(p.kind, kind)) {
           found := true;
           // `filedAtNs` deliberately kept: first seen, not last seen.
@@ -162,7 +162,7 @@ module {
 
   public func unresolvedCount(problems : [Problem]) : Nat {
     var n = 0;
-    for (p in problems.vals()) { if (isUnresolved(p)) n += 1 };
+    for (p in problems.values()) { if (isUnresolved(p)) n += 1 };
     n;
   };
 

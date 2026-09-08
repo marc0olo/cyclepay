@@ -556,22 +556,6 @@ service : {
   /// Allow a principal to buy while this gateway accepts free test payments
   /// (controller only, audited).
   add_allowed_buyer: (p: principal) -> (Result_6);
-  /// Open-obligation depth, public.
-  /// 
-  /// Nothing is evicted, so this only comes down by the operator working it. A climbing
-  /// value means dollars are arriving that nobody has dealt with — the most important
-  /// operational number on the money path, and public because operational state is not
-  /// secret (§8).
-  /// Refusal tallies, and whether the gate is refusing right now (#61).
-  /// 
-  /// ⚠️ **Public, like every other monitoring surface here** — operational state
-  /// is public by design; the webhook secret is the only secret in the system.
-  /// 
-  /// ⚠️ **This query is the point of the counters.** A tally nobody reads is the
-  /// `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
-  /// per counter with the response — the counters mean different things:
-  /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
-  /// `reserveShort` climbing is a refill. Same shape, opposite actions.
   /// Read **any** order by id (admin, #38).
   /// 
   /// ⚠️ **A deliberate exception to §2's "existence is not revealed to non-owners", so it
@@ -602,15 +586,6 @@ service : {
   /// the intended use, and if it becomes one the list inherits the audit.
   admin_orders: (filter: Filter, afterId: opt OrderId, limit: nat) ->
    (Page__1) query;
-  /// Everything the **buyer** needs to verify their own purchase (§2 authz:
-  /// `caller == order.owner`).
-  /// 
-  /// The buyer can **check** the claim rather than take it: recompute the quote from the
-  /// two recorded rate inputs, and look up the block index on the ledger.
-  /// ⚠️ **Owner-only, and a `query`, which is why the admin path is a separate method.**
-  /// See `admin_receipt`. Auditing writes state, so an audited read cannot be a query —
-  /// and folding the admin case in here would have made **every buyer's** receipt read
-  /// an update, putting the common path through consensus to serve the rare one.
   /// The same receipt, for **any** order (admin, #38) — and **audited**, which is the
   /// whole reason it is a separate method.
   /// 
@@ -650,8 +625,6 @@ service : {
   /// 
   /// ⚠️ An empty list does not mean "everyone" — see `allowedBuyers`.
   allowed_buyers: () -> (vec principal) query;
-  /// §4.2 operational trail, newest-last. Admin: details reference payment
-  /// intents. Readers detect ring-buffer drops via gaps in `seq`.
   /// The operational trail, **paginated** (#38).
   /// 
   /// ⚠️ **Pagination became necessary the moment #37 removed the ring.** The bound used
@@ -729,6 +702,10 @@ service : {
                           balance: nat;
                           floor: nat;
                         }) query;
+  /// Orders past `alertAfterNs` and still undelivered (admin, paged by #38).
+  /// 
+  /// The worklist behind `operator_summary.deliveriesDelayed`: one entry per order,
+  /// with the journal figures a human needs to decide whether it is stuck or slow.
   delayed_deliveries: (afterId: opt OrderId, limit: nat) ->
    (record {
       entries: vec DelayedDelivery;
@@ -785,6 +762,11 @@ service : {
       nullPaid: nat;
       refusingNow: RailStateLatch;
     }) query;
+  /// Which Stripe mode this gateway declares it serves, or null while unset.
+  /// 
+  /// Public because the page reads it: a sandbox deployment says so on every view, and
+  /// a mismatch against the mode a webhook arrives in is what `Card.handleWebhook`
+  /// refuses on. `set_expected_livemode` is the controller-only setter.
   expected_livemode: () -> (opt bool) query;
   /// **Admin: expire one `#created` order, releasing its reserve capacity** (#52).
   /// 
@@ -919,6 +901,12 @@ service : {
   /// order it funded. Null means the payment was never attributed to an order
   /// here — check the order's problems and the orphan list for an obligation carrying it.
   order_for_payment: (paymentRef: text) -> (opt OrderId) query;
+  /// Open-obligation depth, public.
+  /// 
+  /// Nothing is evicted, so this only comes down by the operator working it. A climbing
+  /// value means dollars are arriving that nobody has dealt with — the most important
+  /// operational number on the money path, and public because operational state is not
+  /// secret (§8).
   orphan_depth: () -> (record {
                          retained: nat;
                          unresolved: nat;
@@ -1017,6 +1005,15 @@ service : {
   /// operator's cost — `docs/DESIGN.md` §3.2 for the split and why a stored copy would
   /// be wrong here.
   quote_previews: (amounts: vec nat) -> (QuotePreviews) query;
+  /// Everything the **buyer** needs to verify their own purchase (§2 authz:
+  /// `caller == order.owner`).
+  /// 
+  /// The buyer can **check** the claim rather than take it: recompute the quote from the
+  /// two recorded rate inputs, and look up the block index on the ledger.
+  /// ⚠️ **Owner-only, and a `query`, which is why the admin path is a separate method.**
+  /// See `admin_receipt`. Auditing writes state, so an audited read cannot be a query —
+  /// and folding the admin case in here would have made **every buyer's** receipt read
+  /// an update, putting the common path through consensus to serve the rare one.
   receipt: (id: OrderId) -> (opt Receipt) query;
   /// Record that an escalated order's cycles **did** reach the buyer (admin, §7).
   /// 
@@ -1058,6 +1055,11 @@ service : {
                                text;
                                nat;
                              });
+  /// The recovery machinery's own clocks and its last findings, public.
+  /// 
+  /// Four independent passes report here — the stranded sweep, the tally reconcile, the
+  /// reserve reconcile and the rotating index scan — because each can stop running
+  /// without any of the others noticing. RUNBOOK §8 alerts on the gaps between them.
   recovery_status: () ->
    (record {
       indexScan:
@@ -1109,6 +1111,16 @@ service : {
   /// gateway refuses every sale against a fully funded reserve and nothing anywhere
   /// says why.
   refresh_reserve: () -> (nat);
+  /// Refusal tallies, and whether the gate is refusing right now (#61).
+  /// 
+  /// ⚠️ **Public, like every other monitoring surface here** — operational state
+  /// is public by design; the webhook secret is the only secret in the system.
+  /// 
+  /// ⚠️ **This query is the point of the counters.** A tally nobody reads is the
+  /// `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
+  /// per counter with the response — the counters mean different things:
+  /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
+  /// `reserveShort` climbing is a refill. Same shape, opposite actions.
   refusal_counts: () ->
    (record {
       counts: RefusalCounts;
@@ -1156,6 +1168,11 @@ service : {
       tallySaturations: nat;
       totalOrders: nat;
     }) query;
+  /// Mark one orphaned payment settled off-chain (admin, §4.1).
+  /// 
+  /// The operator has dealt with it in Stripe; this records that they did. Audited with
+  /// the entry's own detail, because nothing else in the system can tell afterwards that
+  /// the obligation was met rather than forgotten. Nothing re-opens it.
   resolve_orphan: (id: nat) -> (Result_10);
   /// Manual resolution (§4.1/§7) — the operator marking an obligation settled after
   /// acting off-chain: a refund issued in the Stripe Dashboard, or a delivery whose
@@ -1247,6 +1264,12 @@ service : {
   /// TLS-terminating boundary node as plain ingress (§7 provisioning
   /// exposure); rotate after provisioning over an untrusted path.
   set_webhook_secret: (secret: text) -> (Result_1);
+  /// Whether the restricted Stripe key is provisioned — **never the key**.
+  /// 
+  /// The console offers this read and no command for the setter: a rendered
+  /// `set_stripe_api_key` would put the key in a page's DOM and clipboard, which is what
+  /// `scripts/check-admin-commands.py` fails on. Admin-gated like every other read of
+  /// operational state that names a secret's presence.
   stripe_api_key_status: () -> (Status) query;
   /// The origin, readable back because it is not a secret — it is the URL
   /// buyers are sent to, and an operator needs to confirm it.

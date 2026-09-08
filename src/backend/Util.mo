@@ -1,7 +1,9 @@
 /// Small shared helpers (spec §9 layout). Currently: hex codec, used by the
 /// Stripe signature path (`v1=` values are lowercase hex) and by tests that
 /// pin known HMAC vectors.
-import Blob "mo:core/Blob";
+// `Array` for the receiver `.toBlob()`: the conversion is spelled on the source value,
+// and the import is what lets the method resolve.
+import Array "mo:core/Array";
 import Char "mo:core/Char";
 import List "mo:core/List";
 import Nat8 "mo:core/Nat8";
@@ -29,7 +31,7 @@ module {
       };
     };
     if (pendingHigh != null) return null;
-    ?Blob.fromArray(bytes.toArray());
+    ?bytes.toArray().toBlob();
   };
 
   func hexDigit(n : Nat8) : Text {

@@ -18,10 +18,16 @@ jobs:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
       - uses: caffeinelabs/setup-mops@v1
         with:
-          mops-version: 2
+          # Matches the CLI that writes `mops.lock` locally. It was pinned to 2 while the
+          # committed lock was format 3, so CI regenerated it on every run and the
+          # lockfile guaranteed nothing here.
+          mops-version: 3
 
       - name: install mops packages
-        run: mops install
+        # `--locked`: fail rather than silently rewrite the lock. CI is the one place
+        # that must build from exactly what was committed, and a lock nothing enforces
+        # is a lock in name only.
+        run: mops install --locked
 
       # -Werror: M0145 (non-exhaustive match) is a warning, so without this a new
       # `Types.Owner` case compiles green and traps at runtime on the authz path.
@@ -40,6 +46,29 @@ jobs:
         run: |
           mops build
           git diff --exit-code -- src/backend/dist/backend.did
+
+      # ⚠️ **These eight ran ONLY in `scripts/test-all.sh` until now, so none of them
+      # could block a merge.** Every one exists because something slipped past a review:
+      # a config setter with no reader, an admin method offered no command, a §N citing a
+      # deleted section, an export whose only caller was its own test, a doc block
+      # published on the wrong method. A check that gates nothing is a check the next
+      # change walks past — and this is the third time CI has been found running a weaker
+      # configuration than the local gate (after `mops-version: 2` and check-bindings).
+      #
+      # Placed after the `.did` step deliberately: four of them read that file, so they
+      # are only meaningful once it is known current. `scripts/sweep-vocabulary.py` is
+      # deliberately absent — it is advisory by design and reads a diff against
+      # origin/main, which this checkout does not have.
+      - name: static checks that gate a merge
+        run: |
+          scripts/check-heredocs.sh
+          scripts/check-doc-surface.py
+          scripts/check-did-docs.py
+          scripts/check-config-readers.py
+          scripts/check-admin-tiers.py
+          scripts/check-admin-commands.py
+          scripts/check-design-sections.py
+          scripts/check-unused-exports.py
 
   frontend:
     runs-on: ubuntu-latest
@@ -117,10 +146,16 @@ jobs:
           node-version: '22'
       - uses: caffeinelabs/setup-mops@v1
         with:
-          mops-version: 2
+          # Matches the CLI that writes `mops.lock` locally. It was pinned to 2 while the
+          # committed lock was format 3, so CI regenerated it on every run and the
+          # lockfile guaranteed nothing here.
+          mops-version: 3
 
       - name: install mops packages
-        run: mops install
+        # `--locked`: fail rather than silently rewrite the lock. CI is the one place
+        # that must build from exactly what was committed, and a lock nothing enforces
+        # is a lock in name only.
+        run: mops install --locked
 
       - name: install integration deps
         run: npm --prefix test/integration ci

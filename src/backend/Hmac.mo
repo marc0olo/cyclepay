@@ -21,10 +21,10 @@ module {
     let keyBytes = normalized.toArray();
     let padded = func(i : Nat) : Nat8 = if (i < keyBytes.size()) keyBytes[i] else 0;
     let innerDigest = Sha256.new();
-    innerDigest.writeArray(Array.tabulate<Nat8>(blockSize, func i = padded(i) ^ 0x36));
+    innerDigest.writeArray(Array.tabulate(blockSize, func i = padded(i) ^ 0x36));
     for (part in parts.values()) { innerDigest.writeBlob(part) };
     let outerDigest = Sha256.new();
-    outerDigest.writeArray(Array.tabulate<Nat8>(blockSize, func i = padded(i) ^ 0x5c));
+    outerDigest.writeArray(Array.tabulate(blockSize, func i = padded(i) ^ 0x5c));
     outerDigest.writeBlob(innerDigest.sum());
     outerDigest.sum();
   };

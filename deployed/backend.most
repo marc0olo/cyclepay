@@ -1,8 +1,7 @@
 // Version: 1.0.0
 type Account__101895817 = {owner : Principal; subaccount : ?Blob};
-type Data__628993992<T> = {var count : Nat__1040412405; elements : [var ?T]};
-type Data__80296667<K, V> =
-  {var count : Nat__1040412405; kvs : [var ?(K, V)]};
+type Data__265875254<K, V> = {var count : Nat__58649523; kvs : [var ?(K, V)]};
+type Data__859131645<T> = {var count : Nat__58649523; elements : [var ?T]};
 type Destination__693442483 = {#cyclesLedgerAccount : Account__101895817};
 type Drift__505569657 = {is : Nat; status : Text; was : Nat};
 type Entry__161555541 =
@@ -16,10 +15,10 @@ type Entry__161555541 =
   };
 type Event__282987190 = {atNs : Int; detail : Text; seq : Nat; tag : Text};
 type ExpiredBy__606996773 = {#sessionExpired; #sessionFailed};
-type Internal__1007892817<T> =
-  {children : [var ?Node__918630472<T>]; data : Data__628993992<T>};
-type Internal__41346355<K, V> =
-  {children : [var ?Node__1000929467<K, V>]; data : Data__80296667<K, V>};
+type Internal__161573640<K, V> =
+  {children : [var ?Node__430031793<K, V>]; data : Data__265875254<K, V>};
+type Internal__778364379<T> =
+  {children : [var ?Node__1045371124<T>]; data : Data__859131645<T>};
 type JournalEntry__248943069 =
   {
     blockIndex : ?Nat;
@@ -38,24 +37,24 @@ type Kind__893817772 =
     #unattributed : {claimedRef : Text; paymentRef : Text};
     #unprocessable : {eventId : Text; field : Text}
   };
-type Leaf__693487502<T> = {data : Data__628993992<T>};
-type Leaf__712614010<K, V> = {data : Data__80296667<K, V>};
-type Map__222667396<K, V> = Map__912772452<K, V>;
-type Map__709709801<K, V> =
-  {var root : Node__1000929467<K, V>; var size : Nat__1040412405};
-type Map__912772452<K, V> = Map__709709801<K, V>;
-type Nat__1040412405 = Nat__920180692;
+type Leaf__1045638083<K, V> = {data : Data__265875254<K, V>};
+type Leaf__776840865<T> = {data : Data__859131645<T>};
+type Map__13625999<K, V> =
+  {var root : Node__430031793<K, V>; var size : Nat__58649523};
+type Map__386906547<K, V> = Map__670138087<K, V>;
+type Map__670138087<K, V> = Map__13625999<K, V>;
+type Nat__58649523 = Nat__920180692;
 type Nat__920180692 = Nat;
-type Node__1000929467<K, V> =
-  {#internal : Internal__41346355<K, V>; #leaf : Leaf__712614010<K, V>};
-type Node__402002734<T> =
+type Node__1045371124<T> =
+  {#internal : Internal__778364379<T>; #leaf : Leaf__776840865<T>};
+type Node__430031793<K, V> =
+  {#internal : Internal__161573640<K, V>; #leaf : Leaf__1045638083<K, V>};
+type Node__671611173<T> =
   {
-    var next : ?Node__402002734<T>;
-    var previous : ?Node__402002734<T>;
+    var next : ?Node__671611173<T>;
+    var previous : ?Node__671611173<T>;
     value : T
   };
-type Node__918630472<T> =
-  {#internal : Internal__1007892817<T>; #leaf : Leaf__693487502<T>};
 type OrderId__370787278 = Text;
 type OrderStatus__644516197 =
   {
@@ -122,12 +121,12 @@ type Problem__103489883 =
   };
 type Quality__631647963 =
   {queriedSources : Nat; receivedRates : Nat; standardDeviation : Nat};
-type Queue__403054774<T> = Queue__49211481<T>;
-type Queue__49211481<T> =
+type Queue__571493<T> = Queue__594378947<T>;
+type Queue__594378947<T> =
   {
-    var back : ?Node__402002734<T>;
-    var front : ?Node__402002734<T>;
-    var size : Nat__1040412405
+    var back : ?Node__671611173<T>;
+    var front : ?Node__671611173<T>;
+    var size : Nat__58649523
   };
 type Rail__555097943 = {#card};
 type Rates__1063802498 =
@@ -137,9 +136,9 @@ type Rates__1063802498 =
     usdPerIcpMicros : Nat;
     xdrPermyriadPerIcp : Nat
   };
-type Set__1052415927<T> = Set__310360741<T>;
-type Set__310360741<T> =
-  {var root : Node__918630472<T>; var size : Nat__1040412405};
+type Set__195681557<T> = Set__29061695<T>;
+type Set__29061695<T> =
+  {var root : Node__1045371124<T>; var size : Nat__58649523};
 type Tier__1004729360 = {id : Text; usdCents : Nat};
 type TransferIntent__612776172 =
   {
@@ -150,29 +149,29 @@ type TransferIntent__612776172 =
   };
 actor {
   stable adminPrincipals :
-    {var root : Node__918630472<Principal>; var size : Nat__1040412405};
+    {var root : Node__1045371124<Principal>; var size : Nat__58649523};
   stable allowedBuyers :
-    {var root : Node__918630472<Principal>; var size : Nat__1040412405};
+    {var root : Node__1045371124<Principal>; var size : Nat__58649523};
   stable auditLog :
-    {events : Queue__403054774<Event__282987190>; var nextSeq : Nat};
+    {events : Queue__571493<Event__282987190>; var nextSeq : Nat};
   stable cancelRequests :
     {
-      var root : Node__918630472<OrderId__370787278>;
-      var size : Nat__1040412405
+      var root : Node__1045371124<OrderId__370787278>;
+      var size : Nat__58649523
     };
   stable var cardTiers : [Tier__1004729360];
   stable countReconcileIntervalNs : Nat;
   stable var cyclesLedgerFee : Nat;
   stable dedup :
     {
-      stripeEvents : Map__222667396<Text, Int>;
-      stripeIntents : Map__222667396<Text, Int>
+      stripeEvents : Map__386906547<Text, Int>;
+      stripeIntents : Map__386906547<Text, Int>
     };
   stable var deliveryConfig : {alertAfterNs : Int; maxHoldNs : Int};
   stable deliveryJournal :
     {
-      var root : Node__1000929467<OrderId__370787278, JournalEntry__248943069>;
-      var size : Nat__1040412405
+      var root : Node__430031793<OrderId__370787278, JournalEntry__248943069>;
+      var size : Nat__58649523
     };
   stable var expectLivemode : ?Bool;
   stable var gateConfig :
@@ -205,27 +204,27 @@ actor {
   stable var lastReserveReconcileAttemptNs : Int;
   stable orderStore :
     {
-      counts : Map__222667396<Text, Nat>;
+      counts : Map__386906547<Text, Nat>;
       var deliveredCycles : Nat;
       var deliveredNullPaid : Nat;
       var deliveredOrders : Nat;
       var deliveredUsdCents : Nat;
       var expiredHighWater : Nat;
-      orders : Map__222667396<OrderId__370787278, Order__859278382>;
+      orders : Map__386906547<OrderId__370787278, Order__859278382>;
       principalsToOrders :
-        Map__222667396<Principal, Set__1052415927<OrderId__370787278>>;
-      promiseHolders : Set__1052415927<OrderId__370787278>;
+        Map__386906547<Principal, Set__195681557<OrderId__370787278>>;
+      promiseHolders : Set__195681557<OrderId__370787278>;
       var promised : Nat;
       var tallySaturations : Nat;
-      unresolvedProblems : Set__1052415927<OrderId__370787278>
+      unresolvedProblems : Set__195681557<OrderId__370787278>
     };
   stable orphanStore :
-    {entries : Map__222667396<Nat, Entry__161555541>; var nextId : Nat};
+    {entries : Map__386906547<Nat, Entry__161555541>; var nextId : Nat};
   stable var outflowsIssued : Nat;
   stable paidIntents :
     {
-      var root : Node__1000929467<Text, OrderId__370787278>;
-      var size : Nat__1040412405
+      var root : Node__430031793<Text, OrderId__370787278>;
+      var size : Nat__58649523
     };
   stable var pricingConfig :
     {
