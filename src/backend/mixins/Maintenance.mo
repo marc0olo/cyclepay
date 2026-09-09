@@ -150,9 +150,18 @@ mixin (
     // The index is authoritative here for the same reason `reconcileBounded` treats it
     // that way — a recount over `promiseHolders` is exact if the index is complete and
     // too low otherwise, never too high.
-    let holders = Orders.promiseHolderCount(orderStore);
-    if (holders > 0) {
-      return #err(#ordersOutstanding({ holders; promised = Orders.promised(orderStore) }));
+    // ⚠️ **The holders gate ONLY, not the whole ladder.** A withdrawal with live orders
+    // outstanding costs no ledger call this way — and the floor arms deliberately wait
+    // for the observe below, because an unobserved top-up leaves the floor reading 0 and
+    // refusing here would strand it.
+    switch (
+      Reserve.ordersOutstanding(
+        Orders.promiseHolderCount(orderStore),
+        Orders.promised(orderStore),
+      )
+    ) {
+      case (?refusal) return #err(refusal);
+      case null {};
     };
     // Observe before withdrawing, or an unobserved top-up is stranded — which defeats
     // the lever. ⚠️ **And an empty promise index is exactly what makes the observation
@@ -173,19 +182,17 @@ mixin (
     // same reason. A comment saying "re-read this" would be the weakest guard available,
     // and comments are exactly what this codebase keeps finding insufficient.
     let { holdersAfter } = await* ops.observeReserve();
-    if (holdersAfter > 0) {
-      return #err(#ordersOutstanding({
-        holders = holdersAfter;
-        promised = Orders.promised(orderStore);
-      }));
-    };
-    let debited = reserveState.floor;
+    // ⚠️ **The same ladder again, and that is the guard.** An await just happened with
+    // the floor still full, so the holder count is re-tested — and the observe may have
+    // moved the floor, so the arithmetic is redone on what it now says. Two call sites,
+    // one decision: the previous shape repeated the holder test inline, where the two
+    // copies could drift.
     let fee = reserveState.cyclesLedgerFee;
-    if (debited == 0) return #err(#nothingToWithdraw);
-    // Draining means transferring `debited - fee`, because the ledger charges the fee
-    // on top. Below the fee there is nothing recoverable at all.
-    let ?amount = Delivery.deliverableCycles(debited, fee) else {
-      return #err(#belowLedgerFee({ floor = debited; fee }));
+    let { debited; amount } = switch (
+      Reserve.withdrawable(holdersAfter, Orders.promised(orderStore), reserveState.floor, fee)
+    ) {
+      case (#ok(figures)) figures;
+      case (#err(e)) return #err(e);
     };
     let to : Types.Account = { owner = caller; subaccount = null };
     // ── Rule 2 (§5.4): the floor drops when the transfer is ISSUED ──────────

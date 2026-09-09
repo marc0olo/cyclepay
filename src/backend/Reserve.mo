@@ -17,6 +17,8 @@
 /// ⚠️ **`lockedCycles` must stay immutable after creation.** The amount an order promises
 /// IS its locked quantity, so no second per-order copy is stored. Anything that mutates
 /// it breaks this tally **silently**, and the design then needs a stored per-order amount.
+import Result "mo:core/Result";
+import Delivery "Delivery";
 import Types "Types";
 
 module {
@@ -75,6 +77,74 @@ module {
       };
       case (#none) ({ total; saturated = false });
     };
+  };
+
+  /// Why a withdrawal cannot proceed, or the amount it may move.
+  ///
+  /// ⚠️ **A structural subtype of `withdraw_reserve`'s error type**, minus `#transferFailed`
+  /// — which is not a decision, it is what the ledger said afterwards. So `#err(e)` returns
+  /// straight out of the endpoint with no mapping layer (T4).
+  public type WithdrawRefusal = {
+    #ordersOutstanding : { holders : Nat; promised : Nat };
+    #nothingToWithdraw;
+    #belowLedgerFee : { floor : Nat; fee : Nat };
+  };
+
+  /// The whole refusal ladder for `withdraw_reserve` (§5.4, #103), as one decision.
+  ///
+  /// ⚠️ **The endpoint calls this TWICE — once before observing the ledger, once after —
+  /// and that repetition is the point.** An `await` sits inside the observe while the
+  /// floor is still full, so the holder count has to be re-tested afterwards: a create
+  /// queued in that window would otherwise be admitted against a reserve about to leave.
+  /// The re-check used to be a second inline `if`, which is a place for the two tests to
+  /// drift apart. One function called twice cannot drift.
+  ///
+  /// ⚠️ **`holders` must be the INDEX, never the tally.** `applyDelta` clamps a release
+  /// to zero when the tally has diverged low, so `promised` can read 0 while promise
+  /// holders still exist — the state `tallySaturations` surfaces. A ladder guarded on the
+  /// tally would permit a withdrawal with live orders outstanding, which is the one thing
+  /// it exists to prevent. `promised` is carried in the refusal for diagnosis only, and
+  /// the two figures disagreeing is itself the signal.
+  ///
+  /// Order matters and is asserted in `test/reserve.test.mo`: outstanding orders outrank
+  /// an empty floor, because "nothing to withdraw" invites a retry while orders
+  /// outstanding is a state the operator has to clear.
+  /// The holders gate on its own, because the endpoint needs it BEFORE the floor arms.
+  ///
+  /// ⚠️ **The floor cannot be judged until the ledger has been observed.** An unobserved
+  /// top-up leaves the floor reading 0, so a `#nothingToWithdraw` decided before the
+  /// observe would strand it — which is the whole reason `withdraw_reserve` observes
+  /// first. An earlier version of this extraction ran the full ladder in both passes and
+  /// moved that refusal ahead of the observe; this split is what keeps the original
+  /// ordering. `withdrawable` calls it too, so the test itself exists once.
+  public func ordersOutstanding(holders : Nat, promised : Nat) : ?WithdrawRefusal {
+    if (holders > 0) ?#ordersOutstanding({ holders; promised }) else null;
+  };
+
+  public func withdrawable(
+    holders : Nat,
+    promised : Nat,
+    floor : Nat,
+    fee : Nat,
+  ) : Result.Result<{ debited : Nat; amount : Nat }, WithdrawRefusal> {
+    switch (ordersOutstanding(holders, promised)) {
+      case (?refusal) return #err(refusal);
+      case null {};
+    };
+    if (floor == 0) return #err(#nothingToWithdraw);
+    // Draining means transferring `floor - fee`: the ledger charges the fee on top, so
+    // below the fee there is nothing recoverable at all.
+    // ⚠️ **`Delivery.deliverableCycles`, not a copy of it.** These are the TWO outflow
+    // classes of one account, and Reserve.mo's own framing is "two destination classes,
+    // ONE outflow mechanism" — a fee correction that diverged between delivery and
+    // withdrawal is exactly what that framing exists to prevent. An earlier version of
+    // this function re-implemented the arithmetic here while its comment claimed it was
+    // "the same function", which replaced a shared call site with a second place to
+    // change. `Delivery` does not import `Reserve`, so this direction is acyclic.
+    let ?amount = Delivery.deliverableCycles(floor, fee) else {
+      return #err(#belowLedgerFee({ floor; fee }));
+    };
+    #ok({ debited = floor; amount });
   };
 
   /// The promise total derived independently from the orders themselves.
