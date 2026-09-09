@@ -10,6 +10,7 @@ import Time "mo:core/Time";
 import Auth "../Auth";
 import Gate "../Gate";
 import Orders "../Orders";
+import Purchase "../Purchase";
 import Pricing "../Pricing";
 import Session "../rails/Session";
 import Tiers "../Tiers";
@@ -66,15 +67,6 @@ mixin (
   /// session path stay single. Everything downstream keys off gross USD cents,
   /// which is what both cases resolve to — the floor and the ceiling then apply
   /// uniformly instead of one bound per entry point.
-  type Amount = {
-    #tier : Text;
-    /// Gross USD cents, straight from the buyer. Bounded by
-    /// `Gate.Config`'s floor and ceiling like any other amount — and bounded
-    /// **here**, not only in the frontend, because a frontend-only bound is not a
-    /// bound.
-    #custom : Nat;
-  };
-
   /// What a given amount buys right now (§3), before anyone commits to an order.
   type QuotePreview = {
     usdCents : Nat;
@@ -238,7 +230,7 @@ mixin (
   /// favour passes through and they keep the extra cycles. The guard can only
   /// ever protect the buyer. `null` opts out entirely.
   public shared ({ caller }) func create_order(
-    amount : Amount,
+    amount : Types.Amount,
     destination : Types.Destination,
     minCycles : ?Nat,
   ) : async Result.Result<CreatedOrder, CreateOrderError> {
@@ -266,47 +258,33 @@ mixin (
         return #err(#sessionUnavailable(ops.sessionErrorToText(e)));
       };
     };
-    // Both cases collapse to gross USD cents here, and everything after this is
-    // identical for a preset and a typed amount — which is the point of the
-    // variant: one quote path, one gate, one session.
-    let (usdCents, quoteLabel) = switch (amount) {
-      case (#tier(tierId)) {
-        let ?tier = Tiers.find(tierState.cards, tierId) else return #err(#unknownTier(tierId));
-        (tier.usdCents, tierId);
-      };
-      // NOT validated against the presets: a custom amount is any amount the
-      // gate admits, and the gate is the only bound. Checking it against the
-      // tier list would make presets a constraint again.
-      case (#custom(cents)) (cents, cents.toText() # " cents");
-    };
-    // A cheap PRE-REFUSAL before any await, so a spamming principal is turned
-    // away before it can make the canister do work (`canister-security`: anyone
-    // can burn your cycles with update calls). The floor and ceiling are enforced
-    // here, for both cases alike.
+    // ── The decision: amount, admission, quote, the caller's floor ───────────
     //
-    // ⚠️ **This can only refuse, never admit.** The authoritative decision is
-    // `admitOrder` inside the create block below, which additionally checks
-    // solvency. Two calls, one decision — do not read this as the gate.
-    switch (ops.admit(caller, usdCents)) {
-      case (#err(reason)) return #err(#notAdmitted(reason));
-      case (#ok) {};
+    // One call, and the ORDER of those four steps is documented on
+    // `Purchase.plan` with a unit test per adjacent pair — which is what this
+    // extraction bought (#127). It decides everything the commit and the session
+    // need and touches no state: admission and quoting come in as functions, so
+    // the live order count and the rate cache stay behind the closures that own
+    // them.
+    //
+    // ⚠️ **`#err(e)` returns straight out.** `Purchase.PlanError` is a structural
+    // subtype of this method's error type, so there is no mapping layer to drift.
+    let plan = switch (
+      Purchase.plan(
+        caller,
+        amount,
+        minCycles,
+        tierState.cards,
+        func(cents) = ops.admit(caller, cents),
+        func(cents) = quoteCents(
+          { feeBps = pricingState.config.feeBps; feeFixedCents = pricingState.config.feeFixedCents },
+          cents,
+        ),
+      )
+    ) {
+      case (#ok(p)) p;
+      case (#err(e)) return #err(e);
     };
-    let fee = { feeBps = pricingState.config.feeBps; feeFixedCents = pricingState.config.feeFixedCents };
-    let (lockedCycles, pricing) = switch (quoteCents(fee, usdCents)) {
-      case (#ok(quoted)) quoted;
-      case (#unpriceable(#stripeFee)) return #err(#tierBelowFees(quoteLabel));
-      case (#unpriceable(#simulationScale(figures))) {
-        return #err(#simulationScaleTooSmall(figures));
-      };
-      case (#stale) return #err(#rateUnavailable);
-    };
-    switch (minCycles) {
-      case (?minimum) if (lockedCycles < minimum) {
-        return #err(#quoteChanged({ quoted = lockedCycles; minimum }));
-      };
-      case null {};
-    };
-    let owner : Types.Owner = #ii(caller);
 
     // ── The order, held against the reserve floor ────────────────────────────
     //
@@ -320,13 +298,13 @@ mixin (
     // fresher balance read can fix it: an awaited value is historical the moment
     // the continuation resumes.
     let order = switch (
-      await* ops.createOrderWithFreshId(caller, usdCents, owner, #card, destination, lockedCycles, pricing)
+      await* ops.createOrderWithFreshId(caller, plan.usdCents, plan.owner, #card, destination, plan.lockedCycles, plan.pricing)
     ) {
       case (#ok(o)) o;
       case (#err(#idGeneration)) return #err(#idGeneration);
       case (#err(#notAdmitted(reason))) return #err(#notAdmitted(reason));
     };
-    let clientReferenceId = Orders.clientReferenceId(owner, order.id);
+    let clientReferenceId = Orders.clientReferenceId(plan.owner, order.id);
 
     // ── The session, after the order exists ─────────────────────────────────
     // The ordering is forced: the order id IS the `client_reference_id`, so the

@@ -3024,6 +3024,70 @@ test('67b — the reserve hold exists BEFORE the session outcall, not after it',
   expectOk(await cancelOrderWithExpire(gw, orderId));
 });
 
+test('67c — the cycles DELIVERED are the cycles HELD, across a rate move (#127)', async () => {
+  // ⚠️ **The oversell wearing the costume of a tidier refactor.** `lockedCycles` is
+  // decided once, before the commit, and carried to the delivery — with an `await` in
+  // between. Anything that re-quotes after that await pays out a different number of
+  // cycles than the reserve set aside, which is the same defect the commit ordering
+  // exists to prevent and is invisible to scenario 67b: the hold at commit would be
+  // perfectly correct, and only the payout would be wrong.
+  //
+  // So the price is moved WHILE the outcall is parked — the one window where a re-quote
+  // would produce a different figure and no test previously looked.
+  //
+  // ⚠️ **Measured: this is near-sole coverage, unlike 67b.** With `lockedCycles`
+  // re-quoted after the await, exactly two scenarios fail — this one, with
+  // `expected 1692207692307n to be 3499900000000n`, and 72, which fails on a downstream
+  // capacity figure. 67b stays GREEN throughout, because the hold at commit is still
+  // correct: the two tests cover different defects in the same ordering.
+  await ensureRates(gw);
+  const reserveBefore = await reserveBalance(gw);
+  const creditedBefore = await userCycles();
+  const fee = await gw.cyclesLedger.icrc1_fee();
+
+  const settle = await gw.deferredUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []);
+  const outcall = await awaitPendingOutcall(gw);
+  const reference = decodeURIComponent(
+    /client_reference_id=([^&]+)/.exec(outcallBody(outcall))![1]!,
+  );
+  const orderId = reference.split('_').pop()!;
+
+  // ⚠️ **The FEE is the lever, not the exchange rate, and that is a finding rather than
+  // a preference.** Halving the ICP price trips the pair cross-check — the gateway
+  // validates implied XDR/USD against a sanity band, so a rate move large enough to
+  // change the quote is refused as `rate pair disagrees`. The fee has no such band, and
+  // it feeds the same §3 formula: at 50% the same 500¢ nets 250¢, so a re-quote here
+  // would price this order at roughly half the cycles it was quoted.
+  const pricingDefaults = (await gw.asAnon.pricing_status()).config;
+  expectOk(await gw.asAdmin.set_pricing_config({ ...pricingDefaults, feeBps: 5_000n }));
+
+  await answerOutcall(gw, outcall, 200, sessionCreatedBody({
+    id: 'cs_rate_moved_midflight',
+    expiresAtSeconds: Number(await nowSeconds(gw.pic)) + 2_100,
+  }));
+  expectOk(await settle());
+
+  expect((await deliverWebhook(gw, checkoutSessionBody({
+    eventId: 'evt_67c', paymentIntent: 'pi_67c', clientReferenceId: reference,
+    amountCents: TIER_USD_CENTS,
+  }))).status_code).toBe(200);
+  expect(await tickUntilStatus(gw, orderId, ['delivered'])).toBe('delivered');
+
+  // Exact, in both directions: the buyer gets the quote they were shown and the reserve
+  // falls by what it held — NOT the post-move figure, which would be roughly double.
+  expect((await userCycles()) - creditedBefore).toBe(TIER_LOCKED_CYCLES - fee);
+  expect(reserveBefore - (await reserveBalance(gw))).toBe(TIER_LOCKED_CYCLES);
+
+  // And the order's own record agrees with both, so nothing re-quoted it on the way.
+  const stored = (await gw.asAdmin.admin_order(orderId))[0]!;
+  expect(stored.lockedCycles).toBe(TIER_LOCKED_CYCLES);
+  // ⚠️ And the fee really did move, so the assertions above are not vacuous: a re-quote
+  // at this config would have produced a different figure.
+  expect((await gw.asAnon.pricing_status()).config.feeBps).toBe(5_000n);
+
+  expectOk(await gw.asAdmin.set_pricing_config(pricingDefaults));
+});
+
 test('68 — a cancel racing session creation cannot leave a payable URL behind (#33)', async () => {
   // THE INTERLEAVING the continuation re-check exists for, and it had no test —
   // the same shape as #46's untested `attach_payment` guard, so it gets one now.
