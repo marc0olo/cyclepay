@@ -1,8 +1,8 @@
 # Reproducible release build (spec §8). Every byte-shaping tool is pinned:
 #  - base image by digest (node 22.22.1 — also the frontend build's node)
 #  - ic-mops / icp-cli / ic-wasm by exact npm version
-#  - moc via the committed mops.toml [toolchain] (1.15.1 today; the pin is the
-#    authority, so this line does not restate the version)
+#  - moc via the committed mops.toml [toolchain] — the pin is the authority, and
+#    this line deliberately does not restate the version
 #  - Motoko deps via the committed mops.lock
 #  - recipes by tag in the committed icp.yaml (icp-cli rejects unpinned)
 #

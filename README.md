@@ -77,6 +77,19 @@ icp deploy
 # 3. make the gateway sellable — NOT optional, see below
 scripts/local-dev-seed.sh
 
+# 3b. OPTIONAL — simulation mode: real Stripe test payments, cycles scaled down.
+#     ⚠️ MUST come before the first order. A divisor change is refused once any
+#     order is stored, and the only way back is `icp deploy --mode reinstall`.
+#     Requires the seed's `expected_livemode = ?false` (guard: `?false` exactly,
+#     and `null` — the fresh-install default — is refused), so run it after step 3.
+icp canister call backend set_pricing_config '(record {
+  feeBps = 290 : nat; divisor = 1_000 : nat; minRateSources = 2 : nat;
+  feeFixedCents = 30 : nat; maxAgeNs = 300_000_000_000 : int;
+  maxRateDeltaBps = 5_000 : nat })'
+#     At divisor 1_000 a $10 purchase quotes ~7.24 G cycles instead of ~7.24 T.
+#     The arithmetic and the ceiling that scales with minPurchaseUsdCents:
+#     docs/STRIPE.md §9a "Simulation mode".
+
 # 4. allow-list yourself as a buyer
 #    Open http://frontend.local.localhost:8000/ , sign in with Internet Identity,
 #    copy the principal the page shows, then:
