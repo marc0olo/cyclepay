@@ -430,6 +430,7 @@ export const idlFactory = ({ IDL }) => {
   });
   const Result_1 = IDL.Variant({ 'ok' : IDL.Null, 'err' : SetError });
   const OriginError = IDL.Variant({
+    'noHost' : IDL.Null,
     'hasQueryOrFragment' : IDL.Null,
     'empty' : IDL.Null,
     'notHttps' : IDL.Null,

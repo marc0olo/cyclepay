@@ -61,6 +61,9 @@ module {
     /// A query string or fragment would collide with the `#/order/<id>` route appended
     /// to it, producing a URL that does not resolve to the order.
     #hasQueryOrFragment;
+    /// No authority at all — `https://`, `http:///path`. The scheme is fine and there
+    /// is nothing to return a buyer to.
+    #noHost;
     #empty;
   };
 
@@ -79,13 +82,15 @@ module {
   /// local `icp network` serves the frontend at `http://frontend.local.localhost:8000`.
   public func validateOrigin(origin : Text) : Result.Result<Text, OriginError> {
     if (origin.size() == 0) return #err(#empty);
-    let afterScheme = if (origin.startsWith(#text "https://")) {
-      ?origin.trimStart(#text "https://");
-    } else if (origin.startsWith(#text "http://")) {
-      let rest = origin.trimStart(#text "http://");
-      if (isLoopbackHost(hostOf(rest))) ?rest else null;
-    } else null;
-    let ?_ = afterScheme else return #err(#notHttps);
+    // Scheme, then host, then the loopback question — in that order, so each refusal
+    // names the first thing actually wrong. Deciding loopback first made `http://`
+    // answer `#notHttps` while `https://` answered `#noHost`, for the same defect.
+    let https = if (origin.startsWith(#text "https://")) true else if (origin.startsWith(#text "http://")) false else {
+      return #err(#notHttps);
+    };
+    let host = hostOf(origin.trimStart(#text (if (https) "https://" else "http://")));
+    if (host.size() == 0) return #err(#noHost);
+    if (not https and not isLoopbackHost(host)) return #err(#notHttps);
     if (origin.contains(#char '?') or origin.contains(#char '#')) {
       return #err(#hasQueryOrFragment);
     };
@@ -107,7 +112,12 @@ module {
   func hostOf(afterScheme : Text) : Text {
     let authority = afterScheme.split(#char '/').next() ?? "";
     let parts = authority.split(#char '@').toArray();
-    let hostPort = parts[parts.size() - 1];
+    // ⚠️ **Guarded, because `"".split(#char '@')` yields ZERO elements and `size() - 1`
+    // underflows on `Nat`.** `set_stripe_origin("http://")` trapped here rather than
+    // returning its declared `Result` — a method that promises a typed refusal had a
+    // path around it. The line this replaced was option-returning (`.next() ?? ""`) and
+    // could not underflow; swapping it for an array index is what introduced it.
+    let hostPort = if (parts.size() == 0) "" else parts[parts.size() - 1];
     // An IPv6 literal keeps its brackets: the colons inside are not a port separator.
     if (hostPort.startsWith(#text "[")) {
       return (hostPort.split(#char ']').next() ?? "") # "]";

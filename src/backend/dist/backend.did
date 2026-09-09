@@ -344,6 +344,7 @@ type OriginError =
  variant {
    "empty";
    hasQueryOrFragment;
+   noHost;
    notHttps;
  };
 type OrderStatus = 

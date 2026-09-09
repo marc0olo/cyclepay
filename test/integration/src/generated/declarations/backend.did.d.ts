@@ -202,7 +202,8 @@ export type OrderStatus = { 'created' : null } |
   { 'abandoned' : null } |
   { 'delivered' : null } |
   { 'needsReview' : null };
-export type OriginError = { 'hasQueryOrFragment' : null } |
+export type OriginError = { 'noHost' : null } |
+  { 'hasQueryOrFragment' : null } |
   { 'empty' : null } |
   { 'notHttps' : null };
 export type Owner = { 'ii' : Principal };

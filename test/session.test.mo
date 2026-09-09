@@ -460,4 +460,18 @@ suite("validateOrigin — https, or loopback http (#83 groundwork)", func() {
   test("empty is its own answer", func() {
     assert Session.validateOrigin("") == #err(#empty);
   });
+
+  test("⚠️ a degenerate authority is refused, and does not TRAP", func() {
+    // `"".split(#char '@')` yields zero elements, so an array index underflowed on Nat
+    // and `set_stripe_origin("http://")` trapped instead of returning its Result. Every
+    // member of the family, because sampling one member of a family is what let the
+    // userinfo bypass through.
+    for (origin in ["http://", "https://", "http:///path", "https:///", "http://@", "http://localhost@"].values()) {
+      assert Session.validateOrigin(origin) == #err(#noHost);
+    };
+    // ⚠️ `https://` used to answer #ok("https:"), which makes success_url
+    // `https:/#/order/<id>`. Refused now, and as #noHost rather than #notHttps — it IS
+    // https, so that reason would have been false.
+    assert Session.validateOrigin("https://") != #err(#notHttps);
+  });
 });
