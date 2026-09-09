@@ -1,7 +1,12 @@
 # Certified-assets has NO default security headers, unlike the legacy asset canister's
 # `security_policy: "standard"`. These reproduce that policy's seven headers verbatim,
-# with two deliberate tightenings noted below — this page takes card details, so the
-# baseline is not negotiable and a copy-paste CSP that breaks the app is worse than none.
+# with three deliberate tightenings — this page takes card details, so the baseline is
+# not negotiable and a copy-paste CSP that breaks the app is worse than none.
+#
+# ⚠️ **This CARRIES the headers over; it does not introduce them.** Measured by
+# redeploying the legacy recipe and curling: it served all seven. `scripts/e2e-local.sh`
+# asserts each one, because nothing else can — the browser suite serves `dist` from a
+# static server, where `_headers` never applies.
 /*
   Content-Security-Policy: default-src 'self';script-src 'self';connect-src 'self' http://localhost:* https://icp0.io https://*.icp0.io https://icp-api.io;img-src 'self' data:;style-src 'self' 'unsafe-inline';style-src-elem 'self' 'unsafe-inline';font-src 'self';object-src 'none';base-uri 'self';frame-ancestors 'none';form-action 'self';upgrade-insecure-requests;
   Permissions-Policy: accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), cross-origin-isolated=(), display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), execution-while-out-of-viewport=(), fullscreen=(), geolocation=(), gyroscope=(), keyboard-map=(), magnetometer=(), microphone=(), midi=(), navigation-override=(), payment=(), picture-in-picture=(), publickey-credentials-get=(), screen-wake-lock=(), sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=(), clipboard-read=(), clipboard-write=(), gamepad=(), speaker-selection=(), conversion-measurement=(), focus-without-user-activation=(), hid=(), idle-detection=(), interest-cohort=(), serial=(), sync-script=(), trust-token-redemption=(), window-placement=(), vertical-scroll=()

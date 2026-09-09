@@ -59,11 +59,14 @@ canisters:
 
   - name: frontend
     recipe:
-      # The certified-assets canister: every response carries a proof the HTTP
-      # gateway verifies, which is the serving half of the verifiability thesis —
-      # the legacy asset canister had no certification and a raw-domain escape
-      # hatch we had to switch off by config (`allow_raw_access: false`). Here
-      # there is no raw mode to disable.
+      # The certified-assets canister, the recommended path for a frontend.
+      #
+      # ⚠️ **Response certification is NOT the gain — both canisters certify.**
+      # Measured by redeploying the legacy recipe: it served `IC-Certificate`
+      # too. What actually changes: no raw-access mode to switch off (the legacy
+      # canister needed `allow_raw_access: false` for that), automatic clean-URL
+      # canonicalisation, `_headers`/`_redirects` instead of `.ic-assets.json5`,
+      # and built-in access protection.
       #
       # ⚠️ Configured by `_headers` / `_redirects` in `dir`, NOT `.ic-assets.json5`,
       # which this canister does not read — and would not even upload, since the
