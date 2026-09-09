@@ -464,6 +464,27 @@ the backend on purpose: it must be true of all three causes of a Stripe 400, whi
 known here and not in the UI. Converting it is the open half of #123 and needs the
 "where does buyer copy live" question answered first.
 
+### §7.2 — Facts stay in the canister; copy may leave it
+
+⚠️ **The rule, and it is what decides each case rather than a preference for one layer:**
+a refusal's copy may live in the frontend **provided its payload carries every fact the
+sentence asserted.** Where the copy *is* the facts, it stays on-chain.
+
+`cancel_order` (#123) satisfies it: `#notCancellable` and `#settledInFlight` carry the
+status their sentences name, `#sessionNotClosed` is deliberately one tag for three
+indistinguishable causes (§4.3 / #118) — which is exactly what its sentence said — and
+nothing else in the seven asserted a fact beyond "this happened".
+
+⚠️ **What is given up, stated because it is real.** With prose from the canister, the
+sentence a buyer reads is composed on-chain. With tags, whoever deploys the frontend
+controls the explanation. That is acceptable here and only here because the FACTS remain
+independently checkable: `get_order` and `receipt` carry the status and the figures, so a
+buyer misled by page copy can verify the actual state without trusting the page. Apply
+this rule to `receipt` and the answer flips — there the copy is the facts, and it stays.
+
+`scripts/check-typed-errors.py` enforces the typed half; the payload half is a review
+question, because no check can tell whether a variant carries what its sentence claims.
+
 ## §8 — Verifiability
 
 The thesis: **the number an operator monitors is the number a buyer can check.** The

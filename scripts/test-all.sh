@@ -304,6 +304,10 @@ scripts/check-unused-exports.py
 # check's first two versions could not see it, which is recorded in the script.
 run "no module function body is duplicated across modules" scripts/check-duplicate-bodies.py
 
+# Reads the regenerated .did, so it sits after the build step. #123 removed the last
+# `Result<_, Text>`; this keeps it removed.
+run "every endpoint error type is a variant, not text" scripts/check-typed-errors.py
+
 # ⚠️ **The Motoko half of the step above, and the compiler covers NONE of it:** M0194
 # fires only in the canister's main file, so a module of dead exports compiles clean
 # under -Werror. Four instances were live when this was added, one of them a renderer

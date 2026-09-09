@@ -2,7 +2,7 @@
 
 import { Principal } from "@icp-sdk/core/principal";
 
-import type { CreateOrderError, OrderStatus, Reason } from "./bindings/backend";
+import type { CancelOrderError, CreateOrderError, OrderStatus, Reason } from "./bindings/backend";
 
 /// OrderStatus variant keys, DERIVED from the generated enum.
 ///
@@ -616,6 +616,57 @@ export function createOrderErrorMessage(key: string): string {
       return `Order creation failed: ${key}`;
   }
 }
+
+/// What a buyer is told when their cancel refuses.
+///
+/// ⚠️ **The copy left the canister in #123; the FACTS did not.** §7.2 is the rule: a
+/// refusal's payload must carry every fact its sentence asserts, which is why
+/// `notCancellable` and `settledInFlight` carry a status. Anything a buyer needs to
+/// verify independently — the status, the figures — is on `get_order` and `receipt`,
+/// not here.
+export function cancelOrderErrorMessage(error: CancelOrderError): string {
+  switch (error.__kind__) {
+    case "notFound":
+      return "That order no longer exists. Reload the page.";
+    case "alreadyExpired":
+      // The opposite case from `notCancellable`: nothing was charged, so there is
+      // nothing to undo. A stale tab is enough to reach it.
+      return "This order already expired, so there is nothing to cancel. Nothing was charged.";
+    case "notCancellable":
+      return `This order is ${statusInfo(`${error.notCancellable.status}`).label.toLowerCase()} and cannot be cancelled. It will deliver, or contact support.`;
+    case "sessionNotClosed":
+      // ⚠️ Three causes and no way to tell them apart (#118): the payment completed, the
+      // session had already expired, or Stripe refused the request. This sentence has to
+      // be true of all three, so it says what happens next in each rather than claiming
+      // which one it was.
+      return "We could not close the payment session. If it was paid it will deliver; if not it expires on its own. Refresh the page to see which.";
+    case "stripeUnavailable":
+      return "Could not reach the payment provider to cancel. Try again, or the order expires on its own.";
+    case "credentialsRefused":
+      return "The payment provider refused this gateway's credentials. An operator has been notified; the order expires on its own if it is not paid.";
+    case "settledInFlight":
+      return `This order was already ${statusInfo(`${error.settledInFlight.status}`).label.toLowerCase()} while the cancel was in flight. The status shown is current.`;
+    default:
+      // Runtime escape hatch for a canister ahead of this build, not the place a known
+      // variant lands: an omission is a compile error in the key list below.
+      return `Cancellation failed: ${(error as { __kind__: string }).__kind__}`;
+  }
+}
+
+/// Every `cancel_order` variant this build knows about.
+///
+/// `@test-oracle` — derived from the type rather than hand-written, because a
+/// hand-written mirror is what let three `create_order` variants render as their own tag
+/// names.
+export const CANCEL_ORDER_ERROR_KEYS: Record<CancelOrderError["__kind__"], true> = {
+  alreadyExpired: true,
+  credentialsRefused: true,
+  notCancellable: true,
+  notFound: true,
+  sessionNotClosed: true,
+  settledInFlight: true,
+  stripeUnavailable: true,
+};
 
 /// Every `create_order` variant this build knows about.
 ///

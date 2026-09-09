@@ -60,6 +60,32 @@ mixin (
     Orders.getOwned(orderStore, id, caller);
   };
 
+  /// Why a buyer's cancel refused (§4.3, #123).
+  ///
+  /// The wording moved to the frontend; the payloads carry every fact the sentences
+  /// asserted, which is the condition under which copy may leave the canister — see
+  /// §7.2.
+  type CancelOrderError = {
+    #notFound;
+    /// Nothing was charged and nothing will deliver — the opposite case from
+    /// `#notCancellable`, which is why they are separate arms.
+    #alreadyExpired;
+    /// Money has moved or is moving. Carries the status the answer names back.
+    #notCancellable : { status : Types.OrderStatus };
+    /// ⚠️ Stripe answered but would not close the session, and this arm cannot tell
+    /// WHICH of three causes it was: the payment completed, the session had already
+    /// expired, or Stripe refused the request. One tag for all three is the point (#118)
+    /// — anything more specific would be a diagnosis this arm does not have.
+    #sessionNotClosed;
+    /// A 5xx or the outcall itself failing. The order stays payable and uncancelled.
+    #stripeUnavailable;
+    /// 401/403 — the operator has been notified through the latch.
+    #credentialsRefused;
+    /// Someone else settled the order while this call was in flight. Carries the status
+    /// it settled to, which the sentence used to defer to the page for.
+    #settledInFlight : { status : Types.OrderStatus };
+  };
+
   /// Order history for the caller (§2, fixes the lost-receipt problem).
   /// The caller's own orders, **paginated** (#38).
   ///
@@ -139,8 +165,8 @@ mixin (
   ///
   /// No problem filed: nothing is owed, and filing an obligation for an order where no
   /// money moved is exactly the noise the worklist must not accumulate.
-  public shared ({ caller }) func cancel_order(id : Types.OrderId) : async Result.Result<Types.Order, Text> {
-    let ?order = Orders.getOwned(orderStore, id, caller) else return #err("no order " # id);
+  public shared ({ caller }) func cancel_order(id : Types.OrderId) : async Result.Result<Types.Order, CancelOrderError> {
+    let ?order = Orders.getOwned(orderStore, id, caller) else return #err(#notFound);
     // WHICH answer is `Orders.cancelShape`'s decision, over the whole status space and
     // unit-tested there; how it READS stays here, because a buyer sees these words
     // verbatim (§4.3 / #118).
@@ -148,14 +174,9 @@ mixin (
       case (#proceed) {};
       case (#alreadyCancelled) return #ok(order);
       case (#alreadyExpired) {
-        return #err("order " # id # " has already expired, so there is nothing to cancel");
+        return #err(#alreadyExpired);
       };
-      case (#notCancellable(status)) {
-        return #err(
-          "order " # id # " is " # Types.statusToText(status)
-          # "; a paid order cannot be cancelled — it will deliver, or contact support"
-        );
-      };
+      case (#notCancellable(status)) return #err(#notCancellable({ status }));
     };
     // `#cancelled`, not `#expired`: the buyer's own decision is a distinct state,
     // so a reload shows them "Cancelled" rather than telling them their order
@@ -218,11 +239,7 @@ mixin (
             // audits Stripe's body verbatim as `order.expireRaced`. A malformed request
             // is not per-order: it fails every cancel, so running it once against a live
             // `#created` order surfaces the cause. RUNBOOK §8 carries the row.
-            return #err(
-              "Stripe would not close the payment session for order " # id
-              # ". If it was paid it will deliver; if not it expires on its own. Refresh"
-              # " the page to see which"
-            );
+            return #err(#sessionNotClosed);
           };
           case (#failed(detail)) {
             // The order stays payable and uncancelled, which is the safe side:
@@ -240,9 +257,7 @@ mixin (
             // and something went wrong at its end. The old wording claimed a diagnosis
             // this arm does not have, and it was the wording a buyer saw for an
             // already-paid order, which took a different branch entirely.
-            return #err(
-              "could not cancel order " # id # " at Stripe — try again, or it expires on its own"
-            );
+            return #err(#stripeUnavailable);
           };
           case (#unauthorized) {
             // ⚠️ The one expire answer that means "rotate the key", and the only one
@@ -251,9 +266,7 @@ mixin (
             ops.noteStripeApiFailed(
               "expire REFUSED (401/403): the restricted key needs WRITE on Checkout Sessions — rotate it"
             );
-            return #err(
-              "could not cancel order " # id # ": Stripe refused our credentials. An operator has been notified; the order expires on its own if it is not paid"
-            );
+            return #err(#credentialsRefused);
           };
         };
       };
@@ -264,7 +277,7 @@ mixin (
       // `checkout.session.expired` webhook Stripe fires from our own expire call
       // routinely lands first, reads `cancelRequests`, and records `#cancelled`. So
       // report the buyer's own order back to them rather than an error.
-      let ?fresh = Orders.get(orderStore, id) else return #err("no order " # id);
+      let ?fresh = Orders.get(orderStore, id) else return #err(#notFound);
       switch (fresh.status) {
         case (#cancelled) {
           cancelRequests.remove(id);
@@ -275,9 +288,7 @@ mixin (
           // Genuinely something else: paid in the window, or an admin ended it. The
           // page re-renders from this response, so it shows what actually happened.
           cancelRequests.remove(id);
-          return #err(
-            "order " # id # " was already settled while this was in flight — the status above is current"
-          );
+          return #err(#settledInFlight({ status = fresh.status }));
         };
       };
     };

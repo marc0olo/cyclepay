@@ -63,6 +63,7 @@ import {
   formatAgo,
   formatDuration,
   checkReceipt,
+  cancelOrderErrorMessage,
   createOrderErrorMessage,
   PRE_ANNOUNCED_GATE_REASONS,
   type GateReason,
@@ -2802,7 +2803,7 @@ async function onCancelOrder(): Promise<void> {
   try {
     const result = await backend.cancel_order(orderId);
     if (result.__kind__ === "err") {
-      status.textContent = result.err;
+      status.textContent = cancelOrderErrorMessage(result.err);
       show("cancel-status", true);
       btn.disabled = false;
       return;

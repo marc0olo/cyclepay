@@ -3,6 +3,8 @@ import {
   checkReceipt,
   decodeBurnMemo,
   CREATE_ORDER_ERROR_KEYS,
+  CANCEL_ORDER_ERROR_KEYS,
+  cancelOrderErrorMessage,
   createOrderErrorMessage,
   cyclesCredited,
   cyclesForCents,
@@ -116,6 +118,47 @@ describe("shortPrincipal", () => {
 describe("nsToMillis", () => {
   test("truncates to milliseconds", () => {
     expect(nsToMillis(1_700_000_000_123_456_789n)).toBe(1_700_000_000_123);
+  });
+});
+
+describe("cancelOrderErrorMessage", () => {
+  // ⚠️ Keys come from `CANCEL_ORDER_ERROR_KEYS`, which is typed
+  // `Record<CancelOrderError["__kind__"], true>` — so a variant added to the canister and
+  // omitted from the copy map is a compile error here, not a buyer seeing a tag name.
+  test("every variant has a sentence, and none is the escape hatch", () => {
+    const keys = Object.keys(CANCEL_ORDER_ERROR_KEYS) as Array<
+      keyof typeof CANCEL_ORDER_ERROR_KEYS
+    >;
+    expect(keys.length).toBeGreaterThan(0);
+    for (const key of keys) {
+      const payload =
+        key === "notCancellable" || key === "settledInFlight"
+          ? { __kind__: key, [key]: { status: "paid" } }
+          : { __kind__: key };
+      const message = cancelOrderErrorMessage(payload as never);
+      expect(message, key).not.toMatch(/^Cancellation failed:/);
+      expect(message.length, key).toBeGreaterThan(20);
+    }
+  });
+
+  test("the two status-carrying arms name the status in the BUYER's vocabulary", () => {
+    // Not the raw tag: `statusInfo` owns the words a buyer sees for a status, so these
+    // sentences read "payment received" rather than "paid" and cannot drift from the
+    // labels on the order page.
+    for (const status of ["paid", "cancelled"] as const) {
+      const expected = statusInfo(status).label.toLowerCase();
+      expect(
+        cancelOrderErrorMessage({ __kind__: "notCancellable", notCancellable: { status } } as never),
+      ).toContain(expected);
+      expect(
+        cancelOrderErrorMessage({ __kind__: "settledInFlight", settledInFlight: { status } } as never),
+      ).toContain(expected);
+    }
+  });
+
+  test("an unknown tag falls back rather than throwing", () => {
+    // A canister ahead of this build. Showing the tag beats showing nothing.
+    expect(cancelOrderErrorMessage({ __kind__: "somethingNew" } as never)).toContain("somethingNew");
   });
 });
 

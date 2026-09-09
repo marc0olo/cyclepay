@@ -21,6 +21,15 @@ export interface Account {
 }
 export type Amount = { 'custom' : bigint } |
   { 'tier' : string };
+export type CancelOrderError = {
+    'notCancellable' : { 'status' : OrderStatus }
+  } |
+  { 'settledInFlight' : { 'status' : OrderStatus } } |
+  { 'alreadyExpired' : null } |
+  { 'notFound' : null } |
+  { 'stripeUnavailable' : null } |
+  { 'sessionNotClosed' : null } |
+  { 'credentialsRefused' : null };
 export interface Config {
   'feeBps' : bigint,
   'divisor' : bigint,
@@ -347,7 +356,7 @@ export type Result_14 = { 'ok' : Order } |
 export type Result_15 = { 'ok' : CreatedOrder } |
   { 'err' : CreateOrderError };
 export type Result_16 = { 'ok' : Order } |
-  { 'err' : string };
+  { 'err' : CancelOrderError };
 export type Result_17 = { 'ok' : null } |
   { 'err' : Reason };
 export type Result_18 = { 'ok' : Order } |

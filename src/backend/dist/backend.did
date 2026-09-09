@@ -107,7 +107,7 @@ type Result_17 =
  };
 type Result_16 = 
  variant {
-   err: text;
+   err: CancelOrderError;
    ok: Order;
  };
 type Result_15 = 
@@ -588,6 +588,16 @@ type Config =
    maxAgeNs: int;
    maxRateDeltaBps: nat;
    minRateSources: nat;
+ };
+type CancelOrderError = 
+ variant {
+   alreadyExpired;
+   credentialsRefused;
+   notCancellable: record {status: OrderStatus;};
+   notFound;
+   sessionNotClosed;
+   settledInFlight: record {status: OrderStatus;};
+   stripeUnavailable;
  };
 type Amount = 
  variant {
