@@ -94,9 +94,20 @@ module {
     #ok(origin.trimEnd(#char '/'));
   };
 
-  /// Everything before the first `/`, with any port removed.
+  /// The host: authority minus userinfo, minus port.
+  ///
+  /// ⚠️ **Userinfo is stripped FIRST, and skipping it accepted a public host as
+  /// loopback.** `http://localhost:8000@evil.com` has host `evil.com` — a browser reads
+  /// everything before the last `@` as credentials — while a port-first parse sees the
+  /// text before the first colon and answers `localhost`. Four of the five userinfo
+  /// spellings passed that way; only the one without a port was refused, which is
+  /// precisely the member the trap test happened to contain.
+  ///
+  /// The LAST `@` is the separator, because userinfo may itself contain one.
   func hostOf(afterScheme : Text) : Text {
-    let hostPort = afterScheme.split(#char '/').next() ?? "";
+    let authority = afterScheme.split(#char '/').next() ?? "";
+    let parts = authority.split(#char '@').toArray();
+    let hostPort = parts[parts.size() - 1];
     // An IPv6 literal keeps its brackets: the colons inside are not a port separator.
     if (hostPort.startsWith(#text "[")) {
       return (hostPort.split(#char ']').next() ?? "") # "]";

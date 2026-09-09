@@ -423,8 +423,25 @@ suite("validateOrigin — https, or loopback http (#83 groundwork)", func() {
     assert Session.validateOrigin("http://localhost.evil.com") == #err(#notHttps);
     assert Session.validateOrigin("http://evil.com/localhost") == #err(#notHttps);
     assert Session.validateOrigin("http://notlocalhost") == #err(#notHttps);
-    // A loopback-looking userinfo prefix does not make the host loopback either.
-    assert Session.validateOrigin("http://localhost@evil.com") == #err(#notHttps);
+    // ⚠️ **The whole userinfo family, not one member of it.** A browser reads everything
+    // before the LAST `@` as credentials, so the host here is always `evil.com`. The
+    // first version of this test had only the port-less spelling — the single member a
+    // port-first parse happens to refuse — so it read as coverage of the family while
+    // four of five were accepted.
+    for (
+      origin in [
+        "http://localhost@evil.com",
+        "http://localhost:8000@evil.com",
+        "http://127.0.0.1:80@evil.com",
+        "http://localhost:8000@evil.com/pay",
+        "http://[::1]:8000@evil.com",
+        "http://user@localhost@evil.com",
+      ].values()
+    ) {
+      assert Session.validateOrigin(origin) == #err(#notHttps);
+    };
+    // And userinfo in front of a genuinely loopback host is still loopback.
+    assert Session.validateOrigin("http://user@localhost:8000") == #ok("http://user@localhost:8000");
   });
 
   test("non-loopback http is still refused", func() {
