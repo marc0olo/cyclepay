@@ -17,6 +17,7 @@ import IC "mo:ic/Types";
 // `n.toText()` and `blob.decodeUtf8()` resolve through the imported module, so
 // dropping an "unused" import here is a compile error rather than a tidy-up.
 import Char "mo:core/Char";
+import Result "mo:core/Result";
 import Iter "mo:core/Iter";
 import Nat "mo:core/Nat";
 import Nat8 "mo:core/Nat8";
@@ -49,6 +50,86 @@ module {
 
   /// `POST /v1/checkout/sessions/{id}/expire` — what `cancel_order` calls to
   /// make an order provably unpayable before marking it `#cancelled`.
+  /// Why an origin was refused.
+  ///
+  /// In this module rather than the mixin so the parsing below is unit-testable; the
+  /// Candid name comes from this declaration, so the interface is unchanged (§9.1).
+  public type OriginError = {
+    /// Non-loopback `http://`. A plain-HTTP return URL after a card payment is not a
+    /// thing to offer, and Stripe would render it.
+    #notHttps;
+    /// A query string or fragment would collide with the `#/order/<id>` route appended
+    /// to it, producing a URL that does not resolve to the order.
+    #hasQueryOrFragment;
+    /// No authority at all — `https://`, `http:///path`. The scheme is fine and there
+    /// is nothing to return a buyer to.
+    #noHost;
+    #empty;
+  };
+
+  /// The origin Stripe returns buyers to, validated and normalised.
+  ///
+  /// ⚠️ **`http://` is accepted for LOOPBACK hosts only, and that is Stripe-correct.**
+  /// `success_url` is a redirect target for the buyer's own browser — Stripe never
+  /// fetches it — and Stripe's API reference states no scheme requirement, while its own
+  /// Checkout quickstart uses `http://localhost:4242/success.html`. The https rule is
+  /// ours, and its reason (never send a buyer to a plaintext page after paying) does not
+  /// apply to traffic that never leaves the machine.
+  ///
+  /// ⚠️ **The host is PARSED, not substring-matched.** `http://localhost.evil.com` is
+  /// the trap: it contains "localhost" and is not loopback. Only an exact `localhost`,
+  /// `127.0.0.1`, `[::1]`, or a `.localhost` subdomain qualifies — the last because a
+  /// local `icp network` serves the frontend at `http://frontend.local.localhost:8000`.
+  public func validateOrigin(origin : Text) : Result.Result<Text, OriginError> {
+    if (origin.size() == 0) return #err(#empty);
+    // Scheme, then host, then the loopback question — in that order, so each refusal
+    // names the first thing actually wrong. Deciding loopback first made `http://`
+    // answer `#notHttps` while `https://` answered `#noHost`, for the same defect.
+    let https = if (origin.startsWith(#text "https://")) true else if (origin.startsWith(#text "http://")) false else {
+      return #err(#notHttps);
+    };
+    let host = hostOf(origin.trimStart(#text (if (https) "https://" else "http://")));
+    if (host.size() == 0) return #err(#noHost);
+    if (not https and not isLoopbackHost(host)) return #err(#notHttps);
+    if (origin.contains(#char '?') or origin.contains(#char '#')) {
+      return #err(#hasQueryOrFragment);
+    };
+    // Trailing slash trimmed here rather than at every use site, so
+    // `origin # "/#/order/" # id` cannot produce a double slash.
+    #ok(origin.trimEnd(#char '/'));
+  };
+
+  /// The host: authority minus userinfo, minus port.
+  ///
+  /// ⚠️ **Userinfo is stripped FIRST, and skipping it accepted a public host as
+  /// loopback.** `http://localhost:8000@evil.com` has host `evil.com` — a browser reads
+  /// everything before the last `@` as credentials — while a port-first parse sees the
+  /// text before the first colon and answers `localhost`. Four of the five userinfo
+  /// spellings passed that way; only the one without a port was refused, which is
+  /// precisely the member the trap test happened to contain.
+  ///
+  /// The LAST `@` is the separator, because userinfo may itself contain one.
+  func hostOf(afterScheme : Text) : Text {
+    let authority = afterScheme.split(#char '/').next() ?? "";
+    let parts = authority.split(#char '@').toArray();
+    // ⚠️ **Guarded, because `"".split(#char '@')` yields ZERO elements and `size() - 1`
+    // underflows on `Nat`.** `set_stripe_origin("http://")` trapped here rather than
+    // returning its declared `Result` — a method that promises a typed refusal had a
+    // path around it. The line this replaced was option-returning (`.next() ?? ""`) and
+    // could not underflow; swapping it for an array index is what introduced it.
+    let hostPort = if (parts.size() == 0) "" else parts[parts.size() - 1];
+    // An IPv6 literal keeps its brackets: the colons inside are not a port separator.
+    if (hostPort.startsWith(#text "[")) {
+      return (hostPort.split(#char ']').next() ?? "") # "]";
+    };
+    hostPort.split(#char ':').next() ?? "";
+  };
+
+  func isLoopbackHost(host : Text) : Bool {
+    host == "localhost" or host == "127.0.0.1" or host == "[::1]"
+    or host.endsWith(#text ".localhost");
+  };
+
   public func expireUrl(sessionId : Text) : Text {
     createUrl # "/" # sessionId # "/expire";
   };

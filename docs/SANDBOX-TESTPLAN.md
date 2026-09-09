@@ -323,17 +323,16 @@ every purchase is refused with `#reserveShort{available = 0}` against a funded
 account: solvency is decided against a lower bound that only rises by observation
 (#30 PR-B). `reserve_status.availableToSell` is the figure to check.
 
-⚠️ **Two things that look like bugs and are not:**
+⚠️ **One thing that looks like a bug and is not:**
 
 - **The session expires 35 minutes after creation**, enforced by Stripe. Past that
   the pay button disappears — the UI renders expiry from `expiresAtNs`, not from
   the status, so it goes even before the `checkout.session.expired` webhook lands.
-- **After paying, Stripe redirects to the configured origin**
-  (`https://<frontend-id>.icp0.io`), which does **not** serve your local frontend.
-  The payment completes and the webhook fires regardless; only the landing page
-  fails to load. There is no local https origin to point at, and a caller-supplied
-  `success_url` is deliberately impossible — it would be an open redirect Stripe
-  renders after a real payment.
+
+The post-payment redirect **does** land now: the seed points the origin at
+`http://frontend.local.localhost:<port>`, which `Session.validateOrigin` accepts because
+the host is loopback. A caller-supplied `success_url` remains deliberately impossible —
+it would be an open redirect Stripe renders after a real payment.
 
 #### Giving the local CMC a current rate
 

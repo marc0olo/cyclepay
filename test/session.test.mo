@@ -396,3 +396,82 @@ suite("retrieve: url, cap, and the classifier (#52)", func() {
     };
   });
 });
+
+suite("validateOrigin — https, or loopback http (#83 groundwork)", func() {
+  /// ⚠️ Stripe imposes no scheme requirement on `success_url` — it is a redirect target
+  /// for the buyer's own browser, and Stripe's own quickstart uses
+  /// `http://localhost:4242/success.html`. The https rule is ours, and its reason (never
+  /// send a buyer to a plaintext page after paying) is vacuous for loopback.
+
+  test("https is accepted and the trailing slash is trimmed", func() {
+    assert Session.validateOrigin("https://cyclepay.icp0.io") == #ok("https://cyclepay.icp0.io");
+    assert Session.validateOrigin("https://cyclepay.icp0.io/") == #ok("https://cyclepay.icp0.io");
+  });
+
+  test("loopback http is accepted, in all four spellings", func() {
+    // `.localhost` matters: a local `icp network` serves the frontend at
+    // `http://frontend.local.localhost:8000`.
+    assert Session.validateOrigin("http://localhost:8000") == #ok("http://localhost:8000");
+    assert Session.validateOrigin("http://127.0.0.1:8000") == #ok("http://127.0.0.1:8000");
+    assert Session.validateOrigin("http://[::1]:8000") == #ok("http://[::1]:8000");
+    assert Session.validateOrigin("http://frontend.local.localhost:8000")
+      == #ok("http://frontend.local.localhost:8000");
+  });
+
+  test("⚠️ a host that merely CONTAINS localhost is refused", func() {
+    // The trap a substring match would fall into, and the reason the host is parsed.
+    assert Session.validateOrigin("http://localhost.evil.com") == #err(#notHttps);
+    assert Session.validateOrigin("http://evil.com/localhost") == #err(#notHttps);
+    assert Session.validateOrigin("http://notlocalhost") == #err(#notHttps);
+    // ⚠️ **The whole userinfo family, not one member of it.** A browser reads everything
+    // before the LAST `@` as credentials, so the host here is always `evil.com`. The
+    // first version of this test had only the port-less spelling — the single member a
+    // port-first parse happens to refuse — so it read as coverage of the family while
+    // four of five were accepted.
+    for (
+      origin in [
+        "http://localhost@evil.com",
+        "http://localhost:8000@evil.com",
+        "http://127.0.0.1:80@evil.com",
+        "http://localhost:8000@evil.com/pay",
+        "http://[::1]:8000@evil.com",
+        "http://user@localhost@evil.com",
+      ].values()
+    ) {
+      assert Session.validateOrigin(origin) == #err(#notHttps);
+    };
+    // And userinfo in front of a genuinely loopback host is still loopback.
+    assert Session.validateOrigin("http://user@localhost:8000") == #ok("http://user@localhost:8000");
+  });
+
+  test("non-loopback http is still refused", func() {
+    assert Session.validateOrigin("http://cyclepay.icp0.io") == #err(#notHttps);
+    assert Session.validateOrigin("ftp://cyclepay.icp0.io") == #err(#notHttps);
+    assert Session.validateOrigin("cyclepay.icp0.io") == #err(#notHttps);
+  });
+
+  test("a query or fragment is refused, on either scheme", func() {
+    // It would collide with the `#/order/<id>` route appended to the origin.
+    assert Session.validateOrigin("https://cyclepay.icp0.io?x=1") == #err(#hasQueryOrFragment);
+    assert Session.validateOrigin("https://cyclepay.icp0.io#/order") == #err(#hasQueryOrFragment);
+    assert Session.validateOrigin("http://localhost:8000?x=1") == #err(#hasQueryOrFragment);
+  });
+
+  test("empty is its own answer", func() {
+    assert Session.validateOrigin("") == #err(#empty);
+  });
+
+  test("⚠️ a degenerate authority is refused, and does not TRAP", func() {
+    // `"".split(#char '@')` yields zero elements, so an array index underflowed on Nat
+    // and `set_stripe_origin("http://")` trapped instead of returning its Result. Every
+    // member of the family, because sampling one member of a family is what let the
+    // userinfo bypass through.
+    for (origin in ["http://", "https://", "http:///path", "https:///", "http://@", "http://localhost@"].values()) {
+      assert Session.validateOrigin(origin) == #err(#noHost);
+    };
+    // ⚠️ `https://` used to answer #ok("https:"), which makes success_url
+    // `https:/#/order/<id>`. Refused now, and as #noHost rather than #notHttps — it IS
+    // https, so that reason would have been false.
+    assert Session.validateOrigin("https://") != #err(#notHttps);
+  });
+});
