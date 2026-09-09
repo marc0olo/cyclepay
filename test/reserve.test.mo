@@ -228,3 +228,43 @@ suite("available and canCover", func() {
     assert not Reserve.canCover(10_000, 10_000, 1);
   });
 });
+
+suite("withdrawable — the refusal ladder, and its order (#127)", func() {
+  /// ⚠️ **The order of the arms is behaviour.** An operator decommissioning a gateway
+  /// reads the refusal as an instruction: "orders outstanding" is a state they have to
+  /// clear, while "nothing to withdraw" invites a retry that will never differ. Reporting
+  /// the second when the first is also true sends them to the wrong place.
+  let noFee = 0;
+
+  test("outstanding orders outrank an empty floor", func() {
+    // Both conditions true. The ladder must report the one that needs action.
+    assert Reserve.withdrawable(1, 3_500, 0, noFee) == #err(#ordersOutstanding({ holders = 1; promised = 3_500 }));
+  });
+
+  test("⚠️ the holder count decides, and the tally is only carried", func() {
+    // `applyDelta` clamps a release to zero, so `promised` can read 0 while holders
+    // exist — the saturation state. Guarding on the tally would admit the withdrawal
+    // this ladder exists to refuse, so a zero tally with a live holder must still refuse.
+    assert Reserve.withdrawable(1, 0, 50_000, noFee) == #err(#ordersOutstanding({ holders = 1; promised = 0 }));
+    // And the reverse: no holders, so a nonzero tally does not block. It is diagnostic.
+    assert Reserve.withdrawable(0, 999, 50_000, noFee) == #ok({ debited = 50_000; amount = 50_000 });
+  });
+
+  test("an empty floor is distinguishable from a successful withdrawal of nothing", func() {
+    assert Reserve.withdrawable(0, 0, 0, noFee) == #err(#nothingToWithdraw);
+  });
+
+  test("a floor that cannot clear the fee is refused, with both figures", func() {
+    // Not "withdraw zero": there is nothing recoverable, and the operator needs to see
+    // why rather than watch a no-op succeed.
+    assert Reserve.withdrawable(0, 0, 100, 100) == #err(#belowLedgerFee({ floor = 100; fee = 100 }));
+    assert Reserve.withdrawable(0, 0, 99, 100) == #err(#belowLedgerFee({ floor = 99; fee = 100 }));
+  });
+
+  test("⚠️ the amount is the floor LESS the fee, because the ledger charges it on top", func() {
+    // The same correction §5.4 carries for delivery: debiting `amount` alone would leave
+    // the floor overstating the account by exactly the fee.
+    assert Reserve.withdrawable(0, 0, 101, 100) == #ok({ debited = 101; amount = 1 });
+    assert Reserve.withdrawable(0, 0, 50_000, 100) == #ok({ debited = 50_000; amount = 49_900 });
+  });
+});

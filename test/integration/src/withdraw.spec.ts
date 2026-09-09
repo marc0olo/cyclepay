@@ -161,6 +161,56 @@ test('103d — the destination is IN the audit record, not just the fact of a wi
   expect(withdrawn[0]!.detail).toContain('incl. fee');
 });
 
+test('103g — a create landing INSIDE the withdrawal is refused, because the floor drops first', async () => {
+  // ⚠️ **Rule 2 of §5.4, observed rather than reviewed.** `withdraw_reserve` decrements
+  // the floor SYNCHRONOUSLY before issuing the transfer, so a `create_order` arriving in
+  // the window between them is refused by `Gate.solvent` for free. Move the decrement
+  // after the transfer and that create is admitted instead — the buyer pays for cycles
+  // that are already leaving.
+  //
+  // ⚠️ **103e said no such test could exist, and that was wrong.** Its measurement was
+  // right ("with the decrement moved after the transfer, every test here still passed"),
+  // but its explanation — "a `pic.tick()` drains the whole message including its
+  // inter-canister awaits, and there is no way to land an ingress message inside one" —
+  // generalised past it. `pic.tick(1)` advances ONE round, not to quiescence, so a
+  // deferred call parks across rounds and ingress lands in between. The affordance was
+  // already in the harness: `deferredAdmin`, added for `expire_order`.
+  await fundReserve(gw, RESERVE);
+  await gw.asAdmin.refresh_reserve();
+  expect(await holders()).toBe(0n);
+  const balanceBefore = await reserveBalance(gw);
+  expect(balanceBefore).toBeGreaterThan(TIER_LOCKED_CYCLES);
+
+  const settle = await gw.deferredAdmin.withdraw_reserve();
+
+  // ⚠️ **Ticked until the state moves, never to a fixed round.** Which round exposes the
+  // window depends on how many the observe takes, so a literal would break on an
+  // unrelated change and read as a real failure. Bounded, and it aborts loudly if the
+  // window never appears rather than asserting over a state it never reached.
+  let rounds = 0;
+  let floorNow = (await gw.asAnon.reserve_status()).reserveFloor;
+  while (floorNow !== 0n && rounds < 12) {
+    await gw.pic.tick(1);
+    floorNow = (await gw.asAnon.reserve_status()).reserveFloor;
+    rounds += 1;
+  }
+  expect(floorNow, `the floor never reached 0 in ${rounds} rounds — the window was never entered`).toBe(0n);
+
+  // THE WINDOW: the floor is committed to zero and the cycles are still in the account.
+  expect(await reserveBalance(gw)).toBe(balanceBefore);
+
+  // ⚠️ **And the safety property itself, not a proxy for it.** A buyer arriving here is
+  // quoted against a floor of zero, so admission refuses before any session is created.
+  // On the mutated ordering this call is ADMITTED, which is the oversell.
+  const refused = expectErr(
+    await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []),
+  ) as { notAdmitted: Record<string, unknown> };
+  expect(Object.keys(refused.notAdmitted)).toEqual(['reserveShort']);
+
+  expectOk(await settle());
+  expect(await reserveBalance(gw)).toBe(0n);
+});
+
 test('103e — the two interleaving windows, and ⚠️ what this suite CANNOT prove', async () => {
   // `withdraw_reserve` has two awaits and a rule for each:
   //
@@ -176,12 +226,20 @@ test('103e — the two interleaving windows, and ⚠️ what this suite CANNOT p
   // so the value arrives with the result and there is nothing to forget. Rule 2 — the
   // decrement before the transfer — still rests on review.
   //
-  // ⚠️ **NEITHER ordering is verified by this suite, and saying so is the point.**
-  // Measured, not assumed: with the re-read deleted, and again with the decrement moved
-  // after the transfer, every test here still passed. A `pic.tick()` drains the whole
-  // message including its inter-canister awaits, and there is no way to land an ingress
-  // message inside one — so a create submitted before the withdrawal never reaches the
-  // window, and one submitted after finds the work already done.
+  // ⚠️ **CORRECTION (#127): rule 2 IS verified now — by 103g above — and this comment's
+  // explanation was wrong.** Its measurement was right: with the decrement moved after
+  // the transfer, every test that existed *then* still passed. But the reason given —
+  // "a `pic.tick()` drains the whole message including its inter-canister awaits, and
+  // there is no way to land an ingress message inside one" — generalised from "these
+  // tests do not catch it" to "no test can", and that is false. `pic.tick(1)` advances
+  // ONE round rather than to quiescence, so a deferred call parks across rounds and
+  // ingress lands in between; `deferredAdmin` was already in the harness. 103g runs that
+  // mutation and is the only scenario of 115 that fails on it.
+  //
+  // ⚠️ **Rule 1 remains unverified here**, and it is the one this comment's residue
+  // applies to: its window sits inside `observeReserve`, and nothing yet lands a create
+  // there. It is structural rather than reviewed — `observeReserve` returns the
+  // post-await holder count with its result — so the gap is narrower than it was.
   //
   // An earlier version of this test asserted "a withdrawal and a create can never both
   // succeed" and passed for the wrong reason every time: the withdrawal simply finished
@@ -189,11 +247,11 @@ test('103e — the two interleaving windows, and ⚠️ what this suite CANNOT p
   // post-drain and the interleave never happened. That is a safety assertion that cannot
   // fail — worse than no test, because it reads as proof.
   //
-  // What IS pinned: the predicate both rules depend on (103b — holders > 0 refuses), and
-  // the observable end state (below). The orderings rest on review of the two comments in
-  // `Main.withdraw_reserve` and on the pattern they copy from `observeReserve`, which
-  // captures `unsettledBefore`/`outflowsIssued` and re-checks after its own await for
-  // exactly this reason.
+  // What IS pinned: the predicate both rules depend on (103b — holders > 0 refuses), the
+  // observable end state (below), and rule 2's ordering (103g). Rule 1 rests on review of
+  // the comment in `withdraw_reserve` and on the pattern it copies from `observeReserve`,
+  // which captures `unsettledBefore`/`outflowsIssued` and re-checks after its own await
+  // for exactly this reason.
   await fundReserve(gw, RESERVE);
   await gw.asAdmin.refresh_reserve();
   expect(await holders()).toBe(0n);
