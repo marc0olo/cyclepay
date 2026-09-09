@@ -395,7 +395,12 @@
              likely to want. -->
         <div class="order-actions">
           <div id="pay-area" hidden>
-            <a id="pay-link" target="_blank" rel="noopener noreferrer" class="cta">Pay with card ↗</a>
+            <!-- IMPORTANT: Same tab, deliberately. A new tab meant Stripe's post-payment
+                 redirect landed in THAT tab, leaving the buyer with two order pages and
+                 no relationship between them. Returning here is safe because
+                 `stripeSessionUrl` lives on the order record (#33/#34), so a back
+                 button, a reload or a deep link all restore the pay button. -->
+            <a id="pay-link" class="cta">Pay with card</a>
           </div>
           <div id="cancel-area" hidden>
             <button id="cancel-order" type="button" class="ghost danger">Cancel this order</button>
@@ -405,7 +410,7 @@
              note about that button, and a note outliving its control is a claim about a
              control that is not there. -->
         <p id="pay-note" class="muted" hidden>
-          Opens Stripe in a new tab. This page updates when the payment clears.
+          Opens Stripe's payment page. You come back here when the payment clears.
         </p>
         <p id="cancel-status" class="error" hidden></p>
 
