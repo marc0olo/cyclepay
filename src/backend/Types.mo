@@ -287,6 +287,59 @@ module {
     memo : Blob;
   };
 
+  /// Every `OrderStatus`, and its index — **the pair a test needs to iterate the status
+  /// space, kept HERE so `-Werror` can enforce it.**
+  ///
+  /// ⚠️ **This lived in `test/orders.test.mo` and could not do its job there.** Measured:
+  /// `mops check -- -Werror` does not compile `test/` at all, and `mops test` passes
+  /// `--hide-warnings` (see `mops.toml`), so a non-exhaustive match in a test file is a
+  /// suppressed M0145 — the array silently stayed at seven while the type grew, and every
+  /// suite iterating it quietly tested less than it claimed. In `src/` the switch below is
+  /// compiled by the gate, so an eighth status **fails the build** until it is handled.
+  ///
+  /// ⚠️ **What this buys, exactly: `-Werror` forces the VISIT, and the array is two
+  /// lines below it.** Adding a status fails the build at five sites, this being one, so
+  /// the developer lands here — and `allStatuses` and `statusCount` are the next thing
+  /// they read. That is a real improvement on the previous arrangement, where the switch
+  /// sat in a test file and nothing in the gate compiled it.
+  ///
+  /// ⚠️ **What it does NOT buy: a mechanical tie.** Handle the new case here, leave the
+  /// array at seven, and the bitmask test still passes — it sees seven statuses each
+  /// exactly once and has no way to ask the type how many there are. A variant omitted
+  /// from BOTH remains undetectable, as `test/orders.test.mo` said before this moved and
+  /// as it still says. Motoko cannot express the enumeration, so the guarantee is
+  /// "you cannot compile without reading this", not "you cannot get it wrong".
+  ///
+  /// @test-oracle — no production caller by design: production switches on a status, it
+  /// never enumerates the space. The enumeration exists so a test can.
+  public func statusIndex(status : OrderStatus) : Nat {
+    switch (status) {
+      case (#created) 0;
+      case (#cancelled) 1;
+      case (#expired) 2;
+      case (#paid) 3;
+      case (#delivered) 4;
+      case (#needsReview) 5;
+      case (#abandoned) 6;
+    };
+  };
+
+  /// The status space as a value. Hand-written, and tied to the type by `statusIndex`
+  /// above plus the bitmask test that consumes both.
+  public let allStatuses : [OrderStatus] = [
+    #created,
+    #cancelled,
+    #expired,
+    #paid,
+    #delivered,
+    #needsReview,
+    #abandoned,
+  ];
+
+  /// The size the bitmask expects, stated once rather than spelled `2 ** 7 - 1` at the
+  /// assertion — where a stale literal reads as arithmetic rather than as a claim.
+  public let statusCount : Nat = 7;
+
   /// What a buyer asked to buy: a configured preset, or an amount they typed.
   ///
   /// ⚠️ **In `Types` rather than the mixin because `Purchase.plan` takes it** (#127).

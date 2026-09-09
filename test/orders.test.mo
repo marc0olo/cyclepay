@@ -18,15 +18,7 @@ import Orders "../src/backend/Orders";
 // legal-transition table. (It said "8" and there are seven — the same stale-count class
 // the comment purge removed ten of, and #84's double-count test leans on this array.)
 
-let allStatuses : [Types.OrderStatus] = [
-  #created,
-  #cancelled,
-  #expired,
-  #paid,
-  #delivered,
-  #needsReview,
-  #abandoned,
-];
+let allStatuses = Types.allStatuses;
 
 // The legal-transition table straight from spec §4 (+ the escalation edges from
 // §4.1/§5.1 and the #34 statuses). Kept as data here so the test is the spec
@@ -49,36 +41,13 @@ let legalTransitions : [(Types.OrderStatus, Types.OrderStatus)] = [
   (#needsReview, #delivered),
 ];
 
-/// Partial tie between `allStatuses` and `Types.OrderStatus`. That array is hand-written,
-/// so without something here an eighth status goes untried by every test that iterates it
-/// — including #84's "double-counting is unrepresentable" test, whose whole value is
-/// trying *every* status as a follow-on transition.
-///
-/// ⚠️ **This is NOT a compile-time tie, and an earlier version of this comment claimed it
-/// was.** Measured: `mops check -- -Werror` does not compile `test/` at all (it reports
-/// `✓ backend` and nothing else), and `mops test` passes `--hide-warnings`, so a
-/// non-exhaustive match here is suppressed rather than fatal. `-Werror` never sees this
-/// file.
-///
-/// What it actually catches, at RUNTIME, via the test below:
-///   - `allStatuses` gaining a variant this switch lacks → the switch traps, test fails.
-///   - `allStatuses` omitting or duplicating one this switch knows → the bitmask fails.
-///
-/// ⚠️ **What nothing catches: a new variant omitted from BOTH.** The backend's own
-/// exhaustive switches do fail under `-Werror` when a status is added, so a new status
-/// cannot ship silently — but once those are fixed, this array can still be stale. Adding
-/// an `OrderStatus` means updating this switch and `allStatuses` by hand.
-func statusIndex(status : Types.OrderStatus) : Nat {
-  switch (status) {
-    case (#created) 0;
-    case (#cancelled) 1;
-    case (#expired) 2;
-    case (#paid) 3;
-    case (#delivered) 4;
-    case (#needsReview) 5;
-    case (#abandoned) 6;
-  };
-};
+/// ⚠️ **The tie now lives in `Types.mo`, where `-Werror` compiles it.** `statusIndex`
+/// and `allStatuses` moved there together: a non-exhaustive switch in THIS file is a
+/// suppressed warning (`mops test` passes `--hide-warnings`, and `mops check -- -Werror`
+/// never compiles `test/`), so the tie could not be enforced from here. What that leaves
+/// below is the consumer: the bitmask that catches an omission or a duplicate in the
+/// array, given an index function the build guarantees is exhaustive.
+let statusIndex = Types.statusIndex;
 
 func isExpectedLegal(from : Types.OrderStatus, to : Types.OrderStatus) : Bool {
   for ((f, t) in legalTransitions.values()) {
@@ -311,7 +280,7 @@ suite("allStatuses is tied to the type", func() {
   test("⚠️ every OrderStatus variant appears exactly once", func() {
     // If this fails, `allStatuses` and `Types.OrderStatus` have diverged and every test
     // that iterates the array is quietly testing less than it claims.
-    assert allStatuses.size() == 7;
+    assert allStatuses.size() == Types.statusCount;
     // A bitmask, so a DUPLICATE is caught as well as an omission — a hand-written array
     // can gain a repeat as easily as it can miss a variant.
     var seen : Nat = 0;
@@ -320,7 +289,8 @@ suite("allStatuses is tied to the type", func() {
       assert seen / bit % 2 == 0; // not already present
       seen += bit;
     };
-    assert seen == 127; // 2^7 − 1: all seven, each exactly once
+    // 2^n − 1: every status, each exactly once.
+    assert seen == (2 ** Types.statusCount - 1 : Nat);
   });
 });
 
@@ -1575,6 +1545,57 @@ suite("unresolvedProblemOrderCount is the index size (#68)", func() {
     assert Orders.unresolvedProblemOrderCount(store) == 2;
     assert Orders.unresolvedProblemCount(store) == 3;
     assert Orders.unresolvedProblemOrderCount(store) == Orders.withUnresolvedProblems(store).size();
+  });
+});
+
+suite("cancelShape covers the whole status space (#127)", func() {
+  /// ⚠️ **`Types.allStatuses`, not a second hand-written list.** An earlier version of
+  /// this suite copied the seven out and claimed "adding an eighth status is a compile
+  /// error there, and this array is what then fails to cover it" — the first half is
+  /// true (`cancelShape`'s switch is exhaustive and `-Werror` compiles it), the second
+  /// was not: a hand-written copy here is tied to nothing, so it would have gone on
+  /// covering seven of eight in silence. Sharing the array means one edit site and one
+  /// bitmask test guarding it.
+  let every = Types.allStatuses;
+
+  test("⚠️ #created is the ONLY status a buyer can cancel", func() {
+    // The money property: `#paid`, `#delivered` and `#needsReview` hold or have spent
+    // cycles, and `#abandoned` is the operator's terminal decision after refunding by
+    // hand. A buyer cancelling any of them would release a promise against cycles that
+    // moved, or contradict that refund.
+    let proceeds = every.filter(func(st) = Orders.cancelShape(st) == #proceed);
+    assert proceeds == [#created];
+  });
+
+  test("the three refusals are distinct, because the reasons are opposite", func() {
+    // An expired order was never charged; a paid one will deliver. Collapsing them would
+    // tell half the buyers something false.
+    assert Orders.cancelShape(#cancelled) == #alreadyCancelled;
+    assert Orders.cancelShape(#expired) == #alreadyExpired;
+    assert Orders.cancelShape(#paid) == #notCancellable(#paid);
+  });
+
+  test("⚠️ every non-cancellable status names ITSELF back", func() {
+    // The endpoint interpolates this into the buyer's message, so a shape that carried
+    // the wrong status would produce a sentence about the wrong order state.
+    for (st in every.values()) {
+      switch (Orders.cancelShape(st)) {
+        case (#notCancellable(named)) assert named == st;
+        case (_) {};
+      };
+    };
+  });
+
+  test("no status is left without an answer", func() {
+    // Guards the list above rather than the function: a status added to `every` but not
+    // to `cancelShape` cannot compile, but a status added to neither would leave this
+    // suite passing over a gap.
+    assert every.size() == Types.statusCount;
+    for (st in every.values()) {
+      let shape = Orders.cancelShape(st);
+      assert shape == #proceed or shape == #alreadyCancelled or shape == #alreadyExpired
+        or shape == #notCancellable(st);
+    };
   });
 });
 

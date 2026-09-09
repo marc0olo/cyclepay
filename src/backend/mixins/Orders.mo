@@ -141,16 +141,16 @@ mixin (
   /// money moved is exactly the noise the worklist must not accumulate.
   public shared ({ caller }) func cancel_order(id : Types.OrderId) : async Result.Result<Types.Order, Text> {
     let ?order = Orders.getOwned(orderStore, id, caller) else return #err("no order " # id);
-    switch (order.status) {
-      case (#created) {};
-      case (#cancelled) return #ok(order); // idempotent: already given up on
-      // Named separately because the catch-all's wording is about a PAID order, and an
-      // expired one is the opposite case: nothing was charged and nothing will deliver.
-      // A stale tab is enough to reach it.
-      case (#expired) {
+    // WHICH answer is `Orders.cancelShape`'s decision, over the whole status space and
+    // unit-tested there; how it READS stays here, because a buyer sees these words
+    // verbatim (§4.3 / #118).
+    switch (Orders.cancelShape(order.status)) {
+      case (#proceed) {};
+      case (#alreadyCancelled) return #ok(order);
+      case (#alreadyExpired) {
         return #err("order " # id # " has already expired, so there is nothing to cancel");
       };
-      case (status) {
+      case (#notCancellable(status)) {
         return #err(
           "order " # id # " is " # Types.statusToText(status)
           # "; a paid order cannot be cancelled — it will deliver, or contact support"

@@ -3088,6 +3088,48 @@ test('67c — the cycles DELIVERED are the cycles HELD, across a rate move (#127
   expectOk(await gw.asAdmin.set_pricing_config(pricingDefaults));
 });
 
+test('68a — a cancel releases exactly one promise, and a second cancel releases none', async () => {
+  // ⚠️ **The mirror of 67c, on the release side.** A cancel frees a promise on the one
+  // path a BUYER can trigger, so a release that fires twice is reachable by clicking
+  // twice — no race required.
+  //
+  // ⚠️ **The holder SET is the authoritative predicate, not the total.**
+  // `Reserve.applyDelta`'s `#release` arm clamps at zero with `saturated = true`, so a
+  // double release of the last outstanding promise leaves the total reading a perfectly
+  // correct 0. The set cannot hide it: an id is either in it or not. That is why the
+  // assertions below are on `promiseHolders` first and the total second.
+  await ensureRates(gw);
+  const before = await gw.asAnon.reserve_status();
+
+  const held = expectOk(await createOrderWithSession(gw, { tier: 'tier5' }, USER_ACCOUNT, []));
+  const mid = await gw.asAnon.reserve_status();
+  expect(mid.promiseHolders).toBe(before.promiseHolders + 1n);
+  expect(mid.promisedTotal - before.promisedTotal).toBe(TIER_LOCKED_CYCLES);
+
+  expectOk(await cancelOrderWithExpire(gw, held.order.id));
+  const after = await gw.asAnon.reserve_status();
+  expect(after.promiseHolders).toBe(before.promiseHolders);
+  expect(after.promisedTotal).toBe(before.promisedTotal);
+
+  // ⚠️ **Mutation-verified against a real adjacent defect**, not merely a
+  // characterisation: with the holder index left stale on release, this scenario fails
+  // (with 68a, 69 and six others). What no single edit can produce is a double release on
+  // the buyer path — three layers prevent it: `cancelShape`'s early return, the
+  // transition matrix, and `tallyDelta`'s `holdsPromise` predicate.
+  //
+  // ⚠️ **The second cancel is the double-release test, and it needs no interleaving.**
+  // It takes `cancelShape`'s `#alreadyCancelled` arm and returns the order — if it
+  // released again, the holder count would go NEGATIVE and instead clamps, which is
+  // exactly the invisibility the set assertion above defeats.
+  expectOk(await gw.asUser.cancel_order(held.order.id));
+  const twice = await gw.asAnon.reserve_status();
+  expect(twice.promiseHolders).toBe(before.promiseHolders);
+  expect(twice.promisedTotal).toBe(before.promisedTotal);
+  // A clamp is the fingerprint of a release against an empty tally. It must not have
+  // happened even once here.
+  expect(twice.tallySaturations).toBe(before.tallySaturations);
+});
+
 test('68 — a cancel racing session creation cannot leave a payable URL behind (#33)', async () => {
   // THE INTERLEAVING the continuation re-check exists for, and it had no test —
   // the same shape as #46's untested `attach_payment` guard, so it gets one now.
@@ -3138,6 +3180,7 @@ test('69 — a FAILED session creation racing a cancel does not double-release (
   // A direct write would move a terminal order back to `#expired` — and once #30
   // lands, release a promise that cancellation already released.
   await ensureRates(gw);
+  const promisesBefore = await gw.asAnon.reserve_status();
 
   const settle = await gw.deferredUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []);
   const outcall = await awaitPendingOutcall(gw);
@@ -3155,6 +3198,21 @@ test('69 — a FAILED session creation racing a cancel does not double-release (
   const stayed = (await gw.asUser.get_order(orderId))[0]!;
   expect(statusKey(stayed)).toBe('cancelled');
   expect(stayed.expiredBy).toHaveLength(0);
+  // ⚠️ **The hazard this scenario is NAMED for was never asserted** — "release a promise
+  // that cancellation already released", per the comment above. The failure handler runs
+  // against an order the cancel already settled, so the release is the thing at risk.
+  // The holder set is what can see it: a second release clamps the total at zero and
+  // leaves it reading correctly.
+  //
+  // ⚠️ **Measured, because "it needed asserting" is easy to say and cheap to check
+  // wrongly.** With the holder index left stale on release, this scenario PASSED on its
+  // status-only assertions (7 others failed) and fails with these three. Note the probe
+  // has to run the whole file: `-t` isolation fails at setup here, because scenarios
+  // depend on earlier ones installing the XRC mock.
+  const settled = await gw.asAnon.reserve_status();
+  expect(settled.promiseHolders).toBe(promisesBefore.promiseHolders);
+  expect(settled.promisedTotal).toBe(promisesBefore.promisedTotal);
+  expect(settled.tallySaturations).toBe(promisesBefore.tallySaturations);
 });
 
 test('88 — refusals tally and never write a line per attempt (#61)', async () => {
