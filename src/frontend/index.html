@@ -399,8 +399,14 @@
                  redirect landed in THAT tab, leaving the buyer with two order pages and
                  no relationship between them. Returning here is safe because
                  `stripeSessionUrl` lives on the order record (#33/#34), so a back
-                 button, a reload or a deep link all restore the pay button. -->
-            <a id="pay-link" class="cta">Pay with card</a>
+                 button, a reload or a deep link all restore the pay button.
+
+                 `rel="noreferrer"` is KEPT: dropping the whole rel attribute along with
+                 the target would also have stopped suppressing the Referer, so Stripe
+                 would start receiving the order page URL. Benign (fragments are not sent,
+                 and Stripe already holds the session and the client reference) but it was
+                 not a change anyone chose. `noopener` is unnecessary without a target. -->
+            <a id="pay-link" rel="noreferrer" class="cta">Pay with card</a>
           </div>
           <div id="cancel-area" hidden>
             <button id="cancel-order" type="button" class="ghost danger">Cancel this order</button>
