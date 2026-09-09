@@ -131,6 +131,9 @@ test.describe("the delivered view", () => {
     await openFixtureOrder(page, { status: "created" });
     await expect(page.locator("#pay-link")).toBeVisible();
     await expect(page.locator("#pay-link")).toHaveAttribute("href", /^https:\/\/checkout\.stripe\.com\//);
+    // ⚠️ Same tab: a new tab put Stripe's redirect in the wrong one and left two
+    // order pages open. Asserted so the attribute cannot come back unnoticed.
+    await expect(page.locator("#pay-link")).not.toHaveAttribute("target", "_blank");
   });
 
   test("an undelivered order is offered no commands yet", async ({ page }) => {
