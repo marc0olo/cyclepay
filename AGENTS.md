@@ -87,9 +87,16 @@ recorded reasoning — don't "fix" them without reading the rationale:
     `cancel_order`, `withdraw_reserve`, `delayed_deliveries`). Of the nine still over 20
     lines, the length is the RETURN TYPE or guards rather than extractable logic:
     `reserve_status` is 16 of 33 lines of inline record type, `operator_summary` 11 of
-    23. Naming those records in a module would move the published Candid type names for
-    no behaviour change, which `check-did-signatures.sh` correctly refuses. So the
-    remaining nine are not pending work.
+    23. A3 is about logic — "if a body is more than authorize → delegate → map, the
+    middle belongs in a module" — and a return type is neither. So the remaining nine are
+    not pending work; the 20-line metric counting type lines is a limit of the metric.
+  - ⚠️ **`check-did-signatures.sh` is an IDENTITY check, not a compatibility one, and it
+    is not the authority on whether a deliberate interface edit is safe.** Naming an
+    inline return record is `didc`-compatible in both directions — Candid is structural,
+    so a type alias is not part of the wire type — and this script still reports it as
+    changed, correctly for its own job: proving a relocation moved nothing. There is no
+    compatibility check in the gate (`didc` is not wired in), so a deliberate change
+    needs that judgement made by hand.
   - ⚠️ **#127 is delivering TESTS, not smaller bodies, and the count will not move much.**
     Measured on the first three: `create_order` 84 → 73 code lines, `cancel_order`
     65 → 65, `withdraw_reserve` 46 → 48 (LARGER — a named ladder call site is longer

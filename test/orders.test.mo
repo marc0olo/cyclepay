@@ -1718,11 +1718,16 @@ suite("holderPage — the pagination boundaries (#127)", func() {
   });
 
   test("⚠️ the cursor counts KEPT ids, not scanned ones", func() {
-    // A filter that skips the first two: a cursor derived from the scan position would
-    // resume past unexamined orders and silently drop them from every later page.
-    let keepLast = func(o : Types.Order) : ?Text = if (o.id == "a-3") ?o.id else null;
-    let p = Orders.holderPage(store3(), null, 1, keepLast);
-    assert p.items == ["a-3"];
-    assert p.nextCursor == null;
+    // The page must FILL for this rule to bite: with a-2 skipped, a cursor taken from
+    // the scan position would be ?"a-2" and the next page would start after it, dropping
+    // a-2 from every later page even though it was never examined.
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "a-1", alice);
+    ignore newOrder(store, "a-2", alice);
+    ignore newOrder(store, "a-3", alice);
+    let skipMiddle = func(o : Types.Order) : ?Text = if (o.id == "a-2") null else ?o.id;
+    let p = Orders.holderPage(store, null, 1, skipMiddle);
+    assert p.items == ["a-1"];
+    assert p.nextCursor == ?"a-1";
   });
 });
