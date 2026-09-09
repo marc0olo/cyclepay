@@ -1,9 +1,14 @@
 # Reproducible release build (spec §8). Every byte-shaping tool is pinned:
 #  - base image by digest (node 22.22.1 — also the frontend build's node)
 #  - ic-mops / icp-cli / ic-wasm by exact npm version
-#  - moc 1.9.0 via the committed mops.toml [toolchain]
+#  - moc via the committed mops.toml [toolchain] (1.15.1 today; the pin is the
+#    authority, so this line does not restate the version)
 #  - Motoko deps via the committed mops.lock
 #  - recipes by tag in the committed icp.yaml (icp-cli rejects unpinned)
+#
+# NOT pinned, stated so the claim above is not read wider than it is: the two apt
+# packages (neither shapes wasm bytes) and the npm tools' transitive dependencies.
+# Same ref on the same day reproduces; across a registry change it is not guaranteed.
 #
 # Build context must be a clean git tree — use scripts/reproducible-build.sh,
 # which pipes `git archive <ref>` in, so local uncommitted state can never

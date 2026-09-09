@@ -1,7 +1,8 @@
 # Issue tracker: GitHub
 
-**GitHub Issues is the single source of truth for task and progress tracking.** `PRD.md`
-is a frozen historical artifact — never update it.
+**GitHub Issues is the single source of truth for task and progress tracking.**
+`PRD.md` was deleted 2026-09-09 (frozen June, and describing an architecture #33/#35/#36
+removed). The M1 scope lives in issue #1.
 
 Use **`gh-axi`** for issue and PR operations; it is the wrapper this project expects, and
 its output is compact enough to read without `jq` gymnastics. Plain `gh api` is the escape

@@ -17,7 +17,9 @@ holds ICP**: no float, no mint path, no burn cap.
 
 **Pricing is derived on-chain and reproducible by anyone.** Two rates, both read
 from canisters — USD/ICP from the Exchange Rate Canister, XDR/ICP from the CMC —
-so the canister makes no outbound HTTPS at all.
+so **no outbound HTTPS is involved in pricing**. The canister does make HTTPS
+outcalls, to Stripe only: creating a Checkout Session, expiring one, and the
+recovery sweep retrieving one.
 
 The buyer sees the cycle quantity **before** committing (`quote_previews`, a
 public query running the same code that locks the price), the quoted figure is
@@ -45,8 +47,7 @@ Key documents:
 | `AGENTS.md` | Agent instructions: ICP skills setup, conventions, the verification gate |
 
 Task and progress tracking lives in **GitHub Issues** (see
-`docs/agents/issue-tracker.md`). `PRD.md` is a frozen historical artifact and is
-not updated.
+`docs/agents/issue-tracker.md`).
 
 ## Prerequisites
 
@@ -62,95 +63,95 @@ This project uses **`icp-cli`, never `dfx`**. Project configuration lives in
 
 ### Run the app locally, from nothing
 
-```sh
-mops install                              # Motoko dependencies (pinned by mops.lock)
-icp network start -d                      # local replica (PocketIC), gateway on :8000
-icp deploy                                # backend, frontend, and the local XRC mock
-scripts/local-dev-seed.sh                 # make the gateway actually sellable
-```
-
-Then open **<http://frontend.local.localhost:8000/>**.
-
-**The seed step is not optional.** A freshly deployed gateway is fail-closed on
-five axes at once, and the result looks like a broken app rather than a safe one:
-
-| What you see | Why |
-|---|---|
-| "No amounts are configured yet" | No presets are registered. Since #33 that is **not** a paused rail — a custom amount still works; run the seed to register the tiles |
-| "No exchange rate available yet" | Pricing needs the CMC rate, which only NNS governance can set |
-| "temporarily unavailable while the gateway is topped up" | `minCanisterCycles` defaults to 5 T and `icp deploy` creates the canister with less, so the gate refuses every purchase. This one is about the canister's own **gas**, not the cycles it sells; the seed script fixes it with `icp canister top-up backend --amount 20t`, which is what you would do on mainnet, rather than by lowering the floor |
-| Orders are paid but never delivered | The **cycles reserve** is empty — delivery transfers from the gateway's own cycles-ledger account, so it needs funding with `icp cycles transfer`. The seed does this; without it an order pays and then retries delivery forever |
-
-`scripts/local-dev-seed.sh` sets all five and verifies a $5 purchase is admitted
-before reporting success. It reaches the CMC through the local network's PocketIC
-control API — see `docs/SANDBOX-TESTPLAN.md` for why that is possible and why
-nothing in CI depends on it.
-
-The CMC step is verified from a stopped network through to a priced $5 quote. If
-it ever reports that the CMC did not take the rate, that check is real: the script
-queries the CMC and compares what it actually stored rather than trusting the `Ok`
-reply, because PocketIC returning 200 only means the message was delivered.
-
-To click all the way through payment you need a **restricted Stripe API key**
-(`rk_...`) with **Checkout Sessions = Write** — the level that also grants the read the
-recovery sweep needs — and everything else None. There are no
-Payment Links to create: the canister builds a Checkout Session per order through
-the API and sets `client_reference_id` on it, so nothing is configured in the
-Stripe Dashboard (#33).
-
-Put the key in **`scripts/.local-dev.env`** once (gitignored, and sourced by the
-seed) rather than on a command line, where it would land in your shell history:
+Six steps, in this order. Steps 1–4 need nothing from Stripe; 5–6 are for clicking
+through a real payment.
 
 ```sh
+# 1. dependencies and a local replica
+mops install
+icp network start -d                    # PocketIC, gateway on :8000
+
+# 2. deploy (backend, frontend, local XRC mock)
+icp deploy
+
+# 3. make the gateway sellable — NOT optional, see below
+scripts/local-dev-seed.sh
+
+# 4. allow-list yourself as a buyer
+#    Open http://frontend.local.localhost:8000/ , sign in with Internet Identity,
+#    copy the principal the page shows, then:
+icp canister call backend add_allowed_buyer '(principal "<your-principal>")'
+
+# 5. one-time: your restricted Stripe key (see below for the required scope)
 cat > scripts/.local-dev.env <<'ENV'
 STRIPE_API_KEY=rk_test_...
 ENV
-scripts/local-dev-seed.sh
+scripts/local-dev-seed.sh               # re-run: it provisions the key
+
+# 6. in a SECOND terminal: webhook secret + forwarder, and leave it running
+scripts/stripe-dev.sh
 ```
-⚠️ **Do NOT `export` that key into a shell where you run the Stripe CLI.** The CLI
-prefers `STRIPE_API_KEY` from the environment over its own `stripe login` credential, and
-opening a CLI session needs `stripecli_session_write` — a permission the restricted key
-correctly does **not** have. Exporting it makes `stripe listen` fail with
-*"more_permissions_required"*, naming your `rk_` key. **The fix is not to widen the key:**
-keep it in `scripts/.local-dev.env` (which the seed sources into its own process), or prefix a
-single command rather than exporting. Our scripts now strip the variable before calling
-the CLI, so they are immune; a CLI command you type yourself is not.
 
+Then buy: pick an amount, pay with `4242 4242 4242 4242`, and the order walks
+`created → paid → delivered`.
 
-That is the whole file — the `STRIPE_LINK_*` variables it used to hold went with
-`Tier.paymentLinkUrl` (#33).
+**Which script owns what**, because re-running the wrong one fixes nothing:
 
-`scripts/stripe-dev.sh` then provisions the **webhook signing secret** from the
-forwarding session and starts the forwarder. The rail is live only when **both**
-are in; check with `stripe_api_key_status` and `webhook_secret_status`.
+| | owns | after a `--mode reinstall` |
+|---|---|---|
+| `local-dev-seed.sh` | tiers, the cycles reserve, the CMC + XRC rates, the delivery timeline, the canister's own gas, the Stripe **API key** | re-run it |
+| step 4 | the buyer allow-list | redo it — the principal is wiped |
+| `stripe-dev.sh` | expected livemode, the **webhook signing secret**, forwarding | re-run it |
 
-⚠️ A `--mode reinstall` wipes both. The seed restores the key from that file; the
-webhook secret needs `stripe-dev.sh` again.
+⚠️ **Run the seed before `stripe-dev.sh`.** The latter refuses to start if the gateway
+cannot price, which is how it says "seed first" rather than half-configuring.
 
-Precedence is environment → that file → **the link already registered on the
-canister** → a placeholder naming the variable. The third rule is what makes
-re-seeding safe: a re-run cannot overwrite working links with placeholders. See
-RUNBOOK §3 for how each link must be configured — the settings matter more than the
-URL.
+⚠️ **Step 4 is the one nobody guesses.** With an empty allow-list every purchase
+refuses with `unboundedGiveaway` — the #99 faucet guard, not a misconfiguration. The
+seed prints the exact command and does not treat it as a failure.
 
-Without them the tiers carry a placeholder URL and "Pay with card" lands on a
-Stripe `AccessDenied` page. Everything up to that point works.
+⚠️ **Step 5 needs a restricted key** (`rk_...`) with **Checkout Sessions = Write** and
+everything else None. Write is the level that also grants the read the recovery sweep
+needs (#52). No Payment Links exist to configure: the canister creates a Checkout
+Session per order through the API and sets `client_reference_id` on it (#33).
 
-Then wire the webhook, in its own terminal:
+⚠️ **Do NOT `export STRIPE_API_KEY`** into a shell where you run the Stripe CLI. The CLI
+prefers it over your `stripe login` credential, and opening a CLI session needs a
+permission a restricted key correctly lacks — `stripe listen` then fails with
+*more_permissions_required*, naming your key. Keeping it in `scripts/.local-dev.env`
+avoids this; our scripts strip the variable before calling the CLI, a command you type
+yourself is not protected.
+
+#### Why the seed is not optional
+
+A freshly deployed gateway is fail-closed on five axes at once, which looks like a
+broken app rather than a safe one:
+
+| What you see | Why |
+|---|---|
+| "No amounts are configured yet" | No presets registered. Since #33 that is **not** a paused rail — a custom amount still works; the seed registers the tiles |
+| "No exchange rate available yet" | Pricing needs the CMC rate, which only NNS governance can set — the seed reaches it through the local PocketIC control API |
+| "temporarily unavailable while the gateway is topped up" | `minCanisterCycles` is 5 T and `icp deploy` creates the canister with less. This is the canister's own **gas**, not the cycles it sells; the seed tops up rather than lowering the floor |
+| Orders paid but never delivered | The **cycles reserve** is empty — delivery transfers from the gateway's own cycles-ledger account |
+| `unboundedGiveaway` on every purchase | The buyer allow-list is empty (step 4) |
+
+The seed verifies a **$10** purchase is admitted before reporting success, and queries
+the CMC for what it actually stored rather than trusting the `Ok` reply — PocketIC
+returning 200 only means the message was delivered.
+
+⚠️ **The CMC rate goes stale in 15 minutes.** `scripts/local-dev-seed.sh --rate-only`
+re-arms it without redoing the rest.
+
+⚠️ **If the local identity runs out of cycles** — `Insufficient cycles` from a top-up —
+either convert more or restart the network:
 
 ```sh
-scripts/stripe-dev.sh                     # asserts the gateway can price, then forwards
+icp cycles mint --icp 5                 # ~17.5 T; ICP is pre-seeded on local principals
+icp network stop && icp network start -d   # worst case: reseeds principals, wipes state
 ```
 
-The two scripts own different levers and the order matters: `local-dev-seed.sh` owns
-the money (tiers, the cycles reserve, the delivery timeline, the CMC rate, the
-canister's own gas) and `stripe-dev.sh` owns Stripe (expected livemode, the forwarding
-session's signing secret, forwarding). Run the seed first.
-
-**For the full buy → pay → deliver → link the CLI → see the cycles walkthrough,
-including the local Internet Identity step and how to prove the cycles arrived, see
-`docs/SANDBOX-TESTPLAN.md` → "The whole flow, in order, in a browser".** That is the
-one procedure; the rest of that file is scenarios and reference.
+Re-running the seed is otherwise free: it skips the 20 T top-up when the canister
+already clears its floor with headroom.
 
 ### Verify the deployment wiring
 
@@ -170,6 +171,11 @@ mops check -- -Werror        # typecheck + lint; -Werror makes M0145 a build fai
 mops build                   # compile, and regenerate the committed .did
 mops test                    # the Motoko unit suites
 ```
+
+The three IC brand typefaces are **vendored** into the bundle rather than linked from
+Google Fonts: a page that takes card details should not send every visitor's IP to a
+third party on load. `scripts/fetch-fonts.sh` re-vendors them — the committed `.woff2`
+files are its output.
 
 ### Frontend iteration with hot reload
 
@@ -252,7 +258,7 @@ scripts/test-all.sh --fast   # skip PocketIC (needs a 4 KiB-page host)
 ```
 
 See `docs/TEST-COVERAGE.md` for what each suite covers and what is not covered.
-There are three suites:
+There are four suites:
 
 **1. Motoko unit tests** (`test/*.test.mo`) — one suite per module, pure-logic
 (state machine, idempotency, HMAC/Stripe signatures, HTTP routing, pricing, the
@@ -270,7 +276,17 @@ npm --prefix src/frontend run test        # vitest unit tests
 npm --prefix src/frontend run typecheck
 ```
 
-**3. PocketIC integration suite** (`test/integration`) — the **go-live bar**
+**3. Browser specs** (`test/browser`) — Playwright against the built page, for what
+jsdom structurally cannot see: cascade, layout and reachability. `hidden` defeated by
+CSS is invisible to a DOM test and visible here.
+
+```sh
+npm --prefix test/browser ci                             # first run only
+npx --prefix test/browser playwright install chromium    # first run only
+npm --prefix test/browser test
+```
+
+**4. PocketIC integration suite** (`test/integration`) — the **go-live bar**
 (spec §9): end-to-end scenarios against the real ICP ledger, CMC, cycles
 ledger Wasms, plus the released XRC mock at the mainnet XRC
 id — HMAC-signed Stripe webhooks (over a real HTTP gateway in scenario 55), time
@@ -292,11 +308,19 @@ job.
 
 ## Release
 
-Releases are built reproducibly in a Docker-pinned toolchain and verified
-against the on-chain module hash:
+Releases are built in a Docker-pinned toolchain, from `git archive <ref>` so only
+the committed tree can shape the output:
 
 ```sh
 scripts/reproducible-build.sh <git-ref>
 ```
 
-See `RELEASE.md` for the full publish/verify procedure.
+⚠️ **The verify half is a procedure, not a past result.** Nothing is deployed to
+mainnet, so no on-chain module hash exists to diff against yet — `RELEASE.md` has the
+publish/verify steps, and the first real execution happens at go-live (#40).
+
+Pinned: the base image by digest, `ic-mops`/`icp-cli`/`ic-wasm` by exact version, `moc`
+via `mops.toml [toolchain]`, Motoko deps via `mops.lock`, recipes by tag in `icp.yaml`.
+Not pinned: the two `apt` packages (not byte-shaping) and the npm tools' transitive
+dependencies — so identical bytes are expected from the same ref on the same day, and
+are not guaranteed across a registry change.

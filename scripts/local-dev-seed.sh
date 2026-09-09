@@ -307,11 +307,24 @@ CYCLES_TOP_UP=20t
 #
 # Same fault as `capture-stripe-fixtures.sh`'s preflight before it was fixed: a swallowed
 # stderr plus a guessed diagnosis is worse than no diagnosis, because it is believed.
-if ! TOP_UP_OUT="$(icp canister top-up backend --amount "$CYCLES_TOP_UP" 2>&1)"; then
+# ⚠️ **Skipped when the canister already clears the floor with room, because this script
+# is meant to be RE-RUN.** The top-up is 20 T every time, so re-seeding drained the local
+# identity by 20 T a run — two runs and `icp cycles mint` was needed again. Nothing about
+# a canister at 200 T needs another 20.
+NEED_TOP_UP=1
+PRE_CYCLES="$(icp canister call backend cycles_status '()' 2>/dev/null || true)"
+PRE_BALANCE="$(printf '%s' "$PRE_CYCLES" | grep -oE 'balance = [0-9_]+' | tr -d '_' | grep -oE '[0-9]+$' || echo 0)"
+PRE_FLOOR="$(printf '%s' "$PRE_CYCLES" | grep -oE 'floor = [0-9_]+' | tr -d '_' | grep -oE '[0-9]+$' || echo 0)"
+# Twice the floor: enough headroom that a purchase is admitted and the next run is a no-op.
+if [ "${PRE_BALANCE:-0}" -gt "$(( ${PRE_FLOOR:-0} * 2 ))" ] && [ "${PRE_FLOOR:-0}" -gt 0 ]; then
+  NEED_TOP_UP=0
+  ok "canister holds $((PRE_BALANCE / 1000000000000)) T against a $((PRE_FLOOR / 1000000000000)) T floor; no top-up needed"
+fi
+if [ "$NEED_TOP_UP" -eq 1 ] && ! TOP_UP_OUT="$(icp canister top-up backend --amount "$CYCLES_TOP_UP" 2>&1)"; then
   printf '\n%s\n\n' "$TOP_UP_OUT" >&2
   die "could not top up the backend canister with $CYCLES_TOP_UP cycles — the reason is printed above.
-    Two causes are common, and the message says which: the local identity's cycles are spent
-    (reinstall a few times and they are), or icp-cli predates \`icp canister top-up\` (1.2.0)."
+    If it says Insufficient cycles, the local identity is spent: \`icp cycles mint --icp 5\`
+    converts more, or stop and start the network for freshly seeded principals."
 fi
 
 step "buyer allow-list (#99)"
@@ -479,9 +492,27 @@ if [ "${BALANCE:-0}" -le "${FLOOR:-0}" ]; then
 fi
 ok "cycles floor kept at $((FLOOR / 1000000000000)) T; canister holds $((BALANCE / 1000000000000)) T"
 
-icp canister call backend can_purchase '(1_000 : nat)' 2>&1 | grep -q 'variant { ok }' ||
-  die "the gateway still refuses a \$10 purchase. Check: icp canister call backend can_purchase '(1_000 : nat)'"
-ok "a \$10 purchase is admitted"
+# ⚠️ **`unboundedGiveaway` is not a seeding failure, and reporting it as one sent two
+# readers hunting a misconfiguration that was not there.** It is the #99 faucet guard
+# saying the allow-list is empty — the one step this script cannot do for you, because
+# the principal it needs is the one your browser signs in with. Every other refusal here
+# IS a seeding failure and still dies.
+VERDICT="$(icp canister call backend can_purchase '(1_000 : nat)' 2>&1)"
+case "$VERDICT" in
+  *"variant { ok }"*)
+    ok "a \$10 purchase is admitted — the gateway is sellable"
+    ;;
+  *unboundedGiveaway*)
+    printf '  \033[33m!\033[0m seeding is complete, and NOBODY can buy yet: the allow-list is empty.\n'
+    printf '      Sign in at http://frontend.local.localhost:%s/ , copy the principal it\n' "$GATEWAY_PORT"
+    printf '      shows, then run:\n'
+    printf '        icp canister call backend add_allowed_buyer '"'"'(principal "<your-principal>")'"'"'\n'
+    ;;
+  *)
+    die "the gateway refuses a \$10 purchase for a reason seeding should have fixed:
+    $VERDICT"
+    ;;
+esac
 
 # ⚠️ `can_purchase` above does NOT cover solvency, and cannot: it is a query, and
 # reading the reserve is what the gate does synchronously inside `create_order`. So
