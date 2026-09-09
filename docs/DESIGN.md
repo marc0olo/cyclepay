@@ -567,8 +567,16 @@ keeping, this is no longer available** and a change of this shape needs the chai
    the interface, so the invariant survives; it is tracked upstream and reverses on its
    own if moc changes.
 2. **Only imports may precede a `mixin` block** (M0228), so a type the mixin's interface
-   needs is declared inside the block — never moved to `Types.mo`, because Candid type
-   names come from the declaration and renaming one moves the published interface.
+   needs cannot be declared above the block in the same file — it goes inside the block,
+   or in a module.
+
+   ⚠️ **What actually matters is the NAME, not the location, and an earlier version of
+   this rule said "never moved to `Types.mo`" — absolute beyond its own reasoning.**
+   Candid derives a type's published name from its declaration, so a move that keeps the
+   name keeps the interface: #134 moved `Amount` to `Types.mo` so `Purchase.plan` could
+   name it, and `type Amount` is byte-identical in `backend.did` before and after. A
+   RENAME is what moves the interface. The acceptance test below is what tells the two
+   apart, so relocate freely and let it decide.
 
 ⚠️ **The acceptance test for a relocation is `scripts/check-did-signatures.sh`**: the
 Candid signatures must be identical with doc comments stripped. It has already caught
