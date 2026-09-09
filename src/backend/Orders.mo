@@ -1243,6 +1243,38 @@ module {
   /// query.** That is #37's thesis carried through: "everything outstanding" is a
   /// *filter* over orders, so it composes with status and time range instead of being a
   /// parallel list that answers a different question.
+  /// One page of promise-holding orders that `keep` accepts, in id order.
+  ///
+  /// The boundary rules are the reason this is not inline: `nextCursor` is the last
+  /// KEPT id (not the last scanned), it is null when the scan runs out, and `limit == 0`
+  /// or an over-large limit means `maxPageSize`. `test/orders.test.mo` pins each.
+  public func holderPage<T>(
+    store : Store,
+    afterId : ?Types.OrderId,
+    limit : Nat,
+    keep : (Types.Order) -> ?T,
+  ) : { items : [T]; nextCursor : ?Types.OrderId } {
+    let capped = if (limit == 0 or limit > maxPageSize) maxPageSize else limit;
+    let collected = List.empty<T>();
+    var last : ?Types.OrderId = null;
+    let ids = switch (afterId) {
+      case (?cursor) promiseHolderIdsFrom(store, cursor);
+      case null promiseHolderIds(store);
+    };
+    label scan for (id in ids) {
+      let ?order = get(store, id) else continue scan;
+      let past = switch (afterId) { case (?cursor) id > cursor; case null true };
+      if (not past) continue scan;
+      let ?item = keep(order) else continue scan;
+      if (collected.size() == capped) {
+        return { items = collected.toArray(); nextCursor = last };
+      };
+      collected.add(item);
+      last := ?order.id;
+    };
+    { items = collected.toArray(); nextCursor = null };
+  };
+
   public type Filter = {
     status : ?Types.OrderStatus;
     /// Matches `Owner`'s principal.

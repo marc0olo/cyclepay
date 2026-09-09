@@ -302,30 +302,18 @@ mixin (
     // and they are different limits** — ~2 MB for the response, instructions per
     // message for the walk — which is why paginating this in #38 did not make it
     // bounded and the comment here said so until now.
-    let capped = if (limit == 0 or limit > Orders.maxPageSize) Orders.maxPageSize else limit;
     let now = Time.now();
-    let collected = List.empty<DelayedDelivery>();
-    var last : ?Types.OrderId = null;
-    // Seek in O(log n); `valuesFrom` is inclusive, so the `id > cursor` test below is
-    // what skips the cursor itself.
-    let ids = switch (afterId) {
-      case (?cursor) Orders.promiseHolderIdsFrom(orderStore, cursor);
-      case null Orders.promiseHolderIds(orderStore);
-    };
-    label scan for (id in ids) {
-      let ?order = Orders.get(orderStore, id) else continue scan;
-      let past = switch (afterId) { case (?cursor) id > cursor; case null true };
-      // ⚠️ `deliveryDelayed` is the ONLY status gate here. An outer `order.status == #paid`
-      // survived alongside it and made the claim of one shared definition false: widening
-      // the predicate changed this page and the summary's count differently, so the two
-      // could disagree while both were "using the predicate".
-      if (not past) continue scan;
-      let ?stage = ops.deliveryStage(order, now) else continue scan;
-      if (ops.stageIsDelayed(stage)) {
-        if (collected.size() == capped) {
-          return { entries = collected.toArray(); nextCursor = last };
-        };
-        collected.add({
+    let page = Orders.holderPage(
+      orderStore,
+      afterId,
+      limit,
+      func(order) {
+        // `deliveryDelayed` is the ONLY status gate. An outer `order.status == #paid`
+        // once survived alongside it, so widening the predicate moved this page and the
+        // summary's count differently while both claimed one shared definition.
+        let ?stage = ops.deliveryStage(order, now) else return null;
+        if (not ops.stageIsDelayed(stage)) return null;
+        ?{
           orderId = order.id;
           status = order.status;
           heldSinceNs = order.updatedAtNs;
@@ -336,11 +324,10 @@ mixin (
           };
           pastMaxHold = stage == #terminate;
           delayedAtNs = order.delayedAtNs;
-        });
-        last := ?order.id;
-      };
-    };
-    { entries = collected.toArray(); nextCursor = null };
+        };
+      },
+    );
+    { entries = page.items; nextCursor = page.nextCursor };
   };
 
   /// Every delivery with money-out work outstanding, right now (admin).

@@ -253,10 +253,19 @@ test('103e — the two interleaving windows, and ⚠️ what this suite CANNOT p
   // ingress lands in between; `deferredAdmin` was already in the harness. 103g runs that
   // mutation and is the only scenario of 115 that fails on it.
   //
-  // ⚠️ **Rule 1 remains unverified here**, and it is the one this comment's residue
-  // applies to: its window sits inside `observeReserve`, and nothing yet lands a create
-  // there. It is structural rather than reviewed — `observeReserve` returns the
-  // post-await holder count with its result — so the gap is narrower than it was.
+  // ⚠️ **Rule 1 remains unverified, and here is what was tried** (#127) — recorded as a
+  // measurement, not as a claim that no test can exist:
+  //
+  //   - `deferredAdmin.withdraw_reserve()` and `deferredUser.create_order()` submitted
+  //     together, then `tick(1)` per round, reading `reserve_status` and the ledger
+  //     balance each round. The withdrawal completed inside round 1 — balance already 0
+  //     — and the create was then refused `#reserveShort`. Its ledger reply and
+  //     continuation run ahead of the queued ingress.
+  //   - The same with the create submitted after one tick: no outcall, same refusal.
+  //
+  // So the create never lands between the balance read and the holder re-check. Rule 1
+  // is structural rather than reviewed — `observeReserve` returns the post-await count
+  // with its result, so there is nothing to forget — and 103g covers rule 2.
   //
   // An earlier version of this test asserted "a withdrawal and a create can never both
   // succeed" and passed for the wrong reason every time: the withdrawal simply finished
