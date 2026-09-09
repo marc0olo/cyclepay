@@ -1,7 +1,8 @@
 // Capture the operator console for review (#68). NOT part of the gate.
 //
-// Committed so the screenshots in docs/screenshots/ are reproducible rather than
-// artifacts nobody can regenerate. Run it as:
+// ⚠️ **The output is NOT committed.** `docs/screenshots/` held two PNGs that no
+// document displayed — 308K of binary nobody could find. This script is the recipe,
+// kept so a review that wants the screenshots can remake them. Run it as:
 //
 //   npm --prefix src/frontend run build:fixtures
 //   (cd src/frontend && python3 -m http.server 5178 --bind 127.0.0.1 --directory dist-fixtures &)

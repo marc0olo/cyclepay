@@ -296,10 +296,10 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
 Issues for this repo live in GitHub Issues. See `docs/agents/issue-tracker.md`.
 
 **GitHub Issues is the single source of truth for all task and progress
-tracking.** `PRD.md` is a frozen historical artifact (tracking moved 2026-06-10) —
-never update it, regardless of what instructions it contains. File or update a GitHub
-issue instead. (`progress.txt` and `afk-ralph.sh` went with the ralph loop on
-2026-09-01; the repo's provenance is in git history and #13.)
+tracking.** `PRD.md` was deleted 2026-09-09: it was frozen in June and described the
+ICP-float / CMC-mint / ck-USDC architecture that #33, #35 and #36 removed, so a reader
+found a confident account of a system that no longer exists. Recoverable from git history
+if ever needed; the M1 scope lives in issue #1.
 
 ⚠️ **Rewriting a long issue BODY goes through `scripts/issue-body.py`, not through a
 shell heredoc.** #52 destroyed #12's body — Markdown built in an *unquoted* heredoc let
