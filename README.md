@@ -88,7 +88,8 @@ icp canister call backend set_pricing_config '(record {
   maxRateDeltaBps = 5_000 : nat })'
 #     At divisor 1_000 a $10 purchase quotes ~7.24 G cycles instead of ~7.24 T.
 #     The arithmetic and the ceiling that scales with minPurchaseUsdCents:
-#     docs/STRIPE.md §9a "Simulation mode".
+#     docs/STRIPE.md, "9a. Simulation mode". That section is framed for mainnet
+#     against the Stripe sandbox; the arithmetic is identical locally.
 
 # 4. allow-list yourself as a buyer
 #    Open http://frontend.local.localhost:8000/ , sign in with Internet Identity,
@@ -154,6 +155,11 @@ returning 200 only means the message was delivered.
 
 ⚠️ **The CMC rate goes stale in 15 minutes.** `scripts/local-dev-seed.sh --rate-only`
 re-arms it without redoing the rest.
+
+⚠️ **A stale rate shows as `cycles = null` in `quote_previews` — at ANY divisor.** That is
+the same symptom as a scaled amount too small to clear the ledger fee, so re-arm with
+`--rate-only` before concluding the divisor is too large. Both readings are available and
+only one is usually true.
 
 ⚠️ **If the local identity runs out of cycles** — `Insufficient cycles` from a top-up —
 either convert more or restart the network:
