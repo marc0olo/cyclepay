@@ -3111,6 +3111,12 @@ test('68a — a cancel releases exactly one promise, and a second cancel release
   expect(after.promiseHolders).toBe(before.promiseHolders);
   expect(after.promisedTotal).toBe(before.promisedTotal);
 
+  // ⚠️ **Mutation-verified against a real adjacent defect**, not merely a
+  // characterisation: with the holder index left stale on release, this scenario fails
+  // (with 68a, 69 and six others). What no single edit can produce is a double release on
+  // the buyer path — three layers prevent it: `cancelShape`'s early return, the
+  // transition matrix, and `tallyDelta`'s `holdsPromise` predicate.
+  //
   // ⚠️ **The second cancel is the double-release test, and it needs no interleaving.**
   // It takes `cancelShape`'s `#alreadyCancelled` arm and returns the order — if it
   // released again, the holder count would go NEGATIVE and instead clamps, which is

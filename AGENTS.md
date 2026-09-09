@@ -81,6 +81,13 @@ recorded reasoning — don't "fix" them without reading the rationale:
     endpoint bodies still exceed 20 code lines** (counted as non-blank, non-comment lines
     between a `public …func` and its closing `};`, across `src/backend/mixins/*.mo`) —
     `create_order` among them, because the half that stays is the exception below.
+  - ⚠️ **#127 is delivering TESTS, not smaller bodies, and the count will not move much.**
+    Measured on the first two: `create_order` 84 → 73 code lines, `cancel_order` 65 → 65.
+    Both endpoints' `switch` blocks have the same number of arms either way; what the
+    extraction buys is that the decision becomes checkable without an IC environment —
+    `Purchase.plan`'s error precedence, `Orders.cancelShape`'s whole status space. Do not
+    read a static thirteen as work not done, and do not chase the number by moving code
+    that has nowhere better to live.
   - ⚠️ **One part of A3 is a STATED EXCEPTION, not unfinished work.** `create_order`'s
     body keeps commit → outcall → re-check → attach. The commit takes the reserve hold in
     a block with no `await` and the order id IS the `client_reference_id`, so the sequence
