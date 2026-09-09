@@ -297,6 +297,13 @@ step=$((step + 1))
 printf '\n\033[1m── %d. %s\033[0m\n' "$step" "no frontend export is referenced only by tests"
 scripts/check-unused-exports.py
 
+# ⚠️ **A different class from the step above: two functions that BOTH have callers and
+# both do the same thing.** The loss there is not dead code but divergence — the next
+# correction lands on one of them. #136 shipped a review-caught instance on the money
+# path (`Reserve.deliverable` re-implementing `Delivery.deliverableCycles`), and the
+# check's first two versions could not see it, which is recorded in the script.
+run "no module function body is duplicated across modules" scripts/check-duplicate-bodies.py
+
 # ⚠️ **The Motoko half of the step above, and the compiler covers NONE of it:** M0194
 # fires only in the canister's main file, so a module of dead exports compiles clean
 # under -Werror. Four instances were live when this was added, one of them a renderer

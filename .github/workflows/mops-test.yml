@@ -71,6 +71,7 @@ jobs:
           scripts/check-unused-exports.py
           scripts/check-main-doc-comments.py
           scripts/check-unused-motoko.py
+          scripts/check-duplicate-bodies.py
 
   frontend:
     runs-on: ubuntu-latest
