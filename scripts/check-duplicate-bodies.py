@@ -16,13 +16,9 @@ framing exists to prevent. Caught in review; this is what catches the next one �
 ⚠️ **the first two versions of this script did not**, which is recorded on `MIN_TOKENS`
 and on the normalisation steps because each was a claim that measurement contradicted.
 
-**Normalisation, stated because it is the whole instrument.** A body is compared after:
-comments stripped (the Motoko stripper from `check-unused-motoko.py`, block comments
-NEST), all whitespace collapsed to single spaces, and nothing else. Parameter *names* are
-NOT normalised, so two functions that differ only in the names of their parameters are
-reported as distinct — a deliberate false-negative, because renaming a parameter to dodge
-this check is not a thing anyone does by accident, and inferring alpha-equivalence needs a
-parser rather than a scanner.
+**Normalisation:** comments stripped (block comments NEST), parameters renamed
+positionally, in-expression type annotations dropped, whitespace collapsed. The last two
+exist because the motivating case needed them — see the notes at the code.
 
 ⚠️ **`MIN_TOKENS` is a small floor, not a filter, and the measurement is on the constant
 itself.** This tree has zero cross-module duplicate bodies at every threshold from 4 up,
