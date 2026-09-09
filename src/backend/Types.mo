@@ -287,6 +287,19 @@ module {
     memo : Blob;
   };
 
+  /// What a buyer asked to buy: a configured preset, or an amount they typed.
+  ///
+  /// ⚠️ **In `Types` rather than the mixin because `Purchase.plan` takes it** (#127).
+  /// Candid derives the name from this declaration, so the interface is unchanged.
+  public type Amount = {
+    #tier : Text;
+    /// Gross USD cents, straight from the buyer. Bounded by
+    /// `Gate.Config`'s floor and ceiling like any other amount — and bounded
+    /// **here**, not only in the frontend, because a frontend-only bound is not a
+    /// bound.
+    #custom : Nat;
+  };
+
   /// §4.2 — per-order money-out journal.
   public type JournalEntry = {
     orderId : OrderId;

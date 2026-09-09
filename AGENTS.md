@@ -73,9 +73,22 @@ recorded reasoning — don't "fix" them without reading the rationale:
     `rails/Card` with its explicit `Card.Deps`. Stateless, state as a parameter, which is
     what lets the whole ingestion path unit-test with no IC environment. Equivalent
     separation under a different filename; nothing about it is a departure in substance.
-  - **What is NOT done: A3.** Endpoints moved but their bodies were moved *verbatim*, so
-    several still hold logic rather than authorize → delegate → map. That is the next
-    refactor, not something this file excuses.
+  - **A3 is PARTIALLY addressed, and the remainder is #127.** Endpoints moved but their
+    bodies were moved *verbatim*, so several still hold logic rather than authorize →
+    delegate → map. `create_order`'s decision — amount, admission, quote, the caller's
+    floor — is now `Purchase.plan`, which bought the thing worth buying: the **error
+    precedence** is unit-tested rather than reachable only through PocketIC. **Thirteen
+    endpoint bodies still exceed 20 code lines** (counted as non-blank, non-comment lines
+    between a `public …func` and its closing `};`, across `src/backend/mixins/*.mo`) —
+    `create_order` among them, because the half that stays is the exception below.
+  - ⚠️ **One part of A3 is a STATED EXCEPTION, not unfinished work.** `create_order`'s
+    body keeps commit → outcall → re-check → attach. The commit takes the reserve hold in
+    a block with no `await` and the order id IS the `client_reference_id`, so the sequence
+    cannot be rearranged; it needs actor capabilities (`raw_rand`, the outcall) and moving
+    it into a module would make it harder to see, not easier. Two integration scenarios
+    guard it — 67b (the hold exists while the outcall is parked) and 67c (the cycles
+    delivered are the cycles held, across a price move) — and each was mutation-verified
+    against the specific defect it covers. **Do not "finish" A3 by moving that block.**
 
   ⚠️ **A recorded departure is a claim with a scope, and it expires.** The previous
   version of this entry was written about `lib/` and then read as covering the monolith
