@@ -266,21 +266,21 @@ else
   printf '        session. This repo'"'"'s own scripts strip it and are unaffected.\n'
 fi
 
-# The origin Stripe returns the buyer to. The frontend canister's own URL, since
-# no domain is chosen yet (#40/#23). Must be https, so a local run uses the
-# canister's icp0.io origin rather than the localhost gateway.
-# `icp canister id` does not exist; the deploy records the mapping here.
-# `canister status` would also print it, but it needs a running network and a
-# reachable canister, where this is just a read.
-FRONTEND_ID="$(sed -n 's/.*"frontend": *"\([^"]*\)".*/\1/p' .icp/cache/mappings/local.ids.json 2>/dev/null || true)"
-if [ -n "$FRONTEND_ID" ]; then
-  ORIGIN="https://${FRONTEND_ID}.icp0.io"
-  icp canister call backend set_stripe_origin "(\"${ORIGIN}\")" >/dev/null \
-    || die "set_stripe_origin refused ${ORIGIN} — it must be https with no query or fragment"
-  ok "return origin set to ${ORIGIN}"
-else
-  printf '  \033[33m!\033[0m could not read the frontend canister id; set_stripe_origin skipped\n'
-fi
+# The origin Stripe returns the buyer to: the LOCAL gateway, so the post-payment
+# redirect lands on the page you are clicking through.
+#
+# This was `https://<frontend-id>.icp0.io` because the canister refused non-https — a
+# mainnet-shaped URL for a canister that only exists locally, so paying dead-ended the
+# browser. `Session.validateOrigin` now accepts http for loopback hosts, which is what
+# Stripe's own quickstart uses (`success_url` is a browser redirect target; Stripe never
+# fetches it). Delivery never depended on this — the webhook does that work — but the
+# redirect did.
+#
+# ⚠️ Not a chosen domain, just the one that works locally. #40/#23 decide the real one.
+ORIGIN="http://frontend.local.localhost:${GATEWAY_PORT}"
+icp canister call backend set_stripe_origin "(\"${ORIGIN}\")" >/dev/null \
+  || die "set_stripe_origin refused ${ORIGIN} — https, or loopback http, with no query or fragment"
+ok "return origin set to ${ORIGIN}"
 
 step "admission gate"
 # The one that is genuinely confusing: `minCanisterCycles` defaults to 5 T, and
@@ -593,14 +593,7 @@ cat <<NOTES
 
       Check both with stripe_api_key_status and webhook_secret_status.
 
-  Two things in a paying run that look like bugs and are not:
-    - After paying, Stripe redirects to the configured origin
-      (https://<frontend-id>.icp0.io), which does NOT serve your local
-      frontend, so that tab shows an error. The payment completes and the
-      webhook still fires — watch the order in the tab you already had open.
-      There is no local https origin to point at, and a caller-supplied
-      success_url is deliberately impossible: it would be an open redirect
-      Stripe renders after a real payment.
+  One thing in a paying run that looks like a bug and is not:
     - The session expires 35 minutes after creation, enforced by Stripe. The
       pay button disappears at the deadline, and it goes before the
       checkout.session.expired webhook lands, because the UI renders expiry

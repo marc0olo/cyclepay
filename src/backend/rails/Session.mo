@@ -17,6 +17,7 @@ import IC "mo:ic/Types";
 // `n.toText()` and `blob.decodeUtf8()` resolve through the imported module, so
 // dropping an "unused" import here is a compile error rather than a tidy-up.
 import Char "mo:core/Char";
+import Result "mo:core/Result";
 import Iter "mo:core/Iter";
 import Nat "mo:core/Nat";
 import Nat8 "mo:core/Nat8";
@@ -49,6 +50,65 @@ module {
 
   /// `POST /v1/checkout/sessions/{id}/expire` — what `cancel_order` calls to
   /// make an order provably unpayable before marking it `#cancelled`.
+  /// Why an origin was refused.
+  ///
+  /// In this module rather than the mixin so the parsing below is unit-testable; the
+  /// Candid name comes from this declaration, so the interface is unchanged (§9.1).
+  public type OriginError = {
+    /// Non-loopback `http://`. A plain-HTTP return URL after a card payment is not a
+    /// thing to offer, and Stripe would render it.
+    #notHttps;
+    /// A query string or fragment would collide with the `#/order/<id>` route appended
+    /// to it, producing a URL that does not resolve to the order.
+    #hasQueryOrFragment;
+    #empty;
+  };
+
+  /// The origin Stripe returns buyers to, validated and normalised.
+  ///
+  /// ⚠️ **`http://` is accepted for LOOPBACK hosts only, and that is Stripe-correct.**
+  /// `success_url` is a redirect target for the buyer's own browser — Stripe never
+  /// fetches it — and Stripe's API reference states no scheme requirement, while its own
+  /// Checkout quickstart uses `http://localhost:4242/success.html`. The https rule is
+  /// ours, and its reason (never send a buyer to a plaintext page after paying) does not
+  /// apply to traffic that never leaves the machine.
+  ///
+  /// ⚠️ **The host is PARSED, not substring-matched.** `http://localhost.evil.com` is
+  /// the trap: it contains "localhost" and is not loopback. Only an exact `localhost`,
+  /// `127.0.0.1`, `[::1]`, or a `.localhost` subdomain qualifies — the last because a
+  /// local `icp network` serves the frontend at `http://frontend.local.localhost:8000`.
+  public func validateOrigin(origin : Text) : Result.Result<Text, OriginError> {
+    if (origin.size() == 0) return #err(#empty);
+    let afterScheme = if (origin.startsWith(#text "https://")) {
+      ?origin.trimStart(#text "https://");
+    } else if (origin.startsWith(#text "http://")) {
+      let rest = origin.trimStart(#text "http://");
+      if (isLoopbackHost(hostOf(rest))) ?rest else null;
+    } else null;
+    let ?_ = afterScheme else return #err(#notHttps);
+    if (origin.contains(#char '?') or origin.contains(#char '#')) {
+      return #err(#hasQueryOrFragment);
+    };
+    // Trailing slash trimmed here rather than at every use site, so
+    // `origin # "/#/order/" # id` cannot produce a double slash.
+    #ok(origin.trimEnd(#char '/'));
+  };
+
+  /// Everything before the first `/`, with any port removed.
+  func hostOf(afterScheme : Text) : Text {
+    let hostPort = afterScheme.split(#char '/').next() ?? "";
+    // An IPv6 literal keeps its brackets: the colons inside are not a port separator.
+    if (hostPort.startsWith(#text "[")) {
+      return (hostPort.split(#char ']').next() ?? "") # "]";
+    };
+    hostPort.split(#char ':').next() ?? "";
+  };
+
+  func isLoopbackHost(host : Text) : Bool {
+    host == "localhost" or host == "127.0.0.1" or host == "[::1]"
+    or host.endsWith(#text ".localhost");
+  };
+
   public func expireUrl(sessionId : Text) : Text {
     createUrl # "/" # sessionId # "/expire";
   };

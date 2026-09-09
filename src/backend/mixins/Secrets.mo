@@ -2,6 +2,7 @@
 // they are what makes the receiver methods resolve — `.toText()` on a generation,
 // `.startsWith`/`.contains`/`.trimEnd` on the origin. Nothing reports an unused import
 // here either way, so both directions are a judgement the compiler makes, not a lint.
+import Session "../rails/Session";
 import Nat "mo:core/Nat";
 import Result "mo:core/Result";
 import Text "mo:core/Text";
@@ -44,16 +45,6 @@ mixin (
   /// top-level"), and Candid type names come from the Motoko declaration — moving this
   /// to `Types.mo` would risk renaming it in the interface, which is the one thing this
   /// relocation must not do.
-  type OriginError = {
-    /// Anything but `https://`. A plain-HTTP return URL after a card payment is
-    /// not a thing to offer, and Stripe would render it.
-    #notHttps;
-    /// A query string or fragment would collide with the `#/order/<id>` route
-    /// appended to it, producing a URL that does not resolve to the order.
-    #hasQueryOrFragment;
-    #empty;
-  };
-
   /// Provision or rotate the Stripe webhook signing secret (§7). Pass the
   /// full `whsec_...` string from the Stripe dashboard — the whole string,
   /// prefix included, is the HMAC key. NOTE: the argument transits the
@@ -111,14 +102,14 @@ mixin (
   /// fails in front of the operator who typed it instead of breaking every
   /// purchase later. Until a domain is chosen (#40/#23) this is the canister's
   /// own asset origin.
-  public shared ({ caller }) func set_stripe_origin(origin : Text) : async Result.Result<(), OriginError> {
+  public shared ({ caller }) func set_stripe_origin(origin : Text) : async Result.Result<(), Session.OriginError> {
     requireController(caller);
-    if (origin.size() == 0) return #err(#empty);
-    if (not origin.startsWith(#text "https://")) return #err(#notHttps);
-    if (origin.contains(#char '?') or origin.contains(#char '#')) return #err(#hasQueryOrFragment);
-    // Trailing slash trimmed here rather than at every use site, so
-    // `origin # "/#/order/" # id` cannot produce a double slash.
-    let trimmed = origin.trimEnd(#char '/');
+    // Validation and normalisation are `Session.validateOrigin`'s, so the parsing has
+    // unit tests — `http://` is accepted for loopback hosts only.
+    let trimmed = switch (Session.validateOrigin(origin)) {
+      case (#ok(value)) value;
+      case (#err(e)) return #err(e);
+    };
     originAccess.set(?trimmed);
     auditAdmin(caller, "stripe.originSet", trimmed);
     #ok;

@@ -396,3 +396,51 @@ suite("retrieve: url, cap, and the classifier (#52)", func() {
     };
   });
 });
+
+suite("validateOrigin — https, or loopback http (#83 groundwork)", func() {
+  /// ⚠️ Stripe imposes no scheme requirement on `success_url` — it is a redirect target
+  /// for the buyer's own browser, and Stripe's own quickstart uses
+  /// `http://localhost:4242/success.html`. The https rule is ours, and its reason (never
+  /// send a buyer to a plaintext page after paying) is vacuous for loopback.
+
+  test("https is accepted and the trailing slash is trimmed", func() {
+    assert Session.validateOrigin("https://cyclepay.icp0.io") == #ok("https://cyclepay.icp0.io");
+    assert Session.validateOrigin("https://cyclepay.icp0.io/") == #ok("https://cyclepay.icp0.io");
+  });
+
+  test("loopback http is accepted, in all four spellings", func() {
+    // `.localhost` matters: a local `icp network` serves the frontend at
+    // `http://frontend.local.localhost:8000`.
+    assert Session.validateOrigin("http://localhost:8000") == #ok("http://localhost:8000");
+    assert Session.validateOrigin("http://127.0.0.1:8000") == #ok("http://127.0.0.1:8000");
+    assert Session.validateOrigin("http://[::1]:8000") == #ok("http://[::1]:8000");
+    assert Session.validateOrigin("http://frontend.local.localhost:8000")
+      == #ok("http://frontend.local.localhost:8000");
+  });
+
+  test("⚠️ a host that merely CONTAINS localhost is refused", func() {
+    // The trap a substring match would fall into, and the reason the host is parsed.
+    assert Session.validateOrigin("http://localhost.evil.com") == #err(#notHttps);
+    assert Session.validateOrigin("http://evil.com/localhost") == #err(#notHttps);
+    assert Session.validateOrigin("http://notlocalhost") == #err(#notHttps);
+    // A loopback-looking userinfo prefix does not make the host loopback either.
+    assert Session.validateOrigin("http://localhost@evil.com") == #err(#notHttps);
+  });
+
+  test("non-loopback http is still refused", func() {
+    assert Session.validateOrigin("http://cyclepay.icp0.io") == #err(#notHttps);
+    assert Session.validateOrigin("ftp://cyclepay.icp0.io") == #err(#notHttps);
+    assert Session.validateOrigin("cyclepay.icp0.io") == #err(#notHttps);
+  });
+
+  test("a query or fragment is refused, on either scheme", func() {
+    // It would collide with the `#/order/<id>` route appended to the origin.
+    assert Session.validateOrigin("https://cyclepay.icp0.io?x=1") == #err(#hasQueryOrFragment);
+    assert Session.validateOrigin("https://cyclepay.icp0.io#/order") == #err(#hasQueryOrFragment);
+    assert Session.validateOrigin("http://localhost:8000?x=1") == #err(#hasQueryOrFragment);
+  });
+
+  test("empty is its own answer", func() {
+    assert Session.validateOrigin("") == #err(#empty);
+  });
+});
