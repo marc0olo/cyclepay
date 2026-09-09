@@ -613,6 +613,44 @@ module {
     };
   };
 
+  /// Which shape a buyer's cancel takes, given the order's status.
+  ///
+  /// ⚠️ **Extracted from `cancel_order` so the whole status space is checked in one
+  /// place** (#127, A3). Only `#created` proceeds; every other status has a different
+  /// answer, and the difference matters to a buyer — an expired order was never charged,
+  /// a paid one will deliver. The endpoint used to encode this as a four-arm `switch`
+  /// whose completeness could only be tested by driving seven statuses through PocketIC.
+  ///
+  /// The wording stays in the endpoint: a buyer reads `cancel_order`'s error verbatim and
+  /// §4.3 / #118 put that sentence in the backend deliberately. This decides WHICH
+  /// answer, not how it reads.
+  public type CancelShape = {
+    /// Expire the session, then transition. The only shape that changes anything.
+    #proceed;
+    /// Idempotent: the buyer already gave up on this one.
+    #alreadyCancelled;
+    /// ⚠️ Distinct from `#notCancellable` because the reason is the opposite one:
+    /// nothing was charged and nothing will deliver. A stale tab reaches this.
+    #alreadyExpired;
+    /// Money has moved or is moving. Carries the status so the answer can name it.
+    #notCancellable : Types.OrderStatus;
+  };
+
+  /// ⚠️ **`#created` is the only cancellable status, and that is a money property.**
+  /// `#paid`, `#delivered` and `#needsReview` all hold or have spent cycles; `#abandoned`
+  /// is the operator's terminal decision. Letting a buyer cancel any of them would either
+  /// release a promise against cycles that moved, or contradict a refund made by hand.
+  /// The transition matrix refuses those independently — this classification exists so a
+  /// buyer gets an answer that explains which case they are in rather than a bare refusal.
+  public func cancelShape(status : Types.OrderStatus) : CancelShape {
+    switch (status) {
+      case (#created) #proceed;
+      case (#cancelled) #alreadyCancelled;
+      case (#expired) #alreadyExpired;
+      case (#paid or #delivered or #needsReview or #abandoned) #notCancellable(status);
+    };
+  };
+
   public type CreateError = {
     /// raw_rand collision (astronomically unlikely) — caller retries with
     /// fresh randomness rather than silently overwriting an order.

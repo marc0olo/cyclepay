@@ -1578,6 +1578,61 @@ suite("unresolvedProblemOrderCount is the index size (#68)", func() {
   });
 });
 
+suite("cancelShape covers the whole status space (#127)", func() {
+  /// ⚠️ **Every status, listed rather than sampled** — and the compiler is what keeps
+  /// this list honest: `cancelShape`'s own `switch` is exhaustive, so adding an eighth
+  /// status is a compile error there, and this array is what then fails to cover it.
+  let every : [Types.OrderStatus] = [
+    #created,
+    #cancelled,
+    #expired,
+    #paid,
+    #delivered,
+    #needsReview,
+    #abandoned,
+  ];
+
+  test("⚠️ #created is the ONLY status a buyer can cancel", func() {
+    // The money property: `#paid`, `#delivered` and `#needsReview` hold or have spent
+    // cycles, and `#abandoned` is the operator's terminal decision after refunding by
+    // hand. A buyer cancelling any of them would release a promise against cycles that
+    // moved, or contradict that refund.
+    let proceeds = every.filter(func(st) = Orders.cancelShape(st) == #proceed);
+    assert proceeds == [#created];
+  });
+
+  test("the three refusals are distinct, because the reasons are opposite", func() {
+    // An expired order was never charged; a paid one will deliver. Collapsing them would
+    // tell half the buyers something false.
+    assert Orders.cancelShape(#cancelled) == #alreadyCancelled;
+    assert Orders.cancelShape(#expired) == #alreadyExpired;
+    assert Orders.cancelShape(#paid) == #notCancellable(#paid);
+  });
+
+  test("⚠️ every non-cancellable status names ITSELF back", func() {
+    // The endpoint interpolates this into the buyer's message, so a shape that carried
+    // the wrong status would produce a sentence about the wrong order state.
+    for (st in every.values()) {
+      switch (Orders.cancelShape(st)) {
+        case (#notCancellable(named)) assert named == st;
+        case (_) {};
+      };
+    };
+  });
+
+  test("no status is left without an answer", func() {
+    // Guards the list above rather than the function: a status added to `every` but not
+    // to `cancelShape` cannot compile, but a status added to neither would leave this
+    // suite passing over a gap.
+    assert every.size() == 7;
+    for (st in every.values()) {
+      let shape = Orders.cancelShape(st);
+      assert shape == #proceed or shape == #alreadyCancelled or shape == #alreadyExpired
+        or shape == #notCancellable(st);
+    };
+  });
+});
+
 suite("ownerPage bounds the work, not just the response (#70)", func() {
   // Foreign ids all begin `0`, ours all begin `f`, so every one of bob's orders sorts
   // BEFORE every one of alice's — the worst case for a walk over the global store, which
