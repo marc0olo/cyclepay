@@ -78,11 +78,15 @@ recorded reasoning — don't "fix" them without reading the rationale:
     delegate → map. `create_order`'s decision — amount, admission, quote, the caller's
     floor — is now `Purchase.plan`, which bought the thing worth buying: the **error
     precedence** is unit-tested rather than reachable only through PocketIC. **Thirteen
-    endpoint bodies still exceed 20 code lines** (counted as non-blank, non-comment lines
-    between a `public …func` and its closing `};`, across `src/backend/mixins/*.mo`) —
+    endpoint bodies still exceed 20 code lines** (non-blank, non-comment lines,
+    INCLUSIVE of the `public …func` line and the closing `};`, across
+    `src/backend/mixins/*.mo` — a reviewer and I differed by exactly those two lines
+    before the rule said which) —
     `create_order` among them, because the half that stays is the exception below.
   - ⚠️ **#127 is delivering TESTS, not smaller bodies, and the count will not move much.**
-    Measured on the first two: `create_order` 84 → 73 code lines, `cancel_order` 65 → 65.
+    Measured on the first three: `create_order` 84 → 73 code lines, `cancel_order`
+    65 → 65, `withdraw_reserve` 46 → 48 — the last one LARGER, because a named ladder
+    call site is longer than the inline `if` it replaces.
     Both endpoints' `switch` blocks have the same number of arms either way; what the
     extraction buys is that the decision becomes checkable without an IC environment —
     `Purchase.plan`'s error precedence, `Orders.cancelShape`'s whole status space. Do not

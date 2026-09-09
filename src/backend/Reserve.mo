@@ -18,6 +18,7 @@
 /// IS its locked quantity, so no second per-order copy is stored. Anything that mutates
 /// it breaks this tally **silently**, and the design then needs a stored per-order amount.
 import Result "mo:core/Result";
+import Delivery "Delivery";
 import Types "Types";
 
 module {
@@ -108,27 +109,42 @@ module {
   /// Order matters and is asserted in `test/reserve.test.mo`: outstanding orders outrank
   /// an empty floor, because "nothing to withdraw" invites a retry while orders
   /// outstanding is a state the operator has to clear.
+  /// The holders gate on its own, because the endpoint needs it BEFORE the floor arms.
+  ///
+  /// ⚠️ **The floor cannot be judged until the ledger has been observed.** An unobserved
+  /// top-up leaves the floor reading 0, so a `#nothingToWithdraw` decided before the
+  /// observe would strand it — which is the whole reason `withdraw_reserve` observes
+  /// first. An earlier version of this extraction ran the full ladder in both passes and
+  /// moved that refusal ahead of the observe; this split is what keeps the original
+  /// ordering. `withdrawable` calls it too, so the test itself exists once.
+  public func ordersOutstanding(holders : Nat, promised : Nat) : ?WithdrawRefusal {
+    if (holders > 0) ?#ordersOutstanding({ holders; promised }) else null;
+  };
+
   public func withdrawable(
     holders : Nat,
     promised : Nat,
     floor : Nat,
     fee : Nat,
   ) : Result.Result<{ debited : Nat; amount : Nat }, WithdrawRefusal> {
-    if (holders > 0) return #err(#ordersOutstanding({ holders; promised }));
+    switch (ordersOutstanding(holders, promised)) {
+      case (?refusal) return #err(refusal);
+      case null {};
+    };
     if (floor == 0) return #err(#nothingToWithdraw);
     // Draining means transferring `floor - fee`: the ledger charges the fee on top, so
     // below the fee there is nothing recoverable at all.
-    let ?amount = deliverable(floor, fee) else {
+    // ⚠️ **`Delivery.deliverableCycles`, not a copy of it.** These are the TWO outflow
+    // classes of one account, and Reserve.mo's own framing is "two destination classes,
+    // ONE outflow mechanism" — a fee correction that diverged between delivery and
+    // withdrawal is exactly what that framing exists to prevent. An earlier version of
+    // this function re-implemented the arithmetic here while its comment claimed it was
+    // "the same function", which replaced a shared call site with a second place to
+    // change. `Delivery` does not import `Reserve`, so this direction is acyclic.
+    let ?amount = Delivery.deliverableCycles(floor, fee) else {
       return #err(#belowLedgerFee({ floor; fee }));
     };
     #ok({ debited = floor; amount });
-  };
-
-  /// What can actually be sent when the fee is charged on top. Shared with delivery's
-  /// arithmetic by intent — the same correction, so the same function.
-  func deliverable(total : Nat, fee : Nat) : ?Nat {
-    if (fee >= total) return null;
-    ?(total - fee : Nat);
   };
 
   /// The promise total derived independently from the orders themselves.

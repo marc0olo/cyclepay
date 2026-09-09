@@ -161,6 +161,23 @@ test('103d — the destination is IN the audit record, not just the fact of a wi
   expect(withdrawn[0]!.detail).toContain('incl. fee');
 });
 
+test('103h — an UNOBSERVED top-up is withdrawn, because the observe comes first', async () => {
+  // ⚠️ **The ordering the floor arms depend on**, and the reason the first pass tests
+  // only the holder count: fund without letting the gateway look, so the floor reads 0
+  // while the account holds cycles. `withdraw_reserve` must observe, adopt the top-up,
+  // and withdraw it — not refuse `#nothingToWithdraw` against its own stale floor and
+  // strand the money, which is what running the whole ladder before the observe did.
+  expect(await holders()).toBe(0n);
+  await fundReserve(gw, RESERVE, false); // observe: false — the gateway has not looked
+  expect((await gw.asAnon.reserve_status()).reserveFloor).toBe(0n);
+  expect(await reserveBalance(gw)).toBeGreaterThanOrEqual(RESERVE);
+
+  const withdrawn = expectOk(await gw.asAdmin.withdraw_reserve());
+  expect(withdrawn.withdrawn).toBeGreaterThan(0n);
+  expect(withdrawn.debited).toBeGreaterThanOrEqual(withdrawn.withdrawn);
+  expect(await reserveBalance(gw)).toBe(0n);
+});
+
 test('103g — a create landing INSIDE the withdrawal is refused, because the floor drops first', async () => {
   // ⚠️ **Rule 2 of §5.4, observed rather than reviewed.** `withdraw_reserve` decrements
   // the floor SYNCHRONOUSLY before issuing the transfer, so a `create_order` arriving in

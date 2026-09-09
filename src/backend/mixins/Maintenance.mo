@@ -150,19 +150,18 @@ mixin (
     // The index is authoritative here for the same reason `reconcileBounded` treats it
     // that way — a recount over `promiseHolders` is exact if the index is complete and
     // too low otherwise, never too high.
-    // The ladder, first pass — before the observe, so a withdrawal with live orders
-    // costs no ledger call. `Reserve.withdrawable` owns the whole decision and the order
-    // of its arms; this call site owns only when to ask.
+    // ⚠️ **The holders gate ONLY, not the whole ladder.** A withdrawal with live orders
+    // outstanding costs no ledger call this way — and the floor arms deliberately wait
+    // for the observe below, because an unobserved top-up leaves the floor reading 0 and
+    // refusing here would strand it.
     switch (
-      Reserve.withdrawable(
+      Reserve.ordersOutstanding(
         Orders.promiseHolderCount(orderStore),
         Orders.promised(orderStore),
-        reserveState.floor,
-        reserveState.cyclesLedgerFee,
       )
     ) {
-      case (#ok(_)) {};
-      case (#err(e)) return #err(e);
+      case (?refusal) return #err(refusal);
+      case null {};
     };
     // Observe before withdrawing, or an unobserved top-up is stranded — which defeats
     // the lever. ⚠️ **And an empty promise index is exactly what makes the observation
