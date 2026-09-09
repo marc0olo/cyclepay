@@ -1,14 +1,11 @@
 canisters:
   - name: backend
     recipe:
-      type: "@dfinity/motoko@v4.1.0"
+      # v5 delegates compilation to `mops build`, so `main` and `candid` moved to
+      # mops.toml `[canisters.backend]` — this recipe takes only metadata/shrink/compress.
+      # The canister name here must match the `[canisters]` key there.
+      type: "@dfinity/motoko@v5.1.0"
       configuration:
-        main: src/backend/Main.mo
-        # The committed interface (spec §8) doubles as the embedded
-        # candid:service metadata — what `mops build` regenerates, the
-        # frontend bindgens from, and the deployed canister reports are
-        # provably the same bytes.
-        candid: src/backend/dist/backend.did
         # ic-wasm deterministic optimize (spec §8).
         shrink: true
   # DFINITY's published XRC mock, deployed locally so `create_order` can price.
@@ -62,9 +59,16 @@ canisters:
 
   - name: frontend
     recipe:
-      # v2.2.1+ required: icp-cli 0.3.x dropped the `assets` sync step the
-      # v2.1.0 recipe emitted (plugin-based sync replaced it).
-      type: "@dfinity/asset-canister@v2.2.1"
+      # The certified-assets canister: every response carries a proof the HTTP
+      # gateway verifies, which is the serving half of the verifiability thesis —
+      # the legacy asset canister had no certification and a raw-domain escape
+      # hatch we had to switch off by config (`allow_raw_access: false`). Here
+      # there is no raw mode to disable.
+      #
+      # ⚠️ Configured by `_headers` / `_redirects` in `dir`, NOT `.ic-assets.json5`,
+      # which this canister does not read — and would not even upload, since the
+      # sync plugin skips dotfiles.
+      type: "@dfinity/static-site@v0.3.3"
       configuration:
         dir: src/frontend/dist
         build:

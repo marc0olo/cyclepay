@@ -13,7 +13,7 @@ import {
 } from "./ic-env";
 
 /// Cookies are percent-encoded with `_` as %5F, which encodeURIComponent leaves
-/// alone — matching the real asset-canister and dev-server output.
+/// alone — matching the real certified-assets canister and dev-server output.
 function icEnv(backendId: string): string {
   const enc = (s: string) =>
     s.replace(/_/g, "%5F").replace(/:/g, "%3A").replace(/=/g, "%3D").replace(/&/g, "%26");

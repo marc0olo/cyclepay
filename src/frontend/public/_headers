@@ -1,0 +1,21 @@
+# Certified-assets has NO default security headers, unlike the legacy asset canister's
+# `security_policy: "standard"`. These reproduce that policy's seven headers verbatim,
+# with two deliberate tightenings noted below — this page takes card details, so the
+# baseline is not negotiable and a copy-paste CSP that breaks the app is worse than none.
+/*
+  Content-Security-Policy: default-src 'self';script-src 'self';connect-src 'self' http://localhost:* https://icp0.io https://*.icp0.io https://icp-api.io;img-src 'self' data:;style-src 'self' 'unsafe-inline';style-src-elem 'self' 'unsafe-inline';font-src 'self';object-src 'none';base-uri 'self';frame-ancestors 'none';form-action 'self';upgrade-insecure-requests;
+  Permissions-Policy: accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), cross-origin-isolated=(), display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), execution-while-out-of-viewport=(), fullscreen=(), geolocation=(), gyroscope=(), keyboard-map=(), magnetometer=(), microphone=(), midi=(), navigation-override=(), payment=(), picture-in-picture=(), publickey-credentials-get=(), screen-wake-lock=(), sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=(), clipboard-read=(), clipboard-write=(), gamepad=(), speaker-selection=(), conversion-measurement=(), focus-without-user-activation=(), hid=(), idle-detection=(), interest-cohort=(), serial=(), sync-script=(), trust-token-redemption=(), window-placement=(), vertical-scroll=()
+  X-Frame-Options: DENY
+  Referrer-Policy: same-origin
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Content-Type-Options: nosniff
+  X-XSS-Protection: 1; mode=block
+
+# Vite content-hashes everything here, so it can never go stale.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# HTML revalidates so a deploy is picked up. Patterns match the ASSET KEY, not the
+# visitor URL — `/` is served from `/index.html`, so this is the block that governs it.
+/*.html
+  Cache-Control: public, max-age=0, must-revalidate
