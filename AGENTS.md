@@ -83,10 +83,17 @@ recorded reasoning — don't "fix" them without reading the rationale:
     `src/backend/mixins/*.mo` — a reviewer and I differed by exactly those two lines
     before the rule said which) —
     `create_order` among them, because the half that stays is the exception below.
+  - **#127's remainder, measured.** Four bodies were extracted from (`create_order`,
+    `cancel_order`, `withdraw_reserve`, `delayed_deliveries`). Of the nine still over 20
+    lines, the length is the RETURN TYPE or guards rather than extractable logic:
+    `reserve_status` is 16 of 33 lines of inline record type, `operator_summary` 11 of
+    23. Naming those records in a module would move the published Candid type names for
+    no behaviour change, which `check-did-signatures.sh` correctly refuses. So the
+    remaining nine are not pending work.
   - ⚠️ **#127 is delivering TESTS, not smaller bodies, and the count will not move much.**
     Measured on the first three: `create_order` 84 → 73 code lines, `cancel_order`
-    65 → 65, `withdraw_reserve` 46 → 48 — the last one LARGER, because a named ladder
-    call site is longer than the inline `if` it replaces.
+    65 → 65, `withdraw_reserve` 46 → 48 (LARGER — a named ladder call site is longer
+    than the inline `if` it replaces), `delayed_deliveries` 42 → 32.
     Both endpoints' `switch` blocks have the same number of arms either way; what the
     extraction buys is that the decision becomes checkable without an IC environment —
     `Purchase.plan`'s error precedence, `Orders.cancelShape`'s whole status space. Do not

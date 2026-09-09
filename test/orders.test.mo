@@ -1680,3 +1680,49 @@ suite("ownerPage bounds the work, not just the response (#70)", func() {
     assert r.scanned == 0;
   });
 });
+
+suite("holderPage — the pagination boundaries (#127)", func() {
+  /// The rules that were inline in `delayed_deliveries`: `nextCursor` is the last KEPT
+  /// id rather than the last scanned, it is null when the scan runs out, and a limit of
+  /// 0 or an over-large one means `maxPageSize`.
+  func store3() : Orders.Store {
+    let store = Orders.emptyStore();
+    ignore newOrder(store, "a-1", alice);
+    ignore newOrder(store, "a-2", alice);
+    ignore newOrder(store, "a-3", alice);
+    store;
+  };
+  let keepAll = func(o : Types.Order) : ?Text = ?o.id;
+
+  test("a full page reports the last KEPT id as the cursor", func() {
+    let p = Orders.holderPage(store3(), null, 2, keepAll);
+    assert p.items == ["a-1", "a-2"];
+    assert p.nextCursor == ?"a-2";
+  });
+
+  test("an exhausted scan reports no cursor, even at exactly the limit", func() {
+    // The distinction a caller loops on: a cursor means "ask again", null means done.
+    assert Orders.holderPage(store3(), null, 3, keepAll).nextCursor == null;
+    assert Orders.holderPage(store3(), null, 9, keepAll).nextCursor == null;
+  });
+
+  test("the cursor resumes strictly after itself", func() {
+    let p = Orders.holderPage(store3(), ?"a-1", 9, keepAll);
+    assert p.items == ["a-2", "a-3"];
+    assert p.nextCursor == null;
+  });
+
+  test("limit 0 and an over-large limit both mean maxPageSize", func() {
+    assert Orders.holderPage(store3(), null, 0, keepAll).items.size() == 3;
+    assert Orders.holderPage(store3(), null, Orders.maxPageSize + 1, keepAll).items.size() == 3;
+  });
+
+  test("⚠️ the cursor counts KEPT ids, not scanned ones", func() {
+    // A filter that skips the first two: a cursor derived from the scan position would
+    // resume past unexamined orders and silently drop them from every later page.
+    let keepLast = func(o : Types.Order) : ?Text = if (o.id == "a-3") ?o.id else null;
+    let p = Orders.holderPage(store3(), null, 1, keepLast);
+    assert p.items == ["a-3"];
+    assert p.nextCursor == null;
+  });
+});
