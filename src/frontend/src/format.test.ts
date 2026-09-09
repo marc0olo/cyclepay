@@ -156,6 +156,20 @@ describe("cancelOrderErrorMessage", () => {
     }
   });
 
+  test("⚠️ sessionNotClosed claims no diagnosis, and says how to find out (#118)", () => {
+    // The content requirement with a design record behind it: three causes, and this
+    // sentence has to be true of all of them. It must NOT assert which one happened,
+    // and it must tell the buyer where the answer is. Moved here from integration 42b
+    // when the copy moved out of the canister (#123) — 42b keeps the tag assertion.
+    const message = cancelOrderErrorMessage({ __kind__: "sessionNotClosed" } as never);
+    expect(message).not.toMatch(/already settled/i);
+    expect(message).toMatch(/refresh the page/i);
+    // "If it was paid it will deliver; if not it expires" is CONDITIONAL, which is the
+    // point — an earlier version of this test banned the word "paid" outright and failed
+    // on exactly that clause.
+    expect(message).toMatch(/if it was paid/i);
+  });
+
   test("an unknown tag falls back rather than throwing", () => {
     // A canister ahead of this build. Showing the tag beats showing nothing.
     expect(cancelOrderErrorMessage({ __kind__: "somethingNew" } as never)).toContain("somethingNew");

@@ -2020,8 +2020,9 @@ test('42b — a 400 that is NOT "already settled" leaves the order payable, and 
   // One tag for every cause, claiming no diagnosis (#118): the order may be paid, may
   // expire on its own, and the page is where the buyer finds out which.
   expect(refused).toEqual({ sessionNotClosed: null });
-  // The WORDING now lives in the frontend (#123, §7.2) and is asserted in
-  // `format.test.ts`; what this scenario owns is which tag the backend chose.
+  // This scenario owns which TAG the backend chose. The wording's own requirement —
+  // claims no diagnosis, says where to find out (#118) — moved with the copy and is
+  // asserted in `format.test.ts`, mutation-verified there.
 
   // Unchanged and still payable, which is the half the message used to contradict.
   expect(await orderStatus(gw, live.order.id)).toBe('created');

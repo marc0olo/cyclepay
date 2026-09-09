@@ -458,11 +458,7 @@ refused. That is what makes the trade acceptable while there is no console.
 | `#notUnderReview` | Only an under-review order can be recorded as delivered | A live order delivers on its own |
 | `#transitionRefused` | The state machine refused the transition | Re-read the order; something moved it |
 
-`cancel_order` is deliberately **not** in this list. It still returns `Result<Order, Text>`
-because a buyer reads its error verbatim (`main.ts`), and §4.3 / #118 put that sentence in
-the backend on purpose: it must be true of all three causes of a Stripe 400, which are
-known here and not in the UI. Converting it is the open half of #123 and needs the
-"where does buyer copy live" question answered first.
+`cancel_order`'s errors are typed too since #123 — §7.2 is the rule that let its copy move to the frontend, and what that rule refuses.
 
 ### §7.2 — Facts stay in the canister; copy may leave it
 
