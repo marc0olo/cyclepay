@@ -31,7 +31,7 @@ import type {
   AuditPage, DelayedPage, OrdersPage, OrphanPage,
   BackendService, CmcService, OrphanEntry,
   Destination, HttpResponse, Icrc1Service, Order, OrderStatusKey, Result, StatusVariant,
-  CreatedOrder, CreateOrderError, Amount, Problem,
+  CreatedOrder, CreateOrderError, CancelOrderError, Amount, Problem,
 
   AuditEvent,
   Opt,
@@ -1096,7 +1096,7 @@ export async function cancelOrderWithExpire(
   gw: Gateway,
   orderId: string,
   opts: { expireStatus?: number; expireBody?: string } = {},
-): Promise<Result<Order, string>> {
+): Promise<Result<Order, CancelOrderError>> {
   const settle = await gw.deferredUser.cancel_order(orderId);
   // Optional on purpose: an already-cancelled order returns early without an
   // outcall (idempotent), and so does one that never got a session — the residue

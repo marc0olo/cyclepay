@@ -3,6 +3,8 @@ import {
   checkReceipt,
   decodeBurnMemo,
   CREATE_ORDER_ERROR_KEYS,
+  CANCEL_ORDER_ERROR_KEYS,
+  cancelOrderErrorMessage,
   createOrderErrorMessage,
   cyclesCredited,
   cyclesForCents,
@@ -116,6 +118,61 @@ describe("shortPrincipal", () => {
 describe("nsToMillis", () => {
   test("truncates to milliseconds", () => {
     expect(nsToMillis(1_700_000_000_123_456_789n)).toBe(1_700_000_000_123);
+  });
+});
+
+describe("cancelOrderErrorMessage", () => {
+  // ⚠️ Keys come from `CANCEL_ORDER_ERROR_KEYS`, which is typed
+  // `Record<CancelOrderError["__kind__"], true>` — so a variant added to the canister and
+  // omitted from the copy map is a compile error here, not a buyer seeing a tag name.
+  test("every variant has a sentence, and none is the escape hatch", () => {
+    const keys = Object.keys(CANCEL_ORDER_ERROR_KEYS) as Array<
+      keyof typeof CANCEL_ORDER_ERROR_KEYS
+    >;
+    expect(keys.length).toBeGreaterThan(0);
+    for (const key of keys) {
+      const payload =
+        key === "notCancellable" || key === "settledInFlight"
+          ? { __kind__: key, [key]: { status: "paid" } }
+          : { __kind__: key };
+      const message = cancelOrderErrorMessage(payload as never);
+      expect(message, key).not.toMatch(/^Cancellation failed:/);
+      expect(message.length, key).toBeGreaterThan(20);
+    }
+  });
+
+  test("the two status-carrying arms name the status in the BUYER's vocabulary", () => {
+    // Not the raw tag: `statusInfo` owns the words a buyer sees for a status, so these
+    // sentences read "payment received" rather than "paid" and cannot drift from the
+    // labels on the order page.
+    for (const status of ["paid", "cancelled"] as const) {
+      const expected = statusInfo(status).label.toLowerCase();
+      expect(
+        cancelOrderErrorMessage({ __kind__: "notCancellable", notCancellable: { status } } as never),
+      ).toContain(expected);
+      expect(
+        cancelOrderErrorMessage({ __kind__: "settledInFlight", settledInFlight: { status } } as never),
+      ).toContain(expected);
+    }
+  });
+
+  test("⚠️ sessionNotClosed claims no diagnosis, and says how to find out (#118)", () => {
+    // The content requirement with a design record behind it: three causes, and this
+    // sentence has to be true of all of them. It must NOT assert which one happened,
+    // and it must tell the buyer where the answer is. Moved here from integration 42b
+    // when the copy moved out of the canister (#123) — 42b keeps the tag assertion.
+    const message = cancelOrderErrorMessage({ __kind__: "sessionNotClosed" } as never);
+    expect(message).not.toMatch(/already settled/i);
+    expect(message).toMatch(/refresh the page/i);
+    // "If it was paid it will deliver; if not it expires" is CONDITIONAL, which is the
+    // point — an earlier version of this test banned the word "paid" outright and failed
+    // on exactly that clause.
+    expect(message).toMatch(/if it was paid/i);
+  });
+
+  test("an unknown tag falls back rather than throwing", () => {
+    // A canister ahead of this build. Showing the tag beats showing nothing.
+    expect(cancelOrderErrorMessage({ __kind__: "somethingNew" } as never)).toContain("somethingNew");
   });
 });
 

@@ -1928,8 +1928,8 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
   const openBefore = (await gw.asAdmin.reserve_status()).openOrders;
 
   // Owner-scoped: nobody else can cancel your order, including an admin.
-  expect(expectErr(await gw.asAdmin.cancel_order(mine.order.id))).toContain('no order');
-  expect(expectErr(await gw.asAnon.cancel_order(mine.order.id))).toContain('no order');
+  expect(expectErr(await gw.asAdmin.cancel_order(mine.order.id))).toEqual({ notFound: null });
+  expect(expectErr(await gw.asAnon.cancel_order(mine.order.id))).toEqual({ notFound: null });
 
   const cancelled = expectOk(await cancelOrderWithExpire(gw, mine.order.id));
   // `#cancelled`, its own status as of #34 — not `#expired`, which told a buyer
@@ -1977,7 +1977,7 @@ test('42 — a buyer can give up on their own unpaid order and is never locked o
   }))).toMatchObject({ status_code: 200 });
   expect(await tickUntilStatus(gw, payable.order.id, ['delivered'])).toBe('delivered');
   expect(expectErr(await gw.asUser.cancel_order(payable.order.id)))
-    .toContain('cannot be cancelled');
+    .toEqual({ notCancellable: { status: { delivered: null } } });
 
   // The cancel is on the audit trail.
   const log = await allAuditEvents(gw);
@@ -2017,11 +2017,12 @@ test('42b — a 400 that is NOT "already settled" leaves the order payable, and 
       error: { type: 'invalid_request_error', message: 'Unrecognized request URL' },
     }),
   }));
-  // Says what is true of every cause, and claims no diagnosis: the order may be paid,
-  // may expire on its own, and the page is where the buyer finds out which.
-  expect(refused).not.toMatch(/already settled/i);
-  expect(refused).toMatch(/would not close the payment session/i);
-  expect(refused).toMatch(/refresh the page/i);
+  // One tag for every cause, claiming no diagnosis (#118): the order may be paid, may
+  // expire on its own, and the page is where the buyer finds out which.
+  expect(refused).toEqual({ sessionNotClosed: null });
+  // This scenario owns which TAG the backend chose. The wording's own requirement —
+  // claims no diagnosis, says where to find out (#118) — moved with the copy and is
+  // asserted in `format.test.ts`, mutation-verified there.
 
   // Unchanged and still payable, which is the half the message used to contradict.
   expect(await orderStatus(gw, live.order.id)).toBe('created');
@@ -2849,7 +2850,7 @@ test('66 — cancelling is ATOMIC with Stripe: never half-cancelled (#33)', asyn
   const failedCancel = expectErr(
     await cancelOrderWithExpire(gw, stubborn.order.id, { expireStatus: 500, expireBody: '{"error":{"message":"internal"}}' }),
   );
-  expect(failedCancel).toContain('try again');
+  expect(failedCancel).toEqual({ stripeUnavailable: null });
   expect(await orderStatus(gw, stubborn.order.id)).toBe('created');
   // Still payable, which is the safe side of the failure.
   const still = (await gw.asUser.get_order(stubborn.order.id))[0]!;
@@ -2865,8 +2866,9 @@ test('66 — cancelling is ATOMIC with Stripe: never half-cancelled (#33)', asyn
       expireBody: '{"error":{"message":"You cannot expire a Checkout Session in a status of complete."}}',
     }),
   );
-  expect(raced).toContain('would not close the payment session');
-  expect(raced).not.toContain('try again');
+  // ⚠️ One tag for all three causes, which is what the sentence said too (#118/#123).
+  // Distinct from `stripeUnavailable`: that one invites a retry, this one does not.
+  expect(raced).toEqual({ sessionNotClosed: null });
   expect(await orderStatus(gw, stubborn.order.id)).toBe('created');
 
   // ── A successful expire cancels. Only now.

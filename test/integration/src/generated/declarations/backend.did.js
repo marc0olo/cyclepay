@@ -147,7 +147,16 @@ export const idlFactory = ({ IDL }) => {
     'tooManyOpenOrders' : IDL.Record({ 'max' : IDL.Nat, 'open' : IDL.Nat }),
   });
   const Result_17 = IDL.Variant({ 'ok' : IDL.Null, 'err' : Reason });
-  const Result_16 = IDL.Variant({ 'ok' : Order, 'err' : IDL.Text });
+  const CancelOrderError = IDL.Variant({
+    'notCancellable' : IDL.Record({ 'status' : OrderStatus }),
+    'settledInFlight' : IDL.Record({ 'status' : OrderStatus }),
+    'alreadyExpired' : IDL.Null,
+    'notFound' : IDL.Null,
+    'stripeUnavailable' : IDL.Null,
+    'sessionNotClosed' : IDL.Null,
+    'credentialsRefused' : IDL.Null,
+  });
+  const Result_16 = IDL.Variant({ 'ok' : Order, 'err' : CancelOrderError });
   const Tier = IDL.Record({ 'id' : IDL.Text, 'usdCents' : IDL.Nat });
   const Amount = IDL.Variant({ 'custom' : IDL.Nat, 'tier' : IDL.Text });
   const CreatedOrder = IDL.Record({ 'order' : Order });

@@ -52,6 +52,10 @@ export type CreateOrderResult = Awaited<ReturnType<_SERVICE['create_order']>>;
 export type CreatedOrder = Extract<CreateOrderResult, { ok: unknown }>['ok'];
 export type CreateOrderError = Extract<CreateOrderResult, { err: unknown }>['err'];
 
+/// Derived the same way, so the suite cannot hold a stale copy of the variant (#123).
+export type CancelOrderResult = Awaited<ReturnType<_SERVICE['cancel_order']>>;
+export type CancelOrderError = Extract<CancelOrderResult, { err: unknown }>['err'];
+
 export type JournalEntry = Unopt<Awaited<ReturnType<_SERVICE['delivery_journal']>>>;
 export type TransferIntent = Unopt<JournalEntry['transferIntent']>;
 export type Receipt = Unopt<Awaited<ReturnType<_SERVICE['receipt']>>>;
