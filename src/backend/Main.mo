@@ -544,8 +544,15 @@ persistent actor CyclesGateway {
     };
     let transport = Sealed.transportSecret(entropy);
 
+    // The replica's own figure (moc 1.16.0), not a constant. A rejected cost query is
+    // returned rather than defaulted — see `Sealed.derivationFee`.
+    let fee = switch (Sealed.derivationFee()) {
+      case (#ok(cycles)) cycles;
+      case (#err(e)) return #err(e);
+    };
+
     let reply = try {
-      await (with cycles = Sealed.vetkdFee) management.vetkd_derive_key({
+      await (with cycles = fee) management.vetkd_derive_key({
         context = Sealed.context();
         input = Sealed.keyLabel();
         key_id = vetkdKeyId;

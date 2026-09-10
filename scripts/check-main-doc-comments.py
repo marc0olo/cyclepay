@@ -27,15 +27,28 @@ whatever this cannot see.
 documentation — verified in `backend.did`, where it sits directly above `service : {`,
 not at the top of the file. In the source it sits above the first `import` rather than
 above `persistent actor`, which is why this check is positional rather than looking for
-the actor line. ⚠️ That placement is what `leaked_docs()`'s `service + 1` accounts for:
+the actor line. ⚠️ That placement is what `published_docs()`'s `service + 1` accounts for:
 the emitted doc is permanently the line before the service line.
+
+⚠️ **This ban is now BELT, not the only defence, and it is kept deliberately.** It exists
+because a `///` on a private state declaration could alias onto an unrelated endpoint —
+four live instances at the tip of #120. moc 1.16.0 emits endpoint docs properly, which
+plausibly removes the empty slot a neighbour's doc used to fill, but **that was not
+measured**: a probe placing a marker doc on a private `var` produced no leak under 1.16.0
+*or* 1.15.1, so the position simply does not alias and the probe proved nothing either way.
+What did change is that `check-endpoint-docs.py` now compares each endpoint's published doc
+against its written one, so an alias would be *caught* rather than merely prevented. Two
+independent mechanisms for a class that shipped four times; the ban costs nothing here
+(the composition root declares no endpoints, so it needs no published docs) and is not
+worth trading for a measurement nobody has.
 
 ⚠️ **What this does NOT reach**, stated because a check implying more than it verifies is
 worse than no check:
 
   - **Any other file.** Modules and mixins are unaffected: a `///` on a module's `public
-    func` is the right convention, and mixin members' docs are dropped rather than
-    leaked. Only the composition root has a service to leak ONTO.
+    func` is the right convention, and since moc 1.16.0 a mixin member's doc is PUBLISHED
+    on its own endpoint — which is the point of writing it. Only the composition root has
+    a service to leak ONTO.
   - **Whether the comment is any good.** `//` and `///` are equally unpublished here, so
     this is purely about where moc may send the text.
   - ⚠️ **The cost this does impose, stated rather than waved away.** `///` is what a

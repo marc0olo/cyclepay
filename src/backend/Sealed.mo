@@ -19,10 +19,16 @@
 /// — rather than weakening a ciphertext that is already on the wire. That asymmetry is why
 /// an experimental BLS12-381 is acceptable on this path and would not be on a path where a
 /// bug could leak a plaintext.
+// ⚠️ `mo:⛔` for `costVetkdDeriveKey` only. The escape hatch is warranted here because the
+// alternative is a hardcoded fee that goes stale silently — see `derivationFee` below.
+import Prim "mo:⛔";
 // `Array` for the receiver `.toBlob()` on the decrypted `[Nat8]` — the conversion is
 // spelled on the source value, so the module for THAT type must be imported.
 import Array "mo:core/Array";
 import Blob "mo:core/Blob";
+// ⚠️ Zero `Nat32.` uses and load-bearing: it is what makes `resultCode.toText()`
+// resolve (M0070 without it).
+import Nat32 "mo:core/Nat32";
 import Result "mo:core/Result";
 import Text "mo:core/Text";
 import G1 "mo:sealed-secrets-bls/G1";
@@ -72,29 +78,38 @@ module {
   /// so it is ours to choose and never has to match the client.
   let transportDomain = "cyclepay-vetkd-transport-key";
 
-  /// The published `key_1` derivation fee, charged per call. Overpaying is refunded;
-  /// underpaying is rejected outright, so this is attached exactly.
+  /// `bls12_381_g2`, as `costVetkdDeriveKey` encodes the curve. The management canister's
+  /// Candid type is a one-case variant (`#bls12_381_g2`); the system API takes a `Nat32`.
+  let CURVE_BLS12_381_G2 : Nat32 = 0;
+
+  /// The derivation fee to attach, from the system rather than from a constant.
   ///
-  /// **Source:** the "VetKeys" section of
-  /// <https://docs.internetcomputer.org/references/cycles-cost-formulas> — 26_153_846_153
-  /// cycles, ~$0.0357. ⚠️ **A hardcoded figure needs somewhere to be re-checked against,
-  /// not just a plausible number**, which is why the URL is here rather than the
-  /// derivation. Fail-closed if it ever rises: the call is rejected and provisioning fails
-  /// visibly, so a stale constant cannot silently underpay.
+  /// ⚠️ **This used to be `26_153_846_153` written by hand**, matching the "VetKeys"
+  /// section of <https://docs.internetcomputer.org/references/cycles-cost-formulas>. moc
+  /// 1.16.0 exposes the replica's own figure, so there is no longer a number here to go
+  /// stale — which is the whole reason for the `mo:⛔` import.
   ///
-  /// ⚠️ **The fee is set by the subnet HOLDING the key, not by ours** — `key_1` lives on
-  /// the 34-node fiduciary subnet. So it does not scale with this canister's node count,
-  /// and moving to the 7-node confidential subnet (#2) does not make it cheaper. That is
-  /// the opposite of how HTTPS-outcall pricing behaves, which is the reason to say it.
+  /// ⚠️ **A non-zero result code means the key name or curve was rejected, and that is
+  /// returned rather than defaulted.** Falling back to a literal on rejection would make
+  /// a wrong curve encoding invisible: provisioning would keep working on the old constant
+  /// and nothing would say the system query had stopped answering.
   ///
-  /// ⚠️ **moc 1.16.0 supersedes this constant** with `Prim.costVetkdDeriveKey(keyName,
-  /// curve) : (resultCode : Nat32, costOrUndefined : Nat)` — the system's own figure,
-  /// which cannot go stale. This project is pinned to 1.15.1 — see #150, which also covers
-  /// what that upgrade does to the endpoint-doc invariant.
-  ///
-  /// Paid once per provisioning call and never on the webhook or delivery path — which is
-  /// what makes sealing affordable here, and the reason #11 rejects deriving per use.
-  public let vetkdFee : Nat = 26_153_846_153;
+  /// ⚠️ **Nothing needs to assert the VALUE.** Underpaying `vetkd_derive_key` is rejected
+  /// outright, so a wrong fee fails provisioning — which `sealed.spec.ts` already
+  /// exercises end to end on a real replica. That test is what proves this returns a
+  /// figure the management canister accepts; it is also the only place it can be proven,
+  /// since the `mops test` interpreter does not implement the primitive at all
+  /// (`Value.prim: costVetkdDeriveKey`).
+  public func derivationFee() : Result.Result<Nat, ProvisionError> {
+    let (resultCode, cost) = Prim.costVetkdDeriveKey(keyName, CURVE_BLS12_381_G2);
+    if (resultCode != 0) {
+      return #err(#vetkdUnavailable({
+        detail = "the replica rejected a cost query for key " # keyName
+        # " (result code " # resultCode.toText() # ")";
+      }));
+    };
+    #ok(cost);
+  };
 
   /// Why a provisioning call could not store a secret.
   ///

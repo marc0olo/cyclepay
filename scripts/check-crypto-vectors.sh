@@ -15,9 +15,10 @@
 #   1. `mops test` does not descend into path dependencies, so these suites execute in
 #      this project only if something runs them explicitly. Nothing else does.
 #   2. The upstream run proves the vectors under **that repository's** toolchain pins, not
-#      ours. They happen to match today (moc 1.15.1, core 2.6.1) and will diverge, because
-#      this project bumps `moc` and that one is a frozen proof of concept. From the first
-#      bump onward, the combination actually shipped here is tested nowhere else.
+#      ours. ⚠️ **They HAVE now diverged** — upstream is pinned to moc 1.15.1 and this
+#      project moved to 1.16.0 — which is why the run below rewrites the pin instead of
+#      testing in place. Upstream is a frozen proof of concept; this project's compiler
+#      moves, so the combination actually shipped here is tested nowhere else.
 #
 # It is also what makes a submodule work at all: `mops` cannot address a package inside a
 # repository subdirectory — measured, it silently DISCARDS the subdirectory and installs
@@ -62,23 +63,82 @@ if [ "$PINNED" != "$ACTUAL" ]; then
   printf '\033[33m!\033[0m vendor/icp-seeding-secrets-poc is at %s, the commit pinned here is %s\n' "$ACTUAL" "$PINNED"
 fi
 
+# ⚠️ **The suites must run under THIS project's compiler, not the submodule's.**
+#
+# Each vendored package is a self-contained mops project with its own `[toolchain] moc`,
+# pinned at 1.15.1. Running `mops test` in place therefore verifies the port under *that*
+# compiler while the backend compiles the same source under ours — so the moment the two
+# diverge, this check silently stops covering the combination that ships, which is exactly
+# the gap §7.3's acceptance depends on not existing. It went unnoticed for one commit
+# during the 1.16.0 bump.
+#
+# `mops` has no flag or environment override for the compiler (`mops test --help`), so
+# each package is copied to a temp directory with its pin rewritten to ours. The rewrite
+# is VERIFIED below rather than assumed: a `sed` that silently matched nothing would put
+# us straight back to testing the wrong compiler.
+OURS="$(sed -nE 's/^moc = "([^"]+)"/\1/p' mops.toml | head -1)"
+[ -n "$OURS" ] || fail "could not read the moc pin from mops.toml"
+
+# ⚠️ **Nothing is copied. Each package is a directory of SYMLINKS into the submodule,
+# plus one real `mops.toml` carrying our compiler pin.**
+#
+# The only file that has to differ is the toolchain pin, so that is the only file
+# materialised — `src/`, `test/`, `bench/` and the vectors are linked, and the submodule's
+# working tree is never touched. That also rules out the two alternatives: editing the
+# submodule's own `mops.toml` in place mutates checked-out state and leaves it dirty if a
+# run is interrupted, and duplicating the suites into `test/` would be a real, maintained
+# copy of someone else's tests.
+#
+# ⚠️ **Both packages must be SIBLINGS in one root.** `vetkeys` declares
+# `sealed-secrets-bls = "../bls12-381"`, a path relative to its own directory — a
+# per-package root gives `package error [M0012], file "../bls12-381" does not exist`, and
+# only for the second package, so it fails in a way that reads as package-specific.
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+SUB="$(pwd)/vendor/icp-seeding-secrets-poc/motoko"
+for pkg in bls12-381 vetkeys; do
+  mkdir -p "$WORK/$pkg"
+  # `.mops` is deliberately NOT linked: a cache resolved under the old pin would defeat
+  # the point of the rewrite. Everything else the build reads is linked, not duplicated.
+  for entry in "$SUB/$pkg"/*; do
+    name="$(basename "$entry")"
+    [ "$name" = "mops.toml" ] && continue
+    [ "$name" = ".mops" ] && continue
+    ln -s "$entry" "$WORK/$pkg/$name"
+  done
+  # `vectors.json` is shared, one level up, and reached as `../vectors.json`.
+  [ -e "$WORK/vectors.json" ] || ln -s "$SUB/vectors.json" "$WORK/vectors.json"
+  cp "$SUB/$pkg/mops.toml" "$WORK/$pkg/mops.toml"
+done
+
 TOTAL=0
 for pkg in bls12-381 vetkeys; do
-  DIR="vendor/icp-seeding-secrets-poc/motoko/$pkg"
-  # Each package is a self-contained mops project with its own toolchain pins and its own
-  # dev-dependencies, so it installs and tests independently of this one.
-  ( cd "$DIR" && mops install ) >/dev/null 2>&1 || fail "mops install failed in $DIR"
+  DIR="$WORK/$pkg"
+
+  THEIRS="$(sed -nE 's/^moc = "([^"]+)"/\1/p' "$DIR/mops.toml" | head -1)"
+  [ -n "$THEIRS" ] || fail "$pkg/mops.toml has no moc pin to rewrite"
+  sed -i.bak -E "s/^moc = \"[^\"]+\"/moc = \"$OURS\"/" "$DIR/mops.toml"
+  rm -f "$DIR/mops.toml.bak"
+  NOW="$(sed -nE 's/^moc = "([^"]+)"/\1/p' "$DIR/mops.toml" | head -1)"
+  [ "$NOW" = "$OURS" ] || fail "failed to rewrite $pkg's moc pin ($THEIRS -> $OURS, got $NOW)"
+
+  ( cd "$DIR" && mops install ) >/dev/null 2>&1 || fail "mops install failed for $pkg under moc $OURS"
 
   OUT="$( ( cd "$DIR" && mops test ) 2>&1 )" || {
     printf '%s\n' "$OUT" >&2
-    fail "crypto vectors FAILED in $pkg — do not ship a secret through this"
+    fail "crypto vectors FAILED in $pkg under moc $OURS — do not ship a secret through this"
   }
   # `mops test` prints "Done in Xs, passed N". Pull N out so the gate reports coverage
   # rather than a bare tick: a suite that silently stopped collecting tests would
   # otherwise pass here looking identical to one that ran.
   N="$(printf '%s' "$OUT" | sed -nE 's/.*passed ([0-9]+).*/\1/p' | tail -1)"
   [ -n "$N" ] && [ "$N" -gt 0 ] 2>/dev/null || fail "could not read a passing test count from $pkg"
-  printf '   %-12s %3s vectors against the Rust reference\n' "$pkg" "$N"
+  if [ "$THEIRS" = "$OURS" ]; then
+    printf '   %-12s %3s vectors against the Rust reference (moc %s)\n' "$pkg" "$N" "$OURS"
+  else
+    printf '   %-12s %3s vectors against the Rust reference (moc %s, pinned %s upstream)\n' \
+      "$pkg" "$N" "$OURS" "$THEIRS"
+  fi
   TOTAL=$((TOTAL + N))
 done
 

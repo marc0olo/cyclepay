@@ -1065,7 +1065,7 @@ suite("#37 — the pay link is dropped on the way into a terminal state", func()
   test("every terminal status clears it; the non-terminal ones keep it", func() {
     // ⚠️ Terminality comes from `Reserve.holdsPromise`, which is the single authority
     // — a second list in `commitTransition` would be a place for the two to disagree.
-    for (terminal in [#cancelled, #expired].vals()) {
+    for (terminal in [#cancelled, #expired].values()) {
       let store = Orders.emptyStore();
       let o = withUrl(store, "t-" # Types.statusToText(terminal));
       assert o.stripeSessionUrl != null;
@@ -1178,7 +1178,7 @@ suite("#38 — filtered, cursor-paginated reads", func() {
     label walk loop {
       let p = Orders.page(store, noFilter(), cursor, 7);
       pages += 1;
-      for (o in p.orders.vals()) seen := seen.concat([o.id]);
+      for (o in p.orders.values()) seen := seen.concat([o.id]);
       switch (p.nextCursor) {
         case (?c) cursor := ?c;
         case null break walk;
@@ -1187,9 +1187,9 @@ suite("#38 — filtered, cursor-paginated reads", func() {
     };
     assert seen.size() == 25;
     // No duplicates: every id appears once.
-    for (id in seen.vals()) {
+    for (id in seen.values()) {
       var n = 0;
-      for (other in seen.vals()) { if (other == id) n += 1 };
+      for (other in seen.values()) { if (other == id) n += 1 };
       assert n == 1;
     };
   });
