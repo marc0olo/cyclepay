@@ -122,18 +122,18 @@ module {
       // $100, down from $1,000 (#33). The ceiling IS the per-order reserve
       // exposure, so this is the main lever on #30's reserve-griefing vector.
       maxPurchaseUsdCents = 10_000;
-      // $10. Below this the card fee eats too much of the payment to be worth an
-      // outcall and a reserve hold — that fee share is the binding constraint, and the
-      // recorded reason for raising the floor from $5.
+      // $10, for two independent reasons:
       //
-      // ⚠️ **And it is ALSO what a buyer needs, which the fee reasoning alone misses.**
-      // `docs/BUYER-COST-MODEL.md` measures the scenario the product is sold for — two
-      // canisters, a month, three deploys a day on a 13-node subnet. The gate is not what
-      // gets consumed (~1.34 T) but what must be held UPFRONT: `icp canister create`
-      // funds each canister with 2 T by default, so two of them ask for **4.0 T**. $10
-      // buys 6.851 T and clears it 1.7×; **$5 buys 3.320 T and does not clear it at all**,
-      // failing on the second canister. So this floor has two independent justifications,
-      // and only the card-fee one was written down.
+      // 1. ⚠️ **What a buyer needs, which binds first.** `icp canister create` funds each
+      //    canister with 2 T by default, so the two a buyer typically deploys ask for
+      //    **4.0 T** before anything runs — not the ~1.34 T a month consumes. $10 buys
+      //    6.851 T and clears that 1.7×; $5 buys 3.320 T and does not clear it at all,
+      //    failing on the second canister.
+      // 2. **The card fee.** 2.9% + 30¢ is 8.8% of a $5 purchase against 5.9% of a $10
+      //    one, so below this the fee eats too much of the payment to be worth an outcall
+      //    and a reserve hold.
+      //
+      // `docs/BUYER-COST-MODEL.md` has the model, the tier table and the assumptions.
       minPurchaseUsdCents = 1_000;
     };
   };
