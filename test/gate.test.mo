@@ -264,7 +264,7 @@ suite("#61 refusal counters", func() {
 
   test("counters accumulate across every reason", func() {
     var c = Gate.noRefusals();
-    for (r in [belowMin, belowMin, aboveMax, capReached, lowGas, shortReserve].vals()) {
+    for (r in [belowMin, belowMin, aboveMax, capReached, lowGas, shortReserve].values()) {
       c := Gate.countRefusal(c, r);
     };
     assert c.amountBelowMin == 2;
@@ -314,7 +314,7 @@ suite("#61 rail-state latch", func() {
 
   test("per-request and per-principal reasons never latch anything", func() {
     var latch = Gate.admitting();
-    for (r in [belowMin, aboveMax, capReached, belowMin].vals()) {
+    for (r in [belowMin, aboveMax, capReached, belowMin].values()) {
       let step = Gate.latchRefusal(latch, r);
       assert not step.announce;
       latch := step.latch;
@@ -420,7 +420,7 @@ suite("#37 §2c — the session outcall is a fourth condition, cleared different
 
   test("latchAdmission clears exactly the three conditions admission is evidence for", func() {
     var latch = Gate.admitting();
-    for (c in [#reserveShort, #canisterCyclesLow, #railClosed, #stripeApiFailing].vals()) {
+    for (c in [#reserveShort, #canisterCyclesLow, #railClosed, #stripeApiFailing].values()) {
       latch := Gate.latchCondition(latch, c).latch;
     };
     let admitted = Gate.latchAdmission(latch);

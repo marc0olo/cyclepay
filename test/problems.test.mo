@@ -19,7 +19,7 @@ suite("resolution semantics", func() {
     // can settle a problem exactly when `paymentRefOf` gives the closer something to
     // match on. If these ever disagree, either a refund closes a problem it cannot
     // settle, or a settleable one is never closed.
-    for (k in [dup, stuck, refunded, uncredited].vals()) {
+    for (k in [dup, stuck, refunded, uncredited].values()) {
       assert Problems.refundResolvable(k) == (Problems.paymentRefOf(k) != null);
     };
   });

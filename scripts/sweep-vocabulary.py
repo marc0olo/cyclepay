@@ -132,7 +132,24 @@ def added_lines(base_sha):
                     out.append((path, i, text))
             except (IsADirectoryError, PermissionError):
                 continue
-    return [(p, n, t) for p, n, t in out if p != TABLE]
+    return [(p, n, t) for p, n, t in out if p != TABLE and not generated(p)]
+
+
+# ⚠️ **Generated files are excluded, and this became necessary rather than tidy.** Before
+# moc 1.16.0 the `.did` held 5 doc lines in total, so no generated file could contribute
+# prose and no exclusion was needed. 1.16.0 publishes every endpoint's doc — 613 lines —
+# and `backend.did.d.ts` mirrors them again, so **one mixin doc edit now surfaces three
+# times**. Measured on the 1.16.0 bump: 14 hits, 7 in the `.did`, 7 in the `.d.ts`, and 0
+# in source — a step whose entire output was a restatement of a source change it did not
+# report, under a heading asking a reviewer to adjudicate each one.
+#
+# The rule is "adjudicate prose a human wrote". A generated mirror of that prose is the
+# same sentence counted again, and the source line is already in the list.
+GENERATED = ("src/backend/dist/", "/generated/declarations/")
+
+
+def generated(path: str) -> bool:
+    return any(marker in path for marker in GENERATED)
 
 
 def main() -> int:

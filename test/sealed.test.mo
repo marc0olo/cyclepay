@@ -72,10 +72,12 @@ suite("Sealed — the two published constants", func() {
     assert Sealed.keyName == "key_1";
   });
 
-  test("the derivation fee is the published key_1 figure", func() {
-    // Underpaying is rejected outright, so this is not a value to round.
-    assert Sealed.vetkdFee == 26_153_846_153;
-  });
+  // ⚠️ **The fee is deliberately NOT asserted here.** It comes from
+  // `Prim.costVetkdDeriveKey`, which the `mops test` interpreter does not implement — a
+  // call fails with `Value.prim: costVetkdDeriveKey`. Asserting a literal would also
+  // re-create the stale-constant problem that primitive exists to remove. What proves the
+  // figure is `test/integration/src/sealed.spec.ts`: underpaying `vetkd_derive_key` is
+  // rejected outright, so provisioning succeeding on a real replica IS the assertion.
 });
 
 suite("Sealed.transportSecret — the half that never leaves", func() {

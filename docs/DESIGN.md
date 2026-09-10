@@ -648,12 +648,20 @@ keeping, this is no longer available** and a change of this shape needs the chai
 
 ⚠️ **Two costs of mixins, both measured rather than assumed:**
 
-1. **`moc` does not emit doc comments for mixin members** (1.15.1; identical under
-   `mops build`, `moc --idl` and `mops generate candid`). So a relocated endpoint loses
-   its documentation from `backend.did` and from the generated TypeScript bindings — ~6
-   lines per endpoint. `scripts/check-endpoint-docs.py` therefore reads the SOURCE, not
-   the interface, so the invariant survives; it is tracked upstream and reverses on its
-   own if moc changes.
+1. **~~`moc` does not emit doc comments for mixin members~~ — FIXED in moc 1.16.0, and
+   this entry is kept to record that it reversed.** On 1.15.1 a relocated endpoint lost its
+   documentation from `backend.did` and from the generated TypeScript bindings, ~6 lines
+   per endpoint. 1.16.0 emits them: measured on this project as 0 → **613** doc lines
+   inside the service block, all 62 endpoints' published blocks byte-equal to their source
+   blocks.
+
+   This entry said the cost "reverses on its own if moc changes", and it did — but not
+   neutrally. `scripts/check-endpoint-docs.py` had grown a second check that asserted the
+   `.did` documented *no* endpoint, sound only while the docs were being dropped, whose
+   remedy (*make it `//`*) would now delete a deliberately published doc. It was replaced
+   by a direct comparison of published against written. ⚠️ **The lesson worth keeping: a
+   compiler defect that a check is built on is a dependency, and the fix is a breaking
+   change to the check.**
 2. **Only imports may precede a `mixin` block** (M0228), so a type the mixin's interface
    needs cannot be declared above the block in the same file — it goes inside the block,
    or in a module.
