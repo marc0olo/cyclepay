@@ -91,7 +91,10 @@ test.describe("visual baselines", () => {
     await page.locator("#start-buy").click();
     await expect(page.locator("#buy-flow")).toBeVisible();
     // Wait for the priced tiles rather than the empty grid.
-    await expect(page.locator("#tiers button.tier")).toHaveCount(3);
+    // ⚠️ `:not(.tier-custom)` counts the three FIXTURE presets. `#tier-custom` also
+    // carries `.tier`, so a bare `.tier` count is 4 — which is what a five-month
+    // suspension turned into a failure before this test ever screenshotted.
+    await expect(page.locator("#tiers button.tier:not(.tier-custom)")).toHaveCount(3);
     await settleForShot(page);
     await expect(page).toHaveScreenshot("buy-light.png", shot);
   });
@@ -105,6 +108,11 @@ test.describe("visual baselines", () => {
     await page.goto("/");
     await signInAsFixtureBuyer(page);
     await openFixtureOrder(page, { status: "delivered" });
+    // ⚠️ The tour is behind this link now — `delivered.spec.ts` clicks it for the same
+    // reason. Asserting `#cmd-link` without it failed before screenshotting, so the
+    // suspension was hiding a stale SETUP and not only stale pixels.
+    await page.locator("#order-next-link").click();
+    await expect(page.locator("#cli-steps")).toBeVisible();
     await expect(page.locator("#cmd-link")).toBeVisible();
     await settleForShot(page);
     await expect(page).toHaveScreenshot("delivered-light.png", shot);
@@ -115,7 +123,7 @@ test.describe("visual baselines", () => {
     await page.locator("#theme-toggle").click();
     await useFixtureBackend(page);
     await page.locator("#start-buy").click();
-    await expect(page.locator("#tiers button.tier")).toHaveCount(3);
+    await expect(page.locator("#tiers button.tier:not(.tier-custom)")).toHaveCount(3);
     await settleForShot(page);
     await expect(page).toHaveScreenshot("buy-dark.png", shot);
   });
