@@ -15,6 +15,27 @@ import { describe, expect, test } from "vitest";
 /// values (`#8f867a` where the reference has `#7a7367`). So one mode had been fixed and
 /// the other had not, with nothing recording that the fix had happened. That asymmetry
 /// is the thing this file prevents from recurring.
+/// ⚠️ **What this suite CANNOT see: opacity composition.** It measures a token against
+/// a token, and `opacity` composites on top of the result afterwards — so a rule like
+/// `.flow-step { opacity: 0.55 }` (`styles.css:1125`) makes text render at a ratio this
+/// file never computes. Measured on the landing page's four-step rail:
+///
+///   light   --icp-fg-muted      5.15:1  →  2.19:1 at 0.55
+///           --icp-fg-secondary  8.54:1  →  2.74:1
+///   dark    --icp-fg-muted      5.25:1  →  2.41:1
+///           --icp-fg-secondary  9.98:1  →  3.78:1
+///
+/// That rail is deliberate — 0.55 is the trough of an 8 s cycle that brings each step to
+/// full opacity, and `prefers-reduced-motion` sets `opacity: 1` with `animation: none`.
+/// It is recorded here because a green run of this file was cited as covering
+/// "text the same colour as its background", and for anything faded it does not.
+///
+/// ⚠️ **What DOES cover it: `test/browser/visual.spec.ts`.** Playwright's
+/// `animations: "disabled"` cancels an infinite animation to its initial state, and the
+/// `0%` keyframe is the 0.55 trough — so the committed baselines pin the DIMMEST frame,
+/// and a change that faded the rail further fails there. The two suites are complements:
+/// this one is exact about tokens and blind to composition; that one sees the composed
+/// pixels and cannot tell you a ratio.
 const TOKENS = readFileSync(
   resolve(__dirname, "tokens.css"),
   "utf8",
