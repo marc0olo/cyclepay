@@ -1,4 +1,4 @@
-import { test, expect, useFixtureBackend } from "./fixtures";
+import { test, expect, useFixtureBackend, signInAsFixtureBuyer, openFixtureOrder } from "./fixtures";
 
 /// The bugs jsdom is structurally blind to: the CASCADE and LAYOUT.
 ///
@@ -290,5 +290,136 @@ test.describe("the four-step hero figure", () => {
       () => getComputedStyle(document.querySelector(".hero")!).gridTemplateColumns.split(" ").length,
     );
     expect(narrow).toBe(1);
+  });
+});
+
+/// Three facts that no element assertion can reach, because each is about two
+/// things AGREEING — an animation with a highlight, a header with its viewport, a
+/// table with its container. Every one of them was on screen and wrong while the
+/// whole suite was green.
+test.describe("layout agreement", () => {
+  test("the travelling dot lands on the step that is ringed", async ({ page }) => {
+    await page.goto("/");
+    const worst = await page.evaluate(() => {
+      const flow = document.querySelector(".flow") as HTMLElement;
+      const steps = [...document.querySelectorAll(".flow-step")] as HTMLElement[];
+      const nodes = [...document.querySelectorAll(".flow-node")] as HTMLElement[];
+      const top = flow.getBoundingClientRect().top;
+      const height = flow.getBoundingClientRect().height;
+      const centres = nodes.map((n) => {
+        const r = n.getBoundingClientRect();
+        return r.top - top + r.height / 2;
+      });
+
+      // Seek every animation to one absolute instant. `flow-dim`/`flow-ring` carry a
+      // `--i * 2s - 1s` delay, so each step's seek is offset by its own.
+      const seek = (t: number) => {
+        flow.style.animationPlayState = "paused";
+        flow.style.animationDelay = `${-t}s`;
+        steps.forEach((s, i) => {
+          for (const el of [s, nodes[i]!]) {
+            el.style.animationPlayState = "paused";
+            el.style.animationDelay = `${i * 2 - 1 - t}s`;
+          }
+        });
+      };
+
+      // The pulse is a background layer, so its position has to be read from the
+      // computed value and its percentage resolved against the positioning area
+      // (the container minus the 5px dot).
+      const dotCentre = () => {
+        const y = getComputedStyle(flow)
+          .backgroundPosition.split(",")[0]!
+          .trim()
+          .split(/\s+/)
+          .slice(1)
+          .join(" ");
+        const area = height - 5;
+        const m = y.match(/calc\(([-\d.]+)%\s*([+-])\s*([\d.]+)px\)/);
+        let px: number;
+        if (m) px = (parseFloat(m[1]!) / 100) * area + (m[2] === "-" ? -1 : 1) * parseFloat(m[3]!);
+        else if (y.endsWith("%")) px = (parseFloat(y) / 100) * area;
+        else px = parseFloat(y);
+        return px + 2.5;
+      };
+
+      // `flow-ring` lights node i between 8% and 22% of its cycle, so the middle of
+      // its window is at t = 2i + 0.2.
+      let worstOffset = 0;
+      for (let i = 0; i < centres.length; i++) {
+        seek(2 * i + 0.2);
+        worstOffset = Math.max(worstOffset, Math.abs(dotCentre() - centres[i]!));
+      }
+      return worstOffset;
+    });
+    // The dot is 5px, so anything inside its own radius reads as "on the node".
+    // The linear-travel version this replaced drifted 67px by the fourth step.
+    expect(worst).toBeLessThan(4);
+  });
+
+  for (const width of [320, 390]) {
+    test(`the signed-in header does not push the page sideways at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 740 });
+      await page.goto("/");
+      await useFixtureBackend(page);
+      await signInAsFixtureBuyer(page);
+      await openFixtureOrder(page, { status: "delivered" });
+      await page.goto("/#/");
+      // Non-vacuous: signed out, the nav links and the identity are absent and the
+      // header fits any width, so this would pass while testing nothing.
+      await expect(page.locator("#auth-area .principal")).toBeVisible();
+      await expect(page.locator("#history-link")).toBeVisible();
+      const { scrollWidth, clientWidth } = await page.evaluate(() => ({
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      // Signed in, this row wants 457px. Without the wraps in `.site-header` and
+      // `.header-actions` the header sets the page width and the whole document
+      // scrolls: +137px here at 320px, +67px at 390px.
+      expect(scrollWidth).toBe(clientWidth);
+    });
+  }
+
+  test("a table too wide for the screen scrolls itself, and still fills a desktop panel", async ({ page }) => {
+    await page.goto("/");
+    await useFixtureBackend(page);
+    await signInAsFixtureBuyer(page);
+    await openFixtureOrder(page, { status: "delivered" });
+
+    await page.setViewportSize({ width: 358, height: 740 });
+    await page.goto("/#/history");
+    await expect(page.locator(".orders-table tbody tr").first()).toBeVisible();
+    const phone = await page.evaluate(() => {
+      const table = document.querySelector(".orders-table") as HTMLElement;
+      const box = table.parentElement as HTMLElement;
+      box.scrollLeft = 9999;
+      return {
+        overflows: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        wider: box.scrollWidth > box.clientWidth,
+        scrolled: box.scrollLeft,
+      };
+    });
+    // `body` sets `overflow-x: clip`, so a table with no scroll container of its own
+    // is not merely off-screen — its last columns cannot be reached at all.
+    expect(phone.wider).toBe(true); // non-vacuous: there IS something to scroll to
+    expect(phone.scrolled).toBeGreaterThan(0);
+    expect(phone.overflows).toBe(false);
+
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto("/#/history");
+    await expect(page.locator(".orders-table tbody tr").first()).toBeVisible();
+    const desktop = await page.evaluate(() => {
+      const table = document.querySelector(".orders-table") as HTMLElement;
+      const box = table.parentElement as HTMLElement;
+      const row = table.querySelector("thead tr") as HTMLElement;
+      return {
+        row: row.getBoundingClientRect().width,
+        box: box.getBoundingClientRect().width,
+      };
+    });
+    // The other half of the trade: putting `overflow-x` on the table itself does
+    // give it a scrollbar, but it also makes the rows an anonymous auto-width table
+    // box that `width: 100%` no longer reaches — 518px of columns in a 1008px panel.
+    expect(desktop.row).toBeCloseTo(desktop.box, 0);
   });
 });

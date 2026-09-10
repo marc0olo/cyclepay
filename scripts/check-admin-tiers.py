@@ -104,6 +104,7 @@ TIERS = {
     "admin_orders": "admin",
     "admin_receipt": "admin",
     "audit_log": "admin",
+    "audit_log_recent": "admin",     # the same trail, newest first (#68)
     "delayed_deliveries": "admin",
     "delivery_journal": "admin",
     "order_for_payment": "admin",

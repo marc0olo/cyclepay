@@ -110,6 +110,47 @@ module {
     { events = collected.toArray(); nextCursor = null };
   };
 
+  /// One page of events, **newest → oldest**, strictly older than `beforeSeq` (#68).
+  ///
+  /// ⚠️ **Why this exists rather than reversing `page`'s result.** Reversing a page gives
+  /// the OLDEST events in descending order, which is the opposite of what an operator
+  /// opening the console wants; and reversing the whole log to find the tail defeats the
+  /// paging. The store is a `Queue`, so `reverseValues` walks from the newest end and this
+  /// costs O(limit) for the first page where `page` costs O(n) to reach a late cursor.
+  ///
+  /// ⚠️ **The STORAGE order stays ascending, and `page` is unchanged.** Inverting the
+  /// existing endpoint would have broken two integration scenarios, one of them silently:
+  /// `allAuditEvents(gw).slice(auditBefore)` means "events since I last looked" and
+  /// assumes append-at-end, so under a descending log it would have kept running while
+  /// inspecting the wrong window. An append-only log is ascending; a console wants a
+  /// reverse view of it. Those are different questions and this is the second one.
+  ///
+  /// ⚠️ **`nextCursor` means the opposite of `page`'s, which is the one trap here.** For
+  /// `page` it is the NEWEST seq returned, to be passed back as `afterSeq`. For this it is
+  /// the OLDEST seq returned, to be passed back as `beforeSeq`. Same `Page` type, mirrored
+  /// meaning; a caller that swaps them pages the wrong way and sees a stuck first page.
+  ///
+  /// `seq` starts at 0, so `beforeSeq = ?0` correctly yields nothing older and `null`
+  /// means "start at the newest".
+  public func recentPage(log : Log, beforeSeq : ?Nat, limit : Nat) : Page {
+    let capped = if (limit == 0 or limit > maxPageSize) maxPageSize else limit;
+    let collected = List.empty<Event>();
+    var oldest : ?Nat = null;
+    for (event in log.events.reverseValues()) {
+      let older = switch (beforeSeq) { case (?cursor) event.seq < cursor; case null true };
+      if (older) {
+        // Reaching the cap with another qualifying event still to come is exactly the
+        // condition that means "more remain", so the cursor is set here and nowhere else.
+        if (collected.size() == capped) {
+          return { events = collected.toArray(); nextCursor = oldest };
+        };
+        collected.add(event);
+        oldest := ?event.seq;
+      };
+    };
+    { events = collected.toArray(); nextCursor = null };
+  };
+
   /// Retained events, oldest → newest.
   public func events(log : Log) : [Event] {
     log.events.values().toArray();

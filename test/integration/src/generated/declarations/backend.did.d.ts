@@ -557,6 +557,20 @@ export interface _SERVICE {
    */
   'audit_log' : ActorMethod<[[] | [bigint], bigint], Page__2>,
   /**
+   * / **Admin: the audit trail, newest first** (#68).
+   * /
+   * / The same events `audit_log` returns, in the order an operator reads them: someone
+   * / opening the console wants what just happened, and the ascending view starts at the
+   * / first line ever written. Both exist because they answer different questions, and the
+   * / store stays ascending because an append-only log is.
+   * /
+   * / ⚠️ **The cursor is the MIRROR of `audit_log`'s.** `nextCursor` here is the oldest
+   * / `seq` in the page and is passed back as `beforeSeq` to walk further into the past;
+   * / there it is the newest, passed back as `afterSeq`. Same `Page` type, opposite
+   * / meanings. `AuditLog.recentPage` carries the reasoning and the unit tests pin it.
+   */
+  'audit_log_recent' : ActorMethod<[[] | [bigint], bigint], Page__2>,
+  /**
    * / Admission preflight, public: lets the frontend disable the buy button with
    * / a real reason (and lets an operator ask "would a purchase go through right
    * / now?") without creating an order. `usdCents` is the gross amount to test.
