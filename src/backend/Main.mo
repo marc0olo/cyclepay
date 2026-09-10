@@ -23,6 +23,11 @@ import Timer "mo:core/Timer";
 // `Call.httpRequest` attaches the exact `ic0.cost_http_request` price; `IC` is
 // imported for the request/response types the transform signature needs.
 import Call "mo:ic/Call";
+// The vetKD argument/result records for the two management-canister methods
+// `Sealed.mo` needs. Only reached through the `management` actor declaration below.
+import IC "mo:ic/Types";
+// The unwrapped vetKey's type, for the cache below. EXPERIMENTAL — see Sealed.mo.
+import G1 "mo:sealed-secrets-bls/G1";
 import AuditLog "AuditLog";
 import Auth "Auth";
 import Cmc "Cmc";
@@ -47,6 +52,7 @@ import BuyingMixin "mixins/Buying";
 import AdminOrdersMixin "mixins/AdminOrders";
 import MaintenanceMixin "mixins/Maintenance";
 import Session "rails/Session";
+import Sealed "Sealed";
 import Secret "Secret";
 import Tiers "Tiers";
 import Types "Types";
@@ -71,6 +77,20 @@ persistent actor CyclesGateway {
   // IP/ASN access policies are not usable here — a subnet's replicas have many
   // changing addresses.
   let stripeApiKey : Secret.Store = Secret.emptyStore();
+
+  // The vetKey that opens both sealed secrets, cached after the first provisioning call.
+  //
+  // Safe to cache: derivation is deterministic in `(canister, context, input, key_id)`,
+  // none of which depends on the secrets. One derivation therefore serves the API key and
+  // the webhook secret — they share `Sealed.keyLabel`.
+  //
+  // ⚠️ **`transient`, so an upgrade drops it**, and the next provisioning derives again
+  // for ~26 B cycles. Orthogonal persistence would keep it for free, and that is exactly
+  // the trap: editing `Sealed.context` or `Sealed.keyLabel` would then leave a cache
+  // serving the key for the OLD values until the canister was reinstalled, so sealing
+  // against the new published key would fail with `#notSealedToThisCanister` while the
+  // source said it should work.
+  transient var sealedVetkey : ?G1.Affine = null;
 
   // Stripe's two operator-set values: where buyers are returned, and which mode
   // this deployment serves.
@@ -488,12 +508,81 @@ persistent actor CyclesGateway {
 
 
 
-  // ── Orders: create/query (task 6) ───────────────────────────────────────
+  // ── Management canister: entropy and vetKD ──────────────────────────────
 
-  // raw_rand source for order IDs (§2).
+  // One reference, two unrelated users: `raw_rand` for order ids (§2) and the two vetKD
+  // methods for sealed provisioning (#11). Its own section because it belongs to neither
+  // path exclusively.
   transient let management = actor "aaaaa-aa" : actor {
     raw_rand : () -> async Blob;
+    // vetKD, for sealed provisioning (#11). Declared on the same reference as `raw_rand`
+    // rather than reaching for `mo:ic`'s `ic` object, so this actor has one path to the
+    // management canister instead of two.
+    vetkd_derive_key : IC.VetkdDeriveKeyArgs -> async IC.VetkdDeriveKeyResult;
+    vetkd_public_key : IC.VetkdPublicKeyArgs -> async IC.VetkdPublicKeyResult;
   };
+
+  transient let vetkdKeyId : { name : Text; curve : IC.VetkdCurve } = {
+    name = Sealed.keyName;
+    curve = #bls12_381_g2;
+  };
+
+  // Derives (once) the vetKey that opens sealed secrets.
+  //
+  // Three management-canister calls on a cold cache: entropy for the transport keypair,
+  // the derivation itself, and the derived public key the reply is verified against.
+  //
+  // ⚠️ **Two concurrent provisioning calls on a cold cache will both derive.** Accepted
+  // rather than prevented: derivation is deterministic, so both get the identical key and
+  // the only cost is a duplicate ~26 B cycle fee. Both are controller-gated and
+  // provisioning is rare, so a lock would guard against nothing that happens.
+  func sealedKey() : async* Result.Result<G1.Affine, Sealed.ProvisionError> {
+    switch (sealedVetkey) { case (?key) return #ok(key); case null {} };
+
+    let entropy = try { await management.raw_rand() } catch (e) {
+      return #err(#entropyUnavailable({ detail = e.message() }));
+    };
+    let transport = Sealed.transportSecret(entropy);
+
+    let reply = try {
+      await (with cycles = Sealed.vetkdFee) management.vetkd_derive_key({
+        context = Sealed.context();
+        input = Sealed.keyLabel();
+        key_id = vetkdKeyId;
+        transport_public_key = Sealed.transportPublicKey(transport);
+      });
+    } catch (e) {
+      return #err(#vetkdUnavailable({ detail = e.message() }));
+    };
+
+    let reported = try {
+      await management.vetkd_public_key({
+        canister_id = null;
+        context = Sealed.context();
+        key_id = vetkdKeyId;
+      });
+    } catch (e) {
+      return #err(#vetkdUnavailable({ detail = e.message() }));
+    };
+
+    switch (Sealed.unwrap(reply.encrypted_key, transport, reported.public_key)) {
+      case (#err(e)) #err(e);
+      case (#ok(key)) { sealedVetkey := ?key; #ok(key) };
+    };
+  };
+
+  // Turns a sealed argument into the plaintext a `Secret.Store` holds.
+  //
+  // Passed to `SecretsMixin` as a closure, so the mixin stays at authorize → delegate →
+  // map and needs no view of the management canister or of the vetKey cache.
+  func openSealed(ciphertext : Blob) : async* Result.Result<Blob, Sealed.ProvisionError> {
+    switch (await* sealedKey()) {
+      case (#err(e)) #err(e);
+      case (#ok(key)) Sealed.open(ciphertext, key);
+    };
+  };
+
+  // ── Orders: create/query (task 6) ───────────────────────────────────────
 
   // raw_rand re-draws on an ID collision. With 128-bit IDs a single
   // collision is already astronomically unlikely; exhausting this means
@@ -2603,5 +2692,6 @@ persistent actor CyclesGateway {
     requireAdmin,
     auditAdmin,
     func() = Time.now(),
+    openSealed,
   );
 };

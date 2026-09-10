@@ -303,9 +303,11 @@ ok "http://id.ai.localhost:${GATEWAY##*:}/ → 200"
 
 # ── 6. the webhook route through the real gateway ─────────────────────────────
 step "6. signed webhook through the HTTP gateway"
-icp canister call backend set_webhook_secret "(\"$WEBHOOK_SECRET\")" >/dev/null ||
-  die "set_webhook_secret failed (are you the controller?)"
-ok "webhook secret provisioned"
+# Sealed (#11): the plaintext never becomes an ingress argument. The wrapper derives the
+# PocketIC master key from the (default, local) environment.
+STRIPE_WEBHOOK_SECRET="$WEBHOOK_SECRET" scripts/seal-secret.sh webhook-secret >/dev/null ||
+  die "sealed set_webhook_secret failed (are you the controller?)"
+ok "webhook secret provisioned, sealed"
 
 # A `charge.dispute.created` body on purpose: it is a type the canister does not
 # subscribe to, so it verifies, acks 200, and files **nothing**. That proves the

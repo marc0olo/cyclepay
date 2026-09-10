@@ -32,6 +32,7 @@ import {
 import { Principal } from '@icp-sdk/core/principal';
 import type { Destination, OrphanEntry, Order } from './types';
 
+import { seal } from "./seal";
 let gw: Gateway;
 
 /// The only destination `create_order` accepts (#29): the caller's own
@@ -140,10 +141,10 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
   expect(before.status_code).toBe(503);
 
   // §7: only controllers may provision; the user and anonymous callers trap.
-  await expect(gw.asUser.set_webhook_secret(WEBHOOK_SECRET)).rejects.toThrow(/not a controller/);
-  await expect(gw.asAnon.set_webhook_secret(WEBHOOK_SECRET)).rejects.toThrow(/anonymous/);
+  await expect(gw.asUser.set_webhook_secret(seal(gw.backendId, WEBHOOK_SECRET))).rejects.toThrow(/not a controller/);
+  await expect(gw.asAnon.set_webhook_secret(seal(gw.backendId, WEBHOOK_SECRET))).rejects.toThrow(/anonymous/);
 
-  expectOk(await gw.asAdmin.set_webhook_secret(WEBHOOK_SECRET));
+  expectOk(await gw.asAdmin.set_webhook_secret(seal(gw.backendId, WEBHOOK_SECRET)));
   const status = await gw.asAdmin.webhook_secret_status();
   expect(status.isSet).toBe(true);
   expect(status.generation).toBe(1n);
@@ -195,7 +196,7 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
 
   // The key alone is not enough: without a return origin there is no URL to send
   // the buyer back to, and the same no-record rule applies.
-  expectOk(await gw.asAdmin.set_stripe_api_key('rk_test_integration_suite_key'));
+  expectOk(await gw.asAdmin.set_stripe_api_key(seal(gw.backendId, 'rk_test_integration_suite_key')));
   // #99: these suites fund a reserve and accept test payments, so without an
   // allow-list every create_order refuses as the faucet state.
   await allowTestBuyers(gw);
@@ -4139,7 +4140,7 @@ test('91 — a granted admin can end one order and cannot change the rules (#68)
     // secret — which is mint authority, since HMAC verification is the trust root.
     expect(Array.isArray(await gw.asStranger.recount_orders())).toBe(true);
     await expect(gw.asStranger.set_recovery_interval(3_600_000_000_000n)).rejects.toThrow(/not a controller/);
-    await expect(gw.asStranger.set_webhook_secret('whsec_should_never_land_here')).rejects.toThrow(/not a controller/);
+    await expect(gw.asStranger.set_webhook_secret(seal(gw.backendId, 'whsec_should_never_land_here'))).rejects.toThrow(/not a controller/);
 
     // Granting twice is refused rather than silently idempotent, so a controller cannot
     // mistake "already granted" for "granted now".

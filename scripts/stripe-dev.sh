@@ -186,7 +186,9 @@ case "$WHSEC" in
     ;;
 esac
 
-icp canister call backend set_webhook_secret "(\"${WHSEC}\")" >/dev/null
+# Sealed (#11) — the signing secret never appears in an ingress message or in this
+# script's own process arguments.
+STRIPE_WEBHOOK_SECRET="$WHSEC" scripts/seal-secret.sh webhook-secret >/dev/null
 
 # ── the OTHER secret (#33) ───────────────────────────────────────────────────
 # The rail is live only when both are provisioned, so a webhook secret alone is
@@ -198,9 +200,9 @@ if [ "$KEY_SET" = "0" ]; then
   printf '\n\033[33m! no Stripe API key is provisioned, so create_order cannot make a session.\033[0m\n'
   printf '  Create a RESTRICTED key (rk_...) with Checkout Sessions = Write (Write also\n'
   printf '  grants the read the recovery sweep needs) and everything else None, then:\n'
-  printf '    icp canister call backend set_stripe_api_key '"'"'("rk_...")'"'"'\n'
-  printf '  Or re-run the seed with it in the environment:\n'
-  printf '    STRIPE_API_KEY=rk_... ./scripts/local-dev-seed.sh\n\n'
+  printf '    STRIPE_API_KEY=rk_... ./scripts/seal-secret.sh api-key\n'
+  printf '  Or put it in scripts/.local-dev.env (gitignored) and re-run the seed:\n'
+  printf '    ./scripts/local-dev-seed.sh\n\n'
 else
   echo "api key:     provisioned (generation $(icp canister call backend stripe_api_key_status '()' 2>/dev/null | grep -oE 'generation = [0-9_]+' | grep -oE '[0-9_]+' || echo '?'))"
 fi

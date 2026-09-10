@@ -31,6 +31,7 @@ import {
   allAuditEvents, allowTestBuyers } from './harness';
 import type { Destination, Order } from './types';
 
+import { seal } from "./seal";
 /// The buyer's own cycles-ledger account — the only destination the gateway accepts (#29).
 const USER_ACCOUNT: Destination = {
   cyclesLedgerAccount: { owner: user.getPrincipal(), subaccount: [] },
@@ -77,8 +78,8 @@ beforeAll(async () => {
   // is invisible until a file boots its own instance and every `create_order` is refused
   // before it reaches Stripe. The symptom is "no HTTPS outcall was made", which reads as
   // a missing outcall rather than a rail that was never opened.
-  expectOk(await gw.asAdmin.set_webhook_secret(WEBHOOK_SECRET));
-  expectOk(await gw.asAdmin.set_stripe_api_key('rk_test_stranded_suite_key'));
+  expectOk(await gw.asAdmin.set_webhook_secret(seal(gw.backendId, WEBHOOK_SECRET)));
+  expectOk(await gw.asAdmin.set_stripe_api_key(seal(gw.backendId, 'rk_test_stranded_suite_key')));
   // #99: these suites fund a reserve and accept test payments, so without an
   // allow-list every create_order refuses as the faucet state.
   await allowTestBuyers(gw);

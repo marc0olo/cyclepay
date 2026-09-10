@@ -51,10 +51,6 @@ type Status =
    isSet: bool;
    setAtNs: opt int;
  };
-type SetError = variant {tooShort: record {
-                                     min: nat;
-                                     size: nat;
-                                   };};
 type Result_9 = 
  variant {
    err: ResolveProblemError;
@@ -142,7 +138,7 @@ type Result_10 =
  };
 type Result_1 = 
  variant {
-   err: SetError;
+   err: ProvisionError;
    ok;
  };
 type Result = 
@@ -276,6 +272,21 @@ type Quality =
    queriedSources: nat;
    receivedRates: nat;
    standardDeviation: nat;
+ };
+type ProvisionError = 
+ variant {
+   entropyUnavailable: record {detail: text;};
+   malformedPublicKey;
+   malformedReply;
+   notCiphertext;
+   notSealedToThisCanister;
+   notUtf8;
+   tooShort: record {
+               min: nat;
+               size: nat;
+             };
+   unverifiableReply;
+   vetkdUnavailable: record {detail: text;};
  };
 type ProcessOrderError = 
  variant {
@@ -796,9 +807,9 @@ service : {
   set_gate_config: (config: Config__1) -> (Result_5);
   set_pricing_config: (config: Config) -> (Result_4);
   set_recovery_interval: (intervalNs: nat) -> (Result_3);
-  set_stripe_api_key: (key: text) -> (Result_1);
+  set_stripe_api_key: (ciphertext: blob) -> (Result_1);
   set_stripe_origin: (origin: text) -> (Result_2);
-  set_webhook_secret: (secret: text) -> (Result_1);
+  set_webhook_secret: (ciphertext: blob) -> (Result_1);
   stripe_api_key_status: () -> (Status) query;
   stripe_origin: () -> (opt text) query;
   transform_stripe_response: (args:

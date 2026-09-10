@@ -35,6 +35,13 @@ src/frontend/dist/
 src/frontend/dist-fixtures/
 src/frontend/src/bindings/
 
+# the sealer (scripts/seal) — `package-lock.json` is the committed contract, the install
+# is not. ⚠️ This repo has already tracked a node_modules once (see test/browser below,
+# 193 files and 18 MB including a macOS-only binary in a Linux-CI repo), and the rules here
+# are per-directory rather than a global `node_modules/`, so a NEW npm package is ignored
+# by nothing until someone adds it. Staging this one first showed 1554 such files.
+scripts/seal/node_modules/
+
 # Your own Stripe SANDBOX Payment Links, read by scripts/local-dev-seed.sh so they
 # do not have to be exported into every new shell. Never committed: they are yours,
 # they are per-account, and a live-mode link in here would be a loaded gun.

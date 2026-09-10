@@ -238,16 +238,22 @@ step "Stripe session config"
 # ⚠️ A reinstall wipes both secrets and this script only restores the key, so
 # after `--mode reinstall` you still need `scripts/stripe-dev.sh` before paying.
 if [ -n "${STRIPE_API_KEY:-}" ]; then
-  icp canister call backend set_stripe_api_key "(\"${STRIPE_API_KEY}\")" >/dev/null \
-    || die "set_stripe_api_key was refused (too short?)"
-  ok "Stripe API key provisioned from STRIPE_API_KEY"
+  # Sealed (#11). `seal-secret.sh` reads STRIPE_API_KEY itself, from the environment or
+  # from scripts/.local-dev.env, so the value is never passed as an argument.
+  scripts/seal-secret.sh api-key >/dev/null \
+    || die "sealed set_stripe_api_key was refused (too short, or not a controller?)"
+  ok "Stripe API key provisioned from STRIPE_API_KEY, sealed"
 else
   # A placeholder, deliberately: it lets every non-paying path work — browsing,
   # signing in, quoting — while `create_order` fails at the outcall with a real
   # Stripe 401 rather than at a config check. That is a better local default than
   # refusing to create orders at all, and the failure names itself.
-  icp canister call backend set_stripe_api_key '("rk_test_PLACEHOLDER_set_STRIPE_API_KEY_to_create_sessions")' >/dev/null \
-    || die "set_stripe_api_key was refused"
+  # Sealed like the real thing (#11), so the placeholder path exercises the same code —
+  # a local default that skipped sealing would leave the decrypt path untested until the
+  # first operator with a real key.
+  STRIPE_API_KEY='rk_test_PLACEHOLDER_set_STRIPE_API_KEY_to_create_sessions' \
+    scripts/seal-secret.sh api-key >/dev/null \
+    || die "sealed set_stripe_api_key was refused"
   # ⚠️ **Say the TRUE reason, and scope the hazard correctly.** An earlier version of this
   # message asserted that exporting the key makes `stripe listen` die with
   # "more_permissions_required". It does not: every `stripe` invocation in this repo's own

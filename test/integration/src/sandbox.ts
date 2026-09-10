@@ -22,6 +22,7 @@ import {
   ensureRates, expectOk, setCmcRate, setXrcRate, setupGateway, user,
   clientReferenceFor, allowTestBuyers } from './harness';
 
+import { seal } from "./seal";
 const SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? WEBHOOK_SECRET;
 
 async function main(): Promise<void> {
@@ -41,7 +42,7 @@ async function main(): Promise<void> {
   await setXrcRate(gw);
   await setCmcRate(gw);
   await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_webhook_secret(SECRET));
+  expectOk(await gw.asAdmin.set_webhook_secret(seal(gw.backendId, SECRET)));
 
   // ⚠️ **Lower the floor before registering the tier, or nothing here works.** The
   // gate's `minPurchaseUsdCents` default is $10 and `TIER_USD_CENTS` is $5, so
@@ -139,7 +140,7 @@ async function main(): Promise<void> {
   // most of what it is for (the banner, the config, the webhook forwarder target).
   const apiKey = process.env.STRIPE_API_KEY;
   if (apiKey && apiKey.length > 0) {
-    expectOk(await gw.asAdmin.set_stripe_api_key(apiKey));
+    expectOk(await gw.asAdmin.set_stripe_api_key(seal(gw.backendId, apiKey)));
     // #99: these suites fund a reserve and accept test payments, so without an
     // allow-list every create_order refuses as the faucet state.
     await allowTestBuyers(gw);

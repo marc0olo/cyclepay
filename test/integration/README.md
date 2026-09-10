@@ -78,6 +78,33 @@ scenario green including ones that assert the mutated behaviour directly.
 So: `npm test` for anything where the backend changed, and read the first run's
 timing — a mutation run that finishes as fast as a no-op run did not rebuild.
 
+## One `@icp-sdk/core`, and why `overrides` is here
+
+`@dfinity/pic` depends on `@icp-sdk/core@^5.0.0`; `@icp-sdk/vetkeys` (added for sealed
+provisioning, #11) declares it as a **peer** dependency at `^5.0.0 || ^6.0.0`. Left alone,
+npm satisfied the peer with 6.1.0 at the top level while pic kept 5.4.0 nested — **two
+copies, two nominal `Principal` types**, and four `TS2345`/`TS2322` errors in
+`withdraw.spec.ts`, a file the change never touched. `Principal` carries a private `_arr`,
+so the two are not assignable to each other.
+
+Two things hold them together, and it is worth knowing which does what:
+
+- `@icp-sdk/core` is a **direct devDependency** at `^5.4.0` — the version pic already
+  uses, and inside vetkeys' supported range.
+- `"overrides": { "@icp-sdk/core": "$@icp-sdk/core" }` forces every transitive user to
+  that same resolution. The `$name` form points at the direct dependency, so the version
+  is written once; a literal version there is refused by npm as conflicting.
+
+⚠️ **What `overrides` does NOT do: it is not recorded in `package-lock.json`.** Measured —
+the string does not appear in the lock. So CI, which runs `npm ci`, gets a correct tree
+because the *lock* already resolves one copy, not because the override is enforced at
+install time. The override earns its place on **re-resolution**: if a future
+`@dfinity/pic` moves its `core` requirement outside that caret, a plain `npm install`
+would otherwise reintroduce the nested copy.
+
+Either way it fails closed — `tsc` catches it — but it fails in a file nobody edited,
+which is what made it expensive to diagnose the first time.
+
 ## CI
 
 `ci/integration.yml` is a ready GitHub Actions job (ubuntu-latest is

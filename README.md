@@ -59,6 +59,19 @@ Task and progress tracking lives in **GitHub Issues** (see
 This project uses **`icp-cli`, never `dfx`**. Project configuration lives in
 `icp.yaml`; Motoko dependencies in `mops.toml` / `mops.lock`.
 
+⚠️ **Clone with submodules.** The backend decrypts its sealed secrets (#11) using a
+BLS12-381 implementation pinned as a git submodule, resolved by `mops` as a path
+dependency — so without it nothing compiles:
+
+```sh
+git clone --recurse-submodules https://github.com/marc0olo/cyclepay
+# already cloned:
+git submodule update --init --recursive
+```
+
+That code is **experimental and unaudited**; `docs/DESIGN.md` §7.3 explains what it is
+trusted with, what it is not, and the deletion criterion.
+
 ## Local development
 
 ### Run the app locally, from nothing
@@ -68,6 +81,7 @@ through a real payment.
 
 ```sh
 # 1. dependencies and a local replica
+git submodule update --init --recursive   # the pinned crypto (#11), first time only
 mops install
 icp network start -d                    # PocketIC, gateway on :8000
 
@@ -339,7 +353,12 @@ mainnet, so no on-chain module hash exists to diff against yet — `RELEASE.md` 
 publish/verify steps, and the first real execution happens at go-live (#40).
 
 Pinned: the base image by digest, `ic-mops`/`icp-cli`/`ic-wasm` by exact version, `moc`
-via `mops.toml [toolchain]`, Motoko deps via `mops.lock`, recipes by tag in `icp.yaml`.
+via `mops.toml [toolchain]`, Motoko deps via `mops.lock`, recipes by tag in `icp.yaml`, and
+the crypto submodule by the commit **the ref itself records** — read with `git ls-tree`, so
+a local checkout at a different commit cannot change the output. ⚠️ `git archive` omits
+submodules, so `reproducible-build.sh` assembles the build context explicitly rather than
+piping the archive straight to Docker; without that the container fails on an empty path
+dependency.
 Not pinned: the two `apt` packages (not byte-shaping) and the npm tools' transitive
 dependencies — so identical bytes are expected from the same ref on the same day, and
 are not guaranteed across a registry change.

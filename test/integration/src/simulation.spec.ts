@@ -8,6 +8,7 @@
 /// the scenarios below: everything that configures the divisor runs before anything
 /// that creates an order.
 import { afterAll, beforeAll, expect, test } from 'vitest';
+import { seal } from "./seal";
 import {
   CYCLES_LEDGER_FEE, TIER_LOCKED_CYCLES, TIER_USD_CENTS, WEBHOOK_SECRET,
   allowTestBuyers, checkoutSessionBody, clientReferenceFor, createOrderWithSession,
@@ -47,8 +48,8 @@ test('99a — the faucet refusal: test payments, empty allow-list, funded reserv
   await setXrcRate(gw);
   await setCmcRate(gw);
   await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_webhook_secret(WEBHOOK_SECRET));
-  expectOk(await gw.asAdmin.set_stripe_api_key('rk_test_simulation_spec'));
+  expectOk(await gw.asAdmin.set_webhook_secret(seal(gw.backendId, WEBHOOK_SECRET)));
+  expectOk(await gw.asAdmin.set_stripe_api_key(seal(gw.backendId, 'rk_test_simulation_spec')));
   expectOk(await gw.asAdmin.set_stripe_origin('https://simulation.example'));
   const { gate } = await gw.asAnon.lifecycle_config();
   expectOk(await gw.asAdmin.set_gate_config({ ...gate, minPurchaseUsdCents: 100n }));

@@ -1,0 +1,3 @@
+[submodule "vendor/icp-seeding-secrets-poc"]
+	path = vendor/icp-seeding-secrets-poc
+	url = https://github.com/marc0olo/icp-seeding-secrets-poc

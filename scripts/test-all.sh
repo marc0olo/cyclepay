@@ -119,7 +119,9 @@ detect_lanes() {
       # ⚠️ A backend change regenerates the .did, which the frontend bindings and the
       # integration bindings are both generated FROM. So it activates everything —
       # there is no such thing as a backend-only change here.
-      src/backend/*|test/*.mo|mops.toml|mops.lock|deployed/*) lane_add backend; lane_add frontend; lane_add browser; lane_add integration; lane_add checks ;;
+      # `vendor/*` and `.gitmodules` are the pinned crypto (#11): a submodule bump changes
+      # what `Sealed.mo` compiles against, so it activates everything a backend change does.
+      src/backend/*|test/*.mo|mops.toml|mops.lock|deployed/*|vendor/*|.gitmodules) lane_add backend; lane_add frontend; lane_add browser; lane_add integration; lane_add checks ;;
       src/frontend/*) lane_add frontend; lane_add browser; lane_add checks ;;
       test/browser/*) lane_add browser ;;
       test/integration/*) lane_add integration ;;
@@ -137,7 +139,7 @@ EOF
 lane_active() {
   [ "$CHANGED" -eq 0 ] && return 0
   case "$1" in
-    "mops check"*|"mops test"*|"mops build"*) lane_on backend ;;
+    "mops check"*|"mops test"*|"mops build"*|"crypto vectors"*) lane_on backend ;;
     "docs match"*|"every config setter"*|"admin tiers"*|"docs/DESIGN.md"*|"the reserve account"*) lane_on checks || lane_on backend ;;
     "integration bindings"*|"integration typecheck"*|"PocketIC"*) lane_on integration ;;
     "frontend build"*|"frontend typecheck"*|"frontend tests"*|"no frontend export"*|"no test hooks"*) lane_on frontend ;;
@@ -222,6 +224,10 @@ run "shell — no unquoted heredoc runs its own body" scripts/check-heredocs.sh
 # or a fresh checkout without one, gives a check with nothing to compare against — and by
 # default that reads as a pass. Verified by deleting it.
 run "mops check — lint, typecheck, stable compatibility (-Werror)" mops check -- -Werror
+# ⚠️ **Before `mops test`, deliberately.** `test/sealed.test.mo` asserts our wiring on top
+# of this curve implementation; if the curve itself is wrong, that suite's failures would
+# read as our bug. Verify the dependency, then the code that uses it.
+run "crypto vectors — the pinned BLS12-381/vetKD vs the Rust reference" scripts/check-crypto-vectors.sh
 run "mops test — Motoko unit suites" mops test
 
 # Before the frontend: the committed .did is both the embedded candid:service

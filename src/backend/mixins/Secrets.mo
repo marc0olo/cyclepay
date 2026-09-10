@@ -6,6 +6,7 @@ import Session "../rails/Session";
 import Nat "mo:core/Nat";
 import Result "mo:core/Result";
 import Text "mo:core/Text";
+import Sealed "../Sealed";
 import Secret "../Secret";
 
 /// The two Stripe secrets and the buyer-return origin: provision, rotate, and read back
@@ -38,6 +39,10 @@ mixin (
   requireAdmin : (Principal) -> (),
   auditAdmin : (Principal, Text, Text) -> (),
   nowNs : () -> Int,
+  /// Decrypts a sealed argument (#11). A closure rather than the vetKey itself: the key is
+  /// derived lazily through the management canister and cached in the actor, so handing
+  /// this mixin a value would hand it a snapshot of an empty cache.
+  openSealed : (Blob) -> async* Result.Result<Blob, Sealed.ProvisionError>,
 ) {
 
   /// ⚠️ **Declared inside the mixin body, not above it and not in `Types.mo`.** Only
@@ -45,14 +50,27 @@ mixin (
   /// top-level"), and Candid type names come from the Motoko declaration — moving this
   /// to `Types.mo` would risk renaming it in the interface, which is the one thing this
   /// relocation must not do.
-  /// Provision or rotate the Stripe webhook signing secret (§7). Pass the
-  /// full `whsec_...` string from the Stripe dashboard — the whole string,
-  /// prefix included, is the HMAC key. NOTE: the argument transits the
-  /// TLS-terminating boundary node as plain ingress (§7 provisioning
-  /// exposure); rotate after provisioning over an untrusted path.
-  public shared ({ caller }) func set_webhook_secret(secret : Text) : async Result.Result<(), Secret.SetError> {
+  /// Provision or rotate the Stripe webhook signing secret (§7).
+  ///
+  /// Takes the full `whsec_...` string — the whole string, prefix included, is the HMAC
+  /// key — **sealed to this canister's vetKD public key** (#11). `scripts/seal-secret.sh`
+  /// produces the argument; the plaintext never travels.
+  ///
+  /// ⚠️ **This closed the §7 provisioning exposure, and the note that used to sit here
+  /// saying otherwise is gone rather than softened.** The ingress argument is now
+  /// ciphertext, so the boundary node that terminates TLS sees nothing usable. What
+  /// remains is the at-rest exposure, which is the confidential subnet's job (#2) and not
+  /// something rotation can help with.
+  public shared ({ caller }) func set_webhook_secret(ciphertext : Blob) : async Result.Result<(), Sealed.ProvisionError> {
     requireController(caller);
-    let result = Secret.set(webhookSecret, secret.encodeUtf8(), nowNs());
+    let plaintext = switch (await* openSealed(ciphertext)) {
+      case (#ok(bytes)) bytes;
+      case (#err(e)) {
+        auditAdmin(caller, "secret.setRejected", "the sealed argument could not be opened; the working secret is untouched");
+        return #err(e);
+      };
+    };
+    let result = Secret.set(webhookSecret, plaintext, nowNs());
     switch (result) {
       case (#ok) {
         // The secret itself is never logged — only that it changed, by whom,
@@ -71,13 +89,22 @@ mixin (
     Secret.status(webhookSecret);
   };
 
-  /// Provision or rotate the Stripe API key (#33) — admin, mirroring
-  /// `set_webhook_secret` in every respect including the provisioning caveat:
-  /// the argument transits the TLS-terminating boundary node as plain ingress.
-  /// #11 covers vetKeys for encrypted delivery, and now applies to two secrets.
-  public shared ({ caller }) func set_stripe_api_key(key : Text) : async Result.Result<(), Secret.SetError> {
+  /// Provision or rotate the restricted Stripe API key (#33), sealed exactly as
+  /// `set_webhook_secret` is — same vetKey, one derivation for both (#11).
+  ///
+  /// The key to seal is a **restricted key** (`rk_...`) with *Checkout Sessions = Write*
+  /// and everything else None; `Secret.mo` records why that scope, not this storage, is
+  /// what bounds a leak.
+  public shared ({ caller }) func set_stripe_api_key(ciphertext : Blob) : async Result.Result<(), Sealed.ProvisionError> {
     requireController(caller);
-    let result = Secret.set(stripeApiKey, key.encodeUtf8(), nowNs());
+    let plaintext = switch (await* openSealed(ciphertext)) {
+      case (#ok(bytes)) bytes;
+      case (#err(e)) {
+        auditAdmin(caller, "stripe.apiKeyRejected", "the sealed argument could not be opened; the working key is untouched");
+        return #err(e);
+      };
+    };
+    let result = Secret.set(stripeApiKey, plaintext, nowNs());
     switch (result) {
       case (#ok) auditAdmin(caller, "stripe.apiKeySet", "generation " # Secret.status(stripeApiKey).generation.toText());
       case (#err(_)) auditAdmin(caller, "stripe.apiKeyRejected", "rejected as too short; the working key is untouched");

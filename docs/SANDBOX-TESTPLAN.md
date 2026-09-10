@@ -284,8 +284,11 @@ icp network start -d && icp deploy              # backend + xrc + frontend
 # deploy sits under the 5 T floor.
 icp canister top-up backend --amount 20t
 
-# Config. The webhook secret has a 16-character minimum; shorter is rejected.
-icp canister call backend set_webhook_secret '("whsec_local_test_1234567890")'
+# Config. The webhook secret is SEALED (§7.3) — `set_webhook_secret` takes a ciphertext
+# blob, so it cannot be set with a quoted string. No trailing environment argument here:
+# the default is `local`, which is the PocketIC master key this network uses.
+# The 16-byte minimum applies to the decrypted value.
+STRIPE_WEBHOOK_SECRET='whsec_local_test_1234567890' scripts/seal-secret.sh webhook-secret
 icp canister call backend set_card_tiers \
   '(vec { record { id = "t10"; usdCents = 1_000 : nat } })'
 icp canister call backend set_delivery_config \
