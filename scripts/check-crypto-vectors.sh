@@ -24,6 +24,13 @@
 # the repository root, which has no `src/`. Having the packages on disk is what lets their
 # suites run in the same gate that guards the key they protect.
 #
+# ⚠️ **DO NOT SKIP OR DELETE THIS STEP TO GET A BUILD GREEN.** `docs/DESIGN.md` §7.3
+# accepts an unaudited BLS12-381 on the money path, and that acceptance is conditional on
+# this check running — not on the argument in the prose. A `moc` upgrade that makes the
+# pinned packages fail to compile is the likely trigger: skipping their suites to move on
+# quietly removes the only thing standing behind that decision, and nothing else reports it.
+# Fix the compile, bump the pin, or reopen §7.3 — do not silence this.
+#
 # ⚠️ **What this does NOT establish.** These suites prove the port agrees with the
 # reference on the vectors it ships. They are not an audit, they do not cover inputs the
 # generator never produced, and passing here is not a statement that the implementation is
