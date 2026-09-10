@@ -135,17 +135,25 @@ exceed a $10 purchase, and nothing in the storage or upload arithmetic hints at 
 ### The freezing threshold
 
 Each canister retains 30 days of its own idle cost (`freezing_threshold = 2_592_000`
-seconds) and stops executing rather than spending into it. Measured on this project's
-canisters:
+seconds) and stops executing rather than spending into it. At the documented 13-node
+storage rate, idle cost is storage cost, so the reserve is a function of stored data:
 
-| canister | memory | idle | reserve locked |
-|---|---|---|---|
-| `xrc` | 1.3 MB | 0.90 B/day | **26.9 B cycles** |
-| `frontend` | 104.1 MB | 3.52 B/day | **105.7 B cycles** |
-| `backend` | 336.7 MB | 9.47 B/day | **284.0 B cycles** |
+| canister memory | idle | reserve locked |
+|---|---|---|
+| 1 MB | 0.010 B/day | **0.31 B cycles** |
+| 10 MB | 0.102 B/day | **3.07 B cycles** |
+| 50 MB | 0.511 B/day | **15.33 B cycles** |
+| 100 MB | 1.022 B/day | **30.66 B cycles** |
+| 500 MB | 5.110 B/day | **153.29 B cycles** |
+| 1024 MB | 10.464 B/day | **313.93 B cycles** |
 
-0.03–0.28 T per canister depending on stored data — small against 2 T, but **locked rather
-than spendable**, and it grows.
+⚠️ **Locked rather than spendable, and it grows with stored data** — but at small-app scale
+it is under 0.1 T per canister, well inside the 2 T each one is created with. It changes no
+verdict here; it matters when a canister's balance is being run down deliberately, because
+"the balance says 0.1 T" and "0.1 T is available" are different claims.
+
+⚠️ Do not read these off a local network. The flat per-canister baseline there dominates at
+small sizes — a 1.3 MB canister shows a reserve **67× larger** than this table gives.
 
 ### Sensitivity
 
