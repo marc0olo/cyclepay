@@ -28,6 +28,9 @@ subnet a buyer's own canisters would typically land on.
 | Update call execution | 5,000,000 base + 1 per instruction |
 
 USD is the docs' own: $0.683 per 0.5 T ⇒ **$1.366 per T**, consistent with 1 T ≈ 1 XDR.
+⚠️ Used for cost intuition only. The headroom comparison below is done in **cycles**, since
+this gateway's quote and these costs are both denominated in XDR and putting a USD rate
+between them would import a conversion neither side needs.
 
 ⚠️ **Two subnets that are NOT this one, both easy to conflate.**
 
@@ -99,13 +102,26 @@ change any conclusion.
 
 ## What $10 buys
 
-```
-$10.00 gross − Stripe (2.9% + 30¢) = $9.41 net → 6.89 T cycles
+Best compared in **cycles**, using this gateway's own quote arithmetic rather than a USD
+round-trip — that way no exchange rate sits between the two sides:
 
-light upgrades     needs 1.35 T  → 5.1× headroom
-moderate upgrades  needs 1.43 T  → 4.8× headroom
-heavy upgrades     needs 2.24 T  → 3.1× headroom
 ```
+$10.00 gross − fee (290 bps + 30¢)      = $9.41 net
+$9.41 ÷ $4.55/ICP × 3.5 XDR/ICP         = 7.238 XDR = 7.238 T cycles
+```
+
+⚠️ Not a re-derivation of the docs' rate: this is `Pricing`'s own formula on §3's rate
+vector, and it lands on **exactly** the 7.238 T that `test/browser`'s delivered-order
+baseline shows for a $10.00 order. So it is the figure a buyer actually receives.
+
+```
+light upgrades     needs 1.35 T  → 5.4× headroom
+moderate upgrades  needs 1.43 T  → 5.1× headroom
+heavy upgrades     needs 2.24 T  → 3.2× headroom
+```
+
+After the one-time 1.0 T of creation, the recurring cost is ~0.336 T/month, so a $10
+purchase carries about **eighteen further months** of the same three-deploys-a-day pattern.
 
 ⚠️ **The minimum is not what constrains a buyer, and $5 would also have covered this**
 (~3.4 T, 2.5× headroom). Anyone re-litigating the floor should argue about the card fee,
@@ -113,7 +129,7 @@ which is the actual binding constraint and the reason recorded in the code.
 
 ⚠️ **The consequence for product copy, which is #40's open question.** #41 drafted an
 unshipped tile reading *"enough to deploy a small app and run it for about a month."*
-Measured, $10 covers creation **plus roughly sixteen further months** of the same
+Measured, $10 covers creation **plus roughly eighteen further months** of the same
 three-deploys-a-day pattern. The claim understates by more than 10×. That is the safe
 direction for a claim to be wrong in, but it is wrong, and #40 owns whether to say
 something truer.
