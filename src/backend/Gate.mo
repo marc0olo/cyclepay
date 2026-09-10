@@ -122,8 +122,18 @@ module {
       // $100, down from $1,000 (#33). The ceiling IS the per-order reserve
       // exposure, so this is the main lever on #30's reserve-griefing vector.
       maxPurchaseUsdCents = 10_000;
-      // $10. Below this the card fee eats too much of the payment to be worth an
-      // outcall and a reserve hold.
+      // $10, for two independent reasons:
+      //
+      // 1. ⚠️ **What a buyer needs, which binds first.** `icp canister create` funds each
+      //    canister with 2 T by default, so the two a buyer typically deploys ask for
+      //    **4.0 T** before anything runs — not the ~1.34 T a month consumes. $10 buys
+      //    6.851 T and clears that 1.7×; $5 buys 3.313 T and does not clear it at all,
+      //    failing on the second canister.
+      // 2. **The card fee.** `feeCents` is 9.0% of a $5 purchase against 5.9% of a $10
+      //    one — the fixed 30¢ is regressive — so below this the fee eats too much of the
+      //    payment to be worth an outcall and a reserve hold.
+      //
+      // `docs/BUYER-COST-MODEL.md` has the model, the tier table and the assumptions.
       minPurchaseUsdCents = 1_000;
     };
   };
