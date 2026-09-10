@@ -5,8 +5,17 @@ backend and a frontend — and run them for **two weeks to a month**, syncing as
 upgrading the backend wasm **about three times a day**. What does that cost, and does the
 $10 minimum cover it?
 
-**The answer:** ~1.35 T cycles, about **$1.83**. The $10 minimum covers it **3–5× over**,
-and the single largest line is canister creation, which is one-time.
+**The answer:** the buyer needs **4.0 T upfront** and *consumes* ~1.34 T in the month. The
+gate is the upfront figure, because `icp canister create` funds each canister with **2 T by
+default** — so **$10 works (6.851 T, 1.7× the requirement) and $5 does not (3.320 T, short
+by 0.68 T).**
+
+⚠️ **Upfront requirement and consumed cost are different numbers, and pricing the wrong
+one inverts the conclusion.** An earlier draft of this document costed only what gets
+consumed — the 0.5 T protocol creation fee, uploads, storage — and concluded a $5 minimum
+would be sufficient. It is not. The 2 T per canister is not *spent*; it lands in the
+canister as its balance and remains the buyer's. But they must **have** it, and default
+tooling asks for it without being told.
 
 ⚠️ **This did not exist before 2026-09-10 and its absence was not obvious.** The $5 → $10
 minimum was decided on the **card-fee share** — `Gate.mo` says so at `minPurchaseUsdCents`,
@@ -48,13 +57,33 @@ Sizes are this repo's own artifacts, which is a fair stand-in for "a small app":
 backend wasm is **1,165,653 bytes** and the built frontend is **612,831 bytes** across 8
 files.
 
+### What must be held upfront
+
 ```
-create 2 canisters                    1.000 T     $1.37     one-time, 75% of the total
+icp canister create --cycles default   2.000 T  per canister   ← not documented at the call site
+× 2 canisters                          4.000 T                 ← THE GATE
+   of which protocol creation fee      1.000 T   consumed
+   of which lands as canister balance  3.000 T   still the buyer's
+```
+
+⚠️ **`--cycles` defaults to `2000000000000`.** It appears only in `icp canister create
+--help`, and `icp deploy` inherits it silently, so a buyer who never reads that flag still
+needs 2 T per canister. This is the single largest number in the model and the only one
+that decides whether a purchase is enough.
+
+### What gets consumed in the month
+
+```
+protocol creation fee, 2 canisters    1.000 T     $1.37     one-time
 90 deploys (3/day × 30 days)          0.321 T     $0.44     3.57 G each
 storage, 50 MB across both, 30 days   0.015 T     $0.02
                                       ───────
                                       1.336 T     $1.83
 ```
+
+So after a month the two canisters still hold about **2.664 T** between them — roughly eight
+further months of the same pattern before either needs a top-up, entirely separate from
+whatever is left unspent in the buyer's wallet.
 
 Two weeks rather than a month is roughly **1.16 T** — the recurring half halves, creation
 does not.
@@ -96,56 +125,112 @@ band for a small app is the light-to-moderate rows, where it changes the total b
 10%; the limit row is included because it is the shape of the only failure mode, not
 because it is likely.
 
-The freezing threshold is a further reserve each canister must retain — 30 days of its own
-idle cost by default — which at these sizes is well under a gibibyte-month and does not
-change any conclusion.
+### The freezing threshold, measured
+
+Each canister must retain 30 days of its own idle cost (the default
+`freezing_threshold = 2_592_000` seconds) and stops executing rather than spending into it.
+Read off this project's own canisters:
+
+| canister | memory | idle | reserve locked |
+|---|---|---|---|
+| `xrc` | 1.3 MB | 0.90 B/day | **26.9 B cycles** |
+| `frontend` | 104.1 MB | 3.52 B/day | **105.7 B cycles** |
+| `backend` | 336.7 MB | 9.47 B/day | **284.0 B cycles** |
+
+So 0.03–0.28 T per canister depending on size — small against 2 T, but it is **locked, not
+spendable**, and it grows with stored data. It does not change the verdict at either tier;
+it is recorded because "the balance says 0.1 T" and "0.1 T is available" are different
+claims.
 
 ## What $10 buys
 
-Best compared in **cycles**, using this gateway's own quote arithmetic rather than a USD
-round-trip — that way no exchange rate sits between the two sides:
+⚠️ **Only XDR-per-USD matters, and it must be the REAL rate.** `Pricing.mo` computes
+`cycles = netCents × xdrPermyriadPerIcp / usdPerIcpMicros`, so **ICP cancels** — the ICP
+price is an intermediate unit, not an input to how many cycles a dollar buys. What is left
+is the XDR/USD rate, and cycles mint at 1 T = 1 XDR.
 
-```
-$10.00 gross − fee (290 bps + 30¢)      = $9.41 net
-$9.41 ÷ $4.55/ICP × 3.5 XDR/ICP         = 7.238 XDR = 7.238 T cycles
-```
+At the IMF rate for 2026-09-10 — **1 XDR = $1.373470**, so $1.00 = 0.728083 XDR — and the
+canister's own integer fee arithmetic (`feeBps` 290, `feeFixedCents` 30):
 
-⚠️ Not a re-derivation of the docs' rate: this is `Pricing`'s own formula on §3's rate
-vector, and it lands on **exactly** the 7.238 T that `test/browser`'s delivered-order
-baseline shows for a $10.00 order. So it is the figure a buyer actually receives.
+| tier | net | cycles | covers 4.0 T upfront? | spare |
+|---|---|---|---|---|
+| $5.00 | $4.56 | **3.320 T** | **NO** — short 0.68 T | — |
+| $10.00 | $9.41 | **6.851 T** | yes, 1.7× | +2.851 T |
+| $20.00 | $19.12 | 13.921 T | yes, 3.5× | +9.921 T |
+| $50.00 | $48.25 | 35.130 T | yes, 8.8× | +31.130 T |
 
-```
-light upgrades     needs 1.35 T  → 5.4× headroom
-moderate upgrades  needs 1.43 T  → 5.1× headroom
-heavy upgrades     needs 2.24 T  → 3.2× headroom
-```
+⚠️ **Do not price a claim off the §3 test vector.** That vector (3.5 XDR/ICP ÷ $4.55/ICP =
+0.769 XDR/USD) is a fixture and runs **5.6% generous**: it yields 7.238 T for $10, which is
+exactly what `test/browser`'s delivered-order baseline shows. Matching that baseline is
+**not** validation of the real figure — the baseline is generated from the same fixture, so
+the agreement is circular. Two drafts of this document reported 7.238 T and "eighteen
+months" for that reason before the rate was checked against the IMF.
 
-After the one-time 1.0 T of creation, the recurring cost is ~0.336 T/month, so a $10
-purchase carries about **eighteen further months** of the same three-deploys-a-day pattern.
+## Could the minimum go back to $5?
 
-⚠️ **The minimum is not what constrains a buyer, and $5 would also have covered this**
-(~3.4 T, 2.5× headroom). Anyone re-litigating the floor should argue about the card fee,
-which is the actual binding constraint and the reason recorded in the code.
+⚠️ **Not with default tooling.** $5 buys 3.320 T; two canisters at the CLI's default ask
+for 4.0 T. A $5 buyer creates the first canister and **fails on the second**, holding
+1.32 T against a 2 T request — a failure that arrives from `icp deploy` rather than from
+this gateway, with nothing pointing back at the purchase being too small.
+
+**It works only if the buyer knows to tune the flag.** At `--cycles 600m` each — protocol
+fee plus the freezing reserve plus slack — the upfront need falls to ~1.2 T and $5 clears
+it 2.8×. That is a real path, and it is not the default path.
+
+⚠️ **So the $10 floor turns out to be product-justified as well as fee-justified**, which
+the recorded rationale does not say. `Gate.mo` cites the card-fee share, and #21 quantified
+that; neither mentions that $5 cannot fund two canisters through the standard tooling. The
+number is right for a second and stronger reason than the one written down.
+
+If it were ever revisited, the other considerations are:
+
+- **The fixed 30¢ is regressive.** Fee share is **8.8%** of a $5 purchase against **5.9%**
+  of a $10 one, so the buyer's effective price rises from **$1.46/T to $1.51/T**. That
+  difference is visible on the receipt, so a buyer comparing tiers sees the penalty.
+- **Per-order overhead does not scale with size.** Each order costs one HTTPS outcall
+  (~220 M cycles at 13 nodes), one reserve hold, and one of the buyer's open-order slots
+  regardless of amount — which is what `Gate.mo`'s "worth an outcall and a reserve hold"
+  refers to.
+- ⚠️ **But there is no operator loss at $5**, and that is worth stating because #21's
+  comment says a $5 purchase means "selling at a loss". `Pricing` derives cycles from
+  **netCents**, so Stripe's cut is recovered *from the buyer*, not absorbed. Our own
+  unrecovered per-order cost is the outcall plus the ledger transfer fee, ~320 M cycles
+  ≈ **$0.0004**. That framing appears to predate the net-based formula.
 
 ⚠️ **The consequence for product copy, which is #40's open question.** #41 drafted an
 unshipped tile reading *"enough to deploy a small app and run it for about a month."*
-Measured, $10 covers creation **plus roughly eighteen further months** of the same
-three-deploys-a-day pattern. The claim understates by more than 10×. That is the safe
+Measured at the real XDR rate, $10 covers creation **plus roughly sixteen further months**
+of the same three-deploys-a-day pattern. The claim understates by more than 10×. That is the safe
 direction for a claim to be wrong in, but it is wrong, and #40 owns whether to say
 something truer.
 
 ## Reproducing this
 
 ```python
-CREATE, STORAGE, IB, IBY, UB = 500_000_000_000, 127_000, 1_200_000, 2_000, 5_000_000
-USD_PER_T = 0.683 / 0.5
+CLI_DEFAULT, CREATE_FEE = 2_000_000_000_000, 500_000_000_000
+STORAGE, IB, IBY, UB    = 127_000, 1_200_000, 2_000, 5_000_000
+XDR_PER_USD             = 0.728083          # IMF, check this — it moves
 WASM, ASSETS, DAYS, PER_DAY = 1_165_653, 612_831, 30, 3
+CANISTERS = 2
 
-deploy  = (IB + IBY*WASM + UB) + (IB + IBY*ASSETS + UB)
-storage = STORAGE * (50e6 / 2**30) * 86400 * DAYS
-total   = 2*CREATE + deploy*DAYS*PER_DAY + storage
-print(total/1e12, "T", "$%.2f" % (total/1e12*USD_PER_T))
+deploy   = (IB + IBY*WASM + UB) + (IB + IBY*ASSETS + UB)
+storage  = STORAGE * (50e6 / 2**30) * 86400 * DAYS
+upfront  = CANISTERS * CLI_DEFAULT                        # what the CLI demands
+consumed = CANISTERS * CREATE_FEE + deploy*DAYS*PER_DAY + storage
+
+def buys(gross_cents):                                    # the canister's own fee math
+    net = gross_cents - (gross_cents*290//10000 + 30)
+    return net/100 * XDR_PER_USD
+
+print("upfront  %.3f T" % (upfront/1e12))
+print("consumed %.3f T" % (consumed/1e12))
+for tier in (500, 1000):
+    print("$%.2f -> %.3f T  covers upfront: %s"
+          % (tier/100, buys(tier), buys(tier) >= upfront/1e12))
 ```
+
+⚠️ Compare a tier against **`upfront`**, not `consumed`. Getting that backwards is what made
+an earlier draft conclude a $5 minimum would do.
 
 Swap `WASM`/`ASSETS` for the app being priced, and add an instruction estimate to `deploy`
 if its upgrades do real work on install.

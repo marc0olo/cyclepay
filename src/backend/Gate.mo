@@ -126,12 +126,14 @@ module {
       // outcall and a reserve hold — that fee share is the binding constraint, and the
       // recorded reason for raising the floor from $5.
       //
-      // ⚠️ **It is NOT what a buyer needs, and the two get conflated.**
+      // ⚠️ **And it is ALSO what a buyer needs, which the fee reasoning alone misses.**
       // `docs/BUYER-COST-MODEL.md` measures the scenario the product is sold for — two
-      // canisters, a month, three deploys a day on a 13-node subnet — at ~1.34 T, which
-      // $10 covers about 5× over and $5 would have covered 2.5×. So an argument for
-      // moving this floor has to be an argument about the card fee; buyer need does not
-      // bind here.
+      // canisters, a month, three deploys a day on a 13-node subnet. The gate is not what
+      // gets consumed (~1.34 T) but what must be held UPFRONT: `icp canister create`
+      // funds each canister with 2 T by default, so two of them ask for **4.0 T**. $10
+      // buys 6.851 T and clears it 1.7×; **$5 buys 3.320 T and does not clear it at all**,
+      // failing on the second canister. So this floor has two independent justifications,
+      // and only the card-fee one was written down.
       minPurchaseUsdCents = 1_000;
     };
   };
