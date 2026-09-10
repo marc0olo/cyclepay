@@ -18,12 +18,15 @@ UPFRONT   icp canister create --cycles default   2.000 T per canister
             of which protocol creation fee      1.000 T   consumed
             of which lands as canister balance  3.000 T   still the buyer's
 
-CONSUMED  protocol creation fee, 2 canisters    1.000 T   $1.37
-          90 deploys (3/day × 30 days)          0.321 T   $0.44
-          storage, 50 MB across both, 30 days   0.015 T   $0.02
+CONSUMED  protocol creation fee, 2 canisters    1.000 T
+          90 deploys (3/day × 30 days)          0.321 T
+          storage, 50 MB across both, 30 days   0.015 T
                                                 ───────
-                                                1.336 T   $1.83
+                                                1.337 T   ($1.84)
 ```
+
+Only the total carries a USD figure: the parts are rounded to three decimals and summing
+them gives 1.336, while the exact total is 1_336_571_944_520 cycles.
 
 ⚠️ **`--cycles` defaults to `2000000000000`, documented only in `icp canister create
 --help`.** `icp deploy` inherits it silently, so a buyer who never reads that flag still
@@ -77,10 +80,16 @@ Using the canister's own integer fee arithmetic (`feeBps` 290, `feeFixedCents` 3
 
 | tier | net | cycles | covers the 4.0 T upfront? | spare |
 |---|---|---|---|---|
-| **$5.00** | $4.56 | **3.320 T** | **NO** — short 0.68 T | — |
+| **$5.00** | $4.55 | **3.313 T** | **NO** — short 0.69 T | — |
 | $10.00 | $9.41 | **6.851 T** | yes, 1.7× | +2.851 T |
 | $20.00 | $19.12 | 13.921 T | yes, 3.5× | +9.921 T |
 | $50.00 | $48.25 | 35.130 T | yes, 8.8× | +31.130 T |
+
+⚠️ **`Pricing.feeCents` CEILINGS the basis-point part** — `(gross × bps + 9_999) / 10_000` —
+so $5 nets 455¢ rather than the 456¢ a floored reading gives. $5 is the only tier where the
+two differ. `test/buyer-cost.test.mo` asserts every figure in this table against
+`Pricing.feeCents` and `Pricing.cyclesForCents`, so a change to the fee config fails there
+with the tier that moved.
 
 At $10 the buyer holds ~5.5 T across wallet and canisters after the first month — roughly
 sixteen further months of the same three-deploys-a-day pattern.
@@ -89,15 +98,15 @@ sixteen further months of the same three-deploys-a-day pattern.
 
 The floor has **two independent justifications**, and both hold:
 
-1. **Sufficiency.** $5 buys 3.320 T against a 4.0 T upfront requirement. A $5 buyer creates
-   the first canister and fails on the second, holding 1.32 T against a 2 T request — a
+1. **Sufficiency.** $5 buys 3.313 T against a 4.0 T upfront requirement. A $5 buyer creates
+   the first canister and fails on the second, holding 1.31 T against a 2 T request — a
    failure that surfaces from `icp deploy`, with nothing pointing back at the purchase being
    too small.
-2. **Fee share.** The fixed 30¢ is regressive: **8.8%** of a $5 purchase against **5.9%** of
+2. **Fee share.** The fixed 30¢ is regressive: **9.0%** of a $5 purchase against **5.9%** of
    a $10 one, so the buyer's effective price rises from **$1.46/T to $1.51/T**, which is
    visible on the receipt.
 
-A $5 floor works **only** if the buyer tunes `--cycles` down — at ~600 M each (protocol fee
+A $5 floor works **only** if the buyer tunes `--cycles` down — at ~600 B each (protocol fee
 plus freezing reserve plus slack) the upfront need falls to ~1.2 T and $5 clears it 2.8×.
 That is a real path and not the default one.
 
@@ -110,7 +119,7 @@ the HTTPS outcall (~220 M cycles at 13 nodes) plus the ledger transfer fee, ~320
 ## The cost shape, and the one thing that breaks it
 
 **Storage is a rounding error** at small-app scale — 50 MB across both canisters for a month
-is 2 cents, a full gibibyte-month is $0.43. Count creations and uploads, not storage.
+is 2 cents, a full gibibyte-month is $0.45. Count creations and uploads, not storage.
 
 **The recurring cost is upload bytes.** At 2,000 cycles/byte every megabyte costs 2 G, so a
 deploy costs 3.57 G and tracks *artifact size* rather than deploy frequency — the two
@@ -122,11 +131,11 @@ here.** At 1 cycle per instruction:
 
 | instructions per upgrade | per deploy | 90 deploys | consumed, 30d |
 |---|---|---|---|
-| base only (modelled) | 3.57 G | 0.321 T | 1.336 T |
-| 100 M — light | 3.67 G | 0.330 T | 1.345 T |
-| 1 B — moderate | 4.57 G | 0.411 T | 1.426 T |
-| 10 B — heavy | 13.57 G | 1.221 T | 2.236 T |
-| **200 B — the install limit** | 203.57 G | **18.321 T** | **19.336 T** |
+| base only (modelled) | 3.57 G | 0.321 T | 1.337 T |
+| 100 M — light | 3.67 G | 0.330 T | 1.346 T |
+| 1 B — moderate | 4.57 G | 0.411 T | 1.427 T |
+| 10 B — heavy | 13.57 G | 1.221 T | 2.237 T |
+| **200 B — the install limit** | 203.57 G | **18.321 T** | **19.337 T** |
 
 The realistic band for a small app is light-to-moderate, under 10% of the total. The limit
 row is the shape of the only failure mode: instruction-heavy upgrades three times a day can
@@ -175,8 +184,8 @@ storage  = STORAGE * (50e6 / 2**30) * 86400 * DAYS
 upfront  = CANISTERS * CLI_DEFAULT
 consumed = CANISTERS * CREATE_FEE + deploy*DAYS*PER_DAY + storage
 
-def buys(gross_cents):                      # the canister's own fee math
-    net = gross_cents - (gross_cents*290//10000 + 30)
+def buys(gross_cents):                      # mirrors Pricing.feeCents — note the CEILING
+    net = gross_cents - ((gross_cents*290 + 9_999)//10_000 + 30)
     return net/100 * XDR_PER_USD
 
 print("upfront  %.3f T" % (upfront/1e12))
@@ -188,3 +197,9 @@ for tier in (500, 1000):
 
 Swap `WASM`/`ASSETS` for the app being priced, `CANISTERS` for its shape, and add an
 instruction estimate to `deploy` if its upgrades do real work on install.
+
+⚠️ **`buys()` is a transcription of `Pricing.feeCents`, so running this checks the cost side
+and NOT whether the tier figures match the canister.** The authority for those is
+`test/buyer-cost.test.mo`, which calls `Pricing.feeCents` and `Pricing.cyclesForCents`
+directly. Change a fee constant and this snippet keeps agreeing with itself; that suite
+fails with the tier that moved.
