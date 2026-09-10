@@ -508,9 +508,11 @@ persistent actor CyclesGateway {
 
 
 
-  // ── Orders: create/query (task 6) ───────────────────────────────────────
+  // ── Management canister: entropy and vetKD ──────────────────────────────
 
-  // raw_rand source for order IDs (§2).
+  // One reference, two unrelated users: `raw_rand` for order ids (§2) and the two vetKD
+  // methods for sealed provisioning (#11). Its own section because it belongs to neither
+  // path exclusively.
   transient let management = actor "aaaaa-aa" : actor {
     raw_rand : () -> async Blob;
     // vetKD, for sealed provisioning (#11). Declared on the same reference as `raw_rand`
@@ -579,6 +581,8 @@ persistent actor CyclesGateway {
       case (#ok(key)) Sealed.open(ciphertext, key);
     };
   };
+
+  // ── Orders: create/query (task 6) ───────────────────────────────────────
 
   // raw_rand re-draws on an ID collision. With 128-bit IDs a single
   // collision is already astronomically unlikely; exhausting this means
