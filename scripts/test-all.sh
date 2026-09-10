@@ -287,6 +287,14 @@ run "admin tiers are enforced, not just listed" scripts/check-admin-tiers.py
 # that never entered the union, which is what this covers.
 run "every write is offered as a command, or excluded on purpose" scripts/check-admin-commands.py
 
+# ⚠️ **The step above checks WHICH methods the console offers; this one checks whether
+# the calls printed in prose still run.** Different question, different files, and the
+# gap between them was live: `audit_log` took `(opt nat, nat)` from #38 while three
+# places called it `'()'`, and RUNBOOK passed `quote_previews` a rail argument that #35
+# deleted -- the line it calls the fastest is-the-rail-quoting check. An operator finds
+# these mid-incident, by pasting one and getting a serialization error.
+run "every documented canister call still matches the .did" scripts/check-doc-calls.py
+
 # ⚠️ **The decision record is enforced, not trusted.** Its predecessor was a 697-line
 # spec that rotted by being updated less often than the code — 67 mentions of deleted
 # architecture while Main.mo still cited it by section number. This cannot check whether

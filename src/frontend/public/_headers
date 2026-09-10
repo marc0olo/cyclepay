@@ -24,3 +24,8 @@
 # visitor URL — `/` is served from `/index.html`, so this is the block that governs it.
 /*.html
   Cache-Control: public, max-age=0, must-revalidate
+
+# Not content-hashed, so it needs a rule of its own: long enough to stop a refetch on
+# every navigation, short enough that a brand change is not stuck in caches for a year.
+/favicon.svg
+  Cache-Control: public, max-age=86400

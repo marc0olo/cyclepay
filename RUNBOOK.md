@@ -35,6 +35,30 @@ icp canister call backend <method> '(<candid args>)' -e ic --identity <operator>
 argument makes `icp canister call` ask *"Do you want to send this message?
 [y/N]"* and read stdin — which hangs any script, cron job, or CI step.
 
+**For reads, open the console first (#68).** Every read-only command in this
+runbook is also a panel at `#/admin`, so a triage that used to be a sequence of
+typed calls is now one screen. The `Admin` header link appears for a controller
+or a granted admin and for nobody else.
+
+| panel | what it shows |
+|---|---|
+| **Now** (default) | the summary split into what needs a person and what clears itself, the reserve, and refusals since deploy |
+| **Worklists** | orphans · problems · delayed · pending, as sortable tables |
+| **Orders** | order history, paged · look up one order by id |
+| **Diagnostics** | `health` · queue depths · the recovery sweep with its count drift · the audit trail, newest first and paged |
+| **Configuration** | the config groups, the write commands, and this browser's identity |
+
+⚠️ **The CLI is still the answer for four things**, and the panels do not replace
+them: anything that **writes** (the console prints the command for you to run,
+it does not send it); reading when the **frontend is down or not yet deployed**,
+which is most of §1; a **scripted or monitored** read, where the public queries
+below are the interface; and `-e ic` **before** the frontend canister exists.
+
+⚠️ **Opening the console spends no audit entries.** `admin_order`,
+`admin_receipt` and `delivery_journal` are updates precisely so the read is
+recorded (#38), so no panel calls them on open — the Orders lookup is explicit,
+and one deliberate lookup is one audited read.
+
 Public queries (`reserve_status`, `pricing_status`, `recovery_status`,
 `card_tiers`, `lifecycle_config`, `reserve_status`,
 `can_purchase`, `cycles_status`, `orphan_depth`, `health`) work from any
@@ -403,7 +427,7 @@ XDR/ICP. There is no HTTPS outcall and no settable rate source.
 
 ```bash
 icp canister call backend pricing_status '()' -e ic   # public: both rates, config, last refresh
-icp canister call backend quote_previews '(variant { card }, vec { 500 : nat })' -e ic  # public: what an amount buys
+icp canister call backend quote_previews '(vec { 500 : nat })' -e ic  # public: what an amount buys
 icp canister call backend refresh_rates '()' -e ic --identity <operator>   # force a tick now
 icp canister call backend set_pricing_config \
   '(record { feeBps = 290 : nat; feeFixedCents = 30 : nat; maxAgeNs = 300_000_000_000 : nat; maxRateDeltaBps = 5_000 : nat; minRateSources = 2 : nat })' \
@@ -745,7 +769,7 @@ grow together and never diverge.
 ## 6. Obligations — triage (§4.1)
 
 ```bash
-icp canister call backend orphans '()' -e ic --identity <operator>
+icp canister call backend orphans '(null, 50 : nat)' -e ic --identity <operator>
 icp canister call backend resolve_orphan '(42)' -e ic --identity <operator>
 icp canister call backend delivery_journal '("<orderId>")' -e ic --identity <operator>
 ```

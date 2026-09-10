@@ -150,6 +150,14 @@ function adminOrder(): Order {
   return {
     ...cannedOrder({ status: "needsReview" }),
     id: "9f3a0000000000000000000000000000",
+    // ⚠️ **Relative, unlike `cannedOrder`'s fixed `CREATED_AT_NS`, because the console
+    // renders this column as an AGE.** A fixed timestamp reads "220 days ago" today and
+    // "221 days ago" tomorrow, so a pixel baseline of the Orders panel would fail every
+    // day -- worse than no baseline, because a suite that fails daily gets regenerated
+    // without being read. `formatAgo` buckets by hour, so an exact 3h offset renders the
+    // same string on every run. Every other operational fixture here is already relative;
+    // this one was the outlier.
+    createdAtNs: BigInt(Date.now() - 3 * 3_600_000) * 1_000_000n,
     problems: [
       {
         filedAtNs: BigInt(Date.now() - 40 * 60_000) * 1_000_000n,

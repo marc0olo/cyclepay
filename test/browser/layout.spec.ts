@@ -353,7 +353,12 @@ test.describe("layout agreement", () => {
       return worstOffset;
     });
     // The dot is 5px, so anything inside its own radius reads as "on the node".
-    // The linear-travel version this replaced drifted 67px by the fourth step.
+    //
+    // ⚠️ **49px is the number to compare a failure against**, and it is the one this
+    // test's own seek points produce: reverting `flow-pulse` to the linear travel
+    // measures 49.4px here. The drift is a function of WHERE in each ring window you
+    // look — 40px at the moment node 4 lights, 67px later in the same window — so a
+    // figure taken at another instant will not reproduce against this assertion.
     expect(worst).toBeLessThan(4);
   });
 
@@ -380,15 +385,23 @@ test.describe("layout agreement", () => {
     });
   }
 
-  test("a table too wide for the screen scrolls itself, and still fills a desktop panel", async ({ page }) => {
+  /// ⚠️ **Two tests, not one, and the split is the point.** As a single test the
+  /// desktop half was unreachable by the mutation that motivates it: putting
+  /// `overflow-x` back on the table moves the scroll onto the table, so the wrapper
+  /// stops overflowing and the PHONE assertion trips first. The desktop assertion was
+  /// real but never the one that fired, which makes it untested scaffolding.
+  const openHistory = async (page: Parameters<Parameters<typeof test>[1]>[0]["page"], width: number, height: number) => {
+    await page.setViewportSize({ width, height });
     await page.goto("/");
     await useFixtureBackend(page);
     await signInAsFixtureBuyer(page);
     await openFixtureOrder(page, { status: "delivered" });
-
-    await page.setViewportSize({ width: 358, height: 740 });
     await page.goto("/#/history");
     await expect(page.locator(".orders-table tbody tr").first()).toBeVisible();
+  };
+
+  test("a table too wide for the screen scrolls itself rather than being cut off", async ({ page }) => {
+    await openHistory(page, 358, 740);
     const phone = await page.evaluate(() => {
       const table = document.querySelector(".orders-table") as HTMLElement;
       const box = table.parentElement as HTMLElement;
@@ -400,26 +413,26 @@ test.describe("layout agreement", () => {
       };
     });
     // `body` sets `overflow-x: clip`, so a table with no scroll container of its own
-    // is not merely off-screen — its last columns cannot be reached at all.
+    // is not merely off-screen — its last columns cannot be reached at all. This one
+    // wants 449px against 358px.
     expect(phone.wider).toBe(true); // non-vacuous: there IS something to scroll to
     expect(phone.scrolled).toBeGreaterThan(0);
     expect(phone.overflows).toBe(false);
+  });
 
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await page.goto("/#/history");
-    await expect(page.locator(".orders-table tbody tr").first()).toBeVisible();
+  test("⚠️ and the same table still fills its panel on a desktop", async ({ page }) => {
+    await openHistory(page, 1280, 900);
     const desktop = await page.evaluate(() => {
       const table = document.querySelector(".orders-table") as HTMLElement;
       const box = table.parentElement as HTMLElement;
       const row = table.querySelector("thead tr") as HTMLElement;
-      return {
-        row: row.getBoundingClientRect().width,
-        box: box.getBoundingClientRect().width,
-      };
+      return { row: row.getBoundingClientRect().width, box: box.getBoundingClientRect().width };
     });
-    // The other half of the trade: putting `overflow-x` on the table itself does
-    // give it a scrollbar, but it also makes the rows an anonymous auto-width table
-    // box that `width: 100%` no longer reaches — 518px of columns in a 1008px panel.
+    // The other half of the trade, and the reason the scroll container is a WRAPPER:
+    // `overflow-x` on the table itself also makes its rows an anonymous auto-width
+    // table box that `width: 100%` no longer reaches — 518px of columns stranded in a
+    // 1008px panel here, and 387px in a 1008px panel for the console's own tables,
+    // which had been doing exactly that since they were introduced.
     expect(desktop.row).toBeCloseTo(desktop.box, 0);
   });
 });

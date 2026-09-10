@@ -10,6 +10,10 @@
     />
     <meta name="theme-color" content="#faf9f5" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#14110d" media="(prefers-color-scheme: dark)" />
+    <!-- SVG only, and no .ico fallback: every browser this app supports reads an SVG
+         icon (Safari since 16), and a second rasterised copy is a second thing to keep
+         in step with the brand. The CSP allows it: img-src is 'self'. -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/src/fonts.css" />
     <link rel="stylesheet" href="/src/tokens.css" />
     <link rel="stylesheet" href="/src/styles.css" />
@@ -708,9 +712,6 @@
         </div>
       </section>
 
-      <!-- The operator console (#68). Reached at #/admin only: no nav link, because a
-           console entry point on a purchase page is noise for everyone who is not an
-           operator. -->
       <!-- The operator console (#68), in FIVE panels rather than one column.
            NOTE: It used to stack all of this: identity, configuration, actions, then the
            summary, then the worklists. Someone opening it mid-incident scrolled past
@@ -946,7 +947,7 @@
             <div class="lookup-row">
               <label for="lookup-id">Order id</label>
               <input type="text" id="lookup-id" inputmode="latin" autocomplete="off"
-                     placeholder="f22bd6dc4932a8480f3cee3669a48cc6" />
+                     placeholder="32 hex characters" />
               <button type="button" id="lookup-run">Look up</button>
             </div>
             <p id="lookup-state" class="muted" hidden></p>

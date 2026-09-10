@@ -1477,8 +1477,21 @@ function renderOperatorSummary(): void {
   act.replaceChildren();
   figureRow(act, "Orders under review", s.ordersNeedingReview);
   figureRow(act, "Payments not attributed", s.orphansUnresolved);
-  figureRow(act, "Open problems", s.problemsUnresolved);
-  figureRow(act, "Orders carrying a problem", s.ordersWithProblems);
+  // ⚠️ **`ordersWithProblems` is the SAME problems grouped by order, so it goes ON this
+  // row rather than beside it as a fourth.** As its own row the group read
+  // 1 + 2 + 2 + 1 = 6 above a headline of 5: correct arithmetic, because `owed` must not
+  // count one problem set twice, and a disagreement to anyone who reads the list. The
+  // rows in this group now sum to `owed` exactly, which is the only way a reader can
+  // check the headline at all.
+  figureRow(
+    act,
+    s.ordersWithProblems === 0n
+      ? "Open problems"
+      : s.ordersWithProblems === 1n
+        ? "Open problems, on 1 order"
+        : `Open problems, on ${s.ordersWithProblems} orders`,
+    s.problemsUnresolved,
+  );
 
   wait.replaceChildren();
   figureRow(wait, "Deliveries outstanding", s.deliveriesOutstanding);
