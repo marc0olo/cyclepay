@@ -125,8 +125,15 @@ recorded reasoning — don't "fix" them without reading the rationale:
 ## Running it locally
 
 ```sh
+git submodule update --init --recursive   # first time only — see below
 icp network start -d && icp deploy && scripts/local-dev-seed.sh
 ```
+
+⚠️ **The submodule is not optional and its absence does not look like its cause.** The
+backend decrypts its sealed secrets (#11) with a BLS12-381 implementation pinned at
+`vendor/icp-seeding-secrets-poc`, resolved by `mops` as a path dependency. Without it
+`mops` reports a missing package and nothing compiles. If you clone fresh, use
+`--recurse-submodules`.
 
 The seed step is **not optional**. A fresh deploy is fail-closed on four axes at once
 (no tiers, no CMC rate, an empty and unobserved cycles reserve, and a canister funded
