@@ -49,6 +49,10 @@ const state = {
   /// The diagnostics panel's reads (#68). None of these had a surface before, so none
   /// had a mock either.
   health: true,
+  /// Whether the diagnostics reads are refused, for the panel's locked path. A flag
+  /// rather than a mutated mock: the mock object is shared across every test in this
+  /// file, so reassigning a method leaks into whatever runs next.
+  diagnosticsRefused: false,
   problemDepth: { orders: 0n, unresolved: 0n },
   orphanDepth: { retained: 0n, unresolved: 0n },
   recoveryStatus: {
@@ -310,7 +314,10 @@ const typedStubs = {
     return state.problemOrders;
   },
   operator_summary: async () => state.operatorSummary,
-  health: async () => state.health,
+  health: async () => {
+    if (state.diagnosticsRefused) throw new Error("admin only");
+    return state.health;
+  },
   problem_depth: async () => state.problemDepth,
   orphan_depth: async () => state.orphanDepth,
   recovery_status: async () => state.recoveryStatus as never,
@@ -1826,18 +1833,51 @@ describe("the operator console's panels (#68)", () => {
     expect(el("lookup-state").textContent).toMatch(/Enter an order id/);
   });
 
-  test("⚠️ the tab count is the ACT lists only, and hides at zero", async () => {
-    // Counting the self-clearing lists would make the badge read "there is work" during
-    // normal operation, which is how a badge stops being read.
+  test("⚠️ the tab count AGREES with the headline, because both come from the summary", async () => {
+    // The regression this pins: the badge counted worklist rows while the headline
+    // counted the summary's figures, so one screen showed 3 and "5 things need a person".
+    // An operator who spots two numbers for one thing stops trusting both.
     state.adminStatus = granted;
-    state.orphans = { entries: [], nextCursor: undefined } as never;
-    state.problemOrders = { orders: [], nextCursor: undefined } as never;
-    state.delayed = { entries: [{ orderId: "d1", waitedNs: 1n, retries: 1n, pastMaxHold: false, status: "paid" }], nextCursor: undefined } as never;
-    state.pending = [] as never;
-    await mount("landing", "#/admin/worklists");
-    const badge = el("atab-worklists-count");
-    expect(badge.hidden).toBe(true);
-    expect(badge.textContent).toBe("");
+    state.operatorSummary = {
+      ...state.operatorSummary,
+      ordersNeedingReview: 1n,
+      orphansUnresolved: 2n,
+      problemsUnresolved: 2n,
+    } as never;
+    await mount("landing", "#/admin");
+    expect(el("summary-headline").textContent).toBe("5 things need a person.");
+    expect(el("atab-worklists-count").textContent).toBe("5");
+    expect(el("atab-worklists-count").hidden).toBe(false);
+  });
+
+  test("the count hides at zero rather than showing a 0", async () => {
+    // A badge that is always present trains an operator to stop reading it.
+    state.adminStatus = granted;
+    state.operatorSummary = {
+      ...state.operatorSummary,
+      ordersNeedingReview: 0n,
+      orphansUnresolved: 0n,
+      problemsUnresolved: 0n,
+    } as never;
+    await mount("landing", "#/admin");
+    expect(el("summary-headline").textContent).toMatch(/Nothing needs a person/);
+    expect(el("atab-worklists-count").hidden).toBe(true);
+    expect(el("atab-worklists-count").textContent).toBe("");
+  });
+
+  test("⚠️ a refused diagnostics read hides the body rather than leaving four empty headings", async () => {
+    // Reporting the failure on the health line alone left the depths, the sweep and the
+    // trail as a heading over prose over nothing, which reads as a broken page rather
+    // than a refused one.
+    state.adminStatus = granted;
+    state.diagnosticsRefused = true;
+    await mount("landing", "#/admin/diagnostics");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(el("diag-locked").hidden).toBe(false);
+    expect(el("diag-locked").textContent).toMatch(/admin-gated/);
+    expect(el("diagnostics-body").hidden).toBe(true);
+    state.diagnosticsRefused = false;
   });
 
   test("the diagnostics panel renders health, depths and the sweep", async () => {

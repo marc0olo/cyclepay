@@ -949,6 +949,13 @@
              `orphan_depth` 7, `health` 6, and the only way to read any of them was an
              `icp canister call` typed by hand, mid-incident. -->
         <div id="apanel-diagnostics" class="admin-panel" hidden>
+          <!-- Same shape as the worklists' locked state: one message for the panel, and
+               the body hidden behind it. Annotating four sections individually left three
+               of them as a heading over prose over nothing, which reads as broken rather
+               than as refused. -->
+          <p id="diag-locked" class="muted" hidden></p>
+
+          <div id="diagnostics-body">
           <!-- NOTE: `health()` returns a single BOOLEAN, not a per-subsystem report. Rendered
                as one sentence rather than a figure list, because a `<dl>` with one row
                implies there are others and invites someone to add a second reading that
@@ -1009,6 +1016,7 @@
             </table>
             <button type="button" id="diag-audit-more" hidden>Load more</button>
           </section>
+          </div>
         </div>
 
         <!-- ══ CONFIGURATION ══ what you change rarely, and this browser's identity. -->

@@ -360,8 +360,11 @@ const ADMIN_PANELS: ReadonlyArray<readonly [AdminTab, string]> = [
 /// The count that rides the Worklists tab.
 ///
 /// ⚠️ **Hidden at zero rather than showing "0".** A badge that is always present trains an
-/// operator to stop reading it, which defeats the reason it exists — seeing that there is
+/// operator to stop reading it, which defeats the reason it exists: seeing that there is
 /// work without opening the panel.
+///
+/// ⚠️ **Fed from `operator_summary`'s own count, never from a row tally** — see the note
+/// at the call site for what the two disagreeing looked like.
 function renderWorklistCount(n: number): void {
   const node = document.getElementById("atab-worklists-count");
   if (node === null) return;
@@ -1193,11 +1196,13 @@ function textFigureRow(into: HTMLElement, label: string, value: string): void {
 /// list here that grows without bound, so it pages; everything else is a fixed-shape
 /// record or is bounded by a variant.
 async function loadDiagnostics(): Promise<void> {
+  const locked = document.getElementById("diag-locked");
+  const body = document.getElementById("diagnostics-body");
   const state = document.getElementById("diag-health-state");
   const depths = document.getElementById("diag-depth-figures");
   const recovery = document.getElementById("diag-recovery-figures");
   const drift = document.getElementById("diag-recovery-drift");
-  if (!state || !depths || !recovery || !drift) return;
+  if (!locked || !body || !state || !depths || !recovery || !drift) return;
 
   try {
     const [healthy, problems, orphans, rec] = await Promise.all([
@@ -1260,10 +1265,19 @@ async function loadDiagnostics(): Promise<void> {
 
     auditCursor = null;
     await loadAuditPage(true);
+    locked.hidden = true;
+    body.hidden = false;
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error("could not read the diagnostics", error);
-    state.textContent = "The diagnostics could not be read. They are admin-gated.";
+    // ⚠️ One message, and the body hidden. Reporting the failure on the health line while
+    // leaving the depths, the sweep and the trail as empty headings made a refused read
+    // look like a broken page.
+    locked.hidden = false;
+    body.hidden = true;
+    locked.textContent =
+      "These reads are admin-gated and this identity was refused. " +
+      "Grant it with add_admin, or run them from a linked CLI identity.";
   }
 }
 
@@ -1441,6 +1455,9 @@ function renderOperatorSummary(): void {
   if (!headline || !act || !wait || !reserve) return;
 
   if (operatorSummary === null) {
+    // No figure means no badge: a stale count beside "could not be read" would be a
+    // claim the page has just said it cannot make.
+    renderWorklistCount(0);
     headline.textContent = "The summary could not be read. The canister may be unreachable.";
     act.replaceChildren();
     wait.replaceChildren();
@@ -1464,6 +1481,14 @@ function renderOperatorSummary(): void {
 
   const owed =
     s.ordersNeedingReview + s.orphansUnresolved + s.problemsUnresolved;
+  // ⚠️ **The badge is this SAME number, not a tally of worklist rows.** Counting rows
+  // gave 3 against a headline of 5 on one screen, because the summary counts orders
+  // needing review and open problems while the rows count unattributed payments and
+  // per-problem obligations. Two numbers for "needs a person" is worse than none: an
+  // operator who notices the disagreement stops trusting both. Driving both from `owed`
+  // also means the badge is populated before the Worklists panel is ever opened, which
+  // is the only reason a badge is useful.
+  renderWorklistCount(Number(owed));
   // Said in words, because the whole point of the grouping is answerable at a glance.
   headline.textContent =
     owed === 0n
@@ -1587,10 +1612,6 @@ async function loadWorklists(): Promise<void> {
       backend.pending_deliveries(),
     ]);
 
-    // ⚠️ The badge counts the two ACT lists only. Including the self-clearing ones would
-    // make it read "there is work" during normal operation, which is how a badge stops
-    // being read at all — the same reason it hides at zero.
-    let needsAPerson = 0;
     fillWorklist("wl-orphans-rows", "wl-orphans-empty", (into) => {
       for (const entry of orphans.entries) {
         worklistRow(
@@ -1599,7 +1620,6 @@ async function loadWorklists(): Promise<void> {
           ORPHAN_KIND_HINTS[entry.kind.__kind__],
         );
       }
-      needsAPerson += orphans.entries.length;
       return orphans.entries.length;
     });
 
@@ -1618,7 +1638,6 @@ async function loadWorklists(): Promise<void> {
           n += 1;
         }
       }
-      needsAPerson += n;
       return n;
     });
 
@@ -1652,7 +1671,6 @@ async function loadWorklists(): Promise<void> {
       }
       return pending.length;
     });
-    renderWorklistCount(needsAPerson);
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error("could not read the worklists", error);

@@ -140,6 +140,30 @@ function cannedOrder(spec: OrderSpec): Order {
   };
 }
 
+/// The one order the OPERATOR console depicts: the history table, the worklist problem row
+/// and the id lookup all answer from this.
+///
+/// ⚠️ **One object, because three panels disagreeing is the fixture defect this file has
+/// already recorded once.** Built from `cannedOrder` rather than hand-written, so the
+/// console cannot depict an order shape the app never sees.
+function adminOrder(): Order {
+  return {
+    ...cannedOrder({ status: "needsReview" }),
+    id: "9f3a0000000000000000000000000000",
+    problems: [
+      {
+        filedAtNs: BigInt(Date.now() - 40 * 60_000) * 1_000_000n,
+        kind: {
+          __kind__: "deliveryStuck" as const,
+          deliveryStuck: { stage: "transfer issued, no block recorded" },
+        },
+        detail: "cycles ledger did not answer; money position unknown",
+        resolvedAtNs: undefined,
+      },
+    ],
+  };
+}
+
 /// The window hook. Named on `window` so a spec can find it, and named
 /// distinctively so the gate can grep a production bundle for its absence.
 export type FixtureApi = {
@@ -440,31 +464,67 @@ export function installFixtures(host: FixtureHost): void {
         transferIntent: undefined,
       },
     ],
+    // ── the diagnostics panel (#68) ──────────────────────────────────────────────
+    // ⚠️ **Figures chosen to AGREE with `operator_summary` above**, for the reason the
+    // note below this block records: three panels disagreeing in a screenshot meant to
+    // show how they agree. `problem_depth` mirrors `problemsUnresolved` and
+    // `ordersWithProblems`; `orphan_depth` mirrors `orphansUnresolved`.
+    health: async () => true,
+    problem_depth: async () => ({ orders: 1n, unresolved: 2n }),
+    orphan_depth: async () => ({ retained: 3n, unresolved: 2n }),
+    recovery_status: async () => ({
+      indexScan: {
+        chunkSize: 25n,
+        expectedFullCycleNs: 3_600_000_000_000n,
+        storedOrders: 12n,
+        inFlightCycle: {
+          ordersRead: 7n,
+          startedAtNs: BigInt(Date.now() - 12 * 60_000) * 1_000_000n,
+          repairs: 0n,
+        },
+        lastCompletedCycle: {
+          completedAtNs: BigInt(Date.now() - 70 * 60_000) * 1_000_000n,
+          startedAtNs: BigInt(Date.now() - 130 * 60_000) * 1_000_000n,
+          ordersRead: 12n,
+          repairs: 1n,
+        },
+      },
+      lastCountReconcileAttemptNs: BigInt(Date.now() - 9 * 60_000) * 1_000_000n,
+      lastCountReconcile: {
+        atNs: BigInt(Date.now() - 9 * 60_000) * 1_000_000n,
+        ordersRead: 12n,
+        drift: [],
+        refused: [],
+      },
+      lastReserveReconcileAttemptNs: BigInt(Date.now() - 4 * 60_000) * 1_000_000n,
+      sweepInFlight: false,
+      intervalNs: 600_000_000_000n,
+    }),
+    // One page with a cursor, so the Load more control is visible rather than hidden by
+    // a fixture that happens to fit on one page.
+    audit_log: async (afterSeq: bigint | null, _limit: bigint) =>
+      afterSeq === undefined || afterSeq === null
+        ? {
+            events: [
+              { seq: 1n, tag: "admin.granted", atNs: BigInt(Date.now() - 86_400_000) * 1_000_000n, detail: "granted to fo76k" },
+              { seq: 2n, tag: "secret.set", atNs: BigInt(Date.now() - 82_800_000) * 1_000_000n, detail: "generation 1" },
+              { seq: 3n, tag: "order.read", atNs: BigInt(Date.now() - 3_600_000) * 1_000_000n, detail: "9f3a0000000000000000000000000000" },
+            ],
+            nextCursor: 3n,
+          }
+        : {
+            events: [
+              { seq: 4n, tag: "orders.recounted", atNs: BigInt(Date.now() - 600_000) * 1_000_000n, detail: "paid=1, delivered=0" },
+            ],
+            nextCursor: undefined,
+          },
     // ⚠️ Returns an order carrying an UNRESOLVED problem, matching the summary's count.
     // The first version returned the buyer's order or nothing, so the summary said "1
     // order carrying a problem" while the worklist said "None." and the history said "No
     // orders match" — three panels disagreeing in a screenshot meant to show how they
     // agree. In production all three read the same store.
     admin_orders: async () => ({
-      orders: [
-        {
-          // Reuses the canned buyer order rather than a second hand-written one, so the
-          // console cannot depict an order shape the app never sees.
-          ...cannedOrder({ status: "needsReview" }),
-          id: "9f3a0000000000000000000000000000",
-          problems: [
-            {
-              filedAtNs: BigInt(Date.now() - 40 * 60_000) * 1_000_000n,
-              kind: {
-                __kind__: "deliveryStuck" as const,
-                deliveryStuck: { stage: "transfer issued, no block recorded" },
-              },
-              detail: "cycles ledger did not answer; money position unknown",
-              resolvedAtNs: undefined,
-            },
-          ],
-        },
-      ],
+      orders: [adminOrder()],
       nextCursor: undefined,
     }),
     get_order: async () => order,
@@ -477,6 +537,36 @@ export function installFixtures(host: FixtureHost): void {
       orders: order ? [order] : [],
       nextCursor: undefined,
     }),
+    // ── the order lookup (#68) ───────────────────────────────────────────────────
+    // ⚠️ **Answered from the SAME object the history table renders**, not from the canned
+    // buyer order. Keyed off that one, the lookup said "No order with that id" for the id
+    // visible in the row directly above it, because the buyer order is null until one is
+    // opened. That is the disagreement the note on `admin_orders` above records, in a new
+    // place: a row an operator can see has to be a row they can look up.
+    //
+    // These are UPDATES in production, so each call writes a line to the audit trail.
+    // Refusing every other id keeps the "no order with that id" branch reachable, which is
+    // what an operator hits when they paste a payment reference instead of an order id.
+    admin_order: async (id: string) => (id === adminOrder().id ? adminOrder() : null),
+    // Always null, and that is correct rather than a stub: the fixture order is
+    // `needsReview`, and a receipt exists only for a delivered one. The lookup renders
+    // "Receipt: none" from this, which is the honest reading for that order.
+    admin_receipt: async (_id: string) => null,
+    delivery_journal: async (id: string) =>
+      id !== adminOrder().id
+        ? null
+        : {
+            orderId: adminOrder().id,
+            status: adminOrder().status,
+            updatedAtNs: adminOrder().createdAtNs,
+            createdAtNs: adminOrder().createdAtNs,
+            destination: adminOrder().destination,
+            retries: 4n,
+            blockIndex: undefined,
+            lastError: "cycles ledger did not answer",
+            cyclesDelivered: undefined,
+            transferIntent: undefined,
+          },
     receipt: async () =>
       order === null || order.status !== "delivered"
         ? null
