@@ -21,9 +21,13 @@ import {
 ///
 /// and look at the new PNGs before committing them.
 ///
-/// Baselines are per-platform (Playwright suffixes the file with `darwin`/`linux`)
-/// because font rasterisation differs. CI runs ubuntu-latest x86_64, so the
-/// `-linux` files are the ones it compares against and both sets are committed.
+/// ⚠️ **Baselines are LINUX-ONLY, and these tests skip on any other platform.**
+/// Playwright suffixes per platform because font rasterisation differs, so a
+/// darwin set was committed alongside — and it bought a signal for a rasteriser
+/// nothing ships on, at a second set to regenerate on every deliberate change.
+/// Worse, a Mac cannot repair the `-linux` half that CI actually compares against
+/// (see below), so the darwin half could never substitute for it. Linux-only makes
+/// every failure reproducible where it is checked.
 ///
 /// **The `-linux` set has to come from the CI runner itself.** Generating it in
 /// `mcr.microsoft.com/playwright:v1.62.1-noble` at `--platform linux/amd64` —
@@ -58,30 +62,13 @@ async function settleForShot(page: import("@playwright/test").Page): Promise<voi
 
 const shot = { animations: "disabled", fullPage: true } as const;
 
-/// ── SUSPENDED for the UX phase (#107) ──────────────────────────────────────
-///
-/// Not disabled because they were wrong — they are the only thing in this repo that
-/// can see PAINT, and they have already caught a 5px dot and a 1px hairline painted
-/// over four digits. Disabled because a flow rewrite changes these pixels on purpose,
-/// on every commit, and each refresh needs a full CI round-trip: the `-linux` half of
-/// every baseline can only come from the runner (see the procedure above), so a Mac
-/// cannot repair them locally. That is a round-trip per iteration for information we
-/// already have — the pixels changed, that was the work.
-///
-/// ⚠️ **What is NOT covered while this is skipped**, and nothing else reaches it:
-/// text the same colour as its background, an element covering another, an opacity
-/// that renders something technically visible and practically not. Each of those
-/// passes `toBeVisible()` and passes whichever `getComputedStyle` property someone
-/// thought to check. Reviewing screenshots by hand is the stand-in, and it is a
-/// weaker one.
-///
-/// ⚠️ **Re-enable via #107, not from memory.** Delete this `.skip`, regenerate BOTH
-/// platforms (darwin locally, linux from a CI run's `browser-failures` artifact), and
-/// LOOK at every PNG before committing — a baseline is only evidence if a human
-/// looked at it, and one adopted blind pins whatever the page happened to render.
-/// The issue exists because a code comment is the weakest possible reminder, and this
-/// suite going quietly stale is exactly the failure it would produce.
-test.describe.skip("visual baselines", () => {
+test.describe("visual baselines", () => {
+  // ⚠️ Linux-only: the committed baselines come from the CI runner, and comparing a
+  // macOS rasteriser against them produced ~2,400 differing pixels of pure antialiasing.
+  // Skipping is honest about where this coverage lives; a local run reporting green
+  // against a baseline it cannot reproduce would not be.
+  test.skip(process.platform !== "linux", "baselines are generated on the CI runner");
+
   test("the landing view, light", async ({ page }) => {
     await page.goto("/");
     await settleForShot(page);
