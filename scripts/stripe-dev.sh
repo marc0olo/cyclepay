@@ -263,7 +263,7 @@ cat <<'NOTES'
            through `get_order` or the local UI instead.
 
   Inspect what happened:
-      icp canister call backend audit_log '()'
+      icp canister call backend audit_log_recent '(null, 25 : nat)'
       icp canister call backend orphans_unresolved '(null, 50)'
       icp canister call backend order_for_payment '("pi_...")'
 

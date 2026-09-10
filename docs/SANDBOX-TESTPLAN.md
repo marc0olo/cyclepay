@@ -196,7 +196,7 @@ Then, in the browser at the frontend URL `icp deploy` printed
    |---|---|---|
    | the secret is provisioned | `icp canister call backend webhook_secret_status '()'` | `isSet = false` — every event is dropped unverified, with no audit line and no error-queue entry |
    | the forwarder is up | `pgrep -fl "stripe listen"` | nothing — Stripe delivered to a closed door, and a resend is delivered **once**, so resending before the forwarder is up wastes it |
-   | the CMC rate is fresh | `icp canister call backend audit_log '()' \| grep rates.refresh` | `rates.refreshFailed: cmc rate is stale or zero` — re-arm with `./scripts/local-dev-seed.sh --rate-only`. ⚠️ A stale rate fails at **order creation**, not at delivery: delivery reads no rate at all, so an order already `#paid` delivers regardless |
+   | the CMC rate is fresh | `icp canister call backend audit_log_recent '(null, 25 : nat)' \| grep rates.refresh` | `rates.refreshFailed: cmc rate is stale or zero` — re-arm with `./scripts/local-dev-seed.sh --rate-only`. ⚠️ A stale rate fails at **order creation**, not at delivery: delivery reads no rate at all, so an order already `#paid` delivers regardless |
 
    To replay a payment the canister missed, resend the **`checkout.session.completed`**
    event — not `charge.updated`, `charge.succeeded` or `payment_intent.succeeded`,
@@ -517,7 +517,7 @@ call`; the method names and shapes are the same. Shown as CLI for readability, a
 they work verbatim against a deployed canister.
 
 ```sh
-icp canister call backend audit_log '()'
+icp canister call backend audit_log_recent '(null, 25 : nat)'
 icp canister call backend orphans_unresolved '(null, 50)'
 icp canister call backend get_order '("<orderId>")'
 icp canister call backend order_for_payment '("pi_...")'

@@ -321,7 +321,7 @@ const typedStubs = {
   problem_depth: async () => state.problemDepth,
   orphan_depth: async () => state.orphanDepth,
   recovery_status: async () => state.recoveryStatus as never,
-  audit_log: async (_after: bigint | null, _limit: bigint) => state.auditPage as never,
+  audit_log_recent: async (_before: bigint | null, _limit: bigint) => state.auditPage as never,
   admin_order: async (_id: string) => {
     state.auditedReads += 1;
     return state.lookupOrder as never;
@@ -1863,6 +1863,27 @@ describe("the operator console's panels (#68)", () => {
     expect(el("summary-headline").textContent).toMatch(/Nothing needs a person/);
     expect(el("atab-worklists-count").hidden).toBe(true);
     expect(el("atab-worklists-count").textContent).toBe("");
+  });
+
+  test("⚠️ the audit trail shows the NEWEST event first", async () => {
+    // What an operator opening the console wants. The ascending view starts at the first
+    // line ever written, so on a trail of any age the panel would open on ancient history
+    // and "Load more" would walk towards the present.
+    state.adminStatus = granted;
+    state.auditPage = {
+      events: [
+        { seq: 9n, tag: "orders.recounted", atNs: 1_700_000_009_000_000_000n, detail: "newest" },
+        { seq: 8n, tag: "secret.set", atNs: 1_700_000_008_000_000_000n, detail: "older" },
+      ],
+      nextCursor: 8n,
+    };
+    await mount("landing", "#/admin/diagnostics");
+    await Promise.resolve();
+    await Promise.resolve();
+    const seqs = [...el("diag-audit-rows").querySelectorAll("tr")].map((r) => r.cells[0]?.textContent);
+    expect(seqs).toEqual(["9", "8"]);
+    // A cursor means there is more to walk into the past, so the control is offered.
+    expect(el("diag-audit-more").hidden).toBe(false);
   });
 
   test("⚠️ a refused diagnostics read hides the body rather than leaving four empty headings", async () => {

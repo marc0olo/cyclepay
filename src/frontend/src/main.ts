@@ -1281,7 +1281,7 @@ async function loadDiagnostics(): Promise<void> {
   }
 }
 
-/// Cursor for the next audit page; `null` means "from the start".
+/// Cursor for the next audit page; `null` means "from the newest".
 let auditCursor: bigint | null = null;
 
 /// One page of the audit trail.
@@ -1289,6 +1289,11 @@ let auditCursor: bigint | null = null;
 /// ⚠️ **The only genuinely paginated table in the console.** The trail gains a line per
 /// operator action and per audited read and never loses one, so it is the one list whose
 /// length is neither bounded by the reserve nor by a variant.
+///
+/// ⚠️ **`audit_log_recent`, not `audit_log`.** The ascending view starts at the first line
+/// ever written, so on a trail of any age the panel would open on ancient history and
+/// "Load more" would walk *towards* the present. `auditCursor` is therefore a `beforeSeq`:
+/// null starts at the newest, and each page walks further into the past.
 async function loadAuditPage(reset: boolean): Promise<void> {
   const rows = document.getElementById("diag-audit-rows");
   const empty = document.getElementById("diag-audit-empty");
@@ -1296,7 +1301,7 @@ async function loadAuditPage(reset: boolean): Promise<void> {
   if (!rows || !empty || !more) return;
 
   try {
-    const page = await backend.audit_log(auditCursor, 25n);
+    const page = await backend.audit_log_recent(auditCursor, 25n);
     if (reset) rows.replaceChildren();
     for (const event of page.events) {
       const tr = document.createElement("tr");

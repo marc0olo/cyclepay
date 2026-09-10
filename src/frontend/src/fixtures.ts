@@ -500,21 +500,25 @@ export function installFixtures(host: FixtureHost): void {
       sweepInFlight: false,
       intervalNs: 600_000_000_000n,
     }),
-    // One page with a cursor, so the Load more control is visible rather than hidden by
-    // a fixture that happens to fit on one page.
-    audit_log: async (afterSeq: bigint | null, _limit: bigint) =>
-      afterSeq === undefined || afterSeq === null
+    // ⚠️ **NEWEST first, and the cursor walks into the PAST** — `beforeSeq`, the mirror of
+    // `audit_log`'s `afterSeq`. A fixture that returned ascending pages here would have
+    // made the panel look correct while the endpoint it calls does the opposite.
+    //
+    // Two pages, so the Load more control is visible rather than hidden by a fixture that
+    // happens to fit on one.
+    audit_log_recent: async (beforeSeq: bigint | null, _limit: bigint) =>
+      beforeSeq === undefined || beforeSeq === null
         ? {
             events: [
-              { seq: 1n, tag: "admin.granted", atNs: BigInt(Date.now() - 86_400_000) * 1_000_000n, detail: "granted to fo76k" },
-              { seq: 2n, tag: "secret.set", atNs: BigInt(Date.now() - 82_800_000) * 1_000_000n, detail: "generation 1" },
+              { seq: 4n, tag: "orders.recounted", atNs: BigInt(Date.now() - 600_000) * 1_000_000n, detail: "paid=1, delivered=0" },
               { seq: 3n, tag: "order.read", atNs: BigInt(Date.now() - 3_600_000) * 1_000_000n, detail: "9f3a0000000000000000000000000000" },
             ],
             nextCursor: 3n,
           }
         : {
             events: [
-              { seq: 4n, tag: "orders.recounted", atNs: BigInt(Date.now() - 600_000) * 1_000_000n, detail: "paid=1, delivered=0" },
+              { seq: 2n, tag: "secret.set", atNs: BigInt(Date.now() - 82_800_000) * 1_000_000n, detail: "generation 1" },
+              { seq: 1n, tag: "admin.granted", atNs: BigInt(Date.now() - 86_400_000) * 1_000_000n, detail: "granted to fo76k" },
             ],
             nextCursor: undefined,
           },

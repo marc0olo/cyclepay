@@ -282,6 +282,25 @@ mixin (
     AuditLog.page(auditLog, afterSeq, limit);
   };
 
+  /// **Admin: the audit trail, newest first** (#68).
+  ///
+  /// The same events `audit_log` returns, in the order an operator reads them: someone
+  /// opening the console wants what just happened, and the ascending view starts at the
+  /// first line ever written. Both exist because they answer different questions, and the
+  /// store stays ascending because an append-only log is.
+  ///
+  /// ⚠️ **The cursor is the MIRROR of `audit_log`'s.** `nextCursor` here is the oldest
+  /// `seq` in the page and is passed back as `beforeSeq` to walk further into the past;
+  /// there it is the newest, passed back as `afterSeq`. Same `Page` type, opposite
+  /// meanings. `AuditLog.recentPage` carries the reasoning and the unit tests pin it.
+  public shared query ({ caller }) func audit_log_recent(
+    beforeSeq : ?Nat,
+    limit : Nat,
+  ) : async AuditLog.Page {
+    ops.requireAdmin(caller);
+    AuditLog.recentPage(auditLog, beforeSeq, limit);
+  };
+
   /// Orders past `alertAfterNs` and still undelivered (admin, paged by #38).
   ///
   /// The worklist behind `operator_summary.deliveriesDelayed`: one entry per order,

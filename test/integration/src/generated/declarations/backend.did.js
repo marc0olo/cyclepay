@@ -496,6 +496,11 @@ export const idlFactory = ({ IDL }) => {
     'admins' : IDL.Func([], [IDL.Vec(IDL.Principal)], ['query']),
     'allowed_buyers' : IDL.Func([], [IDL.Vec(IDL.Principal)], ['query']),
     'audit_log' : IDL.Func([IDL.Opt(IDL.Nat), IDL.Nat], [Page__2], ['query']),
+    'audit_log_recent' : IDL.Func(
+        [IDL.Opt(IDL.Nat), IDL.Nat],
+        [Page__2],
+        ['query'],
+      ),
     'can_purchase' : IDL.Func([IDL.Nat], [Result_17], ['query']),
     'cancel_order' : IDL.Func([OrderId], [Result_16], []),
     'card_tiers' : IDL.Func([], [IDL.Vec(Tier)], ['query']),
