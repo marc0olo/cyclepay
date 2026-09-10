@@ -468,5 +468,29 @@ test.describe("layout agreement", () => {
     // (#38), and a mis-click must not spend one.
     await expect(page.locator("#lookup-result")).toBeHidden();
     await expect(page.locator("#lookup-id")).toBeFocused();
+
+    // ⚠️ The control carries no `:focus-visible` rule of its own -- it inherits the
+    // sheet's bare one. That is fine and it is also invisible to a reader, so assert the
+    // ring rather than trusting the cascade: an `outline: none` added for buttons
+    // anywhere would leave this the one control in the panel a keyboard cannot see.
+    //
+    // ⚠️ **Reached by keyboard, because `:focus-visible` is not a plain focus.** It is a
+    // heuristic the browser keys to how focus ARRIVED, so `el.focus()` from script
+    // leaves `outline-style: none` and an assertion built on it fails against perfectly
+    // good CSS. Shift+Tab from the input the click just focused walks back onto the
+    // button as a real keyboard interaction.
+    // Walk back rather than assume a distance: the row's "What this means" disclosure is
+    // focusable and sits between the button and the input, so one Shift+Tab lands there.
+    for (let i = 0; i < 8 && !(await fill.evaluate((el) => el === document.activeElement)); i++) {
+      await page.keyboard.press("Shift+Tab");
+    }
+    await expect(fill).toBeFocused();
+    const ring = await fill.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { visible: el.matches(":focus-visible"), style: cs.outlineStyle, width: cs.outlineWidth };
+    });
+    expect(ring.visible).toBe(true);
+    expect(ring.style).not.toBe("none");
+    expect(parseFloat(ring.width)).toBeGreaterThan(0);
   });
 });
