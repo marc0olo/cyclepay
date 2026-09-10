@@ -39,6 +39,11 @@ sha3 = "0.1.1"
 # `ExperimentalCycles.mo` before any of our own code is reached. `mo:base` is
 # deprecated and this is the one reason it appears here. Measured: removing the
 # pin reproduces `M0096` in a dependency.
+#
+# ⚠️ **Same trap as the zero-use-but-load-bearing IMPORTS noted above, one layer up.**
+# There the absence broke receiver resolution; here it breaks version resolution. Neither
+# leaves a `Module.` reference to warn whoever is tidying, and this one is worse in that
+# the failure surfaces inside a package nobody here wrote.
 base = "0.14.5"
 
 [toolchain]

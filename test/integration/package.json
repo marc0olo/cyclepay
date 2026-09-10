@@ -26,5 +26,8 @@
   },
   "allowScripts": {
     "@dfinity/pic@0.23.0": true
+  },
+  "overrides": {
+    "@icp-sdk/core": "$@icp-sdk/core"
   }
 }

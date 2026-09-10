@@ -75,9 +75,25 @@ module {
   /// The published `key_1` derivation fee, charged per call. Overpaying is refunded;
   /// underpaying is rejected outright, so this is attached exactly.
   ///
-  /// ~26.15 B cycles, about 3.5 US cents. Paid once per provisioning call and never on
-  /// the webhook or delivery path — which is what makes sealing affordable here and is
-  /// the reason #11 rejects deriving per use.
+  /// **Source:** the "VetKeys" section of
+  /// <https://docs.internetcomputer.org/references/cycles-cost-formulas> — 26_153_846_153
+  /// cycles, ~$0.0357. ⚠️ **A hardcoded figure needs somewhere to be re-checked against,
+  /// not just a plausible number**, which is why the URL is here rather than the
+  /// derivation. Fail-closed if it ever rises: the call is rejected and provisioning fails
+  /// visibly, so a stale constant cannot silently underpay.
+  ///
+  /// ⚠️ **The fee is set by the subnet HOLDING the key, not by ours** — `key_1` lives on
+  /// the 34-node fiduciary subnet. So it does not scale with this canister's node count,
+  /// and moving to the 7-node confidential subnet (#2) does not make it cheaper. That is
+  /// the opposite of how HTTPS-outcall pricing behaves, which is the reason to say it.
+  ///
+  /// ⚠️ **moc 1.16.0 supersedes this constant** with `Prim.costVetkdDeriveKey(keyName,
+  /// curve) : (resultCode : Nat32, costOrUndefined : Nat)` — the system's own figure,
+  /// which cannot go stale. This project is pinned to 1.15.1 — see #150, which also covers
+  /// what that upgrade does to the endpoint-doc invariant.
+  ///
+  /// Paid once per provisioning call and never on the webhook or delivery path — which is
+  /// what makes sealing affordable here, and the reason #11 rejects deriving per use.
   public let vetkdFee : Nat = 26_153_846_153;
 
   /// Why a provisioning call could not store a secret.
