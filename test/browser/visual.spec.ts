@@ -99,7 +99,16 @@ test.describe("visual baselines", () => {
     await expect(page).toHaveScreenshot("buy-light.png", shot);
   });
 
-  test("the delivered view, with the tour leading", async ({ page }) => {
+  // ⚠️ **Renamed: this shoots the CLI-LINKING PAGE, not the delivered order view.** The
+  // UX phase split the tour onto its own surface behind `#order-next-link`, so the old
+  // title described a shot it no longer takes. The old baseline shows the difference —
+  // it had the order id, the progress bar and STEP 3 OF 4 inline; this one is five steps
+  // on a page of its own.
+  //
+  // ⚠️ **The delivered ORDER view therefore has no pixel coverage** — the surface this
+  // test's own comment calls the one with the worst history in the repo. Filed, not
+  // quietly accepted.
+  test("the CLI-linking page, reached from a delivered order", async ({ page }) => {
     // The surface with the worst history in this repo: it shipped broken twice,
     // both times because nothing could reach it. It is also the one where paint
     // matters most — two shell commands the buyer has to read and copy exactly.
