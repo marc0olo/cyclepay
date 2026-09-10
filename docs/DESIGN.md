@@ -533,6 +533,22 @@ stands in for that is `scripts/check-crypto-vectors.sh`, which runs the port's 1
 — generated from the audited Rust implementations — in this project's gate under this
 project's toolchain. That is not an audit and does not pretend to be.
 
+⚠️ **The acceptance is DECIDED, and it is conditional on a check — not on the argument
+above.** Unaudited crypto on this path was accepted for this repository by its owner. What
+makes that safe to have decided is not the asymmetry, which is reasoning, but
+`scripts/check-crypto-vectors.sh`: 102 vectors from the audited Rust implementations, run
+in this project's gate under **this project's** toolchain pins. Upstream is a frozen proof
+of concept and our `moc` moves, so that combination is tested nowhere else.
+
+**So the check is load-bearing for the decision, and the failure mode is silent.** If it is
+ever deleted, or starts skipping, or stops collecting vectors, the acceptance rests on
+prose alone and nothing says so. The count floor and the abort-on-missing-submodule guard
+in that script exist for exactly that reason — a vacuous pass there is worse than a red
+gate. ⚠️ A **`moc` upgrade is the change most likely to surface this** (see the
+endpoint-doc inversion in #150): if a bump makes the vendored packages fail to compile, the
+tempting fix is to skip their suites and move on, which quietly removes the only thing
+standing behind this section.
+
 **Deletion criterion:** when `mo:ic-vetkeys` ships BLS12-381, the submodule and both path
 dependencies go, and this section becomes a note about what used to be here.
 
