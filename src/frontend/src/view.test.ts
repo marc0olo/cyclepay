@@ -31,13 +31,35 @@ describe("the dashboard's two records are one view with a tab", () => {
       { view: "buy" },
       { view: "history", tab: "orders" },
       { view: "history", tab: "ledger" },
-      { view: "admin" },
+      { view: "admin", tab: "now" },
+      { view: "admin", tab: "worklists" },
+      { view: "admin", tab: "orders" },
+      { view: "admin", tab: "diagnostics" },
+      { view: "admin", tab: "config" },
       { view: "order", orderId: "f22bd6dc4932a8480f3cee3669a48cc6" },
       { view: "cli" },
     ];
     for (const route of routes) {
       expect(parseRoute(routeHash(route))).toEqual(route);
     }
+  });
+
+  test("⚠️ the bare `#/admin` still means the default panel", () => {
+    // The header link, the RUNBOOK's printed hash and every test written before the
+    // panels existed all use the bare form. It must not become the landing page.
+    expect(parseRoute("#/admin")).toEqual({ view: "admin", tab: "now" });
+    expect(parseRoute("#/admin/now")).toEqual({ view: "admin", tab: "now" });
+    // And the default panel keeps the bare hash, so links stay canonical.
+    expect(routeHash({ view: "admin", tab: "now" })).toBe("#/admin");
+    expect(routeHash({ view: "admin", tab: "diagnostics" })).toBe("#/admin/diagnostics");
+  });
+
+  test("an unrecognised ADMIN panel falls back to the landing page", () => {
+    // Same rule as a mangled history tab: a bad URL shows the product rather than an
+    // empty console. Pinned because a typo'd panel silently meaning "now" would hide
+    // the mistake from whoever wrote the link.
+    expect(parseRoute("#/admin/typo")).toEqual({ view: "landing" });
+    expect(parseRoute("#/admin/")).toEqual({ view: "landing" });
   });
 
   test("an unrecognised tab falls back to the landing page, like every other bad hash", () => {

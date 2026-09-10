@@ -709,171 +709,365 @@
       <!-- The operator console (#68). Reached at #/admin only: no nav link, because a
            console entry point on a purchase page is noise for everyone who is not an
            operator. -->
+      <!-- The operator console (#68), in FIVE panels rather than one column.
+           NOTE: It used to stack all of this: identity, configuration, actions, then the
+           summary, then the worklists. Someone opening it mid-incident scrolled past
+           their own principal and a config table to reach "what needs a person". The
+           panels are ordered by what is needed first, and `now` is the default.
+
+           Tabs are LINKS with `aria-current`, not an ARIA tab widget. Same reasoning as
+           the dashboard's record tabs: faking `role="tab"` over a hash router gives the
+           keyboard two conflicting models and stops the URL describing the page. -->
       <section id="admin" class="view" hidden>
         <h2 class="section-h">Operator console</h2>
 
-        <section id="admin-identity">
-          <h3 class="section-h">This browser identity</h3>
-          <!-- Copyable because the sentence below literally says to send it to a
-               controller, and because `add_admin` takes it as an argument. Inline for
-               the same reason as the buyer's: `admin-link-command` below is the
-               command block on this panel, and two competing blocks read as two
-               instructions. -->
-          <p class="mono">
-            <code id="admin-principal"></code>
-            <button type="button" class="copy copy-inline" data-copy="admin-principal"
-                    aria-label="Copy this browser identity's principal">Copy</button>
-          </p>
-          <p id="admin-grant-state"></p>
-          <div id="admin-link" hidden>
+        <nav class="record-tabs" aria-label="Which part of the console to show">
+          <a id="atab-now" class="record-tab" href="#/admin">Now</a>
+          <!-- The count rides the TAB, so an operator sees there is work without
+               opening the panel. Empty and hidden when there is none: a "0" badge is
+               noise that trains you to ignore the badge. -->
+          <a id="atab-worklists" class="record-tab" href="#/admin/worklists">Worklists<span
+             id="atab-worklists-count" class="tab-count" hidden></span></a>
+          <a id="atab-orders" class="record-tab" href="#/admin/orders">Orders</a>
+          <a id="atab-diagnostics" class="record-tab" href="#/admin/diagnostics">Diagnostics</a>
+          <a id="atab-config" class="record-tab" href="#/admin/config">Configuration</a>
+        </nav>
+
+        <!-- ══ NOW ══ situational awareness, and nothing that takes an argument. -->
+        <div id="apanel-now" class="admin-panel">
+          <!-- The wait-versus-work distinction is carried by ORDER, HEADINGS and a token
+               colour, not by symbols: brand-lint bans pictographs in user-facing copy, and
+               the warning and tick glyphs that would otherwise do this job are pictographs.
+               So the groups say it in words, and the act group comes first.
+
+               Whether an operator can actually TELL THEM APART is a cascade-and-layout
+               property, so it is asserted in the Chromium suite. Note this comment itself
+               tripped the pictograph check: it reads all of index.html, comments included,
+               unlike the CSS check which strips them. -->
+          <section id="admin-summary">
+            <h3 class="section-h">Right now</h3>
+            <p id="summary-headline"></p>
+
+            <div class="summary-groups">
+              <section id="summary-act" class="summary-group">
+                <h4 class="summary-h">Needs a person</h4>
+                <p class="muted">Nothing in this group clears itself.</p>
+                <dl id="summary-act-figures" class="figures"></dl>
+              </section>
+
+              <section id="summary-wait" class="summary-group">
+                <h4 class="summary-h">In progress</h4>
+                <p class="muted">These clear on their own. Reading them is enough.</p>
+                <dl id="summary-wait-figures" class="figures"></dl>
+              </section>
+            </div>
+
+            <p id="summary-reserve" class="muted"></p>
+          </section>
+
+          <!-- Refusal counts are public and cheap, and they answer "is the gate turning
+               people away, and why". Seven counts against the gate's five reasons: railClosed
+               and stripeApiFailed refuse before an amount is considered. -->
+          <section id="admin-refusals">
+            <h3 class="section-h">Refusals since deploy</h3>
+            <table class="wl-table">
+              <thead>
+                <tr>
+                  <th scope="col" data-sort="text">Reason</th>
+                  <th scope="col" data-sort="number">Count</th>
+                  <th scope="col">What this means</th>
+                </tr>
+              </thead>
+              <tbody class="worklist-rows" id="refusal-rows"></tbody>
+            </table>
+          </section>
+        </div>
+
+        <!-- ══ WORKLISTS ══ the queues a person acts on.
+             The two that need a person first, then the two that clear themselves. Each
+             row carries its state's meaning inline, from the hint tables in operator.ts,
+             so the console does not send anyone to RUNBOOK mid-incident.
+
+             NOTE: TABLES rather than lists, with columns specific to each queue. An
+             operator triaging compares rows on one field (how long has this waited, how
+             many attempts), which a list of stacked paragraphs cannot support. Sortable
+             where a column is ordinal; NOT paginated, because every one of these is
+             bounded by the reserve (§5.4) and will hold single digits. -->
+        <div id="apanel-worklists" class="admin-panel" hidden>
+          <section id="admin-worklists">
+            <h3 class="section-h">Worklists</h3>
+            <p id="worklists-locked" class="muted" hidden></p>
+
+            <div id="worklists" hidden>
+              <section class="worklist" id="wl-orphans">
+                <h4 class="summary-h">Payments not attributed</h4>
+                <p class="muted">Needs a person: money we took and cannot attribute.</p>
+                <p class="muted" id="wl-orphans-empty" hidden>None.</p>
+                <table class="wl-table">
+                  <thead>
+                    <tr>
+                      <th scope="col" data-sort="text">Payment</th>
+                      <th scope="col" data-sort="text">What happened</th>
+                      <th scope="col">What this means</th>
+                    </tr>
+                  </thead>
+                  <tbody class="worklist-rows" id="wl-orphans-rows"></tbody>
+                </table>
+              </section>
+
+              <section class="worklist" id="wl-problems">
+                <h4 class="summary-h">Orders carrying a problem</h4>
+                <p class="muted">Needs a person: each is a named obligation on one order.</p>
+                <p class="muted" id="wl-problems-empty" hidden>None.</p>
+                <table class="wl-table">
+                  <thead>
+                    <tr>
+                      <th scope="col" data-sort="text">Order</th>
+                      <th scope="col" data-sort="text">Problem</th>
+                      <th scope="col">What this means</th>
+                    </tr>
+                  </thead>
+                  <tbody class="worklist-rows" id="wl-problems-rows"></tbody>
+                </table>
+              </section>
+
+              <section class="worklist wait" id="wl-delayed">
+                <h4 class="summary-h">Deliveries past the alert threshold</h4>
+                <p class="muted" id="wl-delayed-note"></p>
+                <p class="muted" id="wl-delayed-empty" hidden>None.</p>
+                <table class="wl-table">
+                  <thead>
+                    <tr>
+                      <th scope="col" data-sort="text">Order</th>
+                      <th scope="col" data-sort="number">Waiting</th>
+                      <th scope="col" data-sort="number">Attempts</th>
+                      <th scope="col">What this means</th>
+                    </tr>
+                  </thead>
+                  <tbody class="worklist-rows" id="wl-delayed-rows"></tbody>
+                </table>
+              </section>
+
+              <section class="worklist wait" id="wl-pending">
+                <h4 class="summary-h">Deliveries outstanding</h4>
+                <p class="muted" id="wl-pending-note"></p>
+                <p class="muted" id="wl-pending-empty" hidden>None.</p>
+                <table class="wl-table">
+                  <thead>
+                    <tr>
+                      <th scope="col" data-sort="text">Order</th>
+                      <th scope="col" data-sort="number">Attempts</th>
+                      <th scope="col" data-sort="text">Last error</th>
+                      <th scope="col">What this means</th>
+                    </tr>
+                  </thead>
+                  <tbody class="worklist-rows" id="wl-pending-rows"></tbody>
+                </table>
+              </section>
+            </div>
+          </section>
+        </div>
+
+        <!-- ══ ORDERS ══ the record, and lookup by id. -->
+        <div id="apanel-orders" class="admin-panel" hidden>
+          <!-- The whole order history, with the filters `admin_orders` already accepts.
+               Full Order records come back from that one call, so a row needs no follow-up
+               read: `admin_order` audits itself on every use and would flood the trail with
+               a line per page render. -->
+          <section id="admin-history">
+            <h3 class="section-h">Order history</h3>
+
+            <div id="history-filters">
+              <label for="filter-status">Status</label>
+              <select id="filter-status">
+                <option value="">Any</option>
+                <option value="created">created</option>
+                <option value="paid">paid</option>
+                <option value="delivered">delivered</option>
+                <option value="needsReview">needsReview</option>
+                <option value="abandoned">abandoned</option>
+                <option value="cancelled">cancelled</option>
+                <option value="expired">expired</option>
+              </select>
+              <label for="filter-problems">
+                <input type="checkbox" id="filter-problems" />
+                Only orders carrying an unresolved problem
+              </label>
+            </div>
+
+            <p id="admin-history-locked" class="muted" hidden></p>
+            <p id="admin-history-empty" class="muted" hidden>No orders match.</p>
+            <!-- Paginated for real: `admin_orders` takes `afterId` + `limit`, and this is
+                 the one operator list whose length is the order count rather than the
+                 outstanding work. Sorting is deliberately NOT offered here: it would sort
+                 the page in hand and read as sorting the record. -->
+            <table class="wl-table">
+              <thead>
+                <tr>
+                  <th scope="col">Order</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Cycles</th>
+                  <th scope="col">Paid</th>
+                  <th scope="col">Created</th>
+                  <th scope="col">What this means</th>
+                </tr>
+              </thead>
+              <tbody class="worklist-rows" id="admin-history-rows"></tbody>
+            </table>
+            <button type="button" id="admin-history-more" hidden>Load more</button>
+          </section>
+
+          <!-- NOTE: The two AUDITED reads, which had no surface at all: RUNBOOK reaches for
+               both by name when reconciling a Stripe charge against an order, and the only
+               route was an `icp canister call` typed by hand. They are updates so that the
+               read itself is audited (#38), which is exactly why they are behind a
+               deliberate button rather than fetched on panel open. One line in the audit
+               trail per render would make the trail useless. -->
+          <section id="admin-lookup">
+            <h3 class="section-h">Look up one order</h3>
             <p class="muted">
-              To run operator commands as this identity, link it to the CLI and use that
-              identity for the calls.
+              Reads the full record and its receipt. Each use writes a line to the audit
+              trail, on purpose, so run it when you mean to.
             </p>
-            <pre id="admin-link-command" class="mono"></pre>
-            <p class="muted" id="admin-link-note"></p>
-          </div>
-        </section>
+            <div class="lookup-row">
+              <label for="lookup-id">Order id</label>
+              <input type="text" id="lookup-id" inputmode="latin" autocomplete="off"
+                     placeholder="f22bd6dc4932a8480f3cee3669a48cc6" />
+              <button type="button" id="lookup-run">Look up</button>
+            </div>
+            <p id="lookup-state" class="muted" hidden></p>
+            <div id="lookup-result" hidden></div>
+            <!-- The delivery journal entry for the same id, fetched alongside: it is a
+                 per-order read (`delivery_journal(id)`), not a list, so this is where it
+                 belongs rather than on the diagnostics panel. -->
+            <dl id="lookup-journal" class="figures" hidden></dl>
+          </section>
+        </div>
 
-        <!-- The wait-versus-work distinction is carried by ORDER, HEADINGS and a token
-             colour, not by symbols: brand-lint bans pictographs in user-facing copy, and
-             the warning and tick glyphs that would otherwise do this job are pictographs.
-             So the groups say it in words, and the act group comes first.
+        <!-- ══ DIAGNOSTICS ══ read-only state the RUNBOOK asks for by name.
+             NOTE: None of this had a surface. `recovery_status` is named 18 times in RUNBOOK,
+             `orphan_depth` 7, `health` 6, and the only way to read any of them was an
+             `icp canister call` typed by hand, mid-incident. -->
+        <div id="apanel-diagnostics" class="admin-panel" hidden>
+          <!-- NOTE: `health()` returns a single BOOLEAN, not a per-subsystem report. Rendered
+               as one sentence rather than a figure list, because a `<dl>` with one row
+               implies there are others and invites someone to add a second reading that
+               the canister does not provide. -->
+          <section id="diag-health">
+            <h3 class="section-h">Health</h3>
+            <p id="diag-health-state">reading...</p>
+            <p class="muted">
+              The canister's own liveness answer, and the read to take before concluding
+              anything else is wrong. It says nothing about the rail being live. That is
+              the rail state on the Now panel.
+            </p>
+          </section>
 
-             Whether an operator can actually TELL THEM APART is a cascade-and-layout
-             property, so it is asserted in the Chromium suite. Note this comment itself
-             tripped the pictograph check: it reads all of index.html, comments included,
-             unlike the CSS check which strips them. -->
-        <!-- Configuration. NOTE: the console had no config surface at all before this:
-             nine setters existed and it showed the current value of none of them, nor
-             what any of them did. Reading the source was the only route to "what mode
-             is this gateway in".
+          <section id="diag-depths">
+            <h3 class="section-h">Queue depths</h3>
+            <p class="muted">
+              How much unresolved work exists, counted by the canister rather than by
+              paging through a list.
+            </p>
+            <dl id="diag-depth-figures" class="figures"></dl>
+          </section>
 
-             Each row is value + meaning + what changing it does + the bound the
-             canister enforces, and every field is documented in a table keyed on the
-             config record's own field names, so a new field cannot ship unexplained.
-             The command to change it is rendered beneath, pre-filled with the CURRENT
-             values, because the failure mode in these calls is transcription. -->
-        <section id="admin-config">
-          <h3 class="section-h">Configuration</h3>
-          <p class="muted">
-            What this gateway is set to, what each value does, and the command that
-            changes it. Edit the value in the command before running it.
-          </p>
-          <div id="config-groups"></div>
-        </section>
+          <section id="diag-recovery">
+            <h3 class="section-h">Recovery sweep</h3>
+            <p class="muted">
+              The index scan that repairs stranded orders: where it is, how long a full
+              cycle takes, and what the last completed one did.
+            </p>
+            <dl id="diag-recovery-figures" class="figures"></dl>
+            <p id="diag-recovery-drift" class="muted"></p>
+          </section>
 
-        <!-- The operator ACTIONS that take no row: each is one command, rendered
-             whole, with what it cannot undo beside it. The row-scoped ones
-             (abandon, record_delivered, resolve_problem, resolve_orphan) attach to
-             their worklist rows instead, where the arguments come from. -->
-        <section id="admin-actions">
-          <h3 class="section-h">Actions</h3>
-          <p class="muted">
-            Commands that take no argument from a row. Read what each one cannot undo
-            before running it.
-          </p>
-          <div id="action-list"></div>
-        </section>
+          <!-- NOTE: The one table here that GENUINELY needs paging. The audit log grows
+               without bound: a line per admin action, per audited read, forever, and the
+               canister already offers `afterSeq` + `limit`. Everything else on this panel
+               is bounded by the reserve or by a variant. -->
+          <section id="diag-audit">
+            <h3 class="section-h">Audit trail</h3>
+            <p class="muted">
+              Every operator action and audited read, oldest first within a page. This is
+              the only list here that grows without bound.
+            </p>
+            <p id="diag-audit-empty" class="muted" hidden>No entries yet.</p>
+            <table class="wl-table">
+              <thead>
+                <!-- NOTE: No "who" column: an audit `Event` is `{ seq, tag, atNs, detail }`
+                     and carries no principal. The actor is named inside `detail` where the
+                     writer put it, so a column would be empty on every row. -->
+                <tr>
+                  <th scope="col">Seq</th>
+                  <th scope="col">When</th>
+                  <th scope="col">What</th>
+                  <th scope="col">Detail</th>
+                </tr>
+              </thead>
+              <tbody id="diag-audit-rows"></tbody>
+            </table>
+            <button type="button" id="diag-audit-more" hidden>Load more</button>
+          </section>
+        </div>
 
-        <section id="admin-summary">
-          <h3 class="section-h">Right now</h3>
-          <p id="summary-headline"></p>
+        <!-- ══ CONFIGURATION ══ what you change rarely, and this browser's identity. -->
+        <div id="apanel-config" class="admin-panel" hidden>
+          <!-- Configuration. NOTE: the console had no config surface at all before this:
+               nine setters existed and it showed the current value of none of them, nor
+               what any of them did. Reading the source was the only route to "what mode
+               is this gateway in".
 
-          <div class="summary-groups">
-            <section id="summary-act" class="summary-group">
-              <h4 class="summary-h">Needs a person</h4>
-              <p class="muted">Nothing in this group clears itself.</p>
-              <dl id="summary-act-figures" class="figures"></dl>
-            </section>
+               Each row is value + meaning + what changing it does + the bound the
+               canister enforces, and every field is documented in a table keyed on the
+               config record's own field names, so a new field cannot ship unexplained.
+               The command to change it is rendered beneath, pre-filled with the CURRENT
+               values, because the failure mode in these calls is transcription. -->
+          <section id="admin-config">
+            <h3 class="section-h">Configuration</h3>
+            <p class="muted">
+              What this gateway is set to, what each value does, and the command that
+              changes it. Edit the value in the command before running it.
+            </p>
+            <div id="config-groups"></div>
+          </section>
 
-            <section id="summary-wait" class="summary-group">
-              <h4 class="summary-h">In progress</h4>
-              <p class="muted">These clear on their own. Reading them is enough.</p>
-              <dl id="summary-wait-figures" class="figures"></dl>
-            </section>
-          </div>
+          <!-- The operator ACTIONS that take no row: each is one command, rendered
+               whole, with what it cannot undo beside it. The row-scoped ones
+               (abandon, record_delivered, resolve_problem, resolve_orphan) attach to
+               their worklist rows instead, where the arguments come from. -->
+          <section id="admin-actions">
+            <h3 class="section-h">Actions</h3>
+            <p class="muted">
+              Commands that take no argument from a row. Read what each one cannot undo
+              before running it.
+            </p>
+            <div id="action-list"></div>
+          </section>
 
-          <p id="summary-reserve" class="muted"></p>
-        </section>
-
-        <!-- The four worklists, in the order an operator should read them: the two that
-             need a person first, then the two that clear themselves. Each carries its
-             state's meaning inline, from the hint tables in operator.ts, so the console
-             does not send anyone to RUNBOOK mid-incident. -->
-        <section id="admin-worklists">
-          <h3 class="section-h">Worklists</h3>
-          <p id="worklists-locked" class="muted" hidden></p>
-
-          <div id="worklists" hidden>
-            <section class="worklist" id="wl-orphans">
-              <h4 class="summary-h">Payments not attributed</h4>
-              <p class="muted">Needs a person: money we took and cannot attribute.</p>
-              <p class="muted" id="wl-orphans-empty" hidden>None.</p>
-              <ul class="worklist-rows" id="wl-orphans-rows"></ul>
-            </section>
-
-            <section class="worklist" id="wl-problems">
-              <h4 class="summary-h">Orders carrying a problem</h4>
-              <p class="muted">Needs a person: each is a named obligation on one order.</p>
-              <p class="muted" id="wl-problems-empty" hidden>None.</p>
-              <ul class="worklist-rows" id="wl-problems-rows"></ul>
-            </section>
-
-            <section class="worklist wait" id="wl-delayed">
-              <h4 class="summary-h">Deliveries past the alert threshold</h4>
-              <p class="muted" id="wl-delayed-note"></p>
-              <p class="muted" id="wl-delayed-empty" hidden>None.</p>
-              <ul class="worklist-rows" id="wl-delayed-rows"></ul>
-            </section>
-
-            <section class="worklist wait" id="wl-pending">
-              <h4 class="summary-h">Deliveries outstanding</h4>
-              <p class="muted" id="wl-pending-note"></p>
-              <p class="muted" id="wl-pending-empty" hidden>None.</p>
-              <ul class="worklist-rows" id="wl-pending-rows"></ul>
-            </section>
-          </div>
-        </section>
-
-        <!-- Refusal counts are public and cheap, and they answer "is the gate turning
-             people away, and why". Seven counts against the gate's five reasons: railClosed
-             and stripeApiFailed refuse before an amount is considered. -->
-        <section id="admin-refusals">
-          <h3 class="section-h">Refusals since deploy</h3>
-          <ul class="worklist-rows" id="refusal-rows"></ul>
-        </section>
-
-        <!-- The whole order history, with the filters `admin_orders` already accepts.
-             Full Order records come back from that one call, so a row needs no follow-up
-             read: `admin_order` audits itself on every use and would flood the trail with
-             a line per page render. -->
-        <section id="admin-history">
-          <h3 class="section-h">Order history</h3>
-
-          <div id="history-filters">
-            <label for="filter-status">Status</label>
-            <select id="filter-status">
-              <option value="">Any</option>
-              <option value="created">created</option>
-              <option value="paid">paid</option>
-              <option value="delivered">delivered</option>
-              <option value="needsReview">needsReview</option>
-              <option value="abandoned">abandoned</option>
-              <option value="cancelled">cancelled</option>
-              <option value="expired">expired</option>
-            </select>
-            <label for="filter-problems">
-              <input type="checkbox" id="filter-problems" />
-              Only orders carrying an unresolved problem
-            </label>
-          </div>
-
-          <p id="admin-history-locked" class="muted" hidden></p>
-          <p id="admin-history-empty" class="muted" hidden>No orders match.</p>
-          <ul class="worklist-rows" id="admin-history-rows"></ul>
-          <button type="button" id="admin-history-more" hidden>Load more</button>
-        </section>
+          <section id="admin-identity">
+            <h3 class="section-h">This browser identity</h3>
+            <!-- Copyable because the sentence below literally says to send it to a
+                 controller, and because `add_admin` takes it as an argument. Inline for
+                 the same reason as the buyer's: `admin-link-command` below is the
+                 command block on this panel, and two competing blocks read as two
+                 instructions. -->
+            <p class="mono">
+              <code id="admin-principal"></code>
+              <button type="button" class="copy copy-inline" data-copy="admin-principal"
+                      aria-label="Copy this browser identity's principal">Copy</button>
+            </p>
+            <p id="admin-grant-state"></p>
+            <div id="admin-link" hidden>
+              <p class="muted">
+                To run operator commands as this identity, link it to the CLI and use that
+                identity for the calls.
+              </p>
+              <pre id="admin-link-command" class="mono"></pre>
+              <p class="muted" id="admin-link-note"></p>
+            </div>
+          </section>
+        </div>
       </section>
 
     </main>

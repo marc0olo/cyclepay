@@ -46,6 +46,37 @@ const TIER_CYCLES = 3_500_000_000_000n;
 
 const state = {
   tiers: [{ id: "tier10", usdCents: TIER_CENTS }],
+  /// The diagnostics panel's reads (#68). None of these had a surface before, so none
+  /// had a mock either.
+  health: true,
+  problemDepth: { orders: 0n, unresolved: 0n },
+  orphanDepth: { retained: 0n, unresolved: 0n },
+  recoveryStatus: {
+    indexScan: {
+      chunkSize: 25n,
+      expectedFullCycleNs: 3_600_000_000_000n,
+      storedOrders: 12n,
+      inFlightCycle: { ordersRead: 3n, startedAtNs: 1_700_000_000_000_000_000n, repairs: 0n },
+      lastCompletedCycle: undefined as unknown,
+    },
+    lastCountReconcileAttemptNs: 0n,
+    lastCountReconcile: undefined as unknown,
+    lastReserveReconcileAttemptNs: 0n,
+    sweepInFlight: false,
+    intervalNs: 600_000_000_000n,
+  },
+  /// One audit page, and whether a second exists.
+  auditPage: {
+    events: [] as Array<{ seq: bigint; tag: string; atNs: bigint; detail: string }>,
+    nextCursor: undefined as bigint | undefined,
+  },
+  /// ⚠️ Counts every call to the three AUDITED reads, so a test can assert they are not
+  /// fired by opening a panel. Each call writes a line to the real audit trail, which is
+  /// exactly why the console puts them behind a button.
+  auditedReads: 0,
+  lookupOrder: undefined as unknown,
+  lookupReceipt: undefined as unknown,
+  lookupJournal: undefined as unknown,
   /// The simulation divisor `pricing_status` reports (#99). `1n` is production,
   /// which is what almost every test wants; the simulation-mode tests set it.
   divisor: 1n,
@@ -279,6 +310,23 @@ const typedStubs = {
     return state.problemOrders;
   },
   operator_summary: async () => state.operatorSummary,
+  health: async () => state.health,
+  problem_depth: async () => state.problemDepth,
+  orphan_depth: async () => state.orphanDepth,
+  recovery_status: async () => state.recoveryStatus as never,
+  audit_log: async (_after: bigint | null, _limit: bigint) => state.auditPage as never,
+  admin_order: async (_id: string) => {
+    state.auditedReads += 1;
+    return state.lookupOrder as never;
+  },
+  admin_receipt: async (_id: string) => {
+    state.auditedReads += 1;
+    return state.lookupReceipt as never;
+  },
+  delivery_journal: async (_id: string) => {
+    state.auditedReads += 1;
+    return state.lookupJournal as never;
+  },
   delivery_stats: async () => ({
     availableToSell: 775_000_000_000_000n,
     deliveredOrders: 0n,
@@ -1563,7 +1611,9 @@ describe("operator summary: wait versus work (#68)", () => {
 });
 
 describe("worklists (#68)", () => {
-  const rows = (id: string) => [...el(id).querySelectorAll("li")];
+  // ⚠️ `tr`, not `li`: the worklists are tables so an operator can compare rows on
+  // one column. The row still carries `data-urgency`, which the Chromium suite reads.
+  const rows = (id: string) => [...el(id).querySelectorAll("tr")];
   const granted = {
     caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
     granted: true,
@@ -1687,9 +1737,16 @@ describe("worklists (#68)", () => {
       },
     };
     await mount("landing", "#/admin");
+    // ⚠️ Asserted per CELL rather than on a joined string. "amountBelowMin: 4" used to be
+    // one text node and is now two columns — which is the point: a count in its own column
+    // can be sorted and compared down the table. Reading `textContent` of the tbody would
+    // pass on a row that rendered the reason and the count in the wrong cells.
+    // Still needed for the two assertions below, which are about the HINT text rather
+    // than about which cell a value landed in.
     const text = el("refusal-rows").textContent ?? "";
-    expect(text).toContain("amountBelowMin: 4");
-    expect(text).toContain("reserveShort: 2");
+    const asPairs = rows("refusal-rows").map((r) => [r.cells[0]?.textContent, r.cells[1]?.textContent]);
+    expect(asPairs).toContainEqual(["amountBelowMin", "4"]);
+    expect(asPairs).toContainEqual(["reserveShort", "2"]);
     // Zeroes are not news, so they are not rows.
     expect(text).not.toContain("railClosed");
     // ⚠️ reserveShort's hint names the step that actually gets forgotten.
@@ -1697,8 +1754,131 @@ describe("worklists (#68)", () => {
   });
 });
 
+describe("the operator console's panels (#68)", () => {
+  const granted = {
+    caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
+    granted: true,
+    isController: false,
+  };
+  const panels = ["apanel-now", "apanel-worklists", "apanel-orders", "apanel-diagnostics", "apanel-config"];
+  const visible = () => panels.filter((id) => !el(id).hidden);
+  const current = () =>
+    ["now", "worklists", "orders", "diagnostics", "config"].filter((t) =>
+      el(`atab-${t}`).hasAttribute("aria-current"),
+    );
+
+  test("the bare hash lands on Now, and exactly one panel owns the screen", async () => {
+    state.adminStatus = granted;
+    await mount("landing", "#/admin");
+    expect(visible()).toEqual(["apanel-now"]);
+    expect(current()).toEqual(["now"]);
+  });
+
+  test("each panel is reachable by its own hash", async () => {
+    state.adminStatus = granted;
+    for (const tab of ["worklists", "orders", "diagnostics", "config"]) {
+      await mount("landing", `#/admin/${tab}`);
+      expect(visible()).toEqual([`apanel-${tab}`]);
+      expect(current()).toEqual([tab]);
+    }
+  });
+
+  test("⚠️ opening a panel does NOT fire the audited reads", async () => {
+    // `admin_order`, `admin_receipt` and `delivery_journal` are updates so the read
+    // itself is audited (#38). One line in the trail per panel render would make the
+    // trail useless, which is why the lookup is behind a button. This is the assertion
+    // that keeps it that way.
+    //
+    // ⚠️ **What it catches, established by mutation:** a panel that performs an audited
+    // read on open fails this and the two tests below. What it does NOT catch is an eager
+    // `runLookup()` on open, because that short-circuits on the empty input before
+    // reaching the canister. That is not a gap: such a call spends no audited read, which
+    // is the property being defended. Stated because the obvious mutation is the one that
+    // passes, and reading it as vacuous would be the wrong conclusion.
+    state.adminStatus = granted;
+    state.auditedReads = 0;
+    for (const tab of ["now", "worklists", "orders", "diagnostics", "config"]) {
+      await mount("landing", tab === "now" ? "#/admin" : `#/admin/${tab}`);
+    }
+    expect(state.auditedReads).toBe(0);
+  });
+
+  test("the lookup fires them once, on demand, and reports a miss", async () => {
+    state.adminStatus = granted;
+    state.auditedReads = 0;
+    state.lookupOrder = undefined;
+    await mount("landing", "#/admin/orders");
+    (el("lookup-id") as HTMLInputElement).value = "abc123";
+    el("lookup-run").click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(state.auditedReads).toBe(3);
+    expect(el("lookup-state").textContent).toMatch(/No order with that id/);
+  });
+
+  test("an empty id is refused without spending an audited read", async () => {
+    state.adminStatus = granted;
+    state.auditedReads = 0;
+    await mount("landing", "#/admin/orders");
+    el("lookup-run").click();
+    await Promise.resolve();
+    expect(state.auditedReads).toBe(0);
+    expect(el("lookup-state").textContent).toMatch(/Enter an order id/);
+  });
+
+  test("⚠️ the tab count is the ACT lists only, and hides at zero", async () => {
+    // Counting the self-clearing lists would make the badge read "there is work" during
+    // normal operation, which is how a badge stops being read.
+    state.adminStatus = granted;
+    state.orphans = { entries: [], nextCursor: undefined } as never;
+    state.problemOrders = { orders: [], nextCursor: undefined } as never;
+    state.delayed = { entries: [{ orderId: "d1", waitedNs: 1n, retries: 1n, pastMaxHold: false, status: "paid" }], nextCursor: undefined } as never;
+    state.pending = [] as never;
+    await mount("landing", "#/admin/worklists");
+    const badge = el("atab-worklists-count");
+    expect(badge.hidden).toBe(true);
+    expect(badge.textContent).toBe("");
+  });
+
+  test("the diagnostics panel renders health, depths and the sweep", async () => {
+    state.adminStatus = granted;
+    state.health = false;
+    state.problemDepth = { orders: 3n, unresolved: 5n };
+    state.orphanDepth = { retained: 2n, unresolved: 1n };
+    await mount("landing", "#/admin/diagnostics");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(el("diag-health-state").textContent).toMatch(/NOT healthy/);
+    // Not colour alone: the data attribute is what the stylesheet keys weight off.
+    expect(el("diag-health-state").dataset.healthy).toBe("false");
+    const depths = el("diag-depth-figures").textContent ?? "";
+    expect(depths).toContain("5");
+    expect(el("diag-recovery-figures").textContent).toContain("12");
+  });
+
+  test("sorting a worklist column reorders the rows and marks the direction", async () => {
+    state.adminStatus = granted;
+    state.pending = [
+      { orderId: "aaa", retries: 7n, lastError: undefined, status: "paid" },
+      { orderId: "bbb", retries: 2n, lastError: undefined, status: "paid" },
+    ] as never;
+    await mount("landing", "#/admin/worklists");
+    const attempts = () =>
+      [...el("wl-pending-rows").querySelectorAll("tr")].map((r) => r.cells[1]?.textContent);
+    expect(attempts()).toEqual(["7", "2"]);
+
+    const header = el("wl-pending").querySelectorAll("th")[1] as HTMLElement;
+    header.click();
+    expect(attempts()).toEqual(["2", "7"]);
+    expect(header.getAttribute("aria-sort")).toBe("ascending");
+    header.click();
+    expect(attempts()).toEqual(["7", "2"]);
+    expect(header.getAttribute("aria-sort")).toBe("descending");
+  });
+});
+
 describe("order history (#68)", () => {
-  const rows = () => [...el("admin-history-rows").querySelectorAll("li")];
+  const rows = () => [...el("admin-history-rows").querySelectorAll("tr")];
   const granted = {
     caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
     granted: true,

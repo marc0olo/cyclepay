@@ -1344,6 +1344,122 @@ code.flow-detail {
   color: var(--icp-fg-muted);
 }
 
+/* ── the operator console's tables (#68) ──────────────────────────────────── */
+
+/* ⚠️ `.worklist-rows` is a <tbody> now, and `.worklist-row` a <tr>. The list reset above
+   is harmless on a tbody, but `padding-block` on a row does nothing: cell padding is the
+   only thing that spaces a table row, so it moves to the cells here. */
+.wl-table {
+  width: 100%;
+  border-collapse: collapse;
+  /* Long ids and error strings would otherwise force the page sideways. The table gets
+     its own scroll container rather than the document. */
+  display: block;
+  overflow-x: auto;
+}
+
+.wl-table thead th {
+  text-align: left;
+  font-family: var(--font-ui);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--icp-fg-secondary);
+  border-bottom: 1px solid var(--icp-rule);
+  padding: var(--space-2, 0.5rem) var(--space-3, 0.75rem) var(--space-2, 0.5rem) 0;
+  white-space: nowrap;
+}
+
+.wl-table td {
+  padding: var(--space-2, 0.5rem) var(--space-3, 0.75rem) var(--space-2, 0.5rem) 0;
+  vertical-align: top;
+}
+
+/* The row rule survives the move from <li> to <tr>: it is what separates one obligation
+   from the next when a cell wraps to two lines. */
+.wl-table tbody tr {
+  border-top: 1px solid var(--icp-rule);
+}
+
+/* A sortable header is a control, so it says so on hover and takes focus from the
+   keyboard through the delegated handler on the console. */
+.wl-table th[data-sort] {
+  cursor: pointer;
+  user-select: none;
+}
+
+.wl-table th[data-sort]:hover {
+  color: var(--icp-fg);
+}
+
+/* ⚠️ The sort direction is drawn with BORDERS, not a glyph: brand-lint bans pictographs
+   in user-facing copy and an arrow character is the obvious thing to reach for here.
+   `aria-sort` is the single source of truth, so what assistive tech reads and what is
+   drawn cannot drift. */
+.wl-table th[aria-sort] {
+  color: var(--icp-fg);
+}
+
+.wl-table th[aria-sort]::after {
+  content: "";
+  display: inline-block;
+  margin-left: var(--space-2, 0.5rem);
+  border-left: 0.28em solid transparent;
+  border-right: 0.28em solid transparent;
+}
+
+.wl-table th[aria-sort="ascending"]::after {
+  border-bottom: 0.34em solid currentColor;
+}
+
+.wl-table th[aria-sort="descending"]::after {
+  border-top: 0.34em solid currentColor;
+}
+
+/* The count that rides the Worklists tab. Hidden at zero by the renderer, so this never
+   styles an empty badge. */
+.tab-count {
+  display: inline-block;
+  margin-left: var(--space-2, 0.5rem);
+  padding: 0 0.4em;
+  border-radius: 999px;
+  background: var(--icp-accent);
+  color: var(--icp-bg, #fff);
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Forced-colours mode drops the accent fill, which would leave the count unreadable on
+   its own background. A border keeps it a badge. */
+@media (forced-colors: active) {
+  .tab-count {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+}
+
+.lookup-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2, 0.5rem);
+  margin-block: var(--space-3, 0.75rem);
+}
+
+.lookup-row input {
+  font-family: var(--font-mono);
+  flex: 1 1 22rem;
+  min-width: 0;
+}
+
+/* ⚠️ Not colour alone: an unhealthy canister is the one reading on this panel someone
+   might act on, so it gets weight as well. */
+#diag-health-state[data-healthy="false"] {
+  font-weight: 600;
+  color: var(--icp-fg);
+}
+
 /* ── the configuration surface (#97) ──────────────────────────────────────── */
 
 .config-group {

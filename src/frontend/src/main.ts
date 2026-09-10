@@ -57,7 +57,7 @@ import {
   parseIcEnvCookies,
   resolveLiveBackendId,
 } from "./ic-env";
-import { type View, type Route, type HistoryTab, parseRoute, routeHash } from "./view";
+import { type View, type Route, type HistoryTab, type AdminTab, parseRoute, routeHash } from "./view";
 import {
   RATE_LOCK_NOTE,
   formatAgo,
@@ -330,6 +330,45 @@ function renderRecordTabs(tab: HistoryTab): void {
   }
 }
 
+/// Show one console panel and mark which tab is selected.
+///
+/// ⚠️ **Same contract as `renderRecordTabs`, including the `aria-current` handling:** set
+/// or removed, never written as `"false"`, because `aria-current="false"` still reads as
+/// present to some assistive tech and would announce every tab as current. The stylesheet
+/// keys weight and rule off the same attribute, so the highlight is never colour alone.
+function renderAdminTabs(tab: AdminTab): void {
+  for (const [name, panel] of ADMIN_PANELS) {
+    show(panel, name === tab);
+    const node = document.getElementById(`atab-${name}`);
+    if (node === null) continue;
+    if (name === tab) node.setAttribute("aria-current", "true");
+    else node.removeAttribute("aria-current");
+  }
+}
+
+/// ⚠️ **A tuple list, not a `Record`, so the ORDER is the tab order** — and the order is
+/// the design: `now` first because that is what an incident needs, `config` last because
+/// it is what you touch rarely.
+const ADMIN_PANELS: ReadonlyArray<readonly [AdminTab, string]> = [
+  ["now", "apanel-now"],
+  ["worklists", "apanel-worklists"],
+  ["orders", "apanel-orders"],
+  ["diagnostics", "apanel-diagnostics"],
+  ["config", "apanel-config"],
+];
+
+/// The count that rides the Worklists tab.
+///
+/// ⚠️ **Hidden at zero rather than showing "0".** A badge that is always present trains an
+/// operator to stop reading it, which defeats the reason it exists — seeing that there is
+/// work without opening the panel.
+function renderWorklistCount(n: number): void {
+  const node = document.getElementById("atab-worklists-count");
+  if (node === null) return;
+  node.hidden = n === 0;
+  node.textContent = n === 0 ? "" : String(n);
+}
+
 /// One ledger transaction, in the buyer's terms.
 ///
 /// ⚠️ **Direction is computed from the ACCOUNTS, not from the kind.** A `transfer` is
@@ -581,6 +620,8 @@ let currentView: View = "landing";
 /// Which dashboard record is showing. Mirrors the hash, so a reload or a Back lands
 /// on the same panel rather than snapping to the default.
 let currentHistoryTab: HistoryTab = "orders";
+/// Which console panel is showing. Mirrors `currentHistoryTab`.
+let currentAdminTab: AdminTab = "now";
 /// Orders this principal has, so the header link can hide when there are none.
 let orderCount = 0;
 
@@ -637,8 +678,13 @@ function renderView(): void {
   // to load would leave a visitor arriving from the dashboard on a blank screen.
   show("view-cli", onCli);
   if (effective === "admin") {
+    renderAdminTabs(currentAdminTab);
     renderAdminIdentity();
     renderOperatorSummary();
+    // ⚠️ Per-panel, for the same reason the ledger list is: reads for a panel nobody
+    // opened are work with no reader — and two of these WRITE to the audit trail, so
+    // fetching them eagerly would fill it with lines nobody asked for.
+    if (currentAdminTab === "diagnostics") void loadDiagnostics();
   }
   if (effective === "history") {
     // The balance is above the tabs and belongs to neither record, so it loads either
@@ -1127,6 +1173,266 @@ function figureRow(into: HTMLElement, label: string, value: bigint): void {
   into.append(dt, dd);
 }
 
+/// One figure row whose value is text rather than a count.
+///
+/// ⚠️ Separate from `figureRow` on purpose: that one sets `data-zero`, which the Chromium
+/// suite reads to check a non-zero count is visually distinguishable from a zero. A
+/// duration or a principal has no zero, and tagging one would make that assertion
+/// meaningless.
+function textFigureRow(into: HTMLElement, label: string, value: string): void {
+  const dt = document.createElement("dt");
+  dt.textContent = label;
+  const dd = document.createElement("dd");
+  dd.textContent = value;
+  into.append(dt, dd);
+}
+
+/// The diagnostics panel: the reads RUNBOOK asks for by name, none of which had a surface.
+///
+/// ⚠️ **Fetched only when the panel is open** (see `applyRoute`). `audit_log` is the one
+/// list here that grows without bound, so it pages; everything else is a fixed-shape
+/// record or is bounded by a variant.
+async function loadDiagnostics(): Promise<void> {
+  const state = document.getElementById("diag-health-state");
+  const depths = document.getElementById("diag-depth-figures");
+  const recovery = document.getElementById("diag-recovery-figures");
+  const drift = document.getElementById("diag-recovery-drift");
+  if (!state || !depths || !recovery || !drift) return;
+
+  try {
+    const [healthy, problems, orphans, rec] = await Promise.all([
+      backend.health(),
+      backend.problem_depth(),
+      backend.orphan_depth(),
+      backend.recovery_status(),
+    ]);
+
+    // ⚠️ Says what it does and does NOT cover. "Healthy" beside a closed rail would read
+    // as "the gateway is selling", which this boolean does not claim.
+    state.textContent = healthy
+      ? "The canister answers healthy."
+      : "The canister reports NOT healthy. Read the queue depths and the sweep below.";
+    state.dataset.healthy = healthy ? "true" : "false";
+
+    depths.replaceChildren();
+    figureRow(depths, "Orders carrying a problem", problems.orders);
+    figureRow(depths, "Unresolved problems", problems.unresolved);
+    figureRow(depths, "Payments retained", orphans.retained);
+    figureRow(depths, "Unresolved payments", orphans.unresolved);
+
+    recovery.replaceChildren();
+    const scan = rec.indexScan;
+    figureRow(recovery, "Orders stored", scan.storedOrders);
+    figureRow(recovery, "Orders read this cycle", scan.inFlightCycle.ordersRead);
+    figureRow(recovery, "Repairs this cycle", scan.inFlightCycle.repairs);
+    textFigureRow(
+      recovery,
+      "A full cycle takes",
+      formatDuration(nsToMillis(scan.expectedFullCycleNs)),
+    );
+    const done = scan.lastCompletedCycle;
+    textFigureRow(
+      recovery,
+      "Last completed cycle",
+      done === undefined
+        ? "none yet (the first cycle is still running)"
+        : `${formatAgo(nsToMillis(done.completedAtNs), Date.now())}` +
+          `, ${done.ordersRead} read, ${done.repairs} repaired`,
+    );
+
+    // ⚠️ Drift is the reconcile disagreeing with the maintained count, which is the one
+    // reading here that means something is actually wrong rather than merely slow.
+    const last = rec.lastCountReconcile;
+    if (last === undefined) {
+      drift.textContent = "The count reconcile has not completed a pass yet.";
+    } else if (last.drift.length === 0 && last.refused.length === 0) {
+      drift.textContent =
+        `Last reconcile ${formatAgo(nsToMillis(last.atNs), Date.now())}: ` +
+        `${last.ordersRead} orders read, no drift.`;
+    } else {
+      const parts: string[] = [];
+      for (const d of last.drift) parts.push(`${d.status} was ${d.was}, is ${d.is}`);
+      const shown = parts.join("; ");
+      drift.textContent =
+        `Last reconcile ${formatAgo(nsToMillis(last.atNs), Date.now())} found drift: ${shown}.` +
+        (last.refused.length === 0 ? "" : ` ${last.refused.length} refused.`);
+    }
+
+    auditCursor = null;
+    await loadAuditPage(true);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("could not read the diagnostics", error);
+    state.textContent = "The diagnostics could not be read. They are admin-gated.";
+  }
+}
+
+/// Cursor for the next audit page; `null` means "from the start".
+let auditCursor: bigint | null = null;
+
+/// One page of the audit trail.
+///
+/// ⚠️ **The only genuinely paginated table in the console.** The trail gains a line per
+/// operator action and per audited read and never loses one, so it is the one list whose
+/// length is neither bounded by the reserve nor by a variant.
+async function loadAuditPage(reset: boolean): Promise<void> {
+  const rows = document.getElementById("diag-audit-rows");
+  const empty = document.getElementById("diag-audit-empty");
+  const more = document.getElementById("diag-audit-more");
+  if (!rows || !empty || !more) return;
+
+  try {
+    const page = await backend.audit_log(auditCursor, 25n);
+    if (reset) rows.replaceChildren();
+    for (const event of page.events) {
+      const tr = document.createElement("tr");
+      for (const text of [
+        event.seq.toString(),
+        formatAgo(nsToMillis(event.atNs), Date.now()),
+        event.tag,
+        event.detail,
+      ]) {
+        const td = document.createElement("td");
+        td.textContent = text;
+        tr.append(td);
+      }
+      rows.append(tr);
+    }
+    auditCursor = page.nextCursor ?? null;
+    more.hidden = page.nextCursor === undefined;
+    empty.hidden = rows.children.length > 0;
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("could not read the audit trail", error);
+    empty.hidden = false;
+    empty.textContent = "The audit trail could not be read. It is admin-gated.";
+  }
+}
+
+/// Look up one order by id: the record, its receipt, and its delivery journal entry.
+///
+/// ⚠️ **Behind a button, deliberately, because two of these three reads are UPDATES that
+/// audit themselves** (#38). Fetching them when the panel opens would write a line to the
+/// trail per render and make the trail useless — which is the same reason `admin_order` is
+/// excluded from the console's command table rather than rendered as a command.
+async function runLookup(): Promise<void> {
+  const input = document.getElementById("lookup-id");
+  const state = document.getElementById("lookup-state");
+  const result = document.getElementById("lookup-result");
+  const journal = document.getElementById("lookup-journal");
+  if (!(input instanceof HTMLInputElement) || !state || !result || !journal) return;
+
+  const id = input.value.trim();
+  state.hidden = false;
+  result.hidden = true;
+  journal.hidden = true;
+  if (id === "") {
+    state.textContent = "Enter an order id.";
+    return;
+  }
+  state.textContent = "Reading...";
+
+  try {
+    // All three in one go: an operator asking about an order wants the record and what
+    // was delivered, and three sequential round trips would show the panel filling in.
+    const [order, receipt, entry] = await Promise.all([
+      backend.admin_order(id),
+      backend.admin_receipt(id),
+      backend.delivery_journal(id),
+    ]);
+
+    if (order === undefined || order === null) {
+      state.textContent =
+        "No order with that id. Check the payment reference on the Now panel's " +
+        "unattributed payments, which is where an id that never became an order shows up.";
+      return;
+    }
+
+    state.hidden = true;
+    result.hidden = false;
+    const figures = document.createElement("dl");
+    figures.className = "figures";
+    textFigureRow(figures, "Status", order.status);
+    textFigureRow(figures, "Cycles locked", `${formatCycles(order.lockedCycles)} cycles`);
+    textFigureRow(
+      figures,
+      "Paid",
+      order.paidUsdCents === undefined ? "not paid" : formatUsdCents(order.paidUsdCents),
+    );
+    textFigureRow(
+      figures,
+      "Created",
+      formatAgo(nsToMillis(order.createdAtNs), Date.now()),
+    );
+    textFigureRow(
+      figures,
+      "Unresolved problems",
+      String(order.problems.filter((pr) => pr.resolvedAtNs === undefined).length),
+    );
+    textFigureRow(
+      figures,
+      "Receipt",
+      receipt === undefined || receipt === null ? "none" : "available",
+    );
+    result.replaceChildren(figures);
+
+    // The journal entry is the delivery half of the same question: whether a transfer was
+    // attempted, how often, and which ledger block settled it.
+    journal.replaceChildren();
+    if (entry === undefined || entry === null) {
+      journal.hidden = false;
+      textFigureRow(journal, "Delivery journal", "no entry: nothing has been attempted");
+    } else {
+      journal.hidden = false;
+      textFigureRow(journal, "Delivery attempts", String(entry.retries));
+      textFigureRow(
+        journal,
+        "Ledger block",
+        entry.blockIndex === undefined ? "not settled" : entry.blockIndex.toString(),
+      );
+      textFigureRow(journal, "Last error", entry.lastError ?? "none");
+    }
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("could not look up the order", error);
+    state.textContent = "That read was refused. It is admin-gated and audited.";
+  }
+}
+
+/// Sort one table by a column, in place.
+///
+/// ⚠️ **Client-side and deliberately so: these tables hold what is in front of you.** The
+/// worklists are bounded by the reserve (§5.4), so the rows on screen are all the rows
+/// there are and sorting them sorts the queue. The order history is the one table where
+/// that is NOT true — a page is a page — so its headers carry no `data-sort` and this
+/// never attaches to them.
+function sortTableBy(table: HTMLTableElement, index: number, kind: string): void {
+  const body = table.tBodies[0];
+  if (body === undefined) return;
+  const header = table.tHead?.rows[0]?.cells[index];
+  // Third click is not "unsorted": there is no meaningful original order to return to
+  // once the rows have moved, so it toggles.
+  const descending = header?.getAttribute("aria-sort") === "ascending";
+
+  const rows = [...body.rows];
+  rows.sort((a, b) => {
+    const x = a.cells[index]?.textContent ?? "";
+    const y = b.cells[index]?.textContent ?? "";
+    // ⚠️ `number` parses the LEADING number out of the cell, so "3" and "2 h 14 m" both
+    // sort by magnitude rather than by string order, where "10" precedes "9".
+    if (kind === "number") {
+      const nx = Number.parseFloat(x) || 0;
+      const ny = Number.parseFloat(y) || 0;
+      return descending ? ny - nx : nx - ny;
+    }
+    return descending ? y.localeCompare(x) : x.localeCompare(y);
+  });
+  body.append(...rows);
+
+  for (const cell of table.tHead?.rows[0]?.cells ?? []) cell.removeAttribute("aria-sort");
+  header?.setAttribute("aria-sort", descending ? "descending" : "ascending");
+}
+
 function renderOperatorSummary(): void {
   const headline = document.getElementById("summary-headline");
   const act = document.getElementById("summary-act-figures");
@@ -1183,21 +1489,32 @@ function renderOperatorSummary(): void {
 /// problems four) and per SECTION where it does not (both delivery lists are one state).
 /// A single section-level hint on a mixed list would describe the first row and mislead
 /// about the rest.
-function worklistRow(into: HTMLElement, title: string, detail: string, hint: Hint): void {
-  const li = document.createElement("li");
-  li.className = "worklist-row";
-  li.dataset.urgency = hint.urgency;
+/// One worklist row, as a table row.
+///
+/// ⚠️ **Cells are passed as an ARRAY so each queue can have its own columns**, which is
+/// the point of the tables: an operator triaging compares rows on one field — how long
+/// this has waited, how many attempts it has had — and four stacked paragraphs per row
+/// cannot support that. The header row in `index.html` is the contract; a mismatch shows
+/// as a short row rather than failing, so the count is asserted in the tests.
+///
+/// The hint always occupies the LAST cell, collapsed. A list of twenty stays scannable and
+/// the meaning is one click away rather than in another window.
+///
+/// ⚠️ `data-urgency` stays on the row: the wait-versus-act distinction is carried by token
+/// colour there, and the Chromium suite asserts an operator can tell them apart.
+function worklistRow(into: HTMLElement, cells: readonly string[], hint: Hint): void {
+  const tr = document.createElement("tr");
+  tr.className = "worklist-row";
+  tr.dataset.urgency = hint.urgency;
 
-  const head = document.createElement("p");
-  head.className = "worklist-title";
-  head.textContent = title;
+  for (const [i, text] of cells.entries()) {
+    const td = document.createElement("td");
+    // The first cell identifies the row, so it carries the emphasis the old title had.
+    if (i === 0) td.className = "worklist-title";
+    td.textContent = text;
+    tr.append(td);
+  }
 
-  const sub = document.createElement("p");
-  sub.className = "muted worklist-detail";
-  sub.textContent = detail;
-
-  // Collapsed, so a list of twenty stays scannable and the meaning is one click away
-  // rather than in another window.
   const why = document.createElement("details");
   const summary = document.createElement("summary");
   summary.textContent = "What this means";
@@ -1207,9 +1524,11 @@ function worklistRow(into: HTMLElement, title: string, detail: string, hint: Hin
   then.className = "worklist-then";
   then.textContent = hint.then;
   why.append(summary, means, then);
+  const last = document.createElement("td");
+  last.append(why);
+  tr.append(last);
 
-  li.append(head, sub, why);
-  into.append(li);
+  into.append(tr);
 }
 
 function fillWorklist(rowsId: string, emptyId: string, fill: (into: HTMLElement) => number): void {
@@ -1268,15 +1587,19 @@ async function loadWorklists(): Promise<void> {
       backend.pending_deliveries(),
     ]);
 
+    // ⚠️ The badge counts the two ACT lists only. Including the self-clearing ones would
+    // make it read "there is work" during normal operation, which is how a badge stops
+    // being read at all — the same reason it hides at zero.
+    let needsAPerson = 0;
     fillWorklist("wl-orphans-rows", "wl-orphans-empty", (into) => {
       for (const entry of orphans.entries) {
         worklistRow(
           into,
-          `Payment ${entry.id}`,
-          entry.detail,
+          [`Payment ${entry.id}`, entry.detail],
           ORPHAN_KIND_HINTS[entry.kind.__kind__],
         );
       }
+      needsAPerson += orphans.entries.length;
       return orphans.entries.length;
     });
 
@@ -1289,13 +1612,13 @@ async function loadWorklists(): Promise<void> {
           if (problem.resolvedAtNs !== undefined) continue;
           worklistRow(
             into,
-            `${shortPrincipal(order.id)}: ${problem.kind.__kind__}`,
-            problem.detail,
+            [shortPrincipal(order.id), problem.kind.__kind__, problem.detail],
             PROBLEM_KIND_HINTS[problem.kind.__kind__],
           );
           n += 1;
         }
       }
+      needsAPerson += n;
       return n;
     });
 
@@ -1303,10 +1626,12 @@ async function loadWorklists(): Promise<void> {
       for (const entry of delayed.entries) {
         worklistRow(
           into,
-          shortPrincipal(entry.orderId),
-          `waiting ${formatDuration(nsToMillis(entry.waitedNs))}` +
-            `, ${entry.retries} attempt(s)` +
-            (entry.pastMaxHold ? ", past the max hold" : ""),
+          [
+            shortPrincipal(entry.orderId),
+            formatDuration(nsToMillis(entry.waitedNs)) +
+              (entry.pastMaxHold ? " · past the max hold" : ""),
+            String(entry.retries),
+          ],
           ORDER_STATUS_HINTS[entry.status],
         );
       }
@@ -1317,14 +1642,17 @@ async function loadWorklists(): Promise<void> {
       for (const entry of pending) {
         worklistRow(
           into,
-          shortPrincipal(entry.orderId),
-          `${entry.retries} attempt(s)` +
-            (entry.lastError === undefined ? "" : `, last error: ${entry.lastError}`),
+          [
+            shortPrincipal(entry.orderId),
+            String(entry.retries),
+            entry.lastError ?? "none",
+          ],
           ORDER_STATUS_HINTS[entry.status],
         );
       }
       return pending.length;
     });
+    renderWorklistCount(needsAPerson);
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error("could not read the worklists", error);
@@ -1353,7 +1681,7 @@ async function loadRefusals(): Promise<void> {
   for (const tag of Object.keys(REFUSAL_HINTS) as RefusalTag[]) {
     const n = counts.counts[tag];
     if (n === 0n) continue;
-    worklistRow(rows, `${tag}: ${n}`, "", REFUSAL_HINTS[tag]);
+    worklistRow(rows, [tag, String(n)], REFUSAL_HINTS[tag]);
   }
 }
 
@@ -1405,10 +1733,13 @@ async function loadAdminOrders(append = false): Promise<void> {
       const hint = ORDER_STATUS_HINTS[order.status];
       worklistRow(
         rows,
-        `${shortPrincipal(order.id)}: ${order.status}`,
-        `${formatCycles(order.lockedCycles)} cycles` +
-          (order.paidUsdCents === undefined ? "" : `, ${formatUsdCents(order.paidUsdCents)}`) +
-          `, created ${formatAgo(nsToMillis(order.createdAtNs), Date.now())}`,
+        [
+          shortPrincipal(order.id),
+          order.status,
+          `${formatCycles(order.lockedCycles)} cycles`,
+          order.paidUsdCents === undefined ? "not paid" : formatUsdCents(order.paidUsdCents),
+          formatAgo(nsToMillis(order.createdAtNs), Date.now()),
+        ],
         hint,
       );
     }
@@ -1460,6 +1791,7 @@ function applyRoute(route: Route): void {
 
   currentView = route.view;
   if (route.view === "history") currentHistoryTab = route.tab;
+  if (route.view === "admin") currentAdminTab = route.tab;
   if (route.view === "admin") {
     // Worklists depend on the grant, so they follow the status read rather than racing it.
     void loadAdminStatus().then(async () => {
@@ -3244,6 +3576,37 @@ async function init(): Promise<void> {
   }
   const more = document.getElementById("admin-history-more");
   if (more) more.onclick = () => void loadAdminOrders(true);
+
+  const auditMore = document.getElementById("diag-audit-more");
+  if (auditMore) auditMore.onclick = () => void loadAuditPage(false);
+
+  const lookup = document.getElementById("lookup-run");
+  if (lookup) lookup.onclick = () => void runLookup();
+  const lookupId = document.getElementById("lookup-id");
+  // Enter submits, because typing an id and reaching for the mouse is the wrong shape
+  // for the one control on this panel.
+  if (lookupId instanceof HTMLInputElement) {
+    lookupId.onkeydown = (event) => {
+      if (event.key === "Enter") void runLookup();
+    };
+  }
+
+  // ⚠️ **Delegated on the console, not bound per header.** The worklist bodies are
+  // replaced on every refresh, and a listener bound to a header would survive that while
+  // one bound per row would not — delegation keeps sorting working across a reload of the
+  // data without re-binding anything.
+  const console_ = document.getElementById("admin");
+  if (console_) {
+    console_.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const header = target.closest("th[data-sort]");
+      if (!(header instanceof HTMLTableCellElement)) return;
+      const table = header.closest("table");
+      if (!(table instanceof HTMLTableElement)) return;
+      sortTableBy(table, header.cellIndex, header.dataset.sort ?? "text");
+    });
+  }
 
   el("history-link").onclick = () => {
     // The anchor already sets the hash; this only stops a same-hash click from

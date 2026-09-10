@@ -47,6 +47,24 @@ export type View =
 /// models (arrow keys vs. Back) and the URL stops describing the page.
 export type HistoryTab = "orders" | "ledger";
 
+/// Which panel of the operator console owns the screen.
+///
+/// ⚠️ **Ordered by what an operator needs FIRST, not by what was built first.** The
+/// console previously stacked all of it in one column: identity, configuration, actions,
+/// then the summary, then the worklists. Someone opening it during an incident scrolled
+/// past their own principal and a configuration table to reach "what needs a person".
+///
+///   `now`          is anything wrong, and how bad — the landing panel
+///   `worklists`    the queues a person acts on
+///   `orders`       the record, and lookup by id
+///   `diagnostics`  read-only state the RUNBOOK asks for by name
+///   `config`       what you change rarely, plus this browser's identity
+///
+/// ⚠️ **A TAB, not a view, for the same reason as `HistoryTab`** — and links with
+/// `aria-current` rather than an ARIA tab widget, so the URL keeps describing the page
+/// and the keyboard has one model instead of two.
+export type AdminTab = "now" | "worklists" | "orders" | "diagnostics" | "config";
+
 /// A parsed location hash.
 export type Route =
   | { view: "landing" }
@@ -59,7 +77,7 @@ export type Route =
   /// unreachable from the dashboard, where there is no one order to name.
   | { view: "cli" }
   | { view: "history"; tab: HistoryTab }
-  | { view: "admin" };
+  | { view: "admin"; tab: AdminTab };
 
 /// Parse `window.location.hash`.
 ///
@@ -79,7 +97,12 @@ export function parseRoute(hash: string): Route {
     return { view: "history", tab: "orders" };
   }
   if (clean === "history/ledger") return { view: "history", tab: "ledger" };
-  if (clean === "admin") return { view: "admin" };
+  // ⚠️ The bare form must keep meaning the default panel: `#/admin` is what the header
+  // link points at, what the RUNBOOK prints, and what every test written before the
+  // panels existed uses.
+  if (clean === "admin" || clean === "admin/now") return { view: "admin", tab: "now" };
+  const adminTab = /^admin\/(worklists|orders|diagnostics|config)$/.exec(clean);
+  if (adminTab) return { view: "admin", tab: adminTab[1] as AdminTab };
   if (clean === "cli") return { view: "cli" };
   const order = /^order\/([a-zA-Z0-9-]+)$/.exec(clean);
   if (order) return { view: "order", orderId: order[1]! };
@@ -96,7 +119,8 @@ export function routeHash(route: Route): string {
       // The default tab keeps the bare hash, so existing links stay canonical.
       return route.tab === "ledger" ? "#/history/ledger" : "#/history";
     case "admin":
-      return "#/admin";
+      // The default panel keeps the bare hash, so existing links stay canonical.
+      return route.tab === "now" ? "#/admin" : `#/admin/${route.tab}`;
     case "order":
       return `#/order/${route.orderId}`;
     case "cli":
