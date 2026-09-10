@@ -2,6 +2,9 @@ import { describe, expect, test } from "vitest";
 import { Principal } from "@icp-sdk/core/principal";
 import { COMMANDS, renderCall, irreversibleNote, type CommandMethod } from "./candid";
 import { ProblemKindTag } from "./bindings/backend";
+import { IDL } from "@icp-sdk/core/candid";
+import { idlFactory } from "./bindings/declarations/backend.did.js";
+import type { Backend } from "./actor";
 
 /// A minimal Candid **text** reader, for the one assertion #97 actually asks for:
 /// that the rendered command PARSED equals the tuple the backend expects.
@@ -285,5 +288,89 @@ describe("the parser this suite relies on", () => {
     expect(() => parseCandid("(record { a = })")).toThrow();
     expect(() => parseCandid("(1) trailing")).toThrow();
     expect(() => parseCandid("1")).toThrow();
+  });
+  /// ⚠️ **A renderer can accept the right arguments and emit the wrong number, and
+  /// nothing above catches it.** `Renderer<M> = (...args: Parameters<Backend[M]>) =>
+  /// string` constrains the SIGNATURE, not the string it returns:
+  ///
+  ///     abandon_order: { args: (id, _reason) => `${text(id)}` }
+  ///
+  /// type-checks clean, and the only test that failed did so incidentally, because it
+  /// happened to pass two arguments to that one method. A renderer without that accident
+  /// would drop an argument in a command an operator pastes into a live canister.
+  ///
+  /// The method NAME is genuinely safe, and for a reason worth stating precisely:
+  /// `Parameters<Backend[M]>` forces every `CommandMethod` to be a real method, and
+  /// `renderCall` interpolates the key rather than a hand-typed string. So the pair is
+  /// "the name is typed, the arity is asserted" -- and this is the second half.
+  describe("every command emits the arity its method declares", () => {
+    /// ⚠️ Read from the GENERATED bindings, never transcribed. A table of expected
+    /// arities here would be a restatement that agrees with itself: it would have to be
+    /// edited by whoever changed the signature, which is exactly the person who would
+    /// forget. Transcribing it by regex also gets it wrong -- `recount_orders` and
+    /// `resolve_problem` wrap onto several lines and read as 1 and 1 rather than 0 and 3.
+    const declared = new Map(
+      (idlFactory({ IDL }) as unknown as {
+        _fields: [string, { argTypes: readonly unknown[] }][];
+      })._fields.map(([name, func]) => [name, func.argTypes.length]),
+    );
+
+    /// One valid call per command. TypeScript checks each tuple against
+    /// `Parameters<Backend[M]>`, so this table cannot drift from the interface either --
+    /// a changed signature fails to compile here before it fails to assert.
+    const SAMPLES: { [M in CommandMethod]: Parameters<Backend[M]> } = {
+      set_pricing_config: [{
+        feeBps: 290n,
+        feeFixedCents: 30n,
+        maxAgeNs: 300_000_000_000n,
+        maxRateDeltaBps: 5_000n,
+        minRateSources: 2n,
+        divisor: 1n,
+      }],
+      set_gate_config: [{
+        maxOpenOrdersPerPrincipal: 1n,
+        minCanisterCycles: 5_000_000_000_000n,
+        minPurchaseUsdCents: 1_000n,
+        maxPurchaseUsdCents: 10_000n,
+      }],
+      set_delivery_config: [{ alertAfterNs: 7_200_000_000_000n, maxHoldNs: 259_200_000_000_000n }],
+      set_card_tiers: [[]],
+      set_expected_livemode: [null],
+      set_stripe_origin: ["https://example.com"],
+      set_recovery_interval: [3_600_000_000_000n],
+      add_allowed_buyer: [Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai")],
+      remove_allowed_buyer: [Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai")],
+      add_admin: [Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai")],
+      remove_admin: [Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai")],
+      abandon_order: ["abc123", "the buyer asked"],
+      record_delivered: ["abc123", 16_383_351n],
+      resolve_problem: ["abc123", ProblemKindTag.duplicate, null],
+      resolve_orphan: [42n],
+      process_order: ["abc123"],
+      expire_order: ["abc123"],
+      refresh_reserve: [],
+      refresh_rates: [],
+      recount_orders: [],
+      withdraw_reserve: [],
+    };
+
+    test("⚠️ the table covers every command, so a new one cannot skip this", () => {
+      // `Record<CommandMethod, …>` already makes a missing entry a compile error. This
+      // asserts the other direction: that the loop below actually visits all of them,
+      // rather than passing because `COMMANDS` and `SAMPLES` are both empty of some key.
+      expect(Object.keys(SAMPLES).sort()).toEqual(Object.keys(COMMANDS).sort());
+      expect(Object.keys(SAMPLES).length).toBeGreaterThanOrEqual(21);
+    });
+
+    for (const method of Object.keys(SAMPLES) as CommandMethod[]) {
+      test(`${method} emits every argument it declares`, () => {
+        const want = declared.get(method);
+        // Non-vacuous: an absent method would make `toBe(undefined)` pass against a
+        // renderer that emits nothing.
+        expect(want, `${method} is not in the generated bindings`).toBeTypeOf("number");
+        const emitted = parseCandid(argsOf(renderCall(method, ...SAMPLES[method]))) as unknown[];
+        expect(emitted.length, `${method} emitted ${emitted.length} of ${want}`).toBe(want);
+      });
+    }
   });
 });

@@ -163,4 +163,51 @@ test.describe("visual baselines", () => {
     await settleForShot(page);
     await expect(page).toHaveScreenshot("buy-dark.png", shot);
   });
+  /// ⚠️ **The console had no pixel coverage, and it is where the paint defects came
+  /// from.** Three shipped in the panels' first commit: a tab badge reading 3 beside a
+  /// headline reading 5, a refused diagnostics read leaving four headings over nothing,
+  /// and an id lookup contradicting the row directly above it. All three are AGREEMENT
+  /// bugs -- every element individually correct and individually asserted -- which is
+  /// exactly the class an element assertion cannot see and a picture can. Nothing but
+  /// someone looking again stood between the next three and a release.
+  ///
+  /// One shot per panel, because the defects were spread across three of the five, and
+  /// the tab strip (where the badge lives) is in all of them.
+  const ADMIN_PANELS = [
+    ["now", "summary, reserve and refusals", "#admin-summary"],
+    ["worklists", "the four queues as tables", "#apanel-worklists .wl-table"],
+    ["orders", "paged history and the id lookup", "#admin-lookup"],
+    ["diagnostics", "health, depths, the sweep and the audit trail", "#diagnostics-body"],
+    ["config", "config groups, the commands and this identity", "#apanel-config"],
+  ] as const;
+
+  for (const [panel, what, ready] of ADMIN_PANELS) {
+    test(`the console: ${panel} — ${what}`, async ({ page }) => {
+      await page.goto("/");
+      await useFixtureBackend(page);
+      await signInAsFixtureBuyer(page);
+      await page.goto(`/#/admin/${panel}`);
+      await expect(page.locator(`#apanel-${panel}`)).toBeVisible();
+      // Shoot the loaded panel, not a half-populated one. `diag-locked` is the
+      // refusal path, and a shot of it would pin the defect rather than the fix.
+      await expect(page.locator(ready).first()).toBeVisible();
+      await settleForShot(page);
+      await expect(page).toHaveScreenshot(`admin-${panel}-light.png`, shot);
+    });
+  }
+
+  test("the console: now, dark", async ({ page }) => {
+    // One dark shot of the default panel. Dark is where a token that was never defined
+    // outside a light block shows up as one flat unreadable block, and the console has
+    // the most surfaces per screen of anything here.
+    await page.goto("/");
+    await useFixtureBackend(page);
+    await signInAsFixtureBuyer(page);
+    await page.locator("#theme-toggle").click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    await page.goto("/#/admin/now");
+    await expect(page.locator("#admin-summary")).toBeVisible();
+    await settleForShot(page);
+    await expect(page).toHaveScreenshot("admin-now-dark.png", shot);
+  });
 });

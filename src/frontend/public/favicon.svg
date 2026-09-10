@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="cyclepay">
+  <!-- The hero figure's own vocabulary: a step ring with the travelling pulse sitting
+       in its gap. The accent tile stays #a8482b in both themes, because a brand mark
+       is one colour wherever it appears, and a solid accent reads on a light or a dark
+       browser tab alike. -->
+  <rect width="32" height="32" rx="7" fill="#a8482b"/>
+  <!-- Centred at 16.75 rather than 16: the bead reaches higher than the ring does low,
+       so centring the RING leaves the mark looking top heavy. This centres the mark. -->
+  <circle cx="16" cy="16.75" r="8.75" fill="none" stroke="#faf9f5" stroke-width="3"/>
+  <!-- Knocked out in the tile colour so the bead reads as a bead and not a bulge in
+       the stroke. At 16px the two merge into one lump without it, and the bead is kept
+       close to the stroke width for the same reason. -->
+  <circle cx="16" cy="8" r="5" fill="#a8482b"/>
+  <circle cx="16" cy="8" r="3.1" fill="#faf9f5"/>
+</svg>

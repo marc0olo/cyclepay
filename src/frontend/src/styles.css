@@ -1663,3 +1663,23 @@ code.flow-detail {
 .orders-table {
   width: 100%;
 }
+
+/* The order-history id, as a control. ⚠️ It has to LOOK interactive: the panel's whole
+   loop is "see the row, look it up", and a monospace id that happens to be clickable
+   reads as text. So the accent is its RESTING state and hover adds the underline.
+   Keyboard focus needs no rule here: the bare `:focus-visible` selector above gives
+   every focusable element the accent outline, and nothing in this sheet suppresses it.
+   `layout.spec.ts` asserts that ring rather than trusting the cascade. */
+.id-fill {
+  font-family: var(--font-mono);
+  font-size: inherit;
+  color: var(--icp-accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.id-fill:hover {
+  text-decoration: underline;
+}

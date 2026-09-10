@@ -67,7 +67,7 @@ jobs:
       # change walks past — and this is the third time CI has been found running a weaker
       # configuration than the local gate (after `mops-version: 2` and check-bindings).
       #
-      # Placed after the `.did` step deliberately: four of them read that file, so they
+      # Placed after the `.did` step deliberately: five of them read that file, so they
       # are only meaningful once it is known current. `scripts/sweep-vocabulary.py` is
       # deliberately absent — it is advisory by design and reads a diff against
       # origin/main, which this checkout does not have.
@@ -79,6 +79,7 @@ jobs:
           scripts/check-config-readers.py
           scripts/check-admin-tiers.py
           scripts/check-admin-commands.py
+          scripts/check-doc-calls.py
           scripts/check-design-sections.py
           scripts/check-unused-exports.py
           scripts/check-main-doc-comments.py

@@ -1477,8 +1477,21 @@ function renderOperatorSummary(): void {
   act.replaceChildren();
   figureRow(act, "Orders under review", s.ordersNeedingReview);
   figureRow(act, "Payments not attributed", s.orphansUnresolved);
-  figureRow(act, "Open problems", s.problemsUnresolved);
-  figureRow(act, "Orders carrying a problem", s.ordersWithProblems);
+  // ⚠️ **`ordersWithProblems` is the SAME problems grouped by order, so it goes ON this
+  // row rather than beside it as a fourth.** As its own row the group read
+  // 1 + 2 + 2 + 1 = 6 above a headline of 5: correct arithmetic, because `owed` must not
+  // count one problem set twice, and a disagreement to anyone who reads the list. The
+  // rows in this group now sum to `owed` exactly, which is the only way a reader can
+  // check the headline at all.
+  figureRow(
+    act,
+    s.ordersWithProblems === 0n
+      ? "Open problems"
+      : s.ordersWithProblems === 1n
+        ? "Open problems, on 1 order"
+        : `Open problems, on ${s.ordersWithProblems} orders`,
+    s.problemsUnresolved,
+  );
 
   wait.replaceChildren();
   figureRow(wait, "Deliveries outstanding", s.deliveriesOutstanding);
@@ -1532,7 +1545,12 @@ function renderOperatorSummary(): void {
 ///
 /// ⚠️ `data-urgency` stays on the row: the wait-versus-act distinction is carried by token
 /// colour there, and the Chromium suite asserts an operator can tell them apart.
-function worklistRow(into: HTMLElement, cells: readonly string[], hint: Hint): void {
+function worklistRow(
+  into: HTMLElement,
+  cells: readonly string[],
+  hint: Hint,
+  fillId?: string,
+): void {
   const tr = document.createElement("tr");
   tr.className = "worklist-row";
   tr.dataset.urgency = hint.urgency;
@@ -1541,7 +1559,28 @@ function worklistRow(into: HTMLElement, cells: readonly string[], hint: Hint): v
     const td = document.createElement("td");
     // The first cell identifies the row, so it carries the emphasis the old title had.
     if (i === 0) td.className = "worklist-title";
-    td.textContent = text;
+    // ⚠️ **With `fillId`, the identifying cell becomes a BUTTON that loads the lookup
+    // below.** Without it the panel could not complete its own loop: the cell shows a
+    // TRUNCATED id, the field under it asks for 32 hex characters, and there was no copy
+    // control and no click target between them. An operator looking straight at the row
+    // they wanted had nowhere to get its id from.
+    //
+    // A button rather than a click handler on the row: it is keyboard reachable, it
+    // announces itself, and it does not fire when someone opens "What this means".
+    //
+    // ⚠️ It FILLS and focuses; it does not run. `admin_order` is an update so that the
+    // read is audited (#38), and a mis-click must not spend one.
+    if (i === 0 && fillId !== undefined) {
+      const fill = document.createElement("button");
+      fill.type = "button";
+      fill.className = "id-fill";
+      fill.textContent = text;
+      fill.dataset.orderId = fillId;
+      fill.title = "Put this id in the lookup below";
+      td.append(fill);
+    } else {
+      td.textContent = text;
+    }
     tr.append(td);
   }
 
@@ -1764,6 +1803,7 @@ async function loadAdminOrders(append = false): Promise<void> {
           formatAgo(nsToMillis(order.createdAtNs), Date.now()),
         ],
         hint,
+        order.id,
       );
     }
     historyCursor = page.nextCursor ?? null;
@@ -3606,6 +3646,20 @@ async function init(): Promise<void> {
   const lookup = document.getElementById("lookup-run");
   if (lookup) lookup.onclick = () => void runLookup();
   const lookupId = document.getElementById("lookup-id");
+  // Delegated, because the rows are replaced on every page of the history and a listener
+  // per row would be rebound each time. Same shape as the sort listener above.
+  const ordersPanel = document.getElementById("apanel-orders");
+  if (ordersPanel) {
+    ordersPanel.addEventListener("click", (event) => {
+      const fill = (event.target as HTMLElement | null)?.closest(".id-fill");
+      if (!(fill instanceof HTMLElement)) return;
+      const id = fill.dataset.orderId;
+      if (id === undefined || !(lookupId instanceof HTMLInputElement)) return;
+      lookupId.value = id;
+      // Focus rather than run: the lookup is an audited read, so the operator confirms.
+      lookupId.focus();
+    });
+  }
   // Enter submits, because typing an id and reaching for the mouse is the wrong shape
   // for the one control on this panel.
   if (lookupId instanceof HTMLInputElement) {

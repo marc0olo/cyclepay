@@ -1565,7 +1565,18 @@ describe("operator summary: wait versus work (#68)", () => {
     // grouping exists to prevent: one is waiting, the other is owed an answer.
     expect(act["Orders under review"]).toBe("2");
     expect(act["Payments not attributed"]).toBe("1");
-    expect(act["Open problems"]).toBe("3");
+    // ⚠️ `ordersWithProblems` (2 here) qualifies this row rather than being a fourth
+    // one. As its own row the group summed to 8 beside a headline of 6 -- right, since
+    // `owed` must not count one problem set twice, and a contradiction to anyone who
+    // adds the list up.
+    expect(act["Open problems, on 2 orders"]).toBe("3");
+    expect(act["Orders carrying a problem"]).toBeUndefined();
+    // ⚠️ **The invariant, and the reason the row moved: this group SUMS to the
+    // headline.** Nothing else checks that, and it is the only way an operator can tell
+    // the headline is not lying.
+    const owed = Object.values(act).reduce((n, v) => n + Number(v), 0);
+    expect(owed).toBe(6);
+    expect(el("summary-headline").textContent).toBe("6 things need a person.");
     expect(wait["Deliveries outstanding"]).toBe("7");
     expect(wait["Deliveries past the alert threshold"]).toBe("4");
     // And neither group carries the other's figures.
@@ -1603,9 +1614,7 @@ describe("operator summary: wait versus work (#68)", () => {
     };
     await mount("landing", "#/admin");
     const dds = [...el("summary-act-figures").querySelectorAll("dd")];
-    expect(dds.map((d) => (d as HTMLElement).dataset.zero)).toEqual([
-      "true", "false", "true", "true",
-    ]);
+    expect(dds.map((d) => (d as HTMLElement).dataset.zero)).toEqual(["true", "false", "true"]);
     // ⚠️ This is a DATA attribute, not evidence an operator can see a difference. That
     // claim needs cascade and layout, so it is asserted in the Chromium suite.
   });
