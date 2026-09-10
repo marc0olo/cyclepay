@@ -194,7 +194,7 @@ def main() -> int:
     declared = did_arities(DID.read_text())
     if not declared:
         sys.exit(f"ABORT: no methods found in {DID} — cannot pass vacuously")
-    problems, checked, templated, bare = [], 0, 0, []
+    problems, checked, templated, out_of_band, bare = [], 0, 0, 0, []
 
     for name in TARGETS:
         path = Path(name)
@@ -207,6 +207,15 @@ def main() -> int:
                 problems.append(f"{name}:{line}  {method} is not in the .did")
                 continue
             if arg is None:
+                # ⚠️ **`--args-file` supplies the argument out of band**, so the call is
+                # complete and its arity is not checkable from the text. This is the only
+                # way to pass a SEALED secret: the ciphertext is a blob written by the
+                # sealer, and putting it on the command line is the exposure sealing
+                # exists to close. Found by this check flagging RUNBOOK §1a's own
+                # `set_stripe_api_key --args-file` line as argument-less.
+                if "--args-file" in raw:
+                    out_of_band += 1
+                    continue
                 # A `%s`, a `$VAR` or a `<placeholder>` anywhere in the span means the
                 # argument is templated rather than missing -- a printf that prints the
                 # command for a human to fill in, most often.
@@ -232,7 +241,7 @@ def main() -> int:
 
     print(
         f"{len(declared)} methods in the .did; {checked} literal call(s) checked, "
-        f"{templated} templated, {len(bare)} bare"
+        f"{templated} templated, {out_of_band} via --args-file, {len(bare)} bare"
     )
     # ⚠️ **The floor.** Without it, a scanner that matches nothing reports a pass.
     if checked < MIN_CHECKED:

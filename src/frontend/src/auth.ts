@@ -11,6 +11,7 @@
 // URL to build against. Test-only: production leaves it unset and gets mainnet II.
 import { AuthClient } from "@icp-sdk/auth/client";
 import type { Identity } from "@icp-sdk/core/agent";
+import { derivationOrigin } from "./config";
 
 const EIGHT_HOURS_NS = 8n * 3_600_000_000_000n;
 
@@ -41,9 +42,20 @@ function identityProvider(): string {
 }
 
 const IDENTITY_PROVIDER = identityProvider();
+const DERIVATION_ORIGIN = derivationOrigin();
 
+/// ⚠️ **`derivationOrigin` is what keeps a buyer's principal the same on every domain
+/// this app is ever served from.** Without it II derives from the serving origin, so
+/// `cyclepay.raymondk.co` and the canister URL are two different accounts with two
+/// different cycles balances — and moving to a production domain later would strand
+/// every principal. `config.ts` explains why it is the canister origin and not the
+/// domain; II verifies the claim against `/.well-known/ii-alternative-origins` served
+/// from that origin, so the serving domain must be listed there or sign-in is refused.
+///
+/// `undefined` locally, where II is served from the same origin.
 const authClient = new AuthClient({
   identityProvider: IDENTITY_PROVIDER,
+  ...(DERIVATION_ORIGIN ? { derivationOrigin: DERIVATION_ORIGIN } : {}),
 });
 
 export async function signIn(): Promise<Identity> {

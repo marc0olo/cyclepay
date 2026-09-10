@@ -502,7 +502,11 @@ list.
 
 **One number is the whole switch: `pricing_status().config.divisor`.** `1` is
 production; anything greater is simulation, and the mode signal, the banner and the
-receipt's extra terms all key off that same value. There is deliberately no second
+receipt's extra terms all key off that same value.
+
+This section is the mechanism and the guards. The ordered deployment procedure -- the
+confidential subnet, the custom domain, sealed secrets on mainnet, and the four one-way
+steps -- is **`RUNBOOK.md` section 1a**. There is deliberately no second
 boolean — one that disagreed with the divisor would let two places answer "are we
 simulating?" differently.
 

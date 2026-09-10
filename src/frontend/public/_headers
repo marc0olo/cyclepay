@@ -29,3 +29,18 @@
 # every navigation, short enough that a brand change is not stuck in caches for a year.
 /favicon.svg
   Cache-Control: public, max-age=86400
+
+# ⚠️ Internet Identity fetches this and parses it as JSON, and the file has no extension,
+# so nothing infers a type for it. The bare `Content-Type:` form sets the asset's stored
+# media type rather than adding a response header.
+#
+# It is served from the DERIVATION origin (the canister URL, see src/frontend/src/config.ts)
+# and lists every domain allowed to derive principals from it. A serving domain missing
+# from this list has its sign-in refused by II, not silently given a different principal.
+/.well-known/ii-alternative-origins
+  Content-Type: application/json
+
+# The custom-domain claim the boundary nodes read. `.well-known/` is uploaded by the
+# static-site plugin automatically; every other dot-path is skipped.
+/.well-known/ic-domains
+  Content-Type: text/plain
