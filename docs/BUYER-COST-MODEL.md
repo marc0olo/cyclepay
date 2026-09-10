@@ -25,15 +25,15 @@ CONSUMED  protocol creation fee, 2 canisters    1.000 T   $1.37
                                                 1.336 T   $1.83
 ```
 
-Delivered cycles are directly spendable on this: delivery is an `icrc1_transfer` on the
-**cycles ledger**, and `icp canister create` funds from the cycles ledger by default —
-`--with-icp` is the alternative that routes through the CMC instead.
-
 ⚠️ **`--cycles` defaults to `2000000000000`, documented only in `icp canister create
 --help`.** `icp deploy` inherits it silently, so a buyer who never reads that flag still
 needs 2 T per canister. It is the largest number in the model. Those cycles are not *spent*
 — they land in the canister as its balance and remain the buyer's — but they must be held to
 create the canister at all.
+
+Delivered cycles are directly spendable on this: delivery is an `icrc1_transfer` on the
+**cycles ledger**, and `icp canister create` funds from the cycles ledger by default —
+`--with-icp` is the alternative that routes through the CMC instead.
 
 Two weeks rather than a month consumes ~1.16 T; the upfront figure does not move, because
 creation does not scale with duration. After a month the two canisters still hold about
