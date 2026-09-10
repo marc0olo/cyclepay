@@ -13,15 +13,22 @@ import Pricing "../src/backend/Pricing";
 /// in the table was wrong and nothing in the doc could have caught it.
 ///
 /// So the numbers a reader acts on are asserted here against `Pricing.feeCents` and
-/// `Pricing.cyclesForCents`, and any change to the fee config or the formula fails this
-/// suite with the tier that moved.
+/// `Pricing.cyclesForCents`, and the fee constants are compared to `Pricing.defaultConfig()`
+/// rather than merely restated — so a change to either the formula or the configuration
+/// fails this suite with the tier that moved.
 ///
 /// ⚠️ **What this does NOT pin.** The cost side — creation fee, storage rate, ingress bytes
 /// — has no oracle in this repo: those are the IC's published prices, and the doc cites the
 /// source. This covers the half that *is* ours.
 
-/// `Pricing.defaultConfig()`'s fee, restated so a change there fails here loudly rather
-/// than silently re-basing every figure in the document.
+/// `Pricing.defaultConfig()`'s fee, restated so the expected figures below are readable
+/// without chasing a constant.
+///
+/// ⚠️ **A restatement on its own is BLINDNESS, not a safeguard** — it is pinned to
+/// `defaultConfig()` by the first test in the suite. Without that comparison, changing
+/// `Pricing.defaultConfig()` to 320/50 leaves all 765 unit tests green while every figure
+/// in `docs/BUYER-COST-MODEL.md` and both propagations in `Gate.mo` silently re-base: $5
+/// would buy 3.160 T at a 13.2% fee share and $10 6.684 T at 8.2%. Measured.
 let fee = { feeBps = 290; feeFixedCents = 30 };
 
 /// A rate pair encoding the real XDR/USD rate the document quotes: 1 XDR = $1.373470, so
@@ -46,6 +53,18 @@ func cycles(grossCents : Nat) : Nat {
 let UPFRONT_2_CANISTERS = 4_000_000_000_000;
 
 suite("docs/BUYER-COST-MODEL.md — the fee arithmetic is this canister's", func() {
+  test("⚠️ the restated fee IS `Pricing.defaultConfig()`'s", func() {
+    // The load-bearing assertion of this file. Everything below computes expected figures
+    // from `fee`, so without this the suite would verify the formula against a literal
+    // nobody else uses and report green while the deployed configuration moved.
+    //
+    // ⚠️ Nothing else in the repo pins these two constants — `test/pricing.test.mo` also
+    // restates them beside a `Pricing.defaultConfig()` call without comparing the two — so
+    // this is the only place a config change is caught.
+    assert Pricing.defaultConfig().feeBps == fee.feeBps;
+    assert Pricing.defaultConfig().feeFixedCents == fee.feeFixedCents;
+  });
+
   test("⚠️ $5 nets 455 cents, not 456 — feeCents CEILINGS the bps part", func() {
     // (500 × 290 + 9_999) / 10_000 = 15, not the 14 that flooring gives. $5 is the only
     // tier in the table where the two disagree, which is why a floored transcription of

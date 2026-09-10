@@ -87,9 +87,12 @@ Using the canister's own integer fee arithmetic (`feeBps` 290, `feeFixedCents` 3
 
 ⚠️ **`Pricing.feeCents` CEILINGS the basis-point part** — `(gross × bps + 9_999) / 10_000` —
 so $5 nets 455¢ rather than the 456¢ a floored reading gives. $5 is the only tier where the
-two differ. `test/buyer-cost.test.mo` asserts every figure in this table against
-`Pricing.feeCents` and `Pricing.cyclesForCents`, so a change to the fee config fails there
-with the tier that moved.
+two differ.
+
+`test/buyer-cost.test.mo` asserts every figure in this table against `Pricing.feeCents` and
+`Pricing.cyclesForCents`, and compares the fee constants to `Pricing.defaultConfig()`. So a
+**formula** change fails there with the tier that moved, and a **configuration** change
+fails the comparison — which is the only place in the repo those two constants are pinned.
 
 At $10 the buyer holds ~5.5 T across wallet and canisters after the first month — roughly
 sixteen further months of the same three-deploys-a-day pattern.
