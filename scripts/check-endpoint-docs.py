@@ -306,14 +306,23 @@ def main():
 
     published = published_docs(open(DID).read())
     written = written_docs(files)
-    # ⚠️ **Cannot pass vacuously.** Since moc 1.16.0 every endpoint's doc is published, so
-    # an empty map means an older compiler or a scan that stopped matching — either of
-    # which would compare nothing and report a clean run.
-    if not published:
+    # ⚠️ **A FLOOR, not an emptiness test, and the difference is the whole guard.**
+    # `if not published` fires only when every doc disappears. Lose 30 of 62 and the
+    # comparison would run over the surviving 32, report "all 32 match", and pass — with
+    # half the interface's documentation gone and `undocumented()` blind to it, because it
+    # reads only the source. Same shape as `MIN_VECTORS` in check-crypto-vectors.sh.
+    #
+    # ⚠️ **A floor rather than `len(published) == total`.** `ENDPOINT` also matches a plain
+    # `public func` in a mixin, so equality would quietly couple this guard to "no
+    # non-shared public func lives in a mixin" — true at 62/62 today, and not a property
+    # this check should start enforcing by accident.
+    MIN_PUBLISHED = 55
+    if len(published) < MIN_PUBLISHED:
         sys.exit(
-            f"ABORT: {DID} documents no endpoint. moc 1.16.0 publishes every endpoint's"
-            " doc, so this means the .did was built by an older compiler or the scan"
-            " stopped matching."
+            f"ABORT: {DID} documents only {len(published)} endpoint(s), expected at least"
+            f" {MIN_PUBLISHED}. Since moc 1.16.0 every endpoint's doc is published, so this"
+            " means an older compiler built the .did, or the scan stopped matching, or docs"
+            " were dropped in bulk — all of which compare nothing and read as a clean run."
         )
     wrong = misattributed(published, written)
     if wrong:
@@ -346,6 +355,9 @@ def main():
             "  own block — absorbed during emission, which the source cannot show: every\n"
             "  block sits correctly above whatever owns it and only the .did disagrees.\n"
             "  Compare the two texts above and move the block that belongs here.\n"
+            "  ⚠️ Or the .did is simply STALE — run `mops build`. The gate and CI both\n"
+            "  rebuild before this step so it cannot land there, but a direct run on a\n"
+            "  dirty tree reports a real mismatch with a doc nobody misfiled.\n"
             "  ⚠️ Do NOT silence this by making the doc `//`. Since moc 1.16.0 endpoint\n"
             "  docs are published deliberately, so that deletes part of the interface.",
             file=sys.stderr,

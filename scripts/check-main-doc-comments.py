@@ -30,17 +30,34 @@ above `persistent actor`, which is why this check is positional rather than look
 the actor line. ⚠️ That placement is what `published_docs()`'s `service + 1` accounts for:
 the emitted doc is permanently the line before the service line.
 
-⚠️ **This ban is now BELT, not the only defence, and it is kept deliberately.** It exists
-because a `///` on a private state declaration could alias onto an unrelated endpoint —
-four live instances at the tip of #120. moc 1.16.0 emits endpoint docs properly, which
-plausibly removes the empty slot a neighbour's doc used to fill, but **that was not
-measured**: a probe placing a marker doc on a private `var` produced no leak under 1.16.0
-*or* 1.15.1, so the position simply does not alias and the probe proved nothing either way.
-What did change is that `check-endpoint-docs.py` now compares each endpoint's published doc
-against its written one, so an alias would be *caught* rather than merely prevented. Two
-independent mechanisms for a class that shipped four times; the ban costs nothing here
-(the composition root declares no endpoints, so it needs no published docs) and is not
-worth trading for a measurement nobody has.
+⚠️ **This ban is now BELT with little left to brace, and it is kept by choice.**
+It exists because a `///` on a private state declaration could alias onto an unrelated
+endpoint — four live instances at the tip of #120, fixed in a128982.
+
+**Measured against a128982^, the commit that still had all four**, building the identical
+source under both compilers:
+
+| endpoint | 1.15.1 published | 1.16.0 published |
+|---|---|---|
+| `get_order` | the webhook secret's §7 doc | its own §2 authz doc |
+| `resolve_problem` | "The price tiles, as one record." | its own §4.1/§7 doc |
+| `set_recovery_interval` | `rateRefreshFailures`' backoff doc | its own cadence doc |
+| `withdraw_reserve` | `allowedBuyers`' doc | its own #103 doc |
+
+28 service-block doc lines with all four stolen, versus 600 with none. **So aliasing was a
+symptom of the drop** — a neighbour's doc filled an empty slot, and 1.16.0 leaves no empty
+slots. Strong evidence rather than proof: four known positions, not all positions.
+
+⚠️ **An earlier version of this block claimed the question "was not measured".** That came
+from probing with the wrong instrument — a marker doc on a private `var`, which leaked
+under neither compiler and so proved nothing either way. The reproducer was the four known
+positions all along.
+
+The ban therefore prevents a class that appears fixed, while
+`check-endpoint-docs.py`'s `misattributed()` would *catch* it if it recurred. It is kept
+because the evidence is strong rather than exhaustive, and its only cost is LSP hover on
+742 actor-private blocks — worth revisiting as its own change, not as a rider on a
+compiler bump.
 
 ⚠️ **What this does NOT reach**, stated because a check implying more than it verifies is
 worse than no check:

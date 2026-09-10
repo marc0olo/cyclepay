@@ -72,10 +72,10 @@ fi
 # the gap §7.3's acceptance depends on not existing. It went unnoticed for one commit
 # during the 1.16.0 bump.
 #
-# `mops` has no flag or environment override for the compiler (`mops test --help`), so
-# each package is copied to a temp directory with its pin rewritten to ours. The rewrite
-# is VERIFIED below rather than assumed: a `sed` that silently matched nothing would put
-# us straight back to testing the wrong compiler.
+# `mops` has no flag or environment override for the compiler (`mops test --help`), so the
+# suites run from a temp root with the pin rewritten to ours — see the symlink note below
+# for how. The rewrite is VERIFIED rather than assumed: a `sed` that silently matched
+# nothing would put us straight back to testing the wrong compiler.
 OURS="$(sed -nE 's/^moc = "([^"]+)"/\1/p' mops.toml | head -1)"
 [ -n "$OURS" ] || fail "could not read the moc pin from mops.toml"
 
@@ -103,12 +103,22 @@ for pkg in bls12-381 vetkeys; do
   for entry in "$SUB/$pkg"/*; do
     name="$(basename "$entry")"
     [ "$name" = "mops.toml" ] && continue
+    [ "$name" = "mops.lock" ] && continue
     [ "$name" = ".mops" ] && continue
     ln -s "$entry" "$WORK/$pkg/$name"
   done
   # `vectors.json` is shared, one level up, and reached as `../vectors.json`.
   [ -e "$WORK/vectors.json" ] || ln -s "$SUB/vectors.json" "$WORK/vectors.json"
+  # ⚠️ **`mops.toml` AND `mops.lock` are real files, not links, and the lock is the
+  # subtle one.** `mops` REWRITES a lock whose recorded hash does not match — measured:
+  # corrupt the hash in a copy and `mops install` silently restores it. Both locks are
+  # tracked upstream and this script sends install output to /dev/null, so a symlinked
+  # lock is a write channel straight into the submodule's working tree. It has not fired,
+  # only because the lock's hash does not currently cover `[toolchain]` — which is mops's
+  # implementation detail, not a property to rely on. Copying these two makes "the
+  # submodule is never written to" true by construction.
   cp "$SUB/$pkg/mops.toml" "$WORK/$pkg/mops.toml"
+  [ -f "$SUB/$pkg/mops.lock" ] && cp "$SUB/$pkg/mops.lock" "$WORK/$pkg/mops.lock"
 done
 
 TOTAL=0
