@@ -79,7 +79,8 @@
 ///
 /// Not measurable from this repo yet, and that is itself measured: `nns.ic0.app`,
 /// `identity.internetcomputer.org` and `oc.app` return **no `Set-Cookie` at all**
-/// (checked 2026-08-10). `ic_env` comes from the icp-cli asset-canister recipe, so
+/// (checked 2026-08-10). `ic_env` is served by the certified-assets canister (and was
+/// by the legacy asset canister before it), so
 /// seeing it on mainnet needs a canister deployed that way, and this project has
 /// not deployed one.
 ///

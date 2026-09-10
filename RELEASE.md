@@ -13,7 +13,7 @@ Every tool that shapes the module bytes is pinned by the *committed tree*:
 |------|--------------|
 | `moc` 1.9.0 | `mops.toml [toolchain]` |
 | Motoko dependencies (`core`, `sha2`, `ic`) | `mops.lock` |
-| `@dfinity/motoko@v4.1.0` / `@dfinity/asset-canister@v2.2.1` recipes | `icp.yaml` (icp-cli rejects unpinned recipes) |
+| `@dfinity/motoko@v5.1.0` / `@dfinity/static-site@v0.3.3` recipes | `icp.yaml` (icp-cli rejects unpinned recipes) |
 | `ic-mops` 2.13.2, `@icp-sdk/icp-cli` 0.3.2, `@icp-sdk/ic-wasm` 0.9.11 | `Dockerfile.release` |
 | Node 22.22.1 (toolchain host + frontend build) | `Dockerfile.release` base image, by digest |
 | Candid interface | `src/backend/dist/backend.did`, committed; the recipe embeds **this file** as the `candid:service` metadata, so the committed interface and the deployed one are the same bytes |
@@ -68,13 +68,14 @@ dashboard (`dashboard.internetcomputer.org/canister/<id>`).
 
 ## Frontend verifiability
 
-The frontend **module** (`frontend.wasm`) is the asset-canister wasm bundled
-with the pinned recipe — its hash is published and checked the same way. The
-asset **content** is not part of the module hash; it is verified per-response
-by certified assets: every HTTP response carries a subnet-signed certificate
-over the asset tree, `allow_raw_access: false` (`.ic-assets.json5`) refuses
-the uncertified raw domain, and the service-worker/gateway rejects responses
-whose certificate doesn't verify. The asset build itself is reproducible
+The frontend **module** (`frontend.wasm`) is the certified-assets canister wasm
+bundled with the pinned recipe — its hash is published and checked the same way.
+The asset **content** is not part of the module hash; it is verified per-response:
+every HTTP response carries `IC-Certificate` and `IC-CertificateExpression` over
+the asset tree, and the gateway rejects responses whose certificate does not
+verify. There is no uncertified raw mode to switch off — the legacy asset
+canister needed `allow_raw_access: false` for that, and this canister has no such
+escape hatch. The asset build itself is reproducible
 (vite + committed `package-lock.json`, node pinned by the container), so an
 auditor can rebuild `src/frontend/dist` and compare files against what the
 canister serves.
@@ -87,7 +88,7 @@ canister serves.
   verified byte-identical on linux/arm64. If a build on another platform
   produces a different hash, treat it as a toolchain bug and pin the platform
   with `docker build --platform` while investigating.
-- Recipe tags (`@dfinity/motoko@v4.1.0`) are fetched from
+- Recipe tags (`@dfinity/motoko@v5.1.0`) are fetched from
   `dfinity/icp-cli-recipes` by git tag, which is not content-addressed. A
   moved tag cannot go unnoticed — it changes the hash — but it would break
   reproducibility of *old* tags. Accepted for v1.

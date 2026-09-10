@@ -42,6 +42,12 @@ args = [ "-W=M0223,M0236,M0237" ]
 
 [canisters.backend]
 main = "src/backend/Main.mo"
+# ⚠️ **Moved here from `icp.yaml` when the recipe went to v5.** The Motoko recipe now
+# delegates to `mops build`, and its only configuration is metadata/shrink/compress — the
+# main file and the Candid path live in this file. Keeping the committed `.did` named here
+# preserves the §8 property: what `mops build` regenerates, what the frontend bindgens
+# from, and what the deployed canister reports as `candid:service` are the same bytes.
+candid = "src/backend/dist/backend.did"
 
 # ⚠️ **The baseline is COMMITTED, and it must not be the build's own output.**
 # `mops build` writes `src/backend/dist/backend.most`, which `.gitignore` excludes along

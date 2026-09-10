@@ -250,6 +250,35 @@ ok "http://frontend.local.localhost:${GATEWAY##*:}/ → 200"
 # without a build-time bake. No cookie means the app boots pointing at mainnet.
 # Its contents are percent-encoded (`ic%5Froot%5Fkey`), so decode before matching —
 # grepping the raw header for `ic_root_key` finds nothing even when it is there.
+# ⚠️ **The security headers, asserted here because NOTHING else can see them.** They come
+# from `_headers` in the asset directory, which only the deployed canister applies — the
+# browser suite serves `dist` from a static server, so a `_headers` mistake is invisible
+# to a green gate. The response file is already open for the cookie check below; these are
+# seven greps on it.
+#
+# certified-assets has no default security policy (the legacy asset canister's
+# `security_policy: "standard"` had no equivalent), so every one of these exists only
+# because `_headers` says so — on a page that takes card details.
+for header in \
+  content-security-policy \
+  permissions-policy \
+  x-frame-options \
+  referrer-policy \
+  strict-transport-security \
+  x-content-type-options \
+  x-xss-protection
+do
+  grep -qi "^${header}:" "$HEADERS" ||
+    die "the frontend served no ${header} header — check src/frontend/public/_headers reached
+    src/frontend/dist/ and that the deploy synced it"
+done
+ok "all 7 security headers present (they exist only because _headers says so)"
+
+# ⚠️ Response certification, which BOTH canisters do — measured, not assumed: the legacy
+# asset canister served these too, so this is a property carried over rather than gained.
+grep -qi '^ic-certificate:' "$HEADERS" || die "no IC-Certificate on the frontend response"
+ok "responses are certified (IC-Certificate present)"
+
 grep -qi '^set-cookie:.*ic_env' "$HEADERS" || die "no ic_env cookie on the frontend response"
 COOKIE="$(grep -i '^set-cookie:.*ic_env' "$HEADERS" | head -1 |
   python3 -c 'import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read()))')"
