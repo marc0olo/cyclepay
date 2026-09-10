@@ -48,6 +48,12 @@ import {
 /// tolerance loose enough to absorb cross-environment noise would also have hidden
 /// it. Regenerating on a runner-image bump is the price of that.
 ///
+/// ⚠️ **`--app localhost:5178` is baked into the CLI page's baseline, and that is the
+/// test server's port, not documentation.** The page derives it from
+/// `window.location.host`, so under Playwright it is correct and under any other origin
+/// it differs. Do not read the deployed `--app` value off this picture — #83 is where
+/// that value's source is decided.
+///
 /// The market comes from the fixture backend, so the amounts, the rate strip and
 /// the fee line are fixed numbers rather than whatever a gateway last said. Under
 /// the unreachable-gateway default these shots would be pictures of an error
@@ -125,6 +131,27 @@ test.describe("visual baselines", () => {
     await expect(page.locator("#cmd-link")).toBeVisible();
     await settleForShot(page);
     await expect(page).toHaveScreenshot("delivered-light.png", shot);
+  });
+
+  test("the delivered ORDER view, with the numbers on screen", async ({ page }) => {
+    // ⚠️ **#147: the shot the flow split left uncovered.** One baseline used to catch
+    // both surfaces — the order record with the tour inline — and when the tour moved
+    // to its own page the order view stopped being photographed at all.
+    //
+    // It is worth its own baseline for its history: `#order-problems` and
+    // `#receipt-area` were once NESTED inside a `<details>` the app collapsed here, so
+    // the one page a buyer opens to see what they got showed no cycle quantity. Nothing
+    // hid them; the nesting did. `delivered.spec.ts` asserts they are VISIBLE; what a
+    // picture adds is that nothing is painted over them.
+    //
+    // No `#order-next-link` click — that navigates to the CLI page shot above.
+    await page.goto("/");
+    await signInAsFixtureBuyer(page);
+    await openFixtureOrder(page, { status: "delivered" });
+    await expect(page.locator("#order-cycles")).toBeVisible();
+    await expect(page.locator("#receipt-area")).toBeVisible();
+    await settleForShot(page);
+    await expect(page).toHaveScreenshot("order-delivered-light.png", shot);
   });
 
   test("the buy view with real amounts, dark", async ({ page }) => {
