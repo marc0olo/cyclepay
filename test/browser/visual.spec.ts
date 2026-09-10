@@ -21,9 +21,13 @@ import {
 ///
 /// and look at the new PNGs before committing them.
 ///
-/// Baselines are per-platform (Playwright suffixes the file with `darwin`/`linux`)
-/// because font rasterisation differs. CI runs ubuntu-latest x86_64, so the
-/// `-linux` files are the ones it compares against and both sets are committed.
+/// ⚠️ **Baselines are LINUX-ONLY, and these tests skip on any other platform.**
+/// Playwright suffixes per platform because font rasterisation differs, so a
+/// darwin set was committed alongside — and it bought a signal for a rasteriser
+/// nothing ships on, at a second set to regenerate on every deliberate change.
+/// Worse, a Mac cannot repair the `-linux` half that CI actually compares against
+/// (see below), so the darwin half could never substitute for it. Linux-only makes
+/// every failure reproducible where it is checked.
 ///
 /// **The `-linux` set has to come from the CI runner itself.** Generating it in
 /// `mcr.microsoft.com/playwright:v1.62.1-noble` at `--platform linux/amd64` —
@@ -58,30 +62,13 @@ async function settleForShot(page: import("@playwright/test").Page): Promise<voi
 
 const shot = { animations: "disabled", fullPage: true } as const;
 
-/// ── SUSPENDED for the UX phase (#107) ──────────────────────────────────────
-///
-/// Not disabled because they were wrong — they are the only thing in this repo that
-/// can see PAINT, and they have already caught a 5px dot and a 1px hairline painted
-/// over four digits. Disabled because a flow rewrite changes these pixels on purpose,
-/// on every commit, and each refresh needs a full CI round-trip: the `-linux` half of
-/// every baseline can only come from the runner (see the procedure above), so a Mac
-/// cannot repair them locally. That is a round-trip per iteration for information we
-/// already have — the pixels changed, that was the work.
-///
-/// ⚠️ **What is NOT covered while this is skipped**, and nothing else reaches it:
-/// text the same colour as its background, an element covering another, an opacity
-/// that renders something technically visible and practically not. Each of those
-/// passes `toBeVisible()` and passes whichever `getComputedStyle` property someone
-/// thought to check. Reviewing screenshots by hand is the stand-in, and it is a
-/// weaker one.
-///
-/// ⚠️ **Re-enable via #107, not from memory.** Delete this `.skip`, regenerate BOTH
-/// platforms (darwin locally, linux from a CI run's `browser-failures` artifact), and
-/// LOOK at every PNG before committing — a baseline is only evidence if a human
-/// looked at it, and one adopted blind pins whatever the page happened to render.
-/// The issue exists because a code comment is the weakest possible reminder, and this
-/// suite going quietly stale is exactly the failure it would produce.
-test.describe.skip("visual baselines", () => {
+test.describe("visual baselines", () => {
+  // ⚠️ Linux-only: the committed baselines come from the CI runner, and comparing a
+  // macOS rasteriser against them produced ~2,400 differing pixels of pure antialiasing.
+  // Skipping is honest about where this coverage lives; a local run reporting green
+  // against a baseline it cannot reproduce would not be.
+  test.skip(process.platform !== "linux", "baselines are generated on the CI runner");
+
   test("the landing view, light", async ({ page }) => {
     await page.goto("/");
     await settleForShot(page);
@@ -104,12 +91,24 @@ test.describe.skip("visual baselines", () => {
     await page.locator("#start-buy").click();
     await expect(page.locator("#buy-flow")).toBeVisible();
     // Wait for the priced tiles rather than the empty grid.
-    await expect(page.locator("#tiers button.tier")).toHaveCount(3);
+    // ⚠️ `:not(.tier-custom)` counts the three FIXTURE presets. `#tier-custom` also
+    // carries `.tier`, so a bare `.tier` count is 4 — which is what a five-month
+    // suspension turned into a failure before this test ever screenshotted.
+    await expect(page.locator("#tiers button.tier:not(.tier-custom)")).toHaveCount(3);
     await settleForShot(page);
     await expect(page).toHaveScreenshot("buy-light.png", shot);
   });
 
-  test("the delivered view, with the tour leading", async ({ page }) => {
+  // ⚠️ **Renamed: this shoots the CLI-LINKING PAGE, not the delivered order view.** The
+  // UX phase split the tour onto its own surface behind `#order-next-link`, so the old
+  // title described a shot it no longer takes. The old baseline shows the difference —
+  // it had the order id, the progress bar and STEP 3 OF 4 inline; this one is five steps
+  // on a page of its own.
+  //
+  // ⚠️ **The delivered ORDER view therefore has no pixel coverage** — the surface this
+  // test's own comment calls the one with the worst history in the repo. Filed, not
+  // quietly accepted.
+  test("the CLI-linking page, reached from a delivered order", async ({ page }) => {
     // The surface with the worst history in this repo: it shipped broken twice,
     // both times because nothing could reach it. It is also the one where paint
     // matters most — two shell commands the buyer has to read and copy exactly.
@@ -118,6 +117,11 @@ test.describe.skip("visual baselines", () => {
     await page.goto("/");
     await signInAsFixtureBuyer(page);
     await openFixtureOrder(page, { status: "delivered" });
+    // ⚠️ The tour is behind this link now — `delivered.spec.ts` clicks it for the same
+    // reason. Asserting `#cmd-link` without it failed before screenshotting, so the
+    // suspension was hiding a stale SETUP and not only stale pixels.
+    await page.locator("#order-next-link").click();
+    await expect(page.locator("#cli-steps")).toBeVisible();
     await expect(page.locator("#cmd-link")).toBeVisible();
     await settleForShot(page);
     await expect(page).toHaveScreenshot("delivered-light.png", shot);
@@ -128,7 +132,7 @@ test.describe.skip("visual baselines", () => {
     await page.locator("#theme-toggle").click();
     await useFixtureBackend(page);
     await page.locator("#start-buy").click();
-    await expect(page.locator("#tiers button.tier")).toHaveCount(3);
+    await expect(page.locator("#tiers button.tier:not(.tier-custom)")).toHaveCount(3);
     await settleForShot(page);
     await expect(page).toHaveScreenshot("buy-dark.png", shot);
   });
