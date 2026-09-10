@@ -1,0 +1,21 @@
+{
+  "name": "cyclepay-seal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Seals a Stripe secret to the backend's vetKD public key, offline (#11)",
+  "scripts": {
+    "seal": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@icp-sdk/core": "^6.1.0",
+    "@icp-sdk/vetkeys": "^0.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": { "node": ">=18" }
+}

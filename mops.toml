@@ -13,6 +13,33 @@ sha2 = "0.2.5"
 # reason described a state that had ended, which is the shape that makes a stale
 # justification hard to notice.)
 ic = "4.2.0"
+# ── vetKD sealing (#11) ────────────────────────────────────────────────────────
+#
+# BLS12-381 and the vetKD layer on it, so `Sealed.mo` can decrypt a secret that
+# was encrypted to this canister's derived public key. They are path
+# dependencies into the `vendor/icp-seeding-secrets-poc` submodule, pinned by its commit.
+#
+# ⚠️ **The `./` prefix is load-bearing.** Without it mops reads the string as a
+# REGISTRY name and fails with `Package '...@vendor/icp-seeding-secrets-poc/...' not found`, which
+# reads like a missing package rather than a malformed path. Measured.
+#
+# ⚠️ **EXPERIMENTAL, UNAUDITED.** No published Motoko package has BLS12-381, so
+# there is nothing to depend on instead. What this code does and does not carry
+# is `docs/DESIGN.md` §7.3: it DECRYPTS, and the encrypting is done by the
+# audited `@icp-sdk/vetkeys`, so a bug here fails provisioning closed rather
+# than weakening a ciphertext already on the wire. Delete both when
+# `mo:ic-vetkeys` ships the curve.
+sealed-secrets-bls = "./vendor/icp-seeding-secrets-poc/motoko/bls12-381"
+sealed-secrets-vetkeys = "./vendor/icp-seeding-secrets-poc/motoko/vetkeys"
+# SHAKE256 and the field-tower hashing the two packages above need.
+sha3 = "0.1.1"
+# ⚠️ **Not imported by any file in this project, and NOT removable.** It arrives
+# transitively via sha3, and with no floor mops resolves 0.8.2 — which predates
+# moc 1.15's system-capability types and fails to type-check inside
+# `ExperimentalCycles.mo` before any of our own code is reached. `mo:base` is
+# deprecated and this is the one reason it appears here. Measured: removing the
+# pin reproduces `M0096` in a dependency.
+base = "0.14.5"
 
 [toolchain]
 moc = "1.15.1"

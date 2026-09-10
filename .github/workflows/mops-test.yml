@@ -16,6 +16,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          # The pinned BLS12-381/vetKD packages (#11) are a git submodule that `mops`
+          # resolves as a path dependency, so without this the backend does not compile
+          # here at all — `mops install --locked` fails on a package directory that is
+          # present in the lock and empty on disk. The `frontend` job deliberately does
+          # NOT check it out: it builds from the committed .did and never runs mops.
+          submodules: true
       - uses: caffeinelabs/setup-mops@v1
         with:
           # Matches the CLI that writes `mops.lock` locally. It was pinned to 2 while the
@@ -35,6 +42,11 @@ jobs:
       # rejects the pair.
       - name: type-check and lint (-Werror)
         run: mops check -- -Werror
+
+      # ⚠️ Before the unit tests: `test/sealed.test.mo` asserts our wiring on top of this
+      # curve implementation, so a broken curve would surface as our bug.
+      - name: crypto vectors (pinned BLS12-381/vetKD vs the Rust reference)
+        run: bash scripts/check-crypto-vectors.sh
 
       - name: run unit tests
         run: mops test
@@ -145,6 +157,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          # The pinned BLS12-381/vetKD packages (#11) are a git submodule that `mops`
+          # resolves as a path dependency, so without this the backend does not compile
+          # here at all — `mops install --locked` fails on a package directory that is
+          # present in the lock and empty on disk. The `frontend` job deliberately does
+          # NOT check it out: it builds from the committed .did and never runs mops.
+          submodules: true
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

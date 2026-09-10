@@ -140,7 +140,7 @@ if [ "$FORWARD" -eq 1 ]; then
   echo "forwarding to: http://127.0.0.1:${PORT}/webhook/stripe?canisterId=${BACKEND_ID}"
   echo
   echo "⚠ The canister's webhook secret must match this session's signing secret:"
-  echo "    icp canister call backend set_webhook_secret \"(\\\"\$(stripe listen --print-secret)\\\")\""
+  echo "    STRIPE_WEBHOOK_SECRET=\"\$(stripe listen --print-secret)\" scripts/seal-secret.sh webhook-secret"
 fi
 
 report_status

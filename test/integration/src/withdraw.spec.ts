@@ -13,6 +13,7 @@ import {
   type Gateway,
 } from './harness';
 
+import { seal } from "./seal";
 let gw: Gateway;
 beforeAll(async () => { gw = await setupGateway(); }, 180_000);
 afterAll(async () => { await teardownGateway(gw); });
@@ -34,8 +35,8 @@ test('103a — provision, and an empty reserve has nothing to withdraw', async (
   await setXrcRate(gw);
   await setCmcRate(gw);
   await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_webhook_secret(WEBHOOK_SECRET));
-  expectOk(await gw.asAdmin.set_stripe_api_key('rk_test_withdraw_spec'));
+  expectOk(await gw.asAdmin.set_webhook_secret(seal(gw.backendId, WEBHOOK_SECRET)));
+  expectOk(await gw.asAdmin.set_stripe_api_key(seal(gw.backendId, 'rk_test_withdraw_spec')));
   expectOk(await gw.asAdmin.set_stripe_origin('https://withdraw.example'));
   const { gate } = await gw.asAnon.lifecycle_config();
   expectOk(await gw.asAdmin.set_gate_config({ ...gate, minPurchaseUsdCents: 100n }));

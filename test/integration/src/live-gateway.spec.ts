@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from 'vitest';
+import { seal } from "./seal";
 import {
   TIER_LOCKED_CYCLES, TIER_USD_CENTS, WEBHOOK_SECRET,
   checkoutSessionBody, ensureRates, expectOk, fundReserve, setCmcRate,
@@ -35,9 +36,9 @@ test('55 — the webhook route serves real HTTP end to end, and delivers', async
   await setXrcRate(gw);
   await setCmcRate(gw);
   await ensureRates(gw);
-  expectOk(await gw.asAdmin.set_webhook_secret(WEBHOOK_SECRET));
+  expectOk(await gw.asAdmin.set_webhook_secret(seal(gw.backendId, WEBHOOK_SECRET)));
   // #33: both secrets, or `create_order` cannot produce a payable session.
-  expectOk(await gw.asAdmin.set_stripe_api_key('rk_test_live_gateway_spec'));
+  expectOk(await gw.asAdmin.set_stripe_api_key(seal(gw.backendId, 'rk_test_live_gateway_spec')));
   // #99: these suites fund a reserve and accept test payments, so without an
   // allow-list every create_order refuses as the faucet state.
   await allowTestBuyers(gw);

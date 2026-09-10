@@ -153,27 +153,36 @@ consciously set. Work the list in order:
 
 ## 2. Webhook secret — provisioning & rotation (§7)
 
-The Stripe signing secret is the **only stored secret**: HMAC is symmetric, so
-verify = forge — anyone holding it can forge "paid" webhooks and drain **the entire
-reserve**, one order at a time, at the operator's expense. ⚠️ **The reserve balance
-is the blast-radius bound, so size it to what you can afford to lose in one
-window** — there is no per-period cap standing behind it. It is stored
-**plaintext by design**
-(`Secret.mo` documents the SEV-SNP posture; §10 below is the checklist).
+HMAC is symmetric, so verify = forge — anyone holding this secret can forge "paid"
+webhooks and drain **the entire reserve**, one order at a time, at the operator's expense.
+⚠️ **The reserve balance is the blast-radius bound, so size it to what you can afford to
+lose in one window** — there is no per-period cap standing behind it. It is stored
+**plaintext by design** (`Secret.mo` documents the SEV-SNP posture; §10 below is the
+checklist).
 
-**Provision / rotate:**
+**Provision / rotate — the value is sealed, never typed into a call:**
 
 ```bash
-icp canister call backend set_webhook_secret '("whsec_…")' -e ic --identity <operator>
-icp canister call backend webhook_secret_status '()' -e ic --identity <operator>
+# Reads STRIPE_WEBHOOK_SECRET from the environment (or scripts/.local-dev.env).
+STRIPE_WEBHOOK_SECRET='whsec_…' scripts/seal-secret.sh webhook-secret ic
 ```
 
-- Pass the **full `whsec_…` string** from the Stripe Dashboard — the whole
-  string, prefix included, is the HMAC key (matches Stripe's reference
-  verifiers).
-- `set` rejects anything under 16 bytes (`#tooShort`) and leaves the
-  working secret untouched on rejection — a fat-fingered rotation can't
-  brick the webhook.
+⚠️ **`set_webhook_secret` takes a `blob`, not the string** (§7.3). It is an IBE ciphertext
+sealed to this canister's vetKD public key, so the plaintext never becomes an ingress
+argument. Calling it by hand with a quoted `whsec_…` returns `#notCiphertext`.
+
+⚠️ **The trailing `ic` is what selects the MAINNET master key, and it is not optional.**
+Mainnet and a local network both have a vetKD key called `key_1` backed by *different*
+master keys, so the name does not identify the key. Omit the argument and the script
+defaults to `local` → the PocketIC master key → a ciphertext this canister can never
+open, reported as `#notSealedToThisCanister`. The script derives the choice from that one
+argument precisely so it is never a separate flag to get wrong.
+
+- Pass the **full `whsec_…` string** in the environment variable — the whole string,
+  prefix included, is the HMAC key (matches Stripe's reference verifiers).
+- The 16-byte floor applies to the **decrypted** value (`#tooShort`), and the working
+  secret is left untouched on any rejection — a fat-fingered rotation, a wrong master key
+  or a plaintext argument all leave the webhook working.
 - `webhook_secret_status` returns `{isSet; generation; setAtNs}` —
   `generation` increments per successful set, so ops can confirm a rotation
   landed **without any read-back path existing** (not even for
@@ -185,14 +194,16 @@ icp canister call backend webhook_secret_status '()' -e ic --identity <operator>
    window. During overlap Stripe signs each delivery with **one `v1=` per
    active secret**, and the canister's verifier accepts *any* matching
    `v1` — so order of operations is forgiving.
-2. `set_webhook_secret` with the new `whsec_…`; confirm `generation`
-   bumped.
+2. `scripts/seal-secret.sh webhook-secret ic` with the new `whsec_…` in the
+   environment; confirm `generation` bumped.
 3. Expire the old secret in Stripe after confirming deliveries succeed.
 
-**Provisioning exposure** (§7): the argument transits the TLS-terminating
-boundary node as ordinary ingress. Provision from a trusted network path,
-and treat the first secret set over any untrusted path as burned — rotate
-it once the endpoint is confirmed working.
+**Provisioning exposure — closed** (§7.3). This used to read: *the argument transits the
+TLS-terminating boundary node as ordinary ingress, so treat the first secret set over any
+untrusted path as burned.* That is no longer true, and the advice is withdrawn rather than
+softened: the ingress argument is ciphertext, useless to the boundary node and to anything
+reading a shell history or a CI log. Sealing does nothing for the **at-rest** exposure,
+which is §10's confidential-subnet checklist.
 
 **Suspected leak — immediate actions** (in this order):
 
@@ -265,13 +276,19 @@ rather than a click path through three screens.
 #    the read: it retrieves a session to settle an order whose expiry event never
 #    arrived (#52). A key without it 401s on every retrieve and stranded capacity is
 #    never released — watch for refusingNow.stripeApiFailing (§8).
-icp canister call backend set_stripe_api_key '("rk_...")' -e ic --identity <operator>
+#
+#    SEALED (§7.3): the key is encrypted to this canister before it is sent, so it never
+#    appears in an ingress message, a shell history or a CI log. The trailing `ic` selects
+#    the MAINNET master key — omitting it seals against PocketIC's and the canister will
+#    refuse with #notSealedToThisCanister.
+STRIPE_API_KEY='rk_...' scripts/seal-secret.sh api-key ic
 
 # 2. Where Stripe returns the buyer. Validated: https, no query, no fragment.
+#    Not a secret — it is the URL buyers are sent to — so it is set directly.
 icp canister call backend set_stripe_origin '("https://<your-origin>")' -e ic --identity <operator>
 
-# 3. The webhook signing secret (§7).
-icp canister call backend set_webhook_secret '("whsec_...")' -e ic --identity <operator>
+# 3. The webhook signing secret (§7). Sealed the same way; see §2 for rotation.
+STRIPE_WEBHOOK_SECRET='whsec_...' scripts/seal-secret.sh webhook-secret ic
 
 # 4. The price tiles. Optional — a buyer can type any amount within the bounds.
 icp canister call backend set_card_tiers \
@@ -286,7 +303,14 @@ have many changing addresses.
 
 ⚠️ **Neither secret can be read back out, even by a controller.** `stripe_api_key_status`
 and `webhook_secret_status` report a generation counter and a set timestamp, which is
-how you confirm a rotation landed without ever exposing the value.
+how you confirm a rotation landed without ever exposing the value. `seal-secret.sh` prints
+the relevant status after each successful set.
+
+⚠️ **Put the values in `scripts/.local-dev.env` or export them — never on the command
+line.** `seal-secret.sh` reads them from the environment on purpose. A secret typed as an
+argument lands in shell history, in `ps` output and in CI logs, which would reopen the
+exposure sealing exists to close. The examples above show the variable inline for brevity;
+in a real session, export it or use the file.
 
 ⚠️ **Provisioning the two secrets is what OPENS the rail** (§5b of `docs/STRIPE.md`
 for why capability rather than declaration), so do them last. Rotating either

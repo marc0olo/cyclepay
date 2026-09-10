@@ -363,9 +363,21 @@ refund, read customers, or reach the account.
 
 ## §7 — Security and trust
 
-⚠️ **The webhook secret is plaintext canister state.** HMAC is symmetric, so *verify =
-forge*: anything that can check a signature can forge one, and encrypting the stored blob
-would only move the problem to the key that decrypts it.
+⚠️ **Both secrets are plaintext canister state, and that is at-rest only — provisioning
+is sealed (§7.3).** HMAC is symmetric, so *verify = forge*: anything that can check a
+signature can forge one, and encrypting the stored blob would only move the problem to the
+key that decrypts it. The plaintext therefore has to exist in memory at verification time,
+which is why at-rest confidentiality is a subnet property (#2) rather than something this
+canister can solve.
+
+⚠️ **The two exposures are separate and were routinely conflated.** *In transit* — a
+secret arriving as an ingress argument, seen by the TLS-terminating boundary node and
+anything reading a shell history or CI log — is closed, by vetKD sealing. *At rest* — the
+value living in replicated, checkpointed canister memory — is not, and cannot be. #11
+works through why the obvious fix (store ciphertext, derive per use) fails on both
+economics and mechanism: at ~26 B cycles per derivation it would cost roughly 3.5 cents
+per webhook on an at-cost rail, and a checkpoint captures the heap, so a cached derived
+key sits in the same checkpoint as the ciphertext it opens.
 
 ⚠️ **The blast radius is the reserve balance, and sizing it is the control.** A forged
 "paid" webhook delivers from the reserve. An earlier design bounded this with a per-period
@@ -480,6 +492,49 @@ this rule to `receipt` and the answer flips — there the copy is the facts, and
 
 `scripts/check-typed-errors.py` enforces the typed half; the payload half is a review
 question, because no check can tell whether a variant carries what its sentence claims.
+
+### §7.3 — Sealed provisioning, and an unaudited dependency on the money path
+
+Both secrets are provisioned as **ciphertext**: the operator derives this canister's vetKD
+public key offline and encrypts to it, and only this canister can obtain the matching
+private key. `set_stripe_api_key` and `set_webhook_secret` take a `blob`, decrypt at set
+time, and store the plaintext. The full mechanism — why offline derivation, why one
+identity for both secrets, why the key is cached transiently — is in `src/backend/Sealed.mo`.
+
+⚠️ **Decryption happens at SET time, which is what makes a wrong seal a provisioning error
+rather than an outage.** A ciphertext sealed to the wrong key fails in front of whoever is
+seeding it, with the store untouched, instead of being accepted and found unreadable at the
+first webhook. `Secret.set`'s length floor then applies to the decrypted value, not to the
+envelope.
+
+⚠️ **The decrypting code is EXPERIMENTAL and UNAUDITED, and the reason that is acceptable
+here is an asymmetry — not a judgement that the code is fine.** No published Motoko package
+implements BLS12-381, so `vendor/icp-seeding-secrets-poc` (a git submodule, pinned by
+commit) supplies it. The division of labour is what matters:
+
+| step | performed by | audited |
+|---|---|---|
+| derive the public key | `@icp-sdk/vetkeys` (client) | yes — DFINITY's own |
+| **encrypt the secret** | `@icp-sdk/vetkeys` (client) | yes |
+| decrypt in-canister | the pinned Motoko port | **no** |
+
+The secret's confidentiality *in transit* rests entirely on the ciphertext, which audited
+code produced, and on the vetKD protocol. The unaudited half only **opens** that ciphertext,
+after it has already crossed the boundary node safely — so a bug there fails provisioning
+closed (an error, nothing stored) rather than weakening anything in flight. Set against the
+alternative it replaced, a live `rk_...` in an ingress argument, this cannot be worse.
+
+⚠️ **Two limits of that argument, stated because an asymmetry is easy to over-claim.**
+First, `VetKey.decryptAndVerify`'s verification step *is* security-relevant: if it were
+vacuous, a forged vetKD reply would be accepted — though only the subnet serving the key
+could forge one, and it can read canister memory regardless, so it is not new exposure.
+Second, the argument is architectural; nobody here has reviewed the field arithmetic. What
+stands in for that is `scripts/check-crypto-vectors.sh`, which runs the port's 102 vectors
+— generated from the audited Rust implementations — in this project's gate under this
+project's toolchain. That is not an audit and does not pretend to be.
+
+**Deletion criterion:** when `mo:ic-vetkeys` ships BLS12-381, the submodule and both path
+dependencies go, and this section becomes a note about what used to be here.
 
 ## §8 — Verifiability
 

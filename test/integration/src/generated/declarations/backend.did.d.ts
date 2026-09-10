@@ -252,6 +252,15 @@ export type ProblemKindTag = { 'paidNotCredited' : null } |
   { 'duplicate' : null };
 export type ProcessOrderError = { 'notFound' : null } |
   { 'inFlight' : null };
+export type ProvisionError = { 'entropyUnavailable' : { 'detail' : string } } |
+  { 'malformedPublicKey' : null } |
+  { 'notUtf8' : null } |
+  { 'unverifiableReply' : null } |
+  { 'tooShort' : { 'min' : bigint, 'size' : bigint } } |
+  { 'vetkdUnavailable' : { 'detail' : string } } |
+  { 'notSealedToThisCanister' : null } |
+  { 'malformedReply' : null } |
+  { 'notCiphertext' : null };
 export interface Quality {
   'queriedSources' : bigint,
   'receivedRates' : bigint,
@@ -343,7 +352,7 @@ export interface Response {
 export type Result = { 'ok' : Withdrawn } |
   { 'err' : WithdrawError };
 export type Result_1 = { 'ok' : null } |
-  { 'err' : SetError };
+  { 'err' : ProvisionError };
 export type Result_10 = { 'ok' : Entry } |
   { 'err' : ResolveError };
 export type Result_11 = { 'ok' : null } |
@@ -378,7 +387,6 @@ export type Result_8 = { 'ok' : null } |
   { 'err' : ValidateError };
 export type Result_9 = { 'ok' : bigint } |
   { 'err' : ResolveProblemError };
-export type SetError = { 'tooShort' : { 'min' : bigint, 'size' : bigint } };
 export interface Status {
   'setAtNs' : [] | [bigint],
   'generation' : bigint,
@@ -588,9 +596,9 @@ export interface _SERVICE {
   'set_gate_config' : ActorMethod<[Config__1], Result_5>,
   'set_pricing_config' : ActorMethod<[Config], Result_4>,
   'set_recovery_interval' : ActorMethod<[bigint], Result_3>,
-  'set_stripe_api_key' : ActorMethod<[string], Result_1>,
+  'set_stripe_api_key' : ActorMethod<[Uint8Array], Result_1>,
   'set_stripe_origin' : ActorMethod<[string], Result_2>,
-  'set_webhook_secret' : ActorMethod<[string], Result_1>,
+  'set_webhook_secret' : ActorMethod<[Uint8Array], Result_1>,
   'stripe_api_key_status' : ActorMethod<[], Status>,
   'stripe_origin' : ActorMethod<[], [] | [string]>,
   'transform_stripe_response' : ActorMethod<

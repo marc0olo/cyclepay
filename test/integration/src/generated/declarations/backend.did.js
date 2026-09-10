@@ -425,10 +425,18 @@ export const idlFactory = ({ IDL }) => {
     'intervalTooLong' : IDL.Record({ 'maxNs' : IDL.Nat }),
   });
   const Result_3 = IDL.Variant({ 'ok' : IDL.Null, 'err' : IntervalError });
-  const SetError = IDL.Variant({
+  const ProvisionError = IDL.Variant({
+    'entropyUnavailable' : IDL.Record({ 'detail' : IDL.Text }),
+    'malformedPublicKey' : IDL.Null,
+    'notUtf8' : IDL.Null,
+    'unverifiableReply' : IDL.Null,
     'tooShort' : IDL.Record({ 'min' : IDL.Nat, 'size' : IDL.Nat }),
+    'vetkdUnavailable' : IDL.Record({ 'detail' : IDL.Text }),
+    'notSealedToThisCanister' : IDL.Null,
+    'malformedReply' : IDL.Null,
+    'notCiphertext' : IDL.Null,
   });
-  const Result_1 = IDL.Variant({ 'ok' : IDL.Null, 'err' : SetError });
+  const Result_1 = IDL.Variant({ 'ok' : IDL.Null, 'err' : ProvisionError });
   const OriginError = IDL.Variant({
     'noHost' : IDL.Null,
     'hasQueryOrFragment' : IDL.Null,
@@ -693,9 +701,9 @@ export const idlFactory = ({ IDL }) => {
     'set_gate_config' : IDL.Func([Config__1], [Result_5], []),
     'set_pricing_config' : IDL.Func([Config], [Result_4], []),
     'set_recovery_interval' : IDL.Func([IDL.Nat], [Result_3], []),
-    'set_stripe_api_key' : IDL.Func([IDL.Text], [Result_1], []),
+    'set_stripe_api_key' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_1], []),
     'set_stripe_origin' : IDL.Func([IDL.Text], [Result_2], []),
-    'set_webhook_secret' : IDL.Func([IDL.Text], [Result_1], []),
+    'set_webhook_secret' : IDL.Func([IDL.Vec(IDL.Nat8)], [Result_1], []),
     'stripe_api_key_status' : IDL.Func([], [Status], ['query']),
     'stripe_origin' : IDL.Func([], [IDL.Opt(IDL.Text)], ['query']),
     'transform_stripe_response' : IDL.Func(
