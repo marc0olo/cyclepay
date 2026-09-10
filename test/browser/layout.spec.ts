@@ -435,4 +435,38 @@ test.describe("layout agreement", () => {
     // which had been doing exactly that since they were introduced.
     expect(desktop.row).toBeCloseTo(desktop.box, 0);
   });
+  test("⚠️ the id in a history row loads the lookup beneath it", async ({ page }) => {
+    // The panel has to be able to complete its own loop. It shows a TRUNCATED id and
+    // asks the field below for 32 hex characters, and until this control existed there
+    // was no copy button and no click target between the two: an operator looking
+    // straight at the row they wanted had nowhere to get its id from. Same class as the
+    // three defects this panel already produced, and the reason it got a baseline.
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto("/");
+    await useFixtureBackend(page);
+    await signInAsFixtureBuyer(page);
+    await page.goto("/#/admin/orders");
+    const fill = page.locator("#apanel-orders .id-fill").first();
+    await expect(fill).toBeVisible();
+
+    // Non-vacuous on both sides: the cell really is abbreviated, so the id cannot be
+    // read off the screen, and the field really is empty before the click.
+    const shown = (await fill.textContent()) ?? "";
+    expect(shown).toContain("\u2026");
+    await expect(page.locator("#lookup-id")).toHaveValue("");
+
+    await fill.click();
+    const value = await page.locator("#lookup-id").inputValue();
+    expect(value).toHaveLength(32);
+    // The id from THIS row, not merely some well-formed id: the head and tail either
+    // side of the ellipsis both have to match.
+    const [head, tail] = shown.split("\u2026");
+    expect(value.startsWith(head!)).toBe(true);
+    expect(value.endsWith(tail!)).toBe(true);
+
+    // ⚠️ Filling must not RUN it. `admin_order` is an update so the read is audited
+    // (#38), and a mis-click must not spend one.
+    await expect(page.locator("#lookup-result")).toBeHidden();
+    await expect(page.locator("#lookup-id")).toBeFocused();
+  });
 });

@@ -1663,3 +1663,21 @@ code.flow-detail {
 .orders-table {
   width: 100%;
 }
+
+/* The order-history id, as a control. ⚠️ It has to LOOK interactive: the panel's whole
+   loop is "see the row, look it up", and a monospace id that happens to be clickable
+   reads as text. Underline on hover plus the accent on focus, matching how every other
+   inline control in this console behaves. */
+.id-fill {
+  font-family: var(--font-mono);
+  font-size: inherit;
+  color: var(--icp-accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.id-fill:hover {
+  text-decoration: underline;
+}
