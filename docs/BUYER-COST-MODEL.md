@@ -66,6 +66,14 @@ figure above a deliberate worst case.
 2 cents. Even a full gibibyte is $0.43/month. Anyone reasoning about a small app's cycle
 budget should ignore storage and count creations and uploads.
 
+⚠️ **And the conclusion survives the one figure here I am least sure of.** The docs present
+127,000/GiB/s as already scaled to 13 nodes; the local measurement above disagrees with
+that framing, and I attribute the gap to local pricing rather than to the doc being
+per-node. If it *were* per-node, mainnet storage would be 13× higher — 0.199 T for the same
+50 MB, a **1.520 T** total, and still **4.5× headroom** on a $10 purchase. So the verdict
+does not rest on resolving it. Nothing else in this model is sensitive to it, because
+storage is the smallest term either way.
+
 ## The one way to exceed the budget
 
 `install_code` execution is the term this model does **not** measure, and it is the only
