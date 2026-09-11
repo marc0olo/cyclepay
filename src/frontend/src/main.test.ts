@@ -567,6 +567,10 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
+  // ⚠️ `tiers` belongs here with the rest: it is the one mutable field this reset used to
+  // omit, so a test that emptied it to exercise the no-tiers path leaked into 31 others.
+  // The shared-mock hazard is already documented on `state` itself.
+  state.tiers = [{ id: "tier10", usdCents: TIER_CENTS }];
   state.ledgerBalance = 3_400_000_000_000n;
   state.ledgerBalanceError = false;
   state.ledgerTxs = [];
@@ -637,6 +641,23 @@ beforeEach(() => {
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 describe("tier rendering", () => {
+  test("⚠️ an EMPTY tier list says so, rather than loading for ever", async () => {
+    // The state every fresh deployment starts in, and it read "Loading amounts..."
+    // permanently on mainnet. `loadMarket` calls `renderTiers()` at its end, but
+    // `marketState` is set to "loaded" by its CALLER after the await -- so the render
+    // always observed "loading". With tiers configured that is invisible, because the
+    // placeholder branch is never reached; with none it is the only output, and the
+    // "No amounts are configured yet." branch was unreachable.
+    //
+    // ⚠️ Asserted both ways. Checking only for the empty message would still pass if
+    // the placeholder were rendered underneath it.
+    state.tiers = [];
+    await mount();
+    const grid = el("tiers").textContent ?? "";
+    expect(grid).toContain("No amounts are configured yet.");
+    expect(grid).not.toContain("Loading amounts");
+  });
+
   test("a tier button shows the CYCLE QUANTITY, not the tier id", async () => {
     // The original bug: `label.textContent = tier.id` in the span whose class is
     // literally `cycles`, so a buyer saw "tier5" where the quantity belonged.

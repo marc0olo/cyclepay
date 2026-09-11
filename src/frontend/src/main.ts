@@ -3574,6 +3574,18 @@ async function loadMarketWithRetry(): Promise<void> {
   try {
     await loadMarket();
     marketState = "loaded";
+    // ⚠️ **Re-render, because `loadMarket` already rendered while this still said
+    // "loading".** The flag is set HERE, after the await, so the `renderTiers()` at the
+    // end of `loadMarket` always observed `"loading"`. With tiers configured that is
+    // invisible: the placeholder branch is never reached. With an EMPTY list it is the
+    // only output, so a gateway that has registered no tiles read "Loading amounts..."
+    // for ever and its "No amounts are configured yet." branch was unreachable — the
+    // state every fresh deployment starts in, so the first thing an operator saw on
+    // mainnet was a page that looked broken.
+    //
+    // Mirrors the catch path below, which has always re-rendered for the same reason.
+    renderTiers();
+    renderSubmitGate();
   } catch (error) {
     marketState = "failed";
     // eslint-disable-next-line no-console
