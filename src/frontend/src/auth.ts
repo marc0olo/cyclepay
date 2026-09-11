@@ -56,8 +56,14 @@ const IDENTITY_PROVIDER = identityProvider();
 /// ⚠️ **Built LAZILY, because `derivationOrigin()` refuses rather than guessing.** It
 /// throws when `ic_env` carries no frontend canister id, since deriving from the serving
 /// domain instead would be a working app with a silently different principal. At module
-/// scope that throw would take the whole page down with it; here it reaches whoever asked,
-/// so the page renders and only the identity operations fail.
+/// scope that throw would take the whole page down with it; here it reaches whoever asked.
+///
+/// ⚠️ **"Only the identity operations fail" rests on a chain worth naming, because a
+/// future change can break it.** `linkIdentityCommand()` reaches the same throw through
+/// `canonicalAppDomain()`, and `main.ts` calls it unguarded from two render sites. Both
+/// are unreachable in this state only because `currentIdentity()` below returns null, so
+/// nobody is signed in and neither site runs. Render that command for a signed-out
+/// visitor and the refusal becomes a page crash again.
 let client: AuthClient | undefined;
 
 function authClient(): AuthClient {

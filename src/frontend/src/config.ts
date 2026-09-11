@@ -55,6 +55,9 @@ export function derivationOrigin(
   // a split identity is not. `actor.ts` already throws when the sibling backend id is
   // missing, so this is the same posture on the key that decides identity rather than
   // reachability.
+  // ⚠️ Callers: `auth.ts` builds its client lazily so this reaches the caller rather than
+  // module scope, and `canonicalAppDomain` below propagates it. See `auth.ts` for why the
+  // page survives today and what would stop that being true.
   if (frontendId === undefined) {
     throw new Error(
       "ic_env carries no PUBLIC_CANISTER_ID:frontend, so the Internet Identity derivation "

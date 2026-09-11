@@ -23,6 +23,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { Principal } from "@icp-sdk/core/principal";
 import type { Backend } from "./actor";
 import { shortPrincipal } from "./format";
+import { canonicalAppDomain } from "./config";
 
 type OrphanPage = Awaited<ReturnType<Backend["orphans_unresolved"]>>;
 type DelayedPage = Awaited<ReturnType<Backend["delayed_deliveries"]>>;
@@ -1525,15 +1526,25 @@ describe("operator console (#68)", () => {
     expect(text).not.toMatch(/Not granted/);
   });
 
-  test("⚠️ the link command carries --app with THIS page's domain", async () => {
+  test("⚠️ the link command carries the --app the config layer chose", async () => {
     // #83: Internet Identity derives a principal per origin, and without `--app` the
     // CLI links one derived from the auth domain's own default. That principal is not
     // the one shown above it, so the grant would land on the wrong identity.
+    //
+    // ⚠️ The title used to say "THIS page's domain", which stopped being true when the
+    // derivation origin was pinned: on a custom domain the value is deliberately the
+    // canister's origin rather than the address bar.
     await mount("landing", "#/admin");
     const command = el("admin-link-command").textContent ?? "";
     expect(command).toContain("icp identity link web");
-    expect(command).toContain(`--app ${window.location.host}`);
-    expect(el("admin-link-note").textContent).toMatch(/must be this page's own domain/);
+    expect(command).toContain(`--app ${canonicalAppDomain()}`);
+    // ⚠️ And the note beside it must not contradict the command. It said the value
+    // "must be this page's own domain", which read on a custom domain tells the operator
+    // to edit the command into the empty-balance principal it exists to prevent. The
+    // suite was defending the wrong claim.
+    const note = el("admin-link-note").textContent ?? "";
+    expect(note).toMatch(/exactly as printed/);
+    expect(note).not.toMatch(/this page's own domain/);
   });
 });
 
