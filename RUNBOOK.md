@@ -340,18 +340,36 @@ vetKD master key** — and that choice is derived from the environment rather th
 because mainnet and a local network both call their key `key_1` and sealing against the
 wrong one produces a ciphertext nobody can ever open.
 
+You do **not** set these up front. Each `read` waits for you to paste the value:
+
 ```bash
-# Export in the shell rather than writing scripts/.local-dev.env: that file is for local
-# development, and a mainnet key does not belong in the repo tree even gitignored.
-# Neither value may be passed as a command-line argument.
-read -rs STRIPE_API_KEY && export STRIPE_API_KEY
+# `read -rs` takes one line from the terminal into the variable: -s so nothing echoes,
+# -r so a backslash stays a backslash. The `printf` is the prompt -- `read` prints none
+# of its own, so without it the terminal just looks hung.
+#
+# ⚠️ **This is the point, not ceremony.** `STRIPE_API_KEY=rk_... scripts/seal-secret.sh`
+# would put the key in ~/.zsh_history; typed into `read`, the only thing history records
+# is `read -rs STRIPE_API_KEY`. `export` is what lets the script's child process see it.
+#
+# ⚠️ `read -rsp "prompt: " VAR` is the BASH idiom and FAILS in zsh, where -p means "read
+# from the coprocess" (`zsh:read:1: -p: no coprocess`). Prompt with printf in both.
+printf 'Stripe restricted key (rk_...): '; read -rs STRIPE_API_KEY; echo
+export STRIPE_API_KEY
 scripts/seal-secret.sh api-key ic
 
-read -rs STRIPE_WEBHOOK_SECRET && export STRIPE_WEBHOOK_SECRET
+printf 'Stripe webhook signing secret (whsec_...): '; read -rs STRIPE_WEBHOOK_SECRET; echo
+export STRIPE_WEBHOOK_SECRET
 scripts/seal-secret.sh webhook-secret ic
 
+# ⚠️ Not optional. An exported key stays readable by every later child process of this
+# shell -- including the Stripe CLI, which prefers STRIPE_API_KEY over its own session
+# and cannot use a restricted key (`more_permissions_required`).
 unset STRIPE_API_KEY STRIPE_WEBHOOK_SECRET
 ```
+
+`scripts/.local-dev.env` is the other way the script finds these, and it is for **local
+development only**: it is read only when the variable is unset, and a mainnet key does not
+belong in the repo tree even gitignored.
 
 ⚠️ **Use a SANDBOX restricted key (`rk_test_...`), Checkout Sessions = Write, everything
 else None.** Write is the level that also grants the read the #52 recovery sweep needs.
