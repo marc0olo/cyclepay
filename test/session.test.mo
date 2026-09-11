@@ -36,7 +36,7 @@ suite("form encoding", func() {
   });
 
   test("the product name and a real origin survive a round trip in shape", func() {
-    let encoded = Session.formEncode("https://abc.icp0.io/#/order/deadbeef");
+    let encoded = Session.formEncode("https://abc.icp.net/#/order/deadbeef");
     // The scheme's `//` and the fragment's `#` are both escaped, so the value
     // cannot terminate early or introduce a field.
     assert not encoded.contains(#text "#");
@@ -49,7 +49,7 @@ suite("the create body", func() {
     orderId = "aabbccddeeff00112233445566778899";
     clientReferenceId = "2ibo7-dia_aabbccddeeff00112233445566778899";
     usdCents = 1_000;
-    origin = "https://abc.icp0.io";
+    origin = "https://abc.icp.net";
     expiresAtSeconds = 1_800_000_000;
   };
   let body = Session.createBody(args);
@@ -70,7 +70,7 @@ suite("the create body", func() {
   });
 
   test("sends BOTH return URLs, back to the buyer's own order", func() {
-    let expected = Session.formEncode("https://abc.icp0.io/#/order/aabbccddeeff00112233445566778899");
+    let expected = Session.formEncode("https://abc.icp.net/#/order/aabbccddeeff00112233445566778899");
     assert body.contains(#text("success_url=" # expected));
     assert body.contains(#text("cancel_url=" # expected));
   });
@@ -404,8 +404,8 @@ suite("validateOrigin — https, or loopback http (#83 groundwork)", func() {
   /// send a buyer to a plaintext page after paying) is vacuous for loopback.
 
   test("https is accepted and the trailing slash is trimmed", func() {
-    assert Session.validateOrigin("https://cyclepay.icp0.io") == #ok("https://cyclepay.icp0.io");
-    assert Session.validateOrigin("https://cyclepay.icp0.io/") == #ok("https://cyclepay.icp0.io");
+    assert Session.validateOrigin("https://cyclepay.icp.net") == #ok("https://cyclepay.icp.net");
+    assert Session.validateOrigin("https://cyclepay.icp.net/") == #ok("https://cyclepay.icp.net");
   });
 
   test("loopback http is accepted, in all four spellings", func() {
@@ -445,15 +445,15 @@ suite("validateOrigin — https, or loopback http (#83 groundwork)", func() {
   });
 
   test("non-loopback http is still refused", func() {
-    assert Session.validateOrigin("http://cyclepay.icp0.io") == #err(#notHttps);
-    assert Session.validateOrigin("ftp://cyclepay.icp0.io") == #err(#notHttps);
-    assert Session.validateOrigin("cyclepay.icp0.io") == #err(#notHttps);
+    assert Session.validateOrigin("http://cyclepay.icp.net") == #err(#notHttps);
+    assert Session.validateOrigin("ftp://cyclepay.icp.net") == #err(#notHttps);
+    assert Session.validateOrigin("cyclepay.icp.net") == #err(#notHttps);
   });
 
   test("a query or fragment is refused, on either scheme", func() {
     // It would collide with the `#/order/<id>` route appended to the origin.
-    assert Session.validateOrigin("https://cyclepay.icp0.io?x=1") == #err(#hasQueryOrFragment);
-    assert Session.validateOrigin("https://cyclepay.icp0.io#/order") == #err(#hasQueryOrFragment);
+    assert Session.validateOrigin("https://cyclepay.icp.net?x=1") == #err(#hasQueryOrFragment);
+    assert Session.validateOrigin("https://cyclepay.icp.net#/order") == #err(#hasQueryOrFragment);
     assert Session.validateOrigin("http://localhost:8000?x=1") == #err(#hasQueryOrFragment);
   });
 

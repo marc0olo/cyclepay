@@ -987,7 +987,7 @@ is pinned by the request rather than by a link's configuration.
    key and this secret is what **opens** the rail, so do it last.
 5. Optionally register price tiles with `set_card_tiers` — a buyer can type any
    amount within the gate's bounds without them.
-6. **Fund the reserve** with `icp cycles transfer <backend-id> --amount <N>t`, then
+6. **Fund the reserve** with `icp cycles transfer <N>t <backend-id> -n ic`, then
    `refresh_reserve` so the gate has an observation. Until it does, every order is
    refused with `#reserveShort` — the reserve is the stock being sold, and nothing
    in the canister can create it.

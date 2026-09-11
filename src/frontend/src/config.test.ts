@@ -33,32 +33,53 @@ describe("isLocalNetwork", () => {
 });
 
 describe("derivationOrigin", () => {
-  test("⚠️ on mainnet it is the CANISTER's origin, not the domain serving the page", () => {
-    // The whole point: the same string for every domain this app is ever served from,
-    // so a domain change does not hand every buyer a new principal.
+  test("⚠️ from a custom domain it is the CANISTER's origin, not the serving domain", () => {
+    // The whole point: one string for every domain this app is ever served from, so a
+    // domain change does not hand every buyer a new principal.
     expect(derivationOrigin("cyclepay.raymondk.co", FRONTEND)).toBe(`https://${FRONTEND}.icp.net`);
-    expect(derivationOrigin(`${FRONTEND}.icp.net`, FRONTEND)).toBe(`https://${FRONTEND}.icp.net`);
     expect(derivationOrigin("some.future.domain", FRONTEND))
       .toBe(derivationOrigin("cyclepay.raymondk.co", FRONTEND));
+  });
+
+  test("⚠️ the PRIMARY origin passes nothing, at any of the three gateway spellings", () => {
+    // Per the Internet Identity guidance: only the alternative origin sets a derivation
+    // origin, and II canonicalises `ic0.app` / `icp0.io` / `icp.net` to one form during
+    // delegation -- so passing a gateway origin is the case that BREAKS authentication
+    // rather than a harmless no-op. Which also means the icp0.io -> icp.net switch is a
+    // readability choice, not two identities.
+    for (const gateway of ["icp.net", "icp0.io", "ic0.app"]) {
+      expect(derivationOrigin(`${FRONTEND}.${gateway}`, FRONTEND), gateway).toBeUndefined();
+    }
+    // A DIFFERENT canister on a gateway domain is not this page's primary origin.
+    expect(derivationOrigin("aaaaa-aa.icp.net", FRONTEND)).toBe(`https://${FRONTEND}.icp.net`);
   });
 
   test("undefined locally, where II is served from the page's own origin", () => {
     expect(derivationOrigin("frontend.local.localhost", FRONTEND)).toBeUndefined();
   });
+
+  test("⚠️ with no frontend id it THROWS rather than deriving from the domain", () => {
+    // Fail closed. Returning undefined would let II derive from the serving domain: a
+    // working app, a silently different principal, and the one outcome that cannot be
+    // undone once a buyer holds cycles on it.
+    //
+    // ⚠️ This reads the DEFAULT argument, and passing `undefined` explicitly is the same
+    // call -- a JS default parameter fires on `undefined`. Under jsdom that default
+    // resolves to nothing, which is exactly the state being asserted.
+    expect(() => derivationOrigin("cyclepay.raymondk.co")).toThrow(/PUBLIC_CANISTER_ID:frontend/);
+    // Local is decided BEFORE the id is needed, so a local run never throws.
+    expect(() => derivationOrigin("frontend.local.localhost")).not.toThrow();
+  });
 });
 
 describe("canonicalAppDomain", () => {
-  test("⚠️ with no frontend id there is no derivation origin, so nothing is silently wrong", () => {
-    // A deployment whose `ic_env` lacks the frontend key must fall back to the page's own
-    // origin rather than build `https://undefined.icp.net`, which would derive a
-    // principal nobody could ever reach again.
-    //
-    // ⚠️ This reads the DEFAULT argument on purpose, and passing `undefined` explicitly
-    // would be the same call: a JS default parameter fires on `undefined`. Under jsdom
-    // that default resolves to nothing, which is exactly the state being asserted.
-    expect(derivationOrigin("cyclepay.raymondk.co")).toBeUndefined();
-    expect(canonicalAppDomain({ host: "cyclepay.raymondk.co", hostname: "cyclepay.raymondk.co" }))
-      .toBe("cyclepay.raymondk.co");
+  test("⚠️ with no frontend id it throws here too, rather than printing the wrong origin", () => {
+    // The printed `--app` selects which origin's principal the CLI asks for. Falling back
+    // to the serving domain would hand the buyer a delegation for a principal the page is
+    // not showing them -- the failure this function exists to prevent. Propagating the
+    // refusal is the only answer that cannot be acted on wrongly.
+    expect(() => canonicalAppDomain({ host: "cyclepay.raymondk.co", hostname: "cyclepay.raymondk.co" }))
+      .toThrow(/PUBLIC_CANISTER_ID:frontend/);
   });
 
   test("⚠️ `--app` follows the DERIVATION origin, not the page", () => {
@@ -66,6 +87,11 @@ describe("canonicalAppDomain", () => {
     // principal than the page shows them, with an empty balance -- the exact failure
     // the printed command exists to prevent.
     expect(canonicalAppDomain({ host: "cyclepay.raymondk.co", hostname: "cyclepay.raymondk.co" }, FRONTEND))
+      .toBe(`${FRONTEND}.icp.net`);
+  });
+
+  test("at the canister's own origin it is that host, since nothing is pinned there", () => {
+    expect(canonicalAppDomain({ host: `${FRONTEND}.icp.net`, hostname: `${FRONTEND}.icp.net` }, FRONTEND))
       .toBe(`${FRONTEND}.icp.net`);
   });
 

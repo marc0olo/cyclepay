@@ -101,7 +101,7 @@ persistent actor CyclesGateway {
   // asks for (`reviewing-motoko` A6) rather than an accessor per field.
   let stripeState : {
     // The asset origin Stripe returns the buyer to, e.g.
-    // `https://<canister>.icp0.io`. Null until an admin sets it, and
+    // `https://<canister>.icp.net`. Null until an admin sets it, and
     // `create_order` fails closed rather than creating a sessionless order.
     //
     // ⚠️ **Admin config, never a `create_order` parameter.** A caller-supplied

@@ -233,7 +233,7 @@ module {
     clientReferenceId : Text;
     /// Gross USD cents. Stripe's `unit_amount`.
     usdCents : Nat;
-    /// Operator-configured asset origin, e.g. `https://<canister>.icp0.io`.
+    /// Operator-configured asset origin, e.g. `https://<canister>.icp.net`.
     /// Admin config, never a caller parameter — a caller-supplied `success_url`
     /// is an open redirect Stripe renders after a real payment.
     origin : Text;

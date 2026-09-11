@@ -300,7 +300,7 @@ icp canister call backend set_expected_livemode '(opt false)'
 # creates these cycles; you transfer cycles you already have, which is also the
 # mainnet procedure.
 BACKEND_ID=$(icp canister status backend --json | jq -r '.id')
-icp cycles transfer "$BACKEND_ID" --amount 100t
+icp cycles transfer 100t "$BACKEND_ID"
 # Then let the gateway observe what arrived. Until it does, the admission gate has
 # no reason to believe it can deliver and refuses with `#reserveShort`.
 icp canister call backend refresh_reserve '()'

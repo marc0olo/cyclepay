@@ -14,42 +14,62 @@ export function isLocalNetwork(hostname: string = window.location.hostname): boo
   );
 }
 
-/// The origin Internet Identity derives this app's principals from.
+/// The origin Internet Identity derives this app's principals from, or `undefined` when
+/// this page is already being served from it.
 ///
-/// ⚠️ **II derives a principal PER ORIGIN, so this string decides who a buyer is.**
-/// Served from a custom domain with no derivation origin, the same person signing in at
-/// `cyclepay.raymondk.co` and at the canister URL gets two different principals, two
-/// cycles balances, and an allow-list entry that works on one and not the other.
+/// ⚠️ **II derives a principal PER ORIGIN, so this decides who a buyer is.** Served from a
+/// custom domain with nothing pinned, the same person signing in at
+/// `cyclepay.raymondk.co` and at the canister URL gets two principals, two cycles
+/// balances, and an allow-list entry that works on one and not the other.
 ///
-/// ⚠️ **Pinned to the FRONTEND CANISTER's own origin, never to the domain the page came
-/// from — and that is what makes the domain reversible.** #40 records the origin as
-/// irreversible after the first purchase, which is true of a domain used as the
-/// derivation origin. Deriving from the canister id instead means this test domain and
-/// whatever production domain #40 settles on both yield the SAME principals, so the
-/// decision stops being one-way. The canister id is the one identifier a domain change
-/// cannot alter.
+/// ⚠️ **Only the ALTERNATIVE origin passes this; the primary must not.** A page served at
+/// the canister's own gateway origin returns `undefined` here. II canonicalises the three
+/// official gateway domains during delegation, so passing one as a derivation origin is
+/// the case its own guidance says breaks authentication rather than a no-op.
+///
+/// ⚠️ **Pinned to the FRONTEND CANISTER's origin, never to the domain the page came from,
+/// and that is what makes the domain reversible.** #40 records the origin as irreversible
+/// after the first purchase, which is true of a *custom domain* used as the derivation
+/// origin. Deriving from the canister id instead means this test domain and whatever
+/// production domain #40 settles on both yield the SAME principals, so the decision stops
+/// being one-way. The canister id is the one identifier a domain change cannot alter.
 ///
 /// The cost is a second file: II fetches `/.well-known/ii-alternative-origins` from THIS
-/// origin and refuses to derive for any serving origin the file does not list. Both files
-/// live in `src/frontend/public/.well-known/`, so the canister serves them at the
-/// derivation origin and at the custom domain alike.
+/// origin, cross-origin, and refuses to derive for any serving origin the file does not
+/// list. It needs a CORS header as well as a media type; `public/_headers` carries both.
 ///
-/// ⚠️ **`icp.net`, and the choice is as irreversible as the domain question it defers.**
-/// `icp0.io` serves the same canister and would derive DIFFERENT principals, so this is
-/// not a cosmetic preference: the two spellings are two identities. `icp.net` is the
-/// current canonical host for a canister, which is the property that matters for a string
-/// that has to keep resolving for as long as the accounts derived from it exist. Change it
-/// only before the first sign-in; afterwards it strands every principal.
-///
-/// `undefined` locally: II is served from the same origin there, and passing a
-/// derivation origin it cannot verify would break sign-in for every local run.
+/// ⚠️ **`icp.net` rather than `icp0.io`, and the two are NOT two identities** — corrected
+/// against the Internet Identity guidance, which states that II canonicalises `ic0.app`,
+/// `icp0.io` and `icp.net` to one form during delegation, so a canister served at any of
+/// them yields the same principal. The spelling is therefore a readability choice, not an
+/// irreversible one; `icp.net` is the current default for new frontend canisters. What IS
+/// irreversible is canister-origin versus custom-domain, which is the choice above.
 export function derivationOrigin(
   hostname: string = window.location.hostname,
   frontendId: string | undefined = frontendCanisterId(),
 ): string | undefined {
   if (isLocalNetwork(hostname)) return undefined;
-  return frontendId === undefined ? undefined : `https://${frontendId}.icp.net`;
+  // ⚠️ **Fail CLOSED.** Returning `undefined` here would let II derive from the serving
+  // domain instead: a working app, a silently different principal, and the one outcome
+  // that cannot be undone once a buyer has cycles on it. A refused sign-in is recoverable;
+  // a split identity is not. `actor.ts` already throws when the sibling backend id is
+  // missing, so this is the same posture on the key that decides identity rather than
+  // reachability.
+  if (frontendId === undefined) {
+    throw new Error(
+      "ic_env carries no PUBLIC_CANISTER_ID:frontend, so the Internet Identity derivation "
+        + "origin cannot be determined. Refusing to sign in rather than deriving a "
+        + "different principal from this domain. Redeploy the frontend with `icp deploy`.",
+    );
+  }
+  // The primary origin: this page IS the derivation origin, so it passes nothing.
+  if (GATEWAYS.some((g) => hostname === `${frontendId}.${g}`)) return undefined;
+  return `https://${frontendId}.icp.net`;
 }
+
+/// The official canister gateway domains. II canonicalises all three to one form, so a
+/// page served at any of them is already on the derivation origin.
+const GATEWAYS = ["icp.net", "icp0.io", "ic0.app"];
 
 /// The frontend canister's own id, from the `ic_env` cookie the canister sets.
 ///
