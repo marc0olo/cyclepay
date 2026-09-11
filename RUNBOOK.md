@@ -106,8 +106,28 @@ consciously set. Work the list in order:
    account.
 3. **Provision the webhook secret** (§2 below). Until set, the webhook
    route answers 503 and Stripe retries.
-4. **Register card tiers** (§3 below). Until set, the tier list is empty
-   and no card order can be created.
+4. **Register card tiers. Not optional in practice** (§3 below):
+
+   ```bash
+   icp canister call backend set_card_tiers \
+     '(vec { record { id = "t10"; usdCents = 1_000 : nat };
+             record { id = "t20"; usdCents = 2_000 : nat };
+             record { id = "t50"; usdCents = 5_000 : nat } })' \
+     -e ic --identity <operator>
+   ```
+
+   ⚠️ **With an empty list the buy view offers NO WAY TO BUY**, and the reason is not
+   the one you would guess. `Amount` is `variant { custom : nat; tier : text }` and
+   nothing in the create path validates an amount against the tier list, so the
+   *backend* really does accept any amount within the gate's bounds. But `renderTiers`
+   returns early on an empty list, and the **custom-amount tile is built after that
+   return** — so no tiles and no custom field. The technically-optional reading of this
+   step is what `docs/STRIPE.md` and §3 still carry, and it is true of the canister and
+   false of the page.
+
+   The whole-vector setter replaces the list; there is no add or remove, and `'(vec {})'`
+   clears it. Every tier must sit inside the gate's bounds or it is refused. No `$100`
+   preset: that is the ceiling, and it is what the custom field is for.
 5. **Fund the cycles reserve, then tell the gateway to look** (§5 below):
    `icp cycles transfer <amount> <backend-principal> -n ic` followed by
    `icp canister call backend refresh_reserve '()' -e ic`.
@@ -692,7 +712,10 @@ icp canister call backend set_stripe_origin '("https://<your-origin>")' -e ic --
 # 3. The webhook signing secret (§7). Sealed the same way; see §2 for rotation.
 STRIPE_WEBHOOK_SECRET='whsec_...' scripts/seal-secret.sh webhook-secret ic
 
-# 4. The price tiles. Optional — a buyer can type any amount within the bounds.
+# 4. The price tiles. ⚠️ REQUIRED for a usable page, whatever the canister accepts:
+#    with an empty list the buy view renders no tiles AND no custom field, because
+#    `renderTiers` returns early and the custom tile is built after that return. See §1
+#    step 4. Do not register a $100 preset; that is the ceiling and the custom field's job.
 icp canister call backend set_card_tiers \
   '(vec { record { id = "t10"; usdCents = 1_000 : nat } })' \
   -e ic --identity <operator>
