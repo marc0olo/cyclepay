@@ -502,7 +502,11 @@ list.
 
 **One number is the whole switch: `pricing_status().config.divisor`.** `1` is
 production; anything greater is simulation, and the mode signal, the banner and the
-receipt's extra terms all key off that same value. There is deliberately no second
+receipt's extra terms all key off that same value.
+
+This section is the mechanism and the guards. The ordered deployment procedure -- the
+confidential subnet, the custom domain, sealed secrets on mainnet, and the four one-way
+steps -- is **`RUNBOOK.md` section 1a**. There is deliberately no second
 boolean — one that disagreed with the divisor would let two places answer "are we
 simulating?" differently.
 
@@ -974,16 +978,20 @@ is pinned by the request rather than by a link's configuration.
 2. `set_stripe_origin` — where Stripe returns the buyer, and the origin the
    session's `success_url`/`cancel_url` are built from.
 3. Create a webhook endpoint pointing at
-   `https://<canister-id>.icp0.io/webhook/stripe`, subscribed to
+   `https://<canister-id>.icp.net/webhook/stripe`, subscribed to
    **`checkout.session.completed`**, **`checkout.session.expired`**,
-   **`charge.refunded`** and **`charge.dispute.created`**.
+   **`charge.refunded`**, **`charge.dispute.created`** and both
+   **`checkout.session.async_payment_succeeded`** / **`_failed`** -- six in all,
+   which is every type `Card.handleWebhook` dispatches on. The async pair cannot
+   fire while `createBody` pins `payment_method_types[]=card`; subscribing costs
+   nothing and covers the day that pin changes.
    ⚠️ `checkout.session.expired` is not optional: it is the *only* thing that
    expires an order and releases its reserve promise (§10).
 4. Copy the endpoint's signing secret into `set_webhook_secret`. Provisioning the
    key and this secret is what **opens** the rail, so do it last.
 5. Optionally register price tiles with `set_card_tiers` — a buyer can type any
    amount within the gate's bounds without them.
-6. **Fund the reserve** with `icp cycles transfer <backend-id> --amount <N>t`, then
+6. **Fund the reserve** with `icp cycles transfer <N>t <backend-id> -n ic`, then
    `refresh_reserve` so the gate has an observation. Until it does, every order is
    refused with `#reserveShort` — the reserve is the stock being sold, and nothing
    in the canister can create it.

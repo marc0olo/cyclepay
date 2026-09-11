@@ -6,6 +6,7 @@ import { safeGetCanisterEnv } from "@icp-sdk/core/agent/canister-env";
 import { Actor, HttpAgent, type Identity } from "@icp-sdk/core/agent";
 import { IDL } from "@icp-sdk/core/candid";
 import { createActor, Rail } from "./bindings/backend";
+import { isLocalNetwork } from "./config";
 
 const canisterEnv = safeGetCanisterEnv();
 export const backendCanisterId = canisterEnv?.["PUBLIC_CANISTER_ID:backend"];
@@ -14,7 +15,17 @@ export const backendCanisterId = canisterEnv?.["PUBLIC_CANISTER_ID:backend"];
 /// ledger) — host and root key always come from ic_env.
 export function agentOptions(identity?: Identity) {
   return {
-    host: window.location.origin,
+    // ⚠️ **`host` is the API endpoint, NOT the origin the page came from, and on a
+    // custom domain those differ.** A custom domain is an HTTP gateway and does not
+    // serve `/api/v2`, so `window.location.origin` there points every canister call at
+    // something that cannot answer one. It worked while the app was only ever reached at
+    // a canister URL or a local gateway, both of which do serve the API on their own
+    // origin.
+    //
+    // Omitted on mainnet so `@icp-sdk/core` resolves it to `https://icp-api.io`, the API
+    // boundary nodes. Kept as the page origin locally, where the `icp network` gateway
+    // is the API and `icp-api.io` is not reachable.
+    ...(isLocalNetwork() ? { host: window.location.origin } : {}),
     rootKey: canisterEnv?.IC_ROOT_KEY,
     ...(identity ? { identity } : {}),
   };

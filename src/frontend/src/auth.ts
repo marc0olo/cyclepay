@@ -11,6 +11,7 @@
 // URL to build against. Test-only: production leaves it unset and gets mainnet II.
 import { AuthClient } from "@icp-sdk/auth/client";
 import type { Identity } from "@icp-sdk/core/agent";
+import { derivationOrigin } from "./config";
 
 const EIGHT_HOURS_NS = 8n * 3_600_000_000_000n;
 
@@ -42,21 +43,64 @@ function identityProvider(): string {
 
 const IDENTITY_PROVIDER = identityProvider();
 
-const authClient = new AuthClient({
-  identityProvider: IDENTITY_PROVIDER,
-});
+/// ⚠️ **`derivationOrigin` is what keeps a buyer's principal the same on every domain
+/// this app is ever served from.** Without it II derives from the serving origin, so
+/// `cyclepay.raymondk.co` and the canister URL are two different accounts with two
+/// different cycles balances — and moving to a production domain later would strand
+/// every principal. `config.ts` explains why it is the canister origin and not the
+/// domain; II verifies the claim against `/.well-known/ii-alternative-origins` served
+/// from that origin, so the serving domain must be listed there or sign-in is refused.
+///
+/// `undefined` locally and at the canister's own origin, where nothing is pinned.
+///
+/// ⚠️ **Built LAZILY, because `derivationOrigin()` refuses rather than guessing.** It
+/// throws when `ic_env` carries no frontend canister id, since deriving from the serving
+/// domain instead would be a working app with a silently different principal. At module
+/// scope that throw would take the whole page down with it; here it reaches whoever asked.
+///
+/// ⚠️ **"Only the identity operations fail" rests on a chain worth naming, because a
+/// future change can break it.** `linkIdentityCommand()` reaches the same throw through
+/// `canonicalAppDomain()`, and `main.ts` calls it unguarded from two render sites. Both
+/// are unreachable in this state only because `currentIdentity()` below returns null, so
+/// nobody is signed in and neither site runs. Render that command for a signed-out
+/// visitor and the refusal becomes a page crash again.
+let client: AuthClient | undefined;
+
+function authClient(): AuthClient {
+  client ??= new AuthClient({
+    identityProvider: IDENTITY_PROVIDER,
+    ...(() => {
+      const origin = derivationOrigin();
+      return origin === undefined ? {} : { derivationOrigin: origin };
+    })(),
+  });
+  return client;
+}
 
 export async function signIn(): Promise<Identity> {
-  // Rejects when the user closes the popup — callers surface that, not us.
-  return authClient.signIn({ maxTimeToLive: EIGHT_HOURS_NS });
+  // Rejects when the user closes the popup — callers surface that, not us. A refusal from
+  // `derivationOrigin()` arrives the same way, which is the point: the buyer is told sign-in
+  // is unavailable instead of being given a principal nobody can reach again.
+  return authClient().signIn({ maxTimeToLive: EIGHT_HOURS_NS });
 }
 
 export async function signOut(): Promise<void> {
-  await authClient.signOut();
+  await authClient().signOut();
 }
 
 /// The restored session, or null when signed out / expired.
+///
+/// ⚠️ **Null, not a throw, when the client cannot be built.** This runs during page load,
+/// and a restored session is not a new derivation — but a deployment that cannot name its
+/// derivation origin must not be treated as signed in either. "Signed out" is the reading
+/// that leaves every later decision to `signIn`, which does refuse loudly.
 export async function currentIdentity(): Promise<Identity | null> {
-  if (!authClient.isAuthenticated()) return null;
-  return authClient.getIdentity();
+  let c: AuthClient;
+  try {
+    c = authClient();
+  } catch {
+    return null;
+  }
+  if (!c.isAuthenticated()) return null;
+  return c.getIdentity();
 }

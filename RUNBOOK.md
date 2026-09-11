@@ -94,7 +94,7 @@ consciously set. Work the list in order:
 
 1. **Deploy + verify** per `RELEASE.md` (module hash gate).
 2. **Fund the cycles reserve, then observe it** (§5): `icp cycles transfer <amount>
-   <backend-principal>`, then `refresh_reserve`. ⚠️ The second half is not optional —
+   <backend-principal> -n ic`, then `refresh_reserve`. ⚠️ The second half is not optional —
    solvency is decided against a bound that only rises by observation, so an
    unobserved top-up sells nothing.
 
@@ -109,8 +109,8 @@ consciously set. Work the list in order:
 4. **Register card tiers** (§3 below). Until set, the tier list is empty
    and no card order can be created.
 5. **Fund the cycles reserve, then tell the gateway to look** (§5 below):
-   `icp cycles transfer <amount> <backend-principal>` followed by
-   `icp canister call backend refresh_reserve '()'`.
+   `icp cycles transfer <amount> <backend-principal> -n ic` followed by
+   `icp canister call backend refresh_reserve '()' -e ic`.
    Delivery transfers out of the gateway's own cycles-ledger account, so an unfunded
    reserve means orders that pay and then retry delivery forever. ⚠️ This is a
    different pot from the canister's gas (step 4) — `icp canister top-up` does not
@@ -122,9 +122,12 @@ consciously set. Work the list in order:
    leaked webhook secret (§2), and #30's per-purchase ceiling is the per-order
    exposure inside it.
 8. **Configure the Stripe webhook endpoint**: in the Stripe Dashboard, add
-   a webhook destination `https://<backend-canister-id>.icp0.io/webhook/stripe`
-   sending exactly the events `checkout.session.completed` and
-   `charge.refunded`. (Other event types are acked and ignored.)
+   a webhook destination `https://<backend-canister-id>.icp.net/webhook/stripe`
+   subscribed to the events in §1a's table. ⚠️ **Not just `completed` and
+   `charge.refunded`** — this step said "exactly" those two while
+   `checkout.session.expired` is the *only* thing that expires an order (§10),
+   and the canister dispatches on six types in all. Unsubscribed events are not
+   "acked and ignored": they are never sent, so their handler never runs.
 9. **Review the admission gate** (§5a below). The defaults are non-zero and
    usable, but `maxPurchaseUsdCents` should sit just above your largest tier,
    and `minCanisterCycles` should suit how closely you monitor this canister.
@@ -174,6 +177,332 @@ consciously set. Work the list in order:
    `minCanisterCycles`, with room for the 1 B the XRC needs per refresh),
    `card_tiers`, and `can_purchase '(<your smallest tier's cents>)'` — the last
    one should answer `ok` before you announce the service.
+
+## 1a. Mainnet in SIMULATION mode, on a custom domain
+
+⚠️ **This is not §1 with different values.** §1 deploys a production gateway: live Stripe
+key, `expected_livemode = ?true`, real cycles delivered. This deploys a gateway that takes
+**real charges in Stripe's sandbox** and delivers **1/1000 of the cycles**, so its steps 11
+and 12 are not merely different here, they are *refused* — `divisor > 1` requires
+`expected_livemode == ?false` exactly, and the two guards are mutual (`docs/STRIPE.md`
+§9a).
+
+Target of this procedure: `https://cyclepay.raymondk.co`, on the confidential subnet
+`re2t4-faa75-v3vhk-kdmdr-uyrkl-aik2l-ixd6u-p3fyr-zlfkc-6c5af-zae`, divisor 1000.
+
+### What needs no configuration
+
+| | why |
+|---|---|
+| the Exchange Rate Canister | `icp.yaml`'s `ic` environment lists `[backend, frontend]` only, so the local XRC mock is never created on mainnet and its id is never injected. The backend then falls back to the real XRC. **Verify:** `pricing_status.xrcCanisterId` must read `uf6dk-hyaaa-aaaaq-qaaaq-cai` |
+| the Cycles Minting Canister | `rkp4c-7iaaa-aaaaa-aaaca-cai` is compiled in and is the same principal on mainnet and PocketIC |
+| a webhook forwarder | `scripts/stripe-dev.sh` exists only because Stripe cannot reach localhost. On mainnet Stripe posts straight to the canister |
+| the CSP | `connect-src` already admits `https://icp-api.io`, which is where a custom-domain page sends its canister calls |
+
+### The order is one-way in four places
+
+```
+expected_livemode = ?false        <- ?false EXACTLY; null is the fresh-install default and is refused
+        |
+set_pricing_config divisor=1000   <- refused once ANY order is stored. Reinstall is the only way back
+        |
+add_allowed_buyer <tester>        <- MUST precede funding the reserve
+        |
+icp cycles transfer -> refresh_reserve
+```
+
+And the fifth, outside the canister: **the derivation origin decides who every buyer is.**
+It is pinned to the frontend canister's own origin (`src/frontend/src/config.ts`), which is
+what makes this test domain and whatever domain #40 settles on yield the **same**
+principals. Changing that pin after the first sign-in strands every account.
+
+### Cycles
+
+```bash
+# ⚠️ `-n ic` on BOTH. Without it these act on the local network, where `mint` has no CMC
+# to convert against and `balance` reports a local balance that has nothing to do with
+# what you are about to spend. Exactly one of --icp / --cycles is required.
+icp cycles mint --icp 5 -n ic     # or --cycles 8600b, which solves for the ICP needed
+icp cycles balance -n ic
+```
+
+⚠️ **Every row is cash to mint, and a component sits under its parent rather than beside
+it.** Mixing targets ("to 5 T") with increments ("+0.2 T") is how a budget stops being
+checkable: an earlier version of this table listed the creation fee next to the 4.0 T it
+comes out of, and totalled 7.7 T while its own rows summed to 8.5 T.
+
+```
+  4.000 T   icp deploy, two canisters at the 2 T default
+              of which creation fees        ~0.54 T   consumed (7 nodes: ~269 B each, against 500 B at 13)
+              of which lands as balance     ~3.46 T   ~1.73 T per canister
++ 3.400 T   top the backend up to its own-gas floor
+              the floor is 5 T; it holds ~1.73 T after creation, so this is the increment
++ 0.200 T   the sellable reserve, a SEPARATE pot on the cycles ledger
+              at divisor 1000 a $10 purchase locks ~7.24 G, so ~27 test purchases
++ 1.000 T   slack for one reinstall, because the divisor is one-way once an order exists
+  ────────
+  8.600 T   to mint
+```
+
+| threshold | value | what happens below it |
+|---|---|---|
+| `Gate.Config.minCanisterCycles` | 5 T | the gate admits **no orders**. Compared against the raw `Cycles.balance()`, so the freezing threshold does not eat into it |
+| the reserve floor | anything | `#reserveShort`, and it stays 0 until `refresh_reserve` observes a top-up |
+
+⚠️ **4.5 T is not enough, and the shortfall is invisible until the first order**: the two
+canisters get created, the frontend serves, and every `create_order` is refused because the
+backend sits under its own-gas floor. 5 ICP mints comfortably past 8.6 T at current rates;
+check with `icp cycles balance -n ic` before starting rather than after step 1.
+
+### 1. Create and install on the confidential subnet
+
+```bash
+# From a green main. The -Werror gate runs on `mops check`, not on `icp deploy` (§1).
+bash scripts/test-all.sh
+
+icp deploy -e ic \
+  --subnet re2t4-faa75-v3vhk-kdmdr-uyrkl-aik2l-ixd6u-p3fyr-zlfkc-6c5af-zae
+
+icp canister status backend -e ic -i     # note both ids
+icp canister status frontend -e ic -i
+
+# The backend's own gas, to the floor. This is NOT the reserve.
+icp canister top-up backend --amount 3400b -e ic
+```
+
+⚠️ **`--subnet` on the deploy, not on a later create.** A canister already created on the
+default application subnet cannot be moved; the only fix is to delete it and start over,
+and on mainnet that means new canister ids — which means a new derivation origin and a
+new principal for anyone who signed in.
+
+Raise the freezing threshold once the deployment is real. 30 days is thin for
+money-bearing state, and for a sandbox it is a judgement call rather than a rule:
+
+```bash
+icp canister settings update backend --freezing-threshold 7776000 -e ic   # 90 days
+```
+
+### 2. The custom domain
+
+Two files ship in the frontend already — `src/frontend/public/.well-known/ic-domains` and
+`ii-alternative-origins` — so the canister serves both after step 1. What remains is DNS
+and the registration call.
+
+| record | host | value |
+|---|---|---|
+| CNAME | `cyclepay.raymondk.co` | `cyclepay.raymondk.co.icp1.io` |
+| TXT | `_canister-id.cyclepay.raymondk.co` | the **frontend** canister id |
+| CNAME | `_acme-challenge.cyclepay.raymondk.co` | `_acme-challenge.cyclepay.raymondk.co.icp2.io` |
+
+⚠️ **Turn off the DNS provider's own TLS.** Cloudflare's Universal SSL and equivalents
+interfere with the ACME challenge the boundary nodes run, and can leave stale
+`_acme-challenge` TXT records that do not appear in the dashboard. Check with
+`dig TXT _acme-challenge.cyclepay.raymondk.co` — there should be no TXT records, only the
+CNAME.
+
+```bash
+curl -sL "https://icp.net/custom-domains/v1/cyclepay.raymondk.co/validate" | jq
+curl -sL -X POST "https://icp.net/custom-domains/v1/cyclepay.raymondk.co" | jq
+curl -sL "https://icp.net/custom-domains/v1/cyclepay.raymondk.co" | jq '.data.registration_status'
+```
+
+Poll until `registered`, then give the gateways a few minutes.
+
+⚠️ **`.well-known/ii-alternative-origins` is what makes the domain usable at all.**
+Internet Identity fetches it from the derivation origin and refuses to derive for a
+serving origin the file does not list. Adding a second serving domain later means editing
+that file **and** redeploying before the domain goes live.
+
+### 3. Declare the mode, then the divisor
+
+```bash
+# ?false EXACTLY. `null` accepts either mode and is what a fresh install has.
+icp canister call backend set_expected_livemode '(opt false)' -e ic --identity <operator>
+icp canister call backend expected_livemode '()' -e ic
+
+# Simulation. MUST come before the first order.
+icp canister call backend set_pricing_config '(record {
+  feeBps = 290 : nat; feeFixedCents = 30 : nat; maxAgeNs = 300_000_000_000 : int;
+  maxRateDeltaBps = 5_000 : nat; minRateSources = 2 : nat; divisor = 1_000 : nat })' \
+  -e ic --identity <operator>
+
+icp canister call backend pricing_status '()' -e ic   # divisor = 1_000, xrcCanisterId = uf6dk-...
+```
+
+⚠️ **The divisor's ceiling scales with `minPurchaseUsdCents`, not with the purchase.** At
+the shipped $10 floor, divisor 1000 leaves 7.24 G — 72x the flat 100 M ledger deposit fee,
+so it is accepted. Lower the floor for a demo and the same divisor is refused
+(`#simulationScaleTooSmall`): that is the guard working, not a bug.
+
+### 4. The secrets, sealed, without any local script
+
+Both Stripe secrets are **encrypted to the canister before they are sent** (#11), so the
+plaintext never appears in an ingress message, a shell history or a CI log. The mainnet
+path differs from the local one only in the `ic` argument, which selects the **mainnet
+vetKD master key** — and that choice is derived from the environment rather than typed,
+because mainnet and a local network both call their key `key_1` and sealing against the
+wrong one produces a ciphertext nobody can ever open.
+
+You do **not** set these up front. Each `read` waits for you to paste the value:
+
+```bash
+# `read -rs` takes one line from the terminal into the variable: -s so nothing echoes,
+# -r so a backslash stays a backslash. The `printf` is the prompt -- `read` prints none
+# of its own, so without it the terminal just looks hung.
+#
+# ⚠️ **This is the point, not ceremony.** `STRIPE_API_KEY=rk_... scripts/seal-secret.sh`
+# would put the key in ~/.zsh_history; typed into `read`, the only thing history records
+# is `read -rs STRIPE_API_KEY`. `export` is what lets the script's child process see it.
+#
+# ⚠️ `read -rsp "prompt: " VAR` is the BASH idiom and FAILS in zsh, where -p means "read
+# from the coprocess" (`zsh:read:1: -p: no coprocess`). Prompt with printf in both.
+printf 'Stripe restricted key (rk_...): '; read -rs STRIPE_API_KEY; echo
+export STRIPE_API_KEY
+scripts/seal-secret.sh api-key ic
+
+printf 'Stripe webhook signing secret (whsec_...): '; read -rs STRIPE_WEBHOOK_SECRET; echo
+export STRIPE_WEBHOOK_SECRET
+scripts/seal-secret.sh webhook-secret ic
+
+# ⚠️ Not optional. An exported key stays readable by every later child process of this
+# shell -- including the Stripe CLI, which prefers STRIPE_API_KEY over its own session
+# and cannot use a restricted key (`more_permissions_required`).
+unset STRIPE_API_KEY STRIPE_WEBHOOK_SECRET
+```
+
+`scripts/.local-dev.env` is the other way the script finds these, and it is for **local
+development only**: it is read only when the variable is unset, and a mainnet key does not
+belong in the repo tree even gitignored.
+
+⚠️ **Use a SANDBOX restricted key (`rk_test_...`), Checkout Sessions = Write, everything
+else None.** Write is the level that also grants the read the #52 recovery sweep needs.
+Never an unrestricted `sk_`: a leaked write-sessions key can only create sessions that pay
+*us*, while one that can issue refunds is materially worse.
+
+⚠️ **Do NOT export `STRIPE_API_KEY` into a shell where the Stripe CLI runs.** The CLI
+prefers that variable over its own `stripe login`, and a restricted key cannot open a CLI
+session (`more_permissions_required`).
+
+If you would rather run the two steps by hand — a different machine, or wanting each step
+visible — that is all the script does:
+
+```bash
+BACKEND=$(icp canister status backend -e ic -i)
+
+# 1. Seal, OFFLINE. The public key is computed from a master key shipped in
+#    @icp-sdk/vetkeys plus the canister id: no network call, no identity, nothing to
+#    trust. Anyone may seal a secret TO the canister; only it can open one.
+CYCLEPAY_SEAL_SECRET="$STRIPE_API_KEY" npm --prefix scripts/seal run --silent seal -- \
+  --canister "$BACKEND" --source mainnet --out /tmp/sealed.arg
+
+# 2. Send it. This is the only step that involves your identity.
+icp canister call backend set_stripe_api_key --args-file /tmp/sealed.arg -e ic
+rm -f /tmp/sealed.arg
+
+icp canister call backend stripe_api_key_status '()' -e ic   # isSet = true, generation = 1
+```
+
+`--source mainnet` has no default, on purpose. A `#notSealedToThisCanister` refusal means
+the ciphertext was sealed against the other network's master key — the failure this
+arrangement exists to make loud instead of silent.
+
+### 5. Stripe: where events arrive, and where the buyer comes back
+
+Two different URLs, and only the second one is the custom domain.
+
+```bash
+# Where the BUYER returns after paying. Validated: https, no query, no fragment.
+# success_url becomes `<origin>/#/order/<id>`, and the app routes on the hash, so the
+# certified-assets canister needs no _redirects rule for it.
+icp canister call backend set_stripe_origin '("https://cyclepay.raymondk.co")' \
+  -e ic --identity <operator>
+icp canister call backend stripe_origin '()' -e ic
+```
+
+In the Stripe **sandbox** dashboard, add a webhook destination pointing at the **backend
+canister**, not the domain:
+
+```
+https://<backend-canister-id>.icp.net/webhook/stripe
+```
+
+| event | what it does here | omitting it |
+|---|---|---|
+| `checkout.session.completed` | the delivery path | nothing is ever delivered |
+| **`checkout.session.expired`** | the **only** *event* that moves an order to `#expired` and releases its reserve promise (§10) | ⚠️ orders sit `#created` past their deadline forever. §10 makes a stuck `#created` order the detection signal for a broken one, so a missing subscription manufactures false alarms in the signal the design relies on. ⚠️ **And the obvious lever does not recover it:** `expire_order` asks Stripe first and refuses with `#sessionNotOpen` once the session has really expired there, which is precisely this case. Subscribe, then **resend the event from the Stripe Dashboard** so the order moves through its normal path |
+| `charge.refunded` | resolves an `#unattributed` obligation, and files one for a late payment | a refund settles the money and leaves the worklist item open |
+| `charge.dispute.created` | one audit line: *reconcile in Stripe; cycles cannot be recovered* | the dispute leaves no trace in the trail |
+| `checkout.session.async_payment_succeeded` | the delivery path, for a delayed method | **cannot fire today** — `createBody` pins `payment_method_types[]=card` and cards settle synchronously. Subscribe anyway: if that pin is ever removed, an unsubscribed success is fiat in with nothing delivered and nothing on the worklist |
+| `checkout.session.async_payment_failed` | one audit line: *will never pay* | same, and same reason to subscribe |
+
+⚠️ **Subscribe to all six.** The first three are load-bearing, the next one is the audit
+trail, and the last two are free insurance against a change to the payment-method pin.
+
+⚠️ The signing secret that destination shows you is the one step 4 provisions. Until it is
+set the route answers 503 and Stripe retries.
+
+### 6. Allow-list, then fund the reserve
+
+⚠️ **This order, for the reason §5 gives**: sandbox payments are free and unlimited, so
+test mode plus an empty allow-list plus a funded reserve is a cycles faucet, and the
+gateway refuses every buyer in that state (`#unboundedGiveaway`).
+
+```bash
+# Sign in at https://cyclepay.raymondk.co, copy the principal the page shows.
+# ⚠️ That principal is derived from the pinned derivation origin, so it is the same one
+# you would get at the canister URL -- and a principal copied from any OTHER deployment
+# of this app is not.
+icp canister call backend add_allowed_buyer '(principal "<tester>")' -e ic --identity <operator>
+icp canister call backend allowed_buyers '()' -e ic
+
+icp cycles transfer 200b <backend-principal> -n ic
+icp canister call backend refresh_reserve '()' -e ic --identity <operator>
+icp canister call backend reserve_status '()' -e ic     # availableToSell > 0
+```
+
+### 7. Verify before spending a card
+
+```bash
+icp canister call backend health '()' -e ic                       # true
+icp canister call backend pricing_status '()' -e ic               # ok, divisor 1_000, real XRC id
+icp canister call backend quote_previews '(vec { 1_000 : nat })' -e ic
+icp canister call backend refusal_counts '()' -e ic               # every refusingNow flag false
+icp canister call backend expected_livemode '()' -e ic            # opt false
+curl -sI https://cyclepay.raymondk.co                             # HTTP/2 200
+curl -sL https://cyclepay.raymondk.co/.well-known/ic-domains
+```
+
+⚠️ **Verify IDENTITY too — it is the only one-way item in this list**, and the one nothing
+above touches. Two checks, before step 6 allow-lists a principal and funds a reserve
+against it:
+
+```bash
+# 1. Internet Identity reads this CROSS-ORIGIN from the derivation origin. Without the
+#    CORS header it cannot read the file, cannot validate the domain, and refuses to
+#    derive -- which presents as sign-in failing only on the custom domain.
+curl -sI https://<frontend-canister-id>.icp.net/.well-known/ii-alternative-origins
+#    expect: content-type: application/json  AND  access-control-allow-origin: *
+```
+
+2. **Sign in at `https://cyclepay.raymondk.co` and at
+   `https://<frontend-canister-id>.icp.net`, and confirm the page shows the same
+   principal.** Thirty seconds, and it turns this section's central claim from prose into
+   an observation. If they differ, stop: the derivation origin is not in effect, and
+   anything allow-listed from here is allow-listed for an identity that will not come
+   back.
+
+⚠️ **`availableToSell` stays in REAL cycles while quotes are scaled**, so it can read
+200 G while $10 buys 7.24 G. Arithmetically right, and startling without this sentence.
+
+⚠️ **A stale rate shows as `cycles = null` in `quote_previews` at ANY divisor.** Read
+`pricing_status` before concluding the divisor is wrong, and force a tick rather than
+waiting for the timer -- a fresh install before its first refresh is exactly when this
+appears:
+
+```bash
+icp canister call backend refresh_rates '()' -e ic --identity <operator>
+icp canister call backend pricing_status '()' -e ic     # ok = true, fetchedAt recent
+```
 
 ## 2. Webhook secret — provisioning & rotation (§7)
 
@@ -504,9 +833,14 @@ An **unfunded** reserve refuses every order at `Gate.solvent` anyway, before a S
 session is even created — so a sandbox deployment is safe to explore before either the
 allow-list or the reserve exists. Only paying needs both.
 
+⚠️ **`icp` defaults to the LOCAL environment**, so every command in this section needs
+`-n ic` (the cycles ledger) or `-e ic` (a canister) to act on mainnet. Omitted, they
+succeed against a local network and report a balance that has nothing to do with the one
+being funded.
+
 ```bash
 # The reserve IS the gateway's own cycles-ledger account.
-icp cycles transfer 100t <backend-principal>
+icp cycles transfer 100t <backend-principal>          # -n ic on mainnet
 
 # ⚠️ REQUIRED after every top-up. Without it the balance is real and unsellable.
 icp canister call backend refresh_reserve '()'

@@ -257,7 +257,7 @@ cat <<'NOTES'
 
          ⚠ The session expires 35 minutes after creation, enforced by Stripe.
          ⚠ After paying, Stripe redirects to the origin the seed configured
-           (https://<frontend-id>.icp0.io), which does NOT serve your local
+           (https://<frontend-id>.icp.net), which does NOT serve your local
            frontend. The payment still completes and the webhook still fires —
            the landing page is the only thing that will not load. Watch the order
            through `get_order` or the local UI instead.

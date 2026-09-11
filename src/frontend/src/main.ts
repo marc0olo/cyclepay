@@ -1142,10 +1142,16 @@ function renderAdminIdentity(): void {
 
   link.hidden = false;
   command.textContent = linkIdentityCommand("operator");
-  // The reason the flag is printed rather than left to the reader.
+  // ⚠️ **Says "as printed", NOT "this page's domain", and the difference is the whole
+  // point.** It used to say the domain, which was true until the derivation origin was
+  // pinned. On a custom domain the printed value is deliberately the canister's origin
+  // and not the address bar, so the old sentence invited an operator to "correct" the
+  // command into the one thing it exists to prevent: a delegation for a different
+  // principal, with an empty balance.
   note.textContent =
-    "The --app value must be this page's own domain. Without it the CLI links a principal " +
-    "derived from the auth domain's default, which is a different identity than the one above.";
+    "Use the --app value exactly as printed. It names the origin this principal is " +
+    "derived from, which is not always the domain in your address bar. Changing it, or " +
+    "omitting it, links a different identity than the one above.";
 }
 
 /// The operator summary: nine counts, one public query (#68).

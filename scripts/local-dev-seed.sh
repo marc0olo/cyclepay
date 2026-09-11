@@ -275,7 +275,7 @@ fi
 # The origin Stripe returns the buyer to: the LOCAL gateway, so the post-payment
 # redirect lands on the page you are clicking through.
 #
-# This was `https://<frontend-id>.icp0.io` because the canister refused non-https — a
+# This was `https://<frontend-id>.icp.net` because the canister refused non-https — a
 # mainnet-shaped URL for a canister that only exists locally, so paying dead-ended the
 # browser. `Session.validateOrigin` now accepts http for loopback hosts, which is what
 # Stripe's own quickstart uses (`success_url` is a browser redirect target; Stripe never

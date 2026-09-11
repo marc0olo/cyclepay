@@ -42,7 +42,7 @@ Key documents:
 | `docs/STRIPE.md` | **Start here.** The Card rail end to end, written from the code: ingress, session creation, signature verification, attribution, dedup, pricing, the order lifecycle, refunds, the two secrets, and the local Stripe-sandbox loop |
 | `docs/TEST-COVERAGE.md` | What is tested, how, and what is not — one place to answer "is X covered?" |
 | `docs/SANDBOX-TESTPLAN.md` | The manual Stripe-sandbox verification pass required before go-live, and an explicit statement of what a green run does not prove |
-| `RUNBOOK.md` | Operations, authoritative for procedure: go-live checklist, secret rotation, rate diagnosis, reserve funding and sizing, error-queue triage, monitoring plan |
+| `RUNBOOK.md` | Operations, authoritative for procedure: go-live checklist, the mainnet simulation-mode deployment (section 1a), secret rotation, rate diagnosis, reserve funding and sizing, error-queue triage, monitoring plan |
 | `RELEASE.md` | Reproducible build and module-hash verification procedure |
 | `AGENTS.md` | Agent instructions: ICP skills setup, conventions, the verification gate |
 
@@ -103,7 +103,8 @@ icp canister call backend set_pricing_config '(record {
 #     At divisor 1_000 a $10 purchase quotes ~7.24 G cycles instead of ~7.24 T.
 #     The arithmetic and the ceiling that scales with minPurchaseUsdCents:
 #     docs/STRIPE.md, "9a. Simulation mode". That section is framed for mainnet
-#     against the Stripe sandbox; the arithmetic is identical locally.
+#     against the Stripe sandbox; the arithmetic is identical locally. The ordered
+#     mainnet procedure, custom domain included, is RUNBOOK.md section 1a.
 
 # 4. allow-list yourself as a buyer
 #    Open http://frontend.local.localhost:8000/ , sign in with Internet Identity,
