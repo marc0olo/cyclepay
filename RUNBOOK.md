@@ -392,11 +392,13 @@ You do **not** set these up front. Each `read` waits for you to paste the value:
 #
 # ⚠️ `read -rsp "prompt: " VAR` is the BASH idiom and FAILS in zsh, where -p means "read
 # from the coprocess" (`zsh:read:1: -p: no coprocess`). Prompt with printf in both.
-printf 'Stripe restricted key (rk_...): '; read -rs STRIPE_API_KEY; echo
+printf 'Stripe restricted key (rk_...): '; read -rs STRIPE_API_KEY
+printf '\n%s chars captured\n' "${#STRIPE_API_KEY}"
 export STRIPE_API_KEY
 scripts/seal-secret.sh api-key ic
 
-printf 'Stripe webhook signing secret (whsec_...): '; read -rs STRIPE_WEBHOOK_SECRET; echo
+printf 'Stripe webhook signing secret (whsec_...): '; read -rs STRIPE_WEBHOOK_SECRET
+printf '\n%s chars captured\n' "${#STRIPE_WEBHOOK_SECRET}"
 export STRIPE_WEBHOOK_SECRET
 scripts/seal-secret.sh webhook-secret ic
 
@@ -406,9 +408,20 @@ scripts/seal-secret.sh webhook-secret ic
 unset STRIPE_API_KEY STRIPE_WEBHOOK_SECRET
 ```
 
-`scripts/.local-dev.env` is the other way the script finds these, and it is for **local
-development only**: it is read only when the variable is unset, and a mainnet key does not
-belong in the repo tree even gitignored.
+⚠️ **The length echo is the confirmation, and it exists because there was none.** `read -rs`
+shows nothing as you type, so a paste that silently fails is indistinguishable from one that
+worked. Check the number against the key you hold before running the seal.
+
+`scripts/.local-dev.env` is the other way the script finds these, and it is read **only for
+a local environment**: it holds sandbox values, and a mainnet key does not belong in the
+repo tree even gitignored.
+
+⚠️ **That scoping is a fix, not a convention.** The file used to be consulted for any
+environment whenever the variable was empty, so an empty paste during a mainnet
+provisioning sealed the **sandbox** key to the **mainnet** canister, and printed the same
+byte count, the same `isSet = true` and the same `generation = 1`. Both keys are 107
+characters, so even the length disclosure could not separate them. The script now refuses a
+set-but-empty value outright and never reads the file for a named environment.
 
 ⚠️ **Use a SANDBOX restricted key (`rk_test_...`), Checkout Sessions = Write, everything
 else None.** Write is the level that also grants the read the #52 recovery sweep needs.

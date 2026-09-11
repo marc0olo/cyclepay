@@ -61,16 +61,39 @@ esac
 ENV_FLAG=()
 [ "$ENVIRONMENT" = "local" ] || ENV_FLAG=(-e "$ENVIRONMENT")
 
-# `scripts/.local-dev.env` is gitignored and holds your sandbox values. Sourced only when
-# the variable is not already set, so an exported value wins and CI needs no file.
-if [ -z "${!VAR:-}" ] && [ -f scripts/.local-dev.env ]; then
+# ⚠️ **SET-BUT-EMPTY is a different state from UNSET, and conflating them sealed the
+# wrong key.** `read -rs` prints nothing as you type, so a paste that silently fails
+# leaves the variable set to "". This used to fall through to `scripts/.local-dev.env`
+# for ANY environment, so an empty paste during a mainnet provisioning sealed the
+# SANDBOX key to the mainnet canister — and printed the same byte count, the same
+# `isSet = true` and the same `generation = 1`. Both keys are 107 characters, so even
+# the length disclosure could not tell them apart. Nothing anywhere reported it.
+if [ -n "${!VAR+set}" ] && [ -z "${!VAR}" ]; then
+  die "$VAR is set but EMPTY — the paste did not take.
+    Nothing was sealed. Re-run the read and check the length it echoes before continuing.
+    Refusing to fall back to scripts/.local-dev.env: for '$ENVIRONMENT' that would seal a
+    different key than the one you meant, indistinguishably."
+fi
+
+# ⚠️ **The file is for LOCAL development and is only read for a local environment.** It
+# holds sandbox values; a mainnet or any other named environment must get its secret from
+# the caller, so a stale local value can never reach a deployment it was not meant for.
+if [ "$ENVIRONMENT" = "local" ] && [ -z "${!VAR:-}" ] && [ -f scripts/.local-dev.env ]; then
   # shellcheck disable=SC1091
   . scripts/.local-dev.env
 fi
 
 SECRET="${!VAR:-}"
-[ -n "$SECRET" ] || die "$VAR is unset. Put it in scripts/.local-dev.env (gitignored) or export it.
+if [ -z "$SECRET" ]; then
+  if [ "$ENVIRONMENT" = "local" ]; then
+    die "$VAR is unset. Put it in scripts/.local-dev.env (gitignored) or export it.
     Do NOT pass it as an argument — it would land in shell history and CI logs."
+  fi
+  die "$VAR is unset, and scripts/.local-dev.env is NOT consulted for '$ENVIRONMENT'.
+    Export it for this shell instead:
+      printf 'value: '; read -rs $VAR; echo \"\${#$VAR} chars\"; export $VAR
+    Do NOT pass it as an argument — it would land in shell history and CI logs."
+fi
 
 command -v node >/dev/null || die "node is required (>=18)"
 if [ ! -d scripts/seal/node_modules ]; then
