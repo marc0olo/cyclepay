@@ -106,8 +106,12 @@ consciously set. Work the list in order:
    account.
 3. **Provision the webhook secret** (§2 below). Until set, the webhook
    route answers 503 and Stripe retries.
-4. **Register card tiers** (§3 below). Until set, the tier list is empty
-   and no card order can be created.
+4. **Optionally register card tiers** (§3 below). ⚠️ This step used to say no card
+   order can be created without them, which stopped being true when custom amounts
+   arrived (#33): `Amount` is `variant { custom : nat; tier : text }`, nothing in the
+   create path validates an amount against the tier list, and §3 and `docs/STRIPE.md`
+   both already called it optional. With none registered a buyer simply sees no tiles
+   and types any amount within the gate's bounds.
 5. **Fund the cycles reserve, then tell the gateway to look** (§5 below):
    `icp cycles transfer <amount> <backend-principal> -n ic` followed by
    `icp canister call backend refresh_reserve '()' -e ic`.
