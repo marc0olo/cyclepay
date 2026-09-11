@@ -194,7 +194,7 @@ Target of this procedure: `https://cyclepay.raymondk.co`, on the confidential su
 
 | | why |
 |---|---|
-| the Exchange Rate Canister | `icp.yaml`'s `ic` environment lists `[backend, frontend]` only, so the local XRC mock is never created on mainnet and its id is never injected. The backend then falls back to the real XRC. **Verify:** `pricing_status.xrcCanisterId` must read `uf6dk-hyaaa-aaaaq-qaaaq-cai` |
+| the Exchange Rate Canister | `icp.yaml`'s `ic` environment lists `[backend, frontend]` only, so the local XRC mock is never created on mainnet and its id is never injected. The backend then falls back to the real XRC. **Verify — but not until a rate call has happened, see below:** `pricing_status.xrcCanisterId` must read `uf6dk-hyaaa-aaaaq-qaaaq-cai` |
 | the Cycles Minting Canister | `rkp4c-7iaaa-aaaaa-aaaca-cai` is compiled in and is the same principal on mainnet and PocketIC |
 | a webhook forwarder | `scripts/stripe-dev.sh` exists only because Stripe cannot reach localhost. On mainnet Stripe posts straight to the canister |
 | the CSP | `connect-src` already admits `https://icp-api.io`, which is where a custom-domain page sends its canister calls |
@@ -258,6 +258,29 @@ deployment consumed **505.9 B each**: the creation fee is the 500 B flat figure 
 canisters get created, the frontend serves, and every `create_order` is refused because the
 backend sits under its own-gas floor. 5 ICP mints comfortably past 8.6 T at current rates;
 check with `icp cycles balance -n ic` before starting rather than after step 1.
+
+⚠️ **`pricing_status` reads `xrcCanisterId = null`, `rates = null`, `lastAttempt = null`
+on a fresh deploy, and all three are CORRECT.** Do not read them as a broken rate path.
+
+- `xrcCanisterId` is **null until an XRC call has actually resolved it** (`Main.mo`), and
+  deliberately so: defaulting it to the mainnet id would make the one signal that detects
+  a mainnet deploy wrongly pointed at a mock read *all-clear* during exactly the window an
+  operator checks a fresh deploy.
+- No XRC call has happened because the rate timer returns early while no rail is selling
+  (`rateTimerJob`: `if (not railsLive()) return`). A dark gateway spends nothing, and the
+  rail is not live until both Stripe secrets and the return origin are set (steps 4 and 5).
+
+So the XRC verification cannot pass before step 5. To check it earlier, force a tick:
+`refresh_rates` is an admin method that calls the refresh **directly and bypasses the
+`railsLive` guard**, which is what makes it the right lever here and after any deploy.
+
+```bash
+icp canister call backend refresh_rates '()' -e ic --identity <operator>
+icp canister call backend pricing_status '()' -e ic   # xrcCanisterId = uf6dk-hyaaa-aaaaq-qaaaq-cai
+```
+
+⚠️ And `xrcCanisterId` is **transient**: it is null again after every upgrade until the
+next rate call. A null reading after a redeploy means "not yet asked", never "misconfigured".
 
 ### 1. Create and install on the confidential subnet
 
