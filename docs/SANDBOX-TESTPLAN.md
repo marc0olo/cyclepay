@@ -740,12 +740,13 @@ found.
 2. **Disputes produce no on-chain signal.** Only `charge.refunded` is subscribed.
    A lost chargeback is invisible to the canister — accepted, documented, and
    managed by Dashboard vigilance.
-3. **The SEV-SNP question is unresolved.** Memory encryption protects RAM, but
-   canister state is checkpointed to disk and state-synced; if those are not
-   confidential on the target subnet, the webhook secret leaks through that path
-   and SEV buys nothing. The single most consequential open item, and no Stripe
-   test touches it. **Owned by `RUNBOOK.md` §10** (the checklist to work through)
-   and spec §7 (why it matters) — not restated here.
+3. **The SEV-SNP question is RESOLVED** (owner, 2026-09-11). Memory encryption
+   protects RAM, and checkpoint-to-disk and state-sync between nodes are confidential
+   on the target subnet as well — which was the part that mattered, since either in
+   the clear would have leaked the webhook secret and made SEV worthless. It was the
+   single most consequential open item and no Stripe test could touch it.
+   `RUNBOOK.md` §10 carries the checklist; **attestation coverage** of every replica
+   is the sub-item still open there.
 4. **Flat controller allowlist.** Any one controller can upgrade-then-drain. An
    honest trust model, but it is the model you would launch with.
 5. **The reproducible-build gate has never run against a real deployment** —

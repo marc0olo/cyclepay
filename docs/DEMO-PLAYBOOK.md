@@ -33,14 +33,13 @@ One canister does pricing, payment, delivery and the audit trail; there is no se
 - **Fund the cycles reserve** by transferring cycles to the canister's own cycles-ledger
   account.
 
-⚠️ **Be precise about what the confidential subnet buys, because this audience will
-press on it.** SEV-SNP encrypts *memory*. Whether checkpoints and state-sync between
-nodes are also confidential is a **separate property the repo flags as needing
-verification** (`docs/STRIPE.md` §7.3): if they are not, a plaintext secret can leak
-through that path. So the honest claim is "memory is encrypted and the provisioning
-channel is closed", not "no node provider can ever see it". The always-on control that
-does not depend on SEV is the **reserve size** — a forger drains at most what the reserve
-holds.
+⚠️ **Say the whole thing, because this audience will press on it.** SEV-SNP encrypts
+memory, **and** checkpoint-to-disk and state-sync between nodes are confidential on this
+subnet too — which is the part that matters: either one in the clear would leak the
+plaintext and make SEV worthless. That was the spec's "verify this hardest" item and it is
+closed. Still open, and worth saying if asked: **attestation coverage**, since one
+unattested replica is one node provider who can read the secret. And the control that does
+not depend on SEV at all is the **reserve size**, which bounds what any leak could cost.
 
 ## 3. Simulation mode
 
