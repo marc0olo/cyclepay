@@ -123,8 +123,11 @@ consciously set. Work the list in order:
    exposure inside it.
 8. **Configure the Stripe webhook endpoint**: in the Stripe Dashboard, add
    a webhook destination `https://<backend-canister-id>.icp.net/webhook/stripe`
-   sending exactly the events `checkout.session.completed` and
-   `charge.refunded`. (Other event types are acked and ignored.)
+   subscribed to the events in §1a's table. ⚠️ **Not just `completed` and
+   `charge.refunded`** — this step said "exactly" those two while
+   `checkout.session.expired` is the *only* thing that expires an order (§10),
+   and the canister dispatches on six types in all. Unsubscribed events are not
+   "acked and ignored": they are never sent, so their handler never runs.
 9. **Review the admission gate** (§5a below). The defaults are non-zero and
    usable, but `maxPurchaseUsdCents` should sit just above your largest tier,
    and `minCanisterCycles` should suit how closely you monitor this canister.
@@ -421,8 +424,19 @@ canister**, not the domain:
 
 ```
 https://<backend-canister-id>.icp.net/webhook/stripe
-events: checkout.session.completed, charge.refunded
 ```
+
+| event | what it does here | omitting it |
+|---|---|---|
+| `checkout.session.completed` | the delivery path | nothing is ever delivered |
+| **`checkout.session.expired`** | the **only** thing that moves an order to `#expired` and releases its reserve promise (§10) | ⚠️ orders sit `#created` past their deadline forever. §10 makes a stuck `#created` order the detection signal for a broken one, so a missing subscription manufactures false alarms in the signal the design relies on |
+| `charge.refunded` | resolves an `#unattributed` obligation, and files one for a late payment | a refund settles the money and leaves the worklist item open |
+| `charge.dispute.created` | one audit line: *reconcile in Stripe; cycles cannot be recovered* | the dispute leaves no trace in the trail |
+| `checkout.session.async_payment_succeeded` | the delivery path, for a delayed method | **cannot fire today** — `createBody` pins `payment_method_types[]=card` and cards settle synchronously. Subscribe anyway: if that pin is ever removed, an unsubscribed success is fiat in with nothing delivered and nothing on the worklist |
+| `checkout.session.async_payment_failed` | one audit line: *will never pay* | same, and same reason to subscribe |
+
+⚠️ **Subscribe to all six.** The first three are load-bearing, the next one is the audit
+trail, and the last two are free insurance against a change to the payment-method pin.
 
 ⚠️ The signing secret that destination shows you is the one step 4 provisions. Until it is
 set the route answers 503 and Stripe retries.

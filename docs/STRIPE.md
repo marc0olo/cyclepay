@@ -980,7 +980,11 @@ is pinned by the request rather than by a link's configuration.
 3. Create a webhook endpoint pointing at
    `https://<canister-id>.icp.net/webhook/stripe`, subscribed to
    **`checkout.session.completed`**, **`checkout.session.expired`**,
-   **`charge.refunded`** and **`charge.dispute.created`**.
+   **`charge.refunded`**, **`charge.dispute.created`** and both
+   **`checkout.session.async_payment_succeeded`** / **`_failed`** -- six in all,
+   which is every type `Card.handleWebhook` dispatches on. The async pair cannot
+   fire while `createBody` pins `payment_method_types[]=card`; subscribing costs
+   nothing and covers the day that pin changes.
    ⚠️ `checkout.session.expired` is not optional: it is the *only* thing that
    expires an order and releases its reserve promise (§10).
 4. Copy the endpoint's signing secret into `set_webhook_secret`. Provisioning the
