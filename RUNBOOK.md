@@ -231,17 +231,22 @@ it.** Mixing targets ("to 5 T") with increments ("+0.2 T") is how a budget stops
 checkable: an earlier version of this table listed the creation fee next to the 4.0 T it
 comes out of, and totalled 7.7 T while its own rows summed to 8.5 T.
 
+⚠️ **Measured on this subnet, not derived.** An earlier version scaled the creation fee
+by 7/13 with the rest of the per-node costs and budgeted ~269 B per canister. The real
+deployment consumed **505.9 B each**: the creation fee is the 500 B flat figure and does
+**not** scale with subnet size. That understated the total by half a trillion.
+
 ```
   4.000 T   icp deploy, two canisters at the 2 T default
-              of which creation fees        ~0.54 T   consumed (7 nodes: ~269 B each, against 500 B at 13)
-              of which lands as balance     ~3.46 T   ~1.73 T per canister
-+ 3.400 T   top the backend up to its own-gas floor
-              the floor is 5 T; it holds ~1.73 T after creation, so this is the increment
+              of which creation fees         1.012 T   consumed (505.9 B each, MEASURED)
+              of which lands as balance      2.988 T   1.494 T per canister
++ 3.506 T   top the backend up to its own-gas floor
+              5 T floor minus the 1.494 T it actually holds. COMPUTE THIS, see below
 + 0.200 T   the sellable reserve, a SEPARATE pot on the cycles ledger
               at divisor 1000 a $10 purchase locks ~7.24 G, so ~27 test purchases
 + 1.000 T   slack for one reinstall, because the divisor is one-way once an order exists
   ────────
-  8.600 T   to mint
+  8.706 T   to mint
 ```
 
 | threshold | value | what happens below it |
@@ -267,7 +272,15 @@ icp canister status backend -e ic -i     # note both ids
 icp canister status frontend -e ic -i
 
 # The backend's own gas, to the floor. This is NOT the reserve.
-icp canister top-up backend --amount 3400b -e ic
+#
+# ⚠️ **Read the balance and compute the difference; do not paste a figure.** What
+# creation leaves behind is not something to assume -- this step said `--amount 3400b`,
+# which lands at 4.894 T against a 5 T floor and leaves the gate refusing every order
+# after an operator has "done the step". Off by 106 B, invisible until the first order.
+icp canister status backend -e ic | grep -i cycles      # e.g. 1_494_093_400_599
+#   top-up = 5_000_000_000_000 - that, rounded up. For the figure above: 3506b.
+icp canister top-up backend --amount 3506b -e ic
+icp canister status backend -e ic | grep -i cycles      # must now read >= 5_000_000_000_000
 ```
 
 ⚠️ **`--subnet` on the deploy, not on a later create.** A canister already created on the
