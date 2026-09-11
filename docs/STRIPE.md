@@ -989,8 +989,11 @@ is pinned by the request rather than by a link's configuration.
    expires an order and releases its reserve promise (§10).
 4. Copy the endpoint's signing secret into `set_webhook_secret`. Provisioning the
    key and this secret is what **opens** the rail, so do it last.
-5. Optionally register price tiles with `set_card_tiers` — a buyer can type any
-   amount within the gate's bounds without them.
+5. Register price tiles with `set_card_tiers`. ⚠️ **Not optional in practice**: the
+   canister accepts `Amount = variant { custom; tier }` and validates neither against
+   the tile list, but `renderTiers` returns early on an empty list and the custom-amount
+   tile is built *after* that return -- so a gateway with no tiles offers no way to buy
+   at all. `RUNBOOK.md` §1 step 4 carries the command.
 6. **Fund the reserve** with `icp cycles transfer <N>t <backend-id> -n ic`, then
    `refresh_reserve` so the gate has an observation. Until it does, every order is
    refused with `#reserveShort` — the reserve is the stock being sold, and nothing
