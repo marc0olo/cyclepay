@@ -7,6 +7,12 @@
 # redeploying the legacy recipe and curling: it served all seven. `scripts/e2e-local.sh`
 # asserts each one, because nothing else can — the browser suite serves `dist` from a
 # static server, where `_headers` never applies.
+# ⚠️ **The `icp0.io` entries in `connect-src` are NOT the derivation origin** (that is
+# `src/frontend/src/config.ts`, and II fetches it rather than this page). They predate
+# `agentOptions` omitting `host` on mainnet: calls now go to `https://icp-api.io`, which is
+# listed, and a page served from a canister URL or a custom domain is covered by `'self'`.
+# So they look dead. Left in place rather than removed on that reasoning alone, because
+# narrowing a CSP is only safe once a mainnet deployment has exercised every call path.
 /*
   Content-Security-Policy: default-src 'self';script-src 'self';connect-src 'self' http://localhost:* https://icp0.io https://*.icp0.io https://icp-api.io;img-src 'self' data:;style-src 'self' 'unsafe-inline';style-src-elem 'self' 'unsafe-inline';font-src 'self';object-src 'none';base-uri 'self';frame-ancestors 'none';form-action 'self';upgrade-insecure-requests;
   Permissions-Policy: accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), cross-origin-isolated=(), display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), execution-while-out-of-viewport=(), fullscreen=(), geolocation=(), gyroscope=(), keyboard-map=(), magnetometer=(), microphone=(), midi=(), navigation-override=(), payment=(), picture-in-picture=(), publickey-credentials-get=(), screen-wake-lock=(), sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=(), clipboard-read=(), clipboard-write=(), gamepad=(), speaker-selection=(), conversion-measurement=(), focus-without-user-activation=(), hid=(), idle-detection=(), interest-cohort=(), serial=(), sync-script=(), trust-token-redemption=(), window-placement=(), vertical-scroll=()

@@ -34,10 +34,12 @@ export function isLocalNetwork(hostname: string = window.location.hostname): boo
 /// live in `src/frontend/public/.well-known/`, so the canister serves them at the
 /// derivation origin and at the custom domain alike.
 ///
-/// ⚠️ **`icp0.io`, and the choice is as irreversible as the domain question it defers.**
-/// `icp.net` serves the same canister and would derive DIFFERENT principals. It is
-/// `icp0.io` because that is the host this repo already uses for the webhook endpoint and
-/// the CSP, so one spelling is right everywhere. Change it only before the first sign-in.
+/// ⚠️ **`icp.net`, and the choice is as irreversible as the domain question it defers.**
+/// `icp0.io` serves the same canister and would derive DIFFERENT principals, so this is
+/// not a cosmetic preference: the two spellings are two identities. `icp.net` is the
+/// current canonical host for a canister, which is the property that matters for a string
+/// that has to keep resolving for as long as the accounts derived from it exist. Change it
+/// only before the first sign-in; afterwards it strands every principal.
 ///
 /// `undefined` locally: II is served from the same origin there, and passing a
 /// derivation origin it cannot verify would break sign-in for every local run.
@@ -46,7 +48,7 @@ export function derivationOrigin(
   frontendId: string | undefined = frontendCanisterId(),
 ): string | undefined {
   if (isLocalNetwork(hostname)) return undefined;
-  return frontendId === undefined ? undefined : `https://${frontendId}.icp0.io`;
+  return frontendId === undefined ? undefined : `https://${frontendId}.icp.net`;
 }
 
 /// The frontend canister's own id, from the `ic_env` cookie the canister sets.

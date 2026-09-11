@@ -26,7 +26,7 @@ describe("isLocalNetwork", () => {
   test("⚠️ and nothing that merely contains one", () => {
     // `localhost.evil.com` is the trap the backend's own origin parser documents; the
     // same substring mistake here would put a production page on the local branch.
-    for (const h of ["cyclepay.raymondk.co", "localhost.evil.com", "notlocalhost", `${FRONTEND}.icp0.io`]) {
+    for (const h of ["cyclepay.raymondk.co", "localhost.evil.com", "notlocalhost", `${FRONTEND}.icp.net`]) {
       expect(isLocalNetwork(h), h).toBe(false);
     }
   });
@@ -36,8 +36,8 @@ describe("derivationOrigin", () => {
   test("⚠️ on mainnet it is the CANISTER's origin, not the domain serving the page", () => {
     // The whole point: the same string for every domain this app is ever served from,
     // so a domain change does not hand every buyer a new principal.
-    expect(derivationOrigin("cyclepay.raymondk.co", FRONTEND)).toBe(`https://${FRONTEND}.icp0.io`);
-    expect(derivationOrigin(`${FRONTEND}.icp0.io`, FRONTEND)).toBe(`https://${FRONTEND}.icp0.io`);
+    expect(derivationOrigin("cyclepay.raymondk.co", FRONTEND)).toBe(`https://${FRONTEND}.icp.net`);
+    expect(derivationOrigin(`${FRONTEND}.icp.net`, FRONTEND)).toBe(`https://${FRONTEND}.icp.net`);
     expect(derivationOrigin("some.future.domain", FRONTEND))
       .toBe(derivationOrigin("cyclepay.raymondk.co", FRONTEND));
   });
@@ -50,7 +50,7 @@ describe("derivationOrigin", () => {
 describe("canonicalAppDomain", () => {
   test("⚠️ with no frontend id there is no derivation origin, so nothing is silently wrong", () => {
     // A deployment whose `ic_env` lacks the frontend key must fall back to the page's own
-    // origin rather than build `https://undefined.icp0.io`, which would derive a
+    // origin rather than build `https://undefined.icp.net`, which would derive a
     // principal nobody could ever reach again.
     //
     // ⚠️ This reads the DEFAULT argument on purpose, and passing `undefined` explicitly
@@ -66,7 +66,7 @@ describe("canonicalAppDomain", () => {
     // principal than the page shows them, with an empty balance -- the exact failure
     // the printed command exists to prevent.
     expect(canonicalAppDomain({ host: "cyclepay.raymondk.co", hostname: "cyclepay.raymondk.co" }, FRONTEND))
-      .toBe(`${FRONTEND}.icp0.io`);
+      .toBe(`${FRONTEND}.icp.net`);
   });
 
   test("locally it is the page's host, port included", () => {

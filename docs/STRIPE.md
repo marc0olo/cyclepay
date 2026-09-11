@@ -978,7 +978,7 @@ is pinned by the request rather than by a link's configuration.
 2. `set_stripe_origin` — where Stripe returns the buyer, and the origin the
    session's `success_url`/`cancel_url` are built from.
 3. Create a webhook endpoint pointing at
-   `https://<canister-id>.icp0.io/webhook/stripe`, subscribed to
+   `https://<canister-id>.icp.net/webhook/stripe`, subscribed to
    **`checkout.session.completed`**, **`checkout.session.expired`**,
    **`charge.refunded`** and **`charge.dispute.created`**.
    ⚠️ `checkout.session.expired` is not optional: it is the *only* thing that

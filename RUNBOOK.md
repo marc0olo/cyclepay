@@ -122,7 +122,7 @@ consciously set. Work the list in order:
    leaked webhook secret (§2), and #30's per-purchase ceiling is the per-order
    exposure inside it.
 8. **Configure the Stripe webhook endpoint**: in the Stripe Dashboard, add
-   a webhook destination `https://<backend-canister-id>.icp0.io/webhook/stripe`
+   a webhook destination `https://<backend-canister-id>.icp.net/webhook/stripe`
    sending exactly the events `checkout.session.completed` and
    `charge.refunded`. (Other event types are acked and ignored.)
 9. **Review the admission gate** (§5a below). The defaults are non-zero and
@@ -384,7 +384,7 @@ In the Stripe **sandbox** dashboard, add a webhook destination pointing at the *
 canister**, not the domain:
 
 ```
-https://<backend-canister-id>.icp0.io/webhook/stripe
+https://<backend-canister-id>.icp.net/webhook/stripe
 events: checkout.session.completed, charge.refunded
 ```
 
