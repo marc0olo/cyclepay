@@ -4,7 +4,8 @@
 > reserve, payment is per-order Stripe Checkout Sessions, and the ICP mint path is
 > gone. There is no plan issue standing above this file any more: **this file,
 > `docs/DESIGN.md` (decisions) and `RUNBOOK.md` (operations) are the sources of
-> truth**, and `RUNBOOK.md` §1 is what remains to do before real money.
+> truth**, and `RUNBOOK.md` is operations and `docs/OPERATE.md` is setup — its Mode 3
+> carries what remains to do before real money.
 
 ## ICP skills
 
@@ -121,22 +122,20 @@ recorded reasoning — don't "fix" them without reading the rationale:
 ## Running it locally
 
 ```sh
-git submodule update --init --recursive   # first time only — see below
+git submodule update --init --recursive   # first time only
 icp network start -d && icp deploy && scripts/local-dev-seed.sh
 ```
 
-⚠️ **The submodule is not optional and its absence does not look like its cause.** The
-backend decrypts its sealed secrets (#11) with a BLS12-381 implementation pinned at
-`vendor/icp-seeding-secrets-poc`, resolved by `mops` as a path dependency. Without it
-`mops` reports a missing package and nothing compiles. If you clone fresh, use
-`--recurse-submodules`.
+**`docs/OPERATE.md`, Mode 1, is the procedure** — the submodule, the seed, the
+iteration loops and the troubleshooting table. Two things it explains that will
+otherwise cost you an hour: the pinned crypto submodule is a `mops` path dependency,
+so without it nothing compiles and the error names a missing package rather than a
+missing submodule; and the seed is **not optional**, because a fresh deploy is
+fail-closed on five separate axes at once and presents as a broken app.
 
-The seed step is **not optional**. A fresh deploy is fail-closed on four axes at once
-(no tiers, no CMC rate, an empty and unobserved cycles reserve, and a canister funded
-below the `minCanisterCycles` floor), which presents as a broken app rather than a safe
-one. `scripts/local-dev-seed.sh --rate-only` after every
-deploy and every ~15 minutes: the CMC rate expires, and `icp deploy` wipes the XRC
-mock's install-time response. Full detail in README.md.
+This section deliberately carries no copy of that procedure. It had one, and it drifted
+— it claimed four axes where the README said five, and the axis it omitted was the one
+the README calls "the one nobody guesses".
 
 ### Do not cycle the network
 

@@ -135,7 +135,7 @@ if [ "$BOOTSTRAP" -eq 1 ]; then
 
   # Declare the Stripe world. A sandbox forwarder sends livemode=false events, so
   # without this every honoured payment records `stripe.livemodeUnset`. On mainnet
-  # this must be `opt true` — see RUNBOOK §1.
+  # this must be `opt true` — see docs/OPERATE.md.
   icp canister call backend set_expected_livemode '(opt false)' >/dev/null
   echo "livemode:    expecting TEST events (mainnet must be 'opt true')"
 fi

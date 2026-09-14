@@ -615,7 +615,7 @@ persistent actor CyclesGateway {
   // first would create a permanent `#expired` record for **free**: no cycles are
   // spent, so `minCanisterCycles` never bounds the loop, and the record is not
   // `#created`, so the open-order cap does not either. Unbounded storage growth
-  // at zero attacker cost — and precisely in the state RUNBOOK §1 prescribes
+  // at zero attacker cost — and precisely in the state docs/OPERATE.md prescribes
   // during go-live, since provisioning the secrets last is what opens the rail.
   //
   // #33's own finding 1 says it: *fail closed rather than creating a sessionless
@@ -995,7 +995,7 @@ persistent actor CyclesGateway {
   // ⚠️ **This path never reaches `admit`, which is what made it easy to miss.**
   // `create_order` checks caller, destination, then the RAIL, then tier and
   // admission — so while the rail is closed, **100% of attempts refuse here** and
-  // a counter set covering only `Gate.Reason` would record nothing. RUNBOOK §1
+  // a counter set covering only `Gate.Reason` would record nothing. docs/OPERATE.md
   // prescribes provisioning the secrets last, so a freshly deployed gateway sits
   // in exactly this state by design.
   func noteRailClosed(e : Session.Error) {
@@ -1867,7 +1867,7 @@ persistent actor CyclesGateway {
     // Surfaced on `recovery_status` so "the counts are trustworthy" is an observable
     // fact rather than an assumption. Written only on success, so it falling behind
     // while `lastSweep` advances is the signal that the reconcile itself is failing
-    // (RUNBOOK §8).
+    // (RUNBOOK's monitoring section).
     //
     // ⚠️ **`drift` and `refused` are different verdicts and are reported separately**
     // (#63): `drift` is a tally that was raised to the recount and is now correct, while
@@ -2295,7 +2295,7 @@ persistent actor CyclesGateway {
       // incident with one lever**. Which is why the condition is named for the API.
       case (#unauthorized) {
         // The guidance the deleted `stripe.retrieveUnauthorized` line carried, kept
-        // verbatim — it is the one message that names the fix, and RUNBOOK §8's P1 row
+        // verbatim — it is the one message that names the fix, and RUNBOOK's monitoring P1 row
         // is keyed on this text now rather than on a tag that no longer exists.
         noteStripeApiFailed(
           "retrieve REFUSED (401/403): the restricted key needs WRITE on Checkout Sessions, which includes the read this sweep does. Stranded reserve capacity cannot be released until it does — rotate the key"
@@ -2385,7 +2385,7 @@ persistent actor CyclesGateway {
       // Claiming the cadence here, in the sweep's own message, is what bounds the
       // damage: this write commits whatever the detached message does, so a
       // trapping reconcile retries daily rather than every tick. Its cost is a
-      // visibly stale `lastCountReconcile` (RUNBOOK §8), which is the right
+      // visibly stale `lastCountReconcile` (RUNBOOK's monitoring section), which is the right
       // signal — the tallies are unverified, not known-wrong.
       let now = Time.now();
       if (Recovery.reconcileDue(recoveryState.lastCountReconcileAttemptNs, now, Recovery.countReconcileIntervalNs)) {

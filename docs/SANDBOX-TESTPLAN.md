@@ -707,7 +707,7 @@ They answer different questions and neither replaces the other:
 | Audience | whoever is validating the build | the on-call operator |
 | Output | a green run, plus captured fixtures | a resolved incident |
 
-The plan is a **precondition** to `RUNBOOK.md` §1: the go-live checklist assumes
+The plan is a **precondition** to `docs/OPERATE.md`'s Mode 3: that procedure assumes
 the rail has already been shown to work.
 
 ⚠️ **Configuration is not duplicated, and the two scripts own different halves.**
@@ -719,7 +719,7 @@ hours of patience or a hand-called `set_delivery_config`.
 ⚠️ **Only the PocketIC harness shortens it**, to a 2-minute alert (`sandbox.ts`),
 which is why that is the harness to reach for when you want to *see* a delay alert.
 Neither script sets an order TTL: the deadline is the Stripe session's own, and
-nothing local shortens it. `RUNBOOK.md` §1
+nothing local shortens it. `docs/OPERATE.md`'s Mode 3
 is the sole authority for go-live configuration.
 
 Where this plan states an *expected outcome* (a queued obligation, a `#unprocessable`,

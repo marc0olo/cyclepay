@@ -418,7 +418,7 @@ suite("terminationFor — the money position, not the status", func() {
 
   test("every stage it can produce is non-empty and recognisable to the runbook", func() {
     // ⚠️ **The whole vocabulary, and `#paid` covers all four shapes a journal can
-    // have.** Every string this can emit is a row in RUNBOOK §6's triage table, so a
+    // have.** Every string this can emit is a row in RUNBOOK's triage table, so a
     // new stage with no row leaves an operator holding a word and no procedure.
     let cases : [(Types.OrderStatus, ?Types.JournalEntry)] = [
       (#paid, ?entryWith(?intentAt(0), ?1, ?1, 0)),
@@ -428,7 +428,7 @@ suite("terminationFor — the money position, not the status", func() {
       (#paid, null),
     ];
     // ⚠️ **The whole vocabulary, and it is short on purpose.** Every string here is a
-    // row in RUNBOOK §6's triage table, so a stage this function can emit that the
+    // row in RUNBOOK's triage table, so a stage this function can emit that the
     // table does not list is an operator reading an escalation with no instruction.
     let known = ["staleIntent", "landedNotRecorded", "missingJournal", "deliveryWaitExceeded", "notInFlight"];
     for ((status, entry) in cases.values()) {

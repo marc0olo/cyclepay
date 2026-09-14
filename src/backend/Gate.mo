@@ -289,7 +289,7 @@ module {
     /// destination, then the RAIL, then tier and admission — so while the rail is
     /// closed **100% of attempts never reach `admit` at all**. A counter set that
     /// only covered `Reason` would record nothing during exactly the window the
-    /// gateway spends freshly deployed, because RUNBOOK §1 prescribes
+    /// gateway spends freshly deployed, because docs/OPERATE.md prescribes
     /// provisioning the secrets last.
     railClosed : Nat;
     /// The session outcall failed. Separate from `railClosed` because a present

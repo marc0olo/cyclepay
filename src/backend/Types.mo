@@ -32,8 +32,8 @@ module {
     };
   };
 
-  /// Money-in rail. Single-case variant for the same reason `Owner` is: it names the
-  /// dimension, so a second rail is additive rather than a schema-wide edit.
+  /// Money-in rail (§1). Single-case variant for the same reason `Owner` is: it names
+  /// the dimension, so a second rail is additive rather than a schema-wide edit.
   public type Rail = { #card };
 
   /// ICRC-1 account (cycles ledger destination).

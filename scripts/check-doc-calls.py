@@ -211,7 +211,7 @@ def main() -> int:
                 # complete and its arity is not checkable from the text. This is the only
                 # way to pass a SEALED secret: the ciphertext is a blob written by the
                 # sealer, and putting it on the command line is the exposure sealing
-                # exists to close. Found by this check flagging RUNBOOK §1a's own
+                # exists to close. Found by this check flagging the mainnet-simulation procedure's own
                 # `set_stripe_api_key --args-file` line as argument-less.
                 if "--args-file" in raw:
                     out_of_band += 1
