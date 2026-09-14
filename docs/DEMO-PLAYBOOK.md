@@ -1,14 +1,24 @@
 # Demo playbook
 
 The running order for a recorded walkthrough, for an audience that knows the IC. The
-operational setup is **already done** on the live deployment, so it is narrated rather
-than performed: the demo is the buyer's flow, with the interesting mechanics explained at
-the point they happen. Closes #100.
+operational setup is **already done** on whichever deployment you are showing, so it is
+narrated rather than performed: the demo is the buyer's flow, with the interesting
+mechanics explained at the point they happen.
 
+⚠️ **This document names no live figures, deliberately.** An earlier version wrote the
+reserve balance and the order count into prose, and both were wrong within three days —
+in the two places the demo points a technical audience at the screen. So every number
+here is a **query to read on camera**, and the canister ids come from
+`.icp/data/mappings/ic.ids.json`, which is the record of which canister is which:
+
+```bash
+icp canister call backend pricing_status  '()' -e ic   # the divisor: 1 is live, >1 is simulation
+icp canister call backend reserve_status  '()' -e ic   # availableToSell, promisedTotal, totalOrders
+icp canister call backend lifecycle_config '()' -e ic  # the amount bounds you are about to quote
 ```
-backend  saz2a-riaaa-aaaay-aadha-cai      frontend  shy4u-4qaaa-aaaay-aadhq-cai
-subnet   re2t4-… (confidential, 7 nodes)  divisor   1000 (simulation)
-```
+
+Read them before recording. If one disagrees with what you are about to say, the screen
+is right.
 
 ⚠️ **Before recording:** `unset STRIPE_API_KEY STRIPE_WEBHOOK_SECRET`, and keep
 `scripts/.local-dev.env` off screen. Both secrets are unreadable from the canister, so the
@@ -44,18 +54,27 @@ not depend on SEV at all is the **reserve size**, which bounds what any leak cou
 ## 3. Simulation mode
 
 Real card charge in Stripe's sandbox, real exchange-rate arithmetic, **cycles divided by
-1000**. One number does it: `pricing_status().config.divisor`.
+the divisor**. One number does it: `pricing_status().config.divisor`. Say the value on
+screen; a live gateway has 1.
 
 - A principal must be **allow-listed by a controller** (not a delegated admin —
   `add_allowed_buyer` is `requireController`) before it can buy. Test payments are free
   and unlimited, so without that list a funded gateway is a faucet, and it refuses to
   sell in that state rather than warning.
-- The reserve was funded with **1 T**, and one demo purchase already ran end to end
-  before this recording — visible as `totalOrders` and a floor that has moved.
+- The reserve and the order count are on `reserve_status`: `availableToSell` is what the
+  gateway will sell, and `totalOrders` includes every rehearsal. Read both rather than
+  quoting them — this is the screen the audience is checking you against.
+
+⚠️ **Rehearsal hazard: `maxOpenOrdersPerPrincipal` is 1** (§5a). Start an order, abandon
+it, and you cannot start another until Stripe expires that session — **~35 minutes** — or
+you `cancel_order` it. Cancel every rehearsal order before recording, and know the
+buyer-facing refusal on sight.
 
 ## 4. The buying flow
 
-**Pick an amount.** Three presets, or a custom amount between $10 and $100.
+**Pick an amount.** Three presets, or a custom amount between the two bounds
+`lifecycle_config` reports (`minPurchaseUsdCents` / `maxPurchaseUsdCents` — $10 and $100
+by default).
 
 **The quote, before committing.** The buyer sees the cycles they will get and the
 processing fee (2.9% + 30¢) up front. Two rates feed it:
@@ -65,7 +84,8 @@ processing fee (2.9% + 30¢) up front. Two rates feed it:
 | ICP/USD | Exchange Rate Canister | `usdPerIcpMicros` |
 | XDR/ICP | Cycles Minting Canister | `xdrPermyriadPerIcp` |
 
-Both refresh on a timer, never on demand — no caller can drive our XRC spend.
+Both refresh on a timer, and **no unauthenticated caller can drive our XRC spend** —
+`refresh_rates` exists as an operator lever but is admin-only.
 
 ⚠️ **Worth 15 seconds for this audience: ICP cancels.** Both rates are *per ICP*, so the
 quotient is XDR per USD and the ICP price drops out. **A cycle is XDR-pegged**, and the

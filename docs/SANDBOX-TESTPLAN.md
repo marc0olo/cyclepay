@@ -745,7 +745,7 @@ found.
    on the target subnet as well — which was the part that mattered, since either in
    the clear would have leaked the webhook secret and made SEV worthless. It was the
    single most consequential open item and no Stripe test could touch it.
-   `RUNBOOK.md` §10 carries the checklist; **attestation coverage** of every replica
+   `RUNBOOK.md` §9 carries the checklist; **attestation coverage** of every replica
    is the sub-item still open there.
 4. **Flat controller allowlist.** Any one controller can upgrade-then-drain. An
    honest trust model, but it is the model you would launch with.
