@@ -48,15 +48,15 @@ architecture it ships is not the one the fork point described.
 
 ## How it works, and how to run it
 
-**`docs/ARCHITECTURE.md` has the diagram** — the money path end to end, where the trust
+**[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) has the diagram** — the money path end to end, where the trust
 boundaries sit, and which of the two cycle pots a delivery spends from. Start there.
 
 | you want to | go to |
 |---|---|
-| understand the system | `docs/ARCHITECTURE.md`, then `docs/DESIGN.md` for *why* |
-| run it locally | `docs/OPERATE.md` — Mode 1 |
-| deploy it | `docs/OPERATE.md` — Mode 2 (mainnet simulation) or Mode 3 (production) |
-| operate one that is misbehaving | `RUNBOOK.md` — entered by symptom |
+| understand the system | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), then [`docs/DESIGN.md`](docs/DESIGN.md) for *why* |
+| run it locally | [`docs/OPERATE.md`](docs/OPERATE.md) — Mode 1 |
+| deploy it | [`docs/OPERATE.md`](docs/OPERATE.md) — Mode 2 (mainnet simulation) or Mode 3 (production) |
+| operate one that is misbehaving | [`RUNBOOK.md`](RUNBOOK.md) — entered by symptom |
 | check the claims yourself | **Verify it yourself** below |
 
 ```sh
@@ -65,7 +65,7 @@ icp network start -d && icp deploy && scripts/local-dev-seed.sh
 ```
 
 ⚠️ **The submodule and the seed are both load-bearing**, and neither failure looks like
-its cause — `docs/OPERATE.md` explains both before the first command.
+its cause — [`docs/OPERATE.md`](docs/OPERATE.md) explains both before the first command.
 
 ## Verify it yourself
 
@@ -83,7 +83,7 @@ Nothing here asks to be taken on trust, and the limits are stated in the same br
 - **The operational state is public**, so solvency is checkable against the cycles ledger
   without this canister's cooperation — see the commands above.
 - **Every suite is in the repo and one command runs them all**: `scripts/test-all.sh`,
-  with `docs/TEST-COVERAGE.md` stating what is *not* covered and why.
+  with [`docs/TEST-COVERAGE.md`](docs/TEST-COVERAGE.md) stating what is *not* covered and why.
 - ⚠️ **The limits.** The deployed module hash has no published provenance (see **Release**),
   any single controller can upgrade-then-drain, and the webhook secret is plaintext
   canister state protected by a confidential subnet rather than by cryptography.
@@ -94,26 +94,26 @@ For a **reader or verifier**:
 
 | | |
 |---|---|
-| `docs/ARCHITECTURE.md` | The diagram: canisters, money path, trust boundaries, the two cycle pots |
-| `docs/DESIGN.md` | The decision record — *why* it is built this way. What the `§N` comments point at. Gate-enforced |
-| `docs/STRIPE.md` | The Card rail end to end, written from the code: ingress, signature verification, attribution, dedup, pricing, the order lifecycle, refunds |
-| `docs/TEST-COVERAGE.md` | What is tested, how, and what is not |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The diagram: canisters, money path, trust boundaries, the two cycle pots |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | The decision record — *why* it is built this way. What the `§N` comments point at. Gate-enforced |
+| [`docs/STRIPE.md`](docs/STRIPE.md) | The Card rail end to end, written from the code: ingress, signature verification, attribution, dedup, pricing, the order lifecycle, refunds |
+| [`docs/TEST-COVERAGE.md`](docs/TEST-COVERAGE.md) | What is tested, how, and what is not |
 
 For an **operator**:
 
 | | |
 |---|---|
-| `docs/OPERATE.md` | Setup, one procedure per mode: local, mainnet simulation, mainnet production |
-| `RUNBOOK.md` | Day-2 operations, entered by symptom: secret rotation, rate diagnosis, reserve sizing, obligation triage, monitoring |
-| `RELEASE.md` | Reproducible build and module-hash verification procedure |
-| `docs/SANDBOX-TESTPLAN.md` | The manual Stripe-sandbox pass required before go-live, and what a green run does not prove |
+| [`docs/OPERATE.md`](docs/OPERATE.md) | Setup, one procedure per mode: local, mainnet simulation, mainnet production |
+| [`RUNBOOK.md`](RUNBOOK.md) | Day-2 operations, entered by symptom: secret rotation, rate diagnosis, reserve sizing, obligation triage, monitoring |
+| [`RELEASE.md`](RELEASE.md) | Reproducible build and module-hash verification procedure |
+| [`docs/SANDBOX-TESTPLAN.md`](docs/SANDBOX-TESTPLAN.md) | The manual Stripe-sandbox pass required before go-live, and what a green run does not prove |
 
-For an **agent changing the code**: `AGENTS.md` (conventions, skills, the verification
-gate), and `docs/DESIGN.md` above — it is the primary surface for that audience, along
+For an **agent changing the code**: [`AGENTS.md`](AGENTS.md) (conventions, skills, the verification
+gate), and [`docs/DESIGN.md`](docs/DESIGN.md) above — it is the primary surface for that audience, along
 with the invariant comments in `src/backend`. `docs/agents/` holds the loop's own
 conventions: the triage labels, the issue-tracker rules and `deleted-vocabulary.md`.
 
-Also: `docs/DEMO-PLAYBOOK.md`, the running order for demoing this to a technical
+Also: [`docs/DEMO-PLAYBOOK.md`](docs/DEMO-PLAYBOOK.md), the running order for demoing this to a technical
 audience.
 
 ## Release
@@ -127,7 +127,7 @@ scripts/reproducible-build.sh <git-ref>
 
 ⚠️ **The verify half is a procedure, not a past result — and the live deployment did
 not go through it.** The gateway on mainnet was deployed with a plain `icp deploy`:
-nothing was tagged, no `MODULE-HASHES.txt` was published, and `RELEASE.md`'s step 5 —
+nothing was tagged, no `MODULE-HASHES.txt` was published, and [`RELEASE.md`](RELEASE.md)'s step 5 —
 the gate that compares the deployed hash against the published one — has never run.
 So whether the live bytes reproduce from their own commit is **unknown**, not
 known-negative: a deploy from a clean checkout of a tag is expected to match, and that

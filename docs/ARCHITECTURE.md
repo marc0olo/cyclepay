@@ -22,7 +22,7 @@ flowchart TB
     II -.->|"principal"| FE
     BUYER -->|"2 · pick an amount"| FE
     FE -->|"3 · quote_previews<br/>public query, the same code<br/>that locks the price"| BE
-    XRC -.->|"on a TIMER, never on demand"| BE
+    XRC -.->|"on a timer · no UNAUTHENTICATED<br/>caller can drive this spend"| BE
     CMC -.->|"inter-canister · no HTTPS"| BE
     FE -->|"4 · create_order<br/>locks the quote,<br/>reserves the cycles"| BE
     BE ==>|"5 · HTTPS outcall<br/>create Checkout Session<br/>Idempotency-Key = order id"| STRIPE
@@ -50,14 +50,16 @@ boundary node terminates TLS, so nothing about the transport authenticates Strip
 `HMAC-SHA256` over `timestamp.body` with the signing secret is all of it — whoever holds
 that secret can sign a completed-payment event for an order they created and be delivered
 cycles having paid nothing. That is why the reserve balance is the blast radius, and why
-sizing it is a security decision (`RUNBOOK.md`'s webhook-secret section).
+sizing it is a security decision ([`RUNBOOK.md`](../RUNBOOK.md)'s webhook-secret section).
 
 **2. Step 7 is an UPDATE call.** `http_request_update`, not `http_request` — so the
 webhook goes through consensus and can write state. The name suggests otherwise, and it
 is the reason the handler can deliver at all.
 
 **3. Pricing crosses no trust boundary.** Both rates come from *canisters* — the XRC for
-USD/ICP, the CMC for XDR/ICP — read on a timer. There are exactly **three** HTTPS outcalls
+USD/ICP, the CMC for XDR/ICP — read on a timer. ⚠️ **"Never on demand" would be wrong**:
+`refresh_rates` exists as an operator lever, `requireAdmin`. What holds is that no
+*unauthenticated* caller can drive the XRC spend. There are exactly **three** HTTPS outcalls
 in the whole system and all three go to Stripe: create a session, expire a session, and
 retrieve one (the recovery sweep). "A canister that talks to a payment processor" makes
 people assume a price oracle over HTTP; there isn't one.
@@ -93,7 +95,7 @@ guard — is worth knowing before changing anything in that file.
 
 | | |
 |---|---|
-| **why** it is built this way | `docs/DESIGN.md` — the decision record, and what the `§N` comments in the code point at |
-| the Card rail in full detail | `docs/STRIPE.md` — ingress, signature verification, attribution, dedup, the order lifecycle, refunds |
-| running or deploying it | `docs/OPERATE.md` — one procedure per mode |
-| operating it when something breaks | `RUNBOOK.md` — entered by symptom |
+| **why** it is built this way | [`docs/DESIGN.md`](./DESIGN.md) — the decision record, and what the `§N` comments in the code point at |
+| the Card rail in full detail | [`docs/STRIPE.md`](./STRIPE.md) — ingress, signature verification, attribution, dedup, the order lifecycle, refunds |
+| running or deploying it | [`docs/OPERATE.md`](./OPERATE.md) — one procedure per mode |
+| operating it when something breaks | [`RUNBOOK.md`](../RUNBOOK.md) — entered by symptom |
