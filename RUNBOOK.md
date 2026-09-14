@@ -89,6 +89,15 @@ Everything money-touching **fails closed by default** — a freshly deployed
 gateway accepts no orders and delivers nothing until each lever below is
 consciously set.
 
+⚠️ **"Fresh" is literal: a simulation gateway cannot be promoted to this one.** The
+divisor is refused once any order is stored (§1a), so a sandbox deployment that has
+taken even one test order can never accept `set_expected_livemode '(opt true)'`.
+Production is a new backend canister, and that is survivable for the reason the
+derivation origin is pinned where it is: principals derive from the **frontend**
+canister id, so replacing the backend behind the same frontend changes nobody's
+identity. It does leave their order history in the old canister, which is a sandbox
+deployment's data and nothing anyone paid for.
+
 ### 1.1 What is not a command
 
 Six prerequisites that no step below can perform: a decision, a piece of code, or
@@ -143,9 +152,16 @@ derivation origin — which this deployment does not do.
 `Session.validateOrigin` accepts `http://` for loopback hosts, and nothing refuses the
 pair `expected_livemode = ?true` with `stripe_origin = http://localhost:8000` — a live
 gateway returning paying buyers to their own machine. So **read `stripe_origin` back
-after setting either one** (step 8 and step 5 below). The permanent fix is the shape
-`Config.mo` already uses for divisor-versus-livemode: a mutual refusal on both
-endpoints, making the state unrepresentable rather than discouraged.
+after setting either one** (steps 5 and 8 below).
+
+The permanent fix is a refusal on both setters, like the divisor's — but ⚠️ **key each
+refusal on the BAD VALUE, not on the pair.** `set_stripe_origin` refuses a *loopback*
+origin while livemode is `?true`; `set_expected_livemode(?true)` refuses while the
+*stored* origin is loopback. Phrased that way a gateway already in the bad pair can
+always set a good origin and walk out. The divisor's mutual refusal is the shape to
+copy and **not** the constraint: its way out is blocked by a second guard entirely
+(`#divisorChangeWithOrders`), so a simulation gateway with one stored order can never
+go live at all. Do not add a second lockout to a money-handling setter.
 
 **5. Attestation coverage of the confidential subnet** (§9, #2). Checkpoints and
 state-sync **are** confirmed confidential on the target subnet, which was the spec's
