@@ -1636,11 +1636,12 @@ sizing it is the always-on control (§2). Launch does not block on SEV, but that
 trade is now "size the reserve to what a leak could cost", not "the cap bounds it". Before relying on a confidential subnet for the
 secret, verify — in this order, hardest first:
 
-- [ ] **Checkpoint/state-sync confidentiality**: SEV-SNP protects RAM, but
-  canister state is checkpointed to disk and state-synced between nodes.
-  Confirm with DFINITY that both paths are encrypted on the target subnet —
-  **if they aren't, a plaintext secret leaks there and SEV buys nothing**
-  (§7: "verify this hardest").
+- [x] **Checkpoint/state-sync confidentiality** — **confirmed encrypted on the
+  target subnet** (owner, 2026-09-11). SEV-SNP protects RAM; canister state is also
+  checkpointed to disk and state-synced between nodes, and both of those paths are
+  confidential here too. This was §7's "verify this hardest" item, because either
+  one in the clear would have leaked the plaintext secret and SEV would have bought
+  nothing.
 - [ ] **Attestation coverage**: every replica in the subnet runs attested
   SEV-SNP (one unattested node = one node provider who can read the
   secret).

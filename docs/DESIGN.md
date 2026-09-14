@@ -373,7 +373,9 @@ canister can solve.
 ⚠️ **The two exposures are separate and were routinely conflated.** *In transit* — a
 secret arriving as an ingress argument, seen by the TLS-terminating boundary node and
 anything reading a shell history or CI log — is closed, by vetKD sealing. *At rest* — the
-value living in replicated, checkpointed canister memory — is not, and cannot be. #11
+value living in replicated, checkpointed canister memory — is not closed **by sealing**,
+and cannot be; it is closed by the confidential subnet instead, whose checkpoint and
+state-sync paths are confirmed confidential (owner, 2026-09-11). #11
 works through why the obvious fix (store ciphertext, derive per use) fails on both
 economics and mechanism: at ~26 B cycles per derivation it would cost roughly 3.5 cents
 per webhook on an at-cost rail, and a checkpoint captures the heap, so a cached derived

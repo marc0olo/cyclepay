@@ -838,7 +838,7 @@ What actually protects it:
 | Layer | Status |
 |---|---|
 | **SEV-SNP confidential subnet** | The deployment target. Confidentiality rests on hardware and attestation, not on cryptography in the canister. |
-| **Checkpoint / state-sync confidentiality** | **Must be verified separately.** Memory encryption does not cover state written to disk and state-synced between nodes. If those are not also confidential, a plaintext secret leaks through that path. |
+| **Checkpoint / state-sync confidentiality** | **Confirmed confidential on the target subnet** (owner, 2026-09-11). This was the spec's "verify this hardest" item, because memory encryption alone does not cover state written to disk or synced between nodes -- had either path been in the clear, a plaintext secret would leak there and SEV would buy nothing. It is closed. |
 | **Provisioning channel** | Known-exposed: the argument to `set_webhook_secret` / `set_stripe_api_key` transits the TLS-terminating boundary node as ordinary ingress. Treat the first set over any untrusted path as burned and rotate. |
 | **Reserve size** | The always-on control, independent of SEV. A forger drains at most what the reserve holds, so it is sized to what a leak could cost. |
 

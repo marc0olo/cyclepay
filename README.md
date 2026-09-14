@@ -42,6 +42,7 @@ Key documents:
 | `docs/STRIPE.md` | **Start here.** The Card rail end to end, written from the code: ingress, session creation, signature verification, attribution, dedup, pricing, the order lifecycle, refunds, the two secrets, and the local Stripe-sandbox loop |
 | `docs/TEST-COVERAGE.md` | What is tested, how, and what is not — one place to answer "is X covered?" |
 | `docs/SANDBOX-TESTPLAN.md` | The manual Stripe-sandbox verification pass required before go-live, and an explicit statement of what a green run does not prove |
+| `docs/DEMO-PLAYBOOK.md` | The running order for demoing this to a technical audience: what to show, why each step is interesting, and the three "looks wrong and isn't" answers. Names no live figures — every number is a query read on camera |
 | `RUNBOOK.md` | Operations, authoritative for procedure: go-live checklist, the mainnet simulation-mode deployment (section 1a), secret rotation, rate diagnosis, reserve funding and sizing, error-queue triage, monitoring plan |
 | `RELEASE.md` | Reproducible build and module-hash verification procedure |
 | `AGENTS.md` | Agent instructions: ICP skills setup, conventions, the verification gate |
