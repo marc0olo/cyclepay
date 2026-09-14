@@ -28,7 +28,7 @@ here, or if a section here is cited by nothing. It cannot check whether a sectio
 ## §1 — Scope and sequencing
 
 One rail: **Card, via Stripe**. Cycles are sold at cost from a pre-funded cycles reserve.
-The build is done; what is left before real money is `RUNBOOK.md` §1.
+The build is done; what is left before real money is `docs/OPERATE.md`'s Mode 3.
 
 ## §2 — Identity and ownership
 
@@ -408,7 +408,7 @@ advantages is advocacy.** A cap spreads a loss across periods and so bounds how 
 can happen; a stock can go in a single burst between the leak and its rotation. The design
 accepts that and controls it by **sizing** — keep in the account what you are willing to
 lose in one go — and by refunding the reserve only after the secret is dead. Both are
-procedure rather than mechanism, which is exactly why they are written down (RUNBOOK §1,
+procedure rather than mechanism, which is exactly why they are written down (`docs/OPERATE.md`,
 §2).
 
 **Rotation needs no dual-secret window on our side.** While a rolled Stripe secret's

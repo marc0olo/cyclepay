@@ -238,7 +238,7 @@ mixin (
             // path, is admin-authenticated — so the same rule admits its line — and
             // audits Stripe's body verbatim as `order.expireRaced`. A malformed request
             // is not per-order: it fails every cancel, so running it once against a live
-            // `#created` order surfaces the cause. RUNBOOK §8 carries the row.
+            // `#created` order surfaces the cause. RUNBOOK's monitoring section carries the row.
             return #err(#sessionNotClosed);
           };
           case (#failed(detail)) {

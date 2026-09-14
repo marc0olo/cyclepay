@@ -2,8 +2,31 @@
 
 Day-2 operations for the cycles gateway: provisioning, money levers, error
 triage, incident response. Build/upgrade/verify procedure lives in
-`RELEASE.md`; design decisions and the `§N` shorthand in `docs/DESIGN.md`
-(spec v2.1 — section references below are to it).
+`RELEASE.md`; first-time setup for all three modes in `docs/OPERATE.md`.
+
+**`§N` always means a `docs/DESIGN.md` section** (spec v2.1) — that is what the `§N`
+comments in the code point at too. This file's own sections are referred to **by name**,
+because a bare `§5a` meant two different things depending on which file you were reading
+and `check-design-sections.py` read one of them as the other.
+
+## Enter here: what you are looking at
+
+This file is read under pressure, by lookup. Find the symptom, not the section number.
+
+| what you are seeing | go to |
+|---|---|
+| the rail refuses every purchase, `refusingNow.railClosed` | **3. Presets, the API key** — the rail opens when both secrets are provisioned |
+| `refusingNow.reserveShort`, or `availableToSell` is 0 while the ledger holds cycles | **5. The cycles reserve** — a floor that only rises by observation |
+| `refusingNow.stripeApiFailing` latched | **8. Monitoring** P1 rows — one lever: rotate the key |
+| an order sits at `created` past its own `expiresAtNs` | **5b. Order expiry** — the missed-event case, and why nothing sweeps it |
+| buyers report that cancelling does nothing | **8. Monitoring** P2 — run `expire_order` once, read `order.expireRaced` |
+| a buyer paid and was never credited | **6. Obligations** — the `#paidNotCredited` row. Resend first, always |
+| `pricing_status.lastAttempt.ok` is false, or a quote returns no cycles | **4. Pricing rates** — the staleness window is a security control |
+| a delivery is stuck, delayed, or you must establish where the money is | **6. Obligations** and **7. Recovery timer** |
+| you suspect the webhook secret leaked | **2. Webhook secret** — rotate, and know what you cannot do |
+| an unexpected principal can or cannot buy | **5a. Admission gate** |
+| you are about to upgrade the canister | **10. Upgrades & releases**, then `RELEASE.md` |
+| you are setting a deployment up for the first time | not here — `docs/OPERATE.md` |
 
 ## 0. Operating model
 
@@ -51,7 +74,7 @@ or a granted admin and for nobody else.
 ⚠️ **The CLI is still the answer for four things**, and the panels do not replace
 them: anything that **writes** (the console prints the command for you to run,
 it does not send it); reading when the **frontend is down or not yet deployed**,
-which is most of §1; a **scripted or monitored** read, where the public queries
+which is most of `docs/OPERATE.md`; a **scripted or monitored** read, where the public queries
 below are the interface; and `-e ic` **before** the frontend canister exists.
 
 ⚠️ **Opening the console spends no audit entries.** `admin_order`,
@@ -61,7 +84,7 @@ and one deliberate lookup is one audited read.
 
 Public queries (`reserve_status`, `pricing_status`, `recovery_status`,
 `card_tiers`, `lifecycle_config`, `can_purchase`, `cycles_status`,
-`orphan_depth`, `health`) work from any identity and are the monitoring surface (§9 transparency stance — operational state is public,
+`orphan_depth`, `health`) work from any identity and are the monitoring surface (§8's verifiability stance — operational state is public,
 the webhook secret is the only secret in the system).
 
 **Units used throughout:** money is US cents (`usdCents`); durations are
@@ -69,655 +92,14 @@ nanoseconds (1 h = `3_600_000_000_000`, 24 h = `86_400_000_000_000`,
 72 h = `259_200_000_000_000`); cycle prices are XDR-pegged (1 XDR = 1 T
 cycles).
 
-## 1. Go-live checklist (fresh deployment)
-
-⚠️ **Before any of this**, work `docs/SANDBOX-TESTPLAN.md` to green. Every Stripe
-payload in the automated suites is hand-crafted; that plan is the only thing that
-verifies the real wire format, and its closing section lists what remains open
-even after a clean run.
-
-⚠️ **Deploy only from a green `main`.** The `-Werror` gate that makes a
-non-exhaustive match (M0145) a build failure runs on `mops check` in
-`scripts/test-all.sh` and in CI — **not** on `mops build` or `icp deploy`, which
-compile the same code without it. `mops test` passes `--hide-warnings` and moc
-refuses that together with `-Werror`, so gate-side is the only place it can live.
-A direct-deploy hotfix therefore bypasses it entirely: a new `Owner` case, or any
-other non-exhaustive match, would ship and trap at runtime — on the webhook path
-that is a 5xx Stripe retries for ~3 days.
-
-Everything money-touching **fails closed by default** — a freshly deployed
-gateway accepts no orders and delivers nothing until each lever below is
-consciously set.
-
-⚠️ **"Fresh" is literal: a simulation gateway cannot be promoted to this one.** The
-divisor is refused once any order is stored (§1a), so a sandbox deployment that has
-taken even one test order can never accept `set_expected_livemode '(opt true)'`.
-Production is a new backend canister, and that is survivable for the reason the
-derivation origin is pinned where it is: principals derive from the **frontend**
-canister id, so replacing the backend behind the same frontend changes nobody's
-identity. It does leave their order history in the old canister, which is a sandbox
-deployment's data and nothing anyone paid for.
-
-### 1.1 What is not a command
-
-Six prerequisites that no step below can perform: a decision, a piece of code, or
-off-chain work. Each was a separate open issue until 2026-09-14 and is here instead,
-because a go-live prerequisite filed somewhere else is one that gets discovered
-missing at go-live. The closed issues hold the reasoning; what is kept here is what a
-deployment turns on.
-
-**1. The migration chain, before there is data worth keeping** (#32). `Main.mo` is a
-`persistent actor` with **inline initializers** and there is no
-`src/backend/migrations/`, so an incompatible stable-shape change has exactly one
-remedy — `icp deploy --mode reinstall` — and on a canister holding real orders,
-journals and dedup sets that is not a remedy. The incompatibility itself is caught
-early: `[canisters.backend.check-stable]` compares the actor against the committed
-`deployed/backend.most` inside `mops check`. Three facts to write it against:
-
-- Write it **after** the last schema-affecting change. The init migration must
-  enumerate every stable field, so writing it earlier means writing it again.
-- Adding a stable `var` to the actor needs **no** migration. A field on an existing
-  stable record (`Order`, `Orders.Store`, `Gate.RefusalCounts`) does, and fails
-  `mops check` with *"Write an explicit migration function"*.
-- ⚠️ **The baseline only helps while it is current.** Promote it with `mops deployed`
-  after every deploy: adding a field is *compatible*, so a stale baseline keeps the
-  gate green while it has stopped describing the actor. Measured — `cancelRequests`
-  shipped that way.
-
-Read the `migrating-motoko-actors` skill first. No `preupgrade`/`postupgrade`, no
-`(with migration = ...)`.
-
-**2. An alert someone actually receives** (#3). §8 is a complete monitoring plan —
-metric, threshold, severity, action — and nothing runs it. The whole P1 set polls
-**public queries**, so the alerting layer needs no key. It is done when those metrics
-reach a human out of hours **and someone has tripped one deliberately and watched it
-arrive**; the failure modes here are slow (a 2 h delay alert, a 72 h terminate bound),
-so what is needed is something that wakes a person, not a dashboard someone visits.
-
-**3. The claim, and the legal surface of being official** (#40).
-*"At cost"* must hold **net of card processing** or become a visible fee line — the
-fee is real (≈2.9% + $0.30) and the buyer pays it. Beside it: imprint, terms, privacy
-and contact; invoices a developer can expense, and the VAT position; a refund
-**procedure**, because the canister deliberately models no refunds (§6) so refunding
-is an operator action; and a staffed rotation for the obligation queue, which §6
-currently describes without anyone being on the hook for it.
-
-⚠️ **The serving domain is not irreversible, and this reverses an earlier claim.** II
-derives a principal per origin, but the derivation origin is pinned to the **frontend
-canister id** (`config.ts`), so a test domain and whatever production domain is chosen
-yield the *same* principals. What would be one-way is making a custom domain itself the
-derivation origin — which this deployment does not do.
-
-**4. `stripe_origin` must be https and non-loopback once livemode is `?true`** (#143).
-`Session.validateOrigin` accepts `http://` for loopback hosts, and nothing refuses the
-pair `expected_livemode = ?true` with `stripe_origin = http://localhost:8000` — a live
-gateway returning paying buyers to their own machine. So **read `stripe_origin` back
-after setting either one** (steps 5 and 8 below).
-
-The permanent fix is a refusal on both setters, like the divisor's — but ⚠️ **key each
-refusal on the BAD VALUE, not on the pair.** `set_stripe_origin` refuses a *loopback*
-origin while livemode is `?true`; `set_expected_livemode(?true)` refuses while the
-*stored* origin is loopback. Phrased that way a gateway already in the bad pair can
-always set a good origin and walk out. The divisor's mutual refusal is the shape to
-copy and **not** the constraint: its way out is blocked by a second guard entirely
-(`#divisorChangeWithOrders`), so a simulation gateway with one stored order can never
-go live at all. Do not add a second lockout to a money-handling setter.
-
-**5. Attestation coverage of the confidential subnet** (§9, #2). Checkpoints and
-state-sync **are** confirmed confidential on the target subnet, which was the spec's
-"verify this hardest" item. Attestation coverage is the box still open: one unattested
-replica is one node provider who can read the webhook secret. §9 is the checklist.
-
-**6. Where the repo lives, before the "check the code" link is published** (#13, #23).
-`RELEASE.md`'s trust story is *verify the deployed module hash against a tagged
-commit*, so the repository URL is a user-facing artifact. `cyclepay` also still names
-the upstream fork this repo grew from. Renaming or moving is free now and costs
-redirect debt once that link is on a money page.
-
-### 1.2 The steps
-
-⚠️ **Two of these are knowingly NOT done on the live simulation deployment** — step 2's
-freezing threshold (still the 30-day default) and step 10's backup controller (one
-principal, no second). Both are single commands and both are production prerequisites,
-tracked on issue #171; they are deferred rather than missed. Read
-`icp canister status backend -e ic` before assuming either has been done on whatever
-deployment you are looking at.
-
-1. **Deploy and verify** per `RELEASE.md` — reproducible build, published module
-   hash, and `icp canister status` gated on matching it.
-
-2. **The canister's own gas, and its freezing threshold.** `minCanisterCycles`
-   refuses every order below the floor, and the XRC needs 1 B attached per rate
-   refresh. ⚠️ **Read the balance and compute the difference; never paste a figure** —
-   §1a records what pasting one cost. Then raise the freezing threshold: this
-   canister holds money-bearing state, so the 30-day default is thin, and losing it
-   to a cycle drain destroys the order store, the journals and the dedup sets.
-
-   ```bash
-   icp canister status backend -e ic                 # read the balance first
-   icp canister top-up backend --amount <diff> -e ic  # --amount, not --cycles
-   icp canister settings update backend --freezing-threshold 7776000 -e ic  # 90 days
-   ```
-
-3. **Fund the cycles reserve, then tell the gateway to look** (§5). Delivery transfers
-   out of the gateway's own cycles-ledger account, which is a **different pot from
-   step 2** — `icp canister top-up` does not touch it.
-
-   ```bash
-   icp cycles transfer <amount> <backend-principal> -n ic
-   icp canister call backend refresh_reserve '()' -e ic
-   ```
-
-   ⚠️ **The second call is not optional.** Solvency is decided against a maintained
-   lower bound that starts at zero and rises only by observation, so without it the
-   gateway refuses every sale with `#reserveShort{available = 0}` while the ledger
-   holds the full amount.
-
-   ⚠️ **How much is a SECURITY decision before it is a working-capital one.** A forged
-   webhook delivers from the reserve and nothing caps that, so **the reserve balance is
-   the blast radius** (§2, §9). Size it to what you are willing to lose between a leak
-   and its detection, and top up on a cadence rather than parking months of stock in
-   the account. The gate's `maxPurchaseUsdCents` is the per-order exposure inside it.
-
-4. **Register card tiers. Not optional in practice** (§3):
-
-   ```bash
-   icp canister call backend set_card_tiers \
-     '(vec { record { id = "t10"; usdCents = 1_000 : nat };
-             record { id = "t20"; usdCents = 2_000 : nat };
-             record { id = "t50"; usdCents = 5_000 : nat } })' \
-     -e ic --identity <operator>
-   ```
-
-   ⚠️ **With an empty list the buy view offers NO WAY TO BUY**, and the reason is not
-   the one you would guess. `Amount` is `variant { custom : nat; tier : text }` and
-   nothing in the create path validates an amount against the tier list, so the
-   *backend* really does accept any amount within the gate's bounds. But `renderTiers`
-   returns early on an empty list, and the **custom-amount tile is built after that
-   return** — so no tiles and no custom field. The technically-optional reading is true
-   of the canister and false of the page.
-
-   The whole-vector setter replaces the list; there is no add or remove, and `'(vec {})'`
-   clears it. Every tier must sit inside the gate's bounds or it is refused. No `$100`
-   preset: that is the ceiling, and it is what the custom field is for.
-
-5. **Declare the Stripe mode:**
-
-   ```bash
-   icp canister call backend set_expected_livemode '(opt true)' -e ic --identity <operator>
-   ```
-
-   Until this is set, a test-mode webhook secret would deliver **real** cycles for
-   payments that never happened. Verify with `expected_livemode`, and re-read
-   `stripe_origin` (§1.1 item 4).
-
-6. **Configure the Stripe webhook destination**: in the Stripe Dashboard, add
-   `https://<backend-canister-id>.icp.net/webhook/stripe` subscribed to the events in
-   §1a's table. ⚠️ **Not just `completed` and `charge.refunded`** —
-   `checkout.session.expired` is the *only* thing that expires an order (§5b), and the
-   canister dispatches on six types in all. An unsubscribed event is not "acked and
-   ignored": it is never sent, so its handler never runs.
-
-7. **Provision the webhook signing secret** (§2). Until it is set the webhook route
-   answers 503 and Stripe retries. Sealed — it never appears in an ingress message, a
-   shell history or a CI log (§7.3 of `docs/STRIPE.md`; §1a step 4 carries the exact
-   commands).
-
-8. **The origin, then the live API key — the pair that opens the rail** (§3).
-
-   ```bash
-   icp canister call backend set_stripe_origin '("https://<your-origin>")' -e ic --identity <operator>
-   # then set_stripe_api_key, sealed, per §1a step 4
-   ```
-
-   The key is **LIVE, restricted (`rk_...`), Checkout Sessions = Write, everything else
-   None**. Write is the level that also grants the read the recovery sweep needs to
-   settle an order whose expiry event never arrived (§6's `#paidNotCredited` row, §8's
-   `stripeApiFailing` row). A sandbox key cannot be reused.
-
-   ⚠️ **With either missing, `create_order` refuses** — provisioning both is what opens
-   the rail, so do it last; rotating either closes it until both are valid again.
-
-   There are no Payment Links, Products or Prices to create: the session carries inline
-   `price_data`, and `amount_total == usdCents` holds because of what the session does
-   **not** enable — the eight settings are listed in `rails/Session.mo` beside the body
-   builder, and `test/session.test.mo` asserts their absence. Historically a mismatch
-   there failed silently and delivered a different cycle quantity; it now delivers
-   nothing and files a refund obligation, so a wrong amount is visible on the first
-   order rather than as drift.
-
-9. **Review the admission gate** (§5a). The defaults are non-zero and usable, but
-   `maxPurchaseUsdCents` should sit just above your largest tier, and
-   `minCanisterCycles` should suit how closely you monitor this canister.
-
-10. **Add a backup controller.** A single controller identity with no backup means a
-    lost key makes the canister permanently un-upgradeable; there is no recovery path
-    (§0 covers the trust model this implies).
-
-11. **Wire monitoring (§8) before announcing the service**, not after — and confirm an
-    alert arrives (§1.1 item 2).
-
-12. **Smoke-check the public surface**: `pricing_status` — both rates populated and
-    `lastAttempt.ok` true. The rate timer warms itself on install, so this should hold
-    within seconds; if it does not, `lastAttempt.detail` names the failing guard (§4)
-    and **no order can be created until it clears** (creation answers
-    `rateUnavailable`, by design). Then `reserve_status`, `recovery_status` (sweep
-    timer armed), `cycles_status` (balance above `minCanisterCycles`), `card_tiers`,
-    and `can_purchase '(<your smallest tier's cents>)'` — the last should answer `ok`
-    before you announce anything.
-
-13. **Buy one thing on the deployed site with a real card.** Nothing short of a live
-    purchase exercises the key, the origin, the return URL and the webhook secret
-    together.
-
-## 1a. Mainnet in SIMULATION mode, on a custom domain
-
-⚠️ **This is not §1 with different values.** §1 deploys a production gateway: live Stripe
-key, `expected_livemode = ?true`, real cycles delivered. This deploys a gateway that takes
-**real charges in Stripe's sandbox** and delivers **1/1000 of the cycles**, so its steps 11
-and 12 are not merely different here, they are *refused* — `divisor > 1` requires
-`expected_livemode == ?false` exactly, and the two guards are mutual (`docs/STRIPE.md`
-§9a).
-
-Target of this procedure: `https://cyclepay.raymondk.co`, on the confidential subnet
-`re2t4-faa75-v3vhk-kdmdr-uyrkl-aik2l-ixd6u-p3fyr-zlfkc-6c5af-zae`, divisor 1000.
-
-### What needs no configuration
-
-| | why |
-|---|---|
-| the Exchange Rate Canister | `icp.yaml`'s `ic` environment lists `[backend, frontend]` only, so the local XRC mock is never created on mainnet and its id is never injected. The backend then falls back to the real XRC. **Verify — but not until a rate call has happened, see below:** `pricing_status.xrcCanisterId` must read `uf6dk-hyaaa-aaaaq-qaaaq-cai` |
-| the Cycles Minting Canister | `rkp4c-7iaaa-aaaaa-aaaca-cai` is compiled in and is the same principal on mainnet and PocketIC |
-| a webhook forwarder | `scripts/stripe-dev.sh` exists only because Stripe cannot reach localhost. On mainnet Stripe posts straight to the canister |
-| the CSP | `connect-src` already admits `https://icp-api.io`, which is where a custom-domain page sends its canister calls |
-
-### The order is one-way in four places
-
-```
-expected_livemode = ?false        <- ?false EXACTLY; null is the fresh-install default and is refused
-        |
-set_pricing_config divisor=1000   <- refused once ANY order is stored. Reinstall is the only way back
-        |
-add_allowed_buyer <tester>        <- MUST precede funding the reserve
-        |
-icp cycles transfer -> refresh_reserve
-```
-
-And the fifth, outside the canister: **the derivation origin decides who every buyer is.**
-It is pinned to the frontend canister's own origin (`src/frontend/src/config.ts`), which is
-what makes this test domain and whatever domain #40 settles on yield the **same**
-principals. Changing that pin after the first sign-in strands every account.
-
-### Cycles
-
-```bash
-# ⚠️ `-n ic` on BOTH. Without it these act on the local network, where `mint` has no CMC
-# to convert against and `balance` reports a local balance that has nothing to do with
-# what you are about to spend. Exactly one of --icp / --cycles is required.
-icp cycles mint --icp 5 -n ic     # or --cycles 8600b, which solves for the ICP needed
-icp cycles balance -n ic
-```
-
-⚠️ **Every row is cash to mint, and a component sits under its parent rather than beside
-it.** Mixing targets ("to 5 T") with increments ("+0.2 T") is how a budget stops being
-checkable: an earlier version of this table listed the creation fee next to the 4.0 T it
-comes out of, and totalled 7.7 T while its own rows summed to 8.5 T.
-
-⚠️ **Measured on this subnet, not derived.** An earlier version scaled the creation fee
-by 7/13 with the rest of the per-node costs and budgeted ~269 B per canister. The real
-deployment consumed **505.9 B each**: the creation fee is the 500 B flat figure and does
-**not** scale with subnet size. That understated the total by half a trillion.
-
-```
-  4.000 T   icp deploy, two canisters at the 2 T default
-              of which creation fees         1.012 T   consumed (505.9 B each, MEASURED)
-              of which lands as balance      2.988 T   1.494 T per canister
-+ 3.506 T   top the backend up to its own-gas floor
-              5 T floor minus the 1.494 T it actually holds. COMPUTE THIS, see below
-+ 0.200 T   the sellable reserve, a SEPARATE pot on the cycles ledger
-              at divisor 1000 a $10 purchase locks ~7.24 G, so ~27 test purchases
-+ 1.000 T   slack for one reinstall, because the divisor is one-way once an order exists
-  ────────
-  8.706 T   to mint
-```
-
-| threshold | value | what happens below it |
-|---|---|---|
-| `Gate.Config.minCanisterCycles` | 5 T | the gate admits **no orders**. Compared against the raw `Cycles.balance()`, so the freezing threshold does not eat into it |
-| the reserve floor | anything | `#reserveShort`, and it stays 0 until `refresh_reserve` observes a top-up |
-
-⚠️ **4.5 T is not enough, and the shortfall is invisible until the first order**: the two
-canisters get created, the frontend serves, and every `create_order` is refused because the
-backend sits under its own-gas floor. 5 ICP mints comfortably past 8.6 T at current rates;
-check with `icp cycles balance -n ic` before starting rather than after step 1.
-
-⚠️ **`pricing_status` reads `xrcCanisterId = null`, `rates = null`, `lastAttempt = null`
-on a fresh deploy, and all three are CORRECT.** Do not read them as a broken rate path.
-
-- `xrcCanisterId` is **null until an XRC call has actually resolved it** (`Main.mo`), and
-  deliberately so: defaulting it to the mainnet id would make the one signal that detects
-  a mainnet deploy wrongly pointed at a mock read *all-clear* during exactly the window an
-  operator checks a fresh deploy.
-- No XRC call has happened because the rate timer returns early while no rail is selling
-  (`rateTimerJob`: `if (not railsLive()) return`). A dark gateway spends nothing, and the
-  rail is not live until both Stripe secrets and the return origin are set (steps 4 and 5).
-
-So the XRC verification cannot pass before step 5. To check it earlier, force a tick:
-`refresh_rates` is an admin method that calls the refresh **directly and bypasses the
-`railsLive` guard**, which is what makes it the right lever here and after any deploy.
-
-```bash
-icp canister call backend refresh_rates '()' -e ic --identity <operator>
-icp canister call backend pricing_status '()' -e ic   # xrcCanisterId = uf6dk-hyaaa-aaaaq-qaaaq-cai
-```
-
-⚠️ And `xrcCanisterId` is **transient**: it is null again after every upgrade until the
-next rate call. A null reading after a redeploy means "not yet asked", never "misconfigured".
-
-### 1. Create and install on the confidential subnet
-
-```bash
-# From a green main. The -Werror gate runs on `mops check`, not on `icp deploy` (§1).
-bash scripts/test-all.sh
-
-icp deploy -e ic \
-  --subnet re2t4-faa75-v3vhk-kdmdr-uyrkl-aik2l-ixd6u-p3fyr-zlfkc-6c5af-zae
-
-icp canister status backend -e ic -i     # note both ids
-icp canister status frontend -e ic -i
-
-# The backend's own gas, to the floor. This is NOT the reserve.
-#
-# ⚠️ **Read the balance and compute the difference; do not paste a figure.** What
-# creation leaves behind is not something to assume -- this step said `--amount 3400b`,
-# which lands at 4.894 T against a 5 T floor and leaves the gate refusing every order
-# after an operator has "done the step". Off by 106 B, invisible until the first order.
-icp canister status backend -e ic | grep -i cycles      # e.g. 1_494_093_400_599
-#   top-up = 5_000_000_000_000 - that, rounded up. For the figure above: 3506b.
-icp canister top-up backend --amount 3506b -e ic
-icp canister status backend -e ic | grep -i cycles      # must now read >= 5_000_000_000_000
-```
-
-⚠️ **`--subnet` on the deploy, not on a later create.** A canister already created on the
-default application subnet cannot be moved; the only fix is to delete it and start over,
-and on mainnet that means new canister ids — which means a new derivation origin and a
-new principal for anyone who signed in.
-
-Raise the freezing threshold once the deployment is real. 30 days is thin for
-money-bearing state, and for a sandbox it is a judgement call rather than a rule:
-
-```bash
-icp canister settings update backend --freezing-threshold 7776000 -e ic   # 90 days
-```
-
-### 2. The custom domain
-
-Two files ship in the frontend already — `src/frontend/public/.well-known/ic-domains` and
-`ii-alternative-origins` — so the canister serves both after step 1. What remains is DNS
-and the registration call.
-
-| record | host | value |
-|---|---|---|
-| CNAME | `cyclepay.raymondk.co` | `cyclepay.raymondk.co.icp1.io` |
-| TXT | `_canister-id.cyclepay.raymondk.co` | the **frontend** canister id |
-| CNAME | `_acme-challenge.cyclepay.raymondk.co` | `_acme-challenge.cyclepay.raymondk.co.icp2.io` |
-
-⚠️ **Turn off the DNS provider's own TLS.** Cloudflare's Universal SSL and equivalents
-interfere with the ACME challenge the boundary nodes run, and can leave stale
-`_acme-challenge` TXT records that do not appear in the dashboard. Check with
-`dig TXT _acme-challenge.cyclepay.raymondk.co` — there should be no TXT records, only the
-CNAME.
-
-```bash
-curl -sL "https://icp.net/custom-domains/v1/cyclepay.raymondk.co/validate" | jq
-curl -sL -X POST "https://icp.net/custom-domains/v1/cyclepay.raymondk.co" | jq
-curl -sL "https://icp.net/custom-domains/v1/cyclepay.raymondk.co" | jq '.data.registration_status'
-```
-
-Poll until `registered`, then give the gateways a few minutes.
-
-⚠️ **`.well-known/ii-alternative-origins` is what makes the domain usable at all.**
-Internet Identity fetches it from the derivation origin and refuses to derive for a
-serving origin the file does not list. Adding a second serving domain later means editing
-that file **and** redeploying before the domain goes live.
-
-### 3. Declare the mode, then the divisor
-
-```bash
-# ?false EXACTLY. `null` accepts either mode and is what a fresh install has.
-icp canister call backend set_expected_livemode '(opt false)' -e ic --identity <operator>
-icp canister call backend expected_livemode '()' -e ic
-
-# Simulation. MUST come before the first order.
-icp canister call backend set_pricing_config '(record {
-  feeBps = 290 : nat; feeFixedCents = 30 : nat; maxAgeNs = 300_000_000_000 : int;
-  maxRateDeltaBps = 5_000 : nat; minRateSources = 2 : nat; divisor = 1_000 : nat })' \
-  -e ic --identity <operator>
-
-icp canister call backend pricing_status '()' -e ic   # divisor = 1_000, xrcCanisterId = uf6dk-...
-```
-
-⚠️ **The divisor's ceiling scales with `minPurchaseUsdCents`, not with the purchase.** At
-the shipped $10 floor, divisor 1000 leaves 7.24 G — 72x the flat 100 M ledger deposit fee,
-so it is accepted. Lower the floor for a demo and the same divisor is refused
-(`#simulationScaleTooSmall`): that is the guard working, not a bug.
-
-### 4. The secrets, sealed, without any local script
-
-Both Stripe secrets are **encrypted to the canister before they are sent** (#11), so the
-plaintext never appears in an ingress message, a shell history or a CI log. The mainnet
-path differs from the local one only in the `ic` argument, which selects the **mainnet
-vetKD master key** — and that choice is derived from the environment rather than typed,
-because mainnet and a local network both call their key `key_1` and sealing against the
-wrong one produces a ciphertext nobody can ever open.
-
-You do **not** set these up front. Each `read` waits for you to paste the value:
-
-```bash
-# `read -rs` takes one line from the terminal into the variable: -s so nothing echoes,
-# -r so a backslash stays a backslash. The `printf` is the prompt -- `read` prints none
-# of its own, so without it the terminal just looks hung.
-#
-# ⚠️ **This is the point, not ceremony.** `STRIPE_API_KEY=rk_... scripts/seal-secret.sh`
-# would put the key in ~/.zsh_history; typed into `read`, the only thing history records
-# is `read -rs STRIPE_API_KEY`. `export` is what lets the script's child process see it.
-#
-# ⚠️ `read -rsp "prompt: " VAR` is the BASH idiom and FAILS in zsh, where -p means "read
-# from the coprocess" (`zsh:read:1: -p: no coprocess`). Prompt with printf in both.
-printf 'Stripe restricted key (rk_...): '; read -rs STRIPE_API_KEY
-printf '\n%s chars captured\n' "${#STRIPE_API_KEY}"
-export STRIPE_API_KEY
-scripts/seal-secret.sh api-key ic
-
-printf 'Stripe webhook signing secret (whsec_...): '; read -rs STRIPE_WEBHOOK_SECRET
-printf '\n%s chars captured\n' "${#STRIPE_WEBHOOK_SECRET}"
-export STRIPE_WEBHOOK_SECRET
-scripts/seal-secret.sh webhook-secret ic
-
-# ⚠️ Not optional. An exported key stays readable by every later child process of this
-# shell -- including the Stripe CLI, which prefers STRIPE_API_KEY over its own session
-# and cannot use a restricted key (`more_permissions_required`).
-unset STRIPE_API_KEY STRIPE_WEBHOOK_SECRET
-```
-
-⚠️ **The length echo is the confirmation, and it exists because there was none.** `read -rs`
-shows nothing as you type, so a paste that silently fails is indistinguishable from one that
-worked. Check the number against the key you hold before running the seal.
-
-`scripts/.local-dev.env` is the other way the script finds these, and it is read **only for
-a local environment**: it holds sandbox values, and a mainnet key does not belong in the
-repo tree even gitignored.
-
-⚠️ **That scoping is a fix, not a convention.** The file used to be consulted for any
-environment whenever the variable was empty, so an empty paste during a mainnet
-provisioning sealed the **sandbox** key to the **mainnet** canister, and printed the same
-byte count, the same `isSet = true` and the same `generation = 1`. Both keys are 107
-characters, so even the length disclosure could not separate them. The script now refuses a
-set-but-empty value outright and never reads the file for a named environment.
-
-⚠️ **Use a SANDBOX restricted key (`rk_test_...`), Checkout Sessions = Write, everything
-else None.** Write is the level that also grants the read the #52 recovery sweep needs.
-Never an unrestricted `sk_`: a leaked write-sessions key can only create sessions that pay
-*us*, while one that can issue refunds is materially worse.
-
-⚠️ **Do NOT export `STRIPE_API_KEY` into a shell where the Stripe CLI runs.** The CLI
-prefers that variable over its own `stripe login`, and a restricted key cannot open a CLI
-session (`more_permissions_required`).
-
-If you would rather run the two steps by hand — a different machine, or wanting each step
-visible — that is all the script does:
-
-```bash
-BACKEND=$(icp canister status backend -e ic -i)
-
-# 1. Seal, OFFLINE. The public key is computed from a master key shipped in
-#    @icp-sdk/vetkeys plus the canister id: no network call, no identity, nothing to
-#    trust. Anyone may seal a secret TO the canister; only it can open one.
-CYCLEPAY_SEAL_SECRET="$STRIPE_API_KEY" npm --prefix scripts/seal run --silent seal -- \
-  --canister "$BACKEND" --source mainnet --out /tmp/sealed.arg
-
-# 2. Send it. This is the only step that involves your identity.
-icp canister call backend set_stripe_api_key --args-file /tmp/sealed.arg -e ic
-rm -f /tmp/sealed.arg
-
-icp canister call backend stripe_api_key_status '()' -e ic   # isSet = true, generation = 1
-```
-
-`--source mainnet` has no default, on purpose. A `#notSealedToThisCanister` refusal means
-the ciphertext was sealed against the other network's master key — the failure this
-arrangement exists to make loud instead of silent.
-
-### 5. Stripe: where events arrive, and where the buyer comes back
-
-Two different URLs, and only the second one is the custom domain.
-
-```bash
-# Where the BUYER returns after paying. Validated: https, no query, no fragment.
-# success_url becomes `<origin>/#/order/<id>`, and the app routes on the hash, so the
-# certified-assets canister needs no _redirects rule for it.
-icp canister call backend set_stripe_origin '("https://cyclepay.raymondk.co")' \
-  -e ic --identity <operator>
-icp canister call backend stripe_origin '()' -e ic
-```
-
-In the Stripe **sandbox** dashboard, add a webhook destination pointing at the **backend
-canister**, not the domain:
-
-```
-https://<backend-canister-id>.icp.net/webhook/stripe
-```
-
-| event | what it does here | omitting it |
-|---|---|---|
-| `checkout.session.completed` | the delivery path | nothing is ever delivered |
-| **`checkout.session.expired`** | the **only** *event* that moves an order to `#expired` and releases its reserve promise (§10) | ⚠️ orders sit `#created` past their deadline forever. §10 makes a stuck `#created` order the detection signal for a broken one, so a missing subscription manufactures false alarms in the signal the design relies on. ⚠️ **And the obvious lever does not recover it:** `expire_order` asks Stripe first and refuses with `#sessionNotOpen` once the session has really expired there, which is precisely this case. Subscribe, then **resend the event from the Stripe Dashboard** so the order moves through its normal path |
-| `charge.refunded` | resolves an `#unattributed` obligation, and files one for a late payment | a refund settles the money and leaves the worklist item open |
-| `charge.dispute.created` | one audit line: *reconcile in Stripe; cycles cannot be recovered* | the dispute leaves no trace in the trail |
-| `checkout.session.async_payment_succeeded` | the delivery path, for a delayed method | **cannot fire today** — `createBody` pins `payment_method_types[]=card` and cards settle synchronously. Subscribe anyway: if that pin is ever removed, an unsubscribed success is fiat in with nothing delivered and nothing on the worklist |
-| `checkout.session.async_payment_failed` | one audit line: *will never pay* | same, and same reason to subscribe |
-
-⚠️ **Subscribe to all six.** The first three are load-bearing, the next one is the audit
-trail, and the last two are free insurance against a change to the payment-method pin.
-
-⚠️ The signing secret that destination shows you is the one step 4 provisions. Until it is
-set the route answers 503 and Stripe retries.
-
-### 6. Allow-list, then fund the reserve
-
-⚠️ **This order, for the reason §5 gives**: sandbox payments are free and unlimited, so
-test mode plus an empty allow-list plus a funded reserve is a cycles faucet, and the
-gateway refuses every buyer in that state (`#unboundedGiveaway`).
-
-```bash
-# Sign in at https://cyclepay.raymondk.co, copy the principal the page shows.
-# ⚠️ That principal is derived from the pinned derivation origin, so it is the same one
-# you would get at the canister URL -- and a principal copied from any OTHER deployment
-# of this app is not.
-icp canister call backend add_allowed_buyer '(principal "<tester>")' -e ic --identity <operator>
-icp canister call backend allowed_buyers '()' -e ic
-
-icp cycles transfer 200b <backend-principal> -n ic
-icp canister call backend refresh_reserve '()' -e ic --identity <operator>
-icp canister call backend reserve_status '()' -e ic     # availableToSell > 0
-```
-
-⚠️ **`refresh_reserve` is not optional and its absence is silent**: the ledger holds
-the cycles, `availableToSell` stays 0, and every buyer is refused with
-`#reserveShort`. Read `reserve_status` back — that is what the third line is for.
-
-### 6a. The price tiles
-
-⚠️ **This step was missing from this procedure entirely**, which is how a deployment
-gets a buy page with no way to buy: `renderTiers` returns early on an empty list and
-the custom-amount tile is built *after* that return, so an unconfigured gateway offers
-neither. The canister accepts a custom amount; the page never asks for one. §1 step 4
-carries the same warning, and this procedure is the one that produced the live
-deployment.
-
-```bash
-icp canister call backend set_card_tiers \
-  '(vec { record { id = "t10"; usdCents = 1_000 : nat };
-          record { id = "t20"; usdCents = 2_000 : nat };
-          record { id = "t50"; usdCents = 5_000 : nat } })' \
-  -e ic --identity <operator>
-icp canister call backend card_tiers '()' -e ic          # three tiles
-```
-
-Every tier must sit inside the gate's bounds (§5a) or the whole vector is refused. No
-`$100` preset: that is the ceiling, and it is what the custom field is for.
-
-### 7. Verify before spending a card
-
-```bash
-icp canister call backend health '()' -e ic                       # true
-icp canister call backend pricing_status '()' -e ic               # ok, divisor 1_000, real XRC id
-icp canister call backend quote_previews '(vec { 1_000 : nat })' -e ic
-icp canister call backend refusal_counts '()' -e ic               # every refusingNow flag false
-icp canister call backend expected_livemode '()' -e ic            # opt false
-curl -sI https://cyclepay.raymondk.co                             # HTTP/2 200
-curl -sL https://cyclepay.raymondk.co/.well-known/ic-domains
-```
-
-⚠️ **Verify IDENTITY too — it is the only one-way item in this list**, and the one nothing
-above touches. Two checks, before step 6 allow-lists a principal and funds a reserve
-against it:
-
-```bash
-# 1. Internet Identity reads this CROSS-ORIGIN from the derivation origin. Without the
-#    CORS header it cannot read the file, cannot validate the domain, and refuses to
-#    derive -- which presents as sign-in failing only on the custom domain.
-curl -sI https://<frontend-canister-id>.icp.net/.well-known/ii-alternative-origins
-#    expect: content-type: application/json  AND  access-control-allow-origin: *
-```
-
-2. **Sign in at `https://cyclepay.raymondk.co` and at
-   `https://<frontend-canister-id>.icp.net`, and confirm the page shows the same
-   principal.** Thirty seconds, and it turns this section's central claim from prose into
-   an observation. If they differ, stop: the derivation origin is not in effect, and
-   anything allow-listed from here is allow-listed for an identity that will not come
-   back.
-
-⚠️ **`availableToSell` stays in REAL cycles while quotes are scaled**, so it can read
-200 G while $10 buys 7.24 G. Arithmetically right, and startling without this sentence.
-
-⚠️ **A stale rate shows as `cycles = null` in `quote_previews` at ANY divisor.** Read
-`pricing_status` before concluding the divisor is wrong, and force a tick rather than
-waiting for the timer -- a fresh install before its first refresh is exactly when this
-appears:
-
-```bash
-icp canister call backend refresh_rates '()' -e ic --identity <operator>
-icp canister call backend pricing_status '()' -e ic     # ok = true, fetchedAt recent
-```
-
 ## 2. Webhook secret — provisioning & rotation (§7)
 
 HMAC is symmetric, so verify = forge — anyone holding this secret can forge "paid"
 webhooks and drain **the entire reserve**, one order at a time, at the operator's expense.
 ⚠️ **The reserve balance is the blast-radius bound, so size it to what you can afford to
 lose in one window** — there is no per-period cap standing behind it. It is stored
-**plaintext by design** (`Secret.mo` documents the SEV-SNP posture; §10 below is the
-checklist).
+**plaintext by design** (`Secret.mo` documents the SEV-SNP posture; the confidential-subnet
+checklist below is the checklist).
 
 **Provision / rotate — the value is sealed, never typed into a call:**
 
@@ -762,7 +144,7 @@ TLS-terminating boundary node as ordinary ingress, so treat the first secret set
 untrusted path as burned.* That is no longer true, and the advice is withdrawn rather than
 softened: the ingress argument is ciphertext, useless to the boundary node and to anything
 reading a shell history or a CI log. Sealing does nothing for the **at-rest** exposure,
-which is §10's confidential-subnet checklist.
+which is the confidential-subnet checklist below.
 
 **Suspected leak — immediate actions** (in this order):
 
@@ -834,7 +216,7 @@ rather than a click path through three screens.
 #    else None. Write is the level that also grants read, and the recovery sweep needs
 #    the read: it retrieves a session to settle an order whose expiry event never
 #    arrived (#52). A key without it 401s on every retrieve and stranded capacity is
-#    never released — watch for refusingNow.stripeApiFailing (§8).
+#    never released — watch for refusingNow.stripeApiFailing (monitoring).
 #
 #    SEALED (§7.3): the key is encrypted to this canister before it is sent, so it never
 #    appears in an ingress message, a shell history or a CI log. The trailing `ic` selects
@@ -846,12 +228,13 @@ STRIPE_API_KEY='rk_...' scripts/seal-secret.sh api-key ic
 #    Not a secret — it is the URL buyers are sent to — so it is set directly.
 icp canister call backend set_stripe_origin '("https://<your-origin>")' -e ic --identity <operator>
 
-# 3. The webhook signing secret (§7). Sealed the same way; see §2 for rotation.
+# 3. The webhook signing secret (DESIGN §7). Sealed the same way; rotation is
+#    the webhook-secret section above.
 STRIPE_WEBHOOK_SECRET='whsec_...' scripts/seal-secret.sh webhook-secret ic
 
 # 4. The price tiles. ⚠️ REQUIRED for a usable page, whatever the canister accepts:
 #    with an empty list the buy view renders no tiles AND no custom field, because
-#    `renderTiers` returns early and the custom tile is built after that return. See §1
+#    `renderTiers` returns early and the custom tile is built after that return. See `docs/OPERATE.md`
 #    step 4. Do not register a $100 preset; that is the ceiling and the custom field's job.
 icp canister call backend set_card_tiers \
   '(vec { record { id = "t10"; usdCents = 1_000 : nat } })' \
@@ -893,7 +276,7 @@ version.
 ### Tier registration
 
 Validation is atomic — non-empty unique ids, non-zero amounts, every amount
-within `[minPurchaseUsdCents, maxPurchaseUsdCents]` (§5a), or the whole call
+within `[minPurchaseUsdCents, maxPurchaseUsdCents]` (the admission-gate section), or the whole call
 rejects and the live tier list is untouched. `card_tiers` is the public query the
 frontend renders.
 
@@ -920,7 +303,7 @@ it. Two things remain account-level and are therefore yours to keep off:
 | **Automatic tax** (account default) | **off** | raises `amount_total`; the payment is refused as a mismatch, so nothing is delivered — but every order fails until it is turned off |
 | **Adaptive pricing** (Dashboard toggle) | pinned off by the request | currently harmless to `amount_total` for this shape; the request pins it anyway, and it is proof Stripe adds Dashboard-side amount changers over time |
 
-Plus the two already in §1: **USD** (any other currency is refused as
+Plus the two already in `docs/OPERATE.md`: **USD** (any other currency is refused as
 `#unattributed`, a refund obligation) and **card-only**
 (delayed methods are handled, but they make money-in asynchronous).
 
@@ -933,7 +316,7 @@ as a queue entry on the first order, not as a slow drift in what buyers receive.
 ⚠️ **Test-mode and live-mode keys are different objects.** Going live means a
 live-mode restricted key and a live-mode webhook secret, both re-provisioned
 against the mainnet canister. Once `set_expected_livemode '(opt true)'` is set, a
-stray test-mode event is refused and tagged `stripe.livemodeMismatch` (§8 alerts
+stray test-mode event is refused and tagged `stripe.livemodeMismatch` (the monitoring section alerts
 on it), so this fails closed: the symptom of getting it wrong is that nobody can
 buy anything, not lost money.
 
@@ -1127,7 +510,7 @@ to the canister's principal and the cycles ledger is a different canister, so a
 
 Order creation is refused before any quote when fulfilment is already
 impossible. This is separate from, and in addition to, the solvency check in
-§5 — the point is to refuse *before* the customer pays Stripe.
+the reserve section — the point is to refuse *before* the customer pays Stripe.
 
 ```bash
 icp canister call backend lifecycle_config '()' -e ic     # public: gate AND delivery bounds
@@ -1143,7 +526,7 @@ icp canister call backend set_gate_config \
 
 | Lever | Default | What it protects | Sizing |
 |---|---|---|---|
-| `maxOpenOrdersPerPrincipal` | **1** | Unbounded state growth. Abandoned orders are the only thing a user can create for free, so this is the real bound. Nothing sweeps them away (§5b): a slot frees when Stripe expires the session, when the buyer cancels, or via `expire_order`. | ⚠️ **1 is a product choice and it is felt.** A buyer who abandons a checkout cannot start another until that session expires (~35 min) — including whoever is demoing this. Raise it for power users; must be > 0, and 0 is rejected as config. |
+| `maxOpenOrdersPerPrincipal` | **1** | Unbounded state growth. Abandoned orders are the only thing a user can create for free, so this is the real bound. Nothing sweeps them away (the order-expiry section): a slot frees when Stripe expires the session, when the buyer cancels, or via `expire_order`. | ⚠️ **1 is a product choice and it is felt.** A buyer who abandons a checkout cannot start another until that session expires (~35 min) — including whoever is demoing this. Raise it for power users; must be > 0, and 0 is rejected as config. |
 | `minCanisterCycles` | 5 T | **This canister's own gas.** Below it the gate stops admitting NEW orders. It does not gate delivery, cancellation or the webhook, so a paid order is still delivered below the floor. | Sized against a gas **drain**, not against freezing: freezing is ~149x further down (~34 B, 30 days of idle burn), so at 5 T sales close with over a year of runway in hand. It is the only bound on order flooding from rotating principals, and on a revoked Stripe key retrying its session outcall at ~220 M a try. Lowering it toward the freezing threshold removes that bound. `0` disables the check. |
 | `maxPurchaseUsdCents` | **10 000 (\$100)** | Operator typo in a tier, and the webhook's upward repricing path. ⚠️ **It IS the per-order reserve exposure**, which is why #33 lowered it from \$1 000 — it is the main lever against reserve griefing. | Set just above your largest tier. `set_card_tiers` rejects any tier above it, and the webhook refuses to deliver against a payment above it. |
 | `minPurchaseUsdCents` | **1 000 (\$10)** | A purchase too small to be worth an outcall and a reserve hold — and one that does not buy what a buyer came for. | Two independent floors hold it at \$10: the 30¢ fixed fee is 9.0% of \$5 against 5.9% of \$10, and \$5 buys 3.313 T against the **4.0 T** two default-funded canisters need, so it fails on the second one. `docs/BUYER-COST-MODEL.md` carries the model, and `test/buyer-cost.test.mo` pins it. |
@@ -1151,11 +534,11 @@ icp canister call backend set_gate_config \
 **All four deliberately default to non-zero**, unlike the tier list. A limit where 0
 would brick the canister rather than protect it has to ship armed. ⚠️ **The tier list is
 no longer the rail's on/off switch** — since #33 that is "both Stripe secrets
-provisioned", and an empty tier list stops no purchase the canister can see (§3).
+provisioned", and an empty tier list stops no purchase the canister can see (the presets-and-keys section).
 
 ⚠️ **This table's Default column is pinned to the code.** It was wrong in two of four
 rows for long enough that the `set_gate_config` example above pasted a \$1 000 ceiling
-and a cap of 20 — an operator following §1 step 9 to "review the admission gate" would
+and a cap of 20 — an operator following `docs/OPERATE.md`'s Mode 3 step 9 to "review the admission gate" would
 have re-based the exposure #33 lowered on purpose. `test/gate.test.mo` now fails
 with the lever that moved, beside the example it has to match.
 
@@ -1186,11 +569,11 @@ A buyer freeing their own open-order slot uses `cancel_order` (owner-scoped),
 which produces `cancelled` — a separate status.
 
 ⚠️ **Three things reach `expired`, not one, and the difference decides your remedy.**
-This section said "the only thing" for long enough that §8's own P1 row contradicted it:
+This section said "the only thing" for long enough that the monitoring section's own P1 row contradicted it:
 
 | | reaches `expired` | when it does not |
 |---|---|---|
-| `checkout.session.expired` | the normal path; releases the promise | never sent if the event is not subscribed (§1a) |
+| `checkout.session.expired` | the normal path; releases the promise | never sent if the event is not subscribed (`docs/OPERATE.md`, Mode 2) |
 | `cancel_order` (owner) | produces `cancelled`, also releasing | expires the session at Stripe first, so a paid race wins |
 | `expire_order` (admin) | asks Stripe to expire, then settles | ⚠️ refuses `#sessionNotOpen` once the session has *already* expired or completed at Stripe — which is exactly the missed-event case below |
 
@@ -1219,7 +602,7 @@ until someone acts, and `reserve_status.promisedTotal` climbing while `openOrder
 also climbs is what it looks like.
 
 **The lever for THIS case is off-chain: resend `checkout.session.expired` from the
-Stripe Dashboard** (§8's P2 row) — because the session has genuinely expired there, so
+Stripe Dashboard** (the monitoring section's P2 row) — because the session has genuinely expired there, so
 `expire_order` refuses it (table above). ⚠️ An earlier version of this note said there was "no
 operator lever at all", which contradicted that row — the honest statement is that
 the remedy exists but is **gated on noticing**, because nothing on-chain surfaces the
@@ -1229,7 +612,7 @@ ceiling, and unbounded only in aggregate against a failure that Stripe itself re
 for ~3 days first.
 
 ⚠️ **Nothing exposes it yet**: order reads are owner-scoped and `reserve_status`
-carries only counts, so §8 records this as a gap with an interim signal rather
+carries only counts, so the monitoring section records this as a gap with an interim signal rather
 than as an alert you can wire. #38 (admin order listing) is what closes it.
 
 ⚠️ **A payment arriving against an expired or cancelled order cannot be
@@ -1280,7 +663,7 @@ deadline, so an abandoned order is already `#expired` about half an hour before 
 sweep would look at it — `expiryCheckDue` tests the status first. So a buyer, or an
 attacker, abandoning orders costs the gateway one create outcall each, exactly as
 before #52. The second row is the *degraded* case: it needs the webhook path broken
-as well, which is a different incident with its own P1 rows in §8.
+as well, which is a different incident with its own P1 rows in the monitoring section.
 
 ⚠️ **These four figures are computed from the formula above, not carried forward.** At
 `max_response_bytes` 16,384 and 32,768 with a 15 T spendable balance they are 67,685 /
@@ -1323,7 +706,7 @@ labels it in the audit log for exactly that reason.
 ### Growth
 
 Growth is bounded at its source, not by deletion:
-`maxOpenOrdersPerPrincipal` (§5a) bounds what a user can create for free, and the
+`maxOpenOrdersPerPrincipal` (the admission-gate section) bounds what a user can create for free, and the
 reserve bounds legitimate volume — nobody can buy more than it holds. An order is a
 few hundred bytes, so a
 million is a few hundred MB — and a million orders is millions of dollars of
@@ -1332,7 +715,7 @@ deleting a financial record is not the answer.
 
 Monitor `reserve_status.openOrders` — climbing while `delivered` orders do not
 is the signature of order-creation abuse, and the lever is
-`maxOpenOrdersPerPrincipal` (§5a). `totalOrders` and `paidIntentsIndexed` should
+`maxOpenOrdersPerPrincipal` (the admission-gate section). `totalOrders` and `paidIntentsIndexed` should
 grow together and never diverge.
 
 ## 6. Obligations — triage (§4.1)
@@ -1435,9 +818,9 @@ entry without a human deciding anything.
 | `#duplicate {orderId; paymentRef}` | ✅ **yes**, automatically | Fiat in twice for one order; the second payment delivered nothing | Refund `paymentRef` in the Stripe Dashboard (search by payment_intent). The `charge.refunded` webhook auto-resolves the entry; `resolve_orphan` is the fallback. |
 | `#unattributed {claimedRef; paymentRef}` | ✅ **yes**, automatically | Fiat in, and no order that can accept it: a bad or missing `client_reference_id`, an owner/rail/currency mismatch, **a paid amount that is not the one the order asked Stripe for**, or a payment against a `cancelled` or `expired` order — the common producer. The entry's `detail` says which | Inspect the session in Stripe by `paymentRef`, then **refund** → auto-resolve (or `resolve_orphan`). This is the only remedy, whatever the order's status. ⚠️ If the detail says the amount is not the quoted one, refunding is not the end of it: the session carried our own figure, so something in the Stripe configuration moved the total — check the forbidden-settings list in `docs/STRIPE.md` before the next order, because it will recur. |
 | `#deliveryStuck {stage}` (on the order) | ❌ **no** — see the stage table below | **Depends entirely on `stage`.** One of them means the buyer may already hold their cycles, so a blind refund pays twice | Read `stage` first, then follow its row |
-| `#refundAfterDelivery {paymentRef; cycles; refundedCents; fullRefund}` (on the order) | ❌ **no, and never** | **A loss, not a recoverable position**: the fiat was refunded or charged back *after* the cycles were credited. Cycles cannot be clawed back | Nothing to recover on-chain. Reconcile in the Dashboard by `paymentRef` to see whether this was your own refund (a support decision) or a dispute (a fraud signal). For repeated disputes, tighten Stripe Radar and lower the per-purchase ceiling (§5a). ⚠️ **Nothing auto-resolves it, deliberately: the refund is the event that created it**, so resolving on that event would close the entry with the loss unrecorded |
+| `#refundAfterDelivery {paymentRef; cycles; refundedCents; fullRefund}` (on the order) | ❌ **no, and never** | **A loss, not a recoverable position**: the fiat was refunded or charged back *after* the cycles were credited. Cycles cannot be clawed back | Nothing to recover on-chain. Reconcile in the Dashboard by `paymentRef` to see whether this was your own refund (a support decision) or a dispute (a fraud signal). For repeated disputes, tighten Stripe Radar and lower the per-purchase ceiling (the admission-gate section). ⚠️ **Nothing auto-resolves it, deliberately: the refund is the event that created it**, so resolving on that event would close the entry with the loss unrecorded |
 | `#paidNotCredited {orderId; paymentRef; sessionId}` | ❌ **no — and a refund alone makes it worse** | **The buyer paid and this gateway never credited them.** Found by the recovery sweep asking Stripe about a `#created` order past its deadline, once Stripe has had longer than its ~3-day redelivery window to hand us the `completed` event it owed. The order is still `Created`, so it still holds reserve capacity — correctly, because the cycles are genuinely owed | ⚠️ **RESEND FIRST, ALWAYS.** Find the event in the Stripe Dashboard (search by `paymentRef`) and resend `checkout.session.completed`. That credits the order through the normal path, delivers the cycles, and **closes this entry automatically**. <br><br>⚠️ **Refunding instead does not settle it, and leaves no way out.** The refund returns the money and leaves the order in `Created` holding capacity, and a *complete* session never fires `checkout.session.expired`, so nothing is left that can release it — `expire_order` correctly refuses (Stripe reports the session not-open), and `abandon_order` cannot act on `Created`. If you have already refunded: resend anyway to move the order to `Paid`, then `abandon_order`. **The buyer keeps cycles they were refunded for** — that is the cost of refunding first, and it is why the order of operations is the whole procedure. <br><br>The entry does **not** auto-resolve on `charge.refunded`, deliberately: refunding settles the money and leaves the order broken, so auto-closing would delete the only worklist item pointing at the stranded capacity |
-| `#unprocessable {eventId; field}` | ❌ no — the position is unknown | A verified Stripe event was missing a required field, so the canister could not tell whether money moved | Look the `eventId` up in the Dashboard. **Paid** → refund. **Not paid** → nothing happened; `resolve_orphan`. Then find the configuration that produced it: the canister controls every field it sends, so a missing one points at an account-level API-version change (§1 pins it) and will recur until fixed. ⚠️ Resolve only after establishing the money position — once resolved, a later resend is allowed to file again |
+| `#unprocessable {eventId; field}` | ❌ no — the position is unknown | A verified Stripe event was missing a required field, so the canister could not tell whether money moved | Look the `eventId` up in the Dashboard. **Paid** → refund. **Not paid** → nothing happened; `resolve_orphan`. Then find the configuration that produced it: the canister controls every field it sends, so a missing one points at an account-level API-version change (`docs/OPERATE.md` pins it) and will recur until fixed. ⚠️ Resolve only after establishing the money position — once resolved, a later resend is allowed to file again |
 
 ### `#deliveryStuck`'s stages — read `stage`, never the kind
 
@@ -1544,7 +927,7 @@ what success looks like here.
 | kind tag | ref needed? | what closing it means |
 |---|---|---|
 | `duplicate` | **yes** when several exist | you refunded that specific second payment in Stripe |
-| `deliveryStuck` | no — one per order | you established the money position and acted (§6's stage table) |
+| `deliveryStuck` | no — one per order | you established the money position and acted (the triage section's stage table) |
 | `refundAfterDelivery` | **yes** when several exist | you reconciled the recorded loss; the cycles are not recoverable |
 | `paidNotCredited` | **yes** when several exist | ⚠️ normally closes ITSELF on the resend — closing it by hand says you gave up on crediting the buyer |
 
@@ -1650,7 +1033,7 @@ key on a monitoring box:
 
 The ones worth a monitor: `health`, `cycles_status`, `reserve_status`,
 `pricing_status`, `recovery_status`, `orphan_depth`, `problem_depth` (open
-obligations — the count §6 triage works from) and `refusal_counts`.
+obligations — the count the triage section works from) and `refusal_counts`.
 
 `can_purchase` is also callable anonymously and is worth special mention: the
 anonymous principal owns no orders, so `tooManyOpenOrders` can never trip for it.
@@ -1691,11 +1074,11 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 
 | Metric | Alert when | Sev | Action |
 |---|---|---|---|
-| `pricing_status.lastAttempt.ok` | false on two consecutive ticks | **P1** | §4 — order creation stops once the cache passes `maxAgeNs`. `detail` names the failing guard |
+| `pricing_status.lastAttempt.ok` | false on two consecutive ticks | **P1** | the pricing-rates section — order creation stops once the cache passes `maxAgeNs`. `detail` names the failing guard |
 | `pricing_status.rates.fetchedAtNs` | older than `maxAgeNs` | **P1** | the rail has stopped selling. Timer dead or every tick rejected |
 | `cycles_status.balance` | below 3× `minCanisterCycles` | **P1** | top up. At zero the canister is **uninstalled** and money-bearing state is lost. Note the XRC needs 1 B attached per refresh, so pricing dies before the gate does |
 | anonymous `can_purchase` | returns `#err` | **P1** | the rail is refusing sales; the reason says which lever |
-| `orphan_depth.unresolved` | `> 0` | **P2** | §6 triage. Depth climbing past 1,000 means work is accumulating faster than it clears |
+| `orphan_depth.unresolved` | `> 0` | **P2** | triage. Depth climbing past 1,000 means work is accumulating faster than it clears |
 | `reserve_status.promisedTotal` | climbing while deliveries do not complete | **P2** | money in, nothing delivered — those orders are on the clock toward the 72 h bound. `pending_deliveries` says which and why |
 | `recovery_status.lastSweep.atNs` | older than 2 intervals | **P2** | the sweep timer is not running; nothing recovers while it is dead |
 | `recovery_status.lastCountReconcile.drift` | non-empty | **P2** | a per-status tally had diverged and was **raised** to the recount. The counts are correct again; the bookkeeping bug that moved them is not fixed. They gate admission and they short-circuit the sweeps, so an under-counted `Paid` reads as zero to the recovery sweep and money-out silently stops |
@@ -1707,27 +1090,27 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | `orders.expiredOverflow` in the audit log | any occurrence | **P2** | the `Expired` tally plus the non-terminal order count exceeds the number of orders in the store. Those two sets are disjoint subsets of it, so this is arithmetically impossible and `Expired` is over-counted. Same class as the row above — observability, not money |
 | `recovery_status.indexScan.lastCompletedCycle` | empty, or `completedAtNs` older than a small multiple of `indexScan.expectedFullCycleNs` | **P2** | ⚠️ **Without this the clean-scan rows above mean nothing.** The rotating scan verifies the one property that needs every order, so it can only speak for what it has visited: silence plus a recent `completedAtNs` is *verified clean*, silence with no completed cycle is *unverified*. ⚠️ **Compare against `indexScan.expectedFullCycleNs`, not against a remembered number** — it is computed from the live store size and the live sweep cadence, and `set_recovery_interval` can move it by 24×. Empty long past that, with `inFlightCycle.ordersRead` frozen, means a chunk is trapping — the cursor does not advance, so the next sweep retries the same chunk rather than skipping forward |
 | `recovery_status.lastCountReconcile.atNs` | older than ~48 h while `lastSweep` advances, or materially older than `lastCountReconcileAttemptNs` | **P3** | the daily reconcile is failing. It runs in its own message, so it cannot take the sweep down with it — money-out is unaffected — but the tallies are now **unverified**, not known-good. Written only on success, and the cadence is claimed by the sweep, so a reconcile that traps retries daily rather than every tick. `recount_orders` is the on-demand repair and will show the same failure if it is a real one |
-| `reserve_status.openOrders` | climbing while `delivered` does not | **P3** | order-creation abuse; lever is `maxOpenOrdersPerPrincipal` (§5a) |
-| `refusal_counts.refusingNow.reserveShort` | true | **P1** | the rail is refusing sales for want of reserve. Exactly one `gate.startedRefusing` line marks when it began — the counter says how many buyers have been turned away since. Fund the reserve (§5); it clears on the next successful admission |
+| `reserve_status.openOrders` | climbing while `delivered` does not | **P3** | order-creation abuse; lever is `maxOpenOrdersPerPrincipal` (the admission-gate section) |
+| `refusal_counts.refusingNow.reserveShort` | true | **P1** | the rail is refusing sales for want of reserve. Exactly one `gate.startedRefusing` line marks when it began — the counter says how many buyers have been turned away since. Fund the reserve (the reserve section); it clears on the next successful admission |
 | `refusal_counts.refusingNow.canisterCyclesLow` | true | **P1** | the gate is refusing on its own gas. Same shape as above, different lever: top up the canister (`cycles_status`). ⚠️ **Do not expect a corroborating `pricing_status` alert, and do not read its absence as a false positive.** At the 5 T default the gate closes while the balance is still ~5000x the 1 B a rate call must attach, so pricing keeps working long after sales stop. Pricing alerting *too* means the floor has been set near `0`, which is a second finding. ⚠️ Sales are closed but delivery is not: orders already paid for keep being delivered, so this is revenue stopping, not money going missing |
-| `refusal_counts.refusingNow.railClosed` | true | **P1** | ⚠️ **The rail is not provisioned, so every purchase is being refused before the gate is even consulted.** Expected on a fresh deployment — §1 provisions the secrets last — and an incident at any other time. `stripe_api_key_status().isSet` and `stripe_origin()` say which half is missing. One `gate.startedRefusing` line marks when it began; `counts.railClosed` says how many buyers hit it since |
-| `refusal_counts.refusingNow.stripeApiFailing` | true | **P1** | ⚠️ **The key is present but Stripe is refusing it — rotated or revoked without updating the canister.** Distinct from `railClosed`: that one says *provision the key*, this one says *rotate it*. `sessionConfig` cannot detect it, so every purchase reaches the outcall, 401s, and is refused. ⚠️ **Each attempt also commits an order and expires it**, and the open-order cap does not bound that because the record is not `Created` — so the order table grows while this is true. Set a fresh restricted key (§3); it clears on the next successful session |
+| `refusal_counts.refusingNow.railClosed` | true | **P1** | ⚠️ **The rail is not provisioned, so every purchase is being refused before the gate is even consulted.** Expected on a fresh deployment — `docs/OPERATE.md` provisions the secrets last — and an incident at any other time. `stripe_api_key_status().isSet` and `stripe_origin()` say which half is missing. One `gate.startedRefusing` line marks when it began; `counts.railClosed` says how many buyers hit it since |
+| `refusal_counts.refusingNow.stripeApiFailing` | true | **P1** | ⚠️ **The key is present but Stripe is refusing it — rotated or revoked without updating the canister.** Distinct from `railClosed`: that one says *provision the key*, this one says *rotate it*. `sessionConfig` cannot detect it, so every purchase reaches the outcall, 401s, and is refused. ⚠️ **Each attempt also commits an order and expires it**, and the open-order cap does not bound that because the record is not `Created` — so the order table grows while this is true. Set a fresh restricted key (the presets-and-keys section); it clears on the next successful session |
 | `refusal_counts.counts.amountBelowMin` | climbing | **P3** | ⚠️ **Two very different causes and the counter cannot tell them apart.** Either the buy UI is offering an amount the gate refuses — a bug, and every affected buyer sees a dead end — or someone is probing the cheapest free refusal there is (one cent needs no order, no payment, no prior state). Compare against `reserve_status.openOrders`: climbing refusals with flat order creation is probing, climbing alongside real traffic is the UI |
-| `refusal_counts.counts.amountAboveMax` | climbing | **P3** | buyers are asking for more than the per-order ceiling allows. If it is sustained the ceiling is mispriced for demand, not misconfigured — raising it raises per-order reserve exposure (§5a), so treat it as a pricing decision |
+| `refusal_counts.counts.amountAboveMax` | climbing | **P3** | buyers are asking for more than the per-order ceiling allows. If it is sustained the ceiling is mispriced for demand, not misconfigured — raising it raises per-order reserve exposure (the admission-gate section), so treat it as a pricing decision |
 | `refusal_counts.counts.tooManyOpenOrders` | climbing | **P3** | buyers hitting the one-open-order cap. Expected in normal use — a buyer who abandons a checkout and retries meets it — so alert on the **rate**, not the total |
 | `refusal_counts.counts.railClosed` | climbing while `refusingNow.railClosed` is **false** | **P2** | ⚠️ **Should be unreachable.** `sessionConfig` can only fail with a missing key or origin, both of which latch — so a climbing counter with a clear flag means it failed some other way, and the mapping in `Main.mo`'s `railClosureCondition` needs re-reading against the current `Session.Error` |
 | `reserve_status.availableToSell` | 0, or far below `reserveFloor` − `promisedTotal` as you expect it | **P2** | the gateway is refusing sales. Three causes and the same query separates them: the reserve is genuinely spent (`reserveFloor` low), it is committed to live orders (`promisedTotal` high), or **the floor has not observed a top-up** (`reserveObservedAtNs` old). The last is the common one and the lever is `refresh_reserve` |
 | `reserve_status.reserveObservedAtNs` | materially older than `recovery_status.lastReserveReconcileAttemptNs` | **P3** | the hourly reserve reconcile is attempting and not adopting: either the ledger read is failing (`reserve.observeFailed` in the audit log) or every attempt lands while a delivery is in flight (`reserve.reconcileSkipped`). Under-sells rather than over-sells, so it explains refusals; it is not a loss |
 | `delivery.feeChanged` in the audit log | on **every** delivery rather than once | **P3** | the stored cycles-ledger fee is stale, so every order pays one rejected call before its transfer lands. Self-correcting by design — the first `#BadFee` persists the ledger's value — so a *repeating* tag means the correction is not sticking (an upgrade reverting the stored value, or the ledger's fee moving repeatedly). ⚠️ **This is the ONLY detector for a stored fee that will not stick**, since nothing but the ledger writes that value and the persistence itself is untested (`docs/TEST-COVERAGE.md`). Each occurrence costs one rejected call, never a wrong debit — the buyer still gets the quoted amount and the reserve absorbs the real fee. If it repeats, redeploy rather than looking for a lever; there is none, deliberately |
-| `refusal_counts.refusingNow.stripeApiFailing` true, with `gate.startedRefusing` naming **retrieve REFUSED** | any occurrence | **P1** | ⚠️ **The restricted key cannot read Checkout Sessions, so stranded capacity can never be released automatically.** The recovery sweep's retrieve is 401/403ing. Fix the key's permission (Checkout Sessions = **Write**, which is the level that also grants read — §3) and rotate it in; nothing else recovers. Until it is fixed, `expire_order` is the manual release. <br><br>⚠️ **This replaced a `stripe.retrieveUnauthorized` tag, deleted by #37 §2c.** That tag fired **once per stranded order per hourly pass** — up to ~240 permanent lines a day for one unfixed problem once the ring was gone. Our own cadence bounded a *rate*, and a rate against an unfixed persistent condition is unbounded over time. It is now the same latched condition as a failing session *create* or *expire*, because a 401 on any of the three is one incident with one lever: **rotate the key** |
+| `refusal_counts.refusingNow.stripeApiFailing` true, with `gate.startedRefusing` naming **retrieve REFUSED** | any occurrence | **P1** | ⚠️ **The restricted key cannot read Checkout Sessions, so stranded capacity can never be released automatically.** The recovery sweep's retrieve is 401/403ing. Fix the key's permission (Checkout Sessions = **Write**, which is the level that also grants read — the presets-and-keys section) and rotate it in; nothing else recovers. Until it is fixed, `expire_order` is the manual release. <br><br>⚠️ **This replaced a `stripe.retrieveUnauthorized` tag, deleted by #37 §2c.** That tag fired **once per stranded order per hourly pass** — up to ~240 permanent lines a day for one unfixed problem once the ring was gone. Our own cadence bounded a *rate*, and a rate against an unfixed persistent condition is unbounded over time. It is now the same latched condition as a failing session *create* or *expire*, because a 401 on any of the three is one incident with one lever: **rotate the key** |
 | buyers report that cancelling does nothing, or `admin_orders` shows no order has ever reached `cancelled` | any occurrence | **P2** | ⚠️ **`cancel_order`'s "Stripe would not close the payment session" answer has three causes and the buyer-facing arm deliberately records none of them.** Two are normal and settle themselves (the payment won the race, or the session had already expired); the third is a malformed expire request from this canister, which leaves the order `#created` and payable while every cancel fails the same way. That is what makes one manual run diagnostic: `expire_order '("<a live created order>")'` takes the identical path, is admin-authenticated, and audits Stripe's body verbatim as `order.expireRaced`. Read that line. A session-state refusal there means the two normal causes; anything else is ours to fix. ⚠️ There is no counter for this yet — `Gate.RefusalCounts` cannot gain a field without an upgrade-incompatible stable change — so the detection is this row, not a metric |
 | `stripe.retrieveFailed` in the audit log | repeatedly for the same order | **P3** | Stripe is unreachable or answering non-200 for the session read. Distinct from the row above on purpose: **"Stripe refused the read" and "Stripe is down" are different actions.** Transient failures retry hourly and need nothing; a persistent one means the outcall path is broken, so check `pricing_status` (the same egress) before suspecting the key |
-| `stripe.paidAwaitingEvent` in the audit log | any occurrence | **P2** | a buyer paid and Stripe has not delivered `checkout.session.completed`. **Not yet an obligation** — Stripe redelivers for ~3 days and the entry is deliberately withheld until then — but it IS the support signal: the buyer's own page renders expired from `expiresAtNs`, so expect a contact the same hour. If it is one order, resend the event from the Dashboard now rather than waiting. If it is many, the webhook endpoint is broken: check the secret and the subscribed event list (§3) |
-| `stripe.paidNotCredited` in the audit log | any occurrence | **P1** | a buyer paid, Stripe has given up redelivering, and the obligation is now filed on the order itself (#37). Follow the `#paidNotCredited` row in §6 — **resend first, always** |
-| `stripe.retrieveUnreadable` in the audit log | any occurrence | **P3** | Stripe answered the session read in a shape the classifier does not recognise, so the sweep did nothing (fail-safe). Capacity stays held until it is understood. Most likely an API-version change; §1 pins the version, so this points at an account-level change |
+| `stripe.paidAwaitingEvent` in the audit log | any occurrence | **P2** | a buyer paid and Stripe has not delivered `checkout.session.completed`. **Not yet an obligation** — Stripe redelivers for ~3 days and the entry is deliberately withheld until then — but it IS the support signal: the buyer's own page renders expired from `expiresAtNs`, so expect a contact the same hour. If it is one order, resend the event from the Dashboard now rather than waiting. If it is many, the webhook endpoint is broken: check the secret and the subscribed event list (the presets-and-keys section) |
+| `stripe.paidNotCredited` in the audit log | any occurrence | **P1** | a buyer paid, Stripe has given up redelivering, and the obligation is now filed on the order itself (#37). Follow the `#paidNotCredited` triage row — **resend first, always** |
+| `stripe.retrieveUnreadable` in the audit log | any occurrence | **P3** | Stripe answered the session read in a shape the classifier does not recognise, so the sweep did nothing (fail-safe). Capacity stays held until it is understood. Most likely an API-version change; `docs/OPERATE.md` pins the version, so this points at an account-level change |
 | `reserve.unexplainedShortfall` in the audit log | any occurrence | **P1** | the ledger holds LESS than the floor's lower bound, which the design says is impossible — no allowance exists and `withdraw` is unused. Treat as a bookkeeping breach: stop selling (`set_gate_config` with a high `minPurchaseUsdCents`, or pause), reconcile the journal against the ledger, and find the outflow before funding anything |
-| an order still `created` past its own `expiresAtNs` | any | **P2** | a `checkout.session.expired` was missed. Nothing sweeps it (§5b, deliberately — a sweep would hide a held reserve): resend the event from the Stripe Dashboard. Query it with `admin_orders '(record { status = opt variant { created }; owner = null; createdFromNs = null; createdToNs = null; withUnresolvedProblems = false }, null, 200)'` and compare each `expiresAtNs` against now |
-| `pricing_status.xrcCanisterId` | anything other than `uf6dk-hyaaa-aaaaq-qaaaq-cai` | **P1** | **on mainnet this must be the real Exchange Rate Canister.** The id is resolved from a `PUBLIC_CANISTER_ID:xrc` canister environment variable so a local network can point at a mock; a mainnet canister reporting any other id is pricing real sales off something that is not the market. Only a controller can inject it, so this reads as either a misconfigured deploy or a compromised controller. Cap the burn to 0 (§2) before investigating. **`null` is not a pass** — it means no refresh has reached the XRC call at all (expected for seconds after an install or upgrade, since the value is transient). Do **not** wait on `lastAttempt` becoming non-null: that field is persistent, so it survives the upgrade and is already set while this one is still null. Re-read until `lastAttempt.atNs` post-dates the deploy. A *failing* refresh never shows null here — the id is recorded when the call is constructed, so a rejected call reads as a non-null id plus `lastAttempt.ok = false` |
+| an order still `created` past its own `expiresAtNs` | any | **P2** | a `checkout.session.expired` was missed. Nothing sweeps it (the order-expiry section, deliberately — a sweep would hide a held reserve): resend the event from the Stripe Dashboard. Query it with `admin_orders '(record { status = opt variant { created }; owner = null; createdFromNs = null; createdToNs = null; withUnresolvedProblems = false }, null, 200)'` and compare each `expiresAtNs` against now |
+| `pricing_status.xrcCanisterId` | anything other than `uf6dk-hyaaa-aaaaq-qaaaq-cai` | **P1** | **on mainnet this must be the real Exchange Rate Canister.** The id is resolved from a `PUBLIC_CANISTER_ID:xrc` canister environment variable so a local network can point at a mock; a mainnet canister reporting any other id is pricing real sales off something that is not the market. Only a controller can inject it, so this reads as either a misconfigured deploy or a compromised controller. ⚠️ **There is no burn cap to pull — it went with the ICP mint path.** To stop new orders while investigating, `set_gate_config` with `minCanisterCycles` above the canister's current balance: the gate refuses every creation. It does **not** stop delivery of an order already paid, or the webhook. **`null` is not a pass** — it means no refresh has reached the XRC call at all (expected for seconds after an install or upgrade, since the value is transient). Do **not** wait on `lastAttempt` becoming non-null: that field is persistent, so it survives the upgrade and is already set while this one is still null. Re-read until `lastAttempt.atNs` post-dates the deploy. A *failing* refresh never shows null here — the id is recorded when the call is constructed, so a rejected call reads as a non-null id plus `lastAttempt.ok = false` |
 | `pricing_status.rates.quality.receivedRates` | drops to `minRateSources` | **P3** | thin market — a price from 2 sources is not one from 12 |
 | `health` | unreachable | **P1** | canister stopped, frozen, or out of cycles |
 
@@ -1773,7 +1156,7 @@ never tell a fresh `created` order from one that lapsed an hour ago.
 - **Stripe Dashboard → event deliveries.** A run of failures means the secret is
   out of sync or the gateway is unhealthy. Stripe retries non-2xx for ~3 days, so
   transient failures lose nothing — but a *permanent* 4xx can get the endpoint
-  disabled, which is why verified-but-unprocessable events are acked 200 (§6).
+  disabled, which is why verified-but-unprocessable events are acked 200 (triage).
 - **Stripe payouts and disputes.** Disputes produce **no on-chain signal** (only
   `charge.refunded` is subscribed), so the Dashboard is the only control.
 
@@ -1795,7 +1178,7 @@ a read-only operator page is straightforward. It is a convenience, not a control
 The webhook secret is plaintext canister state, and SEV-SNP is the intended
 confidentiality layer. ⚠️ **There is no cap standing behind it any more**: a forged
 webhook delivers from the reserve, so **the reserve balance is the blast radius** and
-sizing it is the always-on control (§2). Launch does not block on SEV, but that
+sizing it is the always-on control (the webhook-secret section). Launch does not block on SEV, but that
 trade is now "size the reserve to what a leak could cost", not "the cap bounds it". Before relying on a confidential subnet for the
 secret, verify — in this order, hardest first:
 
@@ -1813,14 +1196,14 @@ secret, verify — in this order, hardest first:
   history; trust shifts to AMD, not math).
 - [ ] **Provisioning channel**: ingress still TLS-terminates at the
   boundary node. Unless an attestation-tied confidential provisioning
-  channel exists, follow §2's rotate-after-provisioning rule even on the
+  channel exists, follow the webhook-secret section's rotate-after-provisioning rule even on the
   confidential subnet.
 - [ ] **Migration**: moving subnets is a canister migration — re-verify
   the module hash after (RELEASE.md gate) and rotate the secret (it
   transited infrastructure during the move).
 
 Until all boxes tick: the secret lives plaintext on a normal subnet, and the
-protections are exactly (a) **the reserve sized to what a leak could cost** (§2, §5)
+protections are exactly (a) **the reserve sized to what a leak could cost** (the webhook-secret and reserve sections)
 and (b) accountable node providers. That is the documented, accepted §7 posture — the
 loss is bounded by the reserve balance, detectable in the audit log and the order
 store, and recoverable only to the extent that fiat was never taken for the forged
@@ -1872,7 +1255,7 @@ release doc doesn't cover:
   Consequence: `staleIntent` is **not** reachable through a controlled upgrade —
   an in-flight transfer settles before the upgrade happens. It covers genuine
   faults: a ledger that never replies, a subnet incident, running out of cycles
-  mid-call. §6's triage rules apply when it appears.
+  mid-call. The triage section's rules apply when it appears.
 
 - **A call that never replies blocks the stop, and therefore the upgrade.**
   If `icp canister stop` hangs, the canister is waiting on an outstanding

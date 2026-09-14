@@ -153,7 +153,7 @@ test('01 — deploy, fail-closed before provisioning, admin authz', async () => 
   //
   // Asserted here because there is deliberately no way to UNSET a secret, so
   // this is the only point in the suite where the unprovisioned state exists —
-  // and it is the state a fresh deployment is in, and the one RUNBOOK §1
+  // and it is the state a fresh deployment is in, and the one docs/OPERATE.md
   // prescribes during go-live, since provisioning the secrets last is what opens
   // the rail.
   //

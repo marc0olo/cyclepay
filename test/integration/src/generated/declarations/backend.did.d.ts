@@ -1048,7 +1048,7 @@ export interface _SERVICE {
    * /
    * / Four independent passes report here — the stranded sweep, the tally reconcile, the
    * / reserve reconcile and the rotating index scan — because each can stop running
-   * / without any of the others noticing. RUNBOOK §8 alerts on the gaps between them.
+   * / without any of the others noticing. RUNBOOK's monitoring section alerts on the gaps between them.
    */
   'recovery_status' : ActorMethod<
     [],
@@ -1109,7 +1109,7 @@ export interface _SERVICE {
    * / is public by design; the webhook secret is the only secret in the system.
    * /
    * / ⚠️ **This query is the point of the counters.** A tally nobody reads is the
-   * / `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
+   * / `Orders.tallySaturations` failure over again, so RUNBOOK's monitoring section carries a row
    * / per counter with the response — the counters mean different things:
    * / `amountBelowMin` climbing is a UI bug or an attacker probing, while
    * / `reserveShort` climbing is a refill. Same shape, opposite actions.

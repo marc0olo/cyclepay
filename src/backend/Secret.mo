@@ -10,7 +10,7 @@
 /// encrypting it would only move the problem to the key that decrypts it. The posture —
 /// SEV-SNP as the confidentiality layer, the reserve balance as the always-on blast
 /// radius, why a stock beats a per-period cap and the one way it does not — is
-/// `docs/DESIGN.md` §7, with the confidential-subnet checklist in RUNBOOK §9.
+/// `docs/DESIGN.md` §7, with the confidential-subnet checklist in RUNBOOK.
 ///
 /// ⚠️ **What a leak of each one buys an attacker differs, and that is why the key's SCOPE
 /// matters more than its storage.** The webhook secret spends the reserve. A restricted

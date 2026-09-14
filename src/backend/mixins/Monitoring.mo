@@ -92,7 +92,7 @@ mixin (
     /// Which Exchange Rate Canister the last refresh actually priced from. On
     /// mainnet this MUST read `uf6dk-hyaaa-aaaaq-qaaaq-cai`; anything else means
     /// the deploy injected `PUBLIC_CANISTER_ID:xrc` and prices are coming from
-    /// somewhere else. Alert on it (RUNBOOK §8).
+    /// somewhere else. Alert on it (RUNBOOK's monitoring section).
     ///
     /// **Null means no refresh has resolved it yet** — not that it is the mainnet
     /// canister. Null is the expected reading for the first seconds after an
@@ -141,7 +141,7 @@ mixin (
   /// is public by design; the webhook secret is the only secret in the system.
   ///
   /// ⚠️ **This query is the point of the counters.** A tally nobody reads is the
-  /// `Orders.tallySaturations` failure over again, so RUNBOOK §8 carries a row
+  /// `Orders.tallySaturations` failure over again, so RUNBOOK's monitoring section carries a row
   /// per counter with the response — the counters mean different things:
   /// `amountBelowMin` climbing is a UI bug or an attacker probing, while
   /// `reserveShort` climbing is a refill. Same shape, opposite actions.
@@ -247,7 +247,7 @@ mixin (
       /// release asking to remove more than was held, so it says the tally was
       /// already wrong *before* that order got there — strictly worse than a fault
       /// in the order being released. The daily recount reports drift's SIZE; this
-      /// reports its EXISTENCE, same day. RUNBOOK §8 alerts on any increment.
+      /// reports its EXISTENCE, same day. RUNBOOK's monitoring section alerts on any increment.
       tallySaturations = orderStore.tallySaturations;
       // Named so an operator (or the frontend) can point a ledger query at the
       // right account without reconstructing it.
@@ -412,7 +412,7 @@ mixin (
   ///
   /// Four independent passes report here — the stranded sweep, the tally reconcile, the
   /// reserve reconcile and the rotating index scan — because each can stop running
-  /// without any of the others noticing. RUNBOOK §8 alerts on the gaps between them.
+  /// without any of the others noticing. RUNBOOK's monitoring section alerts on the gaps between them.
   public query func recovery_status() : async {
     intervalNs : Nat;
     lastSweep : ?{ atNs : Int; pending : Nat };
@@ -432,7 +432,7 @@ mixin (
     /// When one was last *attempted*. Reported alongside the success timestamp so
     /// "due tomorrow" and "attempted today and failed" are distinguishable without
     /// correlating against the sweep clock: an attempt materially newer than the
-    /// success means the reconcile is trapping (RUNBOOK §8).
+    /// success means the reconcile is trapping (RUNBOOK's monitoring section).
     lastCountReconcileAttemptNs : Int;
     /// When the RESERVE reconcile was last attempted (#30 PR-B). Its success clock
     /// is `reserve_status.reserveObservedAtNs`, and the two diverging is the one

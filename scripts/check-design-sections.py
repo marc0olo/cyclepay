@@ -34,6 +34,14 @@ worse than no check:**
     `RUNBOOK.md` and `docs/STRIPE.md` a bare `§2` means *that document's own* section 2,
     so scanning them would compare two different numbering schemes and produce noise.
     Code comments have no sections of their own, so there `§N` is unambiguous.
+
+⚠️ **That last premise was FALSE for three comments, and it silently propped up a row.**
+`Main.mo` and `Gate.mo` wrote `RUNBOOK §1`, which this check read as a citation of
+`DESIGN §1` — so the "glossed but not cited" arm passed over a section nothing in the
+code actually referenced. Removing those three (#169, when RUNBOOK's setup sections
+moved to `docs/OPERATE.md`) is what exposed it. The premise is now **enforced** rather
+than assumed: a `§N` preceded by a document name is refused, so the glyph in code means
+a design section or it fails here.
 """
 
 import glob
@@ -48,6 +56,13 @@ SECTION = re.compile(r"§([0-9][0-9a-z]*(?:\.[0-9a-z]+)*)")
 # The `#NN ` prefix is the disambiguator, and it is required: a bare `§2c` is
 # indistinguishable from a design section and this check will demand one.
 ISSUE_SCOPED = re.compile(r"#[0-9]+\s+§[0-9]")
+# ⚠️ A `§N` in code must mean a DESIGN section. `RUNBOOK §1` in a comment was read as a
+# citation of DESIGN §1 and kept a dead row alive; refer to another document's sections
+# by NAME in code, never by glyph.
+FOREIGN_SCOPED = re.compile(r"(RUNBOOK|STRIPE|OPERATE|TEST-COVERAGE|SANDBOX-TESTPLAN|VERIFY|RELEASE|ARCHITECTURE)[^§]{0,12}§[0-9]")
+
+
+FOREIGN = []
 
 
 def cited():
@@ -58,6 +73,11 @@ def cited():
                 for m in SECTION.finditer(line):
                     before = line[max(0, m.start() - 8):m.end()]
                     if ISSUE_SCOPED.search(before):
+                        continue
+                    # A citation of ANOTHER document's section, which this check would
+                    # otherwise bank as a DESIGN citation. Reported, never counted.
+                    if FOREIGN_SCOPED.search(line[max(0, m.start() - 40):m.end()]):
+                        FOREIGN.append(f"{f}:{i}: {line.strip()[:90]}")
                         continue
                     out.setdefault(m.group(1), []).append(f"{f}:{i}")
     return out
@@ -97,11 +117,24 @@ def main() -> int:
             where = ", ".join(use[sec][:3])
             fail.append(f"§{sec} is cited ({where}) but has no section in {SPEC}")
         else:
-            covered.add(owner)
+            # ⚠️ A cited CHILD covers its ancestors. `§6` documents `§6.0`/`§6.1` and is
+            # cited only through them — before this, the arm below called it dead, and
+            # the only thing hiding that was a `RUNBOOK §6` in a test being miscounted.
+            parts = owner.split(".")
+            while parts:
+                covered.add(".".join(parts))
+                parts.pop()
     for sec in sorted(set(rows) - covered):
         fail.append(
             f"§{sec} is a section in {SPEC} that nothing cites — delete it, or"
             " the file grows back into the 697-line spec it replaced"
+        )
+    # ⚠️ A refusal, not a warning. `RUNBOOK §1` in a comment was counted as a citation
+    # of DESIGN §1 and kept a dead row alive for as long as it stood.
+    for hit in FOREIGN:
+        fail.append(
+            f"{hit}\n        ^ a §N citing ANOTHER document. In code the glyph means a"
+            f" {SPEC} section; name that document's section in words instead"
         )
 
     if fail:
