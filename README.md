@@ -81,10 +81,10 @@ Key documents:
 | `RELEASE.md` | Reproducible build and module-hash verification procedure |
 | `AGENTS.md` | Agent instructions: ICP skills setup, conventions, the verification gate |
 
-**There are no open issues, by design.** The build is done; the go-live prerequisites
-that were tracked as issues are now `RUNBOOK.md` section 1.1, ahead of the deployment
-commands, and each one names the closed issue that holds its reasoning. Closed issues
-are the archive, not the plan. `docs/agents/` holds the conventions an agent needs,
+**The go-live prerequisites are no longer tracked as issues.** The build is done, and
+what has to happen before real money is `RUNBOOK.md` section 1.1 — ahead of the
+deployment commands, each item naming the closed issue that holds its reasoning. The
+tracker carries current work, not the plan; closed issues are the archive. `docs/agents/` holds the conventions an agent needs,
 including `deleted-vocabulary.md` and `issue-tracker.md`.
 
 ## Prerequisites
