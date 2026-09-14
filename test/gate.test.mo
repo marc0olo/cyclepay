@@ -56,7 +56,7 @@ suite("defaults", func() {
   test("⚠️ the documented defaults ARE these defaults — RUNBOOK section 5a's table", func() {
     // The assertion the suite above cannot make. Every other case here derives its
     // expectations FROM `config`, so all of them stay green when a default moves — and
-    // the operator-facing table in RUNBOOK §5a had drifted on two of four rows, with
+    // the operator-facing table in RUNBOOK's admission-gate section had drifted on two of four rows, with
     // the `set_gate_config` example beside it pasting a $1,000 ceiling and a cap of 20.
     // An operator copying that line 10x'd the per-order reserve exposure #33 lowered
     // on purpose.
@@ -64,7 +64,7 @@ suite("defaults", func() {
     // ⚠️ **Restating a value is only a check when something compares the two.** Same
     // construction as `test/buyer-cost.test.mo`'s first case, which exists because a
     // document reimplemented the fee formula and could not check itself. Change a
-    // default and this fails with the lever that moved; then fix §5a's Default column
+    // default and this fails with the lever that moved; then fix that Default column
     // and its example command together.
     assert config.maxOpenOrdersPerPrincipal == 1;
     assert config.minCanisterCycles == 5_000_000_000_000; // 5 T
