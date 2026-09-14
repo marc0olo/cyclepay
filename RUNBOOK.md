@@ -618,6 +618,31 @@ icp canister call backend refresh_reserve '()' -e ic --identity <operator>
 icp canister call backend reserve_status '()' -e ic     # availableToSell > 0
 ```
 
+⚠️ **`refresh_reserve` is not optional and its absence is silent**: the ledger holds
+the cycles, `availableToSell` stays 0, and every buyer is refused with
+`#reserveShort`. Read `reserve_status` back — that is what the third line is for.
+
+### 6a. The price tiles
+
+⚠️ **This step was missing from this procedure entirely**, which is how a deployment
+gets a buy page with no way to buy: `renderTiers` returns early on an empty list and
+the custom-amount tile is built *after* that return, so an unconfigured gateway offers
+neither. The canister accepts a custom amount; the page never asks for one. §1 step 4
+carries the same warning, and this procedure is the one that produced the live
+deployment.
+
+```bash
+icp canister call backend set_card_tiers \
+  '(vec { record { id = "t10"; usdCents = 1_000 : nat };
+          record { id = "t20"; usdCents = 2_000 : nat };
+          record { id = "t50"; usdCents = 5_000 : nat } })' \
+  -e ic --identity <operator>
+icp canister call backend card_tiers '()' -e ic          # three tiles
+```
+
+Every tier must sit inside the gate's bounds (§5a) or the whole vector is refused. No
+`$100` preset: that is the ceiling, and it is what the custom field is for.
+
 ### 7. Verify before spending a card
 
 ```bash
@@ -1084,20 +1109,32 @@ impossible. This is separate from, and in addition to, the solvency check in
 ```bash
 icp canister call backend lifecycle_config '()' -e ic     # public: gate AND delivery bounds
 icp canister call backend can_purchase '(500 : nat)' -e ic  # public: would this be admitted?
+# ⚠️ Read the CURRENT config and change one field. The record is whole-value: every
+# field you type replaces the live one, so a pasted example silently re-bases the
+# levers you did not mean to touch. This example restates the defaults below.
 icp canister call backend set_gate_config \
-  '(record { maxOpenOrdersPerPrincipal = 20 : nat; minCanisterCycles = 5_000_000_000_000 : nat; maxPurchaseUsdCents = 100_000 : nat })' \
+  '(record { maxOpenOrdersPerPrincipal = 1 : nat; minCanisterCycles = 5_000_000_000_000 : nat;
+             maxPurchaseUsdCents = 10_000 : nat; minPurchaseUsdCents = 1_000 : nat })' \
   -e ic --identity <operator>
 ```
 
 | Lever | Default | What it protects | Sizing |
 |---|---|---|---|
-| `maxOpenOrdersPerPrincipal` | 20 | Unbounded state growth. Abandoned orders are the only thing a user can create for free, so this is the real bound. Nothing sweeps them away (§5b): a slot frees when Stripe expires the session, or when the buyer cancels. | Raise for legitimate power users. Must be > 0; 0 is rejected as config. |
+| `maxOpenOrdersPerPrincipal` | **1** | Unbounded state growth. Abandoned orders are the only thing a user can create for free, so this is the real bound. Nothing sweeps them away (§5b): a slot frees when Stripe expires the session, when the buyer cancels, or via `expire_order`. | ⚠️ **1 is a product choice and it is felt.** A buyer who abandons a checkout cannot start another until that session expires (~35 min) — including whoever is demoing this. Raise it for power users; must be > 0, and 0 is rejected as config. |
 | `minCanisterCycles` | 5 T | **This canister's own gas.** Below it the gate stops admitting NEW orders. It does not gate delivery, cancellation or the webhook, so a paid order is still delivered below the floor. | Sized against a gas **drain**, not against freezing: freezing is ~149x further down (~34 B, 30 days of idle burn), so at 5 T sales close with over a year of runway in hand. It is the only bound on order flooding from rotating principals, and on a revoked Stripe key retrying its session outcall at ~220 M a try. Lowering it toward the freezing threshold removes that bound. `0` disables the check. |
-| `maxPurchaseUsdCents` | 100 000 (\$1 000) | Operator typo in a tier, and the webhook's upward repricing path. | Set just above your largest tier. `set_card_tiers` rejects any tier above it, and the webhook refuses to deliver against a payment above it. |
+| `maxPurchaseUsdCents` | **10 000 (\$100)** | Operator typo in a tier, and the webhook's upward repricing path. ⚠️ **It IS the per-order reserve exposure**, which is why #33 lowered it from \$1 000 — it is the main lever against reserve griefing. | Set just above your largest tier. `set_card_tiers` rejects any tier above it, and the webhook refuses to deliver against a payment above it. |
+| `minPurchaseUsdCents` | **1 000 (\$10)** | A purchase too small to be worth an outcall and a reserve hold — and one that does not buy what a buyer came for. | Two independent floors hold it at \$10: the 30¢ fixed fee is 9.0% of \$5 against 5.9% of \$10, and \$5 buys 3.313 T against the **4.0 T** two default-funded canisters need, so it fails on the second one. `docs/BUYER-COST-MODEL.md` carries the model, and `test/buyer-cost.test.mo` pins it. |
 
-**These three deliberately default to non-zero**, unlike the tier list. A limit
-where 0 would brick the canister rather than protect it has to ship armed; the card
-rail's actual on/off switch remains the tier list, which ships empty.
+**All four deliberately default to non-zero**, unlike the tier list. A limit where 0
+would brick the canister rather than protect it has to ship armed. ⚠️ **The tier list is
+no longer the rail's on/off switch** — since #33 that is "both Stripe secrets
+provisioned", and an empty tier list stops no purchase the canister can see (§3).
+
+⚠️ **This table's Default column is pinned to the code.** It was wrong in two of four
+rows for long enough that the `set_gate_config` example above pasted a \$1 000 ceiling
+and a cap of 20 — an operator following §1 step 9 to "review the admission gate" would
+have re-based the exposure #33 lowered on purpose. `test/gate.test.mo` now fails
+with the lever that moved, beside the example it has to match.
 
 `can_purchase` returns the same decision `create_order` would make, so it is
 both the frontend's button-gating call and the operator's "would a purchase go
@@ -1112,7 +1149,7 @@ through right now?" check. Two operational gotchas:
   nothing until `refresh_reserve` runs (the hourly sweep does it too).
   `reserve_status.reserveObservedAtNs` is how you tell that from a spent reserve.
 
-## 5b. Order expiry — Stripe owns it, and there is no lever here
+## 5b. Order expiry — Stripe owns the clock
 
 ```bash
 icp canister call backend reserve_status '()' -e ic   # public counters
@@ -1120,10 +1157,23 @@ icp canister call backend reserve_status '()' -e ic   # public counters
 
 **There is no retention config, no TTL and no sweep.** #33 deleted
 `Retention.mo`: an order's deadline is its Checkout Session's `expires_at`
-(~35 min, above Stripe's 30-minute floor), stored on the order, and the *only*
-thing that moves an order to `expired` is Stripe's `checkout.session.expired`
-event. A buyer freeing their own open-order slot uses `cancel_order`
-(owner-scoped), which produces `cancelled` — a separate status.
+(~35 min, above Stripe's 30-minute floor), stored on the order, and the only
+*event* that moves an order to `expired` is Stripe's `checkout.session.expired`.
+A buyer freeing their own open-order slot uses `cancel_order` (owner-scoped),
+which produces `cancelled` — a separate status.
+
+⚠️ **Three things reach `expired`, not one, and the difference decides your remedy.**
+This section said "the only thing" for long enough that §8's own P1 row contradicted it:
+
+| | reaches `expired` | when it does not |
+|---|---|---|
+| `checkout.session.expired` | the normal path; releases the promise | never sent if the event is not subscribed (§1a) |
+| `cancel_order` (owner) | produces `cancelled`, also releasing | expires the session at Stripe first, so a paid race wins |
+| `expire_order` (admin) | asks Stripe to expire, then settles | ⚠️ refuses `#sessionNotOpen` once the session has *already* expired or completed at Stripe — which is exactly the missed-event case below |
+
+`expire_order` is therefore the manual release for an order whose session is **still
+open** at Stripe, and for the residue class with no `stripeSessionId` at all (expired
+with no outcall). It is **not** the remedy for a missed expiry event.
 
 | Status | Payable? |
 |---|---|
@@ -1145,8 +1195,9 @@ was taken. So a missed expiry webhook strands `lockedCycles` of sellable reserve
 until someone acts, and `reserve_status.promisedTotal` climbing while `openOrders`
 also climbs is what it looks like.
 
-**The lever is off-chain: resend `checkout.session.expired` from the Stripe
-Dashboard** (§8's P2 row). ⚠️ An earlier version of this note said there was "no
+**The lever for THIS case is off-chain: resend `checkout.session.expired` from the
+Stripe Dashboard** (§8's P2 row) — because the session has genuinely expired there, so
+`expire_order` refuses it (table above). ⚠️ An earlier version of this note said there was "no
 operator lever at all", which contradicted that row — the honest statement is that
 the remedy exists but is **gated on noticing**, because nothing on-chain surfaces the
 stranded order. That observability gap, and an on-chain remedy, are what #30's ranked
