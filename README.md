@@ -1,38 +1,16 @@
 # CyclePay — Fully On-Chain Cycles Gateway
 
-**Buy cycles with a credit card.** No ICP, no wallet, no exchange account — which
-is the whole point: it exists to get a developer from "I have a card" to "my
-canister has cycles" without first solving crypto onboarding.
+**Buy cycles with a credit card.** No ICP, no wallet, no exchange account — which is the
+whole point: it gets a developer from "I have a card" to "my canister has cycles" without
+first solving crypto onboarding.
 
-It runs entirely on the Internet Computer: a single verifiable Motoko backend
-canister plus an asset canister serving the frontend. The **Card** rail creates a
-Stripe Checkout Session per order through the API (#33) and **sells cycles from a
-reserve it already holds** — the canister's own cycles-ledger account — rather
-than minting them per payment (#30). Purchases are Internet-Identity-authenticated,
-one-shot, and delivered by one `icrc1_transfer` to the buyer's cycles-ledger
-account.
+It runs entirely on the Internet Computer — one Motoko backend canister and one
+certified-assets frontend canister, **no server**. It sells cycles from a reserve it
+already holds, prices them from two on-chain rates with **no outbound HTTPS in the pricing
+path**, and shows the buyer the cycle quantity before they commit.
 
-The operator funds that reserve with `icp cycles transfer`. **The canister never
-holds ICP**: no float, no mint path, no burn cap.
-
-**Pricing is derived on-chain and reproducible by anyone.** Two rates, both read
-from canisters — USD/ICP from the Exchange Rate Canister, XDR/ICP from the CMC —
-so **no outbound HTTPS is involved in pricing**. The canister does make HTTPS
-outcalls, to Stripe only: creating a Checkout Session, expiring one, and the
-recovery sweep retrieving one.
-
-The buyer sees the cycle quantity **before** committing (`quote_previews`, a
-public query running the same code that locks the price), the quoted figure is
-**pinned server-side** at creation so an order can never lock less than they were
-shown, and afterwards `receipt(orderId)` hands them both rate inputs so they can
-recompute the price themselves rather than take our word for it.
-
-The design bar is "production money-handler from day one": full idempotency,
-write-intent-before-call replay safety, obligations that live on the order so an
-unresolved one is never dropped, a defined money position for every failure, and
-a reproducible build, so that a deployed module hash **can** be verified against a
-tagged commit. ⚠️ That last one is a property of the build system and not yet of any
-deployment — see **Release** below for where that stands.
+Everything money-touching **fails closed**: a freshly deployed gateway accepts no orders
+and delivers nothing until each lever is consciously set.
 
 ## It is running
 
@@ -68,32 +46,18 @@ This repository began as a fork of [`raymondk/cyclepay`](https://github.com/raym
 which explored the design with an agent loop; it is the source of truth now, and the
 architecture it ships is not the one the fork point described.
 
-Key documents:
+## How it works, and how to run it
 
-| Document | What it is |
-|----------|------------|
-| `docs/OPERATE.md` | Setup, per mode: local, mainnet simulation, mainnet production — one complete procedure each, plus the local troubleshooting table |
-| `docs/DESIGN.md` | The decision record — *why* it is built this way. What the `§N` comments point at. Gate-enforced |
-| `docs/STRIPE.md` | The Card rail end to end, written from the code: ingress, session creation, signature verification, attribution, dedup, pricing, the order lifecycle, refunds, the two secrets, and the local Stripe-sandbox loop |
-| `docs/TEST-COVERAGE.md` | What is tested, how, and what is not — one place to answer "is X covered?" |
-| `docs/SANDBOX-TESTPLAN.md` | The manual Stripe-sandbox verification pass required before go-live, and an explicit statement of what a green run does not prove |
-| `docs/DEMO-PLAYBOOK.md` | The running order for demoing this to a technical audience: what to show, why each step is interesting, and the three "looks wrong and isn't" answers. Names no live figures — every number is a query read on camera |
-| `RUNBOOK.md` | Day-2 operations, entered by symptom: secret rotation, rate diagnosis, reserve funding and sizing, obligation triage, the monitoring plan. First-time setup is `docs/OPERATE.md` |
-| `RELEASE.md` | Reproducible build and module-hash verification procedure |
-| `AGENTS.md` | Agent instructions: ICP skills setup, conventions, the verification gate |
+**`docs/ARCHITECTURE.md` has the diagram** — the money path end to end, where the trust
+boundaries sit, and which of the two cycle pots a delivery spends from. Start there.
 
-**The go-live prerequisites are no longer tracked as issues.** The build is done, and
-what has to happen before real money is `RUNBOOK.md` section 1.1 — ahead of the
-deployment commands, each item naming the closed issue that holds its reasoning. The
-tracker carries current work, not the plan; closed issues are the archive. `docs/agents/` holds the conventions an agent needs,
-including `deleted-vocabulary.md` and `issue-tracker.md`.
-
-## Running it, and deploying it
-
-`docs/OPERATE.md` is the setup half: the three modes this runs in — **local**, **mainnet
-simulation**, **mainnet production** — one complete procedure each, plus the
-prerequisites and the local troubleshooting table. `RUNBOOK.md` is the other half, for
-when something is already running and misbehaving.
+| you want to | go to |
+|---|---|
+| understand the system | `docs/ARCHITECTURE.md`, then `docs/DESIGN.md` for *why* |
+| run it locally | `docs/OPERATE.md` — Mode 1 |
+| deploy it | `docs/OPERATE.md` — Mode 2 (mainnet simulation) or Mode 3 (production) |
+| operate one that is misbehaving | `RUNBOOK.md` — entered by symptom |
+| check the claims yourself | **Verify it yourself** below |
 
 ```sh
 git clone --recurse-submodules https://github.com/marc0olo/cyclepay
@@ -103,61 +67,54 @@ icp network start -d && icp deploy && scripts/local-dev-seed.sh
 ⚠️ **The submodule and the seed are both load-bearing**, and neither failure looks like
 its cause — `docs/OPERATE.md` explains both before the first command.
 
-## Tests
+## Verify it yourself
 
-```sh
-scripts/test-all.sh          # the whole gate, fail-fast
-scripts/test-all.sh --fast   # skip PocketIC (needs a 4 KiB-page host)
-```
+Nothing here asks to be taken on trust, and the limits are stated in the same breath.
 
-See `docs/TEST-COVERAGE.md` for what each suite covers and what is not covered.
-There are four suites:
+- **The interface cannot drift from the source.** `mops build` regenerates the committed
+  `src/backend/dist/backend.did`, a gate step fails on drift, and the recipe embeds that
+  file as the canister's `candid:service`.
+- **The price shown is produced by the code that locks it.** `quote_previews` is a public
+  query running the same pricing path as order creation — callable by anyone, on the live
+  canister, and it returns both rate inputs.
+- **A buyer can recompute their own price and confirm delivery on the ledger.**
+  `receipt(orderId)` returns both rate inputs and the delivery block index. Owner-scoped,
+  so it is a buyer's affordance rather than a visitor's.
+- **The operational state is public**, so solvency is checkable against the cycles ledger
+  without this canister's cooperation — see the commands above.
+- **Every suite is in the repo and one command runs them all**: `scripts/test-all.sh`,
+  with `docs/TEST-COVERAGE.md` stating what is *not* covered and why.
+- ⚠️ **The limits.** The deployed module hash has no published provenance (see **Release**),
+  any single controller can upgrade-then-drain, and the webhook secret is plaintext
+  canister state protected by a confidential subnet rather than by cryptography.
 
-**1. Motoko unit tests** (`test/*.test.mo`) — one suite per module, pure-logic
-(state machine, idempotency, HMAC/Stripe signatures, HTTP routing, pricing, the
-admission gate, the delivery decision, the reserve floor, …):
+## Documents
 
-```sh
-mops test
-```
+For a **reader or verifier**:
 
-**2. Frontend tests** (`src/frontend`) — pure-function tests, plus jsdom tests
-driving `main.ts` against the real `index.html`:
+| | |
+|---|---|
+| `docs/ARCHITECTURE.md` | The diagram: canisters, money path, trust boundaries, the two cycle pots |
+| `docs/DESIGN.md` | The decision record — *why* it is built this way. What the `§N` comments point at. Gate-enforced |
+| `docs/STRIPE.md` | The Card rail end to end, written from the code: ingress, signature verification, attribution, dedup, pricing, the order lifecycle, refunds |
+| `docs/TEST-COVERAGE.md` | What is tested, how, and what is not |
 
-```sh
-npm --prefix src/frontend run test        # vitest unit tests
-npm --prefix src/frontend run typecheck
-```
+For an **operator**:
 
-**3. Browser specs** (`test/browser`) — Playwright against the built page, for what
-jsdom structurally cannot see: cascade, layout and reachability. `hidden` defeated by
-CSS is invisible to a DOM test and visible here.
+| | |
+|---|---|
+| `docs/OPERATE.md` | Setup, one procedure per mode: local, mainnet simulation, mainnet production |
+| `RUNBOOK.md` | Day-2 operations, entered by symptom: secret rotation, rate diagnosis, reserve sizing, obligation triage, monitoring |
+| `RELEASE.md` | Reproducible build and module-hash verification procedure |
+| `docs/SANDBOX-TESTPLAN.md` | The manual Stripe-sandbox pass required before go-live, and what a green run does not prove |
 
-```sh
-npm --prefix test/browser ci                             # first run only
-npx --prefix test/browser playwright install chromium    # first run only
-npm --prefix test/browser test
-```
+For an **agent changing the code**: `AGENTS.md` (conventions, skills, the verification
+gate), and `docs/DESIGN.md` above — it is the primary surface for that audience, along
+with the invariant comments in `src/backend`. `docs/agents/` holds the loop's own
+conventions: the triage labels, the issue-tracker rules and `deleted-vocabulary.md`.
 
-**4. PocketIC integration suite** (`test/integration`) — the **go-live bar**
-(spec §9): end-to-end scenarios against the real ICP ledger, CMC, cycles
-ledger Wasms, plus the released XRC mock at the mainnet XRC
-id — HMAC-signed Stripe webhooks (over a real HTTP gateway in scenario 55), time
-control, outage injection against the real NNS canisters, and upgrade-mid-flight
-replay checks:
-
-```sh
-cd test/integration
-npm ci
-npm test        # pretest fetches the sha256-pinned wasms + builds the backend
-                # never `npx vitest run` — it skips pretest and tests a stale wasm
-```
-
-Requirements: Node ≥ 20.11, `mops` on PATH, and a **4 KiB-page kernel** —
-macOS or x86_64 Linux are fine, but the replica cannot run inside arm64 Linux
-VMs with 16 KiB pages (e.g. Apple-Silicon Docker guests). See
-`test/integration/README.md` for the full scenario map and the ready-made CI
-job.
+Also: `docs/DEMO-PLAYBOOK.md`, the running order for demoing this to a technical
+audience.
 
 ## Release
 
