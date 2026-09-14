@@ -28,10 +28,14 @@ shown, and afterwards `receipt(orderId)` hands them both rate inputs so they can
 recompute the price themselves rather than take our word for it.
 
 The design bar is "production money-handler from day one": full idempotency,
-write-intent-before-call replay safety, obligations that live on the order and never drop an
-unresolved obligation and carries a defined money position for every failure, and
+write-intent-before-call replay safety, obligations that live on the order so an
+unresolved one is never dropped, a defined money position for every failure, and
 a reproducible build so anyone can verify the deployed module hash against a
 tagged commit.
+
+This repository began as a fork of [`raymondk/cyclepay`](https://github.com/raymondk/cyclepay),
+which explored the design with an agent loop; it is the source of truth now, and the
+architecture it ships is not the one the fork point described.
 
 Key documents:
 

@@ -28,7 +28,7 @@ here, or if a section here is cited by nothing. It cannot check whether a sectio
 ## §1 — Scope and sequencing
 
 One rail: **Card, via Stripe**. Cycles are sold at cost from a pre-funded cycles reserve.
-The plan and its order live in GitHub issues (#12 is the index).
+The build is done; what is left before real money is `RUNBOOK.md` §1.
 
 ## §2 — Identity and ownership
 
@@ -37,9 +37,12 @@ issues a **per-origin principal** unlinkable to the same user elsewhere. Destina
 arbitrary — you may fund any canister — so sign-in governs *ownership and history*, not
 what you may buy. It exists to fix the lost-receipt problem.
 
-⚠️ **The origin is irreversible after the first real purchase.** II derives the principal
-*from* the origin, so changing it later gives every returning buyer a different principal:
-they cannot see their old orders, and the cycles behind them are unreachable.
+⚠️ **The DERIVATION origin is irreversible after the first real purchase; the serving
+domain is not.** II derives the principal *from* an origin, so changing that origin gives
+every returning buyer a different principal: they cannot see their old orders, and the
+cycles behind them are unreachable. Which is why the derivation origin is pinned to the
+**frontend canister id** (`config.ts`) rather than to a domain — the canister id is the one
+identifier a domain change cannot alter, so the domain stays a reversible decision.
 
 Authz is `caller == order.owner`. **Order ids are random (`raw_rand`), not a counter** —
 the id travels in the public `client_reference_id`, so randomness avoids enumeration and

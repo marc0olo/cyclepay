@@ -1,14 +1,10 @@
 # Agent instructions
 
-> ⚠️ **The architecture is being changed right now, and this file describes the
-> code as it is — not as it will be.** Pinned issue **#12 ("Start here: the plan,
-> in order")** is authoritative over this file, over `docs/`, and over `RUNBOOK.md`
-> wherever they disagree. Read it before starting any work on the Card rail.
->
-> Settlement is moving to a cycles reserve, payment to per-order Stripe Checkout
-> Sessions, and the ICP mint path has been removed. Several
-> statements below are true today and are scheduled to stop being true; each issue
-> updates the ones its own change invalidates.
+> **The rewrite this file used to warn about is done.** Settlement is a cycles
+> reserve, payment is per-order Stripe Checkout Sessions, and the ICP mint path is
+> gone. There is no plan issue standing above this file any more: **this file,
+> `docs/DESIGN.md` (decisions) and `RUNBOOK.md` (operations) are the sources of
+> truth**, and `RUNBOOK.md` §1 is what remains to do before real money.
 
 ## ICP skills
 
@@ -168,10 +164,8 @@ account**. That is the whole point, and it is why the Stripe rail gets the
 attention: for that user a stablecoin rail is not an option, because acquiring
 the stablecoin is the same problem over again.
 
-The card rail is the only rail. A second ck-USDC rail was kept code-complete and
-disabled as a second-source hedge; that decision was reversed on 2026-08-14 and
-#35 removed it, because carrying a rail we do not ship made every other change
-bigger.
+The card rail is the only rail — a second, disabled ck-USDC rail was removed in
+#35, because carrying a rail we do not ship made every other change bigger.
 
 `Types.Rail` stays a single-case variant so a future rail is an additive change
 rather than a schema-wide edit — the same reasoning as `Types.Owner`.
