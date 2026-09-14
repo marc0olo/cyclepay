@@ -2,6 +2,35 @@
 
 One place to answer "is X covered?". Run everything with `scripts/test-all.sh`.
 
+## Running them
+
+`scripts/test-all.sh` runs the whole gate, fail-fast; `--fast` skips PocketIC. Two suites
+need a one-time install, and one needs a specific kernel:
+
+```sh
+npm --prefix test/browser ci                             # first run only
+npx --prefix test/browser playwright install chromium    # first run only
+cd test/integration && npm ci                            # first run only
+```
+
+Per suite, when you want one rather than the gate:
+
+```sh
+mops test                                    # Motoko unit
+npm --prefix src/frontend run test           # frontend, vitest (pure + jsdom)
+npm --prefix src/frontend run typecheck
+npm --prefix test/browser test               # Playwright, Chromium
+npm --prefix test/integration test           # PocketIC
+```
+
+⚠️ **`npm test`, never `npx vitest run`, in `test/integration`.** The `pretest` hook
+fetches the sha256-pinned ledger wasms and rebuilds the backend; skipping it tests a
+stale wasm and passes.
+
+⚠️ **PocketIC needs a 4 KiB-page kernel.** macOS and x86_64 Linux are fine; the replica
+cannot run inside an arm64 Linux guest with 16 KiB pages (an Apple-Silicon Docker VM, for
+instance). Node ≥ 20.11 and `mops` on `PATH`.
+
 ## The automated suites
 
 Counts are deliberately absent: they drifted in three separate documents over one

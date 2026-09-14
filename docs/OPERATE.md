@@ -25,9 +25,25 @@ them on one page.
 
 ⚠️ **The divisor must be set BEFORE the first order.** `set_pricing_config` refuses a
 divisor change once any order is stored (`#divisorChangeWithOrders`), because every
-earlier receipt would recompute against the new value. Locally the only way back is
-`icp deploy --mode reinstall`; on mainnet there is no way back, so a simulation
-deployment that has taken one order can never become a production one.
+earlier receipt would recompute against the new value. The only way back is
+`icp deploy --mode reinstall`, which discards the stored orders along with everything
+else in canister memory.
+
+⚠️ **Reinstall is available on mainnet too — what makes it unacceptable is REAL orders,
+not the network.** On a simulation gateway the stored orders are test orders, so
+reinstalling to `divisor = 1` is the ordinary route to production, and it is much
+cheaper than a fresh canister because the canister id does not change:
+
+| survives a reinstall | because |
+|---|---|
+| the Stripe webhook URL | it names the canister id |
+| both sealed secrets' **ciphertexts** | the seal derives from the master key, the canister id and a fixed context — nothing from canister state, so re-send the same blobs |
+| the reserve's cycles | the account belongs to the canister's principal and lives on the cycles ledger, a different canister |
+
+What has to be redone: `refresh_reserve` (the floor resets to 0 while the stock is
+intact), the buyer allow-list, and re-sending the two sealed blobs. Orders, receipts,
+the audit log, the journals and the dedup sets are gone — which is why a gateway
+holding orders **someone paid for** has no way back.
 
 **Local runs in plain mode only.** A simulation divisor is settable locally too, but it
 exists for mainnet simulation, where the arithmetic and its guards are documented — see
@@ -773,14 +789,16 @@ Everything money-touching **fails closed by default** — a freshly deployed
 gateway accepts no orders and delivers nothing until each lever below is
 consciously set.
 
-⚠️ **"Fresh" is literal: a simulation gateway cannot be promoted to this one.** The
-divisor is refused once any order is stored (Mode 2), so a sandbox deployment that has
-taken even one test order can never accept `set_expected_livemode '(opt true)'`.
-Production is a new backend canister, and that is survivable for the reason the
-derivation origin is pinned where it is: principals derive from the **frontend**
-canister id, so replacing the backend behind the same frontend changes nobody's
-identity. It does leave their order history in the old canister, which is a sandbox
-deployment's data and nothing anyone paid for.
+⚠️ **A simulation gateway is not promoted in place — it is reinstalled.** The divisor
+is refused once any order is stored (Mode 2), so a gateway that has taken even one test
+order cannot simply be switched: `set_expected_livemode '(opt true)'` is refused while
+the divisor is above 1, and the divisor cannot move while orders are stored. **Reinstall
+breaks that deadlock and keeps the canister id** — so the webhook URL, both sealed
+ciphertexts and the reserve's cycles all survive; see Mode 2's table above for what does
+not. A fresh canister is the expensive option and is not required.
+
+Either way, buyer identity is unaffected: principals derive from the **frontend**
+canister id, which is why the derivation origin is pinned there.
 
 ### What is not a command
 

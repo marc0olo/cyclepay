@@ -1212,7 +1212,7 @@ orders.
 Related §11.1 note for future rails: the four Base seams (Owner variant,
 route table, edge-captured ownership, per-rail expiry) are binding on code
 changes, not operations — but any new rail lands with its own runbook
-section, its own dedup set, and its own go-live checklist entry here.
+section, its own dedup set, and its own entry in `docs/OPERATE.md`'s Mode 3.
 
 ## 10. Upgrades & releases
 
