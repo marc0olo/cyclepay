@@ -69,3 +69,7 @@ test/integration/wasm/
 # except by a one-off probe, which is how this got committed once).
 __pycache__/
 *.pyc
+
+# macOS Finder metadata. Committed once by the demo-playbook branch and caught
+# before it reached main — nothing reads it, and it changes on every Finder visit.
+.DS_Store
