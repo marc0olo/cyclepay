@@ -30,8 +30,39 @@ recompute the price themselves rather than take our word for it.
 The design bar is "production money-handler from day one": full idempotency,
 write-intent-before-call replay safety, obligations that live on the order so an
 unresolved one is never dropped, a defined money position for every failure, and
-a reproducible build so anyone can verify the deployed module hash against a
-tagged commit.
+a reproducible build, so that a deployed module hash **can** be verified against a
+tagged commit. ⚠️ That last one is a property of the build system and not yet of any
+deployment — see **Release** below for where that stands.
+
+## It is running
+
+**<https://cyclepay.raymondk.co>** — or <https://shy4u-4qaaa-aaaay-aadhq-cai.icp.net>,
+which is the same app on the canister's own gateway origin. Internet Identity derives
+principals from the **frontend canister id**, so both addresses give you the same
+account and the same cycles.
+
+⚠️ **Simulation mode, and you cannot buy on it.** Cards are charged in Stripe's
+sandbox, and cycles are divided by `pricing_status().config.divisor` — so a purchase
+quotes *and* delivers that fraction of what a live gateway would for the same charge.
+Read the divisor rather than trusting a number written here.
+
+Purchases also require the buyer's principal to be **allow-listed by a controller**:
+without that, free sandbox payments against a funded reserve would be a faucet, so an
+unlisted principal is refused with `buyerNotAllowed`.
+
+What anyone can do on it, with no identity at all: browse, read a **live quote** for any
+amount, and check every operational number the gateway publishes.
+
+```bash
+icp canister call backend quote_previews '(vec { 1_000 : nat })' -e ic  # $10, with both rate inputs
+icp canister call backend reserve_status  '()' -e ic
+icp canister call backend pricing_status  '()' -e ic
+icp canister call backend lifecycle_config '()' -e ic
+icp canister call backend card_tiers      '()' -e ic
+```
+
+Canister ids are in `.icp/data/mappings/ic.ids.json`; the backend is
+`saz2a-riaaa-aaaay-aadha-cai`.
 
 This repository began as a fork of [`raymondk/cyclepay`](https://github.com/raymondk/cyclepay),
 which explored the design with an agent loop; it is the source of truth now, and the
@@ -41,9 +72,8 @@ Key documents:
 
 | Document | What it is |
 |----------|------------|
-| `docs/agents/deleted-vocabulary.md` | The sweep list: a deleted mechanism's vocabulary, with each term's adjudicated disposition |
 | `docs/DESIGN.md` | The decision record — *why* it is built this way. What the `§N` comments point at. Gate-enforced |
-| `docs/STRIPE.md` | **Start here.** The Card rail end to end, written from the code: ingress, session creation, signature verification, attribution, dedup, pricing, the order lifecycle, refunds, the two secrets, and the local Stripe-sandbox loop |
+| `docs/STRIPE.md` | The Card rail end to end, written from the code: ingress, session creation, signature verification, attribution, dedup, pricing, the order lifecycle, refunds, the two secrets, and the local Stripe-sandbox loop |
 | `docs/TEST-COVERAGE.md` | What is tested, how, and what is not — one place to answer "is X covered?" |
 | `docs/SANDBOX-TESTPLAN.md` | The manual Stripe-sandbox verification pass required before go-live, and an explicit statement of what a green run does not prove |
 | `docs/DEMO-PLAYBOOK.md` | The running order for demoing this to a technical audience: what to show, why each step is interesting, and the three "looks wrong and isn't" answers. Names no live figures — every number is a query read on camera |
@@ -51,8 +81,11 @@ Key documents:
 | `RELEASE.md` | Reproducible build and module-hash verification procedure |
 | `AGENTS.md` | Agent instructions: ICP skills setup, conventions, the verification gate |
 
-Task and progress tracking lives in **GitHub Issues** (see
-`docs/agents/issue-tracker.md`).
+**There are no open issues, by design.** The build is done; the go-live prerequisites
+that were tracked as issues are now `RUNBOOK.md` section 1.1, ahead of the deployment
+commands, and each one names the closed issue that holds its reasoning. Closed issues
+are the archive, not the plan. `docs/agents/` holds the conventions an agent needs,
+including `deleted-vocabulary.md` and `issue-tracker.md`.
 
 ## Prerequisites
 
@@ -246,7 +279,8 @@ icp deploy --mode reinstall --yes
 `scripts/e2e-local.sh` detects the trap and does this for you. Do **not** add a
 mops migration file to avoid it — the app holds no data anyone needs, and every
 migration replays forever on a fresh install. The chain is a go-live
-prerequisite; see issue #32.
+prerequisite, and `RUNBOOK.md` section 1.1 item 1 carries the three facts that decide
+how it gets written.
 
 Reinstalling wipes local orders, the audit log and the delivery journal. That is
 expected: re-seed, and restart a manual run from the top.
@@ -354,9 +388,18 @@ the committed tree can shape the output:
 scripts/reproducible-build.sh <git-ref>
 ```
 
-⚠️ **The verify half is a procedure, not a past result.** Nothing is deployed to
-mainnet, so no on-chain module hash exists to diff against yet — `RELEASE.md` has the
-publish/verify steps, and the first real execution happens at go-live (#40).
+⚠️ **The verify half is a procedure, not a past result — and the live deployment did
+not go through it.** The gateway on mainnet was deployed with a plain `icp deploy`:
+nothing was tagged, no `MODULE-HASHES.txt` was published, and `RELEASE.md`'s step 5 —
+the gate that compares the deployed hash against the published one — has never run.
+So whether the live bytes reproduce from their own commit is **unknown**, not
+known-negative: a deploy from a clean checkout of a tag is expected to match, and that
+premise has simply never been tested here.
+
+The on-chain hash is deliberately **not** published in this repo as a verifiable
+artifact. A number with no independently reproducible counterpart looks like
+verification without being one. Read it yourself with
+`icp canister status backend -e ic` if you want it.
 
 Pinned: the base image by digest, `ic-mops`/`icp-cli`/`ic-wasm` by exact version, `moc`
 via `mops.toml [toolchain]`, Motoko deps via `mops.lock`, recipes by tag in `icp.yaml`, and

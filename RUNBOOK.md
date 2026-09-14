@@ -176,6 +176,13 @@ redirect debt once that link is on a money page.
 
 ### 1.2 The steps
 
+⚠️ **Two of these are knowingly NOT done on the live simulation deployment** — step 2's
+freezing threshold (still the 30-day default) and step 10's backup controller (one
+principal, no second). Both are single commands and both are production prerequisites,
+tracked on issue #171; they are deferred rather than missed. Read
+`icp canister status backend -e ic` before assuming either has been done on whatever
+deployment you are looking at.
+
 1. **Deploy and verify** per `RELEASE.md` — reproducible build, published module
    hash, and `icp canister status` gated on matching it.
 
@@ -1888,8 +1895,8 @@ release doc doesn't cover:
 
   ⚠️ **This is a development lever and has no mainnet counterpart.** `reinstall`
   discards every order, journal and dedup set, so on mainnet a shape change needs
-  the mops migration chain (issue #32) — which is why no migration file is written
-  before the schema settles: every file replays forever on a fresh install.
+  the mops migration chain (section 1.1 item 1) — which is why no migration file is
+  written before the schema settles: every file replays forever on a fresh install.
 
 - In-flight deliveries resume from the persisted journal via the re-armed timer
   (§5.1), so an interrupted money movement degrades to a recoverable stage,
