@@ -87,6 +87,7 @@ jobs:
           scripts/check-duplicate-bodies.py
           scripts/check-typed-errors.py
           scripts/check-mermaid.py
+          scripts/check-doc-links.py
 
   frontend:
     runs-on: ubuntu-latest

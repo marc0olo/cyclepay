@@ -325,6 +325,12 @@ run "no module function body is duplicated across modules" scripts/check-duplica
 # the source; this lints the two silent cases so they cannot come back.
 run "mermaid labels keep their text on GitHub" scripts/check-mermaid.py
 
+# ⚠️ **A link to a renamed SECTION fails silently** — the page opens at the top and the
+# reader never learns they were sent somewhere specific. This repo has produced that
+# class repeatedly: `§10` for a checklist that was `§9`, a "step 5" that renumbered, a
+# "commit identification above" that had been deleted.
+run "every doc link resolves, file and #anchor" scripts/check-doc-links.py
+
 # Reads the regenerated .did, so it sits after the build step. #123 removed the last
 # `Result<_, Text>`; this keeps it removed.
 run "every endpoint error type is a variant, not text" scripts/check-typed-errors.py
