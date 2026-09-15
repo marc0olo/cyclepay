@@ -72,10 +72,10 @@ its cause — [`docs/OPERATE.md`](docs/OPERATE.md) explains both before the firs
 [`docs/VERIFY.md`](docs/VERIFY.md) is the list: what a stranger can check with no
 identity, what only a buyer can, and the limits stated in the same breath.
 
-⚠️ **One limit is measured, not hedged:** the live module hash has no published
-provenance. The build turns out to depend on the platform it runs on, so the release
-procedure now pins one and installs the container's artifact rather than rebuilding on
-the host — but this deployment predates that. `docs/VERIFY.md` has the numbers.
+⚠️ **One limit worth stating here:** the live module hash has no published provenance.
+`scripts/release.sh` builds in a pinned container, installs that artifact and gates on the
+canister reporting the same hash — this deployment was not cut that way.
+[`docs/VERIFY.md`](docs/VERIFY.md) has the detail.
 
 ## Documents
 

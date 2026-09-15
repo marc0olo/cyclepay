@@ -42,36 +42,38 @@ with the same pinned toolchain; the container is the canonical environment.
 
 ## Cutting a release
 
-1. Tag: `git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`.
-2. Build in the container: `scripts/reproducible-build.sh vX.Y.Z`.
-3. Publish `release/MODULE-HASHES.txt` verbatim in the GitHub release notes — including
-   its `# build arch:` line, which is part of the claim.
-4. **Install the artifact the container produced. Do NOT `icp deploy`.**
-   ```bash
-   icp canister install backend --wasm release/backend.wasm --mode upgrade -e ic
-   icp deploy frontend -e ic          # the frontend is different — see below
-   ```
-5. **Gate:** confirm the deployed module hash equals the published one —
-   ```bash
-   icp canister status backend -e ic
-   ```
-   If it differs, the installed bytes are not the ones you published. Re-install from
-   `release/backend.wasm`; do not publish the deployed hash instead.
+```bash
+git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z
+scripts/release.sh vX.Y.Z                                    # build, print the hashes
+# publish release/MODULE-HASHES.txt verbatim in the release notes
+scripts/release.sh vX.Y.Z --install -e ic --identity <operator>
+```
 
-⚠️ **Step 4 is the whole difference between a verifiable deployment and an unverifiable
-one, and the live simulation gateway is the evidence.** `icp deploy` **rebuilds on the
-host** and installs *that*, so a container build followed by `icp deploy` publishes one
-set of bytes and installs another — which is exactly what happened: the deployed wasm
-reproduces from a macOS host build and from no container build. `docs/VERIFY.md` has the
-numbers. `icp canister install --wasm` installs the file, which is what makes step 5 able
-to pass.
+The second call builds in the container again, installs **that artifact**, reads the
+module hash back from the canister and fails if it differs from what it built. Three
+things follow from that shape:
 
-⚠️ **The frontend is deployed normally, and that is correct.** Its module is the pinned
-recipe's prebuilt certified-assets canister — identical bytes in every build, native or
-container, on either architecture — so there is nothing platform-sensitive to preserve.
-What matters for the frontend is asset *content*, which is certified per response and
-audited by rebuilding `src/frontend/dist` and comparing against what the canister
-serves (below).
+⚠️ **The installed bytes are the built bytes.** `icp deploy` rebuilds on the host, so a
+container build followed by `icp deploy` publishes one module and installs another.
+`scripts/release.sh` uses `icp canister install --wasm`, which installs the file.
+
+⚠️ **The gate cannot be skipped.** It is the same command, not a later instruction — and
+a skipped verification is indistinguishable from a passing one. The hash is read back
+from the canister, never from the build.
+
+⚠️ **Publish `MODULE-HASHES.txt` including its `# build arch:` line.** The architecture
+is part of the claim (see Caveats); a hash without it cannot be compared.
+
+**The frontend is deployed normally**, and separately:
+
+```bash
+icp deploy frontend -e ic
+```
+
+Its module is the pinned recipe's prebuilt certified-assets canister, identical on every
+platform, so there is nothing to preserve by installing a file. What matters for the
+frontend is asset *content*, which is certified per response and audited by rebuilding
+`src/frontend/dist` and comparing against what the canister serves (below).
 
 ## Verifying a release (anyone)
 
@@ -102,15 +104,12 @@ canister serves.
 
 ## Caveats (stated, not hidden)
 
-- ⚠️ **The wasm output is architecture- AND OS-dependent, measured, so the platform is
-  pinned rather than trusted.** One commit, three `backend.wasm` hashes: `darwin/arm64`
-  native, `linux/arm64` container, `linux/amd64` container. This section previously said
-  the output was "host-architecture-independent by design" and cited a byte-identical
-  container-vs-native check on linux/arm64 — that check does not generalise, and the
-  claim was false. `scripts/reproducible-build.sh` therefore passes
-  `--platform linux/amd64` (override with `RELEASE_PLATFORM=`), and
-  `MODULE-HASHES.txt` records the architecture it was built on. `frontend.wasm` and
-  `backend.did` were identical across all three.
+- ⚠️ **`backend.wasm` depends on the platform it is built on, so the platform is pinned
+  and published.** The same commit yields three different hashes on `darwin/arm64`
+  native, `linux/arm64` container and `linux/amd64` container. `reproducible-build.sh`
+  pins `--platform linux/amd64` (`RELEASE_PLATFORM=` overrides) and `MODULE-HASHES.txt`
+  records the architecture, so a hash is never compared across platforms by accident.
+  `frontend.wasm` and `backend.did` are identical on all three.
 - Recipe tags (`@dfinity/motoko@v5.1.0`) are fetched from
   `dfinity/icp-cli-recipes` by git tag, which is not content-addressed. A
   moved tag cannot go unnoticed — it changes the hash — but it would break

@@ -1,15 +1,14 @@
 # Verify it yourself
 
-What a stranger can check about this gateway today, what they cannot, and why. Every
-figure below was measured, and the commands are the measurement.
+What anyone can check about this gateway, what they cannot, and why. The commands are
+the check — run them rather than trusting this page.
 
 ## The deployment's status, plainly
 
 The gateway is live in **simulation mode** on mainnet —
 <https://cyclepay.raymondk.co>, backend `saz2a-riaaa-aaaay-aadha-cai`. It was deployed
-with a plain `icp deploy`: **nothing was tagged, no `MODULE-HASHES.txt` was published,
-and [`RELEASE.md`](../RELEASE.md)'s step 5 — the gate comparing the deployed hash
-against a published one — has never run.**
+with a plain `icp deploy`, untagged, with no published module hash — so there is nothing
+for anyone to compare the on-chain hash against.
 
 ⚠️ **The on-chain hash is deliberately not published here as a verifiable artifact.** A
 number with no independently reproducible counterpart looks like verification without
@@ -19,7 +18,7 @@ being one. Read it yourself:
 icp canister status backend -e ic
 ```
 
-### Does the live wasm reproduce? No — measured 2026-09-15
+### Does the live wasm reproduce? No
 
 **The deployed commit is `468687e`** (#157). Two independent confirmations: the wasm's
 embedded Candid is byte-identical to that commit's committed `backend.did`, and rebuilding
@@ -34,20 +33,17 @@ linux/arm64,  container   98c99a3a…
 linux/amd64,  container   41128dbd…      ← now the pinned default
 ```
 
-Not the tool versions — pinning the container to the host's `icp` 1.3.0 / `ic-wasm`
-0.9.10 gave a hash identical to the original pins. `frontend.wasm` and `backend.did`
-were identical in every build.
+`frontend.wasm` and `backend.did` are identical on all three; only the Motoko module
+moves.
 
-**This is fixed for future releases and cannot be fixed for this one.**
-`scripts/reproducible-build.sh` now pins `--platform linux/amd64` and records the build
-architecture in `MODULE-HASHES.txt`, and [`RELEASE.md`](../RELEASE.md)'s step 4 installs
-**the container's artifact** (`icp canister install --wasm`) instead of `icp deploy`,
-which rebuilds on the host and installs bytes nobody published. That combination is what
-makes the step-5 gate able to pass.
+**A release cut through `scripts/release.sh` does not have this problem**: it builds in
+the container on a pinned platform, installs that artifact rather than rebuilding on the
+host, and fails unless the canister reports the hash it built. See
+[`RELEASE.md`](../RELEASE.md).
 
-The live wasm was installed by a host build, so it stays unverifiable — the honest
-statement, and the reason to re-cut the deployment through the fixed procedure before
-real money rather than to try to bless it now.
+**This deployment was not cut that way**, so its bytes stay unverifiable. That is the
+honest statement, and the remedy is to re-cut the deployment before real money — not to
+publish the hash it has.
 
 ## What anyone can check right now
 
