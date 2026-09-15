@@ -95,7 +95,8 @@ For an **operator**:
 |---|---|
 | [`docs/OPERATE.md`](docs/OPERATE.md) | Setup, one procedure per mode: local, mainnet simulation, mainnet production |
 | [`RUNBOOK.md`](RUNBOOK.md) | Day-2 operations, entered by symptom: secret rotation, rate diagnosis, reserve sizing, obligation triage, monitoring |
-| [`RELEASE.md`](RELEASE.md) | Reproducible build and module-hash verification procedure |
+| [`RELEASE.md`](RELEASE.md) | Cutting a release: build, publish hashes, install, gate |
+| [`CHANGELOG.md`](CHANGELOG.md) | What changed per release |
 | [`docs/SANDBOX-TESTPLAN.md`](docs/SANDBOX-TESTPLAN.md) | The manual Stripe-sandbox pass required before go-live, and what a green run does not prove |
 
 For an **agent changing the code**: [`AGENTS.md`](AGENTS.md) (conventions, skills, the verification

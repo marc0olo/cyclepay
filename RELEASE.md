@@ -14,8 +14,7 @@ Every tool that shapes the module bytes is pinned by the *committed tree*:
 | `moc` 1.16.0 | `mops.toml [toolchain]` |
 | Motoko dependencies (`core`, `sha2`, `ic`) | `mops.lock` |
 | `@dfinity/motoko@v5.1.0` / `@dfinity/static-site@v0.3.3` recipes | `icp.yaml` (icp-cli rejects unpinned recipes) |
-| `ic-mops` 2.13.2, `@icp-sdk/icp-cli` 0.3.2, `@icp-sdk/ic-wasm` 0.9.11 | `Dockerfile.release` |
-| Node 22.22.1 (toolchain host + frontend build) | `Dockerfile.release` base image, by digest |
+| `icp` 1.4.0, `ic-wasm` 0.11.1, `mops` 3.2.0, Node 24.20.0 | `ghcr.io/dfinity/icp-dev-env-motoko:v2.1.0`, pinned **by digest** in `Dockerfile.release` |
 | Candid interface | `src/backend/dist/backend.did`, committed; the recipe embeds **this file** as the `candid:service` metadata, so the committed interface and the deployed one are the same bytes |
 
 The backend recipe runs `ic-wasm` shrink (deterministic optimize) and embeds
@@ -23,6 +22,10 @@ metadata (`candid:service` public; `candid:args`, `motoko:stable-types`,
 `enhanced-orthogonal-persistence`, `moc:version` private). The module is
 **not** gzip-compressed: the on-chain module hash is the sha256 of the wasm
 file itself, so `sha256sum` and `icp canister status` are directly comparable.
+
+⚠️ **Bumping the dev-env image changes every module hash.** That is correct — the image
+is part of what shapes the bytes — but it makes the bump a release of its own, with its
+own published hashes, never a passenger on an unrelated change.
 
 `scripts/release.sh` and `scripts/reproducible-build.sh` write `backend.wasm`,
 `frontend.wasm`, `backend.did` and `MODULE-HASHES.txt` into `release/`, from
@@ -32,23 +35,30 @@ pinned recipe's pre-built canister, the same for every project that uses it.
 
 ## Cutting a release
 
-Four commands, in this order.
+Five steps, in this order.
 
 ```bash
-git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z
+# 1. CHANGELOG.md: rename "Unreleased" to the version, commit it
+git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 
-scripts/release.sh vX.Y.Z                                       # 1. build, print hashes
-# 2. publish release/MODULE-HASHES.txt verbatim in the release notes,
+scripts/release.sh vX.Y.Z                                        # 2. build, print hashes
+# 3. publish release/MODULE-HASHES.txt verbatim in the release notes,
 #    including its `# build arch:` line — a hash without its architecture
 #    cannot be compared (see Caveats)
-scripts/release.sh vX.Y.Z --install -e ic --identity <operator>  # 3. install + gate
+scripts/release.sh vX.Y.Z --install -e ic --identity <operator>  # 4. install + gate
 
-icp deploy frontend -e ic && scripts/check-frontend-assets.py -e ic   # 4. frontend
+icp deploy frontend -e ic && scripts/check-frontend-assets.py -e ic   # 5. frontend
 ```
 
-Step 3 rebuilds in the container, installs **that artifact** with
+Step 4 rebuilds in the container, installs **that artifact** with
 `icp canister install --wasm`, then reads the module hash back from the canister and
 fails if it differs from what it built.
+
+⚠️ **The changelog comes first because the check reads the TAGGED tree.**
+`scripts/release.sh` refuses a version whose `CHANGELOG.md` has no `## X.Y.Z` section,
+and it looks inside the ref rather than the working copy — so the entry is part of the
+commit the hash is published for and cannot be backfilled. Building `HEAD` or a bare
+commit to inspect hashes needs no entry.
 
 ⚠️ **Never `icp deploy` the backend.** It rebuilds on the host, so a container build
 followed by `icp deploy` publishes one module and installs another — which is how a
