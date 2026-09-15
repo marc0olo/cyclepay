@@ -73,8 +73,9 @@ its cause — [`docs/OPERATE.md`](docs/OPERATE.md) explains both before the firs
 identity, what only a buyer can, and the limits stated in the same breath.
 
 ⚠️ **One limit is measured, not hedged:** the live module hash has no published
-provenance, and the deployed bytes do not reproduce from the pinned container — the build
-is macOS-versus-linux sensitive. `docs/VERIFY.md` has the numbers.
+provenance. The build turns out to depend on the platform it runs on, so the release
+procedure now pins one and installs the container's artifact rather than rebuilding on
+the host — but this deployment predates that. `docs/VERIFY.md` has the numbers.
 
 ## Documents
 

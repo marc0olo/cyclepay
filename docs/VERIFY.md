@@ -25,23 +25,29 @@ icp canister status backend -e ic
 embedded Candid is byte-identical to that commit's committed `backend.did`, and rebuilding
 that commit **on the machine that deployed it** reproduces the module hash exactly.
 
-**But the pinned container produces different bytes for the same commit** —
-`c91b4cfe110d65a7…` against the deployed `6cc46209e627d1d5…`. It is **not** the tool
-versions: pinning the container to the host's `icp` 1.3.0 / `ic-wasm` 0.9.10 gave a hash
-identical to the original pins, so the difference is **linux versus macOS**. `RELEASE.md`
-claims the output is host-*architecture*-independent, which it may well be; nobody checked
-host *operating system*.
+**The container produces different bytes for the same commit**, and the build turns out
+to depend on where it runs. One commit, three `backend.wasm` hashes:
 
-So the live bytes are reproducible only on macOS, which is not something a third party can
-rely on — and `RELEASE.md`'s step 4 deploys from the host, not from the container, so this
-is not unique to this deployment. Making it verifiable needs one decision about which
-platform's bytes are canonical; filed separately, and not worth solving before there is
-real money.
+```
+darwin/arm64, native      8dae04a0…      ← how the live canister was built
+linux/arm64,  container   98c99a3a…
+linux/amd64,  container   41128dbd…      ← now the pinned default
+```
 
-**What does hold:** the container build is deterministic — repeated runs of a ref give
-identical hashes — and it now runs at all, which it could not before (a bare `icp build`
-included the local `xrc` mock, whose wasm is gitignored and so absent from the archive
-context).
+Not the tool versions — pinning the container to the host's `icp` 1.3.0 / `ic-wasm`
+0.9.10 gave a hash identical to the original pins. `frontend.wasm` and `backend.did`
+were identical in every build.
+
+**This is fixed for future releases and cannot be fixed for this one.**
+`scripts/reproducible-build.sh` now pins `--platform linux/amd64` and records the build
+architecture in `MODULE-HASHES.txt`, and [`RELEASE.md`](../RELEASE.md)'s step 4 installs
+**the container's artifact** (`icp canister install --wasm`) instead of `icp deploy`,
+which rebuilds on the host and installs bytes nobody published. That combination is what
+makes the step-5 gate able to pass.
+
+The live wasm was installed by a host build, so it stays unverifiable — the honest
+statement, and the reason to re-cut the deployment through the fixed procedure before
+real money rather than to try to bless it now.
 
 ## What anyone can check right now
 
