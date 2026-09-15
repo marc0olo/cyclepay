@@ -28,7 +28,8 @@ principal, so a funded gateway cannot be drained by free test payments.
 **Verifiability.** This is the first build published with module hashes.
 `scripts/release.sh` builds in a digest-pinned container, installs that artifact, and
 gates on the canister reporting the hash it built, so the published bytes and the running
-bytes cannot drift apart. `scripts/check-frontend-assets.py` compares every asset the
+bytes cannot drift apart. The container is
+`ghcr.io/dfinity/icp-dev-env-motoko:v2.2.1`, pinned by digest. `scripts/check-frontend-assets.py` compares every asset the
 frontend serves against a local build. Rebuild the tag and check both yourself —
 [`docs/VERIFY.md`](docs/VERIFY.md) has the commands.
 
