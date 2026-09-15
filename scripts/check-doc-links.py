@@ -30,6 +30,23 @@ HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*$", re.M)
 FENCE = re.compile(r"```.*?```", re.S)
 
 
+def links_in(src: str):
+    """(line, href) for every markdown link outside a fenced block.
+
+    ⚠️ **Fences are SKIPPED BY POSITION, not stripped.** Two reasons, and both were bugs
+    here. Searching a stripped copy for the matched text attributes every duplicate link
+    to the first one's line — this README has the same link twice, so it sent the author
+    to a line that was already correct. And matching line-by-line instead would drop a
+    link whose TEXT wraps across a newline, of which this README has three, silently
+    checking less than it claims.
+    """
+    fences = [(m.start(), m.end()) for m in FENCE.finditer(src)]
+    for m in LINK.finditer(src):
+        if any(a <= m.start() < b for a, b in fences):
+            continue
+        yield src.count("\n", 0, m.start()) + 1, m.group("href")
+
+
 def anchor(heading: str) -> str:
     s = heading.strip().lower()
     s = re.sub(r"[^\w\s-]", "", s)
@@ -48,6 +65,11 @@ def _self_test() -> None:
     assert anchor("What is pinned") == "what-is-pinned"
     assert anchor("`state_hash` is a fingerprint, not a check") == "state_hash-is-a-fingerprint-not-a-check"
     assert anchor("1. The one-sentence version") == "1-the-one-sentence-version"
+    # the same link twice must report two DIFFERENT lines, and a link whose text wraps
+    # must still be seen at all
+    sample = "[a](x.md#p)\nfiller\n[a](x.md#p)\n```\n[in](a-fence.md)\n```\n[wrapped\ntext](y.md#q)\n"
+    got = list(links_in(sample))
+    assert got == [(1, "x.md#p"), (3, "x.md#p"), (7, "y.md#q")], got
 
 
 def main() -> int:
@@ -55,15 +77,11 @@ def main() -> int:
     checked = 0
     bad: list[str] = []
     for f in FILES:
-        src = f.read_text()
-        body = FENCE.sub("", src)
-        for m in LINK.finditer(body):
-            href, text = m.group("href"), m.group("text")
+        for line, href in links_in(f.read_text()):
             if href.startswith(("http://", "https://", "mailto:")):
                 continue
             file_part, _, frag = href.partition("#")
             target = f.parent / file_part if file_part else f
-            line = src[: src.find(m.group(0))].count("\n") + 1
             if not target.exists():
                 bad.append(f"{f}:{line}: link target missing — {href}")
                 continue
