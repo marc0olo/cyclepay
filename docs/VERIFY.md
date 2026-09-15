@@ -115,10 +115,10 @@ recompute their own price and confirm the transfer on the cycles ledger independ
 
 ## The limits, in the same breath
 
-- **The published hash is reproducible on one platform.** `backend.wasm` depends on the
-  build architecture, so the release is built on `linux/amd64` and says so; rebuilding on
-  a different one gives different bytes and proves nothing. Reproduce on the architecture
-  the release names.
+- **The published hash is reproducible on one architecture.** `backend.wasm` depends on
+  it, so the build is pinned to `--platform linux/amd64` and the release records the
+  architecture it ran on — `x86_64`, as `uname -m` reports it inside that container.
+  Rebuilding elsewhere gives different bytes and proves nothing.
 - **The hashes are published by us.** The reproducible build is what makes that not
   require trust — anyone can produce the same bytes — but nobody else counter-signs them.
 - **Any single controller can upgrade and drain.** IC controllers are OR-semantics; the

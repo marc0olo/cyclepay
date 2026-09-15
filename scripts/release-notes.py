@@ -19,6 +19,12 @@ Usage: scripts/release-notes.py <version> [hashes-file] [out-file]
 import sys
 from pathlib import Path
 
+# ⚠️ **Written out, not left as `<backend-id>`.** The notes' audience is precisely the
+# people who do not know this canister's id, and it is a stable identifier rather than a
+# perishable figure — unlike a hash, which is why no hash is hardcoded anywhere.
+BACKEND = "saz2a-riaaa-aaaay-aadha-cai"
+REPO = "https://github.com/marc0olo/cyclepay"
+
 WHAT = {
     "backend.wasm": "the gateway canister — **this is the hash to check**",
     "frontend.wasm": "the pinned recipe's certified-assets canister (see the note below)",
@@ -61,12 +67,24 @@ def main() -> int:
     out_path = Path(sys.argv[3] if len(sys.argv) > 3 else "release/NOTES.md")
 
     raw = hashes_path.read_text()
-    arch = next((l.split(":", 1)[1].strip() for l in raw.split("\n") if l.startswith("# build arch:")), "unknown")
+    # ⚠️ Abort rather than degrade. Publishing "built on unknown" two lines above the rule
+    # telling a verifier to compare like for like would be worse than failing here.
+    arch = next((l.split(":", 1)[1].strip() for l in raw.split("\n") if l.startswith("# build arch:")), None)
+    if arch is None:
+        sys.exit(f"ABORT: {hashes_path} carries no '# build arch:' line — a hash without its"
+                 " architecture cannot be compared, so these notes would mislead")
     rows = [(n, h) for h, n in (l.split() for l in raw.split("\n") if l and not l.startswith("#"))]
     if not rows:
         sys.exit(f"ABORT: no hashes parsed out of {hashes_path} — refusing to publish empty notes")
 
-    changes = changelog_section(version, Path("CHANGELOG.md").read_text())
+    # ⚠️ **The changelog comes from the REF when there is one.** Generating notes for a
+    # tag from the working tree's changelog is how a backfill silently publishes a later
+    # version's text. Falls back to the working tree for `HEAD` and bare commits.
+    import subprocess
+    ref = sys.argv[1]
+    at_ref = subprocess.run(["git", "show", f"{ref}:CHANGELOG.md"], capture_output=True, text=True)
+    changelog = at_ref.stdout if at_ref.returncode == 0 else Path("CHANGELOG.md").read_text()
+    changes = changelog_section(version, changelog)
     if not changes:
         sys.exit(f"ABORT: CHANGELOG.md has no '## {version}' section")
 
@@ -91,13 +109,18 @@ Verbatim, as `shasum -c` and a diff against your own build read it:
 ## Verify this yourself
 
 ```bash
-git clone --recurse-submodules <repo> && cd <repo> && git checkout v{version}
+git clone --recurse-submodules {REPO} && cd cyclepay && git checkout v{version}
 scripts/reproducible-build.sh v{version}
-diff release/MODULE-HASHES.txt -   # paste the block above
-icp canister status <backend-id> -n ic -p
+
+# paste the block above into release/PUBLISHED.txt, then check YOUR binaries
+# against THOSE hashes — this fails loudly and names the file that differs
+cd release && shasum -a 256 -c PUBLISHED.txt
+
+# and the canister must report the same backend hash
+icp canister status {BACKEND} -n ic -p
 ```
 
-All three must agree: your build, the block above, and the canister.
+All three must agree: your build, the hashes above, and the canister.
 
 ⚠️ **`frontend.wasm` is not a meaningful check.** It is the pinned recipe's pre-built
 certified-assets canister — identical for every project using it, and unrelated to the
