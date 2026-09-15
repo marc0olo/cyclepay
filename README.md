@@ -109,26 +109,12 @@ audience.
 
 ## Release
 
-Releases are built in a Docker-pinned toolchain, from `git archive <ref>` so only
-the committed tree can shape the output:
+[`RELEASE.md`](RELEASE.md) is the procedure: build in a digest-pinned container, publish
+the module hashes, install **that artifact**, and gate on the canister reporting the hash
+that was built. [`CHANGELOG.md`](CHANGELOG.md) records what each release changed, and the
+release script refuses a version that has no entry there.
 
-```sh
-scripts/reproducible-build.sh <git-ref>
-```
-
-⚠️ **The verify half is a procedure, and the live deployment did not go through it** —
-untagged, no published hash, step 5 never run. Worse, measured: the pinned container
-produces **different bytes** for the deployed commit than the host that deployed it, so
-the live wasm is not third-party reproducible. [`docs/VERIFY.md`](docs/VERIFY.md) carries
-the hashes, the cause and the consequence for the procedure.
-
-Pinned: the base image by digest, `ic-mops`/`icp-cli`/`ic-wasm` by exact version, `moc`
-via `mops.toml [toolchain]`, Motoko deps via `mops.lock`, recipes by tag in `icp.yaml`, and
-the crypto submodule by the commit **the ref itself records** — read with `git ls-tree`, so
-a local checkout at a different commit cannot change the output. ⚠️ `git archive` omits
-submodules, so `reproducible-build.sh` assembles the build context explicitly rather than
-piping the archive straight to Docker; without that the container fails on an empty path
-dependency.
-Not pinned: the two `apt` packages (not byte-shaping) and the npm tools' transitive
-dependencies — so identical bytes are expected from the same ref on the same day, and
-are not guaranteed across a registry change.
+⚠️ **The live deployment did not go through it** — untagged, no published hash, and the
+gate never ran. It would not have matched either: the container produces different bytes
+for the deployed commit than the host that installed it.
+[`docs/VERIFY.md`](docs/VERIFY.md) has the hashes and the cause.

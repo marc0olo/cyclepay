@@ -24,32 +24,38 @@ files — match byte for byte.
 installs a pre-built certified-assets wasm, so that hash describes the recipe, not the
 page. The page lives in canister state.
 
-## "Is the backend module built from this repo?" — not for this deployment
+## "Is the backend module built from this repo?" — compare it to a release
 
-The backend was deployed with a plain `icp deploy`, untagged, with no published module
-hash, so there is nothing to compare the on-chain hash against. And it would not have
-matched: **`backend.wasm` depends on the platform it is built on**, and this one was built
-on the operator's Mac rather than in the release container.
+Every release publishes the module hashes its container build produced. Rebuild the tag
+yourself and compare three things — your build, the release notes, and the canister:
+
+```bash
+git checkout vX.Y.Z
+scripts/reproducible-build.sh vX.Y.Z              # writes release/MODULE-HASHES.txt
+icp canister status saz2a-riaaa-aaaay-aadha-cai -n ic -p
+gh release view vX.Y.Z                            # the published hashes
+```
+
+All three must agree, including the `# build arch:` line — the same commit produces
+different bytes on different platforms, so a hash without its architecture cannot be
+compared. [`RELEASE.md`](../RELEASE.md) is the procedure that keeps them in step: it
+installs the artifact the container built rather than rebuilding on the host, and fails
+unless the canister reports the hash it built.
+
+**Status: no release has been cut yet, so there is nothing published to compare against.**
+The running backend was deployed with a plain `icp deploy`, untagged. It also would not
+match a container build — that deployment was installed from a host build, and the two
+differ:
 
 ```
 darwin/arm64, native      8dae04a0…      ← how the live canister was built
 linux/arm64,  container   98c99a3a…
-linux/amd64,  container   41128dbd…      ← the pinned default
+linux/amd64,  container   41128dbd…      ← the pinned default at the time
 ```
-
-(The deployed commit is identifiable — `468687e`, whose committed `backend.did` is
-byte-identical to the Candid embedded in the running wasm — and rebuilding it on that
-same machine reproduces the hash exactly. That is not something a stranger can rely on.)
 
 ⚠️ **The on-chain hash is deliberately not published here as a verifiable artifact.** A
 number with no independently reproducible counterpart looks like verification without
-being one. Read it yourself with `icp canister status backend -e ic`.
-
-**Future releases do not have this problem.** [`RELEASE.md`](../RELEASE.md)'s procedure
-builds in the container on a pinned platform, installs *that* artifact rather than
-rebuilding on the host, and fails unless the canister reports the hash it built — so the
-published hash and the running module cannot drift apart. The remedy for this deployment
-is to re-cut it that way before real money, not to bless the hash it has.
+being one. Read it yourself with the command above.
 
 ## What anyone can check right now
 
