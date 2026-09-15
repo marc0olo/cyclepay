@@ -318,6 +318,13 @@ scripts/check-unused-exports.py
 # check's first two versions could not see it, which is recorded in the script.
 run "no module function body is duplicated across modules" scripts/check-duplicate-bodies.py
 
+# ⚠️ **Rendering, not parsing, is where a mermaid diagram fails silently.** A bare `#`
+# opens an HTML entity code and swallows the rest of the label, so `#paid` renders as
+# nothing and the clause after it disappears — while the diagram still parses and still
+# draws. Found by rendering the diagrams in Chromium and diffing the visible text against
+# the source; this lints the two silent cases so they cannot come back.
+run "mermaid labels keep their text on GitHub" scripts/check-mermaid.py
+
 # Reads the regenerated .did, so it sits after the build step. #123 removed the last
 # `Result<_, Text>`; this keeps it removed.
 run "every endpoint error type is a variant, not text" scripts/check-typed-errors.py

@@ -72,10 +72,10 @@ its cause — [`docs/OPERATE.md`](docs/OPERATE.md) explains both before the firs
 [`docs/VERIFY.md`](docs/VERIFY.md) is the list: what a stranger can check with no
 identity, what only a buyer can, and the limits stated in the same breath.
 
-⚠️ **One limit worth stating here:** the live module hash has no published provenance.
-`scripts/release.sh` builds in a pinned container, installs that artifact and gates on the
-canister reporting the same hash — this deployment was not cut that way.
-[`docs/VERIFY.md`](docs/VERIFY.md) has the detail.
+The running backend is a published release: `scripts/release.sh` built it in a pinned
+container, installed that artifact, and gated on the canister reporting the same hash. So
+the module hash on chain has a counterpart anyone can reproduce —
+[`docs/VERIFY.md`](docs/VERIFY.md) has the commands and the limits that remain.
 
 ## Documents
 
@@ -114,7 +114,7 @@ the module hashes, install **that artifact**, and gate on the canister reporting
 that was built. [`CHANGELOG.md`](CHANGELOG.md) records what each release changed, and the
 release script refuses a version that has no entry there.
 
-⚠️ **The live deployment did not go through it** — untagged, no published hash, and the
-gate never ran. It would not have matched either: the container produces different bytes
-for the deployed commit than the host that installed it.
-[`docs/VERIFY.md`](docs/VERIFY.md) has the hashes and the cause.
+⚠️ **`backend.wasm` depends on the build architecture**, so each release states the one
+it was built on and a verifier has to match it. `frontend.wasm` is the pinned recipe's
+module and proves nothing about the page — [`docs/VERIFY.md`](docs/VERIFY.md) has the
+check that does.
