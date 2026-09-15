@@ -53,7 +53,7 @@ scripts/release.sh vX.Y.Z                                        # 2. build, pri
 # 3. publish the hashes verbatim as the release notes — including the
 #    `# build arch:` line, since a hash without its architecture cannot be
 #    compared (see Caveats). What CHANGED is CHANGELOG.md, inside the tag.
-gh release create vX.Y.Z --prerelease --verify-tag -t vX.Y.Z \
+gh-axi release create vX.Y.Z --prerelease --verify-tag -t vX.Y.Z \
   --notes-file release/MODULE-HASHES.txt
 
 scripts/release.sh vX.Y.Z --install -e ic --identity <operator>  # 4. install + gate
@@ -72,6 +72,12 @@ whether anything is published to compare against, and that sentence is false the
 the first release exists. It is deliberately **one line** so updating it is cheap and
 forgetting it is obvious — everything around it describes the check rather than the
 status.
+
+⚠️ **`gh-axi`, not `gh`, for this one.** It infers the repository from `git remote`,
+where plain `gh` fails with *"No default remote repository has been set"* until someone
+runs `gh repo set-default`. `gh-axi` is what the rest of this repo's tooling uses. The
+verifier's `gh release view` in `docs/VERIFY.md` stays plain `gh` on purpose — an outsider
+will not have `gh-axi`.
 
 ⚠️ **Do not attach the wasm to the release.** A downloadable module invites installing
 or trusting bytes instead of rebuilding them, which is the opposite of the point. Publish
