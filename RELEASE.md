@@ -24,96 +24,77 @@ metadata (`candid:service` public; `candid:args`, `motoko:stable-types`,
 **not** gzip-compressed: the on-chain module hash is the sha256 of the wasm
 file itself, so `sha256sum` and `icp canister status` are directly comparable.
 
-## Building a release
-
-```bash
-scripts/reproducible-build.sh <git-ref>        # default: HEAD
-```
-
-This pipes `git archive <ref>` — the committed tree only, local changes can
-never leak into a hash — into `Dockerfile.release` and writes to `release/`:
-
-- `backend.wasm`, `frontend.wasm` — the exact modules `icp deploy` installs
-- `backend.did` — the committed interface, as embedded in the module
-- `MODULE-HASHES.txt` — sha256 of all three
-
-`scripts/release-build.sh` (the inner step) also runs directly on any host
-with the same pinned toolchain; the container is the canonical environment.
+`scripts/release.sh` and `scripts/reproducible-build.sh` write `backend.wasm`,
+`frontend.wasm`, `backend.did` and `MODULE-HASHES.txt` into `release/`, from
+`git archive <ref>` — the committed tree only, so local changes cannot reach a hash.
+⚠️ `frontend.wasm` is written for completeness and is **not** a useful check: it is the
+pinned recipe's pre-built canister, the same for every project that uses it.
 
 ## Cutting a release
 
+Four commands, in this order.
+
 ```bash
 git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z
-scripts/release.sh vX.Y.Z                                    # build, print the hashes
-# publish release/MODULE-HASHES.txt verbatim in the release notes
-scripts/release.sh vX.Y.Z --install -e ic --identity <operator>
+
+scripts/release.sh vX.Y.Z                                       # 1. build, print hashes
+# 2. publish release/MODULE-HASHES.txt verbatim in the release notes,
+#    including its `# build arch:` line — a hash without its architecture
+#    cannot be compared (see Caveats)
+scripts/release.sh vX.Y.Z --install -e ic --identity <operator>  # 3. install + gate
+
+icp deploy frontend -e ic && scripts/check-frontend-assets.py -e ic   # 4. frontend
 ```
 
-The second call builds in the container again, installs **that artifact**, reads the
-module hash back from the canister and fails if it differs from what it built. Three
-things follow from that shape:
+Step 3 rebuilds in the container, installs **that artifact** with
+`icp canister install --wasm`, then reads the module hash back from the canister and
+fails if it differs from what it built.
 
-⚠️ **The installed bytes are the built bytes.** `icp deploy` rebuilds on the host, so a
-container build followed by `icp deploy` publishes one module and installs another.
-`scripts/release.sh` uses `icp canister install --wasm`, which installs the file.
+⚠️ **Never `icp deploy` the backend.** It rebuilds on the host, so a container build
+followed by `icp deploy` publishes one module and installs another — which is how a
+deployment becomes unverifiable without anyone noticing.
 
-⚠️ **The gate cannot be skipped.** It is the same command, not a later instruction — and
-a skipped verification is indistinguishable from a passing one. The hash is read back
-from the canister, never from the build.
+⚠️ **The gate is inside step 3 on purpose.** A verification that is a separate
+instruction gets skipped, and a skipped verification is indistinguishable from a passing
+one. The hash is read from the canister, never from the build.
 
-⚠️ **Publish `MODULE-HASHES.txt` including its `# build arch:` line.** The architecture
-is part of the claim (see Caveats); a hash without it cannot be compared.
-
-**The frontend is deployed normally, and verified differently:**
-
-```bash
-icp deploy frontend -e ic
-scripts/check-frontend-assets.py -e ic
-```
-
-⚠️ **The frontend's module hash is not a meaningful check.** The `@dfinity/static-site`
-recipe installs a **pre-built** certified-assets wasm, so that hash is a property of the
-recipe — the same for every project using it, and unrelated to the page anyone is served.
-The content lives in canister state, uploaded by the sync plugin.
-
-So the frontend check compares **what is served against a local build**:
-`check-frontend-assets.py` reads each asset's `Identity` encoding `sha256` from
-`get_asset_details` and compares it to `sha256` of the corresponding file in
-`src/frontend/dist`. A mismatch names the asset.
-
-⚠️ **`state_hash` is recorded, not recomputed.** It is one root hash over everything the
-canister certifies, produced inside the canister, so reproducing it locally would mean
-reimplementing its certification tree and would break whenever that internal shape
-changed. The script prints it: publish it with the release as a fingerprint, so later
-drift is detectable even though it cannot be derived from a build. The per-asset
-comparison is what ties the deployment to the source.
+⚠️ **The frontend is checked by its ASSETS, not its module hash.** The
+`@dfinity/static-site` recipe installs a pre-built certified-assets wasm, so that hash
+describes the recipe — identical for every project using it, and unrelated to the page
+anyone is served. The content lives in canister state, put there by the sync plugin, so
+`check-frontend-assets.py` compares each asset's `Identity` `sha256` from
+`get_asset_details` against `src/frontend/dist`. A mismatch names the asset.
 
 ## Verifying a release (anyone)
 
+No identity, no permissions.
+
 ```bash
-git clone <repo> && cd <repo>
-scripts/reproducible-build.sh vX.Y.Z
-icp canister status <backend-canister-id> -n ic --public   # works for non-controllers
+git clone <repo> && cd <repo> && git checkout vX.Y.Z
+
+scripts/reproducible-build.sh vX.Y.Z          # rebuild the backend in the container
+icp canister status <backend-id> -n ic -p     # read the deployed module hash
+
+npm --prefix src/frontend ci && npm --prefix src/frontend run build
+scripts/check-frontend-assets.py -n ic        # compare served assets to that build
 ```
 
-Compare the `Module hash` line against your locally built
-`release/MODULE-HASHES.txt` and against the hash published in the release
-notes. All three must agree. The module hash is also visible on the public
-dashboard (`dashboard.internetcomputer.org/canister/<id>`).
+`release/MODULE-HASHES.txt`, the hash in the release notes and the canister's
+`Module hash` must all agree — and so must the `# build arch:` line, since the same
+commit gives different bytes on different platforms. The module hash is also on the
+public dashboard (`dashboard.internetcomputer.org/canister/<id>`).
 
-## Frontend verifiability
+**What each half proves.** The backend hash ties the running module to a tagged commit.
+The asset comparison ties the served page to that same tree — the frontend module hash
+proves nothing, because it is the recipe's. Beyond that, every HTTP response carries
+`IC-Certificate` and `IC-CertificateExpression` over the asset tree and the gateway
+rejects responses whose certificate does not verify; there is no uncertified raw mode to
+turn off, the way the legacy asset canister needed `allow_raw_access: false`.
 
-The frontend **module** (`frontend.wasm`) is the certified-assets canister wasm
-bundled with the pinned recipe — its hash is published and checked the same way.
-The asset **content** is not part of the module hash; it is verified per-response:
-every HTTP response carries `IC-Certificate` and `IC-CertificateExpression` over
-the asset tree, and the gateway rejects responses whose certificate does not
-verify. There is no uncertified raw mode to switch off — the legacy asset
-canister needed `allow_raw_access: false` for that, and this canister has no such
-escape hatch. The asset build itself is reproducible
-(vite + committed `package-lock.json`, node pinned by the container), so an
-auditor can rebuild `src/frontend/dist` and compare files against what the
-canister serves.
+⚠️ **`state_hash` is a fingerprint, not a check.** The canister publishes one root hash
+over everything it certifies, and `check-frontend-assets.py` prints it — publish it with
+a release so later drift is detectable. It is computed inside the canister, so it cannot
+be derived from a build; the per-asset comparison is what ties a deployment to a source.
 
 ## Caveats (stated, not hidden)
 

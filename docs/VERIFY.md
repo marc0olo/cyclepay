@@ -1,49 +1,55 @@
 # Verify it yourself
 
-What anyone can check about this gateway, what they cannot, and why. The commands are
-the check — run them rather than trusting this page.
+The gateway is live in **simulation mode** on mainnet — <https://cyclepay.raymondk.co>,
+frontend `shy4u-4qaaa-aaaay-aadhq-cai`, backend `saz2a-riaaa-aaaay-aadha-cai`.
 
-## The deployment's status, plainly
+Two separate questions, with different answers.
 
-The gateway is live in **simulation mode** on mainnet —
-<https://cyclepay.raymondk.co>, backend `saz2a-riaaa-aaaay-aadha-cai`. It was deployed
-with a plain `icp deploy`, untagged, with no published module hash — so there is nothing
-for anyone to compare the on-chain hash against.
+## "Is the page I am using built from this repo?" — yes, check it
 
-⚠️ **The on-chain hash is deliberately not published here as a verifiable artifact.** A
-number with no independently reproducible counterpart looks like verification without
-being one. Read it yourself:
+This takes two minutes and needs no identity:
 
 ```bash
-icp canister status backend -e ic
+git clone --recurse-submodules https://github.com/marc0olo/cyclepay && cd cyclepay
+npm --prefix src/frontend ci && npm --prefix src/frontend run build
+scripts/check-frontend-assets.py -e ic
 ```
 
-### Does the live wasm reproduce? No
+It compares the `sha256` the canister publishes for **every asset it serves** against the
+file your own build produced, and names any that differ. At the time of writing it passes:
+all ten built assets — `index.html`, both bundles, all four fonts, both `.well-known`
+files — match byte for byte.
 
-**The deployed commit is `468687e`** (#157). Two independent confirmations: the wasm's
-embedded Candid is byte-identical to that commit's committed `backend.did`, and rebuilding
-that commit **on the machine that deployed it** reproduces the module hash exactly.
+⚠️ **Do not check the frontend's module hash instead.** The `@dfinity/static-site` recipe
+installs a pre-built certified-assets wasm, so that hash describes the recipe, not the
+page. The page lives in canister state.
 
-**The container produces different bytes for the same commit**, and the build turns out
-to depend on where it runs. One commit, three `backend.wasm` hashes:
+## "Is the backend module built from this repo?" — not for this deployment
+
+The backend was deployed with a plain `icp deploy`, untagged, with no published module
+hash, so there is nothing to compare the on-chain hash against. And it would not have
+matched: **`backend.wasm` depends on the platform it is built on**, and this one was built
+on the operator's Mac rather than in the release container.
 
 ```
 darwin/arm64, native      8dae04a0…      ← how the live canister was built
 linux/arm64,  container   98c99a3a…
-linux/amd64,  container   41128dbd…      ← now the pinned default
+linux/amd64,  container   41128dbd…      ← the pinned default
 ```
 
-`frontend.wasm` and `backend.did` are identical on all three; only the Motoko module
-moves.
+(The deployed commit is identifiable — `468687e`, whose committed `backend.did` is
+byte-identical to the Candid embedded in the running wasm — and rebuilding it on that
+same machine reproduces the hash exactly. That is not something a stranger can rely on.)
 
-**A release cut through `scripts/release.sh` does not have this problem**: it builds in
-the container on a pinned platform, installs that artifact rather than rebuilding on the
-host, and fails unless the canister reports the hash it built. See
-[`RELEASE.md`](../RELEASE.md).
+⚠️ **The on-chain hash is deliberately not published here as a verifiable artifact.** A
+number with no independently reproducible counterpart looks like verification without
+being one. Read it yourself with `icp canister status backend -e ic`.
 
-**This deployment was not cut that way**, so its bytes stay unverifiable. That is the
-honest statement, and the remedy is to re-cut the deployment before real money — not to
-publish the hash it has.
+**Future releases do not have this problem.** [`RELEASE.md`](../RELEASE.md)'s procedure
+builds in the container on a pinned platform, installs *that* artifact rather than
+rebuilding on the host, and fails unless the canister reports the hash it built — so the
+published hash and the running module cannot drift apart. The remedy for this deployment
+is to re-cut it that way before real money, not to bless the hash it has.
 
 ## What anyone can check right now
 
@@ -84,23 +90,9 @@ declares the cycles-ledger interface the canister may call, and `icrc2_approve` 
 ledger's `withdraw` are absent — so they cannot be called, which is what makes the floor
 a valid lower bound. `scripts/test-all.sh` fails on a declaration that widens it.
 
-**What the frontend serves is checkable against a build of this repo.** Each asset's
-`Identity` encoding `sha256` is public, so it can be compared to the file a local build
-produces:
-
-```bash
-npm --prefix src/frontend ci && npm --prefix src/frontend run build
-scripts/check-frontend-assets.py -e ic
-```
-
-⚠️ **Do not check the frontend's module hash instead.** The `@dfinity/static-site` recipe
-installs a pre-built certified-assets wasm, so that hash describes the recipe and not the
-page. The page lives in canister state. The canister's `state_hash` is a single
-fingerprint over everything it certifies — useful for spotting later drift, but produced
-inside the canister and so not reproducible from a build.
-
-**Frontend responses are also certified per response**, with no uncertified raw mode to
-switch off — see [`RELEASE.md`](../RELEASE.md).
+**Frontend responses are certified per response**, on top of the asset comparison above:
+each carries `IC-Certificate` over the asset tree and the gateway rejects a response whose
+certificate does not verify. There is no uncertified raw mode to switch off.
 
 **Every suite is in the repo and one command runs them all**: `scripts/test-all.sh`, with
 [`docs/TEST-COVERAGE.md`](./TEST-COVERAGE.md) stating what is *not* covered and why.
@@ -126,14 +118,3 @@ recompute their own price and confirm the transfer on the cycles ledger independ
   confidential-subnet checklist carries it.
 - **A purchase requires an allow-listed principal** while test payments are accepted, so
   a visitor cannot exercise the buying path end to end on the live gateway.
-
-## How verification is meant to work
-
-[`RELEASE.md`](../RELEASE.md) is the procedure and this document does not restate its
-steps — a second copy is a second thing to drift. Read it there: tag, build in the
-container, publish `MODULE-HASHES.txt`, deploy, then **gate on the deployed hash matching
-the published one**.
-
-⚠️ **Tagging and publishing cannot be done after the fact.** The current deployment is
-the evidence: it was deployed untagged with no hash published, and no amount of later
-work makes those bytes verifiable to someone who was not there.

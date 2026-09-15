@@ -1,29 +1,24 @@
 #!/usr/bin/env python3
 """Compare what the frontend canister SERVES against a local `dist` build.
 
-⚠️ **Why the frontend's module hash is not the check.** The `@dfinity/static-site` recipe
-installs a **pre-built** certified-assets wasm, so that module hash is a property of the
-recipe, identical for every project that uses it — it says nothing about the page anyone
-is served. The content lives in canister state, uploaded by the sync plugin, so verifying
-the frontend means verifying the *assets*.
+Three decisions, because each is a thing someone would otherwise "fix":
 
-⚠️ **Per-asset `sha256`, not `state_hash`, is what can be checked against a build.**
-`state_hash` is one root hash over everything the canister certifies, computed inside the
-canister; reproducing it locally would mean reimplementing its certification tree and
-would break whenever that internal shape changed. `get_asset_details` publishes the
-**Identity** encoding's `sha256` per asset, and that is plain sha256 of the file's bytes —
-comparable directly, and it names *which* asset drifted instead of only that something
-did. `state_hash` is still printed: it is a single fingerprint to record with a release,
-so later drift is detectable even though it is not reproducible from a build.
+⚠️ **Not the module hash.** The `@dfinity/static-site` recipe installs a **pre-built**
+certified-assets wasm, so that hash describes the recipe — identical for every project
+using it, and unrelated to the page anyone is served. The content lives in canister
+state, uploaded by the sync plugin.
 
-⚠️ **Gzip and Brotli encodings are deliberately ignored.** Matching them would require
-reproducing the compressor's exact settings, which is a property of the uploader rather
-than of the content. Identity covers the bytes; the compressed variants are derived from
-them.
+⚠️ **Not `state_hash`.** It is one root hash over everything the canister certifies,
+computed inside the canister, so reproducing it locally would mean reimplementing its
+certification tree and would break whenever that internal shape changed. It is printed
+as a fingerprint to publish with a release; `get_asset_details` is what can be compared
+to a build, and it names *which* asset drifted.
+
+⚠️ **Identity encodings only.** Matching Gzip and Brotli would mean reproducing the
+compressor's settings, which is a property of the uploader rather than of the content.
 
 Usage: scripts/check-frontend-assets.py [-e ENV | -n NETWORK]   (default: -e ic)
 """
-
 import hashlib
 import re
 import subprocess
@@ -75,7 +70,7 @@ def served(net: list[str]) -> dict[str, str]:
     # asset's encodings with the asset they belong to.
     for chunk in raw.split('record { key = "')[1:]:
         key = chunk[: chunk.index('"')]
-        for blob, enc in ENCODING.findall(chunk[: len(chunk)]):
+        for blob, enc in ENCODING.findall(chunk):
             if enc == "Identity":
                 out[key] = unblob(blob).hex()
                 break
@@ -108,7 +103,7 @@ def main() -> int:
         elif r != l:
             bad.append(f"{key}: DIFFERS\n      served {r}\n      built  {l}")
 
-    defaults = sorted(set(remote) & CANISTER_DEFAULTS - set(local))
+    defaults = sorted((set(remote) & CANISTER_DEFAULTS) - set(local))
     print(f"   {len(remote)} asset(s) served, {len(local)} built"
           + (f", {len(defaults)} canister default(s): {', '.join(defaults)}" if defaults else ""))
     fingerprint = unblob(re.search(r'blob "((?:\\[0-9a-fA-F]{2}|[^"])*)"', icp("state_hash", "()", net)).group(1)).hex()
