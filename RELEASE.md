@@ -42,9 +42,13 @@ Five steps, in this order.
 git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 
 scripts/release.sh vX.Y.Z                                        # 2. build, print hashes
-# 3. publish release/MODULE-HASHES.txt verbatim in the release notes,
-#    including its `# build arch:` line — a hash without its architecture
-#    cannot be compared (see Caveats)
+
+# 3. publish the hashes verbatim as the release notes — including the
+#    `# build arch:` line, since a hash without its architecture cannot be
+#    compared (see Caveats). What CHANGED is CHANGELOG.md, inside the tag.
+gh release create vX.Y.Z --prerelease --verify-tag -t vX.Y.Z \
+  --notes-file release/MODULE-HASHES.txt
+
 scripts/release.sh vX.Y.Z --install -e ic --identity <operator>  # 4. install + gate
 
 icp deploy frontend -e ic && scripts/check-frontend-assets.py -e ic   # 5. frontend
@@ -53,6 +57,10 @@ icp deploy frontend -e ic && scripts/check-frontend-assets.py -e ic   # 5. front
 Step 4 rebuilds in the container, installs **that artifact** with
 `icp canister install --wasm`, then reads the module hash back from the canister and
 fails if it differs from what it built.
+
+⚠️ **Do not attach the wasm to the release.** A downloadable module invites installing
+or trusting bytes instead of rebuilding them, which is the opposite of the point. Publish
+the hashes; let a verifier produce the bytes themselves.
 
 ⚠️ **The changelog comes first because the check reads the TAGGED tree.**
 `scripts/release.sh` refuses a version whose `CHANGELOG.md` has no `## X.Y.Z` section,
