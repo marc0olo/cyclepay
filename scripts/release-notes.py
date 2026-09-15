@@ -24,6 +24,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _github_anchor import anchor, self_test as anchor_self_test  # noqa: E402
+
 # ⚠️ **Written out, not left as `<backend-id>`.** The notes' audience is precisely the
 # people who do not know this canister's id, and it is a stable identifier rather than a
 # perishable figure — unlike a hash, which is why no hash is hardcoded anywhere.
@@ -65,12 +68,16 @@ def _self_test() -> None:
 
 def main() -> int:
     _self_test()
+    anchor_self_test()
     if len(sys.argv) < 2:
         sys.exit("usage: scripts/release-notes.py <version> [hashes-file] [out-file]")
     version = sys.argv[1].lstrip("v")
     hashes_path = Path(sys.argv[2] if len(sys.argv) > 2 else "release/MODULE-HASHES.txt")
     out_path = Path(sys.argv[3] if len(sys.argv) > 3 else "release/NOTES.md")
 
+    if not hashes_path.exists():
+        sys.exit(f"error: {hashes_path} is missing — the build has not run.\n"
+                 f"    scripts/release.sh {sys.argv[1]}")
     raw = hashes_path.read_text()
     # ⚠️ Abort rather than degrade. Publishing "built on unknown" two lines above the rule
     # telling a verifier to compare like for like would be worse than failing here.
@@ -94,11 +101,11 @@ def main() -> int:
     # that describes a release.
     if not changelog_section(version, changelog):
         sys.exit(f"ABORT: CHANGELOG.md has no '## {version}' section — the notes would link to nothing")
-    # GitHub's heading anchor: lowercase, drop anything but word chars/space/hyphen,
-    # spaces to hyphens. `## 0.1.0-beta.1` is `#010-beta1` — verified against the
-    # rendered page, because getting this wrong publishes a link that silently lands at
-    # the top of the file.
-    frag = re.sub(r"[^\w\s-]", "", version.lower()).replace(" ", "-")
+    # ⚠️ The SAME anchor rule `check-doc-links.py` verifies the docs with — imported, not
+    # restated, because a second copy of it is exactly the class of duplication this repo
+    # keeps finding, and this is the copy nothing gates: `release/NOTES.md` is build
+    # output that no check reads.
+    frag = anchor(version)
     changes = f"**What changed:** [`CHANGELOG.md`, {version}]({REPO}/blob/v{version}/CHANGELOG.md#{frag})"
 
     table = "\n".join(f"| `{n}` | `{h}` | {WHAT.get(n, '')} |" for n, h in rows)

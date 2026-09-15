@@ -15,14 +15,16 @@ documents table, where a row's description IS the file's title, and it missed th
 cases, where the prose says "Mode 1" and the heading is "Mode 1 — local". A check that
 noisy would be turned off. Anchors are added by reading; this verifies the ones written.
 
-GitHub's anchor rule, as implemented below: lowercase, drop anything that is not
-alphanumeric / space / hyphen / underscore, then spaces to hyphens. So `## Mode 1 — local`
-is `#mode-1--local` — two hyphens, because the em dash is dropped and both spaces survive.
+GitHub's anchor rule lives in `scripts/_github_anchor.py` and is imported, not restated —
+`release-notes.py` needs the same rule to link into `CHANGELOG.md` at a tag.
 """
 
 import re
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from _github_anchor import anchor, self_test as anchor_self_test  # noqa: E402
 
 FILES = sorted(set(list(Path(".").glob("*.md")) + list(Path("docs").glob("*.md"))))
 LINK = re.compile(r"\[(?P<text>[^\]]*)\]\((?P<href>[^)\s]+)\)")
@@ -47,12 +49,6 @@ def links_in(src: str):
         yield src.count("\n", 0, m.start()) + 1, m.group("href")
 
 
-def anchor(heading: str) -> str:
-    s = heading.strip().lower()
-    s = re.sub(r"[^\w\s-]", "", s)
-    return s.replace(" ", "-")
-
-
 def anchors_of(path: Path) -> set[str]:
     return {anchor(h) for h in HEADING.findall(FENCE.sub("", path.read_text()))}
 
@@ -60,11 +56,7 @@ def anchors_of(path: Path) -> set[str]:
 def _self_test() -> None:
     """Unconditional: the anchor rule is a transcription of GitHub's, and a wrong one
     would fail every link or none — both of which read as 'the check ran'."""
-    assert anchor("## Mode 1 — local".lstrip("# ")) == "mode-1--local"
-    assert anchor("Mode 2 — mainnet simulation") == "mode-2--mainnet-simulation"
-    assert anchor("What is pinned") == "what-is-pinned"
-    assert anchor("`state_hash` is a fingerprint, not a check") == "state_hash-is-a-fingerprint-not-a-check"
-    assert anchor("1. The one-sentence version") == "1-the-one-sentence-version"
+    anchor_self_test()
     # the same link twice must report two DIFFERENT lines, and a link whose text wraps
     # must still be seen at all
     sample = "[a](x.md#p)\nfiller\n[a](x.md#p)\n```\n[in](a-fence.md)\n```\n[wrapped\ntext](y.md#q)\n"
