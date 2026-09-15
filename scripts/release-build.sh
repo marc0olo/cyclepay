@@ -29,7 +29,18 @@ cp .icp/cache/artifacts/frontend "$out/frontend.wasm"
 # The committed interface ships alongside the module it is embedded in.
 cp src/backend/dist/backend.did "$out/backend.did"
 
-(cd "$out" && sha256sum backend.wasm frontend.wasm backend.did > MODULE-HASHES.txt)
+# ⚠️ **The architecture goes IN the file, because the bytes depend on it.** Measured on
+# one commit: darwin/arm64 native, linux/arm64 container and linux/amd64 container give
+# three different `backend.wasm` hashes (`frontend.wasm` and `backend.did` are identical
+# in all three — the frontend module is the pinned recipe's prebuilt canister). So a hash
+# without its build architecture cannot be compared, and `reproducible-build.sh` pins
+# `--platform` for exactly this reason. `uname -m` is read here rather than passed in, so
+# it reports where the build really happened. A `#` comment is safe: `sha256sum -c` and
+# `shasum -c` both skip it.
+(cd "$out" && {
+  printf '# build arch: %s\n' "$(uname -m)"
+  sha256sum backend.wasm frontend.wasm backend.did
+} > MODULE-HASHES.txt)
 
 echo
 echo "== expected module hashes (publish MODULE-HASHES.txt with the release) =="
