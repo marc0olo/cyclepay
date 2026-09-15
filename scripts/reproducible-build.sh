@@ -56,8 +56,17 @@ git archive --format=tar "$ref" | tar -x -C "$ctx"
 mkdir -p "$ctx/$SUBMODULE"
 git -C "$SUBMODULE" archive --format=tar "$sub_commit" | tar -x -C "$ctx/$SUBMODULE"
 
+# ⚠️ **The platform is pinned, because the output depends on it.** Without `--platform`
+# the bytes depend on the releaser's chip, and a verifier on a different one fails the
+# gate for no reason. `linux/amd64` is the default because it is what CI and most
+# verifiers run; on Apple Silicon it builds under emulation — slower, same bytes.
+# Override only to publish for a different target, and publish the architecture with the
+# hashes either way (`release-build.sh` records it).
+platform="${RELEASE_PLATFORM:-linux/amd64}"
+echo "  on platform $platform"
+
 tar -c -C "$ctx" . |
-  docker build -f Dockerfile.release --output "type=local,dest=$out" -
+  docker build --platform "$platform" -f Dockerfile.release --output "type=local,dest=$out" -
 
 echo
 echo "== $ref ($commit) =="

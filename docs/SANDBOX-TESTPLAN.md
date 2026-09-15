@@ -750,7 +750,10 @@ found.
 4. **Flat controller allowlist.** Any one controller can upgrade-then-drain. An
    honest trust model, but it is the model you would launch with.
 5. **The reproducible-build gate has never run against a real deployment** —
-   `RELEASE.md`'s publish-and-verify procedure is untested end to end.
+   `RELEASE.md`'s publish-and-verify procedure is untested end to end. ⚠️ The container build produces
+   different bytes than the host that deployed the live canister, so those bytes are not
+   reproducible; `docs/VERIFY.md` has the numbers and `RELEASE.md` the procedure that
+   prevents it recurring.
 6. **No monitoring exists.** Every safety mechanism here is a number someone has
    to go and look at; an alert nobody receives is not an alert. **`RUNBOOK.md` §8
    owns the plan** — metric table with thresholds and severities, and the reason the

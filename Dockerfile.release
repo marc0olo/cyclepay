@@ -1,29 +1,37 @@
-# Reproducible release build (spec §8). Every byte-shaping tool is pinned:
-#  - base image by digest (node 22.22.1 — also the frontend build's node)
-#  - ic-mops / icp-cli / ic-wasm by exact npm version
-#  - moc via the committed mops.toml [toolchain] — the pin is the authority, and
-#    this line deliberately does not restate the version
-#  - Motoko deps via the committed mops.lock
-#  - recipes by tag in the committed icp.yaml (icp-cli rejects unpinned)
+# Reproducible release build (spec §8).
 #
-# NOT pinned, stated so the claim above is not read wider than it is: the two apt
-# packages (neither shapes wasm bytes) and the npm tools' transitive dependencies.
-# Same ref on the same day reproduces; across a registry change it is not guaranteed.
+# The toolchain is DFINITY's published dev-env image, pinned by digest, so the versions
+# of `icp`, `ic-wasm`, `mops` and `node` come from one artifact instead of from four npm
+# pins this repo would have to maintain. `moc` and the Motoko dependencies still come
+# from the committed `mops.toml [toolchain]` and `mops.lock` — the repo is the authority
+# for those, and this file deliberately does not restate their versions.
 #
-# Build context must be a clean git tree — use scripts/reproducible-build.sh,
-# which pipes `git archive <ref>` in, so local uncommitted state can never
-# leak into a published hash.
+# ⚠️ **Pinned by digest, not by tag.** A tag can move; the module hash must not. The
+# digest below is the multi-arch index for `v2.2.1`, so `--platform` still selects the
+# right child image. Bumping the image is this line and nothing else — the image puts its
+# toolchain on `PATH` in its own `Env`, which `RUN` inherits, so nothing here restates a
+# path or a version.
 #
-#   git archive --format=tar <ref> | \
-#     docker build -f Dockerfile.release --output type=local,dest=release -
+# ⚠️ **Do NOT debug this image with a login shell.** `sh -lc` reads Debian's
+# `/etc/profile`, which resets `PATH` and drops the nvm bin directory — so `icp` looks
+# missing when it is not. `RUN` uses `sh -c` and is unaffected.
+#
+# ⚠️ **Changing this image CAN change every module hash**, so a bump belongs in its own
+# release with its own published hashes, never alongside unrelated changes. Whether it
+# actually moves depends on the tool: `ic-wasm` shrinks the module and embeds its
+# metadata, so it shapes the bytes; `icp`, `mops` and Node have not. v2.1.0 -> v2.2.0 left
+# `backend.wasm` identical.
+#
+# NOT pinned, stated so the claim above is not read wider than it is: whatever the image
+# resolves at build time from the network (mops fetches `moc` and the Motoko packages).
+# Same ref against the same image digest reproduces; across a registry change it is not
+# guaranteed.
+#
+# Build context must be a clean git tree — use scripts/release.sh or
+# scripts/reproducible-build.sh, which pipe `git archive <ref>` in, so local uncommitted
+# state can never leak into a published hash.
 
-FROM node:22.22.1-bookworm-slim@sha256:4f77a690f2f8946ab16fe1e791a3ac0667ae1c3575c3e4d0d4589e9ed5bfaf3d AS build
-
-RUN apt-get update \
- && apt-get install -y --no-install-recommends libdbus-1-3 ca-certificates \
- && rm -rf /var/lib/apt/lists/*
-
-RUN npm install -g ic-mops@2.13.2 @icp-sdk/icp-cli@0.3.2 @icp-sdk/ic-wasm@0.9.11
+FROM ghcr.io/dfinity/icp-dev-env-motoko:v2.2.1@sha256:d4dd3bcd73b2deb58c2faeb257ace5990f23a471f069c412eee1816206e1ffae AS build
 
 WORKDIR /build
 COPY . .
