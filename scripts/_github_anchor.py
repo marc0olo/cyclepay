@@ -16,6 +16,13 @@ verified against GitHub's rendered page, not derived.
 
 ⚠️ Leading underscore: this is a module, not a gate step. `scripts/test-all.sh` and
 `.github/workflows/mops-test.yml` name their checks explicitly, so nothing tries to run it.
+
+⚠️ **Being importable costs a trap: `rm -rf scripts/__pycache__` before trusting a
+mutation test on this file.** CPython invalidates a `.pyc` on (mtime, size), and editing
+one character here changes neither the size nor — within the same second — the mtime. A
+mutation of this module and its restore both ran against stale bytecode once, which
+reported a passing self-test over a broken rule and then a broken one over the fixed
+rule. The other `scripts/` checks are run as programs and never cached.
 """
 
 import re
