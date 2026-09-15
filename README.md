@@ -57,7 +57,7 @@ boundaries sit, and which of the two cycle pots a delivery spends from. Start th
 | run it locally | [`docs/OPERATE.md`](docs/OPERATE.md) — Mode 1 |
 | deploy it | [`docs/OPERATE.md`](docs/OPERATE.md) — Mode 2 (mainnet simulation) or Mode 3 (production) |
 | operate one that is misbehaving | [`RUNBOOK.md`](RUNBOOK.md) — entered by symptom |
-| check the claims yourself | **Verify it yourself** below |
+| check the claims yourself | [`docs/VERIFY.md`](docs/VERIFY.md) |
 
 ```sh
 git clone --recurse-submodules https://github.com/marc0olo/cyclepay
@@ -69,24 +69,13 @@ its cause — [`docs/OPERATE.md`](docs/OPERATE.md) explains both before the firs
 
 ## Verify it yourself
 
-Nothing here asks to be taken on trust, and the limits are stated in the same breath.
+[`docs/VERIFY.md`](docs/VERIFY.md) is the list: what a stranger can check with no
+identity, what only a buyer can, and the limits stated in the same breath.
 
-- **The interface cannot drift from the source.** `mops build` regenerates the committed
-  `src/backend/dist/backend.did`, a gate step fails on drift, and the recipe embeds that
-  file as the canister's `candid:service`.
-- **The price shown is produced by the code that locks it.** `quote_previews` is a public
-  query running the same pricing path as order creation — callable by anyone, on the live
-  canister, and it returns both rate inputs.
-- **A buyer can recompute their own price and confirm delivery on the ledger.**
-  `receipt(orderId)` returns both rate inputs and the delivery block index. Owner-scoped,
-  so it is a buyer's affordance rather than a visitor's.
-- **The operational state is public**, so solvency is checkable against the cycles ledger
-  without this canister's cooperation — see the commands above.
-- **Every suite is in the repo and one command runs them all**: `scripts/test-all.sh`,
-  with [`docs/TEST-COVERAGE.md`](docs/TEST-COVERAGE.md) stating what is *not* covered and why.
-- ⚠️ **The limits.** The deployed module hash has no published provenance (see **Release**),
-  any single controller can upgrade-then-drain, and the webhook secret is plaintext
-  canister state protected by a confidential subnet rather than by cryptography.
+⚠️ **One of those limits is measured, not hedged.** The live module hash has no published
+provenance, and the deployed bytes are **not** reproducible by a third party: the deploy
+used the operator's host toolchain, and the pinned release container produces different
+bytes for the same commit. `docs/VERIFY.md` has the numbers and the cause.
 
 ## Documents
 
@@ -98,6 +87,7 @@ For a **reader or verifier**:
 | [`docs/DESIGN.md`](docs/DESIGN.md) | The decision record — *why* it is built this way. What the `§N` comments point at. Gate-enforced |
 | [`docs/STRIPE.md`](docs/STRIPE.md) | The Card rail end to end, written from the code: ingress, signature verification, attribution, dedup, pricing, the order lifecycle, refunds |
 | [`docs/TEST-COVERAGE.md`](docs/TEST-COVERAGE.md) | What is tested, how, and what is not |
+| [`docs/VERIFY.md`](docs/VERIFY.md) | What anyone can check about the live deployment, what they cannot, and the measured state of the module-hash chain |
 
 For an **operator**:
 
@@ -125,18 +115,11 @@ the committed tree can shape the output:
 scripts/reproducible-build.sh <git-ref>
 ```
 
-⚠️ **The verify half is a procedure, not a past result — and the live deployment did
-not go through it.** The gateway on mainnet was deployed with a plain `icp deploy`:
-nothing was tagged, no `MODULE-HASHES.txt` was published, and [`RELEASE.md`](RELEASE.md)'s step 5 —
-the gate that compares the deployed hash against the published one — has never run.
-So whether the live bytes reproduce from their own commit is **unknown**, not
-known-negative: a deploy from a clean checkout of a tag is expected to match, and that
-premise has simply never been tested here.
-
-The on-chain hash is deliberately **not** published in this repo as a verifiable
-artifact. A number with no independently reproducible counterpart looks like
-verification without being one. Read it yourself with
-`icp canister status backend -e ic` if you want it.
+⚠️ **The verify half is a procedure, and the live deployment did not go through it** —
+untagged, no published hash, step 5 never run. Worse, measured: the pinned container
+produces **different bytes** for the deployed commit than the host that deployed it, so
+the live wasm is not third-party reproducible. [`docs/VERIFY.md`](docs/VERIFY.md) carries
+the hashes, the cause and the consequence for the procedure.
 
 Pinned: the base image by digest, `ic-mops`/`icp-cli`/`ic-wasm` by exact version, `moc`
 via `mops.toml [toolchain]`, Motoko deps via `mops.lock`, recipes by tag in `icp.yaml`, and
