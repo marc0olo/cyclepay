@@ -32,7 +32,9 @@ icp_args=("$@")
 # normal thing to do and does not need an entry.
 version="${ref#v}"
 if printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'; then
-  if ! git show "$ref:CHANGELOG.md" 2>/dev/null | grep -q "^## $version\$"; then
+  # -F -x: the version contains dots, which as a regex would match any character —
+  # `0.1.0` would accept a `## 0X1X0` heading. Fixed string, whole line.
+  if ! git show "$ref:CHANGELOG.md" 2>/dev/null | grep -qxF "## $version"; then
     echo "error: CHANGELOG.md in $ref has no '## $version' section." >&2
     echo "  Add the entry, commit it, and move the tag — a published hash with no" >&2
     echo "  changelog leaves nobody able to say what changed." >&2

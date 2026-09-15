@@ -16,9 +16,11 @@
 # `/etc/profile`, which resets `PATH` and drops the nvm bin directory — so `icp` looks
 # missing when it is not. `RUN` uses `sh -c` and is unaffected.
 #
-# ⚠️ **Changing this image changes every module hash.** That is correct behaviour — the
-# image is part of what shapes the bytes — but it means a bump belongs in its own release
-# with its own published hashes, never alongside unrelated changes.
+# ⚠️ **Changing this image CAN change every module hash**, so a bump belongs in its own
+# release with its own published hashes, never alongside unrelated changes. Whether it
+# actually moves depends on the tool: `ic-wasm` shrinks the module and embeds its
+# metadata, so it shapes the bytes; `icp`, `mops` and Node have not. v2.1.0 -> v2.2.0 left
+# `backend.wasm` identical.
 #
 # NOT pinned, stated so the claim above is not read wider than it is: whatever the image
 # resolves at build time from the network (mops fetches `moc` and the Motoko packages).
