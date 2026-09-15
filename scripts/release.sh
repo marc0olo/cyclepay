@@ -25,6 +25,22 @@ if [ "${1:-}" = "--install" ]; then install=true; shift; fi
 # Everything after --install goes to icp verbatim: -e ic, --identity <name>, --yes.
 icp_args=("$@")
 
+# ⚠️ **A version with no CHANGELOG entry is not a release.** Checked against the tree
+# being built, not the working copy, so the entry is part of the tagged commit and cannot
+# be added afterwards — the same reason the hashes come from `git archive`. Only refs that
+# look like versions are checked: building HEAD or a bare commit to inspect hashes is a
+# normal thing to do and does not need an entry.
+version="${ref#v}"
+if printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'; then
+  if ! git show "$ref:CHANGELOG.md" 2>/dev/null | grep -q "^## $version\$"; then
+    echo "error: CHANGELOG.md in $ref has no '## $version' section." >&2
+    echo "  Add the entry, commit it, and move the tag — a published hash with no" >&2
+    echo "  changelog leaves nobody able to say what changed." >&2
+    exit 1
+  fi
+  echo "changelog: '## $version' found in $ref"
+fi
+
 scripts/reproducible-build.sh "$ref" release
 
 expected="$(awk '/backend\.wasm/{print $1}' release/MODULE-HASHES.txt)"
