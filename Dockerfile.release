@@ -8,7 +8,13 @@
 #
 # ⚠️ **Pinned by digest, not by tag.** A tag can move; the module hash must not. The
 # digest below is the multi-arch index for `v2.1.0`, so `--platform` still selects the
-# right child image.
+# right child image. Bumping the image is this line and nothing else — the image puts its
+# toolchain on `PATH` in its own `Env`, which `RUN` inherits, so nothing here restates a
+# path or a version.
+#
+# ⚠️ **Do NOT debug this image with a login shell.** `sh -lc` reads Debian's
+# `/etc/profile`, which resets `PATH` and drops the nvm bin directory — so `icp` looks
+# missing when it is not. `RUN` uses `sh -c` and is unaffected.
 #
 # ⚠️ **Changing this image changes every module hash.** That is correct behaviour — the
 # image is part of what shapes the bytes — but it means a bump belongs in its own release
@@ -24,10 +30,6 @@
 # state can never leak into a published hash.
 
 FROM ghcr.io/dfinity/icp-dev-env-motoko:v2.1.0@sha256:02780158214ff3d0aeadf3ad364fc67025827765410e7538de7d770742eaf7a2 AS build
-
-# ⚠️ The image installs its toolchain under nvm and exports PATH in its own Env, which a
-# non-login `RUN` does not pick up. Setting it here is what makes `icp` resolvable.
-ENV PATH=/root/.nvm/versions/node/v24.20.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 WORKDIR /build
 COPY . .
