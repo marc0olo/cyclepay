@@ -62,9 +62,8 @@ def unblob(text: str) -> bytes:
 ENCODING = re.compile(r'sha256 = blob "((?:\\[0-9a-fA-F]{2}|[^"])*)";\s*encoding = variant \{ (\w+) \}')
 
 
-def served(net: list[str]) -> dict[str, str]:
+def _parse(raw: str) -> dict[str, str]:
     """asset key -> hex sha256 of its Identity encoding."""
-    raw = icp("get_asset_details", "(null)", net)
     out = {}
     # Each asset record starts with its key, so splitting on that boundary keeps each
     # asset's encodings with the asset they belong to.
@@ -77,7 +76,35 @@ def served(net: list[str]) -> dict[str, str]:
     return out
 
 
+def served(net: list[str]) -> dict[str, str]:
+    return _parse(icp("get_asset_details", "(null)", net))
+
+
+def _self_test() -> None:
+    """⚠️ Unconditional, because the parser is the only thing between this check and a
+    false pass. Candid text is parsed with a regex; a change to `icp`'s output spacing or
+    escaping would silently yield zero assets, and the vacuity guard below would then be
+    the only thing left standing. Same reason `check-doc-calls.py` carries one."""
+    sample = (
+        'record { key = "/a.txt"; encodings = vec { '
+        'record { sha256 = blob "\\00\\ff"; encoding = variant { Identity };}; '
+        'record { sha256 = blob "\\de\\ad"; encoding = variant { Gzip };};}; '
+        'content_type = "text/plain"; headers = vec {};}, '
+        'record { key = "/b.bin"; encodings = vec { '
+        'record { sha256 = blob "\\be\\ef"; encoding = variant { Brotli };}; '
+        'record { sha256 = blob "A\\01"; encoding = variant { Identity };};}; '
+        'content_type = "application/octet-stream"; headers = vec {};}'
+    )
+    got = _parse(sample)
+    # /a.txt: Identity is first; /b.bin: Identity is SECOND, and its blob mixes a literal
+    # printable byte with an escape — both shapes `icp` really emits.
+    want = {"/a.txt": "00ff", "/b.bin": "4101"}
+    assert got == want, f"parser self-test failed: {got} != {want}"
+    assert unblob("\\00") == b"\x00" and unblob("A") == b"A", "unblob self-test failed"
+
+
 def main() -> int:
+    _self_test()
     net = sys.argv[1:] or ["-e", "ic"]
     if not DIST.is_dir():
         sys.exit(f"error: {DIST} is missing. Build it first:\n"

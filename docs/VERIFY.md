@@ -42,20 +42,15 @@ compared. [`RELEASE.md`](../RELEASE.md) is the procedure that keeps them in step
 installs the artifact the container built rather than rebuilding on the host, and fails
 unless the canister reports the hash it built.
 
-**Status: no release has been cut yet, so there is nothing published to compare against.**
-The running backend was deployed with a plain `icp deploy`, untagged. It also would not
-match a container build — that deployment was installed from a host build, and the two
-differ:
+**Status: `v0.1.0-beta.1` is the current release.** Its hashes are in its release notes,
+and the running module was installed from that container build rather than rebuilt on a
+host — so the three comparisons above are expected to agree. No hash is restated on this
+page: a figure written into prose goes stale, and the commands above read the live ones.
 
-```
-darwin/arm64, native      8dae04a0…      ← how the live canister was built
-linux/arm64,  container   98c99a3a…
-linux/amd64,  container   41128dbd…      ← the pinned default at the time
-```
-
-⚠️ **The on-chain hash is deliberately not published here as a verifiable artifact.** A
-number with no independently reproducible counterpart looks like verification without
-being one. Read it yourself with the command above.
+⚠️ **An earlier deployment of this gateway was not verifiable**, and the reason is worth
+knowing because the procedure exists to prevent it: it was installed from a **host** build
+while the published hashes come from the **container**, and `backend.wasm` differs between
+platforms. Nothing published about it should be treated as verification.
 
 ## What anyone can check right now
 
@@ -88,8 +83,21 @@ icp canister call backend health           '()' -e ic
 
 **The interface cannot drift from the source.** `mops build` regenerates the committed
 `src/backend/dist/backend.did`; a gate step fails on drift; and the recipe embeds *that
-file* as the canister's `candid:service` — which is what made the commit identification
-above possible.
+file* as the canister's `candid:service` metadata.
+
+**Which means the running canister names its own commit.** The interface it publishes is a
+file in this repo, so you can find which tree it was built from without any published
+hash — including on a deployment that was never released:
+
+```bash
+icp canister metadata backend candid:service -e ic > /tmp/deployed.did
+git show <ref>:src/backend/dist/backend.did | diff - /tmp/deployed.did
+```
+
+An exact match (bar one trailing newline the metadata fetch adds) means the deployed
+interface is that ref's. It narrows the commit rather than proving the bytes — two commits
+that do not touch the interface share it — but it needs nothing published and no
+cooperation from us.
 
 **The reserve floor is enforced by an omission in a type.** `src/backend/Delivery.mo`
 declares the cycles-ledger interface the canister may call, and `icrc2_approve` and the
