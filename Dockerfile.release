@@ -7,7 +7,7 @@
 # for those, and this file deliberately does not restate their versions.
 #
 # ⚠️ **Pinned by digest, not by tag.** A tag can move; the module hash must not. The
-# digest below is the multi-arch index for `v2.1.0`, so `--platform` still selects the
+# digest below is the multi-arch index for `v2.2.0`, so `--platform` still selects the
 # right child image. Bumping the image is this line and nothing else — the image puts its
 # toolchain on `PATH` in its own `Env`, which `RUN` inherits, so nothing here restates a
 # path or a version.
@@ -29,7 +29,7 @@
 # scripts/reproducible-build.sh, which pipe `git archive <ref>` in, so local uncommitted
 # state can never leak into a published hash.
 
-FROM ghcr.io/dfinity/icp-dev-env-motoko:v2.1.0@sha256:02780158214ff3d0aeadf3ad364fc67025827765410e7538de7d770742eaf7a2 AS build
+FROM ghcr.io/dfinity/icp-dev-env-motoko:v2.2.0@sha256:f8562b6760e4c2e2ca2dd3027f73791d3e853e52cef5d5cc34d39ac57b726e35 AS build
 
 WORKDIR /build
 COPY . .
