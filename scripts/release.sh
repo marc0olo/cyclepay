@@ -45,6 +45,8 @@ fi
 
 scripts/reproducible-build.sh "$ref" release
 
+scripts/release-notes.py "$ref"
+
 expected="$(awk '/backend\.wasm/{print $1}' release/MODULE-HASHES.txt)"
 [ -n "$expected" ] || { echo "error: no backend.wasm hash in release/MODULE-HASHES.txt" >&2; exit 1; }
 
@@ -53,7 +55,8 @@ echo "built:    $expected"
 
 if ! $install; then
   echo
-  echo "Publish release/MODULE-HASHES.txt verbatim, including its '# build arch:' line."
+  echo "Publish release/NOTES.md as the release body — it carries the hashes verbatim,"
+  echo "the architecture they were built on, and how to reproduce them."
   echo "Then install and gate in one step:"
   echo "    scripts/release.sh $ref --install -e ic --identity <operator>"
   exit 0

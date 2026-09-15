@@ -75,48 +75,54 @@ CMC for XDR/ICP (§8). There is no operator-settable rate source to audit.
 
 ## 3. The full happy path
 
-```
- operator ──▶ set_stripe_api_key + set_stripe_origin (+ optional price tiles)
-                       │  no Dashboard objects exist for this rail
-                       ▼
- user ──II login──▶ create_order(amount, destination)         mixins/Buying.mo
-                       │  rail provisioned?                    Main.mo → Secret.mo
-                       │  admission gate                       Main.mo → Gate.mo
-                       │  quote: lock the CYCLE QUANTITY       Pricing.mo (cached XRC+CMC)
-                       │  raw_rand order id                    Orders.mo
-                       │
-                       │  HTTPS OUTCALL: POST /v1/checkout/sessions
-                       │    Idempotency-Key = orderId          rails/Session.mo
-                       │    inline price_data, expires_at ≈35m
-                       │    client_reference_id set BY US
-                       ▼
-                    #created + stripeSessionUrl + expiresAtNs (Stripe's own)
-                       │
- frontend ─────────────┤ opens  order.stripeSessionUrl
-                       ▼
- user pays Stripe (card data never touches the canister)
-                       │
- Stripe ───────────────┤ POST /webhook/stripe   (anonymous principal)
-                       ▼
-                    http_request  → upgrade = ?true            mixins/Webhook.mo
-                    http_request_update → route table          mixins/Webhook.mo
-                       ▼
-                    Card.handleWebhook                          Card.mo
-                       │ 1. secret provisioned?      → else 503 (Stripe retries)
-                       │ 2. HMAC verify + ±300 s     → else 400
-                       │ 3. parse event (tree parse) → else 400
-                       │ 4. dedup on event.id        → else 200 "duplicate event"
-                       │ 5. dedup on payment_intent  → else 200 "duplicate payment intent"
-                       │ 6. attribute the reference  → else #unattributed (refund)
-                       │ 7. ceiling + amount honour  → else #unattributed (refund)
-                       ▼
-                    markPaid → #paid, paidIntents[intent] = orderId
-                       │
-                       │ detached self-message kicks money-out
-                       ▼
-   #paid ─ one icrc1_transfer out of the reserve ─▶ #delivered
-              ├─ retriable / no reply ─▶ stays #paid, sweep replays the SAME intent
-              └─ fate unknowable, or 72 h elapsed ─▶ #needsReview
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Operator
+    actor Buyer
+    participant FE as Frontend canister
+    participant BE as Backend canister
+    participant Stripe
+    participant CL as Cycles Ledger
+
+    Operator->>BE: set_stripe_api_key + set_stripe_origin<br/>(+ optional price tiles)
+    Note over Operator,BE: No Dashboard objects exist for this rail.<br/>Provisioning both secrets is what OPENS it.
+
+    Buyer->>FE: Internet Identity login
+    FE->>BE: create_order(amount)
+    Note over BE: rail provisioned? — Secret.mo<br/>admission gate — Gate.mo<br/>quote locks the CYCLE QUANTITY — Pricing.mo (cached XRC+CMC)<br/>raw_rand order id — Orders.mo
+
+    BE->>Stripe: HTTPS OUTCALL POST /v1/checkout/sessions
+    Note over BE,Stripe: Idempotency-Key = orderId — rails/Session.mo<br/>inline price_data · expires_at ≈ 35 min<br/>client_reference_id set BY US, never by the buyer
+    Stripe-->>BE: session id + hosted URL
+    BE-->>FE: #35;created + stripeSessionUrl + expiresAtNs (Stripe's own)
+
+    FE->>Buyer: opens order.stripeSessionUrl
+    Buyer->>Stripe: pays
+    Note over Buyer,Stripe: Card data never touches this system.
+
+    par Stripe notifies the canister
+        Stripe->>BE: POST /webhook/stripe (ANONYMOUS caller)
+        Note over BE: http_request → upgrade = ?true<br/>http_request_update → route table — mixins/Webhook.mo
+        Note over BE: Card.handleWebhook — Card.mo<br/>1. secret provisioned? → else 503, Stripe retries<br/>2. HMAC verify + ±300 s → else 400<br/>3. parse event → else 400<br/>4. dedup on event.id → else 200 "duplicate event"<br/>5. dedup on payment_intent → else 200 "duplicate payment intent"<br/>6. attribute the reference → else #35;unattributed (refund)<br/>7. ceiling + amount honoured → else #35;unattributed (refund)
+        BE->>BE: markPaid → #35;paid, paidIntents[intent] = orderId
+    and The buyer comes back
+        Stripe->>Buyer: redirect to success_url
+        Buyer->>FE: lands on the order page (success_url)
+        loop every 3 s until delivered
+            FE->>BE: get_order(id)
+        end
+    end
+    Note over BE,FE: These two are INDEPENDENT with no ordering guarantee —<br/>the buyer routinely arrives before the webhook does, which is<br/>why the page polls rather than rendering a final state.
+
+    BE->>CL: one icrc1_transfer out of the reserve
+    alt transfer lands
+        CL-->>BE: block index → #35;delivered
+    else retriable, or no reply
+        Note over BE: stays #35;paid — the sweep replays the SAME intent
+    else fate unknowable, or 72 h elapsed
+        Note over BE: #35;needsReview — an operator establishes the money position
+    end
 ```
 
 Money-out is rail-agnostic from `#paid` onward — the code is keyed by

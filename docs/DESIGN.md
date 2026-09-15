@@ -94,16 +94,21 @@ direction**; selling at a stale rate is not.
 
 ## §4 — One order, one state machine
 
-```
-Created ──▶ Cancelled                     the buyer gave up
-   │
-   ├──────▶ Expired                       Stripe's deadline passed; unpayable
-   │
-   └──────▶ Paid ──────▶ Delivered
-                │
-                ├──────▶ NeedsReview ──▶ Delivered    operator read the ledger
-                │              └───────▶ Abandoned    operator refunded by hand
-                └──────▶ Abandoned
+```mermaid
+stateDiagram-v2
+    [*] --> Created
+    Created --> Cancelled: the buyer gave up
+    Created --> Expired: Stripe's deadline passed — unpayable
+    Created --> Paid: webhook, verified
+    Paid --> Delivered: icrc1_transfer landed
+    Paid --> NeedsReview: fate unknowable, or 72 h
+    Paid --> Abandoned: operator gave up
+    NeedsReview --> Delivered: operator read the ledger
+    NeedsReview --> Abandoned: operator refunded by hand
+    Cancelled --> [*]
+    Expired --> [*]
+    Delivered --> [*]
+    Abandoned --> [*]
 ```
 
 ⚠️ **Illegal transitions are ABSENT from the matrix, not guarded at runtime.**

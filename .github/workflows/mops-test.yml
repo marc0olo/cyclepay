@@ -86,6 +86,7 @@ jobs:
           scripts/check-unused-motoko.py
           scripts/check-duplicate-bodies.py
           scripts/check-typed-errors.py
+          scripts/check-mermaid.py
 
   frontend:
     runs-on: ubuntu-latest

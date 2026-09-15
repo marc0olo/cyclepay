@@ -42,15 +42,11 @@ compared. [`RELEASE.md`](../RELEASE.md) is the procedure that keeps them in step
 installs the artifact the container built rather than rebuilding on the host, and fails
 unless the canister reports the hash it built.
 
-**Status: `v0.1.0-beta.1` is the current release.** Its hashes are in its release notes,
-and the running module was installed from that container build rather than rebuilt on a
-host — so the three comparisons above are expected to agree. No hash is restated on this
-page: a figure written into prose goes stale, and the commands above read the live ones.
-
-⚠️ **An earlier deployment of this gateway was not verifiable**, and the reason is worth
-knowing because the procedure exists to prevent it: it was installed from a **host** build
-while the published hashes come from the **container**, and `backend.wasm` differs between
-platforms. Nothing published about it should be treated as verification.
+**Status: the running module is `v0.1.0-beta.1`'s published build.** It was installed
+from the container artifact whose hashes that release publishes, and the install gated on
+the canister reporting them — so the three comparisons above agree, and you can re-check
+that yourself with the commands rather than take it from this page. No hash is restated
+here: a figure written into prose goes stale, and those commands read the live ones.
 
 ## What anyone can check right now
 
@@ -119,8 +115,12 @@ recompute their own price and confirm the transfer on the cycles ledger independ
 
 ## The limits, in the same breath
 
-- **The module hash has no published provenance**, and the live bytes are not
-  reproducible by a third party — measured above.
+- **The published hash is reproducible on one platform.** `backend.wasm` depends on the
+  build architecture, so the release is built on `linux/amd64` and says so; rebuilding on
+  a different one gives different bytes and proves nothing. Reproduce on the architecture
+  the release names.
+- **The hashes are published by us.** The reproducible build is what makes that not
+  require trust — anyone can produce the same bytes — but nobody else counter-signs them.
 - **Any single controller can upgrade and drain.** IC controllers are OR-semantics; the
   hardening path is a multisig canister as sole controller. See
   [`docs/SANDBOX-TESTPLAN.md`](./SANDBOX-TESTPLAN.md).

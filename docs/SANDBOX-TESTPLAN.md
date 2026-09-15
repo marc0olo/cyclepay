@@ -749,11 +749,11 @@ found.
    is the sub-item still open there.
 4. **Flat controller allowlist.** Any one controller can upgrade-then-drain. An
    honest trust model, but it is the model you would launch with.
-5. **The reproducible-build gate has never run against a real deployment** —
-   `RELEASE.md`'s publish-and-verify procedure is untested end to end. ⚠️ The container build produces
-   different bytes than the host that deployed the live canister, so those bytes are not
-   reproducible; `docs/VERIFY.md` has the numbers and `RELEASE.md` the procedure that
-   prevents it recurring.
+5. ~~**The reproducible-build gate has never run against a real deployment.**~~ **Closed:**
+   `v0.1.0-beta.1` was built in the pinned container, installed from that artifact, and the
+   install gated on the canister reporting the hash that was built. ⚠️ What remains is that
+   `backend.wasm` depends on the build architecture, so a hash is only comparable against a
+   rebuild on the architecture the release names — `docs/VERIFY.md` carries that limit.
 6. **No monitoring exists.** Every safety mechanism here is a number someone has
    to go and look at; an alert nobody receives is not an alert. **`RUNBOOK.md` §8
    owns the plan** — metric table with thresholds and severities, and the reason the
