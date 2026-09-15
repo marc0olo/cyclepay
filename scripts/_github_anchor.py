@@ -42,5 +42,10 @@ def self_test() -> None:
     assert anchor("What is pinned") == "what-is-pinned"
     assert anchor("`state_hash` is a fingerprint, not a check") == "state_hash-is-a-fingerprint-not-a-check"
     assert anchor("1. The one-sentence version") == "1-the-one-sentence-version"
-    # a released version, as the release notes link to it
+    # ⚠️ **Do not drop this as redundant with the heading cases above.** It is the only
+    # thing protecting a PUBLISHED url: `release-notes.py` builds
+    # `…/blob/vX.Y.Z/CHANGELOG.md#<anchor>` from a version string, and nothing in the
+    # gate exercises that path — `release/NOTES.md` is build output no check reads. The
+    # heading cases are exercised against real links by `check-doc-links.py`; this one is
+    # exercised by nothing else. Verified against GitHub's rendered page.
     assert anchor("0.1.0-beta.1") == "010-beta1"
