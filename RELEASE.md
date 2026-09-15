@@ -14,7 +14,7 @@ Every tool that shapes the module bytes is pinned by the *committed tree*:
 | `moc` 1.16.0 | `mops.toml [toolchain]` |
 | Motoko dependencies (`core`, `sha2`, `ic`) | `mops.lock` |
 | `@dfinity/motoko@v5.1.0` / `@dfinity/static-site@v0.3.3` recipes | `icp.yaml` (icp-cli rejects unpinned recipes) |
-| `icp` 1.5.0, `ic-wasm` 0.11.1, `mops` 3.2.1, Node 24.21.0 | `ghcr.io/dfinity/icp-dev-env-motoko:v2.2.0`, pinned **by digest** in `Dockerfile.release` |
+| `icp` 1.5.0, `ic-wasm` 0.11.1, `mops` 3.2.2, Node 24.21.0 | `ghcr.io/dfinity/icp-dev-env-motoko:v2.2.1`, pinned **by digest** in `Dockerfile.release` |
 | The pinned crypto submodule | the gitlink in the ref itself — `reproducible-build.sh` reads it with `git ls-tree <ref>`, never from the working tree, so a local checkout at a different commit cannot change the output |
 | Candid interface | `src/backend/dist/backend.did`, committed; the recipe embeds **this file** as the `candid:service` metadata, so the committed interface and the deployed one are the same bytes |
 
@@ -27,8 +27,8 @@ file itself, so `sha256sum` and `icp canister status` are directly comparable.
 ⚠️ **Bumping the dev-env image is one line — the digest — and it CAN move every module
 hash.** Whether it does depends on which tool moved: `ic-wasm` shrinks the module and
 embeds its metadata, so that one changes the bytes, while `icp`, `mops` and Node have not.
-Measured: v2.1.0 → v2.2.0 left `backend.wasm` identical, and the earlier switch off the
-hand-pinned npm toolchain (`ic-wasm` 0.9.11 → 0.11.1) changed it. Either way the bump is a
+Measured: v2.1.0 → v2.2.0 → v2.2.1 left `backend.wasm` identical, while the earlier
+switch off the hand-pinned npm toolchain (`ic-wasm` 0.9.11 → 0.11.1) changed it. Either way the bump is a
 release of its own with its own published hashes, never a passenger on unrelated work. Get
 the digest with `docker buildx imagetools inspect ghcr.io/dfinity/icp-dev-env-motoko:vX.Y.Z`
 and take the **index** digest, not a per-platform one, so `--platform` still selects the
