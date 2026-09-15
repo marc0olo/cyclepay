@@ -11,7 +11,7 @@ Every tool that shapes the module bytes is pinned by the *committed tree*:
 
 | What | Where pinned |
 |------|--------------|
-| `moc` 1.9.0 | `mops.toml [toolchain]` |
+| `moc` 1.16.0 | `mops.toml [toolchain]` |
 | Motoko dependencies (`core`, `sha2`, `ic`) | `mops.lock` |
 | `@dfinity/motoko@v5.1.0` / `@dfinity/static-site@v0.3.3` recipes | `icp.yaml` (icp-cli rejects unpinned recipes) |
 | `ic-mops` 2.13.2, `@icp-sdk/icp-cli` 0.3.2, `@icp-sdk/ic-wasm` 0.9.11 | `Dockerfile.release` |

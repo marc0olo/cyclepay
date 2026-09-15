@@ -13,7 +13,15 @@ out="${1:-release}"
 
 # Build from a clean artifact cache — determinism is asserted, not assumed.
 rm -rf .icp/cache/artifacts
-icp build
+# ⚠️ **Name the two release canisters.** A bare `icp build` builds every canister in the
+# LOCAL environment, which includes the `xrc` mock — and that mock's wasm is a fetched,
+# gitignored artifact (`test/integration/wasm/`), so it is absent from the `git archive`
+# context this whole procedure is built on. A bare build therefore fails inside the
+# container, on every commit, with `failed to read wasm file`. Measured: that is why
+# `docs/SANDBOX-TESTPLAN.md` could say the reproducible-build gate had never run.
+# The `ic` environment declares exactly `[backend, frontend]`; naming them here keeps
+# that true without depending on `-e ic`, which would want network access.
+icp build backend frontend
 
 mkdir -p "$out"
 cp .icp/cache/artifacts/backend "$out/backend.wasm"
