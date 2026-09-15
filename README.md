@@ -54,10 +54,10 @@ boundaries sit, and which of the two cycle pots a delivery spends from. Start th
 | you want to | go to |
 |---|---|
 | understand the system | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), then [`docs/DESIGN.md`](docs/DESIGN.md) for *why* |
-| run it locally | [`docs/OPERATE.md`](docs/OPERATE.md) — Mode 1 |
-| deploy it | [`docs/OPERATE.md`](docs/OPERATE.md) — Mode 2 (mainnet simulation) or Mode 3 (production) |
-| operate one that is misbehaving | [`RUNBOOK.md`](RUNBOOK.md) — entered by symptom |
-| check the claims yourself | [`docs/VERIFY.md`](docs/VERIFY.md) |
+| run it locally | [`docs/OPERATE.md`, Mode 1](docs/OPERATE.md#mode-1--local) |
+| deploy it | [Mode 2 — mainnet simulation](docs/OPERATE.md#mode-2--mainnet-simulation) or [Mode 3 — production](docs/OPERATE.md#mode-3--mainnet-production) |
+| operate one that is misbehaving | [`RUNBOOK.md`](RUNBOOK.md#enter-here-what-you-are-looking-at) — entered by symptom |
+| check the claims yourself | [`docs/VERIFY.md`](docs/VERIFY.md#what-anyone-can-check-right-now) |
 
 ```sh
 git clone --recurse-submodules https://github.com/marc0olo/cyclepay
@@ -65,17 +65,21 @@ icp network start -d && icp deploy && scripts/local-dev-seed.sh
 ```
 
 ⚠️ **The submodule and the seed are both load-bearing**, and neither failure looks like
-its cause — [`docs/OPERATE.md`](docs/OPERATE.md) explains both before the first command.
+its cause — [`docs/OPERATE.md`, Mode 1](docs/OPERATE.md#mode-1--local) explains both
+before the first command.
 
 ## Verify it yourself
 
-[`docs/VERIFY.md`](docs/VERIFY.md) is the list: what a stranger can check with no
-identity, what only a buyer can, and the limits stated in the same breath.
+`docs/VERIFY.md` is the list: [what a stranger can
+check](docs/VERIFY.md#what-anyone-can-check-right-now) with no identity, [what only a
+buyer can](docs/VERIFY.md#what-a-buyer-can-check-that-a-visitor-cannot), and [the
+limits](docs/VERIFY.md#the-limits-in-the-same-breath) stated in the same breath.
 
 The running backend is a published release: `scripts/release.sh` built it in a pinned
 container, installed that artifact, and gated on the canister reporting the same hash. So
-the module hash on chain has a counterpart anyone can reproduce —
-[`docs/VERIFY.md`](docs/VERIFY.md) has the commands and the limits that remain.
+the module hash on chain has a counterpart anyone can reproduce — `docs/VERIFY.md` has
+[the commands](docs/VERIFY.md#is-the-backend-module-built-from-this-repo--compare-it-to-a-release)
+and [the limits that remain](docs/VERIFY.md#the-limits-in-the-same-breath).
 
 ## Documents
 
@@ -109,9 +113,9 @@ audience.
 
 ## Release
 
-[`RELEASE.md`](RELEASE.md) is the procedure: build in a digest-pinned container, publish
-the module hashes, install **that artifact**, and gate on the canister reporting the hash
-that was built. [`CHANGELOG.md`](CHANGELOG.md) records what each release changed, and the
+[`RELEASE.md`, Cutting a release](RELEASE.md#cutting-a-release) is the procedure: build in
+a digest-pinned container, publish the module hashes, install **that artifact**, and gate
+on the canister reporting the hash that was built. [`CHANGELOG.md`](CHANGELOG.md) records what each release changed, and the
 release script refuses a version that has no entry there.
 
 ⚠️ **`backend.wasm` depends on the build architecture**, so each release states the one
