@@ -4,12 +4,6 @@ Notable changes per release. A release is a tag plus the module hashes published
 — see [`RELEASE.md`](RELEASE.md), whose procedure refuses to cut a version that has no
 entry here.
 
-⚠️ **Keep an entry to what CHANGED, plus anything a user of that build must know.** The
-entry is published verbatim at the top of the release notes, above the module-hash table
-and the reproduce-it-yourself commands the release script generates — so re-explaining the
-product, the verification story or the standing limits makes the notes longer and says it
-worse than the pages that own those. Link instead.
-
 Versions are `MAJOR.MINOR.PATCH` with a pre-release suffix while this is not yet handling
 real money.
 
@@ -17,13 +11,28 @@ real money.
 
 ## 0.1.0-beta.1
 
-First tagged release, and the first build whose module hashes are published. The gateway
-was already running on mainnet in **simulation mode**, deployed untagged; this replaces
-that module with one anyone can reproduce.
+First tagged release. The gateway was already running on mainnet in **simulation mode**,
+deployed untagged and with no published hash; this release replaces that module with one
+whose bytes are published and reproducible.
 
-⚠️ **Simulation mode**, so cycles are scaled: `pricing_status().config.divisor` divides
-what a purchase delivers, and buying requires an allow-listed principal. Cards are charged
-in Stripe's sandbox.
+**What it is.** Buy cycles with a credit card, on-chain: one Motoko backend canister and
+one certified-assets frontend, no server. Cycles are sold from a reserve the canister
+already holds, priced from the Exchange Rate Canister and the CMC with no outbound HTTPS
+in the pricing path, and delivered by one `icrc1_transfer` to the buyer's cycles-ledger
+account.
 
-What it is, how it works, what can be checked and what cannot: [`README.md`](README.md),
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/VERIFY.md`](docs/VERIFY.md).
+**Simulation mode.** `pricing_status().config.divisor` scales delivered cycles; `1` is
+production. Cards are charged in Stripe's sandbox, and buying requires an allow-listed
+principal, so a funded gateway cannot be drained by free test payments.
+
+**Verifiability.** This is the first build published with module hashes.
+`scripts/release.sh` builds in a digest-pinned container, installs that artifact, and
+gates on the canister reporting the hash it built, so the published bytes and the running
+bytes cannot drift apart. The container is
+`ghcr.io/dfinity/icp-dev-env-motoko:v2.2.1`, pinned by digest. `scripts/check-frontend-assets.py` compares every asset the
+frontend serves against a local build. Rebuild the tag and check both yourself —
+[`docs/VERIFY.md`](docs/VERIFY.md) has the commands.
+
+**Known limits, stated in `docs/VERIFY.md`:** any single controller can upgrade and drain;
+the webhook secret is plaintext canister state protected by the confidential subnet; the
+mops migration chain is not in place, so a stable-shape change still needs a reinstall.

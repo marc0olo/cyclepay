@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Render `release/NOTES.md` — the release body — from the build output and CHANGELOG.
+"""Render `release/NOTES.md` — the release body — from the build output.
+
+The notes are **generic and the same shape every release**: what changed is a link to the
+CHANGELOG at this tag, not a copy of it. Embedding it made the entry half the page and
+put the release-specific prose above the hashes, which are what a release page is for.
 
 ⚠️ **`MODULE-HASHES.txt` is NOT reformatted.** A verifier rebuilds the tag and diffs their
 own `MODULE-HASHES.txt` against the published one, and `shasum -c` reads that exact
@@ -16,6 +20,7 @@ the asset check instead.
 Usage: scripts/release-notes.py <version> [hashes-file] [out-file]
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -84,9 +89,17 @@ def main() -> int:
     ref = sys.argv[1]
     at_ref = subprocess.run(["git", "show", f"{ref}:CHANGELOG.md"], capture_output=True, text=True)
     changelog = at_ref.stdout if at_ref.returncode == 0 else Path("CHANGELOG.md").read_text()
-    changes = changelog_section(version, changelog)
-    if not changes:
-        sys.exit(f"ABORT: CHANGELOG.md has no '## {version}' section")
+    # ⚠️ Validated, not inlined. The link must not 404, and `release.sh` refuses a version
+    # with no entry — but the notes carry a pointer so the changelog stays the one place
+    # that describes a release.
+    if not changelog_section(version, changelog):
+        sys.exit(f"ABORT: CHANGELOG.md has no '## {version}' section — the notes would link to nothing")
+    # GitHub's heading anchor: lowercase, drop anything but word chars/space/hyphen,
+    # spaces to hyphens. `## 0.1.0-beta.1` is `#010-beta1` — verified against the
+    # rendered page, because getting this wrong publishes a link that silently lands at
+    # the top of the file.
+    frag = re.sub(r"[^\w\s-]", "", version.lower()).replace(" ", "-")
+    changes = f"**What changed:** [`CHANGELOG.md`, {version}]({REPO}/blob/v{version}/CHANGELOG.md#{frag})"
 
     table = "\n".join(f"| `{n}` | `{h}` | {WHAT.get(n, '')} |" for n, h in rows)
     out = f"""{changes}
