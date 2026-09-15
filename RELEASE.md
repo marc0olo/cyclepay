@@ -23,9 +23,12 @@ metadata (`candid:service` public; `candid:args`, `motoko:stable-types`,
 **not** gzip-compressed: the on-chain module hash is the sha256 of the wasm
 file itself, so `sha256sum` and `icp canister status` are directly comparable.
 
-⚠️ **Bumping the dev-env image changes every module hash.** That is correct — the image
-is part of what shapes the bytes — but it makes the bump a release of its own, with its
-own published hashes, never a passenger on an unrelated change.
+⚠️ **Bumping the dev-env image is one line — the digest — and it changes every module
+hash.** That is correct, since the image is part of what shapes the bytes, but it makes
+the bump a release of its own with its own published hashes, never a passenger on an
+unrelated change. Get the new digest with
+`docker buildx imagetools inspect ghcr.io/dfinity/icp-dev-env-motoko:vX.Y.Z` and take the
+**index** digest, not a per-platform one, so `--platform` still selects the right child.
 
 `scripts/release.sh` and `scripts/reproducible-build.sh` write `backend.wasm`,
 `frontend.wasm`, `backend.did` and `MODULE-HASHES.txt` into `release/`, from
