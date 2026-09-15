@@ -84,8 +84,23 @@ declares the cycles-ledger interface the canister may call, and `icrc2_approve` 
 ledger's `withdraw` are absent — so they cannot be called, which is what makes the floor
 a valid lower bound. `scripts/test-all.sh` fails on a declaration that widens it.
 
-**Frontend responses are certified per response**, and there is no uncertified raw mode
-to switch off — see [`RELEASE.md`](../RELEASE.md).
+**What the frontend serves is checkable against a build of this repo.** Each asset's
+`Identity` encoding `sha256` is public, so it can be compared to the file a local build
+produces:
+
+```bash
+npm --prefix src/frontend ci && npm --prefix src/frontend run build
+scripts/check-frontend-assets.py -e ic
+```
+
+⚠️ **Do not check the frontend's module hash instead.** The `@dfinity/static-site` recipe
+installs a pre-built certified-assets wasm, so that hash describes the recipe and not the
+page. The page lives in canister state. The canister's `state_hash` is a single
+fingerprint over everything it certifies — useful for spotting later drift, but produced
+inside the canister and so not reproducible from a build.
+
+**Frontend responses are also certified per response**, with no uncertified raw mode to
+switch off — see [`RELEASE.md`](../RELEASE.md).
 
 **Every suite is in the repo and one command runs them all**: `scripts/test-all.sh`, with
 [`docs/TEST-COVERAGE.md`](./TEST-COVERAGE.md) stating what is *not* covered and why.

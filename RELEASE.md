@@ -64,16 +64,29 @@ from the canister, never from the build.
 ⚠️ **Publish `MODULE-HASHES.txt` including its `# build arch:` line.** The architecture
 is part of the claim (see Caveats); a hash without it cannot be compared.
 
-**The frontend is deployed normally**, and separately:
+**The frontend is deployed normally, and verified differently:**
 
 ```bash
 icp deploy frontend -e ic
+scripts/check-frontend-assets.py -e ic
 ```
 
-Its module is the pinned recipe's prebuilt certified-assets canister, identical on every
-platform, so there is nothing to preserve by installing a file. What matters for the
-frontend is asset *content*, which is certified per response and audited by rebuilding
-`src/frontend/dist` and comparing against what the canister serves (below).
+⚠️ **The frontend's module hash is not a meaningful check.** The `@dfinity/static-site`
+recipe installs a **pre-built** certified-assets wasm, so that hash is a property of the
+recipe — the same for every project using it, and unrelated to the page anyone is served.
+The content lives in canister state, uploaded by the sync plugin.
+
+So the frontend check compares **what is served against a local build**:
+`check-frontend-assets.py` reads each asset's `Identity` encoding `sha256` from
+`get_asset_details` and compares it to `sha256` of the corresponding file in
+`src/frontend/dist`. A mismatch names the asset.
+
+⚠️ **`state_hash` is recorded, not recomputed.** It is one root hash over everything the
+canister certifies, produced inside the canister, so reproducing it locally would mean
+reimplementing its certification tree and would break whenever that internal shape
+changed. The script prints it: publish it with the release as a fingerprint, so later
+drift is detectable even though it cannot be derived from a build. The per-asset
+comparison is what ties the deployment to the source.
 
 ## Verifying a release (anyone)
 
