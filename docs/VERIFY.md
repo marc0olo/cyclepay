@@ -19,60 +19,29 @@ being one. Read it yourself:
 icp canister status backend -e ic
 ```
 
-### What the module hash turned out to be — measured 2026-09-15
+### Does the live wasm reproduce? No — measured 2026-09-15
 
-The question "do the live bytes reproduce from their own commit?" is no longer *unknown*.
-It was answered by running the procedure retroactively, and the answer is **the live
-bytes are not third-party reproducible, for a reason worth knowing**.
+**The deployed commit is `468687e`** (#157). Two independent confirmations: the wasm's
+embedded Candid is byte-identical to that commit's committed `backend.did`, and rebuilding
+that commit **on the machine that deployed it** reproduces the module hash exactly.
 
-**Which commit is deployed: `468687e`** (#157), established two independent ways.
+**But the pinned container produces different bytes for the same commit** —
+`c91b4cfe110d65a7…` against the deployed `6cc46209e627d1d5…`. It is **not** the tool
+versions: pinning the container to the host's `icp` 1.3.0 / `ic-wasm` 0.9.10 gave a hash
+identical to the original pins, so the difference is **linux versus macOS**. `RELEASE.md`
+claims the output is host-*architecture*-independent, which it may well be; nobody checked
+host *operating system*.
 
-1. The wasm's own embedded Candid is **byte-identical** to that commit's committed
-   interface — one trailing newline the metadata fetch adds:
-   ```bash
-   icp canister metadata backend candid:service -e ic > /tmp/deployed.did
-   git show 468687e:src/backend/dist/backend.did | diff - /tmp/deployed.did
-   ```
-2. Rebuilding that commit on the operator's own machine reproduces the module hash
-   **exactly**.
+So the live bytes are reproducible only on macOS, which is not something a third party can
+rely on — and `RELEASE.md`'s step 4 deploys from the host, not from the container, so this
+is not unique to this deployment. Making it verifiable needs one decision about which
+platform's bytes are canonical; filed separately, and not worth solving before there is
+real money.
 
-**But the pinned container build of the same commit produces different bytes:**
-
-| build of `468687e` | `backend.wasm` sha256 |
-|---|---|
-| deployed, per `icp canister status` | `6cc46209e627d1d5…` |
-| **native**, on the operator's host | `6cc46209e627d1d5…` — match |
-| **container**, per `RELEASE.md` | `c91b4cfe110d65a7…` — differs |
-
-**The cause is the toolchain, not the code.** `moc` agrees on both sides (1.16.0, pinned
-by the committed `mops.toml`). The tools *around* it do not:
-
-| | host, which built the deployed wasm | `Dockerfile.release` |
-|---|---|---|
-| `icp` | 1.3.0 | 0.3.2 |
-| `ic-wasm` | 0.9.10 | 0.9.11 |
-
-`ic-wasm` shrinks the module and embeds its metadata, so a version difference there
-changes the bytes. The deployed wasm is therefore reproducible **only** on a host
-carrying those versions — which is not a property anyone else can rely on.
-
-⚠️ **This exposes a defect in the five-step procedure itself, and it is not this
-document's to fix.** Step 2 builds in the container; **step 4 (`icp deploy --mode
-upgrade`) rebuilds on the host**. Unless the host's toolchain matches the container's,
-step 5's gate cannot pass — so the procedure needs one decision (which bytes are
-canonical, and how the container's artifact reaches the canister) before it can gate
-anything. Filed separately.
-
-⚠️ **And until this PR the procedure could not run at all.** `scripts/release-build.sh`
-called a bare `icp build`, which builds every canister in the **local** environment —
-including the `xrc` mock, whose wasm is a fetched, gitignored artifact absent from the
-`git archive` context the whole script is built on. Every container build failed with
-`failed to read wasm file`, on every commit. That is why
-[`docs/SANDBOX-TESTPLAN.md`](./SANDBOX-TESTPLAN.md) could say the gate had never run
-against a deployment: it could not run. Fixed by naming the two release canisters.
-
-**What does hold now:** the container build is **deterministic**. Two independent runs of
-the same ref produced identical hashes for all three artifacts.
+**What does hold:** the container build is deterministic — repeated runs of a ref give
+identical hashes — and it now runs at all, which it could not before (a bare `icp build`
+included the local `xrc` mock, whose wasm is gitignored and so absent from the archive
+context).
 
 ## What anyone can check right now
 

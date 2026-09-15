@@ -72,10 +72,9 @@ its cause — [`docs/OPERATE.md`](docs/OPERATE.md) explains both before the firs
 [`docs/VERIFY.md`](docs/VERIFY.md) is the list: what a stranger can check with no
 identity, what only a buyer can, and the limits stated in the same breath.
 
-⚠️ **One of those limits is measured, not hedged.** The live module hash has no published
-provenance, and the deployed bytes are **not** reproducible by a third party: the deploy
-used the operator's host toolchain, and the pinned release container produces different
-bytes for the same commit. `docs/VERIFY.md` has the numbers and the cause.
+⚠️ **One limit is measured, not hedged:** the live module hash has no published
+provenance, and the deployed bytes do not reproduce from the pinned container — the build
+is macOS-versus-linux sensitive. `docs/VERIFY.md` has the numbers.
 
 ## Documents
 
