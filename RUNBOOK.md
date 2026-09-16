@@ -1157,8 +1157,12 @@ never tell a fresh `created` order from one that lapsed an hour ago.
   out of sync or the gateway is unhealthy. Stripe retries non-2xx for ~3 days, so
   transient failures lose nothing — but a *permanent* 4xx can get the endpoint
   disabled, which is why verified-but-unprocessable events are acked 200 (triage).
-- **Stripe payouts and disputes.** Disputes produce **no on-chain signal** (only
-  `charge.refunded` is subscribed), so the Dashboard is the only control.
+- **Stripe payouts.** No on-chain signal, so the Dashboard is the only view.
+  ⚠️ **Disputes DO produce one**, contrary to what this row used to say:
+  `charge.dispute.created` is parsed and audited as `stripe.disputeCreated`
+  (`rails/Card.mo`), carrying the intent and the amount. It is audit-only — the cycles are
+  delivered and irreversible while the card network pulls the fiat back — so the Dashboard
+  is still where it is resolved, but the operator learns it happened from the audit log.
 
 ### Do you need a dashboard?
 

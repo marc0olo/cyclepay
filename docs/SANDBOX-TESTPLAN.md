@@ -628,7 +628,7 @@ that sequence** — a unit test previously encoded a wrong assumption here.
 
 | # | Scenario | How | Expect |
 |---|---|---|---|
-| G1 | Unhandled type | subscribe `charge.dispute.created`, trigger it | `200 ignored` + `stripe.unhandledType`. **Never** 4xx |
+| G1 | Unhandled type | subscribe `payment_intent.succeeded`, trigger it | `200 ignored` + `stripe.unhandledType`. **Never** 4xx. ⚠️ This case used `charge.dispute.created`, which the canister now **handles** (`stripe.disputeCreated`, audit-only) — so it stopped exercising the unhandled path and would fail on its own expectation. It needs a type the dispatcher genuinely does not know |
 | G2 | **No `payment_intent`** | a 100%-off promo code, or a subscription-mode link | `200` + `#unprocessable`; a resend does **not** duplicate it |
 | G3 | Livemode mismatch | point a **test** secret at a canister set to `opt true` | nothing delivered; `stripe.livemodeMismatch`; no obligation queued |
 | G4 | Live-on-test | the reverse | nothing delivered, but an obligation **is** queued, keeping the real reference |
