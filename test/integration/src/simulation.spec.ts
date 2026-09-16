@@ -25,8 +25,8 @@ afterAll(async () => { await teardownGateway(gw); });
 /// knowing: the divisor's ceiling scales with `minPurchaseUsdCents`, not with the
 /// amount being bought.** This suite lowers the floor to $1 to keep the §3 vector
 /// exact, and at a $1 floor a divisor of 1,000 leaves 523 M cycles — under the
-/// ten-times-the-ledger-fee headroom — so `set_pricing_config` refuses it. #99's
-/// recommended 1,000 assumes the shipped $10 floor. Asserted in 99c.
+/// ten-times-the-ledger-fee headroom — so `set_pricing_config` refuses it. The 1,000
+/// `docs/OPERATE.md` recommends assumes the shipped $10 floor. Asserted in 99c.
 const DIVISOR = 100n;
 /// 3.5 T ÷ 100. Exact because the §3 vector is exact.
 const SCALED_LOCKED = TIER_LOCKED_CYCLES / DIVISOR;
@@ -56,8 +56,8 @@ test('99a — the faucet refusal: test payments, empty allow-list, funded reserv
   expectOk(await gw.asAdmin.set_card_tiers([{ id: 'tier5', usdCents: TIER_USD_CENTS }]));
 
   // ⚠️ **Before the reserve is funded there is nothing to give away, so the faucet
-  // condition does NOT fire** — `Gate.solvent` refuses instead. This is exactly what
-  // makes #99's Part 1 explorable on mainnet with no code and no allow-list.
+  // condition does NOT fire** — `Gate.solvent` refuses instead. That is what makes an
+  // unfunded mainnet gateway explorable with no code and no allow-list.
   const unfunded = expectErr(
     await gw.asUser.create_order({ tier: 'tier5' }, USER_ACCOUNT, []),
   ) as { notAdmitted: Record<string, unknown> };
@@ -136,8 +136,9 @@ test('99c — the mutual refusal: neither order of operations reaches the unsafe
 
   // ⚠️ **The recommended 1,000 is refused HERE, and that is the guard working.**
   // This suite's floor is $1, where 1,000 leaves 515 M cycles — five times the
-  // ledger fee, not the ten this refuses under. #99's band table is derived at the
-  // shipped $10 floor; lower the floor and the divisor ceiling falls with it.
+  // ledger fee, not the ten this refuses under. `docs/OPERATE.md`'s band table is
+  // derived at the shipped $10 floor; lower the floor and the divisor ceiling falls
+  // with it.
   //
   // The figure: `feeCents` rounds UP, so $1 nets 67c (not 68c) — 100 − ⌈2.9⌉ − 30.
   // 67c × 3.5 XDR/ICP ÷ $4.55/ICP × 10¹² = 515.38 G, ÷ 1,000 = 515,384,615.

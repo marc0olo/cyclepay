@@ -199,7 +199,7 @@ def main() -> int:
             "  This step does not fail on these; a reviewer decides."
         )
     elif deferred:
-        # ⚠️ Reachable, not hypothetical: #82's diff hits `\bmint` and nothing else. Falling
+        # ⚠️ Reachable, not hypothetical: a diff that hits `\bmint` and nothing else. Falling
         # to the line below would print "no added line names a deleted mechanism"
         # immediately under a list of printed hits, and this step's entire value is a
         # reader trusting that last line.

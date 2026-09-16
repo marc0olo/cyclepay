@@ -254,7 +254,7 @@ test('103e — the two interleaving windows, and ⚠️ what this suite CANNOT p
   // ingress lands in between; `deferredAdmin` was already in the harness. 103g runs that
   // mutation and is the only scenario of 115 that fails on it.
   //
-  // ⚠️ **Rule 1 remains unverified, and here is what was tried** (#127) — recorded as a
+  // ⚠️ **Rule 1 remains unverified, and here is what was tried** — recorded as a
   // measurement, not as a claim that no test can exist:
   //
   //   - `deferredAdmin.withdraw_reserve()` and `deferredUser.create_order()` submitted

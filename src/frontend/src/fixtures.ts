@@ -62,8 +62,8 @@ export type OrderSpec = {
 /// hand-written principal fails its own checksum.
 const BUYER = Principal.selfAuthenticating(new Uint8Array(32).fill(7));
 
-// $10 — the smallest preset as of #33, and the gate's floor. A $5 fixture would
-// match no preset, so "buy again" would select nothing.
+// $10 — the smallest preset, and the gate's floor. A $5 fixture would match no preset,
+// so "buy again" would select nothing.
 const USD_CENTS = 1_000n;
 // 1000 − (ceil(1000 × 290/10000) + 30) = 1000 − 59. Derived, not guessed: the
 // receipt's own verification recomputes from it, so a wrong value fails visibly.
@@ -123,17 +123,17 @@ function cannedOrder(spec: OrderSpec): Order {
     expiredBy: undefined,
     expiresAtNs: EXPIRES_AT_NS,
     stripeSessionId: SESSION_ID,
-    // ⚠️ **Cleared on terminal statuses since #37**, which the rule above demands:
+    // ⚠️ **Cleared on terminal statuses**, which the rule above demands:
     // `commitTransition` drops the pay link on the way into a terminal state, so a
     // fixture that carries one on a `delivered` order depicts a state no real order
     // can be in — the exact fault the comment above was written about.
     stripeSessionUrl: TERMINAL.has(status) ? undefined : SESSION_URL,
     createdAtNs: CREATED_AT_NS,
     updatedAtNs: CREATED_AT_NS,
-    // ⚠️ The three fields #37 added, set explicitly for the reason above — and note
-    // that only `problems` (required) failed the typecheck. `delayedAtNs` and
-    // `abandonedReason` are optional, so they defaulted to `undefined` silently:
-    // the rule exists precisely because the compiler does not enforce it.
+    // ⚠️ The three problem-tracking fields, set explicitly for the reason above — and
+    // note that only `problems` is required. `delayedAtNs` and `abandonedReason` are
+    // optional, so omitting them defaults to `undefined` silently: the rule exists
+    // precisely because the compiler does not enforce it.
     delayedAtNs: undefined,
     abandonedReason: status === "abandoned" ? "operator ended it after refunding" : undefined,
     problems: [],
@@ -202,10 +202,10 @@ export function installFixtures(host: FixtureHost): void {
   // Cast once, here, with the reason stated: the generated actor type carries
   // admin methods and config records this surface never touches, and stubbing
   // them would be noise standing in for coverage the PocketIC suite already has.
-  // #30 PR-A: the fee comes from the ledger now, not from `quote_previews`. The
-  // browser fixture answers it so the buy view still shows what lands, and so a
-  // spec can tell "fee not known yet" (0) from "fee is 100 M" — the two render
-  // differently and only one of them is a bug.
+  // The fee comes from the ledger, not from `quote_previews`. The browser fixture
+  // answers it so the buy view still shows what lands, and so a spec can tell "fee not
+  // known yet" (0) from "fee is 100 M" — the two render differently and only one of
+  // them is a bug.
   const cyclesLedger: CyclesLedger = {
     icrc1_fee: async () => DEPOSIT_FEE,
     // The dashboard reads this from the LEDGER rather than from the gateway. A
@@ -286,7 +286,7 @@ export function installFixtures(host: FixtureHost): void {
 
   const stub = {
     card_tiers: async () => [
-      // The #33 presets: $10 / $20 / $50. `paymentLinkUrl` went with the links.
+      // The presets: $10 / $20 / $50.
       { id: "t10", usdCents: 1_000n },
       { id: "t20", usdCents: 2_000n },
       { id: "t50", usdCents: 5_000n },
@@ -301,10 +301,9 @@ export function installFixtures(host: FixtureHost): void {
         minPurchaseUsdCents: 1_000n,
         maxPurchaseUsdCents: 10_000n,
       },
-      // ⚠️ Added by the `satisfies` below, not by anyone noticing. `lifecycle_config`
-      // gained `delivery` earlier in this same PR (#68 step 1) and this fixture kept
-      // returning `{gate}` alone: the cast accepted it, so the specs drove the app with
-      // a shape the canister no longer returns.
+      // ⚠️ **Kept honest by the `satisfies` below, not by anyone noticing.** Without it
+      // a fixture returning `{gate}` alone typechecks, and the specs then drive the app
+      // with a shape the canister does not return.
       delivery: { alertAfterNs: 7_200_000_000_000n, maxHoldNs: 259_200_000_000_000n },
     }),
     delivery_stats: async () => ({
@@ -369,7 +368,7 @@ export function installFixtures(host: FixtureHost): void {
     // Populated on purpose: a console screenshot with every list empty shows the layout
     // and none of the judgement the design is about. These figures are shaped to show
     // both halves of the wait-versus-work split at once.
-    // #97: the configuration surface reads these. A provisioned sandbox gateway, so the
+    // The configuration surface reads these. A provisioned sandbox gateway, so the
     // console renders as fully configured rather than as a half-set-up one.
     expected_livemode: async () => false,
     stripe_origin: async () => "https://gateway.example",
@@ -597,9 +596,9 @@ export function installFixtures(host: FixtureHost): void {
           },
     // ⚠️ **`satisfies Partial<Backend>`, then ONE narrow assertion.** This was
     // `as unknown as Backend`, which checked not a single stub signature against the
-    // real service: the same hand-written-mirror-with-the-check-laundered-away that
-    // #66/#85 removed from the integration suite, where a missing method fails loudly
-    // and a CHANGED shape silently feeds the app the old one.
+    // real service — a hand-written mirror with the check laundered away, where a
+    // missing method fails loudly and a CHANGED shape silently feeds the app the old
+    // one.
     //
     // `Partial` because the fixture is genuinely partial and must stay so: the specs
     // exercise a handful of paths, and implementing forty methods to satisfy an

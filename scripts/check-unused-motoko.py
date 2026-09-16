@@ -2,10 +2,9 @@
 """Fail if a module's `public func` has no caller outside its own tests.
 
 The Motoko half of `check-unused-exports.py`, which gates this class for the frontend
-only. ⚠️ **The gap had a live instance:** `Gate.configErrorToText`'s only caller was
-`test/gate.test.mo`, while #131 was deleting three renderers of exactly that shape on
-exactly that reasoning — *a `*ToText` with no production caller is dead code that reads
-as a supported path.* One module over, unflagged.
+only. ⚠️ **The class, with a measured instance:** `Gate.configErrorToText`'s only caller
+was `test/gate.test.mo` — *a `*ToText` with no production caller is dead code that reads
+as a supported path* — and nothing flagged it.
 
 ⚠️ **The compiler contributes nothing here, which is why this has to exist.** moc's
 unused-identifier warning (M0194) fires only in the canister's MAIN file — never in

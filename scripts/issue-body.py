@@ -7,16 +7,16 @@
 
 ⚠️ **Why this is a versioned script and not a snippet.**
 
-#52 destroyed #12's body: Markdown built inside an *unquoted* heredoc let the shell run
-the backticks in the text, and a mangled 101k-char body went live in place of 53k. It was
-recoverable only because a pre-edit fetch existed **with its length checked against the
-API's own count** — which is what made the restore trustworthy rather than hopeful.
+Markdown built inside an *unquoted* heredoc lets the shell run the backticks in the text;
+that has put a mangled 101k-char body live in place of a 53k one here. It was recoverable
+only because a pre-edit fetch existed **with its length checked against the API's own
+count** — which is what made the restore trustworthy rather than hopeful.
 
-That check became a rule in #12's traps. Its tool then lived in a session scratchpad,
-which does not persist, so the next agent to touch a large issue body had to re-derive it
-from the trap text. **A rule whose tool is gone is a rule that gets skipped** — so the
-tool lives here, next to every other rule in this repo that graduated from a comment into
-something executable (`check-heredocs.sh`, `brand-lint.sh`, `test-all.sh`).
+A tool that lives in a session scratchpad does not persist, so the next agent to touch a
+large issue body has to re-derive it from prose. **A rule whose tool is gone is a rule
+that gets skipped** — so the tool lives here, next to every other rule in this repo that
+graduated from a comment into something executable (`check-heredocs.sh`,
+`brand-lint.sh`, `test-all.sh`).
 
 ⚠️ **The abort is the feature.** Every failure mode here is silent: a truncated write
 looks like a successful one, and a body that lost 40k characters still renders as a page
@@ -24,8 +24,8 @@ of Markdown. So each step compares against the API's own count and exits non-zer
 mismatch rather than reporting what it hoped happened.
 
 ⚠️ **`put` verifies by re-fetching, not by trusting the write.** GitHub accepting the
-request is not evidence the stored body matches the file: #12's corruption was accepted
-cleanly. Only a read-back proves it.
+request is not evidence the stored body matches the file — the corruption above was
+accepted cleanly. Only a read-back proves it.
 
 Requires `gh` (authenticated). `GH_REPO`, or `--repo owner/name`, overrides the default.
 """

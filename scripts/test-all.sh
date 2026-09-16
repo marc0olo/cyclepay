@@ -51,8 +51,8 @@ cd "$(dirname "$0")/.."
 #
 # Two work-in-progress commits landed on `main` in one session — the branch had been
 # created before an intervening merge and never re-checked. `git branch --show-current`
-# before committing is written down in #12 both times, and the second time it still was
-# not run: a rule that needs remembering is a rule that gets skipped.
+# before committing was written down both times, and the second time it still was not
+# run: a rule that needs remembering is a rule that gets skipped.
 #
 # This gate runs far more often than commits do, so putting the answer on screen turns
 # "remember to check" into "you already know". Both strays were in fact caught by reading
@@ -289,10 +289,9 @@ run "every write is offered as a command, or excluded on purpose" scripts/check-
 
 # ⚠️ **The step above checks WHICH methods the console offers; this one checks whether
 # the calls printed in prose still run.** Different question, different files, and the
-# gap between them was live: `audit_log` took `(opt nat, nat)` from #38 while three
-# places called it `'()'`, and RUNBOOK passed `quote_previews` a rail argument that #35
-# deleted -- the line it calls the fastest is-the-rail-quoting check. An operator finds
-# these mid-incident, by pasting one and getting a serialization error.
+# gap between them is real: a method gains an argument and the prose calling it does
+# not, or keeps passing one the method lost. An operator finds these mid-incident, by
+# pasting one and getting a serialization error.
 run "every documented canister call still matches the .did" scripts/check-doc-calls.py
 
 # ⚠️ **The decision record is enforced, not trusted.** Its predecessor was a 697-line
@@ -313,9 +312,9 @@ scripts/check-unused-exports.py
 
 # ⚠️ **A different class from the step above: two functions that BOTH have callers and
 # both do the same thing.** The loss there is not dead code but divergence — the next
-# correction lands on one of them. #136 shipped a review-caught instance on the money
-# path (`Reserve.deliverable` re-implementing `Delivery.deliverableCycles`), and the
-# check's first two versions could not see it, which is recorded in the script.
+# correction lands on one of them. A review-caught instance on the money path
+# (`Reserve.deliverable` re-implementing `Delivery.deliverableCycles`) was invisible to
+# this check's first two versions, which is recorded in the script.
 run "no module function body is duplicated across modules" scripts/check-duplicate-bodies.py
 
 # ⚠️ **Rendering, not parsing, is where a mermaid diagram fails silently.** A bare `#`
@@ -331,8 +330,8 @@ run "mermaid labels keep their text on GitHub" scripts/check-mermaid.py
 # "commit identification above" that had been deleted.
 run "every doc link resolves, file and #anchor" scripts/check-doc-links.py
 
-# Reads the regenerated .did, so it sits after the build step. #123 removed the last
-# `Result<_, Text>`; this keeps it removed.
+# Reads the regenerated .did, so it sits after the build step. No endpoint returns a
+# `Result<_, Text>`; this keeps it that way.
 run "every endpoint error type is a variant, not text" scripts/check-typed-errors.py
 
 # ⚠️ **The Motoko half of the step above, and the compiler covers NONE of it:** M0194
@@ -412,7 +411,7 @@ fi
 # hierarchy still need eyes.
 run "brand lint — user-facing copy and tokens" bash scripts/brand-lint.sh
 
-# Browser specs (issue #6). These cover what jsdom is structurally blind to: the
+# Browser specs. These cover what jsdom is structurally blind to: the
 # CASCADE and LAYOUT. A class selector's `display` outranks the UA stylesheet's
 # `[hidden]`, so elements the app had hidden stayed on screen while every DOM
 # test passed — that shipped once, and these exist so it cannot again.

@@ -10,7 +10,8 @@ say nothing about a method that never made it into the union at all.
 
 ⚠️ **That gap is this script.** A new mutating admin method is a FAILURE here, never a
 skip: absent from both the table and the exclusion list, it is a lever an operator has to
-hand-author a command for, which is the transcription risk #97 exists to remove.
+hand-author a command for, which is the transcription risk the console exists to
+remove.
 
 ⚠️ **The exclusion list may only ever SHRINK**, and every entry carries why. Same
 construction as `check-admin-tiers.py`'s tier table and `check-config-readers.py`'s

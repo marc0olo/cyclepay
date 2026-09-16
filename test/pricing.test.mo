@@ -26,8 +26,8 @@ let VECTOR_CYCLES : Nat = 3_500_000_000_000;
 let fee = { feeBps = 290; feeFixedCents = 30 };
 let config = Pricing.defaultConfig();
 
-/// Production scale: no divisor. Every pre-#99 quote assertion keeps its exact
-/// expected value with these, which is the point — see the bit-identical suite.
+/// Production scale: no divisor. Every quote assertion below keeps its exact expected
+/// value with these, which is the point — see the bit-identical suite.
 let PROD : Nat = 1;
 /// The cycles ledger's flat deposit fee, as `Delivery.cyclesLedgerDefaultFee`.
 /// Inlined rather than imported so this suite stays pure arithmetic.
@@ -279,9 +279,9 @@ func quoteAt(divisor : Nat, gross : Nat) : { #ok : { cycles : Nat; rates : Prici
 suite("divisor: production is bit-identical", func() {
   test("⚠️ THE test that matters most: divisor 1 equals the independent formula", func() {
     // Not "equals a hardcoded number I read off the implementation" — equals
-    // `netCents` composed with `cyclesForCents`, i.e. the pre-#99 derivation
-    // spelled out separately. Enabling this feature must not be ABLE to change
-    // production pricing, so the check is against the formula, not a snapshot.
+    // `netCents` composed with `cyclesForCents`, i.e. the derivation spelled out
+    // separately. Enabling the divisor must not be ABLE to change production pricing,
+    // so the check is against the formula, not a snapshot.
     for (gross in [TEN_DOLLARS, 1_500, 2_000, 5_000, 10_000].values()) {
       let ?net = Pricing.netCents(fee, gross) else { assert false; return };
       let ?expected = Pricing.cyclesForCents(net, XDR_PERMYRIAD, USD_PER_ICP_MICROS) else {

@@ -40,8 +40,8 @@ describe("statusInfo", () => {
   ];
 
   test("polling stops exactly on the statuses the backend will never move again", () => {
-    // Grew in #34: `#expired` became terminal when `#expired → #paid` was
-    // deleted, and `#cancelled`/`#abandoned` are terminal by construction.
+    // `#expired` is terminal because there is no `expired → paid` edge, and
+    // `#cancelled`/`#abandoned` are terminal by construction.
     const terminal = ALL.filter((k) => statusInfo(k).terminal);
     expect(terminal.sort()).toEqual(["abandoned", "cancelled", "delivered", "expired"]);
   });
@@ -55,10 +55,9 @@ describe("statusInfo", () => {
   });
 
   test("a cancelled order never reads as expired, and neither invites a payment", () => {
-    // The defect #34 fixes: cancelling transitioned to `#expired`, so a reload
-    // told a buyer who had cancelled that their order had expired — and the copy
-    // then promised a late payment would still go through, which is now false for
-    // both.
+    // Two separate statuses with two separate labels: a buyer who cancelled must not
+    // be told their order expired, and neither copy may promise that a late payment
+    // still goes through.
     expect(statusInfo("cancelled").label).toBe("Cancelled");
     expect(statusInfo("expired").label).not.toMatch(/still goes through/i);
     expect(statusInfo("expired").terminal).toBe(true);
@@ -156,7 +155,7 @@ describe("cancelOrderErrorMessage", () => {
     }
   });
 
-  test("⚠️ sessionNotClosed claims no diagnosis, and says how to find out (#118)", () => {
+  test("⚠️ sessionNotClosed claims no diagnosis, and says how to find out", () => {
     // The content requirement with a design record behind it: three causes, and this
     // sentence has to be true of all of them. It must NOT assert which one happened,
     // and it must tell the buyer where the answer is. Moved here from integration 42b
@@ -236,8 +235,7 @@ describe("gateReasonMessage", () => {
   });
 
   test("amountBelowMin tells the user the floor, not just that it failed", () => {
-    // Reachable by typing since #33 gave the rail custom amounts, and it was
-    // rendering `undefined` until #30 PR-B aliased this union to the bindings.
+    // Reachable by typing, because the rail takes custom amounts.
     const msg = gateReasonMessage({
       __kind__: "amountBelowMin",
       amountBelowMin: { usdCents: 500n, minUsdCents: 1_000n },
@@ -263,10 +261,9 @@ describe("gateReasonMessage", () => {
     // These are all pre-payment refusals, so the copy must say so — otherwise a
     // user seeing "unavailable" mid-purchase assumes money may have moved.
     //
-    // ⚠️ This list used to hold `burnCapExhausted` and `floatLow`, which #30 PR-B
-    // deleted from `Gate.Reason` — and it kept passing, because the union was a
-    // hand-written mirror rather than the generated type. That is the whole reason
-    // `GateReason` is now an alias: a deleted variant fails to compile here.
+    // ⚠️ **This list is checked against the GENERATED union, not a hand-written
+    // mirror.** That is the whole reason `GateReason` is an alias: a variant the
+    // backend deletes fails to compile here instead of passing silently.
     const operational: GateReason[] = [
       { __kind__: "canisterCyclesLow", canisterCyclesLow: { balance: 0n, min: 1n } },
       { __kind__: "reserveShort", reserveShort: { requested: 2n, available: 1n } },
@@ -298,7 +295,7 @@ describe("gateReasonMessage", () => {
   });
 });
 
-describe("the two-cause #unpriceable split (#99 review finding 2)", () => {
+describe("the two-cause #unpriceable split", () => {
   test("⚠️ the simulation cause does NOT blame payment processing", () => {
     // The defect this split exists to fix: rendered as `tierBelowFees`, a buyer
     // refused by the operator's divisor is told the processing fee is too large.
@@ -318,7 +315,7 @@ describe("the two-cause #unpriceable split (#99 review finding 2)", () => {
   });
 });
 
-describe("the faucet and allow-list refusals (#99 2b)", () => {
+describe("the faucet and allow-list refusals", () => {
   const faucet = { __kind__: "unboundedGiveaway", unboundedGiveaway: { reserveFloor: 1n } };
   const unlisted = { __kind__: "buyerNotAllowed", buyerNotAllowed: null };
 
@@ -437,10 +434,9 @@ describe("depositFeeLine", () => {
 
 describe("estimateLine", () => {
   test("names the transfer fee when it moves the figure, so the gap is never a surprise", () => {
-    // ⚠️ It asserted "deposit fee" — the operation the ledger charged for before #30
-    // PR-A. Delivery is an `icrc1_transfer` out of the reserve now, so the fee the
-    // buyer is shown is a transfer fee, and "deposit" pointed them at a mechanism
-    // that no longer runs.
+    // ⚠️ **A TRANSFER fee, not a deposit fee.** Delivery is an `icrc1_transfer` out of
+    // the reserve, so "deposit" would point the buyer at a mechanism that does not
+    // run.
     const line = estimateLine(5_000_000_000n, 100_000_000n);
     expect(line).toContain("4.9 G");
     expect(line).toContain("transfer fee");
@@ -519,7 +515,7 @@ describe("checkReceipt", () => {
   });
 });
 
-describe("checkReceipt: the simulation divisor (#99)", () => {
+describe("checkReceipt: the simulation divisor", () => {
   const verification = {
     netCents: 455n,
     usdPerIcpMicros: 4_550_000n,
@@ -529,7 +525,7 @@ describe("checkReceipt: the simulation divisor (#99)", () => {
   };
   const PRODUCTION = 3_500_000_000_000n;
 
-  test("⚠️ divisor 1 is byte-identical to the pre-#99 receipt", () => {
+  test("⚠️ divisor 1 is byte-identical to the receipt with no divisor at all", () => {
     // Including the formula string: a production receipt must not gain a term.
     const before = checkReceipt(verification, PRODUCTION);
     const explicit = checkReceipt(verification, PRODUCTION, 1n);
@@ -605,7 +601,7 @@ describe("formatAgo", () => {
   });
 });
 
-describe("StatusKey is derived from the generated enum (#68)", () => {
+describe("StatusKey is derived from the generated enum", () => {
   test("statusInfo answers for every status the canister has", () => {
     // ⚠️ The point is not this list: it is that `StatusKey` is `${OrderStatus}`, so a
     // status added to the canister makes `statusInfo`'s switch non-exhaustive and fails

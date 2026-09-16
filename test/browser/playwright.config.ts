@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-/// Browser specs for the frontend (issue #6).
+/// Browser specs for the frontend.
 ///
 /// These exist because the jsdom suite is structurally blind to a whole class of
 /// bug, and that blindness shipped: a class selector's `display` outranks the UA

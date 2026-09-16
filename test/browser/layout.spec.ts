@@ -465,7 +465,7 @@ test.describe("layout agreement", () => {
     expect(value.endsWith(tail!)).toBe(true);
 
     // ⚠️ Filling must not RUN it. `admin_order` is an update so the read is audited
-    // (#38), and a mis-click must not spend one.
+    //, and a mis-click must not spend one.
     await expect(page.locator("#lookup-result")).toBeHidden();
     await expect(page.locator("#lookup-id")).toBeFocused();
 

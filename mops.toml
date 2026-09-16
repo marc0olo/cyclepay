@@ -7,11 +7,6 @@ sha2 = "0.2.5"
 # `Call.httpRequest` for the Stripe session outcall — `Main.mo` and `rails/Session.mo`
 # import it. It attaches the exact `ic0.cost_http_request` price, which is why
 # hand-attaching cycles is never the answer here.
-#
-# (This comment said "nothing imports mo:ic right now" until 2026-09-02, kept from before
-# #33 shipped the outcall. The conclusion — keep the dependency — stayed correct while its
-# reason described a state that had ended, which is the shape that makes a stale
-# justification hard to notice.)
 ic = "4.2.0"
 # ── vetKD sealing ────────────────────────────────────────────────────────
 #

@@ -5,11 +5,10 @@ import AuditLog "../src/backend/AuditLog";
 // Unit suite for the §4.2 audit log: append-only with a monotonic, never-reused `seq`,
 // and the two paging views over it.
 //
-// ⚠️ This header described a "bounded ring buffer with hard cap and oldest-first drop"
-// until 2026-09-10, three lines above a test asserting nothing is ever dropped. #37
-// removed the ring; the comment outlived it.
+// ⚠️ **There is no ring, no hard cap and no oldest-first drop.** The log only grows;
+// a test asserting a bound would be asserting something `append` cannot do.
 
-suite("audit log ring buffer", func() {
+suite("audit log", func() {
   test("append returns the event and retains oldest -> newest", func() {
     let log = AuditLog.emptyLog();
     let a = AuditLog.append(log, 100, "delivery.sent", "3.5 T to the buyer");
@@ -22,12 +21,11 @@ suite("audit log ring buffer", func() {
     assert events[1] == b;
   });
 
-  // ── Deleted by #37, with their heirs named ────────────────────────────────
+  // ── No capacity suite, and none is writable ───────────────────────────────
   //
-  // ~~"hard cap drops oldest first"~~ and ~~"seq stays monotonic across drops (gap
-  // detection)"~~ both asserted about a bound that no longer exists. The `capacity`
-  // parameter is gone from `append`, so neither claim is expressible — which is
-  // stronger than a test asserting the cap is large.
+  // `append` takes no `capacity`, so "drops oldest first" and "seq stays monotonic
+  // across drops" are not expressible here — which is stronger than a test asserting
+  // the cap is large.
   //
   // ⚠️ **Their heirs, because a deleted test needs one named:**
   //   - "nothing is ever dropped" below is the direct replacement: it is the same
@@ -36,7 +34,7 @@ suite("audit log ring buffer", func() {
   //     reference to drops. Readers used gaps in `seq` to DETECT drops; with no drops
   //     there are no gaps, so what is left to pin is that `seq` never repeats.
 
-  test("nothing is ever dropped, however many events arrive (#37)", func() {
+  test("nothing is ever dropped, however many events arrive", func() {
     let log = AuditLog.emptyLog();
     for (i in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].values()) {
       ignore AuditLog.append(log, i, "tag", "e" # debug_show(i));
@@ -63,9 +61,9 @@ suite("audit log ring buffer", func() {
   });
 });
 
-/// ⚠️ **Neither paging view had a unit test before 2026-09-10.** `page` shipped with #38
-/// and was covered only through integration scenarios, which read it to exhaustion and so
-/// could not distinguish "the cursor works" from "one page held everything".
+/// ⚠️ **Integration coverage of these views is not enough.** Those scenarios read the log
+/// to exhaustion, so they cannot distinguish "the cursor works" from "one page held
+/// everything". These cases are where the cursor itself is pinned.
 suite("audit log paging", func() {
 
   /// `n` events, seq 0 .. n-1.

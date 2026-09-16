@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy-and-wiring smoke test against a real local network (issue #7).
+# Deploy-and-wiring smoke test against a real local network.
 #
 # Why this exists: the PocketIC suite installs wasms directly and never runs
 # `icp deploy`, so four things it covers perfectly well in-canister have **no

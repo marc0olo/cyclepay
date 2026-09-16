@@ -128,9 +128,8 @@ if [ "$BOOTSTRAP" -eq 1 ]; then
   echo
   echo "--- bootstrapping Stripe-side config (dev values, never for mainnet) ---"
 
-  # No TTL to set: #33 deleted retention, so an order's deadline is its Stripe
-  # session's `expires_at` (~35 min, Stripe's own floor is 30). Nothing local
-  # shortens it — to see an expiry in a dev session, expire the session in the
+  # No TTL to set: an order's deadline is its Stripe session's `expires_at`
+  # (~35 min, Stripe's own floor is 30). Nothing local shortens it — to see an expiry in a dev session, expire the session in the
   # Stripe Dashboard and let `checkout.session.expired` arrive.
 
   # Declare the Stripe world. A sandbox forwarder sends livemode=false events, so

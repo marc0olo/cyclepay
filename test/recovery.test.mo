@@ -114,7 +114,7 @@ suite("isSweepable", func() {
   });
 });
 
-suite("stranded #created capacity (#52)", func() {
+suite("stranded #created capacity", func() {
   test("only #created with a deadline past the grace is asked about", func() {
     let deadline = 1_000_000_000_000_000;
     let grace = Recovery.expiryGraceNs;
@@ -167,12 +167,11 @@ suite("stranded #created capacity (#52)", func() {
   });
 });
 
-suite("#63 — the rotating scan's coverage window", func() {
+suite("the rotating scan's coverage window", func() {
   // ⚠️ **The multiplier is what these exist for.** The integration suite pins
   // `expectedFullCycleNs` against the live sweep interval, which is the right coupling
-  // to pin — but its store is far smaller than one chunk, so `chunks` is always 1 and a
-  // version that dropped the store-size factor entirely would pass. The assertion was
-  // right and blind to the part that makes the number mean anything.
+  // to pin — but its store is far smaller than one chunk, so `chunks` is always 1 there
+  // and a version that dropped the store-size factor entirely would still pass it.
   let chunk = 2_000;
   let interval = Recovery.defaultIntervalNs;
 
@@ -199,7 +198,7 @@ suite("#63 — the rotating scan's coverage window", func() {
     assert Recovery.indexScanCycleNs(2 * chunk + 1, chunk, interval) == 3 * interval;
   });
 
-  test("⚠️ the window grows linearly in stored orders — the latency #63 traded for", func() {
+  test("⚠️ the window grows linearly in stored orders — the latency this trades for", func() {
     // 365k orders at 2,000 per chunk is 183 chunks; at the 15-minute default that is
     // ~1.9 days. Ten times the store is ten times the window, and this is the assertion
     // that makes "grows linearly" a checked claim rather than a comment.

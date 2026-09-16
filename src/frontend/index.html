@@ -56,8 +56,8 @@
         <!-- Sign-in started from the HEADER has no form beneath it to report into,
              and the header itself is too small for a sentence. -->
         <p id="auth-error" class="error" hidden></p>
-        <!-- The gate refusing every buyer (#99 2b): not on the allow-list, or the
-             gateway is unbounded and refusing everyone. -->
+        <!-- The gate refusing every buyer: not on the allow-list, or the gateway is
+             unbounded and refusing everyone. -->
         <div id="gate-notice" class="notice" hidden></div>
         <!-- Simulation mode, in words rather than as a badge: a badge tells
              you a state exists, a sentence tells you what it means for the purchase
@@ -102,7 +102,7 @@
         </div>
 
         <!-- The four steps as a figure rather than a wrapping sentence. The
-             sequence IS the product (issue #21), so it gets the visual weight the
+             sequence IS the product, so it gets the visual weight the
              right-hand column was wasting. Motion is CSS-only and cycles slowly;
              prefers-reduced-motion drops it to a static, fully-legible state. -->
         <ol class="flow" aria-label="What this takes">
@@ -1104,7 +1104,7 @@
         <span class="dot">·</span>
         Operated by the DFINITY Foundation.
       </p>
-      <!-- TODO(#21): imprint, terms, privacy, status, and contact are required
+      <!-- TODO: imprint, terms, privacy, status, and contact are required
            for a Foundation-operated property. Deliberately not stubbed with
            placeholder links: a dead "Terms" link on a page taking card details
            is worse than a visibly absent one. -->

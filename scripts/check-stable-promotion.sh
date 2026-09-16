@@ -3,9 +3,9 @@
 # shape change — before it is committed.
 #
 # ⚠️ **Why this exists.** A promotion resets the reference point the upgrade check
-# compares against, so it is the one operation that can blind that check. The #90 hole
-# was a baseline left stale; the mirror-image hole is a baseline promoted past a real
-# change because the diff looked like noise. Both are invisible in a `git diff`.
+# compares against, so it is the one operation that can blind that check. One hole is a
+# baseline left stale; the mirror image is a baseline promoted past a real change because
+# the diff looked like noise. Both are invisible in a `git diff`.
 #
 # A compiler upgrade renumbers every type hash: moc 1.9.0 → 1.15.1 moved 91 lines of
 # `deployed/backend.most` without changing one field. A real schema change lands in the
@@ -39,7 +39,7 @@
 #
 # ⚠️ **`--accept-reinstall` is the one deliberate override**, and it exists because
 # "not upgrade-compatible" is a legitimate answer pre-launch: with no migration chain
-# (#32) and no data worth preserving, a reinstall is the documented loop and the baseline
+# and no data worth preserving, a reinstall is the documented loop and the baseline
 # should then describe the NEW shape. The flag does not weaken the check — it still
 # refuses silently-wrong promotions — it makes the operator say the words, and it prints
 # **which stable variables are dropped**, because "what state is lost" is the reviewable
@@ -138,7 +138,7 @@ if [ "$forward" -ne 0 ]; then
     printf '%s\n' "$dropped" | sed 's/^/    - /' >&2
   fi
   printf '\n  A deployed canister cannot take this upgrade. Either write the migration\n' >&2
-  printf '  (#32, and the `migrating-motoko-actors` skill), or — pre-launch only, with no\n' >&2
+  printf ' , or — pre-launch only, with no\n' >&2
   printf '  data worth keeping — re-run with `--accept-reinstall` to say so deliberately.\n' >&2
   exit 1
 fi

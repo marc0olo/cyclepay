@@ -56,9 +56,9 @@ describe("sealed provisioning", () => {
   }, 120_000);
 
   it("⚠️ one derivation serves BOTH secrets — they share the identity", async () => {
-    // The second provisioning hits the cached vetKey, so it pays no second fee. If the
-    // two secrets had separate labels this would cost another ~26 B cycles, which is the
-    // arrangement #11 rejects.
+    // The second provisioning hits the cached vetKey, so it pays no second fee. ⚠️ **Do
+    // not give the two secrets separate labels** — that costs another ~26 B cycles per
+    // derivation.
     expectOk(await gw.asAdmin.set_stripe_api_key(seal(gw.backendId, "rk_test_sealed_spec_key")));
     expect((await gw.asAdmin.stripe_api_key_status()).isSet).toBe(true);
   }, 120_000);

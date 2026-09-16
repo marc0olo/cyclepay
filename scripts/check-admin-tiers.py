@@ -33,10 +33,9 @@ import glob
 import re
 import sys
 
-# ⚠️ **Endpoints live in `Main.mo` AND in `mixins/*.mo` since #120.** Scanning only the
-# composition root made this abort with "parser is wrong" the moment the first endpoint
-# moved — correctly, because a check that cannot find what it is checking must not report
-# a clean scan. Both are read as one body of source.
+# ⚠️ **Endpoints live in `Main.mo` AND in `mixins/*.mo`.** Scanning only the composition
+# root aborts with "parser is wrong", correctly: a check that cannot find what it is
+# checking must not report a clean scan. Both are read as one body of source.
 ENDPOINT_SOURCES = ("src/backend/Main.mo", "src/backend/mixins/*.mo")
 GUARDS = {"requireController": "controller", "requireAdmin": "admin"}
 
@@ -73,7 +72,7 @@ TIERS = {
     "add_allowed_buyer": "controller",      # who may take cycles out of a funded reserve
                                             # for free test money is a RULE, not a case —
                                             # and removing the last entry stops the
-                                            # gateway selling at all (#99 2b)
+                                            # gateway selling at all
     "remove_allowed_buyer": "controller",
     "allowed_buyers": "controller",         # the list bounds a giveaway; who is on it is a
                                             # controller's business, like `admins`
@@ -142,7 +141,7 @@ def guarded_methods(text):
         nxt = [b for b in bounds if b > i]
         body = "\n".join(lines[i:(nxt[0] if nxt else len(lines))])
         code = "\n".join(l for l in body.split("\n") if not l.strip().startswith("//"))
-        # ⚠️ **The `\s*\(` is load-bearing since #120, not tidiness.** Bodies are sliced
+        # ⚠️ **The `\s*\(` is load-bearing, not tidiness.** Bodies are sliced
         # out of `Main.mo` and the nine mixins CONCATENATED, so the last endpoint in one
         # file has a body that runs on into the next file's preamble — which for a mixin
         # is its parameter list, and every one of those declares

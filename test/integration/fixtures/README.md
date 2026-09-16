@@ -1,7 +1,7 @@
 # Recorded Stripe event bodies
 
 Captured with `scripts/capture-stripe-fixtures.sh`, asserted by
-`test/integration/src/fixtures.spec.ts`, tracked by issue #4.
+`test/integration/src/fixtures.spec.ts`.
 
 **Why these are committed.** Every other Stripe payload in this repo is JSON written
 from the API docs, so the suites prove the canister matches *our reading* of Stripe

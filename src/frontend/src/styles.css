@@ -1285,7 +1285,7 @@ code.flow-detail {
   gap: 0.4rem;
 }
 /* ⚠️ Resolved problems stay VISIBLE and struck through rather than being filtered out:
-   #37's premise is that nothing drops, so a buyer whose refund was reconciled should see
+   nothing drops, so a buyer whose refund was reconciled should see
    that it happened AND that it was dealt with. Colour alone would not carry that, so the
    line-through does the work and the muted colour reinforces it. */
 #order-problem-list li.resolved {
@@ -1299,9 +1299,8 @@ code.flow-detail {
    the warning and tick glyphs that would otherwise do this job are pictographs.
 
    Whether an operator can actually tell the groups apart is a cascade-and-layout
-   property, so it is asserted in the Chromium suite. jsdom would confirm the
-   class was applied to something invisible, which is how #24's chooser shipped
-   on screen under 109 passing tests. */
+   property, so it is asserted in the Chromium suite. jsdom would only confirm the class
+   was applied — to something that may be invisible on screen. */
 .summary-groups {
   display: grid;
   gap: var(--space-4, 1rem);

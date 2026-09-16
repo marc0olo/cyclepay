@@ -41,7 +41,7 @@ suite("checkController (the RULES tier)", func() {
   });
 });
 
-suite("checkAdmin (the CASES tier: controller OR granted, #68)", func() {
+suite("checkAdmin (the CASES tier: controller OR granted)", func() {
   let noController = func(_ : Principal) : Bool = false;
   let noAdmin = func(_ : Principal) : Bool = false;
 

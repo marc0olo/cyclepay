@@ -141,7 +141,7 @@ suite("resolving", func() {
   });
 });
 
-suite("the kind's tag (#122)", func() {
+suite("the kind's tag", func() {
   test("⚠️ tagOf and kindToText cannot drift, because they agree on every kind", func() {
     // Two switches over the same variant, and only one of them is reachable from the
     // public interface now. Pinning them against each other is what makes adding a

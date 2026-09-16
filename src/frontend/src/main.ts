@@ -491,8 +491,8 @@ let activeOrder: Order | null = null;
 let tierQuotes = new Map<string, QuotePreview>();
 // Fee formulas, for rendering the split in words.
 let cardFee: FeeConfig | null = null;
-// The cycles ledger's own transfer fee. ⚠️ NOT from `quote_previews` any more —
-// #30 PR-A stopped disclosing it there, so this is read from the ledger directly.
+// The cycles ledger's own transfer fee. ⚠️ NOT from `quote_previews` — read from the
+// ledger directly.
 let transferFee = 0n;
 
 /// The account's balance as the LEDGER last reported it, or null when it has not been
@@ -810,10 +810,9 @@ function renderAdminNav(): void {
 /// One configuration group: the values, what each means, and the command that changes
 /// them pre-filled with what is set NOW.
 ///
-/// ⚠️ **Pre-filled from the current values, not from blanks.** #97's point is that the
-/// failure mode in these calls is transcription: the config setters take whole Candid
-/// records, and hand-authoring one while omitting a field silently changes a live
-/// parameter. Rendering the current record means an operator edits one number in a
+/// ⚠️ **Pre-filled from the current values, not from blanks**, because the failure mode
+/// in these calls is transcription: the config setters take whole Candid records, and
+/// hand-authoring one while omitting a field silently changes a live parameter. Rendering the current record means an operator edits one number in a
 /// command that is otherwise already correct.
 function renderConfigGroup<T extends object>(
   title: string,
@@ -2034,7 +2033,7 @@ function setIdentity(next: Identity | null): void {
 }
 
 /// Ask the gate whether this caller can buy AT ALL, and say so before they pick an
-/// amount (#99 2b).
+/// amount.
 ///
 /// ⚠️ **Probed at the gate's own minimum, not at a chosen amount**, because the point
 /// is to catch refusals that no amount can fix. That is also why only two reasons are
@@ -2077,10 +2076,9 @@ async function refreshEligibility(): Promise<void> {
 /// delivered totals are ours to report, so they are supporting evidence rather than the
 /// headline.
 ///
-/// ⚠️ **Always rendered, including at zero — do NOT add a threshold.** #39's body argued
-/// that "0 orders delivered" is worse than no badge, and that was rejected: an absent
-/// number is indistinguishable from a withheld one, and a rule that hides the figure
-/// exactly when the news is bad is a misleading presentation rather than a neutral one.
+/// ⚠️ **Always rendered, including at zero — do NOT add a threshold.** An absent number
+/// is indistinguishable from a withheld one, and a rule that hides the figure exactly
+/// when the news is bad is a misleading presentation rather than a neutral one.
 /// Showing zero is honest and self-correcting; hiding it asks the reader to trust that
 /// nothing is being concealed.
 function renderTrustFigures(
@@ -2876,16 +2874,16 @@ function isPastDeadline(order: Order): boolean {
   return Date.now() >= nsToMillis(deadline);
 }
 
-/// Render #37's attached problems, newest first, with their resolution state.
+/// Render the problems attached to the order, newest first, with their resolution
+/// state.
 ///
 /// ⚠️ **Hidden when there are none, which is the normal case.** A panel headed "What
 /// happened to this order" showing nothing reads as a fault on every healthy order —
 /// the same reasoning as the lock notice above it.
 ///
-/// ⚠️ **Resolved problems are SHOWN, struck through, not filtered out.** #37's whole
-/// premise is that nothing drops: a buyer whose refund was reconciled should see that it
-/// happened and was dealt with, and hiding it would make the record look like it never
-/// existed. The worklist filters by unresolved; a *view of one order* does not.
+/// ⚠️ **Resolved problems are SHOWN, struck through, not filtered out.** Nothing drops:
+/// a buyer whose refund was reconciled should see that it happened and was dealt with,
+/// and hiding it would make the record look like it never existed. The worklist filters by unresolved; a *view of one order* does not.
 function renderProblems(order: Order): void {
   const list = el("order-problem-list");
   list.textContent = "";
@@ -3002,10 +3000,10 @@ function renderOrder(order: Order): void {
   el("order-pay-label").textContent = labels.pay;
   el("order-receive-label").textContent = labels.receive;
 
-  // `#expired` used to be here, on the §4 grounds that a late payment still
-  // completed. #34 deleted `#expired → #paid`, so an expired order is not
-  // awaiting anything — offering a pay link would send a buyer to spend money the
-  // gateway would then have to refund. `#cancelled` was never payable.
+  // ⚠️ **`#expired` must NOT be here.** There is no `expired → paid` edge, so an
+  // expired order is not awaiting anything — offering a pay link would send a buyer to
+  // spend money the gateway would then have to refund. `#cancelled` is not payable
+  // either.
   //
   // Past `expiresAtNs` the order is also not payable, even while the status is
   // still `#created`: Stripe closes the session on its own clock and the webhook
@@ -3278,10 +3276,10 @@ async function pollActiveOrder(): Promise<void> {
 
 async function refreshHistory(): Promise<void> {
   if (!identity) return;
-  // ⚠️ **Paged since #38, and the buyer's view wants ALL of them.** `list_orders` used
-  // to return every order unbounded, which is a trap rather than a convenience: a query
-  // response is capped at ~2 MB and an oversized read traps rather than truncating.
-  // Nothing drops orders under #37, so this only grows.
+  // ⚠️ **`list_orders` is paged, and the buyer's view wants ALL of them.** An unbounded
+  // read would be a trap rather than a convenience: a query response is capped at ~2 MB
+  // and an oversized read traps rather than truncating. Nothing drops orders, so the
+  // list only grows.
   //
   // ⚠️ **Paging to exhaustion here is deliberate, not lazy.** The history view sorts by
   // time and shows a count, so a first page would silently mis-sort and undercount —
@@ -3383,21 +3381,21 @@ const DONE_ICON =
   + '<path d="M3 8.5l3.2 3.2L13 5" fill="none" stroke="currentColor" stroke-width="1.8"'
   + ' stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-/// Copy `text`, and **report the outcome whichever way it goes** (#106 follow-up).
+/// Copy `text`, and **report the outcome whichever way it goes**.
 ///
-/// ⚠️ **Three ways this used to fail silently, and all three read to a user as "the
-/// button does nothing".**
+/// ⚠️ **Three ways this fails silently if written naively, and all three read to a user
+/// as "the button does nothing".**
 ///
 /// 1. `navigator.clipboard?.writeText(t).then(…).catch(…)` — optional chaining
 ///    short-circuits the WHOLE chain, so where `navigator.clipboard` is absent
-///    (any non-secure origin: a LAN IP, a plain-http host) `writeText` was never
-///    called, `then` never ran so there was no feedback, and `catch` never ran so
-///    there was no fallback either. Nothing happened at all.
-/// 2. When `writeText` REJECTED — permission denied, or a browser that wants the
-///    write closer to the gesture — the catch ran, and for the header button there
-///    was no node to select, so it returned having done nothing visible.
-/// 3. Success flashed a label; failure flashed nothing. A user cannot tell "copied"
-///    from "ignored me" if only one of them speaks.
+///    (any non-secure origin: a LAN IP, a plain-http host) `writeText` is never
+///    called, `then` never runs so there is no feedback, and `catch` never runs so
+///    there is no fallback either. Nothing happens at all.
+/// 2. `writeText` can REJECT — permission denied, or a browser that wants the write
+///    closer to the gesture — and the header button has no node to select, so a
+///    catch that only selects text does nothing visible.
+/// 3. Flashing a label on success and nothing on failure. A user cannot tell
+///    "copied" from "ignored me" if only one of them speaks.
 ///
 /// So: a synchronous `execCommand` fallback that works without the async API, and a
 /// state on the button for every outcome including failure.

@@ -16,8 +16,8 @@ generated TypeScript too, which is what shows on hover in an editor.
 
 ⚠️ **`check-endpoint-docs.py`'s `leaked_docs()` detects the same class from the `.did`,
 and this check exists because detecting it is the wrong end.** The leak is POSITIONAL:
-measured while reviewing #125, inserting a single declaration into `Main.mo` shifted two
-FURTHER endpoints into leaking, from private-state docs unrelated to them. So the
+measured, inserting a single declaration into `Main.mo` shifts two FURTHER endpoints into
+leaking, from private-state docs unrelated to them. So the
 detector fires on edits that did not cause it, with "find the block whose text matches"
 as the recurring fix. Refusing the input at the source means the diagnostic names the
 line responsible and needs no rebuild to fire. `leaked_docs()` stays as the backstop for
@@ -31,8 +31,8 @@ the actor line. ⚠️ That placement is what `published_docs()`'s `service + 1`
 the emitted doc is permanently the line before the service line.
 
 ⚠️ **This ban is now BELT with little left to brace, and it is kept by choice.**
-It exists because a `///` on a private state declaration could alias onto an unrelated
-endpoint — four live instances at the tip of #120, fixed in a128982.
+It exists because a `///` on a private state declaration can alias onto an unrelated
+endpoint — four live instances once, fixed in a128982.
 
 **Measured against a128982^, the commit that still had all four**, building the identical
 source under both compilers:
@@ -42,7 +42,7 @@ source under both compilers:
 | `get_order` | the webhook secret's §7 doc | its own §2 authz doc |
 | `resolve_problem` | "The price tiles, as one record." | its own §4.1/§7 doc |
 | `set_recovery_interval` | `rateRefreshFailures`' backoff doc | its own cadence doc |
-| `withdraw_reserve` | `allowedBuyers`' doc | its own #103 doc |
+| `withdraw_reserve` | `allowedBuyers`' doc | its own doc |
 
 28 service-block doc lines with all four stolen, versus 600 with none. **So aliasing was a
 symptom of the drop** — a neighbour's doc filled an empty slot, and 1.16.0 leaves no empty

@@ -136,7 +136,7 @@ Then buy: pick an amount, pay with `4242 4242 4242 4242`, and the order walks
 cannot price, which is how it says "seed first" rather than half-configuring.
 
 ⚠️ **Step 4 is the one nobody guesses.** With an empty allow-list every purchase
-refuses with `unboundedGiveaway` — the #99 faucet guard, not a misconfiguration. The
+refuses with `unboundedGiveaway` — the faucet guard, not a misconfiguration. The
 seed prints the exact command and does not treat it as a failure.
 
 ⚠️ **Step 5 needs a restricted key** (`rk_...`) with **Checkout Sessions = Write** and
@@ -158,7 +158,7 @@ broken app rather than a safe one:
 
 | What you see | Why |
 |---|---|
-| "No amounts are configured yet" | No presets registered. Since #33 that is **not** a paused rail — a custom amount still works; the seed registers the tiles |
+| "No amounts are configured yet" | No presets registered. That is **not** a paused rail — a custom amount still works; the seed registers the tiles |
 | "No exchange rate available yet" | Pricing needs the CMC rate, which only NNS governance can set — the seed reaches it through the local PocketIC control API |
 | "temporarily unavailable while the gateway is topped up" | `minCanisterCycles` is 5 T and `icp deploy` creates the canister with less. This is the canister's own **gas**, not the cycles it sells; the seed tops up rather than lowering the floor |
 | Orders paid but never delivered | The **cycles reserve** is empty — delivery transfers from the gateway's own cycles-ledger account |
@@ -320,7 +320,7 @@ icp cycles transfer -> refresh_reserve
 
 And the fifth, outside the canister: **the derivation origin decides who every buyer is.**
 It is pinned to the frontend canister's own origin (`src/frontend/src/config.ts`), which is
-what makes this test domain and whatever domain #40 settles on yield the **same**
+what makes this test domain and whatever production domain is chosen yield the **same**
 principals. Changing that pin after the first sign-in strands every account.
 
 ### Cycles
@@ -479,7 +479,7 @@ so it is accepted. Lower the floor for a demo and the same divisor is refused
 
 ### 4. The secrets, sealed, without any local script
 
-Both Stripe secrets are **encrypted to the canister before they are sent** (#11), so the
+Both Stripe secrets are **encrypted to the canister before they are sent**, so the
 plaintext never appears in an ingress message, a shell history or a CI log. The mainnet
 path differs from the local one only in the `ic` argument, which selects the **mainnet
 vetKD master key** — and that choice is derived from the environment rather than typed,
@@ -531,7 +531,7 @@ characters, so even the length disclosure could not separate them. The script no
 set-but-empty value outright and never reads the file for a named environment.
 
 ⚠️ **Use a SANDBOX restricted key (`rk_test_...`), Checkout Sessions = Write, everything
-else None.** Write is the level that also grants the read the #52 recovery sweep needs.
+else None.** Write is the level that also grants the read the recovery sweep needs.
 Never an unrestricted `sk_`: a leaked write-sessions key can only create sessions that pay
 *us*, while one that can issue refunds is materially worse.
 
@@ -865,12 +865,12 @@ copy and **not** the constraint: its way out is blocked by a second guard entire
 (`#divisorChangeWithOrders`), so a simulation gateway with one stored order can never
 go live at all. Do not add a second lockout to a money-handling setter.
 
-**5. Attestation coverage of the confidential subnet** (`RUNBOOK.md`'s confidential-subnet checklist, #2). Checkpoints and
+**5. Attestation coverage of the confidential subnet** (`RUNBOOK.md`'s confidential-subnet checklist). Checkpoints and
 state-sync **are** confirmed confidential on the target subnet, which was the spec's
 "verify this hardest" item. Attestation coverage is the box still open: one unattested
 replica is one node provider who can read the webhook secret. That checklist is where it stays open.
 
-**6. Where the repo lives, before the "check the code" link is published** (#13, #23).
+**6. Where the repo lives, before the "check the code" link is published.**
 `RELEASE.md`'s trust story is *verify the deployed module hash against a tagged
 commit*, so the repository URL is a user-facing artifact. `cyclepay` also still names
 the upstream fork this repo grew from. Renaming or moving is free now and costs

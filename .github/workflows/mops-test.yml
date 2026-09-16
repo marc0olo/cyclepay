@@ -125,8 +125,8 @@ jobs:
             exit 1
           fi
 
-      # Issue #6. The cascade-and-layout bugs jsdom cannot see: it has neither,
-      # so `el.hidden` reads true for an element that is plainly on screen. Also
+      # The cascade-and-layout bugs jsdom cannot see: it has neither, so
+      # `el.hidden` reads true for an element that is plainly on screen. Also
       # the paint-level ones no assertion reaches, via committed `-linux`
       # screenshot baselines (test/browser/visual.spec.ts). Serves a build of the
       # frontend; no local network or deployed canister needed.

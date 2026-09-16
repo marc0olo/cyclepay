@@ -11,7 +11,7 @@ func tier(id : Text, usdCents : Nat) : Tiers.Tier {
 };
 
 /// The bounds every case below validates against, except the ones probing a
-/// bound itself. Matches Gate.defaultConfig() as of #33: $10 floor, $100 ceiling.
+/// bound itself. Matches Gate.defaultConfig(): $10 floor, $100 ceiling.
 let floor : Nat = 1_000;
 let ceiling : Nat = 10_000;
 

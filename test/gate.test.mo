@@ -8,9 +8,9 @@ import Text "mo:core/Text";
 
 /// An observation that admits: room on every axis.
 ///
-/// ⚠️ **Live mode, so #99's allow-list has no effect here.** That is what keeps
-/// every pre-#99 case in this suite testing the axis it was written for rather
-/// than tripping the faucet refusal — and it is also the production shape.
+/// ⚠️ **Live mode, so the allow-list has no effect here.** That is what keeps every case
+/// in this suite testing the axis it was written for rather than tripping the faucet
+/// refusal — and it is also the production shape.
 let healthy : Gate.Observation = {
   openOrders = 0;
   canisterCycles = 20_000_000_000_000; // 20T // 100 ICP // 50 ICP // 10 ICP
@@ -38,8 +38,7 @@ let faucet : Gate.Observation = {
 };
 
 let config = Gate.defaultConfig();
-/// Well inside BOTH default bounds as of #33: the floor is $10 and the ceiling
-/// is $100, so the old $5 fixture is now below the floor.
+/// Well inside BOTH default bounds: the floor is $10 and the ceiling is $100.
 let amount : Nat = 2_000;
 
 suite("defaults", func() {
@@ -58,8 +57,8 @@ suite("defaults", func() {
     // expectations FROM `config`, so all of them stay green when a default moves — and
     // the operator-facing table in RUNBOOK's admission-gate section had drifted on two of four rows, with
     // the `set_gate_config` example beside it pasting a $1,000 ceiling and a cap of 20.
-    // An operator copying that line 10x'd the per-order reserve exposure #33 lowered
-    // on purpose.
+    // An operator copying that line would 10x the per-order reserve exposure the
+    // shipped default bounds on purpose.
     //
     // ⚠️ **Restating a value is only a check when something compares the two.** Same
     // construction as `test/buyer-cost.test.mo`'s first case, which exists because a
@@ -97,7 +96,7 @@ suite("admit", func() {
       == #err(#amountAboveMax({ usdCents = over; maxUsdCents = config.maxPurchaseUsdCents }));
   });
 
-  test("amount below the floor is refused, and distinguishably so (#33)", func() {
+  test("amount below the floor is refused, and distinguishably so", func() {
     // Distinct from the ceiling case because the buyer acts on them differently
     // — "ask for less" versus "ask for more" — and with custom amounts both are
     // reachable by typing.
@@ -141,9 +140,8 @@ suite("admit", func() {
     // Reading the reserve means awaiting the cycles ledger, and `admit` is
     // synchronous precisely so there is no window between observing and deciding.
     // Folding solvency in would force every caller to supply a balance —
-    // including `can_purchase`, a query that cannot await one. So #30's ask to
-    // "narrow can_purchase's contract" is a fact about the code here, not a
-    // sentence in a doc comment.
+    // including `can_purchase`, a query that cannot await one. So `can_purchase`'s
+    // narrow contract is a fact about the code here, not a sentence in a doc comment.
     assert Gate.admit(config, healthy, amount) == #ok;
   });
 
@@ -205,9 +203,9 @@ suite("the ceiling cannot be lowered under a live tier", func() {
   // no rescue path: the buyer's money is taken and given back over a config change
   // made earlier, which is why the guard is worth more than the error message it
   // produces.
-  // The #33 presets: $10 / $20 / $50. The old $5 entry is below the new floor,
-  // so it would be refused by `#tierBelowFloor` before the ceiling check ran and
-  // every assertion here would be about the wrong bound.
+  // ⚠️ **Every tier here must sit ABOVE the $10 floor.** One below it is refused by
+  // `#tierBelowFloor` before the ceiling check runs, and every assertion in this suite
+  // would then be about the wrong bound.
   let tiers : [(Text, Nat)] = [("tier10", 1_000), ("tier50", 5_000)];
 
   test("a ceiling above every tier is fine", func() {
@@ -232,12 +230,12 @@ suite("the ceiling cannot be lowered under a live tier", func() {
     assert Gate.validateConfig({ config with maxPurchaseUsdCents = 1; minPurchaseUsdCents = 1 }, []) == #ok;
   });
 
-  test("a floor above the ceiling admits nothing, so it is refused (#33)", func() {
+  test("a floor above the ceiling admits nothing, so it is refused", func() {
     assert Gate.validateConfig({ config with minPurchaseUsdCents = 20_000 }, [])
       == #err(#floorAboveCeiling({ minUsdCents = 20_000; maxUsdCents = config.maxPurchaseUsdCents }));
   });
 
-  test("raising the floor over a live tier is refused, and names it (#33)", func() {
+  test("raising the floor over a live tier is refused, and names it", func() {
     // The mirror of the ceiling rule, for the same reason: it would leave the
     // tier sellable but unpayable, and the operator would have to connect a
     // refused order to a config change made earlier.
@@ -257,9 +255,9 @@ suite("the ceiling cannot be lowered under a live tier", func() {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// #61 — refusal tallies and the rail-state latch.
+// Refusal tallies and the rail-state latch.
 //
-// These replace a per-attempt audit line. The properties worth pinning are not
+// A tally instead of a per-attempt audit line. The properties worth pinning are not
 // "the counter goes up" but the two that a plausible wrong implementation gets
 // wrong: the latch is PER CONDITION, and only a full admission clears it.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -270,7 +268,7 @@ let belowMin : Gate.Reason = #amountBelowMin({ usdCents = 1; minUsdCents = 1_000
 let aboveMax : Gate.Reason = #amountAboveMax({ usdCents = 1_000_000; maxUsdCents = 10_000 });
 let capReached : Gate.Reason = #tooManyOpenOrders({ open = 1; max = 1 });
 
-suite("#61 refusal counters", func() {
+suite("refusal counters", func() {
   test("each reason increments its own counter and no other", func() {
     let c = Gate.countRefusal(Gate.noRefusals(), belowMin);
     assert c.amountBelowMin == 1;
@@ -295,7 +293,7 @@ suite("#61 refusal counters", func() {
 
 });
 
-suite("#61 rail-state latch", func() {
+suite("the rail-state latch", func() {
   test("entering a rail-state condition announces exactly once", func() {
     let first = Gate.latchRefusal(Gate.admitting(), shortReserve);
     assert first.announce;
@@ -310,8 +308,8 @@ suite("#61 rail-state latch", func() {
     // ⚠️ **This is the test that rejects the naive implementation.** A single
     // global "was admitting, now refusing" flag passes every other case here and
     // fails this one, because a per-request refusal looks like a change of state
-    // to it. That version reintroduces a smaller copy of the leak #61 closes:
-    // bounded by real traffic rather than free, but avoidable entirely.
+    // to it. That version leaks audit lines again — bounded by real traffic rather than
+    // free, but avoidable entirely.
     let entered = Gate.latchRefusal(Gate.admitting(), shortReserve);
     assert entered.announce;
     let malformed = Gate.latchRefusal(entered.latch, belowMin);
@@ -356,10 +354,9 @@ suite("#61 rail-state latch", func() {
   });
 });
 
-suite("#61 rail closure is the third latching condition", func() {
+suite("rail closure is the third latching condition", func() {
   test("entering rail closure announces once, and independently of the other two", func() {
-    // ⚠️ **The condition that was missed on the first pass**, and the reason it
-    // was easy to miss: rail closure is refused BEFORE the gate, so it is not a
+    // ⚠️ **Easy to miss**: rail closure is refused BEFORE the gate, so it is not a
     // `Reason` at all and a counter set covering only `Reason` records nothing
     // during the window a freshly deployed gateway spends unprovisioned.
     let first = Gate.latchCondition(Gate.admitting(), #railClosed);
@@ -406,7 +403,7 @@ suite("#61 rail closure is the third latching condition", func() {
   });
 });
 
-suite("#37 §2c — the session outcall is a fourth condition, cleared differently", func() {
+suite("the session outcall is a fourth condition, cleared differently", func() {
   test("entering it announces once", func() {
     let first = Gate.latchCondition(Gate.admitting(), #stripeApiFailing);
     assert first.announce;
@@ -452,7 +449,7 @@ suite("#37 §2c — the session outcall is a fourth condition, cleared different
   });
 });
 
-suite("#99 the faucet refusal", func() {
+suite("the faucet refusal", func() {
   test("the exact triple refuses: test payments, empty list, funded reserve", func() {
     assert Gate.admit(config, faucet, amount)
     == #err(#unboundedGiveaway({ reserveFloor = faucet.reserveFloor }));
@@ -514,7 +511,7 @@ suite("#99 the faucet refusal", func() {
   });
 
   test("the faucet is a GATEWAY fact and the unlisted buyer is not", func() {
-    // Different diagnoses, so different halves of the #61 split: one announces
+    // Different diagnoses, so different halves of the latch/counter split: one announces
     // "the gateway started refusing at T", the other says nothing about the
     // gateway because the gateway is correctly bounded.
     assert Gate.railConditionOf(#unboundedGiveaway({ reserveFloor = 1 })) == ?#unboundedGiveaway;

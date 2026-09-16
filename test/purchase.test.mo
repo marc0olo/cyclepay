@@ -110,9 +110,9 @@ suite("Purchase.plan — each adjacent pair of steps, in order", func() {
 
 suite("Purchase.plan — the two unpriceable causes stay distinct", func() {
   test("a fee-swallowed amount names the amount, not the gateway's divisor", func() {
-    // ⚠️ #99 review finding 2: telling a buyer "payment processing is too large" when the
-    // cause is this gateway's simulation divisor names the wrong party and prescribes a
-    // fix that may not work. The two causes are separate arms for that reason.
+    // ⚠️ Telling a buyer "payment processing is too large" when the cause is this
+    // gateway's simulation divisor names the wrong party and prescribes a fix that may
+    // not work. The two causes are separate arms for that reason.
     assert planWith(#tier("tier5"), null, admits, belowFees) == #err(#tierBelowFees("tier5"));
     assert planWith(#custom(7), null, admits, belowFees) == #err(#tierBelowFees("7 cents"));
   });

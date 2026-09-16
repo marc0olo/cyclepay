@@ -26,7 +26,7 @@ test.describe("sign-in is reachable from the flow", () => {
     // Nothing VISIBLE names the mechanism. The delivered tour does name Internet
     // Identity, deliberately: the CLI-access prerequisite is real and omitting it
     // strands the buyer at "CLI access not enabled". That surface is post-purchase
-    // and technical, which is where #21 confines the vocabulary.
+    // and technical, which is where the crypto vocabulary is confined.
     await expect(
       page.getByText(/internet identity/i).filter({ visible: true }),
     ).toHaveCount(0);
@@ -41,9 +41,9 @@ test.describe("sign-in is reachable from the flow", () => {
     // so the command strip necessarily contains it. The rule is about the token
     // in newcomer copy, not about the tool's name.
     //
-    // "exchange account" is deliberately absent from this list: issue #21 carves
-    // out one use, at the end of the cycles explainer, because the preceding
-    // sentence introduces the concept. A negation only alarms a reader who did
+    // "exchange account" is deliberately absent from this list: one use is carved
+    // out, at the end of the cycles explainer, because the preceding sentence
+    // introduces the concept. A negation only alarms a reader who did
     // not already have the worry.
     // The LANDING surface specifically: header, hero, the call to action,
     // explainers, footer. Not the whole body — the receipt block names the Exchange Rate

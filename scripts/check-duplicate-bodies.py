@@ -6,11 +6,11 @@ Nothing else here can see it. `check-unused-motoko.py` finds a function with no 
 this finds two functions that both have callers and both do the same thing — where the
 loss is not dead code but **divergence**, because the next correction lands on one of them.
 
-**It has already happened once, and on the money path.** #136 added a private
-`Reserve.deliverable` that re-implemented `Delivery.deliverableCycles` — the fee-on-top
-correction — while its own docstring claimed *"the same correction, so the same function"*,
-and it replaced a call site that had been calling the real one. Delivery and withdrawal
-are the two outflow classes of one account, so a fee correction diverging between them is
+**The motivating class, on the money path:** a private `Reserve.deliverable`
+re-implementing `Delivery.deliverableCycles` — the fee-on-top correction — while claiming
+*"the same correction, so the same function"* and replacing a call site that had been
+calling the real one. Delivery and withdrawal are the two outflow classes of one account,
+so a fee correction diverging between them is
 exactly the failure `Reserve.mo`'s "two destination classes, ONE outflow mechanism"
 framing exists to prevent. Caught in review; this is what catches the next one — and
 ⚠️ **the first two versions of this script did not**, which is recorded on `MIN_TOKENS`
@@ -154,18 +154,18 @@ def bodies(path):
             i += 1
         body = " ".join(text[open_at + 1 : i - 1].split())
         # ⚠️ **Parameters are renamed POSITIONALLY, and this is the whole point of the
-        # check.** #136's duplicate took `(total, fee)` where the original took
+        # check.** A duplicate takes `(total, fee)` where the original takes
         # `(lockedCycles, fee)` — identical arithmetic, different argument names, chosen
-        # naturally rather than to dodge anything. Comparing raw text called them
-        # distinct, which made the check blind to the one instance that motivated it.
+        # naturally rather than to dodge anything. Comparing raw text calls them distinct,
+        # which blinds the check to exactly the instance it exists for.
         # Measured before and after: raw text 9 vs 11 tokens and unequal; normalised,
         # both are `if (_1 >= _0) return null; ?(_0 - _1 : Nat);` and equal.
         params = PARAM.findall(" ".join(text[m.end() : open_at].split()))
         for position, param in enumerate(dict.fromkeys(params)):
             body = re.sub(rf"\b{re.escape(param)}\b", f"_{position}", body)
         # ⚠️ **In-expression type annotations are dropped, and that is what closes the
-        # motivating case.** #136's copy wrote `?(_0 - _1 : Nat)` where the original
-        # wrote `?(_0 - _1)` — an annotation that disambiguates for the compiler and
+        # motivating case.** A copy writes `?(_0 - _1 : Nat)` where the original
+        # writes `?(_0 - _1)` — an annotation that disambiguates for the compiler and
         # says nothing about behaviour, so leaving it in made two identical rules compare
         # distinct. ⚠️ The cost is stated rather than hidden: two bodies that differ ONLY
         # by which type they annotate (`: Nat` vs `: Int`) now collide and are reported.

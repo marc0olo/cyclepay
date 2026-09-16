@@ -115,7 +115,7 @@ hits="$( { grep -nEi "$BANNED" "$FE/index.html"; literals | grep -Ei "$BANNED"; 
 # ⚠️ **`index.html` is deliberately NOT treated the same way: it is read whole,
 # comments included.** So an HTML comment mentioning a banned glyph fails the
 # pictograph check while a CSS comment doing the same does not. That asymmetry is
-# intentional and it has caught a real comment (#68's summary-strip markup), but
+# intentional and it has caught a real comment in this repo's markup, but
 # it reads as a bug when you hit it, so: the CSS stripping exists because CSS
 # comments are where the RULES get explained, next to the properties they
 # constrain. HTML comments sit inside the document a visitor is served, and

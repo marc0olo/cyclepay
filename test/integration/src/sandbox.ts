@@ -141,8 +141,8 @@ async function main(): Promise<void> {
   const apiKey = process.env.STRIPE_API_KEY;
   if (apiKey && apiKey.length > 0) {
     expectOk(await gw.asAdmin.set_stripe_api_key(seal(gw.backendId, apiKey)));
-    // #99: these suites fund a reserve and accept test payments, so without an
-    // allow-list every create_order refuses as the faucet state.
+    // These suites fund a reserve and accept test payments, so without an allow-list
+    // every create_order refuses as the faucet state.
     await allowTestBuyers(gw);
     const created = expectOk(
       // One destination, and the gateway refuses any other: the caller's own

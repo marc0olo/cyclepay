@@ -3,11 +3,10 @@
 actually run: the method has to exist in the committed `.did`, and the number of
 top-level arguments has to match what it declares.
 
-Why this exists: `audit_log` took `(opt nat, nat)` from #38 onward while three
-places still called it `'()'`, and `quote_previews` lost its rail argument when
-#35 deleted the ck-USDC rail while RUNBOOK kept passing one -- the line it calls
-"the fastest is-the-rail-actually-quoting check". Four instances, all of them an
-operator's copy-paste failing mid-incident, none of them visible to any suite:
+Why this exists: a method's arity changes and the prose calling it does not.
+`audit_log` gaining `(opt nat, nat)` while three places still call it `'()'`, or
+`quote_previews` losing an argument a runbook line keeps passing, are both an
+operator's copy-paste failing mid-incident and neither is visible to any suite:
 these are strings in prose, so nothing type-checks them and the gate was green.
 
 `check-admin-commands.py` is the neighbouring check and does NOT cover this. It
