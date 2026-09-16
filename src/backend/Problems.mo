@@ -176,7 +176,7 @@ module {
     };
   };
 
-  /// Why `resolve_problem` refused (#123).
+  /// Why `resolve_problem` refused.
   ///
   /// ⚠️ **A variant, because the three refusals need three different actions** and a
   /// caller could previously tell them apart only by matching prose. `#ambiguous` is the
@@ -199,7 +199,7 @@ module {
     #referenceNotFound : { tag : Types.ProblemKindTag; reference : ?Text };
   };
 
-  /// The kind's discriminator, payload dropped (#122).
+  /// The kind's discriminator, payload dropped.
   ///
   /// ⚠️ **Exhaustive by construction, unlike the `Text` comparison it replaces.** This
   /// switch and `kindToText` are the same shape, but only this one is checked: adding a

@@ -81,7 +81,7 @@ module {
     minCanisterCycles : Nat;
     /// Per-purchase ceiling on the gross USD amount.
     ///
-    /// It stopped being defence in depth when custom amounts arrived (#33): the
+    /// It stopped being defence in depth when custom amounts arrived: the
     /// buyer names the amount now, so this is the **only** upper bound, and it is
     /// the real lever on the reserve-availability vector in #30 — the ceiling IS
     /// the per-order reserve exposure. At $1,000 one unpaid order ties up ~720 T
@@ -119,7 +119,7 @@ module {
     {
       maxOpenOrdersPerPrincipal = 1;
       minCanisterCycles = 5_000_000_000_000; // 5T
-      // $100, down from $1,000 (#33). The ceiling IS the per-order reserve
+      // $100, down from $1,000. The ceiling IS the per-order reserve
       // exposure, so this is the main lever on #30's reserve-griefing vector.
       maxPurchaseUsdCents = 10_000;
       // $10, for two independent reasons:
@@ -162,7 +162,7 @@ module {
     /// every amount, which is a config typo rather than a policy.
     #floorAboveCeiling : { minUsdCents : Nat; maxUsdCents : Nat };
     /// ⚠️ **The mirror of `Pricing.ConfigError.divisorUndeliverable`, and it exists
-    /// because the divisor's ceiling is a function of the FLOOR** (#99).
+    /// because the divisor's ceiling is a function of the FLOOR**.
     ///
     /// `set_pricing_config` refuses a divisor that scales the current minimum
     /// purchase below what the cycles-ledger deposit fee eats. Without this check,
@@ -266,7 +266,7 @@ module {
     };
   };
 
-  /// Running tally of refusals, one counter per `Reason` (#61).
+  /// Running tally of refusals, one counter per `Reason`.
   ///
   /// ⚠️ **A counter and not an audit line, because refusals are free to attempt.**
   /// `#amountBelowMin` needs no prior state — one cent from any fresh principal
@@ -548,7 +548,7 @@ module {
     /// The **floor** rather than a ledger balance, and not merely because it is
     /// synchronous: `solvent` derives availability from the floor too, so a
     /// funded-but-unobserved reserve cannot sell and need not trigger the
-    /// condition (#82).
+    /// condition.
     reserveFloor : Nat;
     /// Whether free Stripe **test** payments would be accepted — the rail's
     /// `expectLivemode` is anything other than `?true`.

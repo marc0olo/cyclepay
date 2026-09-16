@@ -732,7 +732,7 @@ service : {
   /// 
   /// ⚠️ An empty list does not mean "everyone" — see `allowedBuyers`.
   allowed_buyers: () -> (vec principal) query;
-  /// The operational trail, **paginated** (#38).
+  /// The operational trail, **paginated**.
   /// 
   /// ⚠️ **Pagination became necessary the moment #37 removed the ring.** The bound used
   /// to be the 4,096-entry ring, so the response size took care of itself; retention is
@@ -742,7 +742,7 @@ service : {
   /// Cursor on `seq`, which now has **no gaps**: gaps used to be how a reader detected
   /// drops, and there are no drops.
   audit_log: (afterSeq: opt nat, limit: nat) -> (Page__2) query;
-  /// **Admin: the audit trail, newest first** (#68).
+  /// **Admin: the audit trail, newest first**.
   /// 
   /// The same events `audit_log` returns, in the order an operator reads them: someone
   /// opening the console wants what just happened, and the ascending view starts at the
@@ -780,7 +780,7 @@ service : {
   /// money moved is exactly the noise the worklist must not accumulate.
   cancel_order: (id: OrderId) -> (Result_16);
   /// Public — the frontend renders the amount tiles from this. There is no link
-  /// to render: the canister creates a session per order (#33).
+  /// to render: the canister creates a session per order.
   card_tiers: () -> (vec Tier) query;
   /// Create a card-rail order: II caller becomes the owner (ownership is
   /// captured here at the API edge, seam §11.1.3), the tier's USD amount is
@@ -833,7 +833,7 @@ service : {
   /// Money-out journal for one order (admin, §4.2) — intent, block_index, cycles
   /// delivered, retries.
   delivery_journal: (id: OrderId) -> (opt JournalEntry) query;
-  /// The public trust figures (#39) — anonymous, safe on a landing page.
+  /// The public trust figures — anonymous, safe on a landing page.
   /// 
   /// ⚠️ **The admission test is "what does a POLLER learn from the deltas?", not "does this
   /// field name a buyer?"** Cumulative counters are differentiable: anyone sampling this
@@ -887,7 +887,7 @@ service : {
   /// a mismatch against the mode a webhook arrives in is what `Card.handleWebhook`
   /// refuses on. `set_expected_livemode` is the controller-only setter.
   expected_livemode: () -> (opt bool) query;
-  /// **Admin: expire one `#created` order, releasing its reserve capacity** (#52).
+  /// **Admin: expire one `#created` order, releasing its reserve capacity**.
   /// 
   /// ⚠️ **The lever for the class the sweep structurally CANNOT see**, so do not delete it
   /// as redundant with the sweep: an order whose session-create response was lost carries
@@ -940,7 +940,7 @@ service : {
       gate: Config__1;
     }) query;
   /// Order history for the caller (§2, fixes the lost-receipt problem).
-  /// The caller's own orders, **paginated** (#38).
+  /// The caller's own orders, **paginated**.
   /// 
   /// ⚠️ **This was a latent trap on the BUYER path, not an ergonomic wart.** It returned
   /// every order the caller owns, unbounded, and a query response is capped at ~2 MB —
@@ -948,13 +948,13 @@ service : {
   /// a buyer accumulates them slowly, but nothing bounded it, and nothing drops orders
   /// under #37.
   /// 
-  /// ⚠️ **Paging bounded the RESPONSE; `Orders.ownerPage` bounds the WORK (#70).** The
+  /// ⚠️ **Paging bounded the RESPONSE; `Orders.ownerPage` bounds the WORK.** The
   /// admin pager's owner filter walks every principal's orders to find one principal's,
   /// so this used to cost O(all orders ever created) in a single message — a page cap on
   /// a ~2 MB response, against a limit that is actually instructions. `ownerPage` walks
   /// the caller's own index from the cursor instead, and its cost is that buyer's page.
   list_orders: (afterId: opt OrderId, limit: nat) -> (Page__1) query;
-  /// "Is anything wrong right now" in ONE call (#68).
+  /// "Is anything wrong right now" in ONE call.
   /// 
   /// ⚠️ **Public is a decision, not a default: #3's alerting needs no credentials.** What
   /// reaches a human at 03:00 is a cron on the public queries, and an admin-gated summary
@@ -1073,7 +1073,7 @@ service : {
       rates: opt Rates;
       xrcCanisterId: opt text;
     }) query;
-  /// How much is outstanding, as two numbers rather than a collection (#38).
+  /// How much is outstanding, as two numbers rather than a collection.
   /// 
   /// ⚠️ **The shape to poll, and the reason it exists separately from the list.** A
   /// paginated detail query needs a cheap total beside it or a monitor pages through
@@ -1087,7 +1087,7 @@ service : {
                           orders: nat;
                           unresolved: nat;
                         }) query;
-  /// Manual delivery kick — **admin, or the order's own owner** (#30 PR-B).
+  /// Manual delivery kick — **admin, or the order's own owner**.
   /// 
   /// Safe to spam by construction: every step is journalled, deduplicated, idempotent
   /// and single-flighted. A page refresh heals a stuck order in seconds rather than
@@ -1105,7 +1105,7 @@ service : {
   /// closed the tab is exactly who most needs us to finish.
   /// 
   /// ⚠️ **An owner kicking their own order is NOT audited**, because the log drops
-  /// nothing (#37) and a refresh loop would be permanent state growth driven by a
+  /// nothing and a refresh loop would be permanent state growth driven by a
   /// caller. An admin kick is audited — it is an ops action on someone else's order.
   process_order: (id: OrderId) -> (Result_13);
   /// Batch pre-purchase quote, public.
@@ -1230,7 +1230,7 @@ service : {
   /// gateway refuses every sale against a fully funded reserve and nothing anywhere
   /// says why.
   refresh_reserve: () -> (nat);
-  /// Refusal tallies, and whether the gate is refusing right now (#61).
+  /// Refusal tallies, and whether the gate is refusing right now.
   /// 
   /// ⚠️ **Public, like every other monitoring surface here** — operational state
   /// is public by design; the webhook secret is the only secret in the system.
@@ -1255,7 +1255,7 @@ service : {
   /// so, because "revoked the last buyer" and "the gateway stopped selling" are
   /// the same event and an operator should not have to connect them later.
   remove_allowed_buyer: (p: principal) -> (Result_11);
-  /// Reserve solvency and order counters, public (#30 PR-B).
+  /// Reserve solvency and order counters, public.
   /// 
   /// `reserveFloor` − `promisedTotal` = `availableToSell`, in one answer, so "the ledger
   /// says 100 T and the gateway will sell 0" is diagnosable at a glance (§3.2).
@@ -1302,7 +1302,7 @@ service : {
   /// `resolve_problem`; pointing an operator here for those would be pointing them at the
   /// wrong method. Resolving an entry never transitions the order — see `Orphans`'s
   /// header.
-  /// Close **one** order-bound problem an operator has dealt with (#37).
+  /// Close **one** order-bound problem an operator has dealt with.
   /// 
   /// ⚠️ **`paymentRef` is the selector, and dropping it over-resolves.** `sameShape`
   /// deliberately allows two unresolved `#duplicate` problems on one order with different
@@ -1325,7 +1325,7 @@ service : {
   /// 
   /// ⚠️ **This is no longer the rail's on/off switch.** An empty list used to
   /// pause the rail, and the audit line said "CARD RAIL PAUSED". With custom
-  /// amounts (#33) a buyer can order without any preset, so an empty list stops
+  /// amounts a buyer can order without any preset, so an empty list stops
   /// nothing — it just shows no tiles. The switch is both Stripe secrets being
   /// provisioned; `railsLive` is where that lives.
   set_card_tiers: (tiers: vec Tier) -> (Result_8);
@@ -1358,21 +1358,21 @@ service : {
   /// Adjust pricing params (§7): fee formula, staleness window, delta guard.
   /// Validated atomically — a bad config never partially applies.
   /// ⚠️ **Three divisor guards live here rather than in `Pricing.validateConfig`,
-  /// because each needs context that module cannot see** (#99). All three are
+  /// because each needs context that module cannot see**. All three are
   /// checked before anything is written, so a bad config never partially applies.
   set_pricing_config: (config: Config) -> (Result_4);
   /// Tune the sweep cadence (admin, §7) — re-arms immediately, no redeploy.
   /// Validated against the §5.1 bound: the cadence must stay well inside
   /// the ledger dedup window or replay loses its safety margin.
   set_recovery_interval: (intervalNs: nat) -> (Result_3);
-  /// Provision or rotate the restricted Stripe API key (#33), sealed exactly as
-  /// `set_webhook_secret` is — same vetKey, one derivation for both (#11).
+  /// Provision or rotate the restricted Stripe API key, sealed exactly as
+  /// `set_webhook_secret` is — same vetKey, one derivation for both.
   /// 
   /// The key to seal is a **restricted key** (`rk_...`) with *Checkout Sessions = Write*
   /// and everything else None; `Secret.mo` records why that scope, not this storage, is
   /// what bounds a leak.
   set_stripe_api_key: (ciphertext: blob) -> (Result_1);
-  /// Set the origin Stripe returns buyers to (#33) — admin.
+  /// Set the origin Stripe returns buyers to — admin.
   /// 
   /// Validated at set time rather than at session-create time, so a bad value
   /// fails in front of the operator who typed it instead of breaking every
@@ -1387,13 +1387,13 @@ service : {
   /// Provision or rotate the Stripe webhook signing secret (§7).
   /// 
   /// Takes the full `whsec_...` string — the whole string, prefix included, is the HMAC
-  /// key — **sealed to this canister's vetKD public key** (#11). `scripts/seal-secret.sh`
+  /// key — **sealed to this canister's vetKD public key**. `scripts/seal-secret.sh`
   /// produces the argument; the plaintext never travels.
   /// 
   /// ⚠️ **This closed the §7 provisioning exposure, and the note that used to sit here
   /// saying otherwise is gone rather than softened.** The ingress argument is now
   /// ciphertext, so the boundary node that terminates TLS sees nothing usable. What
-  /// remains is the at-rest exposure, which is the confidential subnet's job (#2) and not
+  /// remains is the at-rest exposure, which is the confidential subnet's job and not
   /// something rotation can help with.
   set_webhook_secret: (ciphertext: blob) -> (Result_1);
   /// Whether the restricted Stripe key is provisioned — **never the key**.
@@ -1406,7 +1406,7 @@ service : {
   /// The origin, readable back because it is not a secret — it is the URL
   /// buyers are sent to, and an operator needs to confirm it.
   stripe_origin: () -> (opt text) query;
-  /// The outcall transform (#33). Referenced by name in the request, so it has to
+  /// The outcall transform. Referenced by name in the request, so it has to
   /// be a public `shared query` on the actor even though nothing should ever call
   /// it directly.
   /// 
@@ -1422,7 +1422,7 @@ service : {
   /// Provisioning state only — the secret itself is never readable back
   /// out, even by controllers. `generation` confirms a rotation landed.
   webhook_secret_status: () -> (Status) query;
-  /// Return the reserve to the caller, refusing while anything is owed (#103).
+  /// Return the reserve to the caller, refusing while anything is owed.
   /// 
   /// ⚠️ **Why this exists at all.** #30 recorded no withdraw lever because *"the app is
   /// not in production and an over-funded local reserve costs nothing"* — true then, and

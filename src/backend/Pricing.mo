@@ -132,7 +132,7 @@ module {
     minRateSources : Nat;
     /// Simulation scale: deliver `1/divisor` of the cycles a purchase buys.
     /// **`1` is production and means the arithmetic below is bit-identical to
-    /// having no divisor at all** (#99).
+    /// having no divisor at all**.
     ///
     /// ⚠️ **`divisor > 1` IS the simulation-mode signal — there is no second
     /// flag.** A separate boolean could disagree with this number, and then two

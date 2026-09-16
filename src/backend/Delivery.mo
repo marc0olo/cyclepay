@@ -18,7 +18,7 @@
 /// delivery.
 ///
 /// ⚠️ **A third call site exists and it is a different DESTINATION CLASS, not a third
-/// outflow mechanism**: `Main.withdraw_reserve` (#103) transfers to a controller rather
+/// outflow mechanism**: `Main.withdraw_reserve` transfers to a controller rather
 /// than to a buyer. `Reserve.mo`'s outflow section names both classes and what bounds
 /// each; `withdrawArgs` below builds its args, and `withdrawMemo` separates the two in
 /// the ledger's own record.
@@ -130,7 +130,7 @@ module {
 
 
 
-  /// **Seed** for the stored cycles-ledger transfer fee (#30 PR-B). The live value
+  /// **Seed** for the stored cycles-ledger transfer fee. The live value
   /// lives in `Main.cyclesLedgerFee`, because the ledger owns it and can move it.
   ///
   /// It is a seed and not a constant: `#BadFee` carries the ledger's expected fee,
@@ -158,7 +158,7 @@ module {
 
 
 
-  /// §5.1 for the reserve (#30 PR-A) — the delivery transfer's frozen args.
+  /// §5.1 for the reserve — the delivery transfer's frozen args.
   ///
   /// ⚠️ **`memo` is the order id, and that is a correctness requirement, not a
   /// convenience.** The ledger dedups on `(created_at_time, from, to, amount,
@@ -208,7 +208,7 @@ module {
     };
   };
 
-  /// Transfer args for a reserve WITHDRAWAL (#103) — the second destination class.
+  /// Transfer args for a reserve WITHDRAWAL — the second destination class.
   ///
   /// ⚠️ **This is not a delivery, and the difference is the destination.** Every other
   /// transfer this canister makes goes to a buyer's own account for an order they paid
@@ -242,7 +242,7 @@ module {
 
   /// What the buyer receives: the locked quantity less the ledger's transfer fee.
   ///
-  /// Probe-measured (#30): the ledger debits `amount + fee`, so sending
+  /// Probe-measured: the ledger debits `amount + fee`, so sending
   /// `lockedCycles - fee` moves the reserve by **exactly `lockedCycles`**. That
   /// is why #30's promise tally is `Σ lockedCycles` with no separate fee term —
   /// an earlier draft wrote `Σ (lockedCycles + fee)` and double-counted.

@@ -62,7 +62,7 @@ module {
     { events = Queue.empty(); var nextSeq = 0 };
   };
 
-  /// Append. **Nothing is evicted** (#37).
+  /// Append. **Nothing is evicted**.
   ///
   /// ⚠️ **The `capacity` parameter is gone, not defaulted to a large number.** A bound
   /// that is never reached still has to be reasoned about at every call site, and a later
@@ -84,7 +84,7 @@ module {
 
   public type Page = { events : [Event]; nextCursor : ?Nat };
 
-  /// One page of events, oldest → newest, after `afterSeq` (#38).
+  /// One page of events, oldest → newest, after `afterSeq`.
   ///
   /// ⚠️ **This became necessary the moment #37 removed the ring.** The bound used to be
   /// the ring itself, so nobody had to think about the response size; retention is now
@@ -110,7 +110,7 @@ module {
     { events = collected.toArray(); nextCursor = null };
   };
 
-  /// One page of events, **newest → oldest**, strictly older than `beforeSeq` (#68).
+  /// One page of events, **newest → oldest**, strictly older than `beforeSeq`.
   ///
   /// ⚠️ **Why this exists rather than reversing `page`'s result.** Reversing a page gives
   /// the OLDEST events in descending order, which is the opposite of what an operator

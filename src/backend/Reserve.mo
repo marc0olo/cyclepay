@@ -205,7 +205,7 @@ module {
   // per execution.** Two of them are a delivery's attempt and its `#BadFee` re-issue of
   // the same intent; at most one can debit, and the ledger deduplicates if an earlier
   // attempt landed. Reading "two call sites" as "two outflows" and adding a second
-  // decrement double-counts every delivery. The third is `withdraw_reserve` (#103), a
+  // decrement double-counts every delivery. The third is `withdraw_reserve`, a
   // separate execution entirely, which decrements once by the figure it debits.
 
   /// What the ledger should read after an outflow, at minimum. Every term is observed or

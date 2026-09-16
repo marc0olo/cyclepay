@@ -1,4 +1,4 @@
-/// Stripe Checkout Session creation and expiry, as pure functions (#33).
+/// Stripe Checkout Session creation and expiry, as pure functions.
 ///
 /// Everything here is deterministic and unit-testable: building the
 /// form-encoded request, stripping the response for consensus, and parsing the
@@ -26,7 +26,7 @@ import Text "mo:core/Text";
 import Json "../Json";
 
 module {
-  /// Why creating a Checkout Session failed (#33).
+  /// Why creating a Checkout Session failed.
   ///
   /// ⚠️ **Lives with the rail rather than the composition root**, since #120: it
   /// describes a Stripe-session failure, and two mixins plus `Main.mo` need to name it.
@@ -395,7 +395,7 @@ module {
   ///
   /// The reject messages are the replica's, matched as substrings — the exact
   /// strings, not paraphrases. The distinction that matters is **retryable or
-  /// not**, because there is no retry method here by design (#33): the buyer
+  /// not**, because there is no retry method here by design: the buyer
   /// retries, and an audit line saying "outcall failed" leaves the operator
   /// unable to tell a transient subnet hiccup from Stripe being down from a bug
   /// in our own transform.
@@ -520,7 +520,7 @@ module {
 
 
   /// `GET /v1/checkout/sessions/{id}` — the read the recovery sweep uses to settle a
-  /// `#created` order whose expiry event never arrived (#52).
+  /// `#created` order whose expiry event never arrived.
   ///
   /// ⚠️ **The id is Stripe's, never a caller's.** It is stamped into
   /// `Order.stripeSessionId` from the create response and read back from our own store,

@@ -176,7 +176,7 @@ mixin (
   /// `resolve_problem`; pointing an operator here for those would be pointing them at the
   /// wrong method. Resolving an entry never transitions the order — see `Orphans`'s
   /// header.
-  /// Close **one** order-bound problem an operator has dealt with (#37).
+  /// Close **one** order-bound problem an operator has dealt with.
   ///
   /// ⚠️ **`paymentRef` is the selector, and dropping it over-resolves.** `sameShape`
   /// deliberately allows two unresolved `#duplicate` problems on one order with different
@@ -200,7 +200,7 @@ mixin (
     paymentRef : ?Text,
   ) : async Result.Result<Nat, Problems.ResolveProblemError> {
     ops.requireAdmin(caller);
-    // Separated from "nothing to resolve" (#123): an unknown id used to answer the same
+    // Separated from "nothing to resolve": an unknown id used to answer the same
     // way as a known order with nothing open, so a mistyped id read as "already done".
     if (Orders.get(orderStore, orderId) == null) return #err(#noSuchOrder({ orderId }));
     let candidates = Orders.unresolvedOfKind(orderStore, orderId, tag);
@@ -265,7 +265,7 @@ mixin (
     resolved;
   };
 
-  /// The operational trail, **paginated** (#38).
+  /// The operational trail, **paginated**.
   ///
   /// ⚠️ **Pagination became necessary the moment #37 removed the ring.** The bound used
   /// to be the 4,096-entry ring, so the response size took care of itself; retention is
@@ -282,7 +282,7 @@ mixin (
     AuditLog.page(auditLog, afterSeq, limit);
   };
 
-  /// **Admin: the audit trail, newest first** (#68).
+  /// **Admin: the audit trail, newest first**.
   ///
   /// The same events `audit_log` returns, in the order an operator reads them: someone
   /// opening the console wants what just happened, and the ascending view starts at the
@@ -313,7 +313,7 @@ mixin (
     nextCursor : ?Types.OrderId;
   } {
     ops.requireAdmin(caller);
-    // ⚠️ **Bounded by the non-terminal index, not by lifetime sales (#63).** `#paid`
+    // ⚠️ **Bounded by the non-terminal index, not by lifetime sales.** `#paid`
     // holds its promise, so the index is a superset of the population and the filter is
     // exact — and the index is capped by the reserve rather than growing with sales.
     //
@@ -388,7 +388,7 @@ mixin (
     paidIntents.get(paymentRef);
   };
 
-  /// **Admin: expire one `#created` order, releasing its reserve capacity** (#52).
+  /// **Admin: expire one `#created` order, releasing its reserve capacity**.
   ///
   /// ⚠️ **The lever for the class the sweep structurally CANNOT see**, so do not delete it
   /// as redundant with the sweep: an order whose session-create response was lost carries
@@ -512,7 +512,7 @@ mixin (
     // therefore untouched by this guard — escalation implies no outstanding call.
     //
     // ⚠️ **`unsettledDeliveries` now depends on this refusal for its completeness**, so
-    // this guard holds up more than the double-payout it was added for (#69). It is what
+    // this guard holds up more than the double-payout it was added for. It is what
     // keeps a transfer-in-flight order inside `promiseHolders`; relaxing it for operator
     // ergonomics would let the quiet window read quiet across an in-flight transfer,
     // which is the oversell direction. Integration scenario 78 owns it.

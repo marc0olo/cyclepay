@@ -1,4 +1,4 @@
-/// vetKD sealing (#11): what turns a ciphertext an operator sent into the plaintext
+/// vetKD sealing: what turns a ciphertext an operator sent into the plaintext
 /// secret `Secret.Store` holds.
 ///
 /// The problem this solves is **provisioning exposure**, and only that. `set_stripe_api_key`
@@ -11,7 +11,7 @@
 /// canister memory, replicated and checkpointed like any other state. That is irreducible:
 /// HMAC verification needs the plaintext, so no scheme keeps it out of memory. #11 works
 /// this through and rejects the alternatives; the posture is `docs/DESIGN.md` §7, and the
-/// confidentiality layer is the confidential subnet (#2), not this module.
+/// confidentiality layer is the confidential subnet, not this module.
 ///
 /// ⚠️ **What the unaudited dependency can and cannot cost us — `docs/DESIGN.md` §7.3.**
 /// The encrypting is done by the audited `@icp-sdk/vetkeys`; this side only DECRYPTS. So a

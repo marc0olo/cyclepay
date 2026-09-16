@@ -24,7 +24,7 @@ import Secret "../Secret";
 ///
 /// ⚠️ **Accessors rather than a `{ var current : ?Text }` wrapper**, which is the other
 /// way to make a `var` shareable. Wrapping changes the actor's STABLE SHAPE — the field
-/// stops being `stable var stripeOrigin : ?Text` — and with no migration chain (#32)
+/// stops being `stable var stripeOrigin : ?Text` — and with no migration chain
 /// that costs a reinstall. Closures are mixin parameters, never stable state, so
 /// `deployed/backend.most` does not move for this split.
 mixin (
@@ -39,7 +39,7 @@ mixin (
   requireAdmin : (Principal) -> (),
   auditAdmin : (Principal, Text, Text) -> (),
   nowNs : () -> Int,
-  /// Decrypts a sealed argument (#11). A closure rather than the vetKey itself: the key is
+  /// Decrypts a sealed argument. A closure rather than the vetKey itself: the key is
   /// derived lazily through the management canister and cached in the actor, so handing
   /// this mixin a value would hand it a snapshot of an empty cache.
   openSealed : (Blob) -> async* Result.Result<Blob, Sealed.ProvisionError>,
@@ -53,13 +53,13 @@ mixin (
   /// Provision or rotate the Stripe webhook signing secret (§7).
   ///
   /// Takes the full `whsec_...` string — the whole string, prefix included, is the HMAC
-  /// key — **sealed to this canister's vetKD public key** (#11). `scripts/seal-secret.sh`
+  /// key — **sealed to this canister's vetKD public key**. `scripts/seal-secret.sh`
   /// produces the argument; the plaintext never travels.
   ///
   /// ⚠️ **This closed the §7 provisioning exposure, and the note that used to sit here
   /// saying otherwise is gone rather than softened.** The ingress argument is now
   /// ciphertext, so the boundary node that terminates TLS sees nothing usable. What
-  /// remains is the at-rest exposure, which is the confidential subnet's job (#2) and not
+  /// remains is the at-rest exposure, which is the confidential subnet's job and not
   /// something rotation can help with.
   public shared ({ caller }) func set_webhook_secret(ciphertext : Blob) : async Result.Result<(), Sealed.ProvisionError> {
     requireController(caller);
@@ -89,8 +89,8 @@ mixin (
     Secret.status(webhookSecret);
   };
 
-  /// Provision or rotate the restricted Stripe API key (#33), sealed exactly as
-  /// `set_webhook_secret` is — same vetKey, one derivation for both (#11).
+  /// Provision or rotate the restricted Stripe API key, sealed exactly as
+  /// `set_webhook_secret` is — same vetKey, one derivation for both.
   ///
   /// The key to seal is a **restricted key** (`rk_...`) with *Checkout Sessions = Write*
   /// and everything else None; `Secret.mo` records why that scope, not this storage, is
@@ -123,7 +123,7 @@ mixin (
     Secret.status(stripeApiKey);
   };
 
-  /// Set the origin Stripe returns buyers to (#33) — admin.
+  /// Set the origin Stripe returns buyers to — admin.
   ///
   /// Validated at set time rather than at session-create time, so a bad value
   /// fails in front of the operator who typed it instead of breaking every

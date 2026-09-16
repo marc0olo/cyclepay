@@ -55,7 +55,7 @@ mixin (
   },
 ) {
 
-    /// Why the expected Stripe mode could not be set (#123).
+    /// Why the expected Stripe mode could not be set.
     ///
     /// ⚠️ **One case, and it stays a variant rather than collapsing to `()`.** The refusal
     /// is not "bad argument" — it is a *conflict with another setting*, and the caller
@@ -72,7 +72,7 @@ mixin (
   /// Adjust pricing params (§7): fee formula, staleness window, delta guard.
   /// Validated atomically — a bad config never partially applies.
   /// ⚠️ **Three divisor guards live here rather than in `Pricing.validateConfig`,
-  /// because each needs context that module cannot see** (#99). All three are
+  /// because each needs context that module cannot see**. All three are
   /// checked before anything is written, so a bad config never partially applies.
   public shared ({ caller }) func set_pricing_config(config : Pricing.Config) : async Result.Result<(), Pricing.ConfigError> {
     ops.requireController(caller);
@@ -132,7 +132,7 @@ mixin (
   ///
   /// ⚠️ **This is no longer the rail's on/off switch.** An empty list used to
   /// pause the rail, and the audit line said "CARD RAIL PAUSED". With custom
-  /// amounts (#33) a buyer can order without any preset, so an empty list stops
+  /// amounts a buyer can order without any preset, so an empty list stops
   /// nothing — it just shows no tiles. The switch is both Stripe secrets being
   /// provisioned; `railsLive` is where that lives.
   public shared ({ caller }) func set_card_tiers(tiers : [Tiers.Tier]) : async Result.Result<(), Tiers.ValidateError> {
@@ -162,7 +162,7 @@ mixin (
   public shared ({ caller }) func set_expected_livemode(expected : ?Bool) : async Result.Result<(), LivemodeError> {
     ops.requireController(caller);
     if (expected != ?false and pricingState.config.divisor > 1) {
-      // The divisor travels as DATA (#123): a console can say which value is blocking
+      // The divisor travels as DATA: a console can say which value is blocking
       // this without parsing it back out of a sentence, and the remedy is one lever.
       return #err(#simulationDivisorSet({ divisor = pricingState.config.divisor }));
     };
@@ -191,7 +191,7 @@ mixin (
     // would leave it sellable but unpayable (see Gate.ConfigError.tierAboveCeiling).
     let tierPrices = tierState.cards.map(func(t) = (t.id, t.usdCents));
     // ⚠️ **The divisor's ceiling is a function of the FLOOR, so lowering the floor
-    // has to be checked against the divisor** (#99). `set_pricing_config` refuses a
+    // has to be checked against the divisor**. `set_pricing_config` refuses a
     // divisor the current minimum purchase cannot survive; without this, the same
     // configuration is reachable from the other direction — set the divisor at a
     // $10 floor, then drop the floor to $1. Mutual, like the livemode guard, so
@@ -309,7 +309,7 @@ mixin (
       case (#ok) {
         recoveryState.sweepIntervalNs := intervalNs;
         ops.rearmRecoveryTimer<system>(intervalNs);
-        // ⚠️ **This knob also sets the index scan's coverage window (#63), which its
+        // ⚠️ **This knob also sets the index scan's coverage window, which its
         // name does not say.** The rotating scan runs one chunk per sweep, so coarsening
         // the cadence multiplies the detection latency for `orders.unindexedHolders` —
         // a finding that means the reserve was oversellable. Audited with the resulting

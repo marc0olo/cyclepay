@@ -103,7 +103,7 @@ module {
     /// remove more than was held. **Any non-zero value means the tally diverged**,
     /// and it is surfaced by `reserve_status` so it does not wait for a recount.
     var tallySaturations : Nat;
-    /// Orders carrying at least one **unresolved** problem (#37).
+    /// Orders carrying at least one **unresolved** problem.
     ///
     /// ⚠️ **An index, because the alternative is a full scan on the webhook path.**
     /// `resolveByPaymentRef` runs synchronously inside the `charge.refunded` handler,
@@ -119,7 +119,7 @@ module {
     /// ⚠️ **Derived state, safe only because the orders can adjudicate it.** Maintained by
     /// the only two functions that write `problems` — `fileProblem` and `resolveProblems`,
     /// both here — and checked from both directions: the inside daily by
-    /// `reconcileBounded`, the outside on a coverage window by `scanChunk` (#63). This is
+    /// `reconcileBounded`, the outside on a coverage window by `scanChunk`. This is
     /// a projection of `orders`, recomputable at any time; a **map pointing at ids in
     /// another structure** would be the unrecoverable version, because the two could
     /// disagree with no way to tell which was right.
@@ -130,7 +130,7 @@ module {
     ///
     /// Growth is attacker-priced: every problem needs a real payment event to exist.
     unresolvedProblems : Set.Set<Types.OrderId>;
-    /// Orders whose promise is still held — i.e. **the non-terminal set** (#63).
+    /// Orders whose promise is still held — i.e. **the non-terminal set**.
     ///
     /// ⚠️ **Named for the predicate that defines it, not for what it is used for.**
     /// `Reserve.holdsPromise` IS the membership rule, and it is the same predicate the
@@ -154,7 +154,7 @@ module {
     /// — is not knowable from the index at all, and that is what the rotating
     /// `scanChunk` is for.
     promiseHolders : Set.Set<Types.OrderId>;
-    /// Cumulative deliveries, for the public trust figures (#39).
+    /// Cumulative deliveries, for the public trust figures.
     ///
     /// ⚠️ **Counted in `commitTransition` on the transition INTO `#delivered`, which is
     /// the only place it can be counted exactly.** Six call sites move an order to
@@ -183,7 +183,7 @@ module {
     var deliveredUsdCents : Nat;
     var deliveredNullPaid : Nat;
     /// The highest `#expired` tally seen by a reconcile, for the monotonicity check
-    /// that replaces re-summing it (#63).
+    /// that replaces re-summing it.
     ///
     /// ⚠️ **`#expired` is the only tracked status that is terminal**, so it is the only
     /// one `promiseHolders` cannot recount — and it is also the only one that can be
@@ -216,7 +216,7 @@ module {
     };
   };
 
-  /// Cycles promised to unsettled orders (#30 PR-B). O(1).
+  /// Cycles promised to unsettled orders. O(1).
   public func promised(store : Store) : Nat {
     store.promised;
   };
@@ -244,7 +244,7 @@ module {
     store.promiseHolders.valuesFrom(id);
   };
 
-  /// The cumulative delivery figures (#39). O(1) — maintained, never scanned.
+  /// The cumulative delivery figures. O(1) — maintained, never scanned.
   public func deliveryTotals(store : Store) : {
     orders : Nat;
     cycles : Nat;
@@ -329,7 +329,7 @@ module {
   /// the orders actually add up to.
   public type Drift = { status : Text; was : Nat; is : Nat };
 
-  /// What one bounded reconcile pass found (#63).
+  /// What one bounded reconcile pass found.
   ///
   /// ⚠️ **Every field is either a repair that was applied or a breach that was
   /// refused, and the caller must be able to tell which.** A report that collapsed the
@@ -396,7 +396,7 @@ module {
   /// rotating attribution.
   func adoptOnlyIncreases(was : Nat, is_ : Nat) : Bool { is_ > was };
 
-  /// Reconcile every maintained tally **without reading history** (#63).
+  /// Reconcile every maintained tally **without reading history**.
   ///
   /// ⚠️ **Bounded by the two indexes plus one O(1) size read, so its cost is set by
   /// flow rather than by lifetime sales.** The pass it replaced summed every order ever
@@ -452,7 +452,7 @@ module {
             stale.add(id);
           };
         };
-        // Unreachable: orders are never deleted (#37). Dropping is still the right
+        // Unreachable: orders are never deleted. Dropping is still the right
         // answer if the impossible happens — an id with no order can contribute
         // nothing to a tally, so keeping it would only under-count forever.
         case null stale.add(id);
@@ -523,7 +523,7 @@ module {
   };
 
   /// One bounded chunk of the rotating pass that verifies the **outside** direction of
-  /// both indexes: that nothing beyond a set satisfies the set's predicate (#63).
+  /// both indexes: that nothing beyond a set satisfies the set's predicate.
   ///
   /// ⚠️ **This is the only check that needs every order, so it is the only one with a
   /// coverage window instead of a daily guarantee.** What it reports must therefore name
@@ -724,7 +724,7 @@ module {
   /// for the trap.
   public func isLegalTransition(from : Types.OrderStatus, to : Types.OrderStatus) : Bool {
     switch (from, to) {
-      case (#created, #cancelled) true; // the buyer gave up before paying (#34)
+      case (#created, #cancelled) true; // the buyer gave up before paying
       case (#created, #expired) true; // never paid (§4)
       case (#created, #paid) true; // webhook verified, deduped, amount honored
       // Delivery is ONE transfer out of the cycles reserve, so this single edge is
@@ -850,7 +850,7 @@ module {
   /// value they passed in: this mutates the order, not just the tallies, so the two can
   /// disagree.
   func commitTransition(store : Store, before : Types.Order, after : Types.Order) : Types.Order {
-    // ⚠️ **Clear the pay link on the way into a terminal state (#37), HERE and not at
+    // ⚠️ **Clear the pay link on the way into a terminal state, HERE and not at
     // each terminal site.** It is by far the largest field on an order — a Stripe
     // checkout URL runs to a couple of hundred characters — and it is worthless
     // thirty minutes after creation, so dropping it roughly halves the long-term size
@@ -939,7 +939,7 @@ module {
     };
   };
 
-  /// Attach a created Checkout Session to an order (#33).
+  /// Attach a created Checkout Session to an order.
   ///
   /// ⚠️ **Refuses unless the order is still `#created`, and that refusal is the
   /// point.** `create_order` commits the order and *then* awaits the outcall, so
@@ -1081,7 +1081,7 @@ module {
                 expiredBy = ?(#sessionExpired : Types.ExpiredBy);
                 stripeSessionId = ?sessionId;
               };
-              // Release point 1 (#30), and the most common one: Stripe says the
+              // Release point 1, and the most common one: Stripe says the
               // session died unpaid, so every unpaid order releases here.
               #ok(commitTransition(store, order, expired));
             };
@@ -1131,7 +1131,7 @@ module {
     };
   };
 
-  // ── Problems on the order (#37) ────────────────────────────────────────────
+  // ── Problems on the order ────────────────────────────────────────────
 
   /// File a problem on an order. Returns false if the order is gone, or if an
   /// unresolved problem of the same shape is already there.
@@ -1192,7 +1192,7 @@ module {
     let ?order = store.orders.get(id) else return [];
     let out = List.empty<{ kind : Types.ProblemKind; detail : Text; ref : ?Text }>();
     for (p in order.problems.values()) {
-      // ⚠️ Compared as TAGS, not as rendered text (#122). The old
+      // ⚠️ Compared as TAGS, not as rendered text. The old
       // `kindToText(p.kind) == kindTag` could never be wrong about a kind it knew, but
       // it also could not be wrong about one it did not — a fifth `ProblemKind` would
       // have compared false here and reported "nothing to resolve".
@@ -1232,7 +1232,7 @@ module {
     closed;
   };
 
-  // ── Filtered, cursor-paginated reads (#38) ─────────────────────────────────
+  // ── Filtered, cursor-paginated reads ─────────────────────────────────
 
   /// Cap on one page, matching `Orphans.maxPageSize` so an operator learns one number.
   public let maxPageSize : Nat = 200;
@@ -1313,7 +1313,7 @@ module {
     // `entriesFrom` is inclusive, so the `id > cursor` test below still does the
     // skipping; this only removes the wasted prefix.
     //
-    // ⚠️ **This bounds the RESUME, not the page (#70).** A selective `filter` still
+    // ⚠️ **This bounds the RESUME, not the page.** A selective `filter` still
     // walks until it fills a page, so a status filter matching few orders out of many is
     // O(store) in one message, and an owner filter walks every principal's orders to
     // find one principal's. #63 bounded the reconcile and the timer scans, not this. Do
@@ -1441,7 +1441,7 @@ module {
   };
 
   /// Every order carrying at least one unresolved problem — **the worklist, as a
-  /// filter rather than a structure** (#37).
+  /// filter rather than a structure**.
   public func withUnresolvedProblems(store : Store) : [Types.Order] {
     let out = List.empty<Types.Order>();
     for (id in store.unresolvedProblems.values()) {
@@ -1500,7 +1500,7 @@ module {
         switch (transition(order, #expired, nowNs)) {
           case (#ok(updated)) {
             let expired = { updated with expiredBy = ?cause };
-            // Release point 4 (#30): in-call session-creation failure.
+            // Release point 4: in-call session-creation failure.
             #ok(commitTransition(store, order, expired));
           };
           case (#err(e)) #err(e);
@@ -1613,7 +1613,7 @@ module {
   };
 
   /// Order history for a principal, newest-last (insertion order).
-  /// Every order — **the test oracle for the bounded tallies, and nothing else** (#63).
+  /// Every order — **the test oracle for the bounded tallies, and nothing else**.
   ///
   /// ⚠️ **No production path may call this.** A full scan in one message is what #63
   /// removed: under indefinite retention it is on a path to the instruction limit, and

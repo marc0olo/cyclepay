@@ -73,7 +73,7 @@ module {
   };
 
 
-  // ── Stranded `#created` capacity (#52) ───────────────────────────────────────
+  // ── Stranded `#created` capacity ───────────────────────────────────────
   //
   // A `#created` order holds its reserve promise from the moment it exists, and two
   // things release it: Stripe's `checkout.session.expired`, and the buyer's own

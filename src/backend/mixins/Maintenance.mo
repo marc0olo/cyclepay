@@ -117,7 +117,7 @@ mixin (
     (await* ops.observeReserve()).observed;
   };
 
-  /// Return the reserve to the caller, refusing while anything is owed (#103).
+  /// Return the reserve to the caller, refusing while anything is owed.
   ///
   /// ⚠️ **Why this exists at all.** #30 recorded no withdraw lever because *"the app is
   /// not in production and an over-funded local reserve costs nothing"* — true then, and
@@ -165,7 +165,7 @@ mixin (
     };
     // Observe before withdrawing, or an unobserved top-up is stranded — which defeats
     // the lever. ⚠️ **And an empty promise index is exactly what makes the observation
-    // adoptable**: `unsettledDeliveries` is a walk over `promiseHolders` (#69), so no
+    // adoptable**: `unsettledDeliveries` is a walk over `promiseHolders`, so no
     // holders means no unsettled deliveries means the reconcile's quiet window holds.
     // The withdraw guard and the observation guard are the same structure, so they
     // cannot disagree.

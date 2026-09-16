@@ -222,7 +222,7 @@ module {
   /// `resolve_problem` already takes the reference as its own parameter — so mirroring
   /// the full variant would demand data the caller cannot have.
   ///
-  /// ⚠️ **This replaces a `Text` argument (#122).** The set is closed and always was:
+  /// ⚠️ **This replaces a `Text` argument.** The set is closed and always was:
   /// `Problems.kindToText` rendered these four names and `Orders.unresolvedOfKind`
   /// compared against that rendering, so a misspelled tag resolved nothing and said so.
   /// Fail-closed, but the compiler checked nothing — now a wrong tag cannot be encoded
@@ -342,7 +342,7 @@ module {
 
   /// What a buyer asked to buy: a configured preset, or an amount they typed.
   ///
-  /// ⚠️ **In `Types` rather than the mixin because `Purchase.plan` takes it** (#127).
+  /// ⚠️ **In `Types` rather than the mixin because `Purchase.plan` takes it**.
   /// Candid derives the name from this declaration, so the interface is unchanged.
   public type Amount = {
     #tier : Text;

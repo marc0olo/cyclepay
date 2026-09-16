@@ -182,12 +182,12 @@ module {
     #chargeRefunded : ChargeRefunded;
     /// An async payment method failed for good — the session will never pay.
     #asyncPaymentFailed : { eventId : Text; paymentIntent : Text };
-    /// Stripe closed the session unpaid (#33). **The only mechanism that expires
+    /// Stripe closed the session unpaid. **The only mechanism that expires
     /// an order** — there is no TTL sweep, deliberately: a sweep would flip a
     /// stuck order to `#expired` while its promise stayed held, so a broken order
     /// would look like a correctly expired one and the reserve would leak
     /// silently. Without it, a missed event leaves the order visibly `#created`
-    /// past its `expiresAtNs`, which IS the detection signal (#30).
+    /// past its `expiresAtNs`, which IS the detection signal.
     #sessionExpired : {
       eventId : Text;
       /// The session's own id, so the event can be bound to the order that
@@ -855,7 +855,7 @@ module {
         // `cancel_order` cannot record an intent for one of those (no session id, so it
         // takes the sessionless branch without adding).
         deps.cancelRequests.remove(orderId);
-        // ⚠️ **Close any `#paidNotCredited` obligation for this order (#52).** The
+        // ⚠️ **Close any `#paidNotCredited` obligation for this order.** The
         // recovery sweep files that when Stripe reports a paid session we never
         // credited; this is the resend landing, which is the remedy the entry asks for.
         // The rule every closer follows here: **an open worklist entry
@@ -948,7 +948,7 @@ module {
     };
   };
 
-  /// Stripe closed a session unpaid (#33).
+  /// Stripe closed a session unpaid.
   ///
   /// ⚠️ **This handler must never trap.** A trap here is a 5xx, which Stripe
   /// retries for about three days. Three reachable cases, all of which end 200:
