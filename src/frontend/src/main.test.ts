@@ -40,14 +40,14 @@ type Quote = {
   cycles: bigint | undefined;
 };
 
-/// $10 — the new floor (#33). The old $5 fixture is below it, so `Gate.admit`
+/// $10 — the new floor. The old $5 fixture is below it, so `Gate.admit`
 /// would refuse it and every downstream assertion would be about the wrong bound.
 const TIER_CENTS = 1_000n;
 const TIER_CYCLES = 3_500_000_000_000n;
 
 const state = {
   tiers: [{ id: "tier10", usdCents: TIER_CENTS }],
-  /// The diagnostics panel's reads (#68). None of these had a surface before, so none
+  /// The diagnostics panel's reads. None of these had a surface before, so none
   /// had a mock either.
   health: true,
   /// Whether the diagnostics reads are refused, for the panel's locked path. A flag
@@ -82,7 +82,7 @@ const state = {
   lookupOrder: undefined as unknown,
   lookupReceipt: undefined as unknown,
   lookupJournal: undefined as unknown,
-  /// The simulation divisor `pricing_status` reports (#99). `1n` is production,
+  /// The simulation divisor `pricing_status` reports. `1n` is production,
   /// which is what almost every test wants; the simulation-mode tests set it.
   divisor: 1n,
   /// The buyer's own cycles balance, as the LEDGER reports it.
@@ -96,14 +96,14 @@ const state = {
   ledgerOldestTxId: null as bigint | null,
   indexError: false,
   indexRefusal: null as string | null,
-  /// Whether `lifecycle_config` fails, for the console's cannot-read path (#97).
+  /// Whether `lifecycle_config` fails, for the console's cannot-read path.
   lifecycleError: false,
-  /// The rail settings the console's configuration surface reads (#97).
+  /// The rail settings the console's configuration surface reads.
   expectedLivemode: false as boolean | null,
   stripeOrigin: "https://gateway.example" as string | null,
   apiKeySet: true,
   webhookSet: true,
-  /// What `can_purchase` refuses with, or null for admitted (#99).
+  /// What `can_purchase` refuses with, or null for admitted.
   canPurchase: null as { __kind__: string } | null,
   quote: {
     usdCents: TIER_CENTS,
@@ -177,10 +177,10 @@ const state = {
   /// Captured minCycles from the last create_order call.
   lastMinCycles: undefined as bigint | null | undefined,
   /// Captured destination from the last create_order call — the app builds it
-  /// from the session rather than reading it off the form (#29).
+  /// from the session rather than reading it off the form.
   lastDestination: undefined as unknown,
   /// Captured Amount variant, so a test can assert which of the two shapes the
-  /// app sent (#33).
+  /// app sent.
   lastAmount: undefined as unknown,
   order: undefined as Record<string, unknown> | undefined,
   receipt: undefined as Record<string, unknown> | undefined,
@@ -200,7 +200,7 @@ function anOrder(status: string, lockedCycles = TIER_CYCLES) {
     owner: { __kind__: "ii", ii: { toText: () => "aaaaa-aa" } },
     rail: "card",
     // The caller's own cycles-ledger account: the only destination `create_order`
-    // accepts (#29), so every fixture in this file has this shape.
+    // accepts, so every fixture in this file has this shape.
     destination: {
       __kind__: "cyclesLedgerAccount",
       cyclesLedgerAccount: { owner: { toText: () => "aaaaa-aa" }, subaccount: undefined },
@@ -703,7 +703,7 @@ describe("the deposit fee is disclosed on every order", () => {
   test("the tier label and the destination note both name it, with nothing to toggle", async () => {
     // This used to depend on a radio: a canister top-up paid no deposit fee, so
     // the note appeared only after switching to the account option. With one
-    // destination (#29) the fee applies always, so it is stated always — there is
+    // destination the fee applies always, so it is stated always — there is
     // no longer a state of this form in which it is hidden.
     await mount();
 
@@ -749,7 +749,7 @@ describe("the deposit fee is disclosed on every order", () => {
     expect(el("detail-receive").textContent).toBe("≈ 3 T cycles");
     const note = el("detail-fee-note");
     expect(note.hidden).toBe(false);
-    // "3.5 T sent", not "minted" (#30 PR-C): the gateway transfers from its reserve.
+    // "3.5 T sent", not "minted": the gateway transfers from its reserve.
     expect(note.textContent).toContain("3.5 T sent");
     expect(note.textContent).not.toContain("minted");
   });
@@ -919,7 +919,7 @@ describe("receipt", () => {
   });
 });
 
-// ── one path in (#29) ─────────────────────────────────────────────────────────
+// ── one path in ─────────────────────────────────────────────────────────
 
 describe("one way into the buy view", () => {
   test("the landing page offers a single call to action, and the form waits behind it", async () => {
@@ -1280,7 +1280,7 @@ describe("the rate strip never contradicts the tiers", () => {
   });
 });
 
-// ── paying an order, and still being able to after a reload (#33) ─────────────
+// ── paying an order, and still being able to after a reload ─────────────
 
 describe("the pay button comes from the ORDER, not from browser memory", () => {
   test("a created order with a session offers it, pointing at Stripe's URL", async () => {
@@ -1372,7 +1372,7 @@ describe("expiry renders from the DEADLINE, not the status", () => {
   });
 });
 
-// ── custom amounts, bounded by the BACKEND's numbers (#33) ────────────────────
+// ── custom amounts, bounded by the BACKEND's numbers ────────────────────
 
 describe("a buyer can type an amount", () => {
   function customField(): HTMLInputElement {
@@ -1833,7 +1833,7 @@ describe("the operator console's panels (#68)", () => {
 
   test("⚠️ opening a panel does NOT fire the audited reads", async () => {
     // `admin_order`, `admin_receipt` and `delivery_journal` are updates so the read
-    // itself is audited (#38). One line in the trail per panel render would make the
+    // itself is audited. One line in the trail per panel render would make the
     // trail useless, which is why the lookup is behind a button. This is the assertion
     // that keeps it that way.
     //
@@ -2315,7 +2315,7 @@ describe("the landing view is about one thing", () => {
     const cta = el<HTMLButtonElement>("start-buy");
     expect(cta.textContent).toBe("Buy cycles");
     // ⚠️ Exactly one. The landing view deliberately does not ask a visitor to choose
-    // between routes before it (#29), and a second primary button is how that creeps
+    // between routes before it, and a second primary button is how that creeps
     // back in.
     expect(document.querySelectorAll("#view-landing .cta").length).toBe(1);
   });

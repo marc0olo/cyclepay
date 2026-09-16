@@ -374,7 +374,7 @@ suite("a resent webhook is never a second payment", func() {
     assert AuditLog.events(deps.auditLog).find(
       func(e) = e.tag == "stripe.creditedElsewhere"
     ) != null;
-    // ⚠️ **The obligation lands in the ORPHAN list, not on an order (#37).** The
+    // ⚠️ **The obligation lands in the ORPHAN list, not on an order.** The
     // intent is credited to an id that is not in the store, so there is no order to
     // attach a problem to — and dropping it would break §4.1's invariant that every
     // verified dollar resolves to a delivery or to an obligation. Money that cannot
@@ -408,7 +408,7 @@ suite("a resent webhook is never a second payment", func() {
     withOrder(deps, #card);
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
     assert deliver(deps, paidBody("evt_2", "pi_2", ?goodRef, 500)).status_code == 200;
-    // On the order now (#37); no orderId to compare, the order supplies it.
+    // On the order now; no orderId to compare, the order supplies it.
     assert Orphans.unresolved(deps.orphanStore).size() == 0;
     let filed = switch (Orders.get(deps.orders, orderId)) {
       case (?o) o.problems;
@@ -469,7 +469,7 @@ suite("charge.refunded: partial vs full", func() {
     };
 
     assert deliver(deps, partialRefundBody("evt_2", "pi_1", 125, 500)).status_code == 200;
-    // ⚠️ **On the ORDER now (#37).** No `orderId` to assert — the order it hangs off
+    // ⚠️ **On the ORDER now.** No `orderId` to assert — the order it hangs off
     // supplies that structurally, which is why the kind stopped carrying a copy.
     let order1 = switch (Orders.get(deps.orders, orderId)) {
       case (?o) o;
@@ -677,7 +677,7 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
     let resp = deliver(deps, paidBody("evt_2", "pi_2", ?goodRef, 500));
     assert resp.status_code == 200;
     assert bodyText(resp) == "queued for operator review";
-    // On the order (#37); the queue holds only order-less money now.
+    // On the order; the queue holds only order-less money now.
     assert Orphans.unresolved(deps.orphanStore).size() == 0;
     let queued = switch (Orders.get(deps.orders, orderId)) {
       case (?o) o.problems;
@@ -931,7 +931,7 @@ suite("handleWebhook: charge.refunded auto-resolve (§4.1)", func() {
 
     assert deliver(deps, refundBody("evt_2", "pi_1")).status_code == 200;
 
-    // On the order now (#37); the queue keeps only order-less money.
+    // On the order now; the queue keeps only order-less money.
     assert Orphans.unresolved(deps.orphanStore).size() == 0;
     let filed = switch (Orders.get(deps.orders, orderId)) {
       case (?o) o.problems;

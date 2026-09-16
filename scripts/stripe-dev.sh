@@ -186,11 +186,11 @@ case "$WHSEC" in
     ;;
 esac
 
-# Sealed (#11) — the signing secret never appears in an ingress message or in this
+# Sealed — the signing secret never appears in an ingress message or in this
 # script's own process arguments.
 STRIPE_WEBHOOK_SECRET="$WHSEC" scripts/seal-secret.sh webhook-secret >/dev/null
 
-# ── the OTHER secret (#33) ───────────────────────────────────────────────────
+# ── the OTHER secret ───────────────────────────────────────────────────
 # The rail is live only when both are provisioned, so a webhook secret alone is
 # not enough any more: without an API key `create_order` cannot create a session
 # and nobody can pay. Checked rather than set, because the key is yours and it

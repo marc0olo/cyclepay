@@ -129,7 +129,7 @@ let backendFactory: ((who: Identity | null) => Backend) | null = null;
 let cyclesLedgerFactory: (() => CyclesLedger) | null = null;
 let cyclesIndexFactory: (() => CyclesIndex) | null = null;
 
-/// The one place a cycles-ledger actor is built (#30 PR-A).
+/// The one place a cycles-ledger actor is built.
 ///
 /// Separate from `buildBackend` because it is a different canister with a
 /// different trust story: this app only ever READS from the ledger, and it reads
@@ -629,7 +629,7 @@ let currentAdminTab: AdminTab = "now";
 let orderCount = 0;
 
 /// Steps 3 and 4 — link the CLI, deploy — are the deliverable for every order,
-/// because every order credits the buyer's own account (#29). So the only
+/// because every order credits the buyer's own account. So the only
 /// question is whether there is an order at all.
 ///
 /// ⚠️ A second destination kind brings back the question this used to answer:
@@ -1154,7 +1154,7 @@ function renderAdminIdentity(): void {
     "omitting it, links a different identity than the one above.";
 }
 
-/// The operator summary: nine counts, one public query (#68).
+/// The operator summary: nine counts, one public query.
 let operatorSummary: Awaited<ReturnType<typeof backend.operator_summary>> | null = null;
 
 async function loadOperatorSummary(): Promise<void> {
@@ -1337,7 +1337,7 @@ async function loadAuditPage(reset: boolean): Promise<void> {
 /// Look up one order by id: the record, its receipt, and its delivery journal entry.
 ///
 /// ⚠️ **Behind a button, deliberately, because two of these three reads are UPDATES that
-/// audit themselves** (#38). Fetching them when the panel opens would write a line to the
+/// audit themselves**. Fetching them when the panel opens would write a line to the
 /// trail per render and make the trail useless — which is the same reason `admin_order` is
 /// excluded from the console's command table rather than rendered as a command.
 async function runLookup(): Promise<void> {
@@ -1575,7 +1575,7 @@ function worklistRow(
     // announces itself, and it does not fire when someone opens "What this means".
     //
     // ⚠️ It FILLS and focuses; it does not run. `admin_order` is an update so that the
-    // read is audited (#38), and a mis-click must not spend one.
+    // read is audited, and a mis-click must not spend one.
     if (i === 0 && fillId !== undefined) {
       const fill = document.createElement("button");
       fill.type = "button";
@@ -2014,7 +2014,7 @@ function setIdentity(next: Identity | null): void {
     // discloses nothing about anyone else.
     void loadAdminStatus();
     // No field to prefill any more: the destination is the caller's own account
-    // and `readDestination` reads it from the session (#29), so signing in has
+    // and `readDestination` reads it from the session, so signing in has
     // nothing to write into the form.
     void refreshHistory();
   } else {
@@ -2169,7 +2169,7 @@ async function loadMarket(): Promise<void> {
   // figure would be stale by construction.
   //
   // ⚠️ **`#buyerNotAllowed` and `#unboundedGiveaway` are the exception, because they
-  // are neither volatile nor amount-dependent** (#99). An uninvited tester is refused
+  // are neither volatile nor amount-dependent**. An uninvited tester is refused
   // for EVERY amount, always, until an operator acts — so there is no fresher moment
   // for that refusal to arrive at, and letting them pick an amount, sign in and press
   // Buy to discover it is the outcome the pre-emptive rule was never about.
@@ -2223,7 +2223,7 @@ async function refreshTierQuotes(): Promise<void> {
   renderRateLine();
 }
 
-/// The ledger's transfer fee, read from the ledger (#30 PR-A).
+/// The ledger's transfer fee, read from the ledger.
 ///
 /// It used to arrive on `quote_previews`. It does not any more: the backend
 /// would have had to store a copy and correct it on `#BadFee`, because a query
@@ -2278,7 +2278,7 @@ function renderRateLine(): void {
 /// arrive rather than only at load.
 let lastPricing: PricingStatus | null = null;
 
-/// The simulation divisor (#99), read from the config `pricing_status` already
+/// The simulation divisor, read from the config `pricing_status` already
 /// returns — **no new endpoint**, and one place that answers "are we simulating".
 ///
 /// `1n` when the gateway has not answered yet, which is the production value: a
@@ -2590,7 +2590,7 @@ function onQuoteChanged(usdCents: bigint, quoted: bigint): void {
 // --- order creation ------------------------------------------------------
 
 /// The signed-in principal's own account, default subaccount — the only
-/// destination `create_order` accepts (#29).
+/// destination `create_order` accepts.
 ///
 /// Nothing is read from the form, because there is nothing on it to read: no
 /// canister id to mistype and no other-account fields to leave stale. The
@@ -2779,7 +2779,7 @@ function readCustomAmount(): { ok: true; cents: bigint | null } | { ok: false; e
 
 async function createCardOrder(dest: Destination): Promise<void> {
   // A preset or a typed amount — the same order either way. `create_order` takes
-  // a variant (#33), so both go down one path and both are bounded by the same
+  // a variant, so both go down one path and both are bounded by the same
   // floor and ceiling.
   const chosen = chosenAmount();
   if (chosen === null) return;
@@ -2805,7 +2805,7 @@ async function createCardOrder(dest: Destination): Promise<void> {
   clearRequote();
   const created = result.ok;
   // No link to assemble any more: the canister created a Checkout Session and the
-  // order carries its URL (#33). Nothing session-shaped lives in browser memory,
+  // order carries its URL. Nothing session-shaped lives in browser memory,
   // which is what makes a reload keep working.
   lockNotice = lockedVsEstimate(created.order.lockedCycles, shown);
   openOrder(created.order);
@@ -2817,7 +2817,7 @@ async function createCardOrder(dest: Destination): Promise<void> {
 function describeDestination(order: Order): string {
   const account = order.destination.cyclesLedgerAccount;
   // "cycles-ledger account <62-char principal>" is operator vocabulary, and the
-  // account is the caller's own by construction (#29) — so for the signed-in
+  // account is the caller's own by construction — so for the signed-in
   // owner it needs no id at all. The id still appears when the page cannot
   // confirm whose it is, rather than asserting "yours" on no evidence.
   const mine = identity !== null && account.owner.toText() === identity.getPrincipal().toText();
@@ -3017,7 +3017,7 @@ function renderOrder(order: Order): void {
   // session-scoped `Map` populated only when `create_order` returned, so ANY
   // reload lost the pay button on an order that was still payable — and with a
   // one-open-order cap the buyer could not even start over. The URL is on the
-  // record now (#33/#34), so a reload, a second device and a deep link all work.
+  // record now, so a reload, a second device and a deep link all work.
   const link = order.stripeSessionUrl;
   const payable = awaitingPayment && link !== undefined;
   show("pay-area", payable);
@@ -3027,7 +3027,7 @@ function renderOrder(order: Order): void {
   if (link !== undefined) {
     el<HTMLAnchorElement>("pay-link").href = link;
   }
-  // Derived rather than handed back by `create_order` (#33): it is the reference
+  // Derived rather than handed back by `create_order`: it is the reference
   // on the buyer's card receipt, so it stays on screen, but it was only ever in
   // the response so the frontend could build a Payment Link URL.
   if (identity !== null) {
@@ -3070,7 +3070,7 @@ function renderOrder(order: Order): void {
 /// the order facts collapse beneath.
 ///
 /// Every delivered order gets it, because every order credits the buyer's own
-/// account (#29). The two suppressed cases — a canister top-up, where there was
+/// account. The two suppressed cases — a canister top-up, where there was
 /// nothing to link, and somebody else's account, where the buyer's identity
 /// could not reach the balance — are destinations the gateway no longer accepts.
 function renderCliSteps(onCli: boolean): void {
@@ -3083,7 +3083,7 @@ function renderCliSteps(onCli: boolean): void {
   //
   // ⚠️ If a destination that is NOT the caller's ever ships, this becomes wrong for
   // it: `icp identity link web` links the CALLER, so commands printed for someone
-  // else's balance reach the wrong account. Today every order credits the buyer (#29).
+  // else's balance reach the wrong account. Today every order credits the buyer.
   if (!onCli || identity === null) {
     node.hidden = true;
     return;

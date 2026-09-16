@@ -13,7 +13,7 @@ sha2 = "0.2.5"
 # reason described a state that had ended, which is the shape that makes a stale
 # justification hard to notice.)
 ic = "4.2.0"
-# ── vetKD sealing (#11) ────────────────────────────────────────────────────────
+# ── vetKD sealing ────────────────────────────────────────────────────────
 #
 # BLS12-381 and the vetKD layer on it, so `Sealed.mo` can decrypt a secret that
 # was encrypted to this canister's derived public key. They are path

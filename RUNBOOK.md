@@ -58,7 +58,7 @@ icp canister call backend <method> '(<candid args>)' -e ic --identity <operator>
 argument makes `icp canister call` ask *"Do you want to send this message?
 [y/N]"* and read stdin — which hangs any script, cron job, or CI step.
 
-**For reads, open the console first (#68).** Every read-only command in this
+**For reads, open the console first.** Every read-only command in this
 runbook is also a panel at `#/admin`, so a triage that used to be a sequence of
 typed calls is now one screen. The `Admin` header link appears for a controller
 or a granted admin and for nobody else.
@@ -79,7 +79,7 @@ below are the interface; and `-e ic` **before** the frontend canister exists.
 
 ⚠️ **Opening the console spends no audit entries.** `admin_order`,
 `admin_receipt` and `delivery_journal` are updates precisely so the read is
-recorded (#38), so no panel calls them on open — the Orders lookup is explicit,
+recorded, so no panel calls them on open — the Orders lookup is explicit,
 and one deliberate lookup is one audited read.
 
 Public queries (`reserve_status`, `pricing_status`, `recovery_status`,
@@ -152,7 +152,7 @@ which is the confidential-subnet checklist below.
    reserve holds — that balance **is** the blast radius, and there is no cap or pause
    lever standing behind it.
 
-   ⚠️ **`withdraw_reserve` exists (#103) but it will REFUSE during an incident, and
+   ⚠️ **`withdraw_reserve` exists but it will REFUSE during an incident, and
    that is by design.** It is guarded on there being no promise-holder at all, and a
    forged drain means forged orders are open — so the guard fires. Do not plan an
    incident around a one-call evacuation; there isn't one.
@@ -215,7 +215,7 @@ rather than a click path through three screens.
 # 1. The API key. RESTRICTED (rk_). Permission: Checkout Sessions = WRITE, everything
 #    else None. Write is the level that also grants read, and the recovery sweep needs
 #    the read: it retrieves a session to settle an order whose expiry event never
-#    arrived (#52). A key without it 401s on every retrieve and stranded capacity is
+#    arrived. A key without it 401s on every retrieve and stranded capacity is
 #    never released — watch for refusingNow.stripeApiFailing (monitoring).
 #
 #    SEALED (§7.3): the key is encrypted to this canister before it is sent, so it never
@@ -322,7 +322,7 @@ buy anything, not lost money.
 
 ### What the app does with no presets
 
-⚠️ **An empty preset list is NOT the rail's off switch any anymore** (#33). It was,
+⚠️ **An empty preset list is NOT the rail's off switch any anymore**. It was,
 and the audit line said "CARD RAIL PAUSED". With custom amounts it stops nothing: a
 buyer can order any amount between the floor and the ceiling without a preset, so
 an empty list means only that no tiles are shown. `create_order` still answers
@@ -408,7 +408,7 @@ stuck buyer, and there is no longer a rate-move-mid-delivery exposure to bound.
 ### Funding the reserve
 
 ⚠️ **On a gateway that accepts Stripe TEST payments, populate the buyer allow-list
-BEFORE you fund the reserve** (#99). Test payments are free and unlimited, so test mode
+BEFORE you fund the reserve**. Test payments are free and unlimited, so test mode
 plus an empty allow-list plus a funded reserve is a cycles faucet, and the gateway
 refuses every buyer in that state rather than giving cycles away
 (`refusal_counts.refusingNow.unboundedGiveaway`). Funding first is not dangerous — it
@@ -445,7 +445,7 @@ icp canister call um5iw-rqaaa-aaaaq-qaaba-cai icrc1_balance_of \
   '(record { owner = principal "<backend-principal>"; subaccount = null })'
 ```
 
-⚠️ **`reserveFloor` is a maintained lower bound, not the balance** (#30 PR-B).
+⚠️ **`reserveFloor` is a maintained lower bound, not the balance**.
 Solvency is decided synchronously against it, so admission needs no ledger call —
 which also means the floor only learns about incoming cycles by looking. It rises on
 `refresh_reserve` and on the hourly sweep; it falls when the gateway itself transfers
@@ -675,7 +675,7 @@ Either way the shape is unchanged — this is **availability, not memory**, it c
 the rail via `minCanisterCycles` rather than freezing the canister, and it takes
 hours of sustained paid-for abuse. And one thing improved in the same change: the
 per-principal *instantaneous* strand fell from 20 open orders to **1**, a 20×
-reduction in what a single identity can tie up at once (#52 PR-B).
+reduction in what a single identity can tie up at once.
 
 ⚠️ **The retrieve's cap is deliberately double the others', so its call costs
 roughly double.** A *completed* session carries `customer_details`, a resolved
@@ -772,7 +772,7 @@ already have landed — the buyer would keep the cycles and get the refund. It i
 wait, not a block: the ~24 h fuse moves such an order to `NeedsReview`, which is this
 table, where establishing the fate first is the documented procedure.
 
-⚠️ **`record_delivered` exists because its absence made the record lie** (#30 PR-B).
+⚠️ **`record_delivered` exists because its absence made the record lie**.
 Until it did, `abandon_order` was the only exit, so an order whose cycles the buyer
 demonstrably held could only be filed as abandoned — auditing a refund that never
 happened. The block index is required: it is the evidence that you looked, and the
@@ -786,10 +786,10 @@ cycles; `Abandoned` and `Delivered` are the ones that do not.
 the same event for partial refunds, so the canister compares `amount_refunded`
 against the charge's `amount`. A partial refund leaves the entry open and audits
 `stripe.refundPartial`; finish the refund in the Dashboard (or close the entry by
-hand once reconciled). Everything here is manual: the self-resolving cases are no longer entries at all (#37).
+hand once reconciled). Everything here is manual: the self-resolving cases are no longer entries at all.
 A delivery running late is a *reading* — `delayed_deliveries` — not an obligation.
 
-**Nothing is ever evicted (#37).** The former soft cap of 1,000 is gone as a
+**Nothing is ever evicted.** The former soft cap of 1,000 is gone as a
 parameter: an unresolved entry is an open obligation — usually someone's money — so
 the list **grows rather than dropping one**. That makes `orphan_depth` a real alarm
 instead of a saturating gauge: a depth climbing past ~1,000 means
@@ -874,7 +874,7 @@ whether attribution is broken — since #33 nothing but the canister writes
 `client_reference_id`, so a payment that cannot be attributed is a bug worth
 finding, not a routine occurrence to be papered over.
 
-### Closing an order-bound problem (#37)
+### Closing an order-bound problem
 
 Since #37, four of the six kinds live on the order rather than in this list, and they
 are closed with `resolve_problem` rather than `resolve_orphan`:
@@ -891,7 +891,7 @@ position means "from the beginning"; pass the returned `nextCursor` back to cont
 filtered set before sorting, which is the unbounded scan **#63** exists to remove, and a
 time index would be one more piece of derived state the daily reconcile has to adjudicate.
 
-# Read ONE order, whoever owns it (#38). Every such read is audited, hit or miss.
+# Read ONE order, whoever owns it. Every such read is audited, hit or miss.
 icp canister call backend admin_order '("<orderId>")'
 
 # See what is outstanding, and on which orders
@@ -901,7 +901,7 @@ icp canister call backend admin_orders '(record { status = null; owner = null; c
 # Read ONE order's receipt, whoever owns it. Audited, like admin_order.
 icp canister call backend admin_receipt '("<orderId>")'
 
-# Close one. The second argument is a VARIANT, not a string (#122) — a misspelled
+# Close one. The second argument is a VARIANT, not a string — a misspelled
 # tag is now refused by the decoder instead of matching nothing. The third selects
 # WHICH problem, by payment reference.
 icp canister call backend resolve_problem '("<orderId>", variant { duplicate }, opt "pi_...")'
@@ -955,7 +955,7 @@ icp canister call backend process_order '("<orderId>")' -e ic --identity <operat
   incrementally so the admission-gate queries stay O(1); the reconcile is the check
   that they still match. It audits **only when something moved** — a clean line every
   day would bury the one that matters. `recount_orders` runs the same pass on demand.
-- ⚠️ **Its cost is bounded by open orders, not by lifetime sales (#63)**, and that
+- ⚠️ **Its cost is bounded by open orders, not by lifetime sales**, and that
   changes what a stale reconcile means. It recounts over the non-terminal order set,
   which the reserve caps, so `lastCountReconcile.ordersRead` should stay flat as sales
   accumulate. If it starts tracking total orders, the bound has broken.
@@ -1085,7 +1085,7 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | `recovery_status.lastCountReconcile.refused` | non-empty | **P2** | ⚠️ **The opposite reading to the row above, and the tallies are still suspect.** The recount came out **below** the maintained tally, which is indistinguishable from the non-terminal index missing a member — so it was refused and the maintained value stands. That over-refuses rather than overselling, which is why refusing is right. Two causes with one response, *find the writer*: either the index lost a member or a tally gained an adjustment. `orders.unindexedHolders` from the rotating scan tells you which |
 | `orders.unindexedHolders` in the audit log | any occurrence | **P1** | ⚠️ **The one bookkeeping error nothing else can see, and it is on the money side.** An order held a promise and was missing from the non-terminal index — and if `promised` was missing its cycles too, the two agreed with each other, so the daily reconcile reported nothing while `reserve_status.availableToSell` read HIGHER than the truth. The reserve was oversellable. The scan added the order and the next reconcile raises `promised`, so the exposure closes on its own; what does not close is the writer that set a status outside `Orders.create` and `Orders.commitTransition`. Find it. Then check `reserve_status.availableToSell` against the ledger before selling more |
 | `orders.staleHolders` in the audit log | any occurrence | **P2** | the reverse direction: a **terminal** order was still in the non-terminal index, so `promised` may have been holding cycles that were already released — over-refusing, not overselling. Dropped on sight, because the order's own status is the authority. Same writer to find as the row above |
-| `orders.problemIndexDrift` / `orders.unindexedProblems` in the audit log | any occurrence | **P2** | ⚠️ **Not a data problem — a code problem.** The unresolved-problems index (#37) is maintained by exactly two functions, `Orders.fileProblem` and `Orders.resolveProblems`. Either tag means something else wrote `order.problems` directly. **The repair is not the fix**: find the writer. `problemIndexDrift` is an id in the index with no unresolved problem — the worklist showed an obligation that was already closed. `unindexedProblems` is the worse direction: an order carried an unresolved obligation the worklist did **not** show and `resolveByPaymentRef` could not reach |
+| `orders.problemIndexDrift` / `orders.unindexedProblems` in the audit log | any occurrence | **P2** | ⚠️ **Not a data problem — a code problem.** The unresolved-problems index is maintained by exactly two functions, `Orders.fileProblem` and `Orders.resolveProblems`. Either tag means something else wrote `order.problems` directly. **The repair is not the fix**: find the writer. `problemIndexDrift` is an id in the index with no unresolved problem — the worklist showed an obligation that was already closed. `unindexedProblems` is the worse direction: an order carried an unresolved obligation the worklist did **not** show and `resolveByPaymentRef` could not reach |
 | `orders.expiredWentBackwards` in the audit log | any occurrence | **P2** | the `Expired` tally fell, which the transition matrix makes impossible — `created → expired` is its only inbound edge and it has no outbound one. A bookkeeping breach in `Orders.bump`. ⚠️ **Reported once per decrease, not daily**, so a second occurrence means it fell again. `Expired` is an operator metric that nothing decides on, so this is a bug report rather than an exposure |
 | `orders.expiredOverflow` in the audit log | any occurrence | **P2** | the `Expired` tally plus the non-terminal order count exceeds the number of orders in the store. Those two sets are disjoint subsets of it, so this is arithmetically impossible and `Expired` is over-counted. Same class as the row above — observability, not money |
 | `recovery_status.indexScan.lastCompletedCycle` | empty, or `completedAtNs` older than a small multiple of `indexScan.expectedFullCycleNs` | **P2** | ⚠️ **Without this the clean-scan rows above mean nothing.** The rotating scan verifies the one property that needs every order, so it can only speak for what it has visited: silence plus a recent `completedAtNs` is *verified clean*, silence with no completed cycle is *unverified*. ⚠️ **Compare against `indexScan.expectedFullCycleNs`, not against a remembered number** — it is computed from the live store size and the live sweep cadence, and `set_recovery_interval` can move it by 24×. Empty long past that, with `inFlightCycle.ordersRead` frozen, means a chunk is trapping — the cursor does not advance, so the next sweep retries the same chunk rather than skipping forward |
@@ -1106,7 +1106,7 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | buyers report that cancelling does nothing, or `admin_orders` shows no order has ever reached `cancelled` | any occurrence | **P2** | ⚠️ **`cancel_order`'s "Stripe would not close the payment session" answer has three causes and the buyer-facing arm deliberately records none of them.** Two are normal and settle themselves (the payment won the race, or the session had already expired); the third is a malformed expire request from this canister, which leaves the order `#created` and payable while every cancel fails the same way. That is what makes one manual run diagnostic: `expire_order '("<a live created order>")'` takes the identical path, is admin-authenticated, and audits Stripe's body verbatim as `order.expireRaced`. Read that line. A session-state refusal there means the two normal causes; anything else is ours to fix. ⚠️ There is no counter for this yet — `Gate.RefusalCounts` cannot gain a field without an upgrade-incompatible stable change — so the detection is this row, not a metric |
 | `stripe.retrieveFailed` in the audit log | repeatedly for the same order | **P3** | Stripe is unreachable or answering non-200 for the session read. Distinct from the row above on purpose: **"Stripe refused the read" and "Stripe is down" are different actions.** Transient failures retry hourly and need nothing; a persistent one means the outcall path is broken, so check `pricing_status` (the same egress) before suspecting the key |
 | `stripe.paidAwaitingEvent` in the audit log | any occurrence | **P2** | a buyer paid and Stripe has not delivered `checkout.session.completed`. **Not yet an obligation** — Stripe redelivers for ~3 days and the entry is deliberately withheld until then — but it IS the support signal: the buyer's own page renders expired from `expiresAtNs`, so expect a contact the same hour. If it is one order, resend the event from the Dashboard now rather than waiting. If it is many, the webhook endpoint is broken: check the secret and the subscribed event list (the presets-and-keys section) |
-| `stripe.paidNotCredited` in the audit log | any occurrence | **P1** | a buyer paid, Stripe has given up redelivering, and the obligation is now filed on the order itself (#37). Follow the `#paidNotCredited` triage row — **resend first, always** |
+| `stripe.paidNotCredited` in the audit log | any occurrence | **P1** | a buyer paid, Stripe has given up redelivering, and the obligation is now filed on the order itself. Follow the `#paidNotCredited` triage row — **resend first, always** |
 | `stripe.retrieveUnreadable` in the audit log | any occurrence | **P3** | Stripe answered the session read in a shape the classifier does not recognise, so the sweep did nothing (fail-safe). Capacity stays held until it is understood. Most likely an API-version change; `docs/OPERATE.md` pins the version, so this points at an account-level change |
 | `reserve.unexplainedShortfall` in the audit log | any occurrence | **P1** | the ledger holds LESS than the floor's lower bound, which the design says is impossible — no allowance exists and `withdraw` is unused. Treat as a bookkeeping breach: stop selling (`set_gate_config` with a high `minPurchaseUsdCents`, or pause), reconcile the journal against the ledger, and find the outflow before funding anything |
 | an order still `created` past its own `expiresAtNs` | any | **P2** | a `checkout.session.expired` was missed. Nothing sweeps it (the order-expiry section, deliberately — a sweep would hide a held reserve): resend the event from the Stripe Dashboard. Query it with `admin_orders '(record { status = opt variant { created }; owner = null; createdFromNs = null; createdToNs = null; withUnresolvedProblems = false }, null, 200)'` and compare each `expiresAtNs` against now |
@@ -1119,7 +1119,7 @@ saying so is the point.** "An order still `created` past its own `expiresAtNs`" 
 #30's detection predicate 1 — the signal that exists *because* #33 refused to add a
 sweep that would have hidden a held reserve.
 
-`admin_orders` (#38) answers it: filter on `created` and read each record's
+`admin_orders` answers it: filter on `created` and read each record's
 `expiresAtNs`. What it is **not** is a threshold something can alert on — the
 predicate is a comparison against the clock, so there is no field to watch. The
 public interim signal remains `reserve_status.openOrders` **staying non-zero and
@@ -1145,7 +1145,7 @@ never tell a fresh `created` order from one that lapsed an hour ago.
 - **`orphans_unresolved`** for the entries themselves. `orphan_depth` is
   public, so **alert on the public depth and only fetch details when it fires** —
   that keeps the key out of the polling loop.
-- ⚠️ **The audit log no longer drops anything (#37).** It was a 4,096-entry ring, and
+- ⚠️ **The audit log no longer drops anything.** It was a 4,096-entry ring, and
   gaps in `seq` were how you detected drops; there are no gaps now, and `seq` is only a
   never-reused ordering. What has not changed is what it IS: *telemetry*. The order
   store, delivery journal and orphan list are the records of money, and an order's own

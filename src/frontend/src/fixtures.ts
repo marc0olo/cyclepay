@@ -54,7 +54,7 @@ export type OrderSpec = {
 };
 
 /// One destination shape and one owner, so `status` is the only thing worth
-/// parameterising: `create_order` accepts only the caller's own account (#29), so
+/// parameterising: `create_order` accepts only the caller's own account, so
 /// a fixture for any other would depict a screen no buyer can reach.
 ///
 /// A real self-authenticating principal, so it is the length and shape a visitor
@@ -112,7 +112,7 @@ function cannedOrder(spec: OrderSpec): Order {
       feeBps: 290n,
       feeFixedCents: 30n,
       // Before the order, deliberately: the rate pair is read from a cache the
-      // timer refreshes, so it predates every order it prices (#34).
+      // timer refreshes, so it predates every order it prices.
       ratesFetchedAtNs: CREATED_AT_NS - 60_000_000_000n,
     },
     paidUsdCents: status === "created" || status === "expired" ? undefined : USD_CENTS,
@@ -358,7 +358,7 @@ export function installFixtures(host: FixtureHost): void {
         };
       }),
     }),
-    // ── the operator console (#68) ────────────────────────────────────────────────
+    // ── the operator console ────────────────────────────────────────────────
     //
     // ⚠️ Timestamps are NOW-relative, unlike the buyer fixtures' fixed `CREATED_AT_NS`.
     // With the fixed value every figure rendered as "213 days ago", which made the console
@@ -472,7 +472,7 @@ export function installFixtures(host: FixtureHost): void {
         transferIntent: undefined,
       },
     ],
-    // ── the diagnostics panel (#68) ──────────────────────────────────────────────
+    // ── the diagnostics panel ──────────────────────────────────────────────
     // ⚠️ **Figures chosen to AGREE with `operator_summary` above**, for the reason the
     // note below this block records: three panels disagreeing in a screenshot meant to
     // show how they agree. `problem_depth` mirrors `problemsUnresolved` and
@@ -549,7 +549,7 @@ export function installFixtures(host: FixtureHost): void {
       orders: order ? [order] : [],
       nextCursor: undefined,
     }),
-    // ── the order lookup (#68) ───────────────────────────────────────────────────
+    // ── the order lookup ───────────────────────────────────────────────────
     // ⚠️ **Answered from the SAME object the history table renders**, not from the canned
     // buyer order. Keyed off that one, the lookup said "No order with that id" for the id
     // visible in the row directly above it, because the buyer order is null until one is

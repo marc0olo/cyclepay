@@ -24,7 +24,7 @@ fixed syntactic target and therefore gate-able.
 
   1. `undocumented()` reads the SOURCE and asks "does every endpoint have a doc". The
      first version asked this of `backend.did`, the tidier oracle — until endpoints moved
-     into `mixin` blocks (#120) and moc dropped every one of their docs from the
+     into `mixin` blocks and moc dropped every one of their docs from the
      interface, so the `.did` could no longer answer it. The source always could.
   2. `misattributed()` reads BOTH and asks "is the doc the interface publishes the one
      written above that endpoint". Only the `.did` can answer this, because the class it

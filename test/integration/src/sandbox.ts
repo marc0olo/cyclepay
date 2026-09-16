@@ -145,7 +145,7 @@ async function main(): Promise<void> {
     // allow-list every create_order refuses as the faucet state.
     await allowTestBuyers(gw);
     const created = expectOk(
-      // One destination, and the gateway refuses any other (#29): the caller's own
+      // One destination, and the gateway refuses any other: the caller's own
       // cycles-ledger account, default subaccount.
       await gw.asUser.create_order(
         { tier: 'tier5' },

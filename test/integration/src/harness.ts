@@ -145,7 +145,7 @@ export async function allowTestBuyers(gw: Gateway): Promise<void> {
     // Idempotent by intent: a suite that provisions twice must not fail on a principal
     // that is already listed.
     //
-    // ⚠️ **Matched on the TAG, not on a substring (#123).** This read
+    // ⚠️ **Matched on the TAG, not on a substring.** This read
     // `.err.includes('already an allowed buyer')`, so rewording that sentence would have
     // turned an idempotent provision step into a thrown error in every suite — and the
     // message is buyer-facing prose nobody would think of as an API.
@@ -169,7 +169,7 @@ export interface Gateway {
   /// interruption tests to catch a money path mid-flight.
   deferredUser: DeferredActor<BackendService>;
   /// Admin identity, deferred — needed by any admin method that makes an outcall, so the
-  /// outcall can be answered while the call is still in flight. `expire_order` (#52) is
+  /// outcall can be answered while the call is still in flight. `expire_order` is
   /// the first; without it the ingress polls for 100 rounds and reports
   /// `BadIngressMessage` rather than "your outcall was never answered".
   deferredAdmin: DeferredActor<BackendService>;
@@ -627,7 +627,7 @@ export function statusKey(holder: { status: StatusVariant }): OrderStatusKey {
   return Object.keys(holder.status)[0] as OrderStatusKey;
 }
 
-/// The order's own problems (#37), as the owner sees them.
+/// The order's own problems, as the owner sees them.
 ///
 /// ⚠️ **Owner-scoped, like `orderStatus`.** Reading another principal's order needs
 /// #38's admin view, which does not exist yet — so scenarios asserting a problem must
@@ -736,7 +736,7 @@ export function decodeBody(response: { body: Uint8Array | number[] }): string {
 
 
 
-// ── HTTPS outcalls (#33) ──────────────────────────────────────────────────────
+// ── HTTPS outcalls ──────────────────────────────────────────────────────
 //
 // PocketIC does not perform real outcalls: it parks each one and lets the test
 // answer it. That is *better* coverage than a live call for the request shape,
@@ -747,7 +747,7 @@ export function decodeBody(response: { body: Uint8Array | number[] }): string {
 // whether the size cap is big enough for a real Stripe response. Both are first
 // observable in a manual run.
 
-/// Is this parked outcall the recovery sweep's session retrieve (#52), rather than
+/// Is this parked outcall the recovery sweep's session retrieve, rather than
 /// something a scenario asked for?
 ///
 /// The retrieve is the only **GET** the canister makes: creating a session is a POST to
@@ -835,7 +835,7 @@ export async function maybePendingOutcall(
   return undefined;
 }
 
-/// Wait for the sweep's session retrieve specifically (#52) — the mirror of
+/// Wait for the sweep's session retrieve specifically — the mirror of
 /// `awaitPendingOutcall`, which skips exactly this one.
 export async function awaitSweepRetrieve(gw: Gateway, rounds = 40): Promise<PendingHttpsOutcall> {
   for (let i = 0; i < rounds; i += 1) {
@@ -1001,7 +1001,7 @@ export function sessionCreatedBody(opts: {
   });
 }
 
-/// `checkout.session.expired`, the only thing that expires an order (#33).
+/// `checkout.session.expired`, the only thing that expires an order.
 export function sessionExpiredBody(opts: {
   eventId: string;
   sessionId: string;
@@ -1035,7 +1035,7 @@ export function outcallBody(outcall: PendingHttpsOutcall): string {
   return new TextDecoder().decode(outcall.body);
 }
 
-/// `create_order`, answering the Checkout Session outcall it now blocks on (#33).
+/// `create_order`, answering the Checkout Session outcall it now blocks on.
 ///
 /// ⚠️ **Every successful `create_order` needs this.** The method awaits an HTTPS
 /// outcall before it returns, so a plain `await gw.asUser.create_order(...)`
@@ -1086,7 +1086,7 @@ export async function createOrderWithSession(
   return settle();
 }
 
-/// `cancel_order`, answering the expire outcall it now blocks on (#33).
+/// `cancel_order`, answering the expire outcall it now blocks on.
 ///
 /// Cancellation is atomic with Stripe: the session is expired first, so this is
 /// an outcall too. `expireStatus` drives the three outcomes — 200 cancels, a

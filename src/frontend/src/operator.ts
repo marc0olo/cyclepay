@@ -1,4 +1,4 @@
-/// Operator-facing meaning: what each state IS, and what to do about it (#68).
+/// Operator-facing meaning: what each state IS, and what to do about it.
 ///
 /// ⚠️ **The hint tables are `Record<Tags<…>, Hint>`, so a missing hint is a COMPILE
 /// error** — and so is a hint for a tag the canister no longer has. A gate step could only

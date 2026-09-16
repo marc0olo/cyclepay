@@ -119,7 +119,7 @@ detect_lanes() {
       # ⚠️ A backend change regenerates the .did, which the frontend bindings and the
       # integration bindings are both generated FROM. So it activates everything —
       # there is no such thing as a backend-only change here.
-      # `vendor/*` and `.gitmodules` are the pinned crypto (#11): a submodule bump changes
+      # `vendor/*` and `.gitmodules` are the pinned crypto: a submodule bump changes
       # what `Sealed.mo` compiles against, so it activates everything a backend change does.
       src/backend/*|test/*.mo|mops.toml|mops.lock|deployed/*|vendor/*|.gitmodules) lane_add backend; lane_add frontend; lane_add browser; lane_add integration; lane_add checks ;;
       src/frontend/*) lane_add frontend; lane_add browser; lane_add checks ;;
@@ -212,7 +212,7 @@ fi
 
 run "shell — no unquoted heredoc runs its own body" scripts/check-heredocs.sh
 
-# ⚠️ **This also runs the STABLE-COMPATIBILITY check now (#90), because mops.toml
+# ⚠️ **This also runs the STABLE-COMPATIBILITY check now, because mops.toml
 # configures `[canisters.backend.check-stable]`.** No separate step: `mops check` picks it
 # up, and CI runs the same command. Before that config, an incompatible stable shape
 # passed every one of these steps and was refused at DEPLOY time with an
@@ -282,7 +282,7 @@ run "every config setter has a reader" scripts/check-config-readers.py
 # complete and say nothing about whether the code honours it, and a method filed
 # controller-only whose body calls the delegable guard would pass such a table.
 run "admin tiers are enforced, not just listed" scripts/check-admin-tiers.py
-# Every mutating admin method is offered as a command or excluded on purpose (#97).
+# Every mutating admin method is offered as a command or excluded on purpose.
 # TypeScript makes a missing RENDERER a compile error and can say nothing about a method
 # that never entered the union, which is what this covers.
 run "every write is offered as a command, or excluded on purpose" scripts/check-admin-commands.py
@@ -372,7 +372,7 @@ else
   - no test hooks in the shipping bundle"
 fi
 
-# The reserve floor's premise, enforced rather than asserted (#30 PR-B).
+# The reserve floor's premise, enforced rather than asserted.
 #
 # `Reserve.mo`'s floor is a lower bound on the reserve balance ONLY because the
 # balance cannot fall except when we transfer out. What makes that true is that

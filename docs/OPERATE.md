@@ -59,7 +59,7 @@ Mode 2. Keeping one local path means the local procedure has one shape.
 This project uses **`icp-cli`, never `dfx`**. Project configuration lives in
 `icp.yaml`; Motoko dependencies in `mops.toml` / `mops.lock`.
 
-⚠️ **Clone with submodules.** The backend decrypts its sealed secrets (#11) using a
+⚠️ **Clone with submodules.** The backend decrypts its sealed secrets using a
 BLS12-381 implementation pinned as a git submodule, resolved by `mops` as a path
 dependency — so without it nothing compiles:
 
@@ -81,7 +81,7 @@ through a real payment.
 
 ```sh
 # 1. dependencies and a local replica
-git submodule update --init --recursive   # the pinned crypto (#11), first time only
+git submodule update --init --recursive   # the pinned crypto, first time only
 mops install
 icp network start -d                    # PocketIC, gateway on :8000
 
@@ -141,8 +141,8 @@ seed prints the exact command and does not treat it as a failure.
 
 ⚠️ **Step 5 needs a restricted key** (`rk_...`) with **Checkout Sessions = Write** and
 everything else None. Write is the level that also grants the read the recovery sweep
-needs (#52). No Payment Links exist to configure: the canister creates a Checkout
-Session per order through the API and sets `client_reference_id` on it (#33).
+needs. No Payment Links exist to configure: the canister creates a Checkout
+Session per order through the API and sets `client_reference_id` on it.
 
 ⚠️ **Do NOT `export STRIPE_API_KEY`** into a shell where you run the Stripe CLI. The CLI
 prefers it over your `stripe login` credential, and opening a CLI session needs a
@@ -808,7 +808,7 @@ because a go-live prerequisite filed somewhere else is one that gets discovered
 missing at go-live. The closed issues hold the reasoning; what is kept here is what a
 deployment turns on.
 
-**1. The migration chain, before there is data worth keeping** (#32). `Main.mo` is a
+**1. The migration chain, before there is data worth keeping**. `Main.mo` is a
 `persistent actor` with **inline initializers** and there is no
 `src/backend/migrations/`, so an incompatible stable-shape change has exactly one
 remedy — `icp deploy --mode reinstall` — and on a canister holding real orders,
@@ -829,14 +829,14 @@ early: `[canisters.backend.check-stable]` compares the actor against the committ
 Read the `migrating-motoko-actors` skill first. No `preupgrade`/`postupgrade`, no
 `(with migration = ...)`.
 
-**2. An alert someone actually receives** (#3). `RUNBOOK.md`'s monitoring section is a complete monitoring plan —
+**2. An alert someone actually receives**. `RUNBOOK.md`'s monitoring section is a complete monitoring plan —
 metric, threshold, severity, action — and nothing runs it. The whole P1 set polls
 **public queries**, so the alerting layer needs no key. It is done when those metrics
 reach a human out of hours **and someone has tripped one deliberately and watched it
 arrive**; the failure modes here are slow (a 2 h delay alert, a 72 h terminate bound),
 so what is needed is something that wakes a person, not a dashboard someone visits.
 
-**3. The claim, and the legal surface of being official** (#40).
+**3. The claim, and the legal surface of being official**.
 *"At cost"* must hold **net of card processing** or become a visible fee line — the
 fee is real (≈2.9% + $0.30) and the buyer pays it. Beside it: imprint, terms, privacy
 and contact; invoices a developer can expense, and the VAT position; a refund
@@ -850,7 +850,7 @@ canister id** (`config.ts`), so a test domain and whatever production domain is 
 yield the *same* principals. What would be one-way is making a custom domain itself the
 derivation origin — which this deployment does not do.
 
-**4. `stripe_origin` must be https and non-loopback once livemode is `?true`** (#143).
+**4. `stripe_origin` must be https and non-loopback once livemode is `?true`**.
 `Session.validateOrigin` accepts `http://` for loopback hosts, and nothing refuses the
 pair `expected_livemode = ?true` with `stripe_origin = http://localhost:8000` — a live
 gateway returning paying buyers to their own machine. So **read `stripe_origin` back

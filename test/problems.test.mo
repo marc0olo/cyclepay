@@ -3,7 +3,7 @@ import { test; suite } "mo:test";
 import Problems "../src/backend/Problems";
 import Types "../src/backend/Types";
 
-// Unit suite for order-bound problems (#37). All pure over an array, so the whole
+// Unit suite for order-bound problems. All pure over an array, so the whole
 // admission and resolution policy is pinned without an IC environment.
 
 let dup : Types.ProblemKind = #duplicate({ paymentRef = "pi_dup" });

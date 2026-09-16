@@ -123,11 +123,11 @@ func drive(store : Orders.Store, id : Types.OrderId, path : [Types.OrderStatus])
   };
 };
 
-suite("the promise tally (#30 PR-B) — every writer moves it", func() {
+suite("the promise tally — every writer moves it", func() {
   // ⚠️ **These exist because of a real bug in this PR.** The tally was first wired
   // into the three writers a comment claimed were the only ones (`create`,
   // `applyTransition`, `markPaid`), and that comment was false in the file it was
-  // written in: `expireWithCause` and `expireBySession` (#47) also write status.
+  // written in: `expireWithCause` and `expireBySession` also write status.
   // They are #30's release points 4 and 1 — and point 1 is where EVERY unpaid
   // order ends — so every expired order would have left its `lockedCycles` in
   // `promised` forever, ratcheting `available` down until the gate refused sales
@@ -337,7 +337,7 @@ suite("legal-transition matrix (exhaustive, 7×7)", func() {
   test("needsReview has exactly TWO exits, and both need a human's finding", func() {
     // It is NOT re-drivable and NOT terminal. `#abandoned` is "the operator
     // refunded"; `#delivered` is "the operator read the cycles ledger and the
-    // transfer had landed" (#30 PR-B). Both are decisions, neither is automatic —
+    // transfer had landed". Both are decisions, neither is automatic —
     // `Recovery.isSweepable(#needsReview)` is false and stays false, because
     // re-driving an unknown money position is the double-spend this status prevents.
     //
@@ -473,7 +473,7 @@ suite("store: ownership and history", func() {
     // ⚠️ **`a-2` is inserted FIRST, so insertion order and id order disagree.** With
     // `a-1` first the two coincide and this test passes under either contract — which is
     // what it did while the index was a `List` holding insertion order, and what it
-    // would still do now. The index is a `Set` (#70), so id order is the contract, and
+    // would still do now. The index is a `Set`, so id order is the contract, and
     // this fails if anyone puts a `List` back.
     ignore newOrder(store, "a-2", alice);
     ignore newOrder(store, "b-1", bob);
@@ -695,7 +695,7 @@ suite("openOrderCount — the Gate admission input", func() {
     // ⚠️ And it needs no outcall, which is the asymmetry worth remembering: a slot is
     // OUR resource, so we may grant it on our own clock — being early costs nothing,
     // because the order it frees is unpayable anyway once Stripe expires its session.
-    // Reserve capacity is money, so releasing THAT needs Stripe's authority (#52 PR-A).
+    // Reserve capacity is money, so releasing THAT needs Stripe's authority.
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
     ignore Orders.attachSession(store, "ord-1", "cs_1", "https://pay.example/1", 5_000, 120);

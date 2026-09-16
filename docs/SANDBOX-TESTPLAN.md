@@ -90,14 +90,14 @@ scenarios to work through or a by-hand reference for one of these steps.
 What you have to supply: a **Stripe sandbox account** with the Stripe CLI logged in
 to it, and a **restricted API key** (`rk_...`) with **Checkout Sessions = Write**
 and everything else None. Write is the level that also grants read, which the recovery
-sweep needs in order to retrieve a session (#52) — **measured, not inferred: a `rk_`
+sweep needs in order to retrieve a session — **measured, not inferred: a `rk_`
 key scoped to Checkout Sessions = Write returns HTTP 200 on
 `GET /v1/checkout/sessions/{id}`.** It is worth stating as a measurement because the
 failure mode is invisible to the test suite: PocketIC answers the sweep's outcall
 itself, so a key that could create sessions but not read them would 401 in production
 with every scenario green. `Main.mo` carries a `stripe.retrieveUnauthorized` audit tag
 for that case. No Payment Links, no Products, no Prices — the canister creates a
-session per order through the API (#33). Nothing else, and no mainnet.
+session per order through the API. Nothing else, and no mainnet.
 
 **How to create the key, and the go-live ordering, is RUNBOOK §3.**
 Get it right here rather than at go-live: the four settings that break
@@ -133,7 +133,7 @@ npm --prefix test/browser ci                    # only if you also want the suit
 #    move amount_total is enabled — src/backend/rails/Session.mo lists all eight
 #    next to the body builder, and test/session.test.mo asserts their absence.
 #    Nothing else to configure: the STRIPE_LINK_* variables went with
-#    Tier.paymentLinkUrl (#33).
+#    Tier.paymentLinkUrl.
 icp network start -d
 icp deploy
 scripts/local-dev-seed.sh
@@ -172,7 +172,7 @@ Then, in the browser at the frontend URL `icp deploy` printed
 
 1. **Click "Get cycles".** The landing page has one route into the buy form, and
    the form asks nothing about where the cycles go: they go to the account of the
-   principal you sign in as, and the gateway refuses any other destination (#29).
+   principal you sign in as, and the gateway refuses any other destination.
    That is what makes steps 6 and 7 meaningful.
 2. **Sign in.** You get **local** Internet Identity automatically —
    `http://id.ai.localhost:8000`, deployed by `ii: true` in `icp.yaml`, chosen by
@@ -181,7 +181,7 @@ Then, in the browser at the frontend URL `icp deploy` printed
    and local to this network, which is wiped by `icp network stop`.
 3. **Pick an amount and create the order.** The rate is locked here, not at payment.
 4. **Pay.** "Pay with card ↗" opens the order's own Checkout Session — the
-   canister created it and set `client_reference_id` on it through the API (#33),
+   canister created it and set `client_reference_id` on it through the API,
    so there is no link to configure and no parameter to append. Card
    `4242 4242 4242 4242`, any future expiry, any CVC. **You have 35 minutes**,
    enforced by Stripe; the button disappears at the deadline.
@@ -313,7 +313,7 @@ icp canister call backend pricing_status '()' --query   # expect ok = true
 
 Create an order and open the `stripeSessionUrl` on the returned order — that is
 the payment page. The canister creates a **Checkout Session per order** and sets
-`client_reference_id` through the API (#33), so there is no Payment Link to
+`client_reference_id` through the API, so there is no Payment Link to
 configure and no URL parameter to append. Pay with `4242 4242 4242 4242` and watch
 `get_order` reach `delivered`. `process_order` kicks the **delivery** without
 waiting for the sweep — callable as the order's own owner as well as admin since
@@ -547,7 +547,7 @@ icp canister call backend receipt '("<orderId>")'           # owner identity onl
 | B3 | Forged owner | hand-edit the ref to another principal, same order id | `#unattributed` — "claimed owner does not match" |
 | B4 | Malformed reference | ref = `garbage` | `#unattributed` — "malformed" |
 | B5 | Payment for an **expired** order | there is no TTL to shorten since #33 — open the order's session URL, expire that session in the Stripe Dashboard so `checkout.session.expired` arrives, then pay a *previously opened* copy of the page | `200`; order **stays `Expired`**, `#unattributed` whose detail says "cannot be paid". **Refund it in Stripe.** Not honoured — #34 made expiry terminal |
-| B6 | Payment for a **cancelled** order | `cancel_order`, then pay a page you opened before cancelling | `200`; order **stays `Cancelled`**, the same refundable obligation. The buyer's decision wins; the money is refundable, never converted against it (#34). ⚠️ Hard to reach on purpose: cancel expires the session on Stripe *first*, so the payment usually cannot start at all |
+| B6 | Payment for a **cancelled** order | `cancel_order`, then pay a page you opened before cancelling | `200`; order **stays `Cancelled`**, the same refundable obligation. The buyer's decision wins; the money is refundable, never converted against it. ⚠️ Hard to reach on purpose: cancel expires the session on Stripe *first*, so the payment usually cannot start at all |
 | B7 | There is no rescue lever | — | `attach_payment` was deleted in #33. For B5 and B6 the only remedy is a refund in Stripe, which auto-resolves the entry |
 
 ## C. Amount honouring

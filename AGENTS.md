@@ -62,7 +62,7 @@ recorded reasoning — don't "fix" them without reading the rationale:
   the code rather than a memory of this file:
 
   - **Endpoints are in `src/backend/mixins/`**, nine of them split by feature, and
-    `Main.mo` declares **no public methods** (#120). `docs/DESIGN.md` §9.1 has the rules
+    `Main.mo` declares **no public methods**. `docs/DESIGN.md` §9.1 has the rules
     that split rests on — chiefly that `include` passes its arguments **by value**, so
     mutable state is grouped into records and transient state arrives as closures.
   - **The `lib/` layer is flat modules rather than a `lib/` directory**, and that is the
@@ -361,7 +361,7 @@ goes stale the next time a step is inserted, and the script derives its own numb
 | what you see | it means | what to do |
 |---|---|---|
 | `mops build`: `.did is out of date` | the **committed Candid file** does not match the code | `mops build`, commit the `.did`, regenerate the suite's bindings. ⚠️ Says NOTHING about stable state — an added method trips this and is perfectly upgradable |
-| `mops check`: `Stable compatibility check failed` | the **stable shape** cannot be reinterpreted from the deployed one | locally reinstall and reseed; on mainnet this needs a migration (#32). ⚠️ This is the one where deployed data is at stake |
+| `mops check`: `Stable compatibility check failed` | the **stable shape** cannot be reinterpreted from the deployed one | locally reinstall and reseed; on mainnet this needs a migration. ⚠️ This is the one where deployed data is at stake |
 
 **After ANY change that moves the stable shape — compatible or not** — once it is deployed
 (reinstalled and reseeded if it had to be):
@@ -401,7 +401,7 @@ probed against a deliberate mutation rather than assumed:
 |---|---|---|
 | `REPRESENTATION-ONLY` | both directions pass — equivalent signatures | promote without review; note the compiler bump in the commit |
 | `REAL shape change (upgrade-compatible)` | forward only — a field was added or widened | promote deliberately, and **name what moved** in the commit |
-| `NOT upgrade-compatible` | forward fails — a deployed canister cannot take it | not a promotion. Reinstall pre-launch, or write the migration (#32) |
+| `NOT upgrade-compatible` | forward fails — a deployed canister cannot take it | not a promotion. Reinstall pre-launch, or write the migration |
 
 ⚠️ **This is correct ONLY while the shape change is accompanied by a reinstall — and
 nothing in the toolchain will tell you when that stops being true.** Pre-launch,

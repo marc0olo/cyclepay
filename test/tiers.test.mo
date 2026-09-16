@@ -5,7 +5,7 @@ import Tiers "../src/backend/Tiers";
 // replacement depends on it) and lookup.
 
 func tier(id : Text, usdCents : Nat) : Tiers.Tier {
-  // `paymentLinkUrl` went with the Payment Links (#33): a preset is an amount
+  // `paymentLinkUrl` went with the Payment Links: a preset is an amount
   // and an id, and the amount is pinned by the session the canister creates.
   { id; usdCents };
 };

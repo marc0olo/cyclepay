@@ -35,7 +35,7 @@ import type { Destination, OrphanEntry, Order } from './types';
 import { seal } from "./seal";
 let gw: Gateway;
 
-/// The only destination `create_order` accepts (#29): the caller's own
+/// The only destination `create_order` accepts: the caller's own
 /// cycles-ledger account, default subaccount.
 ///
 /// Every order below is addressed here, which is also why the delivered figure is
@@ -65,7 +65,7 @@ const USER_ACCOUNT: Destination = {
 /// than asserted: a scenario that fails with the ledger stopped would otherwise get a
 /// confusing secondary error on top of its real one.
 afterEach(async () => {
-  // ⚠️ **Backstop for the sweep's background retrieves (#52), before the floor check.**
+  // ⚠️ **Backstop for the sweep's background retrieves, before the floor check.**
   // `awaitPendingOutcall` answers strays as it meets them, so this should normally find
   // none; it exists so a scenario that never calls that helper cannot leave a parked
   // outcall for the next one to trip over. A parked outcall is an in-flight message, and
@@ -512,7 +512,7 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
     amountCents: TIER_USD_CENTS,
   }));
   expect(doublePay.status_code).toBe(200);
-  // On the ORDER now (#37) — the order supplies the id the kind used to carry.
+  // On the ORDER now — the order supplies the id the kind used to carry.
   const dupProblem = (await orderProblems(gw, orderA.id)).find(
     (p) => 'duplicate' in p.kind
       && (p.kind as { duplicate: { paymentRef: string } }).duplicate.paymentRef === 'pi_a_double',
@@ -535,7 +535,7 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   // refunded — the automatic closer matches on the reference and is exact, so only the
   // manual lever could ever guess, and it declines instead.
   //
-  // ⚠️ **The candidate list is DATA now (#123), not a sentence to grep.** This used to
+  // ⚠️ **The candidate list is DATA now, not a sentence to grep.** This used to
   // assert `/2 unresolved duplicate problems/` and two `toContain`s against one Text —
   // so the count, the kind and the references were all recovered by matching prose. A
   // console offering the operator a choice had to do the same.
@@ -556,7 +556,7 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   // ⚠️ **The worklist filter sees it** (#37) — this is the query that replaced the
   // queue's worklist function, and the acceptance criterion "everything outstanding is
   // a filter over orders" is only checkable because it exists.
-  // ⚠️ **The worklist is a FILTER now (#38), not its own query** — which is #37's
+  // ⚠️ **The worklist is a FILTER now, not its own query** — which is #37's
   // thesis made structural: it composes with owner, status and time range instead of
   // being a parallel list that answers a slightly different question.
   const worklist = await gw.asAdmin.admin_orders(
@@ -906,7 +906,7 @@ test('17 — admission gate: the per-purchase ceiling bounds tiers and amounts',
   // there is no rescue lever either, so the buyer is refunded.
   //
   // ⚠️ **The pause lever is NOT the tier list.** This comment said it was, and
-  // PR-B (#48) falsified that: with custom amounts a buyer can order without any
+  // PR-B falsified that: with custom amounts a buyer can order without any
   // preset, so an empty vector only hides the tiles. The rail is live iff **both
   // Stripe secrets are provisioned** — scenario 29 in this file asserts exactly
   // that, and asserted the opposite before #48.
@@ -1475,7 +1475,7 @@ test('32 — rates going bad after payment cannot affect an order already #paid'
   const settled = (await gw.asUser.get_order(order.id))[0]!;
   // The LOCKED quantity is untouched by a rate move — that is the guarantee.
   expect(settled.lockedCycles).toBe(TIER_LOCKED_CYCLES);
-  // What was delivered is that quantity less the ledger fee (#30 PR-A).
+  // What was delivered is that quantity less the ledger fee.
   expect((await gw.asAdmin.delivery_journal(order.id))[0]!.cyclesDelivered)
     .toEqual([TIER_LOCKED_CYCLES - CYCLES_LEDGER_FEE]);
 
@@ -1512,7 +1512,7 @@ test('33 — an UNDELIVERED order alerts and waits, then delivers when the cause
   await gw.pic.advanceTime(3 * 3_600 * 1_000);
   await gw.pic.tick(5);
   // ⚠️ **Converted from a `#deliveryDelayed` worklist entry to the reading that
-  // replaced it (#37).** The entry stored nothing of its own — a constant stage
+  // replaced it.** The entry stored nothing of its own — a constant stage
   // string, a fixed sentence, and `sinceNs` copied off the order — so what it
   // actually asserted was "this order is past the threshold", which is what
   // `delayed_deliveries` reports.
@@ -1566,7 +1566,7 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
   // hold an order undelivered, since delivery reads no rate and asks no other canister.
   // `#paid` is the state that matters here: money in, nothing delivered.
   // Declared out here so the assertions after the `finally` can read it: the reason
-  // now lives on the ORDER (#37), and `abandon_order`'s return value is the only way
+  // now lives on the ORDER, and `abandon_order`'s return value is the only way
   // an admin can see another principal's order until #38 lands its view.
   let abandonedOrder: Order;
   await stopNns(gw, CYCLES_LEDGER_ID);
@@ -1583,7 +1583,7 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
     expectErr(await gw.asAdmin.abandon_order(doomed.id, ''));
 
     // ⚠️ **This scenario used to abandon the order HERE, and that was the unsafe
-    // procedure (#30 PR-B).** A `#paid` order with a transfer issued and no block
+    // procedure.** A `#paid` order with a transfer issued and no block
     // recorded has an UNKNOWN money position: abandoning releases the promise and
     // files a refund-by-hand obligation while the transfer may already have landed,
     // and after `#abandoned` nothing sweeps the order, so nothing ever discovers
@@ -1604,7 +1604,7 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
     expect(await tickUntilStatus(gw, doomed.id, ['needsReview'])).toBe('needsReview');
 
     // ⚠️ An escalated order stays on the worklist, and that arm reads the ORDER's status
-    // now (#69), not the journal's copy of it — so assert it rather than assuming the two
+    // now, not the journal's copy of it — so assert it rather than assuming the two
     // still agree. It is deliberately NOT in the reconcile's quiet-window predicate,
     // which is `#paid`-only: an escalated order keeps the intent-without-block shape
     // forever, so counting it there would freeze the reserve permanently.
@@ -1612,7 +1612,7 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
 
     abandonedOrder = expectOk(await gw.asAdmin.abandon_order(doomed.id, 'buyer asked to cancel'));
     const abandoned = abandonedOrder;
-    // `#abandoned`, the released half of the old `#errorQueue` (#34): the operator
+    // `#abandoned`, the released half of the old `#errorQueue`: the operator
     // ended it, so nothing is owed. ⚠️ #30 depends on this releasing the promise —
     // an abandoned order must not keep reserving cycles nobody will receive.
     expect(statusKey(abandoned)).toBe('abandoned');
@@ -1623,7 +1623,7 @@ test('34 — abandon_order is the only terminal give-up, and it demands a reason
     await startNns(gw, CYCLES_LEDGER_ID);
   }
 
-  // ⚠️ **Converted from a queue entry to the order's own field (#37).** The entry was
+  // ⚠️ **Converted from a queue entry to the order's own field.** The entry was
   // the FOURTH copy of one decision — the status, the journal patch and the audit
   // line below already carried it — and nothing about it was outstanding, which
   // `refundResolvable = false` and `paymentRefOf = null` were already saying.
@@ -1697,7 +1697,7 @@ test('35 — past the max-wait bound the order terminates so the operator refund
     await startNns(gw, CYCLES_LEDGER_ID);
   }
 
-  // Now a problem on the order (#37); no `orderId` to compare, the order supplies it.
+  // Now a problem on the order; no `orderId` to compare, the order supplies it.
   const entry = unresolvedProblems(await orderProblems(gw, doomed.id))
     .find((p) => 'deliveryStuck' in p.kind)!;
   expect(entry).toBeDefined();
@@ -1708,7 +1708,7 @@ test('35 — past the max-wait bound the order terminates so the operator refund
   // Nothing moved out of the reserve — the position is certain, not merely likely.
   expect(await reserveBalance(gw)).toBe(reserveBefore);
 
-  // ⚠️ **Scenario 47's property, now structural (#37).** It asserted that a
+  // ⚠️ **Scenario 47's property, now structural.** It asserted that a
   // superseded delay alert was CLOSED rather than left orphaned beside the real
   // obligation. There is nothing to close any more: escalation moves the status off
   // `#paid`, so the order leaves `delayed_deliveries` by construction — no resolve
@@ -1811,7 +1811,7 @@ test('40 — the price a buyer is shown comes from the same code that locks it',
   expect(quoted.netCents[0]! + quoted.feeCents).toBe(TIER_USD_CENTS);
   // The §3 vector, from the public query.
   expect(quoted.cycles).toEqual([TIER_LOCKED_CYCLES]);
-  // ⚠️ The ledger's fee is NOT here any more (#30 PR-A). A query cannot await
+  // ⚠️ The ledger's fee is NOT here any more. A query cannot await
   // `icrc1_fee`, so disclosing it meant the backend storing a copy and
   // correcting it on `#BadFee`. The frontend asks the ledger instead — asserted
   // below to be the same number this suite uses, so the two cannot drift.
@@ -2018,11 +2018,11 @@ test('42b — a 400 that is NOT "already settled" leaves the order payable, and 
       error: { type: 'invalid_request_error', message: 'Unrecognized request URL' },
     }),
   }));
-  // One tag for every cause, claiming no diagnosis (#118): the order may be paid, may
+  // One tag for every cause, claiming no diagnosis: the order may be paid, may
   // expire on its own, and the page is where the buyer finds out which.
   expect(refused).toEqual({ sessionNotClosed: null });
   // This scenario owns which TAG the backend chose. The wording's own requirement —
-  // claims no diagnosis, says where to find out (#118) — moved with the copy and is
+  // claims no diagnosis, says where to find out — moved with the copy and is
   // asserted in `format.test.ts`, mutation-verified there.
 
   // Unchanged and still payable, which is the half the message used to contradict.
@@ -2214,7 +2214,7 @@ test('47 — a delay alert never outlives the delay, even when the order escalat
 
   // Park it in #paid with a real cycles-ledger outage. It used to be a stale CMC
   // rate, which stopped delivery before it started — delivery reads no rate, so
-  // the outage is what holds an order undelivered now (#30 PR-A).
+  // the outage is what holds an order undelivered now.
   await stopNns(gw, CYCLES_LEDGER_ID);
   let alert;
   try {
@@ -2506,7 +2506,7 @@ test('58 — the sweep reconciles the status tallies on its own cadence and repo
   // Empty drift is the pass condition: the incremental counts agreed with the
   // order store. A non-empty list here would mean the tallies had been wrong.
   expect(status.lastCountReconcile[0]!.drift).toEqual([]);
-  // ⚠️ **And nothing was REFUSED**, which is a different verdict (#63): a refused
+  // ⚠️ **And nothing was REFUSED**, which is a different verdict: a refused
   // entry means the recount came out below the maintained tally and the pass would
   // not adopt it, so the tallies are still suspect. Asserting only `drift` would
   // pass while every tally was under review.
@@ -2517,7 +2517,7 @@ test('58 — the sweep reconciles the status tallies on its own cadence and repo
   // latter. Before #63 `ordersRead` would have equalled `storedOrders`, and it would
   // have kept pace with lifetime sales forever.
   expect(status.indexScan.storedOrders).toBeGreaterThan(status.lastCountReconcile[0]!.ordersRead);
-  // ⚠️ **The coverage reader** (#63). A clean rotating scan is only evidence about the
+  // ⚠️ **The coverage reader**. A clean rotating scan is only evidence about the
   // whole store once a cycle has COMPLETED — silence with no completed cycle means
   // "not looked at yet", which carries the opposite response to "verified clean".
   // A chunk runs every sweep and this store is far smaller than one chunk, so a cycle
@@ -2867,7 +2867,7 @@ test('66 — cancelling is ATOMIC with Stripe: never half-cancelled (#33)', asyn
       expireBody: '{"error":{"message":"You cannot expire a Checkout Session in a status of complete."}}',
     }),
   );
-  // ⚠️ One tag for all three causes, which is what the sentence said too (#118/#123).
+  // ⚠️ One tag for all three causes, which is what the sentence said too.
   // Distinct from `stripeUnavailable`: that one invites a retry, this one does not.
   expect(raced).toEqual({ sessionNotClosed: null });
   expect(await orderStatus(gw, stubborn.order.id)).toBe('created');
@@ -3452,7 +3452,7 @@ test('73 — a funded reserve is not a SELLABLE reserve until the gateway looks 
   );
 });
 
-// -- 74 was deleted with the lever it depended on (#30 PR-B) ------------------
+// -- 74 was deleted with the lever it depended on ------------------
 //
 // Its subject was "a deliberately wrong stored ledger fee still delivers, and
 // `#BadFee` persists the correction". Staging that needed `set_cycles_ledger_fee` to
@@ -3875,7 +3875,7 @@ test('87 — the stranded scan RESUMES: a crowd of due orders does not starve th
 });
 
 test('88 — one open order per principal, and its own deadline is what frees the slot', async () => {
-  // The shipped cap (#52 PR-B): **1 per principal**, as a product decision rather than a
+  // The shipped cap: **1 per principal**, as a product decision rather than a
   // safety control — a buyer who wants another order cancels the one they have, which is
   // what makes `cancel_order` load-bearing. This file pins 20 in `beforeAll` because 55
   // creations need it, so the shipped value is exercised here and restored at the end.
@@ -4145,7 +4145,7 @@ test('91 — a granted admin can end one order and cannot change the rules (#68)
     // Granting twice is refused rather than silently idempotent, so a controller cannot
     // mistake "already granted" for "granted now".
     //
-    // ⚠️ **Matched on the tag and the principal it carries (#123).** These read
+    // ⚠️ **Matched on the tag and the principal it carries.** These read
     // `/already an admin/` and `/anonymous/` against a Text, so the two refusals were
     // distinguished by wording — and `#alreadyPresent` now names WHICH principal, which
     // a message could only do by interpolating it into prose the caller then parsed.

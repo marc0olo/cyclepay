@@ -1278,7 +1278,7 @@ export interface _SERVICE {
    * /
    * / Validated at set time rather than at session-create time, so a bad value
    * / fails in front of the operator who typed it instead of breaking every
-   * / purchase later. Until a domain is chosen (#40/#23) this is the canister's
+   * / purchase later. Until a domain is chosen this is the canister's
    * / own asset origin.
    */
   'set_stripe_origin' : ActorMethod<[string], Result_2>,

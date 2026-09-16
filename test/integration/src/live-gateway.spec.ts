@@ -56,7 +56,7 @@ test('55 — the webhook route serves real HTTP end to end, and delivers', async
   // ⚠️ This spec runs its own PocketIC instance, so the main suite's reserve
   // funding does not reach it — which is exactly how this scenario failed once.
   await fundReserve(gw, 100_000_000_000_000n);
-  // One destination, and the gateway refuses any other (#29).
+  // One destination, and the gateway refuses any other.
   // Created BEFORE `makeLive()`, deliberately: the session outcall is answered
   // deterministically here. Once the instance is live it auto-progresses, so a
   // parked outcall could be picked up by the real network instead of the test.

@@ -265,7 +265,7 @@ suite("quote (the composed path)", func() {
   });
 });
 
-// ── The simulation divisor (#99) ────────────────────────────────────────────
+// ── The simulation divisor ────────────────────────────────────────────
 
 /// $10, the gate's minimum purchase — every figure below is at that amount.
 let TEN_DOLLARS : Nat = 1_000;

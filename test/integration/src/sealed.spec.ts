@@ -1,4 +1,4 @@
-/// Sealed provisioning (#11), end to end against a real vetKD-serving subnet.
+/// Sealed provisioning, end to end against a real vetKD-serving subnet.
 ///
 /// ⚠️ **What this covers that `test/sealed.test.mo` cannot.** The Motoko suite tests the
 /// pure functions with fixed vectors; it never derives a key, because deriving needs the

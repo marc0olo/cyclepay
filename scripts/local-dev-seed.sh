@@ -191,7 +191,7 @@ fi
 
 # ── presets ──────────────────────────────────────────────────────────────────
 step "card presets"
-# ⚠️ An empty list is NO LONGER a pause lever (#33): a custom amount is orderable
+# ⚠️ An empty list is NO LONGER a pause lever: a custom amount is orderable
 # without any preset, so an empty list just shows no tiles. The rail's switch is
 # both Stripe secrets being provisioned.
 #
@@ -221,7 +221,7 @@ ok "2 h alert, 72 h max hold"
 
 
 # ── the admission gate ───────────────────────────────────────────────────────
-# ── Stripe API key + return origin (#33) ─────────────────────────────────────
+# ── Stripe API key + return origin ─────────────────────────────────────
 step "Stripe session config"
 # ⚠️ **`STRIPE_API_KEY` belongs in `scripts/.local-dev.env`, not on a command
 # line.** That file is gitignored and is sourced above, so the key never appears
@@ -238,7 +238,7 @@ step "Stripe session config"
 # ⚠️ A reinstall wipes both secrets and this script only restores the key, so
 # after `--mode reinstall` you still need `scripts/stripe-dev.sh` before paying.
 if [ -n "${STRIPE_API_KEY:-}" ]; then
-  # Sealed (#11). `seal-secret.sh` reads STRIPE_API_KEY itself, from the environment or
+  # Sealed. `seal-secret.sh` reads STRIPE_API_KEY itself, from the environment or
   # from scripts/.local-dev.env, so the value is never passed as an argument.
   scripts/seal-secret.sh api-key >/dev/null \
     || die "sealed set_stripe_api_key was refused (too short, or not a controller?)"
@@ -248,7 +248,7 @@ else
   # signing in, quoting — while `create_order` fails at the outcall with a real
   # Stripe 401 rather than at a config check. That is a better local default than
   # refusing to create orders at all, and the failure names itself.
-  # Sealed like the real thing (#11), so the placeholder path exercises the same code —
+  # Sealed like the real thing, so the placeholder path exercises the same code —
   # a local default that skipped sealing would leave the decrypt path untested until the
   # first operator with a real key.
   STRIPE_API_KEY='rk_test_PLACEHOLDER_set_STRIPE_API_KEY_to_create_sessions' \
@@ -611,7 +611,7 @@ cat <<NOTES
   What works now, and what needs Stripe:
     - Browsing amounts, signing in, creating an order, cancelling: all work
       — but CREATING an order needs your principal on the buyer allow-list
-      first (#99). Sign in, copy the principal, then:
+      first. Sign in, copy the principal, then:
         icp canister call backend add_allowed_buyer '(principal "<yours>")'
       Or re-run this script with BUYER_PRINCIPAL=<principal>. Without it the
       gateway refuses every buyer with unboundedGiveaway, because a funded

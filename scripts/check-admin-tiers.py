@@ -84,7 +84,7 @@ TIERS = {
                                             # that tier: a controller can already move
                                             # the reserve by upgrading the canister
                                             # (Auth.mo's tier note). Granting it to the
-                                            # admin tier WOULD be new authority (#103)
+                                            # admin tier WOULD be new authority
     # ── CASES: an admin resolves one case ───────────────────────────────────────────────
     "abandon_order": "admin",               # irreversible RECORD on one identified order,
                                             # audited under the actor's own principal, and
@@ -104,7 +104,7 @@ TIERS = {
     "admin_orders": "admin",
     "admin_receipt": "admin",
     "audit_log": "admin",
-    "audit_log_recent": "admin",     # the same trail, newest first (#68)
+    "audit_log_recent": "admin",     # the same trail, newest first
     "delayed_deliveries": "admin",
     "delivery_journal": "admin",
     "order_for_payment": "admin",

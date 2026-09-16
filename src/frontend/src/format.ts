@@ -60,7 +60,7 @@ export function statusInfo(key: StatusKey): StatusInfo {
       return { label: "Awaiting payment", pill: "Awaiting payment", headline: () => "Awaiting your payment", terminal: false, tone: "active" };
     case "cancelled":
       // The buyer's own decision, and its own status — so a reload no longer
-      // tells someone who cancelled that their order "expired" (#34).
+      // tells someone who cancelled that their order "expired".
       return { label: "Cancelled", pill: "Cancelled", headline: () => "You cancelled this order", terminal: true, tone: "warn" };
     case "expired":
       // TERMINAL as of #34, which deleted `#expired → #paid`. It used to say a
@@ -389,7 +389,7 @@ export interface ReceiptCheck {
 export function checkReceipt(
   v: ReceiptVerification,
   lockedCycles: bigint,
-  /// The simulation divisor from `pricing_status().config` (#99). `1n` in
+  /// The simulation divisor from `pricing_status().config`. `1n` in
   /// production, where every term below is unchanged.
   ///
   /// ⚠️ **Read from config rather than from the order.** The divisor is expected
@@ -459,7 +459,7 @@ export function parseUsdAmount(input: string): UsdAmountParse {
 /// ⚠️ **Aliased from the GENERATED bindings, never re-declared.** It WAS a
 /// hand-written mirror, and it had silently drifted two variants in each direction:
 /// it still carried `burnCapExhausted` and `floatLow`, which #30 PR-B deleted, and it
-/// was missing `amountBelowMin` (#33 PR-B) and `reserveShort` (#30 PR-B) — so the two
+/// was missing `amountBelowMin` and `reserveShort` — so the two
 /// refusals a buyer is most likely to see rendered as `undefined`. Nothing caught it,
 /// because the switch was exhaustive over the *stale* union and `main.ts` reached it
 /// through an `as` cast. Aliasing makes the next backend change a compile error here.
@@ -635,7 +635,7 @@ export function cancelOrderErrorMessage(error: CancelOrderError): string {
     case "notCancellable":
       return `This order is ${statusInfo(`${error.notCancellable.status}`).label.toLowerCase()} and cannot be cancelled. It will deliver, or contact support.`;
     case "sessionNotClosed":
-      // ⚠️ Three causes and no way to tell them apart (#118): the payment completed, the
+      // ⚠️ Three causes and no way to tell them apart: the payment completed, the
       // session had already expired, or Stripe refused the request. This sentence has to
       // be true of all three, so it says what happens next in each rather than claiming
       // which one it was.

@@ -375,7 +375,7 @@ refund, read customers, or reach the account.
 is sealed (§7.3).** HMAC is symmetric, so *verify = forge*: anything that can check a
 signature can forge one, and encrypting the stored blob would only move the problem to the
 key that decrypts it. The plaintext therefore has to exist in memory at verification time,
-which is why at-rest confidentiality is a subnet property (#2) rather than something this
+which is why at-rest confidentiality is a subnet property rather than something this
 canister can solve.
 
 ⚠️ **The two exposures are separate and were routinely conflated.** *In transit* — a
@@ -488,7 +488,7 @@ refused. That is what makes the trade acceptable while there is no console.
 a refusal's copy may live in the frontend **provided its payload carries every fact the
 sentence asserted.** Where the copy *is* the facts, it stays on-chain.
 
-`cancel_order` (#123) satisfies it: `#notCancellable` and `#settledInFlight` carry the
+`cancel_order` satisfies it: `#notCancellable` and `#settledInFlight` carry the
 status their sentences name, `#sessionNotClosed` is deliberately one tag for three
 indistinguishable causes (§4.3 / #118) — which is exactly what its sentence said — and
 nothing else in the seven asserted a fact beyond "this happened".

@@ -4,7 +4,7 @@
     scripts/check-admin-commands.py
 
 The operator console renders an `icp canister call` per mutating method, pre-filled from
-the row you are looking at (#97). The table lives in `src/frontend/src/candid.ts` as
+the row you are looking at. The table lives in `src/frontend/src/candid.ts` as
 `CommandMethod`, and TypeScript makes a missing *renderer* a compile error — but it can
 say nothing about a method that never made it into the union at all.
 
@@ -32,7 +32,7 @@ EXCLUDED = {
     # Same, and worse: whoever can set this can sign a payment event and take delivery
     # having paid nothing.
     "set_webhook_secret": "the signing secret is mint authority",
-    # ⚠️ READS that are updates so the read itself is audited (#38). They mutate the
+    # ⚠️ READS that are updates so the read itself is audited. They mutate the
     # audit log and nothing else, so a "command to change" them would be nonsense —
     # the console calls them directly, as reads.
     "admin_order": "an audited READ, not a change",

@@ -127,7 +127,7 @@ mixin (
   ///
   /// Validated at set time rather than at session-create time, so a bad value
   /// fails in front of the operator who typed it instead of breaking every
-  /// purchase later. Until a domain is chosen (#40/#23) this is the canister's
+  /// purchase later. Until a domain is chosen this is the canister's
   /// own asset origin.
   public shared ({ caller }) func set_stripe_origin(origin : Text) : async Result.Result<(), Session.OriginError> {
     requireController(caller);

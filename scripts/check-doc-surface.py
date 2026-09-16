@@ -67,7 +67,7 @@ PUBLIC_NOT_LISTED = {
 PUBLIC_WITH_CALLER = {
     "create_order",  # public update on the buyer path; the caller BECOMES the owner
     "can_purchase",  # the admission gate's cap is per principal, so it must read caller
-    # ⚠️ Ungated ON PURPOSE (#68): an admin who is NOT yet granted has to be able to read
+    # ⚠️ Ungated ON PURPOSE: an admin who is NOT yet granted has to be able to read
     # their own principal and see that it is not granted. A guarded version would reject
     # exactly the caller who needs the answer, and a UI could not tell "not granted" from
     # "not reachable". It discloses nothing about anyone else — the answer is about

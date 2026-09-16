@@ -1,6 +1,6 @@
 /// Candid IDL factories for the suite.
 ///
-/// `backendIdlFactory` is GENERATED from `src/backend/dist/backend.did` (#66) and
+/// `backendIdlFactory` is GENERATED from `src/backend/dist/backend.did` and
 /// re-exported here so callers keep one import site.
 ///
 /// ⚠️ The ledger/CMC/cycles-ledger factories below stay hand-written, correctly: we do
@@ -11,7 +11,7 @@
 import { IDL } from '@icp-sdk/core/candid';
 import type { IDL as IDLNamespace } from '@icp-sdk/core/candid';
 
-/// ⚠️ **GENERATED, not transcribed (#66).** `backendIdlFactory` was 555 hand-written
+/// ⚠️ **GENERATED, not transcribed.** `backendIdlFactory` was 555 hand-written
 /// `IDL.Func` lines mirroring `src/backend/dist/backend.did`, with nothing checking the
 /// two against each other — so the suite could decode against an interface the canister
 /// no longer had, and did: `GateReason` still carried `burnCapExhausted` and `floatLow`

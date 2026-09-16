@@ -59,7 +59,7 @@
         <!-- The gate refusing every buyer (#99 2b): not on the allow-list, or the
              gateway is unbounded and refusing everyone. -->
         <div id="gate-notice" class="notice" hidden></div>
-        <!-- Simulation mode (#99), in words rather than as a badge: a badge tells
+        <!-- Simulation mode, in words rather than as a badge: a badge tells
              you a state exists, a sentence tells you what it means for the purchase
              you are about to make. Hidden entirely at divisor 1, so a production
              page reads exactly as it did before this existed. -->
@@ -278,7 +278,7 @@
             <!-- IMPORTANT: "Where the cycles go" is GONE from this view. It was a
                  heading, a sentence and a fee note explaining a destination the buyer
                  cannot change: cycles go to the signed-in principal's own
-                 cycles-ledger account and the gateway refuses anything else (#29). All
+                 cycles-ledger account and the gateway refuses anything else. All
                  of it is stated on the order the buyer is about to create, where the
                  card carries Destination and the deposit fee as a sub-line under the
                  quantity it explains. A section answering an unaskable question sat
@@ -402,7 +402,7 @@
             <!-- IMPORTANT: Same tab, deliberately. A new tab meant Stripe's post-payment
                  redirect landed in THAT tab, leaving the buyer with two order pages and
                  no relationship between them. Returning here is safe because
-                 `stripeSessionUrl` lives on the order record (#33/#34), so a back
+                 `stripeSessionUrl` lives on the order record, so a back
                  button, a reload or a deep link all restore the pay button.
 
                  `rel="noreferrer"` is KEPT: dropping the whole rel attribute along with
@@ -427,7 +427,7 @@
         <!-- The guided tour. On delivery this is the point of the page: the two
              commands ARE the deliverable, so they lead and the order facts
              collapse beneath them. Every delivered order gets it, because every
-             order credits the buyer's own account (#29). -->
+             order credits the buyer's own account. -->
         <!-- NOTE: order details, problems and the receipt are SIBLINGS now, and none of
              them is inside a disclosure.
 
@@ -441,7 +441,7 @@
              The order view is now a record: what you bought, what went wrong if
              anything, and the arithmetic you can check. The next action lives on its
              own page. -->
-        <!-- Problems attached to this order (#37/#38). Hidden when there are none,
+        <!-- Problems attached to this order. Hidden when there are none,
              which is the normal case: an empty panel headed "Problems" reads as a
              fault on every healthy order. -->
         <section id="order-problems" class="notice" hidden>
@@ -713,7 +713,7 @@
         </div>
       </section>
 
-      <!-- The operator console (#68), in FIVE panels rather than one column.
+      <!-- The operator console, in FIVE panels rather than one column.
            NOTE: It used to stack all of this: identity, configuration, actions, then the
            summary, then the worklists. Someone opening it mid-incident scrolled past
            their own principal and a config table to reach "what needs a person". The
@@ -936,7 +936,7 @@
           <!-- NOTE: The two AUDITED reads, which had no surface at all: RUNBOOK reaches for
                both by name when reconciling a Stripe charge against an order, and the only
                route was an `icp canister call` typed by hand. They are updates so that the
-               read itself is audited (#38), which is exactly why they are behind a
+               read itself is audited, which is exactly why they are behind a
                deliberate button rather than fetched on panel open. One line in the audit
                trail per render would make the trail useless. -->
           <section id="admin-lookup">

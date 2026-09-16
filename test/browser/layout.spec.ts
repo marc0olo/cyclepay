@@ -24,7 +24,7 @@ test.describe("the hidden attribute actually hides", () => {
   });
 
   test("the form asks for no destination, and no longer explains one either", async ({ page }) => {
-    // Not "the field is hidden": the field is GONE (#29), along with the radios
+    // Not "the field is hidden": the field is GONE, along with the radios
     // and the other-account disclosure. `toHaveCount(0)` is the assertion that a
     // reintroduced input cannot satisfy by being display:none.
     //

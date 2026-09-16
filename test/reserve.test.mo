@@ -1,4 +1,4 @@
-// Unit suite for reserve solvency (#30). All pure, so all of it is pinned here —
+// Unit suite for reserve solvency. All pure, so all of it is pinned here —
 // the `create_order` half needs a ledger and lives in the PocketIC suite.
 import { suite; test } "mo:test";
 import Principal "mo:core/Principal";

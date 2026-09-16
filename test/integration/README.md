@@ -213,7 +213,7 @@ the authoritative list. If you change what a scenario asserts, change its row.
 | 39 | a payment against a **cancelled** order files a refund obligation and never traps — the surviving half of scenarios 36–39, which #33 deleted with `attach_payment` | the guard that keeps `markPaid`'s trap unreachable |
 | 40 | `quote_previews` fee split, §3 vector, deposit fee, and an order locking exactly the previewed figure | quote/lock agreement |
 | 41 | a +40% ICP move → `#quoteChanged` naming the new figure, nothing created; the new figure is accepted; a favourable move never refuses; `null` opts out | server-side quote pinning |
-| 42 | owner-only `cancel_order` produces `#cancelled` and frees a slot, is idempotent, refuses a paid order, and a payment racing the cancel is **refunded, not converted** — one obligation carrying the intent (#34) | buyer never locked out, buyer's decision wins |
+| 42 | owner-only `cancel_order` produces `#cancelled` and frees a slot, is idempotent, refuses a paid order, and a payment racing the cancel is **refunded, not converted** — one obligation carrying the intent | buyer never locked out, buyer's decision wins |
 
 ### Added from the code review
 
@@ -251,8 +251,8 @@ directions), **07** (the `memo = orderId` collision property), **11**, **12**,
 | 58 | the sweep reconciles the status tallies on its own cadence and reports no drift | tally integrity |
 | 59 | a Stripe resend past the dedup window does not file a second unprocessable | redelivery vs double-pay |
 | 60 | a stall that moves to a different stage re-raises the alert instead of leaving stale wording | alert accuracy |
-| 61 | a crafted `create_order` for another principal's account, or a non-default subaccount, is refused by the **canister** — the refusal no UI test can demonstrate (#29) | destination enforcement |
-| 62 | the four new order fields and `ratesFetchedAtNs` survive a real stop → upgrade → start; `ratesFetchedAtNs < createdAtNs`; a `#cancelled` order decodes as itself and stays unpayable across the upgrade (#34) | durable order record |
+| 61 | a crafted `create_order` for another principal's account, or a non-default subaccount, is refused by the **canister** — the refusal no UI test can demonstrate | destination enforcement |
+| 62 | the four new order fields and `ratesFetchedAtNs` survive a real stop → upgrade → start; `ratesFetchedAtNs < createdAtNs`; a `#cancelled` order decodes as itself and stays unpayable across the upgrade | durable order record |
 
 ### Added by #33 (per-order Checkout Sessions) and #30 PR-B (solvency)
 
@@ -264,21 +264,21 @@ before landing.)
 
 | # | Scenario | Coverage |
 |---|----------|----------|
-| 63 | the Checkout Session request is byte-for-byte what Stripe needs (#33) | outcall payload fidelity |
+| 63 | the Checkout Session request is byte-for-byte what Stripe needs | outcall payload fidelity |
 | 65 | a session that cannot be created fails the order **in the same call** (#33) | no order without a payable URL |
-| 66 | cancelling is atomic with Stripe — never half-cancelled (#33) | `#cancelled` means unpayable |
-| 67 | `checkout.session.expired` is the only thing that expires an order (#33) | Stripe owns the deadline |
-| 68 | a cancel racing session creation cannot leave a payable URL behind (#33) | no orphaned session |
-| 69 | a **failed** session creation racing a cancel does not double-release (#33) | tally integrity under a race |
-| 71 | a custom amount is bounded by the gate in both directions (#33) | floor and ceiling on typed input |
-| 72 | a delivery completing during a create cannot manufacture capacity (#30 PR-B) | guard on `promisedTotal ≤ balance` |
-| 73 | a funded reserve sells **nothing** until the gateway observes it; one quiet observation adopts the ledger's truth outright (#30 PR-B) | rule 1, and the trap the design accepts |
+| 66 | cancelling is atomic with Stripe — never half-cancelled | `#cancelled` means unpayable |
+| 67 | `checkout.session.expired` is the only thing that expires an order | Stripe owns the deadline |
+| 68 | a cancel racing session creation cannot leave a payable URL behind | no orphaned session |
+| 69 | a **failed** session creation racing a cancel does not double-release | tally integrity under a race |
+| 71 | a custom amount is bounded by the gate in both directions | floor and ceiling on typed input |
+| 72 | a delivery completing during a create cannot manufacture capacity | guard on `promisedTotal ≤ balance` |
+| 73 | a funded reserve sells **nothing** until the gateway observes it; one quiet observation adopts the ledger's truth outright | rule 1, and the trap the design accepts |
 | ~~74~~ | **deleted with the `set_cycles_ledger_fee` lever it depended on.** The lever was the only seam for making the stored fee differ from the ledger's, and it was removed as self-justifying — the one state it fixed was one it could create, and its typo silently shorted buyers. Shipping an admin money lever so a test can stage a state is the wrong trade | heirs: `interpretTransfer(#Err(#BadFee))` in `test/cmc.test.mo`, the `delivery.feeChanged` P3 row in RUNBOOK §8, and scenarios 06/10 for the fee arithmetic |
-| 75 | a buyer heals their **own** stuck delivery; a stranger and the anonymous principal cannot; the admin lever still works and is the only one audited (#30 PR-B) | owner-scoped `process_order` |
-| 76 | one escalated order must not freeze the reserve reconcile forever (#30 PR-B) | regression test for a shipped bug |
-| 77 | an escalated order whose cycles **did** arrive is recorded as delivered rather than filed as abandoned (#30 PR-B) | `#needsReview → #delivered` |
-| 78 | an order whose delivery is unsettled cannot be abandoned into a double payout (#30 PR-B) | the guard a reviewer found; scenarios 34 and 47 were codifying the hole |
-| ~~79~~ | **deleted with the states it asserted about (#36).** It checked that no order had ever entered `#minting`/`#icpAtCmc`/`#awaitingTreasury` — a claim that stopped being makeable when `OrderStatus` lost those cases | heir: **the deletion itself**. Unreachability became unrepresentability, which is stronger than any test. The measurement it carried: routing `#beginDelivery` into `#minting` failed 06/07/08/10/11/12, and every other insertion point was refused by the transition matrix |
+| 75 | a buyer heals their **own** stuck delivery; a stranger and the anonymous principal cannot; the admin lever still works and is the only one audited | owner-scoped `process_order` |
+| 76 | one escalated order must not freeze the reserve reconcile forever | regression test for a shipped bug |
+| 77 | an escalated order whose cycles **did** arrive is recorded as delivered rather than filed as abandoned | `#needsReview → #delivered` |
+| 78 | an order whose delivery is unsettled cannot be abandoned into a double payout | the guard a reviewer found; scenarios 34 and 47 were codifying the hole |
+| ~~79~~ | **deleted with the states it asserted about.** It checked that no order had ever entered `#minting`/`#icpAtCmc`/`#awaitingTreasury` — a claim that stopped being makeable when `OrderStatus` lost those cases | heir: **the deletion itself**. Unreachability became unrepresentability, which is stronger than any test. The measurement it carried: routing `#beginDelivery` into `#minting` failed 06/07/08/10/11/12, and every other insertion point was refused by the transition matrix |
 
 ⚠️ **76 and 77 both consume the order scenario 35 escalates**, through the
 suite-global `orderEscalated`, because reproducing that state costs another 72 h of
@@ -291,7 +291,7 @@ change in 35 fails there instead of passing vacuously. 76 must stay **before** 7
 
 | # | Scenario | §9 item |
 |---|---|---|
-| 88 | five sub-minimum `create_order` calls tally and write **zero** audit lines (#61) | the leak the ring was hiding |
+| 88 | five sub-minimum `create_order` calls tally and write **zero** audit lines | the leak the ring was hiding |
 
 ⚠️ **Its assertion is a line *count*, which is the only form that catches the
 regression.** `#amountBelowMin` needs no prior state — one cent from any principal

@@ -40,7 +40,7 @@ for the scenario map by id — ids are stable, counts are not.
 
 | Suite | What it covers | How |
 |---|---|---|
-| **Motoko unit** (`test/*.test.mo`) | pure logic: HMAC, the Stripe signature scheme, JSON parsing, fee/rate arithmetic, the §4 state machine, dedup, order-bound problems and the orphan list (#37), every money position `Delivery.terminationFor` can report (including the delivery ones #30 PR-A added), `stageOf`'s resume decisions, and reserve solvency | `mops test`. No IC environment — every module takes its dependencies as a record (`Card.Deps`), which is why the whole ingestion path is unit-testable |
+| **Motoko unit** (`test/*.test.mo`) | pure logic: HMAC, the Stripe signature scheme, JSON parsing, fee/rate arithmetic, the §4 state machine, dedup, order-bound problems and the orphan list, every money position `Delivery.terminationFor` can report (including the delivery ones #30 PR-A added), `stageOf`'s resume decisions, and reserve solvency | `mops test`. No IC environment — every module takes its dependencies as a record (`Card.Deps`), which is why the whole ingestion path is unit-testable |
 | **Frontend pure** (`format.test.ts`) | status mapping, cycle/USD formatting, the §3 pricing vector, slippage flooring, deposit-fee subtraction, receipt verification, every error-message mapping | `vitest` |
 | **Frontend DOM** (`main.test.ts`) | the real `index.html` body in jsdom with a stubbed backend: tier estimates, fee split, the single route into the buy form, the destination it sends (read from the session, never the form), the acknowledge-then-confirm quote flow, cancel visibility, the receipt render, the view machine (including the poll's own arrival at `delivered`, under fake timers) | `vitest` + jsdom |
 | **Browser** (`test/browser/*.spec.ts`) | what jsdom is structurally blind to: the cascade, layout, reachability, and — via committed screenshot baselines — paint. Runs against a production build served statically, with an unreachable gateway by default and a canned one where a spec needs answers | `npm --prefix test/browser test` (Playwright, Chromium) |
@@ -53,7 +53,7 @@ for the scenario map by id — ids are stable, counts are not.
   implementation — so it is not testing our signer against our verifier.
 - **Time control**: the 2 h delay alert and the 72 h terminate bound are reachable
   in seconds; the ledger's 24 h dedup window likewise.
-- **HTTPS outcalls are PARKED, not performed** (#33). Every `create_order` and
+- **HTTPS outcalls are PARKED, not performed**. Every `create_order` and
   `cancel_order` blocks on one, and the suite answers it — which for the request
   *shape* is better coverage than a live call, because the exact bytes the
   canister built can be read back (scenario 63 does). Three things it cannot tell

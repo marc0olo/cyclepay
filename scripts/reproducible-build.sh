@@ -10,7 +10,7 @@
 # release tag and diff MODULE-HASHES.txt against the published one and against
 # `icp canister status --public`.
 #
-# ⚠️ **`git archive` does NOT include submodules, and the pinned crypto (#11) is one.**
+# ⚠️ **`git archive` does NOT include submodules, and the pinned crypto is one.**
 # A plain `git archive | docker build` produces a context whose
 # `vendor/icp-seeding-secrets-poc/` is empty, and the build then fails inside the
 # container on a `mops` path dependency that resolves to nothing. So the context is

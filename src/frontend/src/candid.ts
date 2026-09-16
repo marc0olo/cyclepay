@@ -1,4 +1,4 @@
-/// Candid **text** for `icp canister call`, and the typed command table (#97).
+/// Candid **text** for `icp canister call`, and the typed command table.
 ///
 /// ⚠️ **Why a table of per-method renderers rather than one generic value walker**, and
 /// not the reason first assumed. The guess was that `opt T` and `vec T` are both arrays

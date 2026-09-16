@@ -172,7 +172,7 @@ describe("the rendered command is what the canister expects (#97)", () => {
     // can carry several unresolved problems of the same kind. A swap here closes the
     // wrong obligation and the record then says an obligation was handled that was not.
     //
-    // ⚠️ **The kind is a VARIANT now (#122), and that is visible in this test as a
+    // ⚠️ **The kind is a VARIANT now, and that is visible in this test as a
     // type rather than an assertion.** It used to be `text`, so `"refundAfterDelivery"`
     // was a valid argument and a typo was a runtime miss. The enum below is the whole
     // guarantee: passing the string fails to compile, which no runtime assertion here

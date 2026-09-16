@@ -65,7 +65,7 @@ describe("statusInfo", () => {
   });
 
   test("every status the backend can report has an entry", () => {
-    // ⚠️ **The three legacy statuses are gone from the type (#36)**, so a status the
+    // ⚠️ **The three legacy statuses are gone from the type**, so a status the
     // page cannot describe is a compile error in the switch rather than a test failure
     // here. This pins the count so a status ADDED to the union is noticed.
     expect(ALL).toHaveLength(7);
@@ -160,7 +160,7 @@ describe("cancelOrderErrorMessage", () => {
     // The content requirement with a design record behind it: three causes, and this
     // sentence has to be true of all of them. It must NOT assert which one happened,
     // and it must tell the buyer where the answer is. Moved here from integration 42b
-    // when the copy moved out of the canister (#123) — 42b keeps the tag assertion.
+    // when the copy moved out of the canister — 42b keeps the tag assertion.
     const message = cancelOrderErrorMessage({ __kind__: "sessionNotClosed" } as never);
     expect(message).not.toMatch(/already settled/i);
     expect(message).toMatch(/refresh the page/i);

@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          # The pinned BLS12-381/vetKD packages (#11) are a git submodule that `mops`
+          # The pinned BLS12-381/vetKD packages are a git submodule that `mops`
           # resolves as a path dependency, so without this the backend does not compile
           # here at all — `mops install --locked` fails on a package directory that is
           # present in the lock and empty on disk. The `frontend` job deliberately does
@@ -161,7 +161,7 @@ jobs:
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          # The pinned BLS12-381/vetKD packages (#11) are a git submodule that `mops`
+          # The pinned BLS12-381/vetKD packages are a git submodule that `mops`
           # resolves as a path dependency, so without this the backend does not compile
           # here at all — `mops install --locked` fails on a package directory that is
           # present in the lock and empty on disk. The `frontend` job deliberately does

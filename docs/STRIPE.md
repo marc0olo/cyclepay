@@ -43,7 +43,7 @@ The rail was **inbound-only** until #33: no API key anywhere, Stripe talked to u
 and never the reverse. It now makes outbound calls, and **all three are Checkout
 Sessions calls**: create one for an order, expire one when the buyer cancels, and
 retrieve one when the recovery sweep needs to settle an order whose expiry event never
-arrived (#52). Over HTTPS outcalls, using a **restricted** key (`rk_...`) with
+arrived. Over HTTPS outcalls, using a **restricted** key (`rk_...`) with
 **Checkout Sessions = Write** — the level that also grants the read the retrieve needs —
 and every other permission None.
 
@@ -126,7 +126,7 @@ sequenceDiagram
 ```
 
 Money-out is rail-agnostic from `#paid` onward — the code is keyed by
-`Types.Rail`, which is a single-case variant today (#35).
+`Types.Rail`, which is a single-case variant today.
 
 ## 4. Ingress: two paths, and why the webhook can't be caller-authenticated
 
@@ -290,7 +290,7 @@ Two consequences worth naming, because things downstream depend on them:
   higher ceiling matches its own quote after the ceiling is lowered.
 
 **What was actually paid is stored on the order** (`paidUsdCents`), not only in
-the audit log. ⚠️ **The log no longer drops anything (#37)**, but the division still holds: a fact about
+the audit log. ⚠️ **The log no longer drops anything**, but the division still holds: a fact about
 money cannot live only there — "what did this buyer pay?" has to be answerable
 from state for the life of the canister. It can now only equal `usdCents`, and it
 is stored anyway: "what Stripe said" and "what we asked for" being the same is
@@ -307,7 +307,7 @@ the net, and the cycle quantity — plus the rate pair it used. The preset grid 
 one round trip, and a typed custom amount is priced through the same query rather
 than in the client.
 
-⚠️ **It no longer discloses the cycles-ledger fee** (#30 PR-A). A query cannot
+⚠️ **It no longer discloses the cycles-ledger fee**. A query cannot
 `await icrc1_fee`, so disclosing it meant the backend storing a copy and
 correcting it whenever a transfer came back `#BadFee` — a stable field, a
 correction path and a staleness class, for one number the caller can read itself.
@@ -358,7 +358,7 @@ pay (§10 — even a year).
 Cycles go to the **signed-in principal's own cycles-ledger account**, default
 subaccount, and `create_order` refuses anything else with
 `#destinationNotOwned`. That is a property of the canister, not of the frontend —
-a hand-crafted call reaches the same method (#29).
+a hand-crafted call reaches the same method.
 
 So "the cycles come to you" needs no field, no question and no validation on the
 page. A buyer funding a canister transfers on afterwards from the CLI, and pays
@@ -445,7 +445,7 @@ Two things worth being precise about:
   decided synchronously inside `create_order` against the maintained reserve floor. A
   green `can_purchase` with `availableToSell = 0` is the split working, not a bug.
 
-### What a refusal records (#61)
+### What a refusal records
 
 ⚠️ **A refusal writes no audit line.** It increments a counter, readable through the
 public `refusal_counts` query, and RUNBOOK §8 carries a row per counter with the
@@ -504,7 +504,7 @@ preserves is `can_purchase` as a gateway probe: the frontend calls it before sig
 and the answer to "can this anonymous caller buy" is decided by `#anonymous`, not by a
 list.
 
-## 9a. Simulation mode: mainnet against the Stripe sandbox (#99)
+## 9a. Simulation mode: mainnet against the Stripe sandbox
 
 **One number is the whole switch: `pricing_status().config.divisor`.** `1` is
 production; anything greater is simulation.
@@ -627,7 +627,7 @@ order and we refuse to credit it anyway:
   go wrong: the order still matches its own quote);
 - `amount_total` is not the quoted amount, which means an account-level setting
   is moving the total (§8);
-- the order is `#cancelled` or `#expired` (#34).
+- the order is `#cancelled` or `#expired`.
 
 The genuinely unattributable cases — no reference, a malformed one, one naming no
 order, a non-USD session — are unreachable through this app. Reaching one means a
@@ -817,27 +817,27 @@ privileges — any controller can do any of this):
 | `webhook_secret_status` / `stripe_api_key_status` | confirm a rotation landed, without reading either secret back |
 | `set_card_tiers` | register the preset amounts. Since #33 an empty vector shows no tiles and does **not** disable the rail — the switch is both Stripe secrets |
 | `set_gate_config` | open-order cap, own-cycles floor, per-purchase ceiling |
-| `set_pricing_config` | fee formula, staleness window (capped at 1 h), delta bound, minimum rate sources, and the **simulation divisor** (#99). Three divisor guards live here: it is accepted only while `expected_livemode` is exactly `?false`, it cannot CHANGE while any order is stored (reinstall to change it), and it is refused if it would scale the *smallest purchase this gateway sells* below ten times the cycles-ledger deposit fee |
+| `set_pricing_config` | fee formula, staleness window (capped at 1 h), delta bound, minimum rate sources, and the **simulation divisor**. Three divisor guards live here: it is accepted only while `expected_livemode` is exactly `?false`, it cannot CHANGE while any order is stored (reinstall to change it), and it is refused if it would scale the *smallest purchase this gateway sells* below ten times the cycles-ledger deposit fee |
 | `refresh_rates` | force a rate tick now instead of waiting for the timer |
 | `set_delivery_config` | the two delivery time bounds: alert-after (2 h) and max hold (72 h). Read them back with `lifecycle_config` |
 | `orphans` / `resolve_orphan` | the operator worklist |
 | `order_for_payment` | reconciliation: Stripe charge → order it funded |
-| `add_admin` / `remove_admin` / `admins` | grant, revoke and list the CASES tier (#68). ⚠️ Controller only, and controllers are not listed — they pass the admin guard without being granted, so an empty list does not mean nobody can act |
-| `add_allowed_buyer` / `remove_allowed_buyer` / `allowed_buyers` | who may buy while this gateway accepts free Stripe **test** payments (#99). ⚠️ Controller only: the list is the only bound on the *total* given away, where the divisor bounds only the per-order loss. **An empty list does not mean "everyone"** — with a funded reserve and test payments accepted it means the gateway refuses every buyer (`unboundedGiveaway`), because that combination is a cycles faucet. At `expected_livemode == ?true` the list has no effect at all |
+| `add_admin` / `remove_admin` / `admins` | grant, revoke and list the CASES tier. ⚠️ Controller only, and controllers are not listed — they pass the admin guard without being granted, so an empty list does not mean nobody can act |
+| `add_allowed_buyer` / `remove_allowed_buyer` / `allowed_buyers` | who may buy while this gateway accepts free Stripe **test** payments. ⚠️ Controller only: the list is the only bound on the *total* given away, where the divisor bounds only the per-order loss. **An empty list does not mean "everyone"** — with a funded reserve and test payments accepted it means the gateway refuses every buyer (`unboundedGiveaway`), because that combination is a cycles faucet. At `expected_livemode == ?true` the list has no effect at all |
 | `delivery_journal` | money-out record for one order |
 | `audit_log` / `audit_log_recent` | operational trail, **paginated** both ways: `audit_log` walks oldest-first (`afterSeq`), `audit_log_recent` newest-first (`beforeSeq`) for the console. ⚠️ `nextCursor` means the opposite in each. ⚠️ Nothing drops since #37 — it was a 4,096-entry ring and gaps in `seq` were how you spotted drops; **there are no gaps now**, and `seq` is only a never-reused ordering |
 | `abandon_order` | void an unpaid order, with the reason recorded in the audit trail |
 | `record_delivered` | record that an escalated order's cycles DID reach the buyer, evidenced by the ledger block |
 | `pending_deliveries` | every delivery with work outstanding right now, self-clearing — the live view the 2 h queue alert cannot give |
 | `refresh_reserve` | observe the reserve balance now — **required after a top-up**, or the gateway sells nothing |
-| `withdraw_reserve` | return the reserve to the caller (#103). ⚠️ Controller only, and the **second destination class** for the one outflow — every other transfer goes to a buyer's own account for an order they paid for. Refused while **any** promise-holder exists, so nothing can be owed to a buyer. A **decommissioning** lever, not an incident one: during a forged-webhook drain the forged orders are open, so it refuses — see RUNBOOK's three-step evacuation |
-| `recount_orders` | run the tally reconcile now instead of waiting for the daily one. ⚠️ **Not a stronger repair than the timer's** — same bounded pass, same one-directional rule, so a recount *below* the maintained tally is refused rather than adopted (#63). No force flag, deliberately |
-| `admin_order` / `admin_orders` | read any order, and list with filters + a cursor — the controller-side counterpart to the owner-scoped reads below (#38) |
-| `admin_receipt` | one order's full receipt for any principal. An **update**, not a query, so the read is audited (#38) |
-| `delayed_deliveries` | orders past the 2 h alert threshold, paginated — the worklist between "delivering normally" and "escalated" (#37) |
-| `resolve_problem` | close one obligation on one order. ⚠️ Takes `(orderId, tag, paymentRef)` — a **triple**, because an order can carry several problems of one kind and an earlier version closed all of them at once (#37). `tag` is a variant (`variant { duplicate }`), not text (#122) |
+| `withdraw_reserve` | return the reserve to the caller. ⚠️ Controller only, and the **second destination class** for the one outflow — every other transfer goes to a buyer's own account for an order they paid for. Refused while **any** promise-holder exists, so nothing can be owed to a buyer. A **decommissioning** lever, not an incident one: during a forged-webhook drain the forged orders are open, so it refuses — see RUNBOOK's three-step evacuation |
+| `recount_orders` | run the tally reconcile now instead of waiting for the daily one. ⚠️ **Not a stronger repair than the timer's** — same bounded pass, same one-directional rule, so a recount *below* the maintained tally is refused rather than adopted. No force flag, deliberately |
+| `admin_order` / `admin_orders` | read any order, and list with filters + a cursor — the controller-side counterpart to the owner-scoped reads below |
+| `admin_receipt` | one order's full receipt for any principal. An **update**, not a query, so the read is audited |
+| `delayed_deliveries` | orders past the 2 h alert threshold, paginated — the worklist between "delivering normally" and "escalated" |
+| `resolve_problem` | close one obligation on one order. ⚠️ Takes `(orderId, tag, paymentRef)` — a **triple**, because an order can carry several problems of one kind and an earlier version closed all of them at once. `tag` is a variant (`variant { duplicate }`), not text |
 | `orphans_unresolved` | the open subset of the orphan list — payments that could not be attributed to any order |
-| `expire_order` | release a stranded `#created` order's reserve capacity by hand, when Stripe's expiry event never arrived (#52) |
+| `expire_order` | release a stranded `#created` order's reserve capacity by hand, when Stripe's expiry event never arrived |
 | `set_recovery_interval` | sweep cadence; bounded above at a quarter of the ledger's dedup window |
 | `set_expected_livemode` | pin test-vs-live so a mismatched webhook is refused rather than honoured |
 
@@ -857,7 +857,7 @@ runs in the gate and diffs the marked blocks here against the committed `.did` p
 the guards in `Main.mo` and `mixins/`. ⚠️ It compares **names only** — a stale *description* is still on a
 human, which is how `recount_orders` kept describing the pass #63 deleted.
 
-⚠️ **`delivery_stats` (#39) is public and anonymous** — cumulative delivered orders,
+⚠️ **`delivery_stats` is public and anonymous** — cumulative delivered orders,
 cycles and USD, plus the rail's current refusal state, for a landing page that cannot ask
 for a login. Nothing in it identifies a buyer, an order or a payment, and that is its
 admission test: **do not add a most-recent-order or largest-purchase field**, each of which
@@ -905,7 +905,7 @@ is pinned by the request rather than by a link's configuration.
    `sk_`: §13 covers why the scope matters more than the storage.
    ⚠️ **Write, not Read** — Stripe's permissions are per-resource and escalating, so
    Write covers both the session the rail creates and the session the recovery sweep
-   retrieves to settle a stranded order (#52). A read-only key cannot create sessions;
+   retrieves to settle a stranded order. A read-only key cannot create sessions;
    a key without the read leaves stranded capacity unreleasable.
 2. `set_stripe_origin` — where Stripe returns the buyer, and the origin the
    session's `success_url`/`cancel_url` are built from.

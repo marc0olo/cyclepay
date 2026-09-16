@@ -1,4 +1,4 @@
-/// PocketIC suite for `withdraw_reserve` (#103) — the second destination class for the
+/// PocketIC suite for `withdraw_reserve` — the second destination class for the
 /// one outflow, and the guard that makes it safe.
 ///
 /// ⚠️ **Its own PocketIC instance**, because the guard is "no promise-holder at all" and
@@ -244,7 +244,7 @@ test('103e — the two interleaving windows, and ⚠️ what this suite CANNOT p
   // so the value arrives with the result and there is nothing to forget. Rule 2 — the
   // decrement before the transfer — still rests on review.
   //
-  // ⚠️ **CORRECTION (#127): rule 2 IS verified now — by 103g above — and this comment's
+  // ⚠️ **CORRECTION: rule 2 IS verified now — by 103g above — and this comment's
   // explanation was wrong.** Its measurement was right: with the decrement moved after
   // the transfer, every test that existed *then* still passed. But the reason given —
   // "a `pic.tick()` drains the whole message including its inter-canister awaits, and

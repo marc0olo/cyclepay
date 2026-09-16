@@ -35,7 +35,7 @@
 #   only 1 → 2 → a real, upgrade-compatible change (a new stable field, a widened type).
 #                Promote deliberately, and say in the commit what moved.
 #   1 → 2 fails → the change is NOT upgrade-compatible. Promoting it strands every
-#                deployed canister; that needs a migration chain (#32), not a promotion.
+#                deployed canister; that needs a migration chain, not a promotion.
 #
 # ⚠️ **`--accept-reinstall` is the one deliberate override**, and it exists because
 # "not upgrade-compatible" is a legitimate answer pre-launch: with no migration chain

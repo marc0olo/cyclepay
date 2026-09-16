@@ -1,4 +1,4 @@
-// Unit suite for Checkout Session request building and response parsing (#33).
+// Unit suite for Checkout Session request building and response parsing.
 //
 // Everything the canister sends to Stripe and everything it keeps from the reply
 // is decided by pure functions, so it is all pinned here. What this CANNOT reach

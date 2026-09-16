@@ -368,7 +368,7 @@ button,
    in the "way in" section above, where `.cta`'s own `padding: 0.5rem 1.15rem` came
    LATER at equal specificity and silently won: the button grew by 2px and read as an
    ordinary pill. Caught by looking at a screenshot, because the visual baselines that
-   would have caught it are suspended for this phase (#107). A `.cta.cta-hero`
+   would have caught it are suspended for this phase. A `.cta.cta-hero`
    selector would also work; declaration order is the smaller change and keeps every
    button rule at one class. */
 .cta-hero {
@@ -1267,7 +1267,7 @@ code.flow-detail {
   }
 }
 
-/* Problems attached to an order (#37/#38). Reuses `.notice`'s frame, so it sits in the
+/* Problems attached to an order. Reuses `.notice`'s frame, so it sits in the
    same visual language as the lock notice rather than introducing a second warning
    idiom. */
 #order-problems h3 {
@@ -1293,7 +1293,7 @@ code.flow-detail {
   color: var(--icp-fg-muted);
 }
 
-/* ── operator console (#68) ──────────────────────────────────────────────────
+/* ── operator console ──────────────────────────────────────────────────
    The wait-versus-work distinction is carried by ORDER, HEADING and a token
    colour. Not by symbols: brand-lint bans pictographs in user-facing copy, and
    the warning and tick glyphs that would otherwise do this job are pictographs.
@@ -1409,7 +1409,7 @@ code.flow-detail {
   color: var(--icp-fg-muted);
 }
 
-/* ── the operator console's tables (#68) ──────────────────────────────────── */
+/* ── the operator console's tables ──────────────────────────────────── */
 
 /* ⚠️ `.worklist-rows` is a <tbody> now, and `.worklist-row` a <tr>. The list reset above
    is harmless on a tbody, but `padding-block` on a row does nothing: cell padding is the
@@ -1536,7 +1536,7 @@ code.flow-detail {
   color: var(--icp-fg);
 }
 
-/* ── the configuration surface (#97) ──────────────────────────────────────── */
+/* ── the configuration surface ──────────────────────────────────────── */
 
 .config-group {
   padding-block: var(--space-4);

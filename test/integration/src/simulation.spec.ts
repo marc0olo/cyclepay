@@ -1,4 +1,4 @@
-/// PocketIC suite for simulation mode (#99): the divisor, the faucet refusal, and
+/// PocketIC suite for simulation mode: the divisor, the faucet refusal, and
 /// the guards that keep the unsafe configurations unrepresentable.
 ///
 /// ⚠️ **Its own PocketIC instance, and the reason is the `storedCount` guard.**
