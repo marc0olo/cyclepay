@@ -26,10 +26,20 @@ excluded to skip mermaid's `#35;` escape. A check does not have that blind spot 
     belongs.
   - **Mermaid's `#35;` escape**, inside a mermaid fence only. Outside one, `#NN;` is a
     reference -- that is the exact case this check exists for.
-  - **`scripts/check-mermaid.py`**, one file, because the escape sequence IS its subject:
-    every occurrence there is the literal `#35;` inside a message, a doc line or a
-    self-test vector. The exemption is on the file and not on the number, since `#35` is
-    also a real issue in this repo -- which is why it cannot be exempted globally.
+  - **Two checkers whose SUBJECT is the syntax** -- `scripts/check-mermaid.py` and this
+    file. Every occurrence in them is a literal inside a message, a doc line or a
+    self-test vector. The exemption is on the file, never on the number: `#35` is also a
+    real issue here, so exempting the token globally would open the hole this check
+    exists to close. ⚠️ **The exemption is itself checked** -- `main()` fails if an
+    exempt file has stopped containing a reference, so it cannot outlive its reason.
+
+## ⚠️ Run this against a COMMITTED file
+
+`git ls-files` does not list untracked files, so running this on a new checker before
+`git add` scans everything except the file being written. That is how this check first
+passed locally and failed in CI -- on itself, over its own self-test vectors -- which is
+the same shape as the defect it exists to catch: a green tick from a scan that never
+visited the file that mattered.
 
 ## The digit bound is deliberate
 
@@ -45,8 +55,9 @@ import subprocess
 import sys
 
 EXEMPT_PREFIXES = ("docs/agents/", "vendor/")
-# One file, named rather than pattern-matched, for the reason in the docstring.
-EXEMPT_FILES = ("scripts/check-mermaid.py",)
+# Named rather than pattern-matched, for the reason in the docstring. Verified live in
+# `main()`: an exemption whose file no longer needs it is a failure, not a leftover.
+EXEMPT_FILES = ("scripts/check-mermaid.py", "scripts/check-issue-refs.py")
 SKIP_SUFFIXES = (
     ".png", ".jpg", ".woff2", ".svg", ".ico", ".wasm", ".gz", ".most", ".lock",
 )
@@ -142,6 +153,27 @@ def main() -> int:
     # ⚠️ Vacuity floor. A check that reports a clean scan over nothing is worse than no
     # check: this one's whole job is to be green, so "0 findings" has to be backed by
     # evidence that it looked. The floor is well under the real count (~250 files).
+    # ⚠️ An exemption that is no longer needed must be DELETED, not left standing: it is
+    # a live hole in the check, and the only signal it has stopped being justified is
+    # that its file has stopped containing a reference. So that is asserted.
+    for path in EXEMPT_FILES:
+        try:
+            text = open(path, encoding="utf-8").read()
+        except FileNotFoundError:
+            print(
+                f"   check-issue-refs: exempt file {path} does not exist -- delete the"
+                " exemption.",
+                file=sys.stderr,
+            )
+            return 1
+        if not refs_in(text, mermaid_aware=path.endswith(".md")):
+            print(
+                f"   check-issue-refs: {path} is exempt but carries no reference --"
+                " delete the exemption rather than leaving a hole.",
+                file=sys.stderr,
+            )
+            return 1
+
     if scanned < 100:
         print(
             f"   check-issue-refs: only {scanned} file(s) scanned -- refusing to report"
