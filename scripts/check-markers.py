@@ -1,47 +1,56 @@
 #!/usr/bin/env python3
-"""Fail if a ⚠️ marker is in a place where it cannot be a warning.
+"""Keep the ⚠️ marker rare: no marker in a test name, and the population may only fall.
 
 The marker means **stop: doing the obvious thing here breaks something you will not
-notice**. That only works while it is rare. At 2,164 of them across 139 files, a reader
-skimming for the dangerous line finds every line marked, which is the same as none --
-and the two failure modes are not symmetrical: an unread warning on the money path costs
-more than a missing one, because its presence is what a reviewer trusts.
+notice**. That only works while it is rare, and the two failure modes are not
+symmetrical -- an unread warning on the money path costs more than a missing one, because
+its presence is what a reviewer trusts. At 2,164 across 139 files it marked nothing.
 
-## What this enforces -- three shapes, none of them a judgement call
+Whether a given marker earns its glyph is a judgement no regex makes: *can the next
+editor act on this the wrong way?* **"Do not add a force flag to `refresh_reserve`"**
+earns it, **"this count going LOW is the oversell direction"** does not. `AGENTS.md`
+carries that rule. This file owns only the two things a check can own.
 
-  1. **Not in a test, suite, describe or it NAME.** The name already states the property
-     the test defends; the glyph adds nothing to it and prints on every run, in every
-     runner's output, where it is decoration rather than a warning to an editor.
-  2. **Not three-to-a-block.** One warning in a comment block is a warning. Three is the
-     block's ordinary voice, and the reader has no way to tell which line is the trap.
-     The bar is deliberately generous -- two is allowed, because a block can honestly
-     hold two distinct traps (`Main.mo`'s quiet-window predicate does) -- so anything
-     failing here is not a borderline call.
-## And one it REPORTS without failing
+## 1. Never in a test, suite, describe or it NAME
 
-Endpoint `///` docs are PUBLISHED: `mops build` copies them into
-`src/backend/dist/backend.did` and from there into the generated TypeScript. So a marker
-there reaches whoever calls the API, and whether that is right depends entirely on who
-the warning is addressed to:
+Fully decidable, and 183 instances existed. The name already states the property the test
+defends; the glyph adds nothing to it and prints on every run, in every runner's output,
+where it is decoration rather than a warning to an editor.
 
-  - *"Uncertified query answers, and nothing may be wired to decide on them"* belongs in
-    the published doc. A caller can act on it; an operator wiring a dashboard needs it.
-  - *"Declared inside the mixin body, not above it"* does not. It is addressed to the
-    next editor of this repo, and it is delivered to someone who cannot act on it at
-    all. That trap belongs in a `//` beside the implementation.
+## 2. The population may only FALL
 
-⚠️ **No regex separates those two, so this is counted and listed, never failed on** --
-the same arrangement as `sweep-vocabulary.py`'s adjudication step. Making it a failure
-would push genuinely caller-facing warnings out of the one place a caller reads. The
-count is printed so the population stays visible rather than growing quietly.
+`MARKER_CEILING` is the tree-wide total and the check fails on any disagreement. Adding a
+genuine new trap is a one-line edit here, with the reason in the commit -- which is the
+point: the count cannot move quietly in either direction, and every cleanup pass ratchets
+it down visibly in the diff. `PUBLISHED_CEILING` does the same for the markers that reach
+API callers through the generated `.did` (see below). Same mechanism as
+`check-issue-refs.py`'s exemption audit: make the thing shrink-only rather than trusting
+a convention.
 
-## What it does NOT enforce
+⚠️ **A per-block cap was tried here and REMOVED, because it claimed a guarantee it did
+not deliver.** It counted markers in contiguous comment-line runs, and measured against
+this tree:
 
-Whether a given marker earns its glyph. The test is *"can the next editor act on this
-the wrong way?"* -- **"Do not add a force flag to `refresh_reserve`"** earns it, **"this
-count going LOW is the oversell direction"** does not, and no regex tells those apart.
-`AGENTS.md` carries that rule; this file covers the part a check can own, so the review
-attention goes to the part it cannot.
+  - a blank line between them defeated it, changing nothing a reader experiences;
+  - trailing comments on code lines were never counted at all;
+  - it saw 97% of markers in code, 60% in shell and Python, and **4% in Markdown** --
+    so `RUNBOOK.md`, the file where a false warning costs an operator the most, sat
+    almost entirely outside it.
+
+And where a block honestly holds three distinct traps (`Main.mo`'s quiet-window
+predicate) the cap pushed toward deleting a real warning. A ceiling has none of those
+properties: it counts every shape, in every file type, and cannot be satisfied by
+reformatting.
+
+## What about the markers PUBLISHED into the .did?
+
+Endpoint `///` docs are copied into `src/backend/dist/backend.did` and from there into the
+generated TypeScript, so a marker there reaches whoever calls the API. Whether that is
+right depends on who the warning is addressed to: *"uncertified query answers, and
+nothing may be wired to decide on them"* belongs in the published doc, and *"declared
+inside the mixin body, not above it"* is addressed to the next editor of this repo and
+delivered to someone who cannot act on it. No regex separates those, so the rule here is
+only the ratchet -- the count may fall, never rise.
 """
 
 import re
@@ -56,17 +65,20 @@ GENERATED = (
     "src/frontend/src/bindings/",
 )
 SKIP_SUFFIXES = (".png", ".jpg", ".woff2", ".svg", ".ico", ".wasm", ".gz", ".most", ".lock")
-# ⚠️ **This file, because the shapes it forbids ARE its self-test vectors.** Same
-# arrangement as `check-issue-refs.py`, and audited the same way: `main()` fails if this
-# file stops carrying a vector, so the exemption cannot outlive its reason. Sibling
-# checkers do not get one -- a marker in a real test name here would be a finding.
-EXEMPT_FILES = ("scripts/check-markers.py",)
+# ⚠️ **Exempt from the NAME rule only, because the shapes it forbids are its own test
+# vectors.** Its markers still count toward the ceiling, so the number this prints is the
+# whole tree's and matches what any other tool counting the tree will get. Audited in
+# `main()`: the exemption fails if this file stops carrying a vector.
+NAME_EXEMPT_FILES = ("scripts/check-markers.py",)
+
+# ⚠️ **These may only ever FALL.** Raising one is a deliberate edit whose reason belongs
+# in the commit message; if you are lowering one, you are doing the intended thing.
+MARKER_CEILING = 1796
+PUBLISHED_CEILING = 40
+
 # A marker inside the STRING argument of a test declaration. Deliberately not anchored to
 # the line start: `test.skip(`, `it.each(` and an indented call all have to match.
 IN_NAME = re.compile(r"\b(?:test|suite|describe|it)\b[\w.]*\s*\(\s*[\"'`][^\"'`]*" + MARKER)
-COMMENT = re.compile(r"^\s*(?://|///|#)")
-# Three in one block. Two is allowed on purpose -- see the docstring.
-MAX_PER_BLOCK = 2
 
 
 def names_in(text: str):
@@ -77,29 +89,8 @@ def names_in(text: str):
     ]
 
 
-def stacked_in(text: str):
-    """Comment blocks carrying more than MAX_PER_BLOCK markers, as (line, count)."""
-    out = []
-    start = 0
-    count = 0
-    lines = 0
-    for n, line in enumerate(text.split("\n"), 1):
-        if COMMENT.match(line):
-            if not lines:
-                start = n
-            lines += 1
-            count += line.count(MARKER)
-        else:
-            if count > MAX_PER_BLOCK:
-                out.append((start, count))
-            start = count = lines = 0
-    if count > MAX_PER_BLOCK:
-        out.append((start, count))
-    return out
-
-
 def _self_test() -> None:
-    # Rule 1: a marker in a test name, however the call is spelled.
+    # A marker in a test name, however the call is spelled.
     assert names_in('test("⚠️ the pay note cannot outlive the pay button", async () => {')
     assert names_in('  suite("⚠️ divisor 1 is byte-identical", func() {')
     assert names_in("describe('⚠️ real vs crafted', () => {")
@@ -107,14 +98,9 @@ def _self_test() -> None:
     # ...and NOT a marker in the body, which is where it belongs.
     assert not names_in('test("the pay note", () => {\n  // ⚠️ By id, not by position\n')
     assert not names_in("// ⚠️ **A test name is not the place**, but this line is fine")
-    # Rule 2: three in one block fails, two does not, and a blank line ends the block.
-    three = "// ⚠️ a\n// ⚠️ b\n// ⚠️ c\nlet x = 1;\n"
-    assert [c for _, c in stacked_in(three)] == [3]
-    assert stacked_in("// ⚠️ a\n// ⚠️ b\nlet x = 1;\n") == []
-    assert stacked_in("// ⚠️ a\n\n// ⚠️ b\n\n// ⚠️ c\n") == []
-    # A marker twice on ONE line still counts twice -- the unit is the block, not the line.
-    assert [c for _, c in stacked_in("// ⚠️ a ⚠️ b\n// ⚠️ c\nx\n")] == [3]
-    assert MAX_PER_BLOCK == 2
+    # The ceilings are counts, not thresholds with slack: an exact-match check is what
+    # makes the ratchet visible in a diff.
+    assert isinstance(MARKER_CEILING, int) and isinstance(PUBLISHED_CEILING, int)
 
 
 def main() -> int:
@@ -127,11 +113,8 @@ def main() -> int:
     scanned = 0
     total = 0
     in_names = []
-    stacked = []
     for path in files:
         if path.startswith(GENERATED) or path.endswith(SKIP_SUFFIXES):
-            continue
-        if path in EXEMPT_FILES:
             continue
         try:
             text = open(path, encoding="utf-8").read()
@@ -139,10 +122,10 @@ def main() -> int:
             continue
         scanned += 1
         total += text.count(MARKER)
+        if path in NAME_EXEMPT_FILES:
+            continue
         for n, line in names_in(text):
             in_names.append((path, n, line))
-        for n, count in stacked_in(text):
-            stacked.append((path, n, count))
 
     try:
         published = open(DID, encoding="utf-8").read().count(MARKER)
@@ -152,7 +135,7 @@ def main() -> int:
 
     # ⚠️ An exemption must die with its reason. The only signal this one has is that the
     # exempt file no longer carries the shape it was exempted for.
-    for path in EXEMPT_FILES:
+    for path in NAME_EXEMPT_FILES:
         try:
             text = open(path, encoding="utf-8").read()
         except (FileNotFoundError, IsADirectoryError, PermissionError):
@@ -162,16 +145,16 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
-        if not names_in(text) and not stacked_in(text):
+        if not names_in(text):
             print(
-                f"   check-markers: {path} is exempt but carries none of the shapes it"
-                " was exempted for -- delete the exemption rather than leaving a hole.",
+                f"   check-markers: {path} is exempt from the name rule but carries no"
+                " test-name vector -- delete the exemption rather than leaving a hole.",
                 file=sys.stderr,
             )
             return 1
 
     # ⚠️ Vacuity floor. This check's steady state is green, so "no findings" has to be
-    # backed by evidence it looked: at the markers AND at the artifact rule 3 reads.
+    # backed by evidence that it looked.
     if scanned < 100 or total == 0:
         print(
             f"   check-markers: {scanned} file(s) and {total} marker(s) -- refusing to"
@@ -193,34 +176,31 @@ def main() -> int:
             " body if there is a trap there.",
             file=sys.stderr,
         )
-    if stacked:
-        failed = True
-        print(
-            f"\n   {len(stacked)} comment block(s) with more than {MAX_PER_BLOCK}"
-            " markers:",
-            file=sys.stderr,
-        )
-        for path, n, count in stacked[:20]:
-            print(f"     {path}:{n}  {count} markers in one block", file=sys.stderr)
-        if len(stacked) > 20:
-            print(f"     ... and {len(stacked) - 20} more", file=sys.stderr)
-        print(
-            "   Keep the one the next editor can get wrong; the rest are explanation"
-            " and keep their text.",
-            file=sys.stderr,
-        )
+    for label, got, ceiling, const in (
+        ("markers in the tree", total, MARKER_CEILING, "MARKER_CEILING"),
+        (f"markers published in {DID}", published, PUBLISHED_CEILING, "PUBLISHED_CEILING"),
+    ):
+        if got > ceiling:
+            failed = True
+            print(
+                f"\n   {got} {label}, ceiling {ceiling}. A marker was ADDED: it has to be"
+                f"\n   a trap the next editor can act on wrongly, and then {const} moves"
+                f"\n   to {got} in this commit with the reason in the message.",
+                file=sys.stderr,
+            )
+        elif got < ceiling:
+            failed = True
+            print(
+                f"\n   {got} {label}, ceiling {ceiling} — the population FELL, which is"
+                f"\n   the intended direction. Ratchet it: set {const} = {got}.",
+                file=sys.stderr,
+            )
     if failed:
         return 1
 
     print(
-        f"   {total} markers across {scanned} files: none in a test name, none stacked"
-        f" past {MAX_PER_BLOCK}"
-    )
-    # Reported, never failed on -- see the docstring. Printed on stdout with the count so
-    # a reader can see the population without the step going red over a judgement call.
-    print(
-        f"   {published} reach API callers via {DID} — each should be a warning a CALLER"
-        " can act on, not a note to the next editor"
+        f"   {total} markers across {scanned} files, {published} of them published in the"
+        " .did: at the ceiling, none in a test name"
     )
     return 0
 

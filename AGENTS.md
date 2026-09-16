@@ -180,16 +180,20 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
   the glyph. The marker only works while it is rare, and the asymmetry is why it matters:
   an unread warning on the money path costs more than a missing one, because its presence
   is what a reviewer trusts.
-  - **Never in a test, suite or describe NAME.** The name states the property; the glyph
-    adds nothing and prints on every run.
-  - **Never three to a comment block.** One is a warning, three is the block's ordinary
-    voice and the reader cannot tell which line is the trap. Two is allowed — a block can
-    hold two distinct traps.
+  - **Never in a test, suite or describe NAME** (enforced). The name states the property;
+    the glyph adds nothing and prints on every run.
+  - **The population may only FALL** (enforced): `MARKER_CEILING` is the tree-wide total
+    and the check fails on any disagreement in either direction. A new marker is a
+    one-line ceiling edit with the reason in the commit, and a cleanup pass ratchets it
+    down visibly in the diff.
+  - **A comment block with three markers almost certainly has one trap and two
+    explanations** — worth checking against the phrase test above. Judgement, not a rule:
+    a block can honestly hold three, and `Main.mo`'s quiet-window predicate does.
   - **An endpoint `///` doc is PUBLISHED** into `backend.did` and the generated
     TypeScript, so a marker there reaches API callers. Keep the ones a caller can act on
     (*"uncertified query answers, nothing may be wired to decide on them"*); a note to the
     next editor about our own layout or history belongs in a `//` beside the
-    implementation.
+    implementation. `PUBLISHED_CEILING` ratchets that count the same way.
 - ⚠️ **No bare `#NN` issue reference outside `docs/agents/`**, and
   `scripts/check-issue-refs.py` enforces it. Not in code, not in tests, not in docs, not
   in scripts, not in a suite or test name. An issue number reads as a pointer to a live
