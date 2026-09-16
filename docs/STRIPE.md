@@ -13,7 +13,7 @@ decision — and what the `§N` shorthand in those comments points at — is
 - [5. Signature verification](#5-signature-verification)
 - [6. Attribution: claimed, not trusted](#6-attribution-claimed-not-trusted)
 - [7. Dedup: two layers, and what they do not protect against](#7-dedup-two-layers-and-what-they-do-not-protect-against)
-- [8. Amount honouring — an equality check since #33](#8-amount-honouring--an-equality-check-since-33)
+- [8. Amount honouring — an equality check](#8-amount-honouring--an-equality-check)
 - [8a. What the buyer sees before paying](#8a-what-the-buyer-sees-before-paying)
 - [9. Admission: the pre-creation gate](#9-admission-the-pre-creation-gate)
 - [10. Order lifecycle — Stripe owns the deadline](#10-order-lifecycle--stripe-owns-the-deadline)
@@ -39,7 +39,7 @@ them or fails and retries.
 
 ## 2. What the canister calls Stripe for, and what it still cannot do
 
-The rail was **inbound-only** until #33: no API key anywhere, Stripe talked to us
+The rail is **not inbound-only**: the canister holds an API key and talks to us
 and never the reverse. It now makes outbound calls, and **all three are Checkout
 Sessions calls**: create one for an order, expire one when the buyer cancels, and
 retrieve one when the recovery sweep needs to settle an order whose expiry event never
@@ -197,7 +197,7 @@ look like a delivery failure.
 ## 6. Attribution: claimed, not trusted
 
 `client_reference_id` used to be a **URL parameter the frontend appended**, on a
-permanent link anyone could pay with any reference they liked. Since #33 the
+permanent link anyone could pay with any reference they liked. The
 canister sets it through the API and there is no URL parameter to touch — which
 removes the dominant attribution failure, and removed `attach_payment` with it
 (§12).
@@ -260,7 +260,7 @@ delivered, operator refunds. This is the single most important thing to understa
 about the rail, and it is why **dedup gates delivery** rather than gating the
 webhook.
 
-## 8. Amount honouring — an equality check since #33
+## 8. Amount honouring — an equality check
 
 The order stores a **pricing snapshot** at creation (`Types.Pricing`): the gross
 cents, **both rate inputs** (`usdPerIcpMicros` from the XRC, `xdrPermyriadPerIcp`
@@ -283,7 +283,7 @@ against it silently: the audit log would show an ordinary completed purchase.
 Two consequences worth naming, because things downstream depend on them:
 
 - **`lockedCycles` is immutable after creation.** Nothing on the money-in path
-  writes it. #30's tally is exact rather than conservative because of that.
+  writes it. The promise tally is exact rather than conservative because of that.
 - **`#belowFeeFloor` and `#unusableSnapshot` are gone**, not merely unreachable —
   both existed only to bound repricing. `#aboveCeiling` stays as defence in depth,
   and it is still reachable without any tampering: an order created under a
@@ -378,19 +378,19 @@ denied to pay for someone else's griefing.
 
 ### The order is the record; the audit log is the trail
 
-**Every fact about an order's money lives on the order** (#34): its status, what
+**Every fact about an order's money lives on the order**: its status, what
 the buyer actually paid, why it expired (`expiredBy`), when its rates were read
-(`pricing.ratesFetchedAtNs`), and — once #33 lands — the Stripe session it is paid
+(`pricing.ratesFetchedAtNs`), and the Stripe session it is paid
 through and the deadline Stripe set for it.
 
 `audit_log` is the *operational trail*: alerts and dedup drops. It answers
 "what was happening around then", never "what happened to this order". That
-division is about where a fact belongs, not about the buffer being bounded — #37
+division is about where a fact belongs, not about the buffer being bounded — the
 removes the ring and the division still holds.
 
 **A refund is the one money fact not on the order.** It lives in Stripe, where it
 was issued, plus the unresolved `#refundAfterDelivery` entry, which the queue
-never evicts. #34 considered a `refundedUsdCents` field and dropped it: the app
+never evicts. A `refundedUsdCents` field was considered and rejected: the app
 does not model refunds, and a manual Stripe refund is an out-of-band operator
 action. It becomes a field when there is real money to reconcile.
 
@@ -400,7 +400,7 @@ action. It becomes a field when there is real money to reconcile.
 |---|---|---|
 | `#created` | yes | not yet — the promise is held against the reserve |
 | `#cancelled` | **no** — the buyer gave up, and `#cancelled → #paid` is absent from the matrix | no |
-| `#expired` | **no** as of #34 | no |
+| `#expired` | **no** | no |
 | `#paid` | already paid | **yes** — one transfer out of the reserve away |
 | `#delivered` | — | settled |
 | `#needsReview` | — | **yes** — outcome unknown, a human checks the ledger |
@@ -454,9 +454,9 @@ all, so one cent from any principal reaches it with no order and no payment — 
 audit log is the one structure here whose growth is **not** attacker-priced (orders
 are bounded by the open-order cap and the reserve; orphan entries each require a real
 payment to exist). ⚠️ **A line per attempt was harmless only while the log was a
-4,096-entry ring — and #37 removed that ring**, which is why the refusal lines had to go
+4,096-entry ring, and there is no ring**, which is why the refusal lines had to go
 first and why the admission rule was applied to **every** tag rather than to the two
-paths that prompted it. (#37 §2c did that pass over the whole population; the count is
+paths that prompted it. (That pass covered the whole population; the count is
 deliberately not written here, because a number in prose that nothing checks drifts —
 `grep -c` on the `audit(`/`auditAdmin(` call sites is the answer that cannot be stale.)
 
@@ -516,7 +516,7 @@ other places.
 
 ## 10. Order lifecycle — Stripe owns the deadline
 
-**Orders are never deleted, and nothing sweeps them.** #33 deleted `Retention.mo`
+**Orders are never deleted, and nothing sweeps them.** There is no `Retention.mo`
 entirely: there is no TTL, no band, no cursor. An order's deadline is its
 session's `expires_at` (~35 min; Stripe's floor is 30), stored on the order as
 `expiresAtNs`, and the only thing that moves it to `#expired` is Stripe's
@@ -525,17 +525,17 @@ session's `expires_at` (~35 min; Stripe's floor is 30), stored on the order as
 | Status | Payable? | Moved there by | Record |
 |---|---|---|---|
 | `#created` | yes, until its own `expiresAtNs` | `create_order` | kept forever |
-| `#expired` | **no** (#34) | `checkout.session.expired`, or a failed session creation | kept forever |
-| `#cancelled` | **no** (#34) | the buyer, via `cancel_order` | kept forever |
+| `#expired` | **no** | `checkout.session.expired`, or a failed session creation | kept forever |
+| `#cancelled` | **no** | the buyer, via `cancel_order` | kept forever |
 
 ⚠️ **A missed expiry event leaves the order visibly `#created` past its deadline,
 and that is the design.** A sweep as a backstop was specified and rejected: it
 would flip the order while its reserve promise stayed held, so a broken order
 would look like a correctly expired one and the reserve would leak silently. The
-stuck order **is** the detection signal (#30's predicate 1).
+stuck order **is** the detection signal.
 
-**Expiry is terminal.** #34 deleted `#expired → #paid`, so `Card.handleWebhook`
-admits `#created` alone — the only guard left, now that #33 deleted
+**Expiry is terminal.** There is no `#expired → #paid` edge, so `Card.handleWebhook`
+admits `#created` alone — the only guard, now that there is no
 `attach_payment` and its sibling guard. Expiry deletes nothing, but it is a real
 deadline, and it frees the buyer's open-order slot.
 
@@ -547,11 +547,11 @@ later. Because the record is still there, that payment is
 is therefore **refunded**, not delivered: an `#unattributed` obligation is
 filed carrying the payment intent, and a `charge.refunded` resolves it.
 
-That is a deliberate narrowing. Until #34 the late payment was honoured at the
+That is a deliberate narrowing. A late payment is not honoured at the
 locked quantity for the life of the canister; the price of that guarantee was an
 order that could be paid long after the buyer, the operator and the rate had all
 moved on. What survives is the half that matters — **the record is never deleted,
-so a late payment is never a mystery charge.** #33 narrowed the window itself:
+so a late payment is never a mystery charge.** The window itself is narrow:
 the session and the order now die together, so a session that can still be paid
 always belongs to an order that can still accept it.
 
@@ -564,7 +564,7 @@ and money facts live on permanent records. It would also create orphans,
 ### A buyer can give up on an unpaid order
 
 `cancel_order(id)` is owner-scoped and marks a `#created` order **`#cancelled`** —
-its own status since #34, so a reload no longer tells a buyer who cancelled that
+its own status, so a reload does not tell a buyer who cancelled that
 their order expired. It is idempotent, and it is refused for a paid order: that one
 is going to deliver, and offering a cancel would promise something untrue.
 
@@ -581,8 +581,8 @@ it lands as a refund obligation carrying the payment intent, which a Stripe refu
 resolves. The buyer's decision wins, and their money is recorded and refundable
 rather than silently kept or converted against it.
 
-Until #34 the opposite was true — `#expired` stayed payable, so the in-flight
-payment delivered. #33 removed the window itself: `cancel_order` expires the
+An `#expired` order is not payable, so an in-flight payment does not deliver
+against it. The window itself is closed: `cancel_order` expires the
 Stripe session **first**, and marks the order only if that succeeded, so the race
 stops being possible rather than merely recorded. The audit trail carries
 `order.cancelled` either way.
@@ -615,7 +615,7 @@ partial loss and reconciliation happens by amount.
 
 ⚠️ **An unattributed payment can now only be refunded** — including the ones where we
 know exactly whose it is. `attach_payment`, which credited the order the buyer
-meant, was deleted in #33 along with the failure it existed for: the canister
+meant, is gone along with the failure it existed for: the canister
 sets `client_reference_id` through the API, so there is no URL parameter for a
 buyer to strip or edit.
 
@@ -747,7 +747,7 @@ configuration; the go-live checklist sets it to `?true`.
 
 ## 13. The two secrets
 
-There are **two** since #33: the webhook **signing secret** (`whsec_…`) and the
+There are **two**: the webhook **signing secret** (`whsec_…`) and the
 Stripe **API key** (`rk_…`). Both are stored **plaintext in canister state, by
 design**, through the same `Secret.mo` store.
 
@@ -815,7 +815,7 @@ privileges — any controller can do any of this):
 | `set_stripe_origin` | where Stripe returns the buyer; https, no query, no fragment |
 | `set_webhook_secret` | provision / rotate the signing secret (§13) |
 | `webhook_secret_status` / `stripe_api_key_status` | confirm a rotation landed, without reading either secret back |
-| `set_card_tiers` | register the preset amounts. Since #33 an empty vector shows no tiles and does **not** disable the rail — the switch is both Stripe secrets |
+| `set_card_tiers` | register the preset amounts. An empty vector shows no tiles and does **not** disable the rail — the switch is both Stripe secrets |
 | `set_gate_config` | open-order cap, own-cycles floor, per-purchase ceiling |
 | `set_pricing_config` | fee formula, staleness window (capped at 1 h), delta bound, minimum rate sources, and the **simulation divisor**. Three divisor guards live here: it is accepted only while `expected_livemode` is exactly `?false`, it cannot CHANGE while any order is stored (reinstall to change it), and it is refused if it would scale the *smallest purchase this gateway sells* below ten times the cycles-ledger deposit fee |
 | `refresh_rates` | force a rate tick now instead of waiting for the timer |
@@ -825,7 +825,7 @@ privileges — any controller can do any of this):
 | `add_admin` / `remove_admin` / `admins` | grant, revoke and list the CASES tier. ⚠️ Controller only, and controllers are not listed — they pass the admin guard without being granted, so an empty list does not mean nobody can act |
 | `add_allowed_buyer` / `remove_allowed_buyer` / `allowed_buyers` | who may buy while this gateway accepts free Stripe **test** payments. ⚠️ Controller only: the list is the only bound on the *total* given away, where the divisor bounds only the per-order loss. **An empty list does not mean "everyone"** — with a funded reserve and test payments accepted it means the gateway refuses every buyer (`unboundedGiveaway`), because that combination is a cycles faucet. At `expected_livemode == ?true` the list has no effect at all |
 | `delivery_journal` | money-out record for one order |
-| `audit_log` / `audit_log_recent` | operational trail, **paginated** both ways: `audit_log` walks oldest-first (`afterSeq`), `audit_log_recent` newest-first (`beforeSeq`) for the console. ⚠️ `nextCursor` means the opposite in each. ⚠️ Nothing drops since #37 — it was a 4,096-entry ring and gaps in `seq` were how you spotted drops; **there are no gaps now**, and `seq` is only a never-reused ordering |
+| `audit_log` / `audit_log_recent` | operational trail, **paginated** both ways: `audit_log` walks oldest-first (`afterSeq`), `audit_log_recent` newest-first (`beforeSeq`) for the console. ⚠️ `nextCursor` means the opposite in each. ⚠️ **Nothing drops, so there are no gaps in `seq`** — it is a never-reused ordering, not a drop detector |
 | `abandon_order` | void an unpaid order, with the reason recorded in the audit trail |
 | `record_delivered` | record that an escalated order's cycles DID reach the buyer, evidenced by the ledger block |
 | `pending_deliveries` | every delivery with work outstanding right now, self-clearing — the live view the 2 h queue alert cannot give |
@@ -849,13 +849,13 @@ the reserve is `icp cycles transfer` from the operator's own identity, outside t
 canister. `record_delivered` records a *fact about the ledger*, it does not send.
 
 ⚠️ **"The whole surface" is now CHECKED, because it was wrong.** This table claimed
-completeness while missing **11 of 29** admin methods — every one added by #37 and #38,
-plus `expire_order` from #52, plus the two secret-status queries §13 tells you to call
+completeness while missing **11 of 29** admin methods — the order-problem and
+admin-read surfaces, `expire_order`, and the two secret-status queries §13 tells you to call
 to confirm a rotation. A list of plausible method names reads as complete, so nothing
 short of comparing it against the interface could tell. `scripts/check-doc-surface.py`
 runs in the gate and diffs the marked blocks here against the committed `.did` plus
 the guards in `Main.mo` and `mixins/`. ⚠️ It compares **names only** — a stale *description* is still on a
-human, which is how `recount_orders` kept describing the pass #63 deleted.
+human, which is how `recount_orders` kept describing a pass that no longer exists.
 
 ⚠️ **`delivery_stats` is public and anonymous** — cumulative delivered orders,
 cycles and USD, plus the rail's current refusal state, for a landing page that cannot ask
