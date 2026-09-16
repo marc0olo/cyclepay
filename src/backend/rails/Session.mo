@@ -28,7 +28,7 @@ import Json "../Json";
 module {
   /// Why creating a Checkout Session failed.
   ///
-  /// ⚠️ **Lives with the rail rather than the composition root**, since #120: it
+  /// ⚠️ **Lives with the rail rather than the composition root:** it
   /// describes a Stripe-session failure, and two mixins plus `Main.mo` need to name it.
   /// Not part of the Candid interface — `create_order` answers with `CreateOrderError`,
   /// which is the buyer-facing narrowing of this.
@@ -145,7 +145,7 @@ module {
   /// those checks need, not padding.
   ///
   /// A session response is ~3.5–6 KB of JSON plus 1–2 KB of headers, so 16 KB is ~2×
-  /// headroom — an estimate; #4 captures the real fixture and the check to add then is
+  /// headroom — an estimate; a captured fixture would let this be pinned, and that check is
   /// `cap ≥ 2 × measured`.
   ///
   /// ⚠️ **The asymmetry decides the value: too small takes the rail DOWN, too large only
@@ -303,7 +303,7 @@ module {
   /// same object to every replica.
   ///
   /// The order id is the natural key: one order, one session, for the life of
-  /// the order. There is no session retry (#33 deleted `payment_session`), so it
+  /// the order. There is no session retry, so it
   /// is never reused with a changed body — which Stripe rejects.
   public func createHeaders(apiKey : Text, orderId : Text) : [IC.HttpHeader] {
     [
@@ -384,7 +384,7 @@ module {
   /// ⚠️ **The single most likely implementation bug in this plan.** Stripe's
   /// `expires_at` is Unix **seconds**; IC time is **nanoseconds**. Store the raw
   /// value and every order looks expired since 1970: the open-order cap frees
-  /// instantly, both of #30's detection predicates fire on everything, and the UI
+  /// instantly, both reserve detection predicates fire on everything, and the UI
   /// shows every order expired. It exists as a named function so the conversion
   /// has one home and one test.
   public func secondsToNs(seconds : Nat) : Int {
@@ -458,7 +458,7 @@ module {
   /// again", and the session expires on its own within 35 minutes — but it is an
   /// assumption, not a fact.
   ///
-  /// #4 captures the real expire-on-completed response; pin this against that
+  /// A captured fixture would carry the real expire-on-completed response; pin this against it
   /// body then, or switch to matching the structured `error.code` instead of the
   /// message, which is what Stripe actually guarantees stable.
   public type ExpireOutcome = {
@@ -539,7 +539,7 @@ module {
   /// body arrives. `strip` cannot rescue an over-cap response: that check runs first.
   ///
   /// ⚠️ **The failure is total, not truncation** — an over-cap response fails the call
-  /// every time — so this is sized with margin rather than measured to the byte. #4's
+  /// every time — so this is sized with margin rather than measured to the byte. A
   /// fixture capture turns `cap >= 2x measured` into a check instead of an estimate.
   public let retrieveMaxResponseBytes : Nat64 = 32_768;
 
@@ -559,7 +559,7 @@ module {
     /// an obligation nobody can reconcile.
     #completePaid : { paymentIntent : Text };
     /// Stripe expired it. Nobody can pay this session, so the order's promise is holding
-    /// capacity against a sale that can never happen — the leak #52 exists to close.
+    /// capacity against a sale that can never happen — the leak the sweep exists to close.
     #expired;
     /// Anything we do not recognise, including a body we cannot parse. Carries the text
     /// for the audit line.

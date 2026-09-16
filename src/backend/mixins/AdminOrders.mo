@@ -64,7 +64,7 @@ mixin (
   /// ⚠️ **`alertAfterNs` is this predicate's THRESHOLD, not a trigger.** Lowering a
   /// filter costs nothing; lowering a trigger would file worklist entries for orders that
   /// deliver themselves.
-  /// One delayed delivery, as `delayed_deliveries` reports it (#37, paginated by #38).
+  /// One delayed delivery, as `delayed_deliveries` reports it, paginated.
   ///
   /// ⚠️ **`pastMaxHold` is a transient window, at most one sweep interval wide** — past
   /// `maxHoldNs` the next sweep escalates the order out of `#paid` and out of this set.
@@ -104,7 +104,7 @@ mixin (
     };
   };
 
-  /// Read **any** order by id (admin, #38).
+  /// Read **any** order by id (admin).
   ///
   /// ⚠️ **A deliberate exception to §2's "existence is not revealed to non-owners", so it
   /// audits itself on every use.** `get_order` is owner-scoped with no admin bypass, so
@@ -126,11 +126,11 @@ mixin (
     found;
   };
 
-  /// Filtered, cursor-paginated order list (admin, #38).
+  /// Filtered, cursor-paginated order list (admin).
   ///
   /// ⚠️ **Do not sort by `createdAtNs`.** Ordering is by order id, which is arbitrary
   /// because ids are random — and time-ordering would mean materialising the filtered set
-  /// first, which is the unbounded scan #63 removed. Narrow with `createdFromNs` instead.
+  /// first, which is an unbounded scan. Narrow with `createdFromNs` instead.
   ///
   /// ⚠️ **Deliberately NOT audited, unlike `admin_order` and `admin_receipt` — do not
   /// "fix" the inconsistency.** Their line records *"an operator looked at THIS person's
@@ -172,7 +172,7 @@ mixin (
   /// fate they established on the cycles ledger.
   ///
   /// ⚠️ **This closes ORPHAN entries only — `#unattributed` and `#unprocessable`.**
-  /// Everything order-bound moved onto the orders in #37 and is closed by
+  /// Everything order-bound lives on the order and is closed by
   /// `resolve_problem`; pointing an operator here for those would be pointing them at the
   /// wrong method. Resolving an entry never transitions the order — see `Orphans`'s
   /// header.
@@ -267,10 +267,8 @@ mixin (
 
   /// The operational trail, **paginated**.
   ///
-  /// ⚠️ **Pagination became necessary the moment #37 removed the ring.** The bound used
-  /// to be the 4,096-entry ring, so the response size took care of itself; retention is
-  /// now total. Removing the cap moved the problem from *"history is lossy"* to *"the
-  /// query cannot answer"* — both real, and removing the ring only fixed the first.
+  /// ⚠️ **Retention is total, which is why this has to paginate.** With no bound on the
+  /// store, an unpaginated read is on a path to a response nobody can receive.
   ///
   /// Cursor on `seq`, which now has **no gaps**: gaps used to be how a reader detected
   /// drops, and there are no drops.
@@ -301,7 +299,7 @@ mixin (
     AuditLog.recentPage(auditLog, beforeSeq, limit);
   };
 
-  /// Orders past `alertAfterNs` and still undelivered (admin, paged by #38).
+  /// Orders past `alertAfterNs` and still undelivered (admin, paged).
   ///
   /// The worklist behind `operator_summary.deliveriesDelayed`: one entry per order,
   /// with the journal figures a human needs to decide whether it is stuck or slow.
@@ -319,8 +317,7 @@ mixin (
     //
     // ⚠️ **The page bounds the RESPONSE; the index bounds the WORK. Both are needed
     // and they are different limits** — ~2 MB for the response, instructions per
-    // message for the walk — which is why paginating this in #38 did not make it
-    // bounded and the comment here said so until now.
+    // message for the walk — so paginating this does NOT make it bounded.
     let now = Time.now();
     let page = Orders.holderPage(
       orderStore,
@@ -544,8 +541,8 @@ mixin (
 
   /// Record that an escalated order's cycles **did** reach the buyer (admin, §7).
   ///
-  /// The counterpart to `abandon_order`, and the reason #30 PR-B added the
-  /// `#needsReview → #delivered` edge. `#needsReview` means "we could not establish
+  /// The counterpart to `abandon_order`, and the reason the
+  /// `#needsReview → #delivered` edge exists. `#needsReview` means "we could not establish
   /// whether the transfer landed"; when the operator establishes on the cycles
   /// ledger that it did, this is how they say so. Without it their only lever was
   /// `abandon_order`, which files a delivered order as abandoned and audits a refund
@@ -582,7 +579,7 @@ mixin (
     #ok(delivered);
   };
 
-  /// The same receipt, for **any** order (admin, #38) — and **audited**, which is the
+  /// The same receipt, for **any** order (admin) — and **audited**, which is the
   /// whole reason it is a separate method.
   ///
   /// ⚠️ **The audit is not about existence disclosure; it is about an operator leaving a

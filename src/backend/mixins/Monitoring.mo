@@ -200,7 +200,7 @@ mixin (
     /// How many orders still hold a promise — `promiseHolders.size()`, O(1).
     ///
     /// ⚠️ **This is what `withdraw_reserve` guards on, so it must be readable before
-    /// calling it** (#103): the refusal names a count an operator then has to go and
+    /// calling it**: the refusal names a count an operator then has to go and
     /// find, and a decommissioning lever that cannot tell you what is blocking it is a
     /// dead end.
     ///
@@ -296,7 +296,7 @@ mixin (
   /// Orders are never deleted, but a reinstall replaces the state, so a launch-day figure
   /// starts at zero whichever way it is built.
   ///
-  /// ⚠️ **The renderer must show that zero — do NOT add a threshold.** #39 first said "0
+  /// ⚠️ **The renderer must show that zero — do NOT add a threshold.** Saying "0
   /// orders delivered is worse than no badge" and that was rejected: an absent number is
   /// indistinguishable from a withheld one, and a rule that hides the figure exactly when
   /// the news is bad is a misleading presentation rather than a neutral one. This comment
@@ -337,7 +337,7 @@ mixin (
 
   /// "Is anything wrong right now" in ONE call.
   ///
-  /// ⚠️ **Public is a decision, not a default: #3's alerting needs no credentials.** What
+  /// ⚠️ **Public is a decision, not a default: alerting needs no credentials.** What
   /// reaches a human at 03:00 is a cron on the public queries, and an admin-gated summary
   /// would put that back on a credentialed cron. Everything here is a COUNT, never an
   /// entry, and `reserve_status` already publishes `totalOrders`, `openOrders`,
@@ -383,7 +383,7 @@ mixin (
   /// `orphansUnresolved` walks retained orphan history — both grow only while obligations
   /// go uncleared, and an orphan costs a real payment or the signing secret to create
   /// (`Orphans.add`), so neither is attacker-inflatable. Not O(1), and not the
-  /// grows-with-successful-business shape #69 and #70 removed.
+  /// grows-with-successful-business shape this avoids.
   public query func operator_summary() : async {
     deliveriesOutstanding : Nat;
     deliveriesDelayed : Nat;
@@ -441,7 +441,7 @@ mixin (
     /// rather than over-sell, so this is a P3 that explains refusals — not an
     /// incident.
     lastReserveReconcileAttemptNs : Int;
-    /// The rotating index scan's **coverage** (#63) — the reader without which a clean
+    /// The rotating index scan's **coverage** — the reader without which a clean
     /// scan says nothing.
     ///
     /// ⚠️ **Read `lastCompletedCycle` before reading the absence of an audit line as

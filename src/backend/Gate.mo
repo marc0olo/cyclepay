@@ -83,7 +83,7 @@ module {
     ///
     /// It stopped being defence in depth when custom amounts arrived: the
     /// buyer names the amount now, so this is the **only** upper bound, and it is
-    /// the real lever on the reserve-availability vector in #30 — the ceiling IS
+    /// the real lever on reserve availability — the ceiling IS
     /// the per-order reserve exposure. At $1,000 one unpaid order ties up ~720 T
     /// of reserve for a few hundred million cycles of our gas; at $100 it is
     /// ~72 T, a 10× improvement for one config value and no new machinery.
@@ -97,8 +97,7 @@ module {
     ///
     /// Below it the §3 fee formula swallows too much of the payment to be worth
     /// the outcall and the reserve hold: a $1 purchase pays ~33¢ in card fees
-    /// before it buys a cycle. Nothing enforced a floor before #33 —
-    /// `Tiers.validate` checked non-zero and the ceiling only.
+    /// before it buys a cycle.
     ///
     /// Enforced in **two** places, and both are needed: here, for every order;
     /// and in `set_card_tiers`, or a registered tier becomes unsellable — the
@@ -113,14 +112,14 @@ module {
   /// the operator actually funded the reserve with.
   ///
   /// The card rail's on/off switch is **both Stripe secrets being provisioned**
-  /// (#33), not the tier list. An empty tier list now means only "no presets
+  /// rather than the tier list. An empty tier list means only "no presets
   /// shown", because a custom amount is orderable without one.
   public func defaultConfig() : Config {
     {
       maxOpenOrdersPerPrincipal = 1;
       minCanisterCycles = 5_000_000_000_000; // 5T
       // $100, down from $1,000. The ceiling IS the per-order reserve
-      // exposure, so this is the main lever on #30's reserve-griefing vector.
+      // exposure, so this is the main lever against reserve griefing.
       maxPurchaseUsdCents = 10_000;
       // $10, for two independent reasons:
       //
@@ -152,8 +151,8 @@ module {
     /// inverse check, lowering the ceiling leaves that tier **sellable but
     /// unpayable**: the buyer completes checkout and the webhook files a refundable
     /// obligation,
-    /// because the honoured amount exceeds the ceiling. Since #33 deleted
-    /// `attach_payment` there is no rescue at all — the only remedy is a refund,
+    /// because the honoured amount exceeds the ceiling. There is no rescue path —
+    /// the only remedy is a refund,
     /// so the money is taken and given back for a config change made earlier.
     #tierAboveCeiling : { tierId : Text; usdCents : Nat; maxUsdCents : Nat };
     /// The mirror: a registered tier costs less than the new floor.
@@ -232,7 +231,7 @@ module {
     /// more" — and with custom amounts both are reachable by typing.
     #amountBelowMin : { usdCents : Nat; minUsdCents : Nat };
     /// ⚠️ **The gateway is a faucet: it accepts free test payments, has an empty
-    /// buyer allow-list, and has a funded reserve** (#99 2b). Stripe test
+    /// buyer allow-list, and has a funded reserve.** Stripe test
     /// payments are free and unlimited — `4242 4242 4242 4242` pays any session,
     /// for anyone who reaches the page — so this combination gives cycles away to
     /// the internet. Refused rather than warned about.
@@ -247,7 +246,7 @@ module {
     /// funded the reserve.
     #unboundedGiveaway : { reserveFloor : Nat };
     /// This principal is not on the buyer allow-list, which is enforced while the
-    /// gateway accepts free test payments (#99 2b).
+    /// gateway accepts free test payments.
     ///
     /// Per-*principal*, so it never latches and never announces — nothing about
     /// the gateway changed, exactly like `#tooManyOpenOrders`.
@@ -295,7 +294,7 @@ module {
     /// The session outcall failed. Separate from `railClosed` because a present
     /// but invalid key is a different incident from an absent one.
     stripeApiFailed : Nat;
-    /// The faucet refusal (#99 2b) — see `Reason.unboundedGiveaway`.
+    /// The faucet refusal — see `Reason.unboundedGiveaway`.
     unboundedGiveaway : Nat;
     /// A non-allow-listed buyer against a POPULATED list. Counted separately from
     /// `unboundedGiveaway` because the two mean opposite things: this one is the
@@ -342,7 +341,7 @@ module {
   /// Does this refusal describe the **gateway's** state, or **one request's**?
   ///
   /// Only the two rail-state conditions get an audit line, and the split is the
-  /// whole point of #61: `#reserveShort` and `#canisterCyclesLow` are global facts
+  /// whole point: `#reserveShort` and `#canisterCyclesLow` are global facts
   /// about this gateway, so *"it started refusing at T"* is a real event an
   /// operator wants. The other three have **no meaningful transition** — nothing
   /// about the gateway changed, one request was malformed (`#amountBelowMin`,
@@ -375,7 +374,7 @@ module {
     /// that one says *provision the key*, this one says *rotate it*. Folding them
     /// would file the wrong instruction.
     #stripeApiFailing;
-    /// The gateway is a faucet — see `Reason.unboundedGiveaway` (#99 2b).
+    /// The gateway is a faucet — see `Reason.unboundedGiveaway`.
     ///
     /// **A rail condition rather than a per-request reason** because it is a fact
     /// about this gateway: it started refusing at a definite T, which is the
@@ -535,7 +534,7 @@ module {
     /// `Cycles.balance()` — this canister's own gas.
     canisterCycles : Nat;
     /// The maintained reserve **floor**, used only as "is there anything to sell
-    /// at all" by the faucet check (#99 2b).
+    /// at all" by the faucet check.
     ///
     /// ⚠️ **This is NOT a solvency input, and the distinction is load-bearing** —
     /// see the warning at the end of `admit`. Solvency asks "can the reserve cover

@@ -1,6 +1,6 @@
 /// Card presets (§3) — operator-configured amounts the UI offers as tiles.
 ///
-/// **Presentational as of #33.** A buyer can order any amount between
+/// **Presentational.** A buyer can order any amount between
 /// `Gate.Config`'s floor and ceiling, so a preset is a convenience, not a
 /// constraint: it saves typing and nothing more. Two consequences worth stating
 /// because both used to be false:

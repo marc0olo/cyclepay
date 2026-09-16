@@ -60,7 +60,7 @@ mixin (
     Orders.getOwned(orderStore, id, caller);
   };
 
-  /// Why a buyer's cancel refused (§4.3, #123).
+  /// Why a buyer's cancel refused (§4.3).
   ///
   /// The wording moved to the frontend; the payloads carry every fact the sentences
   /// asserted, which is the condition under which copy may leave the canister — see
@@ -93,7 +93,7 @@ mixin (
   /// every order the caller owns, unbounded, and a query response is capped at ~2 MB —
   /// so an oversized read does not degrade, it **traps**. The open-order cap of 1 means
   /// a buyer accumulates them slowly, but nothing bounded it, and nothing drops orders
-  /// under #37.
+  /// on the order.
   ///
   /// ⚠️ **Paging bounded the RESPONSE; `Orders.ownerPage` bounds the WORK.** The
   /// admin pager's owner filter walks every principal's orders to find one principal's,
@@ -169,7 +169,7 @@ mixin (
     let ?order = Orders.getOwned(orderStore, id, caller) else return #err(#notFound);
     // WHICH answer is `Orders.cancelShape`'s decision, over the whole status space and
     // unit-tested there; how it READS stays here, because a buyer sees these words
-    // verbatim (§4.3 / #118).
+    // verbatim (§4.3).
     switch (Orders.cancelShape(order.status)) {
       case (#proceed) {};
       case (#alreadyCancelled) return #ok(order);
@@ -184,7 +184,7 @@ mixin (
     // what makes a cancelled order unpayable by construction rather than by a
     // runtime check somebody has to remember.
     //
-    // ── Atomic with Stripe (#33, option B) ──────────────────────────────────
+    // ── Atomic with Stripe ─────────────────────────────────────────────────
     // Expire the session FIRST, then mark the order. Nothing is ever *half*
     // cancelled: if the session is still live on Stripe, the order is not
     // cancelled. That ordering is the whole reason `#cancelled → #paid` never

@@ -79,7 +79,7 @@ module {
   // things release it: Stripe's `checkout.session.expired`, and the buyer's own
   // `cancel_order`. If the expiry event never arrives, the promise holds capacity
   // against a session nobody can ever pay — and nothing sweeps `#created`, because
-  // #33 deleted retention deliberately. These predicates decide when to ask Stripe.
+  // There is no retention sweep, deliberately. These predicates decide when to ask Stripe.
 
   /// How long past a session's own deadline to wait before asking Stripe about it.
   ///
@@ -166,11 +166,11 @@ module {
 
   /// Has Stripe had long enough that a completed-but-uncredited session is now a
   /// standing obligation rather than an event in flight?
-  /// How long one full coverage cycle of the #63 rotating index scan is expected to
+  /// How long one full coverage cycle of the rotating index scan is expected to
   /// take: `⌈stored ÷ chunkSize⌉ × intervalNs`.
   ///
   /// ⚠️ **This is the detection latency for `orders.unindexedHolders`**, which is P1
-  /// because it means the reserve was oversellable. #63 converted unbounded *work* into
+  /// because it means the reserve was oversellable. The scan converts unbounded *work* into
   /// latency that still grows linearly in stored orders, and this is the number that
   /// says how much — reported on `recovery_status` rather than documented, because a
   /// documented window rots (the RUNBOOK claimed a 1 h sweep default for months while

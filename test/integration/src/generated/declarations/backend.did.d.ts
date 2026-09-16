@@ -467,7 +467,7 @@ export interface _SERVICE {
    */
   'add_allowed_buyer' : ActorMethod<[Principal], Result_11>,
   /**
-   * / Read **any** order by id (admin, #38).
+   * / Read **any** order by id (admin).
    * /
    * / ⚠️ **A deliberate exception to §2's "existence is not revealed to non-owners", so it
    * / audits itself on every use.** `get_order` is owner-scoped with no admin bypass, so
@@ -481,11 +481,11 @@ export interface _SERVICE {
    */
   'admin_order' : ActorMethod<[OrderId], [] | [Order]>,
   /**
-   * / Filtered, cursor-paginated order list (admin, #38).
+   * / Filtered, cursor-paginated order list (admin).
    * /
    * / ⚠️ **Do not sort by `createdAtNs`.** Ordering is by order id, which is arbitrary
    * / because ids are random — and time-ordering would mean materialising the filtered set
-   * / first, which is the unbounded scan #63 removed. Narrow with `createdFromNs` instead.
+   * / first, which is an unbounded scan. Narrow with `createdFromNs` instead.
    * /
    * / ⚠️ **Deliberately NOT audited, unlike `admin_order` and `admin_receipt` — do not
    * / "fix" the inconsistency.** Their line records *"an operator looked at THIS person's
@@ -500,7 +500,7 @@ export interface _SERVICE {
    */
   'admin_orders' : ActorMethod<[Filter, [] | [OrderId], bigint], Page__1>,
   /**
-   * / The same receipt, for **any** order (admin, #38) — and **audited**, which is the
+   * / The same receipt, for **any** order (admin) — and **audited**, which is the
    * / whole reason it is a separate method.
    * /
    * / ⚠️ **The audit is not about existence disclosure; it is about an operator leaving a
@@ -547,10 +547,8 @@ export interface _SERVICE {
   /**
    * / The operational trail, **paginated**.
    * /
-   * / ⚠️ **Pagination became necessary the moment #37 removed the ring.** The bound used
-   * / to be the 4,096-entry ring, so the response size took care of itself; retention is
-   * / now total. Removing the cap moved the problem from *"history is lossy"* to *"the
-   * / query cannot answer"* — both real, and removing the ring only fixed the first.
+   * / ⚠️ **Retention is total, which is why this has to paginate.** With no bound on the
+   * / store, an unpaginated read is on a path to a response nobody can receive.
    * /
    * / Cursor on `seq`, which now has **no gaps**: gaps used to be how a reader detected
    * / drops, and there are no drops.
@@ -644,7 +642,7 @@ export interface _SERVICE {
    */
   'cycles_status' : ActorMethod<[], { 'floor' : bigint, 'balance' : bigint }>,
   /**
-   * / Orders past `alertAfterNs` and still undelivered (admin, paged by #38).
+   * / Orders past `alertAfterNs` and still undelivered (admin, paged).
    * /
    * / The worklist behind `operator_summary.deliveriesDelayed`: one entry per order,
    * / with the journal figures a human needs to decide whether it is stuck or slow.
@@ -678,7 +676,7 @@ export interface _SERVICE {
    * / Orders are never deleted, but a reinstall replaces the state, so a launch-day figure
    * / starts at zero whichever way it is built.
    * /
-   * / ⚠️ **The renderer must show that zero — do NOT add a threshold.** #39 first said "0
+   * / ⚠️ **The renderer must show that zero — do NOT add a threshold.** Saying "0
    * / orders delivered is worse than no badge" and that was rejected: an absent number is
    * / indistinguishable from a withheld one, and a rule that hides the figure exactly when
    * / the news is bad is a misleading presentation rather than a neutral one. This comment
@@ -789,7 +787,7 @@ export interface _SERVICE {
    * / every order the caller owns, unbounded, and a query response is capped at ~2 MB —
    * / so an oversized read does not degrade, it **traps**. The open-order cap of 1 means
    * / a buyer accumulates them slowly, but nothing bounded it, and nothing drops orders
-   * / under #37.
+   * / on the order.
    * /
    * / ⚠️ **Paging bounded the RESPONSE; `Orders.ownerPage` bounds the WORK.** The
    * / admin pager's owner filter walks every principal's orders to find one principal's,
@@ -801,7 +799,7 @@ export interface _SERVICE {
   /**
    * / "Is anything wrong right now" in ONE call.
    * /
-   * / ⚠️ **Public is a decision, not a default: #3's alerting needs no credentials.** What
+   * / ⚠️ **Public is a decision, not a default: alerting needs no credentials.** What
    * / reaches a human at 03:00 is a cron on the public queries, and an admin-gated summary
    * / would put that back on a credentialed cron. Everything here is a COUNT, never an
    * / entry, and `reserve_status` already publishes `totalOrders`, `openOrders`,
@@ -847,7 +845,7 @@ export interface _SERVICE {
    * / `orphansUnresolved` walks retained orphan history — both grow only while obligations
    * / go uncleared, and an orphan costs a real payment or the signing secret to create
    * / (`Orphans.add`), so neither is attacker-inflatable. Not O(1), and not the
-   * / grows-with-successful-business shape #69 and #70 removed.
+   * / grows-with-successful-business shape this avoids.
    */
   'operator_summary' : ActorMethod<
     [],
@@ -1005,8 +1003,8 @@ export interface _SERVICE {
   /**
    * / Record that an escalated order's cycles **did** reach the buyer (admin, §7).
    * /
-   * / The counterpart to `abandon_order`, and the reason #30 PR-B added the
-   * / `#needsReview → #delivered` edge. `#needsReview` means "we could not establish
+   * / The counterpart to `abandon_order`, and the reason the
+   * / `#needsReview → #delivered` edge exists. `#needsReview` means "we could not establish
    * / whether the transfer landed"; when the operator establishes on the cycles
    * / ledger that it did, this is how they say so. Without it their only lever was
    * / `abandon_order`, which files a delivered order as abandoned and audits a refund
@@ -1182,7 +1180,7 @@ export interface _SERVICE {
    * / fate they established on the cycles ledger.
    * /
    * / ⚠️ **This closes ORPHAN entries only — `#unattributed` and `#unprocessable`.**
-   * / Everything order-bound moved onto the orders in #37 and is closed by
+   * / Everything order-bound lives on the order and is closed by
    * / `resolve_problem`; pointing an operator here for those would be pointing them at the
    * / wrong method. Resolving an entry never transitions the order — see `Orphans`'s
    * / header.
@@ -1234,7 +1232,7 @@ export interface _SERVICE {
    * / nothing of value is at stake — and it is the default, so a fresh canister
    * / starts there.
    * /
-   * / ⚠️ **The other half of the divisor's mutual refusal (#99 2a).** While a
+   * / ⚠️ **The other half of the divisor's mutual refusal.** While a
    * / simulation divisor is set, this refuses anything but `?false`: live mode
    * / takes real money and delivers scaled cycles, and `null` accepts live
    * / payments too. Mutual, so **neither order of operations** reaches the state
@@ -1337,7 +1335,7 @@ export interface _SERVICE {
   /**
    * / Return the reserve to the caller, refusing while anything is owed.
    * /
-   * / ⚠️ **Why this exists at all.** #30 recorded no withdraw lever because *"the app is
+   * / ⚠️ **Why this exists at all.** There was no withdraw lever, on the grounds that *"the app is
    * / not in production and an over-funded local reserve costs nothing"* — true then, and
    * / false the moment the reserve is funded on mainnet, where it is real money in a
    * / ledger account with no way back. Decommissioning, or over-funding once, was a

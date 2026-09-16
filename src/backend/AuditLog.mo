@@ -37,7 +37,7 @@
 /// counter with a monitoring row, not a line.
 ///
 /// ⚠️ **Nothing is dropped and the `capacity` parameter is gone rather than large**
-/// (#37). `seq` is monotonic and never reused; with no drops there are no gaps, so a
+/// `seq` is monotonic and never reused; with no drops there are no gaps, so a
 /// reader holding the last seq it saw can tell new events from an empty interval.
 import Queue "mo:core/Queue";
 import List "mo:core/List";
@@ -86,7 +86,7 @@ module {
 
   /// One page of events, oldest → newest, after `afterSeq`.
   ///
-  /// ⚠️ **This became necessary the moment #37 removed the ring.** The bound used to be
+  /// ⚠️ **Retention is total, which is why this has to paginate.** The bound used to be
   /// the ring itself, so nobody had to think about the response size; retention is now
   /// total, and a query response is capped at ~2 MB. Removing the ring moved the problem
   /// from *"history is lossy"* to *"the query cannot answer"* — both real, and only one

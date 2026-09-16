@@ -37,8 +37,7 @@ module {
     ?Util.hexEncode(prefix.toBlob());
   };
 
-  /// §6.1 — the reference the canister sets on the Checkout Session it creates
-  /// (#33); it used to be appended to a Payment Link URL by the frontend:
+  /// §6.1 — the reference the canister sets on the Checkout Session it creates:
   /// `<principal>_<orderId>`. Unambiguous to split: principal text is
   /// `[a-z0-9-]`, the ID is hex, so the one `_` is the separator. Claimed,
   /// not trusted — webhook ingestion re-resolves and verifies it.
@@ -85,7 +84,7 @@ module {
     /// Only the statuses the queries report are tracked; `countOf` returns 0
     /// for the rest. `recount` rebuilds them if they are ever suspected wrong.
     counts : Map.Map<Text, Nat>;
-    /// #30 PR-B — cycles promised to orders that exist and are not settled.
+    /// Cycles promised to orders that exist and are not settled.
     ///
     /// ⚠️ **It lives HERE, in the store, deliberately.** `create`,
     /// `applyTransition` and `markPaid` are the only three functions that write an
@@ -144,8 +143,8 @@ module {
     /// `|promiseHolders| ≤ reserveFloor / minimum order`. That bound is set by **flow**,
     /// not by lifetime sales — which is precisely what the order store is not.
     ///
-    /// ⚠️ **It is derived state trusted by the reconcile, so read `#63`'s circularity
-    /// argument before extending it.** The rule that makes it safe: iterating this and
+    /// ⚠️ **It is derived state trusted by the reconcile, and the circularity below is
+    /// what keeps that safe — read it before extending this.** Iterating this and
     /// reading each order's real status yields a tally that is **exact if the index is
     /// complete and too LOW otherwise** — never too high, because a member whose order
     /// turned out terminal is dropped on sight. So the reconcile adopts only
@@ -194,8 +193,7 @@ module {
     /// ⚠️ **It follows the count back DOWN once a decrease is reported**, so each
     /// decrease is reported exactly once. Holding a true high-water mark would re-report
     /// the same unfixed condition on every daily pass — our own cadence bounding a
-    /// *rate* against a persistent state, which is the fault #37 §2c removed from the
-    /// audit log.
+    /// *rate* against a persistent state, which is unbounded over time.
     var expiredHighWater : Nat;
   };
 
@@ -585,7 +583,7 @@ module {
     // ⚠️ **`break`, not a flag.** Letting the loop run on after the chunk fills would
     // read every remaining order to do nothing with it — the bound would be on what is
     // reported, not on what is touched, which is the same conflation of *response size*
-    // with *work per message* that #63 exists to undo.
+    // with *work per message*.
     label chunk for ((id, order) in it) {
       let isCursor = switch (from) { case (?cursor) id == cursor; case null false };
       if (not isCursor) {
@@ -616,14 +614,14 @@ module {
   /// Which shape a buyer's cancel takes, given the order's status.
   ///
   /// ⚠️ **Extracted from `cancel_order` so the whole status space is checked in one
-  /// place** (#127, A3). Only `#created` proceeds; every other status has a different
+  /// place.** Only `#created` proceeds; every other status has a different
   /// answer, and the difference matters to a buyer — an expired order was never charged,
-  /// a paid one will deliver. The endpoint used to encode this as a four-arm `switch`
+  /// a paid one will deliver. Encoding it in the endpoint as a `switch`
   /// whose completeness could only be tested by driving seven statuses through PocketIC.
   ///
   /// The wording stays in the endpoint: a buyer reads `cancel_order`'s error verbatim and
-  /// §4.3 / #118 put that sentence in the backend deliberately. This decides WHICH
-  /// answer, not how it reads.
+  /// §4.3 puts that sentence in the backend deliberately. This decides WHICH answer,
+  /// not how it reads.
   public type CancelShape = {
     /// Expire the session, then transition. The only shape that changes anything.
     #proceed;
@@ -718,10 +716,8 @@ module {
   /// ⚠️ **A guard mirrors this matrix and the compiler does not check it**:
   /// `Card.handleWebhook`'s status switch, which feeds `markPaid`, so anything it
   /// admits that this refuses is a bug — and on that path a trap, i.e. a 5xx
-  /// Stripe retries for ~3 days. Change this and check the guard. It was two
-  /// guards until #33 deleted `attach_payment`; #34 shipped the first fix and
-  /// missed the second, so the lesson is to grep for `markPaid`'s CALLERS, not
-  /// for the trap.
+  /// Stripe retries for ~3 days. ⚠️ **Change this and check `markPaid`'s CALLERS**,
+  /// not the trap: the compiler does not check that the two agree.
   public func isLegalTransition(from : Types.OrderStatus, to : Types.OrderStatus) : Bool {
     switch (from, to) {
       case (#created, #cancelled) true; // the buyer gave up before paying
@@ -750,9 +746,8 @@ module {
       // is the double-delivery this status prevents.
       case (#needsReview, #delivered) true;
       // `abandon_order` — the operator ends it, having refunded by hand. The
-      // #needsReview edge is what the #37 split made possible: an
-      // escalated order could not previously be abandoned, because one status
-      // meant both "promise held" and "promise released".
+      // `#needsReview` edge exists because that status holds its promise, so
+      // abandoning it is what releases it.
       case (#paid, #abandoned) true;
       case (#needsReview, #abandoned) true;
       case _ false;
@@ -797,8 +792,8 @@ module {
       pricing;
       status = #created;
       paidUsdCents = null;
-      // All four are the session's, and no session exists yet: #33 stamps them
-      // from the Checkout Session it creates. `expiredBy` stays null unless the
+      // All four are the session's, and no session exists yet: they are stamped
+      // from the Checkout Session the create path makes. `expiredBy` stays null unless the
       // order reaches `#expired` with a known cause.
       expiredBy = null;
       expiresAtNs = null;
@@ -812,16 +807,15 @@ module {
     };
     store.orders.add(id, order);
     bump(store, #created, 1);
-    // #63: the non-terminal index, entered here for the same reason `promised` is —
+    // The non-terminal index, entered here for the same reason `promised` is —
     // an order APPEARS in the held set rather than transitioning into it. Expressed
     // through `holdsPromise` rather than as "`#created` always holds" so that this
     // site and `commitTransition` share one definition of membership.
     if (Reserve.holdsPromise(order.status)) store.promiseHolders.add(id);
-    // #30 PR-B: the hold at creation. ⚠️ **Not a transition** — an order appears in
-    // the counted set rather than moving into it — so it lives outside the
-    // transition machinery entirely, which is why #30 calls `create` an adjustment
-    // site in its own right. Missing this is the one leak the recount could not
-    // attribute to a status change.
+    // The hold at creation. ⚠️ **Not a transition** — an order appears in the counted
+    // set rather than moving into it — so it lives outside the transition machinery
+    // entirely, and `create` is an adjustment site in its own right. Missing this is
+    // the one leak a recount cannot attribute to a status change.
     store.promised += lockedCycles;
     let principal = switch (owner) { case (#ii(p)) p };
     switch (store.principalsToOrders.get(principal)) {
@@ -874,7 +868,7 @@ module {
     store.orders.add(settled.id, settled);
     bump(store, before.status, -1);
     bump(store, after.status, 1);
-    // #63: the non-terminal index moves with the promise tally, on the same predicate,
+    // The non-terminal index moves with the promise tally, on the same predicate,
     // in the same function — so a seventh status writer cannot update one and forget
     // the other. Unconditional rather than delta-driven: `add` and `remove` are both
     // idempotent, so a within-set transition (`#created → #paid`) is a no-op without
@@ -897,7 +891,7 @@ module {
     // an exact release — the first evidence would otherwise be the daily recount,
     // up to 24 h of a wrong tally gating real sales. `Main` audits this.
     if (moved.saturated) store.tallySaturations += 1;
-    // #39 — the cumulative delivery figures, counted HERE for the reason at the fields:
+    // The cumulative delivery figures, counted HERE for the reason at the fields:
     // six sites move an order to `#delivered`, and `#delivered` has no outbound edge, so
     // this is the only place the count is both unforgettable and unable to double.
     if (after.status == #delivered) {
@@ -985,7 +979,7 @@ module {
     };
   };
 
-  /// `#created → #expired` because **Stripe closed the session** (#33), with the
+  /// `#created → #expired` because **Stripe closed the session**, with the
   /// session id backfilled if the order did not have one.
   ///
   /// The backfill is what lets a residue order heal: if the session-create
@@ -996,11 +990,11 @@ module {
   /// actually caused it.
   ///
   /// ⚠️ **The buyer's intent decides the attribution, not who wins the race.**
-  /// `cancel_order` expires the session at Stripe BEFORE recording the cancel (#33
-  /// option B: nothing is ever half-cancelled), so between those two steps Stripe's
+  /// `cancel_order` expires the session at Stripe BEFORE recording the cancel — nothing
+  /// is ever half-cancelled — so between those two steps Stripe's
   /// honest answer to anyone asking is "expired" — and the `checkout.session.expired`
   /// webhook it fires arrives in that window. Three different writers could reach the
-  /// order first: that webhook, the #52 recovery sweep, and the admin expire.
+  /// order first: that webhook, the recovery sweep, and the admin expire.
   ///
   /// Whoever arrives, the state must be the same. So the caller passes the set of
   /// orders whose OWNER has asked to cancel, and this function reads it: a requested
@@ -1092,13 +1086,13 @@ module {
     };
   };
 
-  /// `#created → #expired` **with a recorded cause** (#34's `expiredBy`).
+  /// `#created → #expired` **with a recorded cause** in `expiredBy`.
   ///
   /// Routed through `transition`, never a direct status write, for two protections
   /// at once: the matrix no-ops `#cancelled → #expired` (a second tab may have
   /// cancelled while the outcall was in flight), and the tallies stay coupled to
-  /// the status change. A direct write would bypass both — and on the reserve path
-  /// (#30) it would release an already-released promise.
+  /// the status change. A direct write would bypass both — and on the reserve path it
+  /// would release an already-released promise.
   /// Record that this order has crossed `alertAfterNs` while waiting to deliver.
   ///
   /// Returns true only on the **first** crossing, so the caller can announce once
@@ -1240,7 +1234,7 @@ module {
   /// What an operator narrows by. Every field is optional and they AND together.
   ///
   /// ⚠️ **`withUnresolvedProblems` is folded in here rather than living as its own
-  /// query.** That is #37's thesis carried through: "everything outstanding" is a
+  /// query.** "Everything outstanding" is a
   /// *filter* over orders, so it composes with status and time range instead of being a
   /// parallel list that answers a different question.
   /// One page of promise-holding orders that `keep` accepts, in id order.
@@ -1286,15 +1280,15 @@ module {
 
   /// ⚠️ **Ordered by order ID, which is NOT time order — and that is deliberate.**
   /// Order ids are random hex, so id order is arbitrary. Sorting the filtered set by
-  /// `createdAtNs` would mean materialising it first, which is the unbounded scan #63
-  /// exists to remove; a secondary time index would be one more piece of derived state
+  /// `createdAtNs` would mean materialising it first, which is an unbounded scan;
+  /// a secondary time index would be one more piece of derived state
   /// needing adjudication. So the traversal is **stable and complete** rather than
   /// recent-first, and an operator who wants recency narrows with `createdFromNs`
   /// instead. Saying so here is the point: a caller that assumes newest-first gets a
   /// wrong answer silently.
   ///
   /// Cursor-based, like `Orphans.page`, and for a stronger reason: ids are never reused
-  /// and orders are never deleted under #37, so a cursor cannot be invalidated at all.
+  /// and orders are never deleted, so a cursor cannot be invalidated at all.
   ///
   /// `nextCursor` is set **only when further matching orders remain**, so a caller
   /// stops the moment it is null and never makes a wasted final request.
@@ -1316,8 +1310,8 @@ module {
     // ⚠️ **This bounds the RESUME, not the page.** A selective `filter` still
     // walks until it fills a page, so a status filter matching few orders out of many is
     // O(store) in one message, and an owner filter walks every principal's orders to
-    // find one principal's. #63 bounded the reconcile and the timer scans, not this. Do
-    // not read a paged query as a bounded one — the page caps the ~2 MB response, and
+    // find one principal's. The reconcile and the timer scans are bounded; this is not.
+    // Do not read a paged query as a bounded one — the page caps the ~2 MB response, and
     // the limit this hits is instructions per message.
     let it = switch (afterId) {
       case (?cursor) store.orders.entriesFrom(cursor);
@@ -1447,8 +1441,8 @@ module {
     for (id in store.unresolvedProblems.values()) {
       switch (store.orders.get(id)) {
         case (?order) out.add(order);
-        // An id in the index with no order cannot happen — orders are never deleted
-        // under #37 — so this arm is unreachable rather than defensive. Skipping is
+        // An id in the index with no order cannot happen — orders are never deleted —
+        // so this arm is unreachable rather than defensive. Skipping is
         // still the right response if the impossible occurs: the rebuild fixes it.
         case null {};
       };
@@ -1509,8 +1503,8 @@ module {
     };
   };
 
-  /// Webhook money-in (§6.1): `#created → #paid`, and only that. #34 deleted the
-  /// `#expired` edge, so this REFUSES an order that stopped being payable.
+  /// Webhook money-in (§6.1): `#created → #paid`, and only that. There is no
+  /// `#expired → #paid` edge, so this REFUSES an order that stopped being payable.
   ///
   /// ⚠️ `Card.handleWebhook` guards the status before reaching here and `-Werror`
   /// does not check that guard against the matrix. It **traps** on this error
@@ -1560,7 +1554,7 @@ module {
   /// on our own clock, because being generous with it cannot lose money — at worst a
   /// buyer gets a second slot a little early, and the order they abandoned is unpayable
   /// anyway once Stripe expires its session. Reserve *capacity* is money, so releasing it
-  /// needs Stripe's authority (#52 PR-A's sweep, and the reason option 3 was rejected).
+  /// needs Stripe's authority, which is what the recovery sweep asks for.
   /// Same input, two resources, two standards of proof.
   ///
   /// Without it, one missed `checkout.session.expired` locks a buyer out **permanently**
@@ -1615,8 +1609,8 @@ module {
   /// Order history for a principal, newest-last (insertion order).
   /// Every order — **the test oracle for the bounded tallies, and nothing else**.
   ///
-  /// ⚠️ **No production path may call this.** A full scan in one message is what #63
-  /// removed: under indefinite retention it is on a path to the instruction limit, and
+  /// ⚠️ **No production path may call this.** A full scan in one message is
+  /// unbounded: under indefinite retention it is on a path to the instruction limit, and
   /// `reconcileBounded` recounts the same quantities from `promiseHolders` instead.
   ///
   /// What the full scan is still good for is being the **independent** definition the

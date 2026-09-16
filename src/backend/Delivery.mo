@@ -110,7 +110,7 @@ module {
     icrc1_transfer : shared TransferArg -> async TransferResult;
     /// The reserve's authoritative balance, read by the hourly reconcile and by
     /// `refresh_reserve` — **never by the gate.** ⚠️ An earlier version of this
-    /// comment said `create_order` called it as the gate's read; #30 PR-B removed
+    /// comment said `create_order` called it as the gate's read; that read is gone —
     /// that read entirely, because an awaited value is historical by the time it is
     /// used. The gate decides against the maintained floor, synchronously.
     icrc1_balance_of : shared query Types.Account -> async Nat;
@@ -118,7 +118,7 @@ module {
 
   /// The canister's own cycles-ledger account — the reserve.
   ///
-  /// Default subaccount, matching #29's rule for a buyer's destination: one
+  /// Default subaccount, matching the rule for a buyer's destination: one
   /// canonical form, so "the reserve" names exactly one account in the ledger,
   /// in `reserve_status`, and in whatever an operator types at a terminal.
   public func reserveAccount(gateway : Principal) : Types.Account {
@@ -244,7 +244,7 @@ module {
   ///
   /// Probe-measured: the ledger debits `amount + fee`, so sending
   /// `lockedCycles - fee` moves the reserve by **exactly `lockedCycles`**. That
-  /// is why #30's promise tally is `Σ lockedCycles` with no separate fee term —
+  /// is why the promise tally is `Σ lockedCycles` with no separate fee term —
   /// an earlier draft wrote `Σ (lockedCycles + fee)` and double-counted.
   ///
   /// Null when the fee swallows the whole order, which the purchase floor makes
@@ -266,7 +266,7 @@ module {
     /// An EARLIER call moved the money; this one was deduplicated and handed back
     /// the original block. Still success — the §5.1 replay payoff.
     ///
-    /// ⚠️ **Distinct from `#delivered`, and #30 PR-B is why.** These were one case
+    /// ⚠️ **Distinct from `#delivered`, deliberately.** Treating them as one case
     /// (`#blockIndex`) until the reserve floor needed to know whether *this* call
     /// debited the ledger: the floor is decremented when a transfer is issued, so a
     /// deduplicated call must credit its decrement back (an earlier attempt's

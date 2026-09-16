@@ -92,15 +92,15 @@ mixin (
     /// simulation-scale case below is NOT folded in here.** Telling a buyer that
     /// payment processing is too large, when the cause is this gateway's
     /// simulation divisor, names the wrong party and prescribes a fix that may
-    /// not work (#99 review finding 2).
+    /// not work.
     #tierBelowFees : Text;
     /// The SCALED cycles would not clear the flat cycles-ledger deposit fee: this
-    /// gateway's simulation divisor is too large for this purchase (#99 2d).
+    /// gateway's simulation divisor is too large for this purchase.
     ///
     /// Not the buyer's fault and not fixable by them — it is an operator's
     /// configuration. Carries both figures so the refusal is diagnosable.
     #simulationScaleTooSmall : { scaledCycles : Nat; ledgerFee : Nat };
-    /// #30 PR-B: the reserve balance could not be read, so solvency is unknown.
+    /// The reserve balance could not be read, so solvency is unknown.
     /// Fails closed on purpose — selling against an unknown balance is exactly
     /// what the check exists to prevent. (A short reserve is reported through
     /// `#notAdmitted(#reserveShort)`, which carries both figures.)
@@ -160,7 +160,7 @@ mixin (
   /// here. The §6.1 pricing snapshot persisted on the order carries both rate
   /// inputs from that same epoch — which is what a buyer recomputes their own
   /// price from, and what a delivered order is auditable against. (It was also
-  /// what the webhook repriced a mismatched paid amount from, until #33 made a
+  /// what the webhook would reprice a mismatched paid amount from, before it became a
   /// mismatch deliver nothing.)
   ///
   /// Synchronous and awaitless by design: the rates come from the cache the
@@ -333,7 +333,7 @@ mixin (
         // Stripe answered, so the outcall is working again. This is the ONLY
         // evidence that bears on `#stripeApiFailing` — `latchAdmission` cannot
         // clear it, because admission runs *before* this call and says nothing
-        // about it (#37 §2c).
+        // about it.
         gateState.latch := Gate.latchStripeApiOk(gateState.latch);
         // ⚠️ Re-check the status before storing. `create_order` committed the
         // order as `#created` and then awaited, so `cancel_order` from a second

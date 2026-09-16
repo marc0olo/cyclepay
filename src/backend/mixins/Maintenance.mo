@@ -119,7 +119,7 @@ mixin (
 
   /// Return the reserve to the caller, refusing while anything is owed.
   ///
-  /// ⚠️ **Why this exists at all.** #30 recorded no withdraw lever because *"the app is
+  /// ⚠️ **Why this exists at all.** There was no withdraw lever, on the grounds that *"the app is
   /// not in production and an over-funded local reserve costs nothing"* — true then, and
   /// false the moment the reserve is funded on mainnet, where it is real money in a
   /// ledger account with no way back. Decommissioning, or over-funding once, was a

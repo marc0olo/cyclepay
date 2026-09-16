@@ -90,7 +90,7 @@ module {
     #belowLedgerFee : { floor : Nat; fee : Nat };
   };
 
-  /// The whole refusal ladder for `withdraw_reserve` (§5.4, #103), as one decision.
+  /// The whole refusal ladder for `withdraw_reserve` (§5.4), as one decision.
   ///
   /// ⚠️ **The endpoint calls this TWICE — once before observing the ledger, once after —
   /// and that repetition is the point.** An `await` sits inside the observe while the
@@ -178,7 +178,7 @@ module {
   // ⚠️ **TWO destination classes, ONE outflow mechanism, and the enforcement is the
   // actor type rather than this comment.**
   //
-  // The mechanism is `icrc1_transfer` and nothing else. What #103 added is a second
+  // The mechanism is `icrc1_transfer` and nothing else. There is a second
   // *destination class*, so the phrase "one outflow" must not be read as "one kind of
   // recipient" — and the gate step greps declared METHODS, not destinations, so nothing
   // else would catch that drift:
@@ -187,7 +187,7 @@ module {
   //      the order's `lockedCycles`, which the gate admitted against the floor, and by
   //      §2's own-destination rule: `create_order` refuses any destination but the
   //      caller's.
-  //   2. **Withdrawal** (#103) — to a controller. Bounded by there being **no
+  //   2. **Withdrawal** — to a controller. Bounded by there being **no
   //      promise-holder at all**, so nothing is owed to any buyer, and it grants a
   //      controller no capability they lack: a controller can already move the reserve
   //      by upgrading this canister. `Main.withdraw_reserve` carries the full argument.

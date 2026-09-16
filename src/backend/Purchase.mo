@@ -10,7 +10,7 @@ import Types "Types";
 /// it locks — **decided before anything is committed and before any outcall**.
 ///
 /// ⚠️ **Extracted from `create_order` so the ERROR PRECEDENCE is testable without an IC
-/// environment** (#127, A3). Which refusal a buyer sees when several conditions hold at
+/// environment.** Which refusal a buyer sees when several conditions hold at
 /// once was previously observable only through PocketIC: an unknown tier and a stale rate
 /// both apply, and only the sequence decides which one is reported. That sequence is now
 /// a signature with unit tests rather than a run of `switch` blocks in an endpoint.

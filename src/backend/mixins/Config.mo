@@ -154,7 +154,7 @@ mixin (
   /// nothing of value is at stake — and it is the default, so a fresh canister
   /// starts there.
   ///
-  /// ⚠️ **The other half of the divisor's mutual refusal (#99 2a).** While a
+  /// ⚠️ **The other half of the divisor's mutual refusal.** While a
   /// simulation divisor is set, this refuses anything but `?false`: live mode
   /// takes real money and delivers scaled cycles, and `null` accepts live
   /// payments too. Mutual, so **neither order of operations** reaches the state
@@ -319,7 +319,7 @@ mixin (
           caller,
           "recovery.intervalSet",
           "sweep cadence set to " # intervalNs.toText() # " ns."
-          # " The #63 index scan rides this cadence, so a full coverage cycle now takes about "
+          # " The index scan rides this cadence, so a full coverage cycle now takes about "
           # (ops.expectedIndexScanCycleNs() / 1_000_000_000 / 3_600).toText()
           # " h at the current store size — that is the detection latency for orders.unindexedHolders.",
         );
