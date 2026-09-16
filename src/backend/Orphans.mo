@@ -1,11 +1,11 @@
 /// Payments that cannot be attributed to any order (§4.1).
 ///
-/// ⚠️ **Two kinds, and only two: `#unattributed` and `#unprocessable`.** Everything else
-/// moved onto the orders in #37 — what is left here has, by definition, no order to
-/// attach to. Do not re-add an order-bound kind; `Problems.mo` is where those live.
+/// ⚠️ **Two kinds, and only two: `#unattributed` and `#unprocessable`.** What is filed
+/// here has, by definition, no order to attach to. Do not re-add an order-bound kind;
+/// `Problems.mo` is where those live.
 ///
-/// **Not bounded and not a queue any more.** The capacity and the eviction pass are
-/// gone.
+/// **Nothing is evicted and nothing is bounded** — see `add` for why that is acceptable,
+/// and `maxPageSize` for what it costs the read API.
 ///
 /// Every dollar that arrives resolves to delivery, or to an obligation — on the order, or
 /// on this list. There is no third outcome and no silent one.
@@ -41,7 +41,7 @@ module {
   /// refund is what created the entry, so matching on it would close the recorded loss
   /// the instant it was recorded.
   ///
-  /// ⚠️ **No kind carries a stranded cycle quantity, because cycles cannot strand.**
+  /// No kind carries a stranded cycle quantity, because cycles cannot strand (above).
   /// `#refundAfterDelivery.cycles` is the opposite case — cycles that *were*
   /// delivered, recorded as an operator loss.
   public type Kind = {
@@ -153,19 +153,14 @@ module {
     entry : Entry;
   };
 
-  /// Append an entry. **Nothing is evicted** (#37).
+  /// Append an entry. **Nothing is evicted.**
   ///
-  /// ⚠️ **The `capacity` parameter and the whole eviction pass are gone**, not raised
-  /// to a number nobody reaches. This list only ever held *resolved* entries as
-  /// eviction candidates — it already grew past capacity rather than forget an
-  /// obligation — so removing the bound changes what happens to **history**, not to
-  /// obligations.
-  ///
-  /// ⚠️ **Growth is attacker-priced, which is what makes unbounded acceptable here.**
-  /// Reaching this needs either a verified payment we cannot attribute or an event that
-  /// passes HMAC verification, so only a real dollar or the holder of the signing secret
-  /// can add one. That argument is the whole reason the two order-less kinds stayed here
-  /// while the four order-bound ones moved onto orders.
+  /// ⚠️ **Unbounded on purpose, and acceptable only because growth is attacker-priced.**
+  /// Adding an entry needs either a verified payment nobody can attribute or an event
+  /// that passes HMAC verification, so it costs a real dollar or the signing secret. Do
+  /// not reintroduce a capacity: eviction can only ever discard *resolved* history, and
+  /// a bound that could drop an unresolved obligation is the one thing this list exists
+  /// to prevent.
   public func add(
     store : Store,
     rail : Types.Rail,
@@ -270,8 +265,8 @@ module {
   };
 
   /// Hard cap on a page. Entries are a few hundred bytes, and a Candid message
-  /// is capped at 2 MB — so an unpaginated read of a queue that is allowed to
-  /// grow without bound (#37) would eventually become unreturnable. This
+  /// is capped at 2 MB — so an unpaginated read of a list that is allowed to
+  /// grow without bound would eventually become unreturnable. This
   /// bounds the response instead of bounding the record.
   public let maxPageSize : Nat = 200;
 
@@ -330,8 +325,7 @@ module {
     store.entries.values().filter(func(e) = e.resolvedAtNs == null).toArray();
   };
 
-  /// Everything retained — which is everything ever filed (#37) — oldest
-  /// first.
+  /// Everything retained — which is everything ever filed — oldest first.
   public func all(store : Store) : [Entry] {
     store.entries.values().toArray();
   };
