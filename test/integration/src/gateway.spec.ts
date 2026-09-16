@@ -3392,9 +3392,9 @@ test('73 — a funded reserve is not a SELLABLE reserve until the gateway looks'
   );
 });
 
-// -- 74 was deleted with the lever it depended on ------------------
+// -- 74: no scenario, and the lever it would need is the reason ---
 //
-// Its subject was "a deliberately wrong stored ledger fee still delivers, and
+// The subject would be "a deliberately wrong stored ledger fee still delivers, and
 // `#BadFee` persists the correction". Staging that needs a `set_cycles_ledger_fee`
 // lever, and there is none: the only state such a lever fixes is one that it, or a
 // ~70,000× ledger fee rise, could create, and a typo in it silently shorts buyers.

@@ -33,13 +33,13 @@ excluded to skip mermaid's `#35;` escape. A check does not have that blind spot 
     exists to close. ⚠️ **The exemption is itself checked** -- `main()` fails if an
     exempt file has stopped containing a reference, so it cannot outlive its reason.
 
-## ⚠️ Run this against a COMMITTED file
+## Untracked files are scanned, and that is not optional
 
-`git ls-files` does not list untracked files, so running this on a new checker before
-`git add` scans everything except the file being written. That is how this check first
-passed locally and failed in CI -- on itself, over its own self-test vectors -- which is
-the same shape as the defect it exists to catch: a green tick from a scan that never
-visited the file that mattered.
+This shipped reading `git ls-files` alone, which lists only TRACKED files -- so its first
+local run scanned everything except the checker being written, passed, and failed in CI
+on its own self-test vectors. A green tick from a scan that never visited the file that
+mattered is the exact defect this check exists to catch, so the fix is in the file list
+(`--others --exclude-standard`) rather than in a rule a reader has to remember.
 
 ## The digit bound is deliberate
 
@@ -54,7 +54,11 @@ import re
 import subprocess
 import sys
 
-EXEMPT_PREFIXES = ("docs/agents/", "vendor/")
+# ⚠️ Checked live in `main()`, exactly like EXEMPT_FILES. `vendor/` was listed here and
+# did nothing -- it is a submodule, so `git ls-files` reports one gitlink path and never
+# its contents. An exemption that excludes nothing is indistinguishable from one that is
+# load-bearing, until someone tests it.
+EXEMPT_PREFIXES = ("docs/agents/",)
 # Named rather than pattern-matched, for the reason in the docstring. Verified live in
 # `main()`: an exemption whose file no longer needs it is a failure, not a leftover.
 EXEMPT_FILES = ("scripts/check-mermaid.py", "scripts/check-issue-refs.py")
@@ -70,6 +74,19 @@ FENCE = re.compile(r"^\s*```\s*(\w*)")
 # 5+ digits is a colour or an entity, never an issue here. Kept as an explicit floor
 # rather than folded into REF so the reason survives.
 MAX_DIGITS = 4
+
+
+def _read(path):
+    """The file's text, or None if it is not a readable text file.
+
+    ⚠️ A submodule is listed by `git ls-files` as a single gitlink path (mode 160000)
+    that is a DIRECTORY on disk, so every caller has to tolerate that -- including the
+    exemption audit, which is where it first crashed.
+    """
+    try:
+        return open(path, encoding="utf-8").read()
+    except (UnicodeDecodeError, FileNotFoundError, IsADirectoryError, PermissionError):
+        return None
 
 
 def _spans(pattern, line):
@@ -130,8 +147,15 @@ def _self_test() -> None:
 
 def main() -> int:
     _self_test()
+    # ⚠️ **`--others --exclude-standard` is load-bearing, not thoroughness.** A plain
+    # `git ls-files` lists only TRACKED files, so a brand-new module -- precisely where a
+    # `#NN` gets introduced -- is invisible until it is staged. This check shipped that
+    # way for one commit and was silent on itself for exactly that reason. `--others`
+    # adds untracked files and `--exclude-standard` keeps build output out, so the answer
+    # no longer depends on whether anyone remembered to `git add` first.
     files = subprocess.run(
-        ["git", "ls-files"], capture_output=True, text=True, check=True
+        ["git", "ls-files", "--others", "--exclude-standard", "--cached"],
+        capture_output=True, text=True, check=True,
     ).stdout.split()
     scanned = 0
     findings = []
@@ -142,9 +166,8 @@ def main() -> int:
             continue
         if "-snapshots" in path:
             continue
-        try:
-            text = open(path, encoding="utf-8").read()
-        except (UnicodeDecodeError, FileNotFoundError, IsADirectoryError):
+        text = _read(path)
+        if text is None:
             continue
         scanned += 1
         for n, line, token in refs_in(text, mermaid_aware=path.endswith(".md")):
@@ -155,14 +178,35 @@ def main() -> int:
     # evidence that it looked. The floor is well under the real count (~250 files).
     # ⚠️ An exemption that is no longer needed must be DELETED, not left standing: it is
     # a live hole in the check, and the only signal it has stopped being justified is
-    # that its file has stopped containing a reference. So that is asserted.
-    for path in EXEMPT_FILES:
-        try:
-            text = open(path, encoding="utf-8").read()
-        except FileNotFoundError:
+    # that what it covers has stopped containing a reference. So that is asserted, for
+    # the prefixes as well as the files -- a prefix covering nothing is the `vendor/`
+    # case, which sat here unnoticed because nothing checked it.
+    for prefix in EXEMPT_PREFIXES:
+        covered = [p for p in files if p.startswith(prefix)]
+        if not covered:
             print(
-                f"   check-issue-refs: exempt file {path} does not exist -- delete the"
-                " exemption.",
+                f"   check-issue-refs: exempt prefix {prefix} covers no file -- delete"
+                " the exemption.",
+                file=sys.stderr,
+            )
+            return 1
+        texts = [(p, _read(p)) for p in covered]
+        if not any(
+            refs_in(t, p.endswith(".md")) for p, t in texts if t is not None
+        ):
+            print(
+                f"   check-issue-refs: exempt prefix {prefix} covers no file carrying a"
+                " reference -- delete the exemption rather than leaving a hole.",
+                file=sys.stderr,
+            )
+            return 1
+
+    for path in EXEMPT_FILES:
+        text = _read(path)
+        if text is None:
+            print(
+                f"   check-issue-refs: exempt file {path} is missing or unreadable --"
+                " delete the exemption.",
                 file=sys.stderr,
             )
             return 1

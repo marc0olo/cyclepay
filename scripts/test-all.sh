@@ -312,9 +312,9 @@ scripts/check-unused-exports.py
 
 # ⚠️ **A different class from the step above: two functions that BOTH have callers and
 # both do the same thing.** The loss there is not dead code but divergence — the next
-# correction lands on one of them. A review-caught instance on the money path
-# (`Reserve.deliverable` re-implementing `Delivery.deliverableCycles`) was invisible to
-# this check's first two versions, which is recorded in the script.
+# correction lands on one of them. The motivating shape is on the money path
+# (`Reserve.deliverable` re-implementing `Delivery.deliverableCycles`), and it is
+# invisible to a naive implementation — see the script for what it takes to see it.
 run "no module function body is duplicated across modules" scripts/check-duplicate-bodies.py
 
 # ⚠️ **Rendering, not parsing, is where a mermaid diagram fails silently.** A bare `#`

@@ -8,13 +8,13 @@ loss is not dead code but **divergence**, because the next correction lands on o
 
 **The motivating class, on the money path:** a private `Reserve.deliverable`
 re-implementing `Delivery.deliverableCycles` — the fee-on-top correction — while claiming
-*"the same correction, so the same function"* and replacing a call site that had been
-calling the real one. Delivery and withdrawal are the two outflow classes of one account,
-so a fee correction diverging between them is
-exactly the failure `Reserve.mo`'s "two destination classes, ONE outflow mechanism"
-framing exists to prevent. Caught in review; this is what catches the next one — and
-⚠️ **the first two versions of this script did not**, which is recorded on `MIN_TOKENS`
-and on the normalisation steps because each was a claim that measurement contradicted.
+*"the same correction, so the same function"* and taking over a call site from the real
+one. Delivery and withdrawal are the two outflow classes of one account, so a fee
+correction diverging between them is exactly the failure `Reserve.mo`'s "two destination
+classes, ONE outflow mechanism" framing exists to prevent. ⚠️ **A naive implementation
+does not catch it**, for two reasons recorded on `MIN_TOKENS` and on the normalisation
+steps -- each of those notes is a claim measurement contradicted, so do not relax one
+without re-measuring.
 
 **Normalisation:** comments stripped (block comments NEST), parameters renamed
 positionally, in-expression type annotations dropped, whitespace collapsed. The last two

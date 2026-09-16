@@ -50,13 +50,10 @@ import sys
 SPEC = "docs/DESIGN.md"
 CODE_GLOBS = ("src/backend/*.mo", "src/backend/mixins/*.mo", "test/*.mo")
 SECTION = re.compile(r"§([0-9][0-9a-z]*(?:\.[0-9a-z]+)*)")
-# ⚠️ **A `§N` in code means a DESIGN section, full stop.** There is no issue-scoped
-# escape hatch: an issue's own section numbering used to be written `#NN §2c` and skipped
-# here, and `check-issue-refs.py` now forbids the `#NN` that made it distinguishable. So
-# a `§` that is not a design section has nowhere to hide, which is the point — refer to
-# another document's sections by NAME. `RUNBOOK §1` in a comment was read as a
-# citation of DESIGN §1 and kept a dead row alive; refer to another document's sections
-# by NAME in code, never by glyph.
+# ⚠️ **A `§N` in code means a DESIGN section, full stop, and there is no escape hatch.**
+# Refer to another document's sections by NAME, never by glyph: `RUNBOOK §1` in a comment
+# reads as a citation of DESIGN §1 and keeps a dead row alive, which is what
+# `FOREIGN_SCOPED` below refuses.
 FOREIGN_SCOPED = re.compile(r"(RUNBOOK|STRIPE|OPERATE|TEST-COVERAGE|SANDBOX-TESTPLAN|VERIFY|RELEASE|ARCHITECTURE)[^§]{0,12}§[0-9]")
 
 
