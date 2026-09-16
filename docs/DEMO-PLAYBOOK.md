@@ -1,144 +1,107 @@
 # Demo playbook
 
-The running order for a recorded walkthrough, for an audience that knows the IC. The
-operational setup is **already done** on whichever deployment you are showing, so it is
-narrated rather than performed: the demo is the buyer's flow, with the interesting
-mechanics explained at the point they happen.
+A speaker's outline for a recorded walkthrough of the **payment flow**. Setup is already
+done on whatever deployment you show, so it is narrated, not performed.
 
-⚠️ **This document names no live figures, deliberately.** An earlier version wrote the
-reserve balance and the order count into prose, and both were wrong within three days —
-in the two places the demo points a technical audience at the screen. So every number
-here is a **query to read on camera**, and the canister ids come from
-`.icp/data/mappings/ic.ids.json`, which is the record of which canister is which:
+## Before recording
 
-```bash
-icp canister call backend pricing_status  '()' -e ic   # the divisor: 1 is live, >1 is simulation
-icp canister call backend reserve_status  '()' -e ic   # availableToSell, promisedTotal, totalOrders
-icp canister call backend lifecycle_config '()' -e ic  # the amount bounds you are about to quote
-```
+- ⚠️ **No number is written in this file** — read them off the screen. An earlier version
+  put the reserve balance and the order count in prose and both were wrong within three
+  days, on the two screens the demo points at.
+  ```bash
+  icp canister call backend pricing_status '()' -e ic   # divisor: 1 is live, >1 simulation
+  icp canister call backend reserve_status '()' -e ic   # availableToSell, totalOrders
+  ```
+- ⚠️ `unset STRIPE_API_KEY STRIPE_WEBHOOK_SECRET`, and keep `scripts/.local-dev.env` off
+  screen. The canister cannot leak them; your terminal can.
+- ⚠️ **One open order per principal.** Cancel every rehearsal order, or the next one is
+  refused until Stripe expires the session (~35 min).
 
-Read them before recording. If one disagrees with what you are about to say, the screen
-is right.
+## Goal
 
-⚠️ **Before recording:** `unset STRIPE_API_KEY STRIPE_WEBHOOK_SECRET`, and keep
-`scripts/.local-dev.env` off screen. Both secrets are unreadable from the canister, so the
-only place they can leak is your terminal.
+- Let a customer **buy cycles with a credit card** — from a card to spendable cycles,
+  without solving crypto onboarding first. No wallet, no exchange account, no ICP to hold.
 
-## 1. What CyclePay is
+## The application
 
-Buy cycles with a credit card. No wallet, no exchange account, no ICP to hold first.
-One canister does pricing, payment, delivery and the audit trail; there is no server.
+- Runs **entirely on ICP**: one Motoko backend canister, one certified-assets frontend.
+  No server.
+- **No external dependency but Stripe.** Pricing reads two *canisters*, not an HTTP
+  oracle.
+- **Both canisters run on a confidential SEV-SNP subnet.**
 
-## 2. What an operator had to set up (narrate, already done)
+## Roles
 
-- **Deploy to a confidential SEV-SNP subnet.**
-- **A Stripe sandbox, and a restricted API key** scoped to Checkout Sessions = Write and
-  nothing else. A leaked write-sessions key can only create sessions that pay *us*.
-- **A webhook endpoint in Stripe**, which is how Stripe tells the canister what happened
-  (payment completed, session expired).
-- **Both secrets set on the backend**, sealed with vetKeys: the client derives the
-  canister's public key offline and encrypts to it, so no plaintext ever appears in an
-  ingress message, a shell history or a CI log. The canister decrypts and holds the
-  plaintext in its heap.
-- **Fund the cycles reserve** by transferring cycles to the canister's own cycles-ledger
-  account.
+### Operator
 
-⚠️ **Say the whole thing, because this audience will press on it.** SEV-SNP encrypts
-memory, **and** checkpoint-to-disk and state-sync between nodes are confidential on this
-subnet too — which is the part that matters: either one in the clear would leak the
-plaintext and make SEV worthless. That was the spec's "verify this hardest" item and it is
-closed. Still open, and worth saying if asked: **attestation coverage**, since one
-unattested replica is one node provider who can read the secret. And the control that does
-not depend on SEV at all is the **reserve size**, which bounds what any leak could cost.
+- **Funds the cycles reserve** the gateway sells from — the canister's own account on the
+  cycles ledger, not its gas balance.
+- **Provisions the two Stripe secrets**, sealed with vetKeys — encrypted offline to a key
+  derived from the canister's id, so no plaintext reaches an ingress message, a shell
+  history or a log.
+- **Allow-lists customers** while the gateway takes sandbox payments.
 
-## 3. Simulation mode
+### Customer
 
-Real card charge in Stripe's sandbox, real exchange-rate arithmetic, **cycles divided by
-the divisor**. One number does it: `pricing_status().config.divisor`. Say the value on
-screen; a live gateway has 1.
+- Creates an order, pays on Stripe's hosted page.
+- Receives cycles on the cycles ledger, **to the principal the signed-in page shows**.
 
-- A principal must be **allow-listed by a controller** (not a delegated admin —
-  `add_allowed_buyer` is `requireController`) before it can buy. Test payments are free
-  and unlimited, so without that list a funded gateway is a faucet, and it refuses to
-  sell in that state rather than warning.
-- The reserve and the order count are on `reserve_status`: `availableToSell` is what the
-  gateway will sell, and `totalOrders` includes every rehearsal. Read both rather than
-  quoting them — this is the screen the audience is checking you against.
+### Backend canister
 
-⚠️ **Rehearsal hazard: `maxOpenOrdersPerPrincipal` is 1** (§5a). Start an order, abandon
-it, and you cannot start another until Stripe expires that session — **~35 minutes** — or
-you `cancel_order` it. Cancel every rehearsal order before recording, and know the
-buyer-facing refusal on sight.
+- Quotes and **locks the cycle quantity**, and reserves it so a paid order can always be
+  delivered.
+- Verifies the webhook, then **delivers cycles** — one `icrc1_transfer` out of its own
+  cycles-ledger account.
+- Writes an audit line for every Stripe event it acts on.
 
-## 4. The buying flow
+## The demo
 
-**Pick an amount.** Three presets, or a custom amount between the two bounds
-`lifecycle_config` reports (`minPurchaseUsdCents` / `maxPurchaseUsdCents` — $10 and $100
-by default).
+Open the page, show the balance and the completed-order count on screen, then narrate one
+live purchase:
 
-**The quote, before committing.** The buyer sees the cycles they will get and the
-processing fee (2.9% + 30¢) up front. Two rates feed it:
+1. **Pick the amount.** The quote shows the cycles and the processing fee before
+   committing. The USD→cycles rate comes from two on-chain sources: **USD/ICP** from the
+   Exchange Rate Canister and **XDR/ICP** from the CMC.
+2. **Create the order.** Locks the quote, reserves the cycles, and makes an **HTTPS
+   outcall** to Stripe for a Checkout Session. Stripe's deadline is ~35 minutes.
+3. **Pay.** Card details go to Stripe's page and never touch this system.
+4. **Stripe calls the webhook** — `http_request_update`, an *update* call, so it goes
+   through consensus.
+5. **The canister verifies the HMAC** against the Stripe signing secret, then **transfers
+   the cycles** to the customer's principal.
 
-| | source | supplies |
-|---|---|---|
-| ICP/USD | Exchange Rate Canister | `usdPerIcpMicros` |
-| XDR/ICP | Cycles Minting Canister | `xdrPermyriadPerIcp` |
+- ⚠️ **Step 5 moves cycles, never fiat.** The money stays at Stripe; this canister
+  custodies none of it.
+- ⚠️ **The HMAC is the entire trust root.** The endpoint is public and the caller is
+  anonymous — the boundary node terminates TLS, so nothing about the transport
+  authenticates Stripe. Whoever holds that signing secret gets cycles for free, which is
+  why the reserve balance is the blast radius and why the secret is sealed rather than
+  pasted.
+- ⚠️ **ICP cancels out of the price.** Both rates are *per ICP*, so a cycle is XDR-pegged
+  and the gateway holds no ICP. Cross-checkable against the IMF's published SDR rate.
 
-Both refresh on a timer, and **no unauthenticated caller can drive our XRC spend** —
-`refresh_rates` exists as an operator lever but is admin-only.
+## Considerations
 
-⚠️ **Worth 15 seconds for this audience: ICP cancels.** Both rates are *per ICP*, so the
-quotient is XDR per USD and the ICP price drops out. **A cycle is XDR-pegged**, and the
-gateway carries no ICP exposure per order. The implied rate can be checked against the
-IMF's published SDR rate on screen, which is the strongest claim the demo can make,
-because the number is not ours.
+- **Running out of cycles.** The gate refuses the order **before the customer pays**, so
+  no money is taken for cycles that cannot be delivered. A promise is held from creation,
+  so a paid order is always deliverable.
+- **An expired session.** Stripe tells the canister, the order is marked expired, and the
+  reserved cycles go back to what is sellable.
+- **A dispute.** One audit line — *reconcile in Stripe; cycles cannot be recovered* — and
+  no automated response, deliberately: the cycles are delivered and irreversible while the
+  card network pulls the fiat back. The operator sees it happened and reconciles in the
+  Dashboard. A **refund** is different: it files an obligation on the order.
+- **Anything unexpected.** Every Stripe event the canister acts on is audited, so an
+  order in a state nobody expected is visible to the operator — who can check the
+  Dashboard and refund if that is the right answer.
+- **This is a demo.** You must be **allow-listed** — sandbox payments are free, so an open
+  list on a funded gateway would be a faucet, and it refuses to sell in that state rather
+  than warning. Cycles are divided by the divisor, quote and delivery alike.
 
-**Creating the order** does two things:
+## Try it
 
-1. **Locks the terms and reserves the cycles**, so the promised quantity can always be
-   delivered. Admission is decided against `floor − promised` with no ledger call on the
-   hot path.
-2. **Creates a Stripe Checkout session via HTTPS outcall**, with the order id as the
-   `Idempotency-Key` so a retried outcall cannot create a second session.
-
-**After payment, Stripe calls the canister's webhook.**
-
-```
-Stripe → POST /webhook/stripe → http_request_update (an UPDATE call, through consensus)
-       → verify HMAC → dedup on event id → deliver → mark delivered
-```
-
-⚠️ **This is the security crux.** The endpoint is public and the caller is **anonymous** —
-the boundary node terminates TLS, so nothing about the transport authenticates Stripe.
-HMAC over the request body with the signing secret is the **entire** trust root, which is
-why that secret must never leak: whoever holds it can sign a completed-payment event for
-an order they created and be delivered cycles having paid nothing.
-
-**Delivery is a plain `icrc1_transfer` on the cycles ledger** to the buyer's principal —
-spendable cycles, not a canister top-up.
-
-## 5. Using the cycles
-
-The page walks the buyer through linking their browser identity to `icp-cli`, so the CLI
-acts as the same principal the cycles were delivered to, and `icp deploy` just works.
-
-## 6. Close on the evidence
-
-- **The admin audit log in the app** — every operator action and every audited read.
-- **The Stripe dashboard**, including the webhook events it sent and their delivery
-  status, so both sides of the boundary are visible.
-
-## If asked
-
-- **"Where do the card details go?"** Stripe's hosted Checkout. They never touch this
-  system.
-- **"What if delivery fails?"** The order does not silently die: a paid order that has not
-  delivered escalates to the operator worklist, and the recovery sweep asks Stripe about
-  orders stuck past their deadline. The principle is *stop taking on new obligations,
-  leave every path that discharges existing ones open*.
-- **"`availableToSell` looks wrong."** It stays in **real** cycles while quotes are
-  scaled, because only the promise is scaled. And the floor only rises by observation, so
-  a ledger balance above `availableToSell` means a top-up nobody ran `refresh_reserve` for.
-- **"Can a controller steal the reserve?"** Yes — every controller can upgrade the
-  canister, so "upgrade-then-drain" holds. The hardening path is a multisig canister as
-  *sole* controller, because IC controllers are OR-semantics.
+- Send me **the principal the signed-in page shows you** and I will allow-list it.
+  Internet Identity derives one per origin, so a principal copied from another app is a
+  different account.
+- The rest is in the repo: [`docs/ARCHITECTURE.md`](./ARCHITECTURE.md) for the diagram,
+  [`docs/VERIFY.md`](./VERIFY.md) for what anyone can check and what they cannot.
