@@ -92,7 +92,7 @@ module {
 
   /// The whole refusal ladder for `withdraw_reserve` (§5.4), as one decision.
   ///
-  /// ⚠️ **The endpoint calls this TWICE — once before observing the ledger, once after —
+  /// **The endpoint calls this TWICE — once before observing the ledger, once after —
   /// and that repetition is the point.** An `await` sits inside the observe while the
   /// floor is still full, so the holder count has to be re-tested afterwards: a create
   /// queued in that window would otherwise be admitted against a reserve about to leave.
@@ -195,7 +195,7 @@ module {
   // Both decrement the floor by `amount + fee` before the transfer is issued (rule 2),
   // so the accounting below is identical for either class.
   //
-  // ⚠️ **ONE outflow mechanism, and the enforcement is the actor type, not this comment.**
+  // **The enforcement is the actor type, not this comment.**
   // `Delivery.CyclesLedgerService` declares exactly `icrc1_transfer` and
   // `icrc1_balance_of`. `icrc2_approve` and the ledger's `withdraw` are absent, so this
   // canister *cannot* call them — not "does not plan to". A gate step greps the backend

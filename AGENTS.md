@@ -171,6 +171,28 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
   "this was previously wrong" is noise to everyone who reads the file later. ⚠️ The
   exception, and it is narrow: a comment that stops a future mistake stays, written as
   a **rule** rather than as a story about a past change.
+- ⚠️ **The ⚠️ marker is for a TRAP, not for a fact**, and
+  `scripts/check-markers.py` enforces the part a check can own. The test is: *can the
+  next editor act on this the wrong way, and would the damage be unrecoverable or
+  invisible?* **"Do not add a force flag to `refresh_reserve`"** earns it — the flag
+  reintroduces the bug the predicate prevents. **"This count going LOW is the oversell
+  direction"** does not: it is orientation, it keeps every word of its text, and it loses
+  the glyph. The marker only works while it is rare, and the asymmetry is why it matters:
+  an unread warning on the money path costs more than a missing one, because its presence
+  is what a reviewer trusts.
+  - **Never in a test, suite or describe NAME** (enforced). The name states the property;
+    the glyph adds nothing and prints on every run.
+  - **The population may only FALL** (enforced): `MARKER_CEILING` is the tree-wide total
+    and the check fails on any disagreement in either direction. A new marker is a
+    one-line ceiling edit with the reason in the commit, and a cleanup pass ratchets it
+    down visibly in the diff.
+  - **A comment block with three markers almost certainly has one trap and two
+    explanations** — worth checking against the phrase test above. Judgement, not a rule.
+  - **An endpoint `///` doc is PUBLISHED** into `backend.did` and the generated
+    TypeScript, so a marker there reaches API callers. Keep the ones a caller can act on
+    (*"uncertified query answers, nothing may be wired to decide on them"*); a note to the
+    next editor about our own layout or history belongs in a `//` beside the
+    implementation. `PUBLISHED_CEILING` ratchets that count the same way.
 - ⚠️ **No bare `#NN` issue reference outside `docs/agents/`**, and
   `scripts/check-issue-refs.py` enforces it. Not in code, not in tests, not in docs, not
   in scripts, not in a suite or test name. An issue number reads as a pointer to a live

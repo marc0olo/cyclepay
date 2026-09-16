@@ -181,7 +181,7 @@ module {
   /// chunk and the 15-minute default a 365k store is one cycle in ~1.9 days; at the
   /// §5.1 ceiling of 6 h the same store takes ~46 days.
   ///
-  /// ⚠️ **Pure and in this module so the MULTIPLIER can be tested.** As a private func in
+  /// **Pure and in this module so the MULTIPLIER can be tested.** As a private func in
   /// `Main.mo` its only assertion compared the result to the sweep interval, on a store
   /// smaller than one chunk — where the chunk count is always 1, so a version that dropped
   /// the store-size factor entirely passed. `test/recovery.test.mo` pins `chunkSize + 1`.

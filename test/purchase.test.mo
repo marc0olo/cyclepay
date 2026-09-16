@@ -69,7 +69,7 @@ suite("Purchase.plan — the happy path carries what the commit needs", func() {
     assert plan.quoteLabel == "1234 cents";
   });
 
-  test("⚠️ lockedCycles comes from the quote, so the commit and the delivery agree", func() {
+  test("lockedCycles comes from the quote, so the commit and the delivery agree", func() {
     // The one field a later re-quote would change. `Plan` carries it precisely so
     // nothing downstream has to ask again — see the note on `Purchase.Plan`.
     let #ok(a) = planWith(#tier("tier50"), null, admits, priced) else Runtime.trap("expected #ok");

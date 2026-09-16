@@ -140,7 +140,7 @@ function argsOf(command: string): string {
 }
 
 describe("the rendered command is what the canister expects", () => {
-  test("⚠️ a whole config record round-trips field for field", () => {
+  test("a whole config record round-trips field for field", () => {
     // The setters take whole records, and hand-authoring one while omitting or
     // fat-fingering a field silently changes a live parameter.
     const pricing = {
@@ -167,7 +167,7 @@ describe("the rendered command is what the canister expects", () => {
     expect(parseCandid(argsOf(renderCall("set_delivery_config", delivery)))).toEqual([delivery]);
   });
 
-  test("⚠️ resolve_problem keeps its three arguments in ORDER and shape", () => {
+  test("resolve_problem keeps its three arguments in ORDER and shape", () => {
     // Dropping `paymentRef` over-resolves, because one order can carry several
     // unresolved problems of the same kind. A swap here closes the
     // wrong obligation and the record then says an obligation was handled that was not.
@@ -199,7 +199,7 @@ describe("the rendered command is what the canister expects", () => {
       .toEqual(["abc123", 16_383_351n]);
   });
 
-  test("⚠️ a principal is annotated, because a bare string is refused", () => {
+  test("a principal is annotated, because a bare string is refused", () => {
     // Measured against the running canister: other annotations are inferred from the
     // interface, and this one is not.
     const p = Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai");
@@ -233,7 +233,7 @@ describe("the rendered command is what the canister expects", () => {
       .toEqual(["abc123", reason]);
   });
 
-  test("⚠️ neither secret setter is in the table, and that is permanent", () => {
+  test("neither secret setter is in the table, and that is permanent", () => {
     // A rendered command containing the key would land in this page's DOM and its
     // clipboard. `scripts/check-admin-commands.py` fails if either ever appears.
     const names = Object.keys(COMMANDS);
@@ -258,7 +258,7 @@ describe("the rendered command is what the canister expects", () => {
     );
   });
 
-  test("⚠️ an apostrophe survives the SHELL as well as Candid", () => {
+  test("an apostrophe survives the SHELL as well as Candid", () => {
     // Two escapings, and passing one proves nothing about the other: `text()` escapes
     // for Candid, the single quotes are for the shell. A tier id carrying an apostrophe
     // used to close the quoting early, so what reached the CLI was neither the command
@@ -354,7 +354,7 @@ describe("the parser this suite relies on", () => {
       withdraw_reserve: [],
     };
 
-    test("⚠️ the table covers every command, so a new one cannot skip this", () => {
+    test("the table covers every command, so a new one cannot skip this", () => {
       // `Record<CommandMethod, …>` already makes a missing entry a compile error. This
       // asserts the other direction: that the loop below actually visits all of them,
       // rather than passing because `COMMANDS` and `SAMPLES` are both empty of some key.

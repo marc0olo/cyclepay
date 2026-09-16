@@ -61,7 +61,7 @@ test.describe("the delivered view", () => {
     await expect(page.locator("#active-order")).toBeHidden();
   });
 
-  test("⚠️ the order record shows the numbers, with nothing collapsed over them", async ({ page }) => {
+  test("the order record shows the numbers, with nothing collapsed over them", async ({ page }) => {
     // The defect this pins. `order-problems` and `receipt-area` were NESTED inside a
     // `<details id="order-details">` that the app collapsed on the delivered view, so
     // the one page a buyer opens to see what they got showed no cycle quantity, hid
@@ -166,7 +166,7 @@ test.describe("one view owns the screen, under a live poll", () => {
     await expect(page.locator("#history")).toBeVisible();
   });
 
-  test("⚠️ a dashboard row is a LINK to the order, and there is no buy-again", async ({ page }) => {
+  test("a dashboard row is a LINK to the order, and there is no buy-again", async ({ page }) => {
     // The button is gone: it rendered on every row including unpaid ones, where the
     // one-open-order cap refuses the very order it offered to start. And a row that
     // only responded to `tr.onclick` showed no destination and could not be tabbed

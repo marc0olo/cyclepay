@@ -1548,7 +1548,7 @@ function renderOperatorSummary(): void {
 /// The hint always occupies the LAST cell, collapsed. A list of twenty stays scannable and
 /// the meaning is one click away rather than in another window.
 ///
-/// ⚠️ `data-urgency` stays on the row: the wait-versus-act distinction is carried by token
+/// `data-urgency` stays on the row: the wait-versus-act distinction is carried by token
 /// colour there, and the Chromium suite asserts an operator can tell them apart.
 function worklistRow(
   into: HTMLElement,

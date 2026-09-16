@@ -16,7 +16,7 @@
 # `/etc/profile`, which resets `PATH` and drops the nvm bin directory — so `icp` looks
 # missing when it is not. `RUN` uses `sh -c` and is unaffected.
 #
-# ⚠️ **Changing this image CAN change every module hash**, so a bump belongs in its own
+# **Changing this image CAN change every module hash**, so a bump belongs in its own
 # release with its own published hashes, never alongside unrelated changes. Whether it
 # actually moves depends on the tool: `ic-wasm` shrinks the module and embeds its
 # metadata, so it shapes the bytes; `icp`, `mops` and Node have not. v2.1.0 -> v2.2.0 left

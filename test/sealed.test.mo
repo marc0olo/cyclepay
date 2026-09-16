@@ -61,7 +61,7 @@ func ibeKey() : G1.Affine {
 };
 
 suite("Sealed — the two published constants", func() {
-  test("⚠️ context and keyLabel are pinned, because moving one orphans every ciphertext", func() {
+  test("context and keyLabel are pinned, because moving one orphans every ciphertext", func() {
     // These bytes are a CONTRACT with `scripts/seal-secret.sh` and with every ciphertext
     // an operator has ever produced. Changing either gives this canister a different
     // keypair or a different identity, so previously sealed secrets stop opening — with
@@ -116,7 +116,7 @@ suite("Sealed.open — each refusal names a different operator mistake", func() 
     assert Sealed.open("" : Blob, ibeKey()) == #err(#notCiphertext);
   });
 
-  test("⚠️ a well-formed ciphertext under the wrong key is #notSealedToThisCanister", func() {
+  test("a well-formed ciphertext under the wrong key is #notSealedToThisCanister", func() {
     // This is the arm the WRONG-NETWORK case lands in — sealing against mainnet's master
     // key when the canister is on a local network, or the reverse. Here it is provoked
     // with a key that is valid but simply not the right one, which is the same failure
@@ -136,7 +136,7 @@ suite("Sealed.unwrap — the verification is real, and it is OUR identity", func
     assert Sealed.unwrap(hexBlob("dead"), transport, hexBlob(REPLY_DPK)) == #err(#malformedReply);
   });
 
-  test("⚠️ a genuine reply sealed to ANOTHER identity is rejected", func() {
+  test("a genuine reply sealed to ANOTHER identity is rejected", func() {
     // Everything about this reply is real — it is a `vetkd_derive_key` response the Rust
     // reference produced, and the submodule’s own suite proves it unwraps correctly for the
     // identity it was made for (`"message"`).
@@ -153,7 +153,7 @@ suite("Sealed.unwrap — the verification is real, and it is OUR identity", func
 });
 
 suite("Sealed + Secret — the order the two checks run in", func() {
-  test("⚠️ the length floor applies to the DECRYPTED value, not the ciphertext", func() {
+  test("the length floor applies to the DECRYPTED value, not the ciphertext", func() {
     // The 151-byte ciphertext is far above `minSecretBytes`; the 15-byte plaintext inside
     // it is one byte below. So this pins the ordering `Sealed.mo` documents: decrypt
     // first, then judge the real value. Checking the argument's length instead would let

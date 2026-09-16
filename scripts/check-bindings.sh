@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # The committed Candid bindings match the canister's own interface.
 #
-# ⚠️ **Why the bindings are committed rather than generated on demand.** The integration
+# **Why the bindings are committed rather than generated on demand.** The integration
 # CI job installs only `test/integration` deps and never runs `mops build` — so it
 # typechecks against whatever is in the checkout. Generating at test time would need the
 # Motoko toolchain in that job; committing means a fresh checkout can typecheck and run,
 # and an interface change shows up in a pull-request diff instead of only at runtime.
 #
-# ⚠️ **The cost of committing generated code is that it rots silently, which is what this
+# **The cost of committing generated code is that it rots silently, which is what this
 # check exists for.** Same pattern the gate already applies one layer down to
 # `src/backend/dist/backend.did` — regenerate, diff, fail on drift.
 #
-# ⚠️ **Why generated at all.** Hand-transcribing `test/integration/src/idl.ts` is 555
+# **Why generated at all.** Hand-transcribing `test/integration/src/idl.ts` is 555
 # lines of `IDL.Func` declarations, and `types.ts` 42 TypeScript mirrors, with nothing
 # checking either against the Motoko. Such a copy drifts in both directions at once: a
 # `GateReason` mirror keeps variants the backend deleted and misses ones it added, so

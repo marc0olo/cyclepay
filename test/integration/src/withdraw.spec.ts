@@ -229,7 +229,7 @@ test('103g — a create landing INSIDE the withdrawal is refused, because the fl
   expect(await reserveBalance(gw)).toBe(0n);
 });
 
-test('103e — the two interleaving windows, and ⚠️ what this suite CANNOT prove', async () => {
+test('103e — the two interleaving windows, and what this suite CANNOT prove', async () => {
   // `withdraw_reserve` has two awaits and a rule for each:
   //
   //   1. the balance read inside `observeReserve` — the floor is still FULL across it,
@@ -244,15 +244,13 @@ test('103e — the two interleaving windows, and ⚠️ what this suite CANNOT p
   // so the value arrives with the result and there is nothing to forget. Rule 2 — the
   // decrement before the transfer — still rests on review.
   //
-  // ⚠️ **CORRECTION: rule 2 IS verified now — by 103g above — and this comment's
-  // explanation was wrong.** Its measurement was right: with the decrement moved after
-  // the transfer, every test that existed *then* still passed. But the reason given —
-  // "a `pic.tick()` drains the whole message including its inter-canister awaits, and
-  // there is no way to land an ingress message inside one" — generalised from "these
-  // tests do not catch it" to "no test can", and that is false. `pic.tick(1)` advances
+  // **Rule 2 IS verified, by 103g above** — and the reasoning that says it cannot be is
+  // the trap. *"A `pic.tick()` drains the whole message including its inter-canister
+  // awaits, so there is no way to land an ingress message inside one"* generalises "these
+  // tests do not catch it" into "no test can", and it is false: `pic.tick(1)` advances
   // ONE round rather than to quiescence, so a deferred call parks across rounds and
-  // ingress lands in between; `deferredAdmin` was already in the harness. 103g runs that
-  // mutation and is the only scenario of 115 that fails on it.
+  // ingress lands in between. 103g runs the mutation (the decrement moved after the
+  // transfer) and is the only scenario of 115 that fails on it.
   //
   // ⚠️ **Rule 1 remains unverified, and here is what was tried** — recorded as a
   // measurement, not as a claim that no test can exist:

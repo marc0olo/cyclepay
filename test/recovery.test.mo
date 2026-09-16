@@ -190,7 +190,7 @@ suite("the rotating scan's coverage window", func() {
     assert Recovery.indexScanCycleNs(chunk, chunk, interval) == interval;
   });
 
-  test("⚠️ one order past a chunk boundary costs a second interval", func() {
+  test("one order past a chunk boundary costs a second interval", func() {
     // The multiplier, at the smallest input that exercises it. `chunkSize + 1` is the
     // whole of what the integration assertion cannot see.
     assert Recovery.indexScanCycleNs(chunk + 1, chunk, interval) == 2 * interval;
@@ -198,7 +198,7 @@ suite("the rotating scan's coverage window", func() {
     assert Recovery.indexScanCycleNs(2 * chunk + 1, chunk, interval) == 3 * interval;
   });
 
-  test("⚠️ the window grows linearly in stored orders — the latency this trades for", func() {
+  test("the window grows linearly in stored orders — the latency this trades for", func() {
     // 365k orders at 2,000 per chunk is 183 chunks; at the 15-minute default that is
     // ~1.9 days. Ten times the store is ten times the window, and this is the assertion
     // that makes "grows linearly" a checked claim rather than a comment.
@@ -218,7 +218,7 @@ suite("the rotating scan's coverage window", func() {
     assert large >= 10 * small - 9 * interval;
   });
 
-  test("⚠️ the operator's cadence knob multiplies the window, and nothing else does", func() {
+  test("the operator's cadence knob multiplies the window, and nothing else does", func() {
     // `set_recovery_interval` validates only against the §5.1 ledger-dedup bound, so an
     // operator can legally coarsen the sweep to the 6 h ceiling — 24× the default — and
     // silently multiply the detection latency for `orders.unindexedHolders`, which is P1

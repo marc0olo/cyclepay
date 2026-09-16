@@ -44,7 +44,7 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
     assert Orphans.paymentRefOf(#unprocessable({ eventId = "evt_1"; field = "payment_intent" })) == null;
   });
 
-  test("⚠️ refundResolvable and paymentRefOf agree on EVERY kind", func() {
+  test("refundResolvable and paymentRefOf agree on EVERY kind", func() {
     // The structural claim in `Orphans`'s header: `refundResolvable` and
     // `paymentRefOf` are the same property seen from two sides. The tests above
     // spot-check three kinds; this walks all seven, because the failure it guards
@@ -64,7 +64,7 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
     // kind is named here — which lands the maintainer on the exact line where the list
     // and its count live.
     //
-    // ⚠️ **A hand-written count does not do this.** Adding a kind forces
+    // **A hand-written count does not do this.** Adding a kind forces
     // `refundResolvable` and `paymentRefOf` to handle it via their own exhaustive
     // switches while a "all seven" assertion keeps passing; removing one leaves the
     // array below still listing it. The switch catches the first direction and this

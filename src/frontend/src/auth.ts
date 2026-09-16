@@ -58,7 +58,7 @@ const IDENTITY_PROVIDER = identityProvider();
 /// domain instead would be a working app with a silently different principal. At module
 /// scope that throw would take the whole page down with it; here it reaches whoever asked.
 ///
-/// ⚠️ **"Only the identity operations fail" rests on a chain worth naming, because a
+/// **"Only the identity operations fail" rests on a chain worth naming, because a
 /// future change can break it.** `linkIdentityCommand()` reaches the same throw through
 /// `canonicalAppDomain()`, and `main.ts` calls it unguarded from two render sites. Both
 /// are unreachable in this state only because `currentIdentity()` below returns null, so

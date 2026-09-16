@@ -517,7 +517,7 @@ const PRE_ANNOUNCED_INVITE_ONLY =
 
 /// The same two refusals, worded for a buyer who has **not attempted anything yet**.
 ///
-/// ⚠️ **Why a second table rather than reusing `gateReasonMessage`: "Nothing was
+/// **Why a second table rather than reusing `gateReasonMessage`: "Nothing was
 /// charged" is true after an attempt and misleading before one.** In a pre-emptive
 /// notice it implies a purchase was tried and reversed, which is confusing at exactly
 /// the moment the page is trying to be clear. Everything else about the copy is
@@ -706,7 +706,7 @@ export const CREATE_ORDER_ERROR_KEYS: Record<CreateOrderError["__kind__"], true>
 /// send this account a transfer memoed `FE * 32` and have this app announce "Created a
 /// canister" in a history the buyer reconciles against.
 ///
-/// ⚠️ **A creation tells you THAT, never WHICH.** The created id comes back in
+/// **A creation tells you THAT, never WHICH.** The created id comes back in
 /// `CreateCanisterSuccess.canister_id`, the method reply, and never enters the block. So
 /// `#creation` carries no principal and no later read can recover one.
 ///

@@ -53,7 +53,7 @@ module {
     /// believes this protects delivery raises it to rescue a stalled one, which
     /// refuses every buyer and changes nothing about delivery.
     ///
-    /// ⚠️ **What it bounds is a gas DRAIN, not freezing.** At the 5 T default the
+    /// **What it bounds is a gas DRAIN, not freezing.** At the 5 T default the
     /// freezing threshold is ~149× further down (~34 B, i.e. 30 days of idle burn),
     /// so sales close with over a year of runway still in hand. Sizing it against
     /// freezing invites lowering it by two orders of magnitude, and that is exactly
@@ -75,7 +75,7 @@ module {
     ///     delivering, topped up by a plain `icp cycles transfer <amt> <backend-id>`.
     ///     `reserve_status`, or `icp cycles balance --of-principal <backend-id>`.
     ///   - **the operator's own cycles-ledger account**, which funds both. `icp cycles
-    ///     balance`. ⚠️ A failed top-up reports *this* balance, under a message about the
+    ///     balance`. A failed top-up reports *this* balance, under a message about the
     ///     reserve — so read "insufficient funds. balance: N" as the sender's, not the
     ///     reserve's.
     minCanisterCycles : Nat;
@@ -496,7 +496,7 @@ module {
   /// false at that moment** — the list is non-empty, or we are live, or the floor
   /// is zero. Admission is direct proof.
   ///
-  /// ⚠️ Decided rather than left to symmetry, because the other way round it
+  /// Decided rather than left to symmetry, because the other way round it
   /// latches when the reserve is funded against an empty list and **never
   /// clears**: `refusingNow` would report the faucet forever after the operator
   /// populated the list and buyers started succeeding — a condition become

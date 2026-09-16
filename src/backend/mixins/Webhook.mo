@@ -11,7 +11,7 @@ import Types "../Types";
 /// HMAC over the body — so the dispatcher re-applies every guard on the update half,
 /// because anyone can call it directly through Candid.
 ///
-/// ⚠️ **`routes` and `maxRequestBodyBytes` pass directly and that is safe**, unlike a
+/// **`routes` and `maxRequestBodyBytes` pass directly and that is safe**, unlike a
 /// mutable `var`: both are transient `let`s built during initialisation, which is also
 /// when `include` evaluates its arguments, and neither ever changes afterwards. The
 /// rule in `docs/DESIGN.md` §9.1 is about MUTABLE state; an immutable snapshot of an

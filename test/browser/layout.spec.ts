@@ -41,7 +41,7 @@ test.describe("the hidden attribute actually hides", () => {
     await expect(page.locator('input[name="dest-kind"]')).toHaveCount(0);
   });
 
-  test("⚠️ the deposit fee is still inside the figure the buyer chooses on", async ({ page }) => {
+  test("the deposit fee is still inside the figure the buyer chooses on", async ({ page }) => {
     // The reason removing the note is safe: the tile states the CREDITED quantity, so
     // the fee is already in the number being decided on. Verified in a browser because
     // the quote, the ledger fee read and the render all take part.
@@ -56,7 +56,7 @@ test.describe("the hidden attribute actually hides", () => {
 });
 
 test.describe("the amount picker", () => {
-  test("⚠️ Custom is a tile, and the field opens only when it is chosen", async ({ page }) => {
+  test("Custom is a tile, and the field opens only when it is chosen", async ({ page }) => {
     // In a real browser because `hidden` on a grid child is exactly the kind of thing
     // CSS can defeat, and this suite exists for that class of failure.
     await page.goto("/");
@@ -258,7 +258,7 @@ test.describe("the four-step hero figure", () => {
     expect(flow.image).toContain("linear-gradient");
   });
 
-  test("⚠️ the landing CTA is actually bigger, not just declared bigger", async ({ page }) => {
+  test("the landing CTA is actually bigger, not just declared bigger", async ({ page }) => {
     // A CASCADE test, which is what this file is for. `.cta-hero` first sat ABOVE
     // `.cta` in the stylesheet, where `.cta`'s own `padding: 0.5rem 1.15rem` came
     // later at equal specificity and silently won: the button grew by 2px and read as
@@ -420,7 +420,7 @@ test.describe("layout agreement", () => {
     expect(phone.overflows).toBe(false);
   });
 
-  test("⚠️ and the same table still fills its panel on a desktop", async ({ page }) => {
+  test("and the same table still fills its panel on a desktop", async ({ page }) => {
     await openHistory(page, 1280, 900);
     const desktop = await page.evaluate(() => {
       const table = document.querySelector(".orders-table") as HTMLElement;
@@ -435,7 +435,7 @@ test.describe("layout agreement", () => {
     // which had been doing exactly that since they were introduced.
     expect(desktop.row).toBeCloseTo(desktop.box, 0);
   });
-  test("⚠️ the id in a history row loads the lookup beneath it", async ({ page }) => {
+  test("the id in a history row loads the lookup beneath it", async ({ page }) => {
     // The panel has to be able to complete its own loop. It shows a TRUNCATED id and
     // asks the field below for 32 hex characters, and until this control existed there
     // was no copy button and no click target between the two: an operator looking

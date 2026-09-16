@@ -1087,7 +1087,7 @@ suite("handleWebhook: only a real payment creates money-out work", func() {
 });
 
 suite("a buyer's cancel is not a system expiry, THROUGH the webhook", func() {
-  test("⚠️ the expired event records #cancelled when the owner asked to cancel", func() {
+  test("the expired event records #cancelled when the owner asked to cancel", func() {
     // ⚠️ **This is the path the previous two fixes missed.** `cancel_order` expires the
     // session at Stripe, Stripe fires `checkout.session.expired`, and THIS handler
     // settles the order before the cancel is recorded. The first attempt guarded the
@@ -1110,7 +1110,7 @@ suite("a buyer's cancel is not a system expiry, THROUGH the webhook", func() {
     assert not deps.cancelRequests.contains(orderId);
   });
 
-  test("⚠️ the PAYMENT winning drops the intent, because nothing can honour it", func() {
+  test("the PAYMENT winning drops the intent, because nothing can honour it", func() {
     // The third and last exit from `#created`, and the one that leaked: `cancel_order`
     // records the intent, Stripe answers the expire 400 *because* this session
     // completed, and the cancel returns without removing it. `#cancelled` is
@@ -1128,7 +1128,7 @@ suite("a buyer's cancel is not a system expiry, THROUGH the webhook", func() {
     assert not deps.cancelRequests.contains(orderId);
   });
 
-  test("⚠️ a REFUSED payment leaves the intent alone, so the expiry can still honour it", func() {
+  test("a REFUSED payment leaves the intent alone, so the expiry can still honour it", func() {
     // The other half: only a payment that actually took the order removes the intent.
     // An amount that does not match the quote is refused as `#unattributed`, the order
     // stays `#created`, and the buyer's cancel is still live — so a handler that pruned
@@ -1151,7 +1151,7 @@ suite("a buyer's cancel is not a system expiry, THROUGH the webhook", func() {
     assert not deps.cancelRequests.contains(orderId);
   });
 
-  test("⚠️ and with no request it is still a real expiry, with its cause", func() {
+  test("and with no request it is still a real expiry, with its cause", func() {
     // The other half. Without it, the assertion above is satisfied by a handler that
     // cancels every expired session, which would record every abandoned checkout as
     // the buyer's own decision.

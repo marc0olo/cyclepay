@@ -23,7 +23,7 @@ describe("isLocalNetwork", () => {
     }
   });
 
-  test("⚠️ and nothing that merely contains one", () => {
+  test("and nothing that merely contains one", () => {
     // `localhost.evil.com` is the trap the backend's own origin parser documents; the
     // same substring mistake here would put a production page on the local branch.
     for (const h of ["cyclepay.raymondk.co", "localhost.evil.com", "notlocalhost", `${FRONTEND}.icp.net`]) {
@@ -33,7 +33,7 @@ describe("isLocalNetwork", () => {
 });
 
 describe("derivationOrigin", () => {
-  test("⚠️ from a custom domain it is the CANISTER's origin, not the serving domain", () => {
+  test("from a custom domain it is the CANISTER's origin, not the serving domain", () => {
     // The whole point: one string for every domain this app is ever served from, so a
     // domain change does not hand every buyer a new principal.
     expect(derivationOrigin("cyclepay.raymondk.co", FRONTEND)).toBe(`https://${FRONTEND}.icp.net`);
@@ -41,7 +41,7 @@ describe("derivationOrigin", () => {
       .toBe(derivationOrigin("cyclepay.raymondk.co", FRONTEND));
   });
 
-  test("⚠️ the PRIMARY origin passes nothing, at any of the three gateway spellings", () => {
+  test("the PRIMARY origin passes nothing, at any of the three gateway spellings", () => {
     // Per the Internet Identity guidance: only the alternative origin sets a derivation
     // origin, and II canonicalises `ic0.app` / `icp0.io` / `icp.net` to one form during
     // delegation -- so passing a gateway origin is the case that BREAKS authentication
@@ -58,7 +58,7 @@ describe("derivationOrigin", () => {
     expect(derivationOrigin("frontend.local.localhost", FRONTEND)).toBeUndefined();
   });
 
-  test("⚠️ with no frontend id it THROWS rather than deriving from the domain", () => {
+  test("with no frontend id it THROWS rather than deriving from the domain", () => {
     // Fail closed. Returning undefined would let II derive from the serving domain: a
     // working app, a silently different principal, and the one outcome that cannot be
     // undone once a buyer holds cycles on it.
@@ -73,7 +73,7 @@ describe("derivationOrigin", () => {
 });
 
 describe("canonicalAppDomain", () => {
-  test("⚠️ with no frontend id it throws here too, rather than printing the wrong origin", () => {
+  test("with no frontend id it throws here too, rather than printing the wrong origin", () => {
     // The printed `--app` selects which origin's principal the CLI asks for. Falling back
     // to the serving domain would hand the buyer a delegation for a principal the page is
     // not showing them -- the failure this function exists to prevent. Propagating the
@@ -82,7 +82,7 @@ describe("canonicalAppDomain", () => {
       .toThrow(/PUBLIC_CANISTER_ID:frontend/);
   });
 
-  test("⚠️ `--app` follows the DERIVATION origin, not the page", () => {
+  test("`--app` follows the DERIVATION origin, not the page", () => {
     // Printing the serving domain would hand the buyer a delegation for a different
     // principal than the page shows them, with an empty balance -- the exact failure
     // the printed command exists to prevent.

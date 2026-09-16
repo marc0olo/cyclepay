@@ -27,7 +27,7 @@ export function isLocalNetwork(hostname: string = window.location.hostname): boo
 /// official gateway domains during delegation, so passing one as a derivation origin is
 /// the case its own guidance says breaks authentication rather than a no-op.
 ///
-/// ⚠️ **Pinned to the FRONTEND CANISTER's origin, never to the domain the page came from,
+/// **Pinned to the FRONTEND CANISTER's origin, never to the domain the page came from,
 /// and that is what makes the domain reversible.** A *custom domain* used as the
 /// derivation origin is irreversible after the first purchase. Deriving from the canister
 /// id instead means this test domain and whatever production domain is chosen both yield
@@ -38,7 +38,7 @@ export function isLocalNetwork(hostname: string = window.location.hostname): boo
 /// origin, cross-origin, and refuses to derive for any serving origin the file does not
 /// list. It needs a CORS header as well as a media type; `public/_headers` carries both.
 ///
-/// ⚠️ **`icp.net` rather than `icp0.io`, and the two are NOT two identities** — corrected
+/// **`icp.net` rather than `icp0.io`, and the two are NOT two identities** — corrected
 /// against the Internet Identity guidance, which states that II canonicalises `ic0.app`,
 /// `icp0.io` and `icp.net` to one form during delegation, so a canister served at any of
 /// them yields the same principal. The spelling is therefore a readability choice, not an

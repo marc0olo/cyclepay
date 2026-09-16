@@ -336,6 +336,13 @@ run "every doc link resolves, file and #anchor" scripts/check-doc-links.py
 # external tracker (`owner/repo#NN`) is allowed and has one live instance.
 run "no bare issue reference outside docs/agents/" scripts/check-issue-refs.py
 
+# ⚠️ **The glyph only works while it is rare, and nothing else measures that.** Two
+# things a check can own: no marker in a test NAME, and the tree-wide count may only fall
+# (a ratcheting ceiling, which is the only form that covers Markdown and trailing
+# comments as well as comment blocks). Whether a marker earns its glyph is a review
+# question; AGENTS.md carries that rule.
+run "the ⚠️ marker marks traps, not facts" scripts/check-markers.py
+
 # Reads the regenerated .did, so it sits after the build step. No endpoint returns a
 # `Result<_, Text>`; this keeps it that way.
 run "every endpoint error type is a variant, not text" scripts/check-typed-errors.py

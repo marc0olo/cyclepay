@@ -55,7 +55,7 @@ describe("sealed provisioning", () => {
     expect(status.generation).toBe(1n);
   }, 120_000);
 
-  it("⚠️ one derivation serves BOTH secrets — they share the identity", async () => {
+  it("one derivation serves BOTH secrets — they share the identity", async () => {
     // The second provisioning hits the cached vetKey, so it pays no second fee. ⚠️ **Do
     // not give the two secrets separate labels** — that costs another ~26 B cycles per
     // derivation.
@@ -75,7 +75,7 @@ describe("sealed provisioning", () => {
     expect(after.generation).toBe(before.generation);
   }, 120_000);
 
-  it("⚠️ sealing with MAINNET's master key is refused as #notSealedToThisCanister", async () => {
+  it("sealing with MAINNET's master key is refused as #notSealedToThisCanister", async () => {
     // This instance's vetKD is backed by PocketIC's master key. Both are called `key_1`,
     // so nothing about the NAME distinguishes them — which is exactly why the choice is
     // derived from the environment in `scripts/seal-secret.sh` rather than typed.
@@ -88,7 +88,7 @@ describe("sealed provisioning", () => {
     expect(after.generation).toBe(before.generation);
   }, 120_000);
 
-  it("⚠️ a ciphertext sealed for a DIFFERENT canister does not open here", async () => {
+  it("a ciphertext sealed for a DIFFERENT canister does not open here", async () => {
     // The canister id is a derivation input, so a seal made for the cycles ledger cannot
     // be opened by the backend. This is what makes a ciphertext safe to hand around: it
     // is useless to everyone except its one intended reader.

@@ -277,7 +277,7 @@ func quoteAt(divisor : Nat, gross : Nat) : { #ok : { cycles : Nat; rates : Prici
 };
 
 suite("divisor: production is bit-identical", func() {
-  test("⚠️ THE test that matters most: divisor 1 equals the independent formula", func() {
+  test("THE test that matters most: divisor 1 equals the independent formula", func() {
     // Not "equals a hardcoded number I read off the implementation" — equals
     // `netCents` composed with `cyclesForCents`, i.e. the derivation spelled out
     // separately. Enabling the divisor must not be ABLE to change production pricing,
@@ -314,7 +314,7 @@ suite("divisor: scaling", func() {
     };
   });
 
-  test("⚠️ the STRIPE fee is taken BEFORE the divisor — the buyer pays a real fee", func() {
+  test("the STRIPE fee is taken BEFORE the divisor — the buyer pays a real fee", func() {
     // If the fee were scaled too, a divisor-1000 quote of $10 would be
     // (1000/1000 = 1c gross, which nets nothing) — or, scaling the other way,
     // the buyer would appear to pay 0.059c of processing on a real $10 charge.
@@ -368,7 +368,7 @@ suite("divisor: the cycles-ledger fee is the ceiling", func() {
     == #unpriceable(#simulationScale({ scaledCycles = 72_384_615; ledgerFee = LEDGER_FEE }));
   });
 
-  test("⚠️ it is HEADROOM that refuses, not a bare comparison with the fee", func() {
+  test("it is HEADROOM that refuses, not a bare comparison with the fee", func() {
     // 500,031,883 cycles clears the 100 M fee five times over, so a bare `>=`
     // would admit it — and the next ICP move would walk it into the stall the
     // stored fee cannot correct itself out of. Ten times over is the bound.
@@ -384,7 +384,7 @@ suite("divisor: the cycles-ledger fee is the ceiling", func() {
     assert Pricing.clearsLedgerFee(1_447_692_307, LEDGER_FEE); // 5,000 — 14x
   });
 
-  test("⚠️ the guard applies at divisor 1 too, and that is an improvement", func() {
+  test("the guard applies at divisor 1 too, and that is an improvement", func() {
     // Unreachable under the $10 floor in production (7.238 T against a 1 G
     // bound), but if the ledger fee ever rose that far the order now REFUSES
     // rather than stalling in the one state with no recovery lever.
@@ -403,7 +403,7 @@ suite("divisor: config validation", func() {
     assert Pricing.validateConfig({ config with divisor = 1_000 }) == #ok;
   });
 
-  test("⚠️ validateConfig does NOT catch an undeliverable divisor — by design", func() {
+  test("validateConfig does NOT catch an undeliverable divisor — by design", func() {
     // It cannot: the answer needs rates and the live ledger fee. The pure check
     // passing is exactly why `divisorDeliverable` and `quote` both exist.
     assert Pricing.validateConfig({ config with divisor = 1_000_000 }) == #ok;
@@ -418,7 +418,7 @@ suite("divisor: config validation", func() {
     assert Pricing.divisorDeliverable(cacheAt(1_000), fee, TEN_DOLLARS, 1_000, LEDGER_FEE) == #ok;
   });
 
-  test("⚠️ absent rates ADMIT rather than refuse — cannot-tell must not block setup", func() {
+  test("absent rates ADMIT rather than refuse — cannot-tell must not block setup", func() {
     // On a cold canister the refresh timer may not have run. Refusing here would
     // make the divisor unsettable exactly while the gateway is being configured,
     // and `quote` is the authoritative guard anyway.
@@ -429,7 +429,7 @@ suite("divisor: config validation", func() {
     assert Pricing.divisorDeliverable(cacheAt(1_000), fee, TEN_DOLLARS, 0, LEDGER_FEE) == #err(#zeroDivisor);
   });
 
-  test("⚠️ THE property: no ACCEPTED divisor can reach the unrecoverable stall", func() {
+  test("THE property: no ACCEPTED divisor can reach the unrecoverable stall", func() {
     // This is the test that protects the one delivery state with no recovery
     // lever: a ledger fee above a whole order's locked quantity means nothing
     // ever reaches the ledger, so no `#BadFee` arrives to correct the stored fee,

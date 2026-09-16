@@ -24,7 +24,7 @@ import Card "../rails/Card";
 /// answer its install-time value forever, and for a monitoring surface that is worse than
 /// an error — it looks like a healthy system.
 ///
-/// ⚠️ **Each state parameter declares only the FIELDS these reads touch**, not the whole
+/// **Each state parameter declares only the FIELDS these reads touch**, not the whole
 /// record. Motoko's width subtyping accepts the fuller record, so the signature is the
 /// A6 "pass only the slice it uses" rule enforced by the compiler rather than asserted in
 /// a comment — adding a field elsewhere cannot silently widen what this mixin can reach.
@@ -279,7 +279,7 @@ mixin (
 
   /// The public trust figures — anonymous, safe on a landing page.
   ///
-  /// ⚠️ **The admission test is "what does a POLLER learn from the deltas?", not "does this
+  /// **The admission test is "what does a POLLER learn from the deltas?", not "does this
   /// field name a buyer?"** Cumulative counters are differentiable: anyone sampling this
   /// query recovers each delivery's cycles, USD and timing from the increments. That is
   /// accepted here because it is not new — `reserve_status` is already public and its
@@ -288,15 +288,15 @@ mixin (
   /// what will wave through the field that *does* add something. Do not add a
   /// most-recent-order field, a largest-purchase field, or anything per-principal.
   ///
-  /// ⚠️ **`refusingNow` is REUSED, not re-derived.** It is the same `gateState.latch`
+  /// **`refusingNow` is REUSED, not re-derived.** It is the same `gateState.latch`
   /// `refusal_counts` reports, so "is the rail accepting orders" has one definition and
   /// cannot come out differently on two surfaces.
   ///
-  /// ⚠️ **The counters read zero on a fresh install and that is correct, not a bug.**
+  /// **The counters read zero on a fresh install and that is correct, not a bug.**
   /// Orders are never deleted, but a reinstall replaces the state, so a launch-day figure
   /// starts at zero whichever way it is built.
   ///
-  /// ⚠️ **The renderer must show that zero — do NOT add a threshold.** Saying "0
+  /// **The renderer must show that zero — do NOT add a threshold.** Saying "0
   /// orders delivered is worse than no badge" and that was rejected: an absent number is
   /// indistinguishable from a withheld one, and a rule that hides the figure exactly when
   /// the news is bad is a misleading presentation rather than a neutral one. This comment
@@ -306,13 +306,13 @@ mixin (
   /// `nullPaid` should always be 0. It counts delivered orders whose `paidUsdCents` was
   /// unset, which `markPaid` makes unreachable — a non-zero value means the USD total is
   /// understated and the reason is a bug in this canister, not in the display.
-  /// ⚠️ **One call, because it is the landing page's whole backend.** `availableToSell`
+  /// **One call, because it is the landing page's whole backend.** `availableToSell`
   /// and `refusingNow` also appear on `reserve_status` and `refusal_counts` — that is
   /// duplication of the READER, not of the definition: both are read here from the same
   /// state those queries read, never recomputed. Folding them in keeps a first paint to a
   /// single round trip and a single mock in the test harness.
   ///
-  /// ⚠️ **`availableToSell` leads, and it is a different KIND of number from the
+  /// **`availableToSell` leads, and it is a different KIND of number from the
   /// others.** It is derived from a balance on the cycles ledger that anyone can query
   /// without this canister's cooperation, so a visitor can check it rather than believe
   /// it. The delivered totals are ours to report. Do not present them as equivalent.
@@ -337,7 +337,7 @@ mixin (
 
   /// "Is anything wrong right now" in ONE call.
   ///
-  /// ⚠️ **Public is a decision, not a default: alerting needs no credentials.** What
+  /// **Public is a decision, not a default: alerting needs no credentials.** What
   /// reaches a human at 03:00 is a cron on the public queries, and an admin-gated summary
   /// would put that back on a credentialed cron. Everything here is a COUNT, never an
   /// entry, and `reserve_status` already publishes `totalOrders`, `openOrders`,
@@ -356,13 +356,13 @@ mixin (
   ///   - both: a transfer issued long enough ago that the clock ran out, including one that
   ///     landed without its block recorded.
   ///
-  /// ⚠️ That last case is the CANONICAL outstanding shape (`intent` set, `blockIndex`
+  /// That last case is the CANONICAL outstanding shape (`intent` set, `blockIndex`
   /// null), not a delayed-only one — it is what `unsettledDeliveries` exists to detect and
   /// what freezes the reconcile's quiet window. Filing it under "delayed, not outstanding"
   /// would tell an operator that `outstanding = 0` means no transfer is in flight, when a
   /// transfer of unknown fate is exactly what it means.
   ///
-  /// ⚠️ So `outstanding = 0, delayed = 1` is a real state, not the summary contradicting
+  /// So `outstanding = 0, delayed = 1` is a real state, not the summary contradicting
   /// itself — and a UI that presented one as a subset of the other would be wrong exactly
   /// where it matters.
   ///
@@ -371,7 +371,7 @@ mixin (
   /// `orphansUnresolved` and `problemsUnresolved` are the three that mean a human is
   /// needed. A summary that flattened those would make waiting look like work.
   ///
-  /// ⚠️ **`deliveriesOutstanding` is exactly the reserve reconcile's quiet-window
+  /// **`deliveriesOutstanding` is exactly the reserve reconcile's quiet-window
   /// predicate**, deliberately: it is also the answer to "why does the reconcile keep
   /// skipping", and sharing the definition means the number an operator reads cannot
   /// disagree with the number the reconcile acted on.
@@ -379,7 +379,7 @@ mixin (
   /// **What bounds each number, stated because "bounded" alone would hide a difference:**
   /// `ordersNeedingReview`, `ordersWithProblems` and `availableToSell` are O(1) tallies.
   /// `deliveriesOutstanding` and `deliveriesDelayed` are bounded by `promiseHolders`, i.e.
-  /// by flow (§5.4). ⚠️ `problemsUnresolved` is bounded by the unresolved-problem index and
+  /// by flow (§5.4). `problemsUnresolved` is bounded by the unresolved-problem index and
   /// `orphansUnresolved` walks retained orphan history — both grow only while obligations
   /// go uncleared, and an orphan costs a real payment or the signing secret to create
   /// (`Orphans.add`), so neither is attacker-inflatable. Not O(1), and not the

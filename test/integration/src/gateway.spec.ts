@@ -976,13 +976,12 @@ test('19 — a buyer can verify their own purchase from the receipt', async () =
 
   // Authz: the owner, and an admin. Never anyone else.
   //
-  // ⚠️ **This assertion used to read "not even an admin", and that boundary protected
-  // NOTHING — which is why it changed rather than the change being a relaxation.**
-  // `Receipt` is entirely derived: `order` (admin-readable via `admin_order`),
-  // `paidUsdCents` (on the order), `deliveryBlockIndex` and `cyclesDelivered` (on the
-  // `JournalEntry`, already `requireAdmin`), and `verification` (computed from
-  // `order.pricing`). An operator could already reconstruct every field from two calls;
-  // the old rule only forced them to assemble it by hand while a buyer waited.
+  // **An admin-excluding boundary here would protect NOTHING.** `Receipt` is entirely
+  // derived: `order` (admin-readable via `admin_order`), `paidUsdCents` (on the order),
+  // `deliveryBlockIndex` and `cyclesDelivered` (on the `JournalEntry`, already
+  // `requireAdmin`), and `verification` (computed from `order.pricing`). An operator can
+  // reconstruct every field from two calls, so excluding them only forces the assembly
+  // by hand while a buyer waits.
   //
   // ⚠️ **Do not re-tighten this thinking it is a privacy boundary.** If `Receipt` ever
   // gains a field that is NOT derivable from the order plus the journal, that is the
@@ -3974,15 +3973,15 @@ test('90 — operator_summary is public, and cannot disagree with the surfaces i
       clientReferenceId: clientReferenceFor(target.id), amountCents: TIER_USD_CENTS,
     }))).toMatchObject({ status_code: 200 });
     // Past `alertAfterNs` (2 h) and far under `maxHoldNs` (72 h), so it is delayed rather
-    // than escalated. ⚠️ A failed retry patches the JOURNAL, not the order, so
+    // than escalated. A failed retry patches the JOURNAL, not the order, so
     // `updatedAtNs` — the held-since clock `waitStage` reads — stays at the payment.
     // ⚠️ **One direction of "neither number contains the other", pinned here.** The
     // webhook drives delivery itself, so the intent is journalled and the transfer issued
     // before this line — `deliveriesOutstanding` counts the order already, while
     // `deliveriesDelayed` cannot, because it has waited seconds rather than hours.
     //
-    // ⚠️ I first wrote this assertion the other way round, claiming a paid order has no
-    // journal entry until a sweep runs. It has one: `Delivery.openEntry` is called inside
+    // The easy mistake is to assert the inverse — that a paid order has no journal entry
+    // until a sweep runs. It has one: `Delivery.openEntry` is called inside
     // `driveDelivery`, which the webhook invokes. The no-intent case is real but arrives
     // differently — a delivery that BAILS before issuing (short reserve, stale rate, gas
     // floor) leaves a `#paid` order with no intent, so `deliveriesDelayed` sees it and

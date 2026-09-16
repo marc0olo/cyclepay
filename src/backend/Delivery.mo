@@ -4,7 +4,7 @@
 /// the crash-safe journal, the intent that makes a replay byte-identical, the resume
 /// decision, and the timeline that bounds how long a buyer waits.
 ///
-/// ⚠️ **`CyclesLedgerService` is the reserve floor's enforcement mechanism.**
+/// **`CyclesLedgerService` is the reserve floor's enforcement mechanism.**
 /// `Reserve.mo`'s floor is a lower bound only because the balance cannot fall except
 /// when this canister transfers out, and what makes that true is the declaration
 /// below: `icrc2_approve` and the ledger's `withdraw` are absent, so they cannot be

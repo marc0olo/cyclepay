@@ -71,7 +71,7 @@ suite("filing and dedup", func() {
     assert again.problems[0].detail == "ledger said B";
   });
 
-  test("⚠️ #deliveryStuck's STAGE refreshes — it is the money position", func() {
+  test("#deliveryStuck's STAGE refreshes — it is the money position", func() {
     // The stage is what an operator acts on, and it can move between attempts
     // (staleIntent -> transferRejected). A stale stage sends them to the wrong row of
     // the triage table, which is worse than no problem at all.
@@ -85,7 +85,7 @@ suite("filing and dedup", func() {
     };
   });
 
-  test("⚠️ a cumulative refund files no second problem AND shows the current total", func() {
+  test("a cumulative refund files no second problem AND shows the current total", func() {
     // `refundedCents` is cumulative, so a second partial arrives with a larger number.
     // Comparing it would file one problem per partial refund; IGNORING it would leave
     // the operator reading the stale, smaller figure — and reconciling against Stripe
@@ -142,7 +142,7 @@ suite("resolving", func() {
 });
 
 suite("the kind's tag", func() {
-  test("⚠️ tagOf and kindToText cannot drift, because they agree on every kind", func() {
+  test("tagOf and kindToText cannot drift, because they agree on every kind", func() {
     // Two switches over the same variant, and only one of them is reachable from the
     // public interface now. Pinning them against each other is what makes adding a
     // fifth `ProblemKind` a compile error in both rather than a silent false in one.
@@ -159,7 +159,7 @@ suite("the kind's tag", func() {
     };
   });
 
-  test("⚠️ every tag IS produced by some kind, so none is unmatchable", func() {
+  test("every tag IS produced by some kind, so none is unmatchable", func() {
     // The other direction, and it has to be stated as COVERAGE. An earlier version of
     // this test asserted `tagToText(t).size() > 0` for each tag, which passes for any
     // total function and says nothing about `tagOf`'s image — a tag no kind maps to

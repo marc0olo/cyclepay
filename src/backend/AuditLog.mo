@@ -24,7 +24,7 @@
 /// own outbound request is the only detector for a silently non-functioning recovery
 /// sweep, and it is bounded by our cadence, not by a caller.
 ///
-/// ⚠️ **Our cadence bounds a RATE, and a rate against an unfixed persistent condition is
+/// **Our cadence bounds a RATE, and a rate against an unfixed persistent condition is
 /// unbounded over time.** A per-pass line about a condition nobody has fixed is not
 /// admissible just because a timer paces it; latch the condition and write once.
 ///
@@ -36,7 +36,7 @@
 /// **Adding a tag?** Name the bound. If the honest answer is "a caller decides", it is a
 /// counter with a monitoring row, not a line.
 ///
-/// ⚠️ **Nothing is dropped and the `capacity` parameter is gone rather than large**
+/// **Nothing is dropped and the `capacity` parameter is gone rather than large**
 /// `seq` is monotonic and never reused; with no drops there are no gaps, so a
 /// reader holding the last seq it saw can tell new events from an empty interval.
 import Queue "mo:core/Queue";
@@ -111,7 +111,7 @@ module {
 
   /// One page of events, **newest → oldest**, strictly older than `beforeSeq`.
   ///
-  /// ⚠️ **Why this exists rather than reversing `page`'s result.** Reversing a page gives
+  /// **Why this exists rather than reversing `page`'s result.** Reversing a page gives
   /// the OLDEST events in descending order, which is the opposite of what an operator
   /// opening the console wants; and reversing the whole log to find the tail defeats the
   /// paging. The store is a `Queue`, so `reverseValues` walks from the newest end and this
