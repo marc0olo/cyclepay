@@ -8,9 +8,9 @@ import Orphans "../src/backend/Orphans";
 // by payment_intent.
 
 
-/// ⚠️ Was `#duplicate` until #37 moved that onto the order. `#unattributed` carries
-/// the property this fixture is for: refund-resolvable, and it names the payment a
-/// `charge.refunded` closes it by.
+/// ⚠️ **`#unattributed` is the refund-resolvable kind**, and it names the payment a
+/// `charge.refunded` closes it by — the property this fixture is for. A duplicate
+/// payment is a problem ON THE ORDER, not an entry here.
 func addDuplicate(store : Orphans.Store, orderId : Text, paymentRef : Text, nowNs : Int) : Orphans.AddResult {
   Orphans.add(store, #card, #unattributed({ claimedRef = orderId; paymentRef }), "2nd payment", nowNs);
 };
@@ -22,9 +22,9 @@ func addUnattributed(store : Orphans.Store, claimedRef : Text, paymentRef : Text
 /// An obligation a refund cannot settle — the counterpart to the two above, and what
 /// the eviction and resolution tests need in order to be about anything.
 ///
-/// ⚠️ Was `#deliveryStuck` until #37 moved that onto the order. `#refundAfterDelivery`
-/// carries the same property that matters here: a `charge.refunded` must never close
-/// it, because the refund is what created it.
+/// ⚠️ **`#refundAfterDelivery` must never be closed by a `charge.refunded`**, because
+/// the refund is what created it — the property that matters here. A stuck delivery is
+/// a problem ON THE ORDER, not an entry here.
 func addStuck(store : Orphans.Store, orderId : Text, nowNs : Int) : Orphans.AddResult {
   Orphans.add(store, #card, #unprocessable({ eventId = "evt_" # orderId; field = "payment_intent" }), "a verified event we cannot parse", nowNs);
 };
@@ -64,15 +64,11 @@ suite("kinds: what a refund can settle, and what it cannot", func() {
     // kind is named here — which lands the maintainer on the exact line where the list
     // and its count live.
     //
-    // Found the hard way: #52 added `#paidNotCredited`, both `refundResolvable` and
-    // `paymentRefOf` were forced to handle it by their own exhaustive switches, and
-    // **this test kept passing at "all seven"**. A test whose name promises
-    // exhaustiveness its body cannot deliver is the defect this repo keeps deleting.
-    //
-    // ⚠️ **It works in the removal direction too**, which is the half a hand-written
-    // count usually misses: #37 dropped `#deliveryDelayed`, and `named`'s exhaustive
-    // switch plus this count caught the array still listing it — the compiler on the
-    // switch, this assertion on the tally.
+    // ⚠️ **A hand-written count does not do this.** Adding a kind forces
+    // `refundResolvable` and `paymentRefOf` to handle it via their own exhaustive
+    // switches while a "all seven" assertion keeps passing; removing one leaves the
+    // array below still listing it. The switch catches the first direction and this
+    // tally the second.
     func named(k : Orphans.Kind) : Text {
       switch k {
         case (#unattributed(_)) "unattributed";
@@ -134,12 +130,11 @@ suite("add", func() {
   });
 });
 
-// ── The "bounded eviction" suite was DELETED by #37, with its heirs named ─────
+// ── No eviction suite, and none is writable ───────────────────────────────────
 //
-// Three tests asserted about a bound that no longer exists: "an unresolved obligation
-// is NEVER evicted", "growth is bounded by resolution, not by capacity", and "resolved
-// entries are evicted before older unresolved ones". The `capacity` parameter is gone
-// from `add`, so none of those claims is expressible.
+// `add` takes no `capacity` and nothing is ever evicted, so "an unresolved obligation is
+// never evicted", "growth is bounded by resolution" and "resolved entries go first" are
+// all unrepresentable here rather than merely untested.
 //
 // ⚠️ **Their heirs, because a deleted test needs one named:**
 //   - The first test's property — an unresolved obligation is never dropped — became
@@ -153,7 +148,7 @@ suite("add", func() {
 //     delivery or an obligation — is now carried by `test/webhook.test.mo`'s orphan
 //     fallback test, which is the only place a problem can still fail to find a home.
 
-suite("nothing is evicted (#37)", func() {
+suite("nothing is evicted", func() {
   test("the list grows with real events and never drops one", func() {
     let store = Orphans.emptyStore();
     for (i in Nat.range(0, 12)) {
@@ -176,9 +171,8 @@ suite("nothing is evicted (#37)", func() {
         case (#err(_)) assert false;
       };
     };
-    // ⚠️ **Before #37 a subsequent add would have trimmed these two as history.** Now
-    // resolving is purely a state change: the entries stay, and only the outstanding
-    // count falls.
+    // ⚠️ **Resolving is purely a state change**: the entries stay, and only the
+    // outstanding count falls. A subsequent add trims nothing.
     ignore addDuplicate(store, "oX", "pi_X", 999);
     assert Orphans.size(store) == 6;
     assert Orphans.unresolvedCount(store) == 4;
@@ -331,10 +325,9 @@ suite("paging", func() {
     assert page.nextCursor == null;
   });
 
-  // ⚠️ Two more capacity tests deleted by #37 — the same heirs as the suite above.
-  // "resolved entries are evicted oldest-first" and "an unresolved entry is never
-  // evicted, however far over capacity" both describe a bound that no longer exists.
-  // The second one's property is now unrepresentable: nothing is evicted at all.
+  // ⚠️ No capacity cases here either, for the reason above: nothing is evicted, so
+  // "resolved entries go oldest-first" and "an unresolved entry survives any overflow"
+  // describe a bound this store does not have.
 
   test("an unprocessable event is recognised as already queued", func() {
     let store = Orphans.emptyStore();

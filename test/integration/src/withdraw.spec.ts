@@ -1,4 +1,4 @@
-/// PocketIC suite for `withdraw_reserve` (#103) — the second destination class for the
+/// PocketIC suite for `withdraw_reserve` — the second destination class for the
 /// one outflow, and the guard that makes it safe.
 ///
 /// ⚠️ **Its own PocketIC instance**, because the guard is "no promise-holder at all" and
@@ -244,7 +244,7 @@ test('103e — the two interleaving windows, and ⚠️ what this suite CANNOT p
   // so the value arrives with the result and there is nothing to forget. Rule 2 — the
   // decrement before the transfer — still rests on review.
   //
-  // ⚠️ **CORRECTION (#127): rule 2 IS verified now — by 103g above — and this comment's
+  // ⚠️ **CORRECTION: rule 2 IS verified now — by 103g above — and this comment's
   // explanation was wrong.** Its measurement was right: with the decrement moved after
   // the transfer, every test that existed *then* still passed. But the reason given —
   // "a `pic.tick()` drains the whole message including its inter-canister awaits, and
@@ -254,7 +254,7 @@ test('103e — the two interleaving windows, and ⚠️ what this suite CANNOT p
   // ingress lands in between; `deferredAdmin` was already in the harness. 103g runs that
   // mutation and is the only scenario of 115 that fails on it.
   //
-  // ⚠️ **Rule 1 remains unverified, and here is what was tried** (#127) — recorded as a
+  // ⚠️ **Rule 1 remains unverified, and here is what was tried** — recorded as a
   // measurement, not as a claim that no test can exist:
   //
   //   - `deferredAdmin.withdraw_reserve()` and `deferredUser.create_order()` submitted

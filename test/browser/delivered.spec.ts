@@ -139,7 +139,7 @@ test.describe("the delivered view", () => {
   test("an undelivered order is offered no commands yet", async ({ page }) => {
     // The two cases that used to suppress the tour — a canister top-up, with
     // nothing to link, and somebody else's account, which the buyer's identity
-    // cannot reach — are destinations `create_order` refuses (#29), so their
+    // cannot reach — are destinations `create_order` refuses, so their
     // specs went with them. Status is the only thing left that withholds it.
     await page.goto("/");
     await signInAsFixtureBuyer(page);
@@ -201,7 +201,7 @@ test.describe("one view owns the screen, under a live poll", () => {
   test("#/buy is a bookmarkable route, not a redirect", async ({ page }) => {
     // It used to send the visitor back to the chooser: with no arm picked the
     // form had no destination question on it at all. With one destination the
-    // form is complete on arrival (#29), so a deep link has to resolve to it.
+    // form is complete on arrival, so a deep link has to resolve to it.
     await page.goto("/#/buy");
     await expect(page.locator("#buy-flow")).toBeVisible();
     await expect(page.locator("#view-landing")).toBeHidden();

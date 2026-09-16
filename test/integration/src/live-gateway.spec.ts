@@ -37,26 +37,26 @@ test('55 — the webhook route serves real HTTP end to end, and delivers', async
   await setCmcRate(gw);
   await ensureRates(gw);
   expectOk(await gw.asAdmin.set_webhook_secret(seal(gw.backendId, WEBHOOK_SECRET)));
-  // #33: both secrets, or `create_order` cannot produce a payable session.
+  // Both secrets, or `create_order` cannot produce a payable session.
   expectOk(await gw.asAdmin.set_stripe_api_key(seal(gw.backendId, 'rk_test_live_gateway_spec')));
-  // #99: these suites fund a reserve and accept test payments, so without an
-  // allow-list every create_order refuses as the faucet state.
+  // These suites fund a reserve and accept test payments, so without an allow-list
+  // every create_order refuses as the faucet state.
   await allowTestBuyers(gw);
   expectOk(await gw.asAdmin.set_stripe_origin('https://live.example'));
-  // Same reason as the main suite: the §3 vector is a $5 tier, and #33's shipped
-  // floor is $10. Lowering it here keeps the vector exact; the shipped default is
-  // asserted in gateway.spec scenario 01.
+  // Same reason as the main suite: the §3 vector is a $5 tier and the shipped floor is
+  // $10. Lowering it here keeps the vector exact; the shipped default is asserted in
+  // gateway.spec scenario 01.
   const { gate } = await gw.asAnon.lifecycle_config();
   expectOk(await gw.asAdmin.set_gate_config({ ...gate, minPurchaseUsdCents: 100n }));
   expectOk(await gw.asAdmin.set_card_tiers([
     { id: 'tier5', usdCents: TIER_USD_CENTS },
   ]));
-  // #30 PR-A: delivery transfers OUT of the gateway's own cycles-ledger account,
-  // so that account must hold cycles or the order is paid and never delivered.
+  // Delivery transfers OUT of the gateway's own cycles-ledger account, so that account
+  // must hold cycles or the order is paid and never delivered.
   // ⚠️ This spec runs its own PocketIC instance, so the main suite's reserve
   // funding does not reach it — which is exactly how this scenario failed once.
   await fundReserve(gw, 100_000_000_000_000n);
-  // One destination, and the gateway refuses any other (#29).
+  // One destination, and the gateway refuses any other.
   // Created BEFORE `makeLive()`, deliberately: the session outcall is answered
   // deterministically here. Once the instance is live it auto-progresses, so a
   // parked outcall could be picked up by the real network instead of the test.

@@ -1,6 +1,6 @@
 /// Candid IDL factories for the suite.
 ///
-/// `backendIdlFactory` is GENERATED from `src/backend/dist/backend.did` (#66) and
+/// `backendIdlFactory` is GENERATED from `src/backend/dist/backend.did` and
 /// re-exported here so callers keep one import site.
 ///
 /// ⚠️ The ledger/CMC/cycles-ledger factories below stay hand-written, correctly: we do
@@ -11,12 +11,11 @@
 import { IDL } from '@icp-sdk/core/candid';
 import type { IDL as IDLNamespace } from '@icp-sdk/core/candid';
 
-/// ⚠️ **GENERATED, not transcribed (#66).** `backendIdlFactory` was 555 hand-written
-/// `IDL.Func` lines mirroring `src/backend/dist/backend.did`, with nothing checking the
-/// two against each other — so the suite could decode against an interface the canister
-/// no longer had, and did: `GateReason` still carried `burnCapExhausted` and `floatLow`
-/// after #36 deleted the treasury path, and was missing `reserveShort` entirely, making a
-/// reserve-short refusal untestable.
+/// ⚠️ **GENERATED, not transcribed.** A hand-written `backendIdlFactory` mirroring
+/// `src/backend/dist/backend.did` is 555 `IDL.Func` lines with nothing checking the two
+/// against each other, so the suite decodes against an interface the canister may no
+/// longer have: variants the backend deleted linger and ones it added are missing, which
+/// makes those refusals untestable.
 ///
 /// ⚠️ **The asymmetry is why this could not be caught by a test.** A mirror that DECLARES
 /// a field the canister lacks fails the Candid decode and is found. A mirror that OMITS a

@@ -35,13 +35,11 @@ worse than no check:**
     so scanning them would compare two different numbering schemes and produce noise.
     Code comments have no sections of their own, so there `§N` is unambiguous.
 
-⚠️ **That last premise was FALSE for three comments, and it silently propped up a row.**
-`Main.mo` and `Gate.mo` wrote `RUNBOOK §1`, which this check read as a citation of
-`DESIGN §1` — so the "glossed but not cited" arm passed over a section nothing in the
-code actually referenced. Removing those three (#169, when RUNBOOK's setup sections
-moved to `docs/OPERATE.md`) is what exposed it. The premise is now **enforced** rather
-than assumed: a `§N` preceded by a document name is refused, so the glyph in code means
-a design section or it fails here.
+⚠️ **That last premise is ENFORCED rather than assumed.** A `§N` preceded by a document
+name — `RUNBOOK §1` in a comment — would otherwise read as a citation of `DESIGN §1`, and
+the "glossed but not cited" arm would pass over a section nothing in the code references.
+So a document-scoped `§N` is refused: the glyph in code means a design section or it fails
+here.
 """
 
 import glob
@@ -52,13 +50,10 @@ import sys
 SPEC = "docs/DESIGN.md"
 CODE_GLOBS = ("src/backend/*.mo", "src/backend/mixins/*.mo", "test/*.mo")
 SECTION = re.compile(r"§([0-9][0-9a-z]*(?:\.[0-9a-z]+)*)")
-# ⚠️ An issue's OWN sections are written `#37 §2c` and are not design-record sections.
-# The `#NN ` prefix is the disambiguator, and it is required: a bare `§2c` is
-# indistinguishable from a design section and this check will demand one.
-ISSUE_SCOPED = re.compile(r"#[0-9]+\s+§[0-9]")
-# ⚠️ A `§N` in code must mean a DESIGN section. `RUNBOOK §1` in a comment was read as a
-# citation of DESIGN §1 and kept a dead row alive; refer to another document's sections
-# by NAME in code, never by glyph.
+# ⚠️ **A `§N` in code means a DESIGN section, full stop, and there is no escape hatch.**
+# Refer to another document's sections by NAME, never by glyph: `RUNBOOK §1` in a comment
+# reads as a citation of DESIGN §1 and keeps a dead row alive, which is what
+# `FOREIGN_SCOPED` below refuses.
 FOREIGN_SCOPED = re.compile(r"(RUNBOOK|STRIPE|OPERATE|TEST-COVERAGE|SANDBOX-TESTPLAN|VERIFY|RELEASE|ARCHITECTURE)[^§]{0,12}§[0-9]")
 
 
@@ -71,9 +66,6 @@ def cited():
         for f in glob.glob(pat):
             for i, line in enumerate(open(f, errors="replace"), 1):
                 for m in SECTION.finditer(line):
-                    before = line[max(0, m.start() - 8):m.end()]
-                    if ISSUE_SCOPED.search(before):
-                        continue
                     # A citation of ANOTHER document's section, which this check would
                     # otherwise bank as a DESIGN citation. Reported, never counted.
                     if FOREIGN_SCOPED.search(line[max(0, m.start() - 40):m.end()]):

@@ -116,7 +116,7 @@ mixin (
     stripeState.expectLivemode;
   };
 
-  /// How much is outstanding, as two numbers rather than a collection (#38).
+  /// How much is outstanding, as two numbers rather than a collection.
   ///
   /// ⚠️ **The shape to poll, and the reason it exists separately from the list.** A
   /// paginated detail query needs a cheap total beside it or a monitor pages through
@@ -135,7 +135,7 @@ mixin (
     };
   };
 
-  /// Refusal tallies, and whether the gate is refusing right now (#61).
+  /// Refusal tallies, and whether the gate is refusing right now.
   ///
   /// ⚠️ **Public, like every other monitoring surface here** — operational state
   /// is public by design; the webhook secret is the only secret in the system.
@@ -179,7 +179,7 @@ mixin (
     Orphans.unresolvedPage(orphanStore, afterId, limit);
   };
 
-  /// Reserve solvency and order counters, public (#30 PR-B).
+  /// Reserve solvency and order counters, public.
   ///
   /// `reserveFloor` − `promisedTotal` = `availableToSell`, in one answer, so "the ledger
   /// says 100 T and the gateway will sell 0" is diagnosable at a glance (§3.2).
@@ -200,7 +200,7 @@ mixin (
     /// How many orders still hold a promise — `promiseHolders.size()`, O(1).
     ///
     /// ⚠️ **This is what `withdraw_reserve` guards on, so it must be readable before
-    /// calling it** (#103): the refusal names a count an operator then has to go and
+    /// calling it**: the refusal names a count an operator then has to go and
     /// find, and a decommissioning lever that cannot tell you what is blocking it is a
     /// dead end.
     ///
@@ -232,7 +232,7 @@ mixin (
       /// sale and this figure can never tell different stories.
       availableToSell = Reserve.available(reserveState.floor, Orders.promised(orderStore));
       /// The fee the NEXT delivery will use, and the only way to see that `#BadFee`
-      /// self-correction actually happened (#30 PR-B). ⚠️ Nothing but the ledger
+      /// self-correction actually happened. ⚠️ Nothing but the ledger
       /// writes it — there is deliberately no admin lever — so a value at or above an
       /// order's locked quantity stalls delivery loudly and the answer is a redeploy;
       /// at that fee the rail cannot sell anyway.
@@ -277,7 +277,7 @@ mixin (
     { balance = Cycles.balance(); floor = gateState.config.minCanisterCycles };
   };
 
-  /// The public trust figures (#39) — anonymous, safe on a landing page.
+  /// The public trust figures — anonymous, safe on a landing page.
   ///
   /// ⚠️ **The admission test is "what does a POLLER learn from the deltas?", not "does this
   /// field name a buyer?"** Cumulative counters are differentiable: anyone sampling this
@@ -296,7 +296,7 @@ mixin (
   /// Orders are never deleted, but a reinstall replaces the state, so a launch-day figure
   /// starts at zero whichever way it is built.
   ///
-  /// ⚠️ **The renderer must show that zero — do NOT add a threshold.** #39 first said "0
+  /// ⚠️ **The renderer must show that zero — do NOT add a threshold.** Saying "0
   /// orders delivered is worse than no badge" and that was rejected: an absent number is
   /// indistinguishable from a withheld one, and a rule that hides the figure exactly when
   /// the news is bad is a misleading presentation rather than a neutral one. This comment
@@ -335,9 +335,9 @@ mixin (
     };
   };
 
-  /// "Is anything wrong right now" in ONE call (#68).
+  /// "Is anything wrong right now" in ONE call.
   ///
-  /// ⚠️ **Public is a decision, not a default: #3's alerting needs no credentials.** What
+  /// ⚠️ **Public is a decision, not a default: alerting needs no credentials.** What
   /// reaches a human at 03:00 is a cron on the public queries, and an admin-gated summary
   /// would put that back on a credentialed cron. Everything here is a COUNT, never an
   /// entry, and `reserve_status` already publishes `totalOrders`, `openOrders`,
@@ -383,7 +383,7 @@ mixin (
   /// `orphansUnresolved` walks retained orphan history — both grow only while obligations
   /// go uncleared, and an orphan costs a real payment or the signing secret to create
   /// (`Orphans.add`), so neither is attacker-inflatable. Not O(1), and not the
-  /// grows-with-successful-business shape #69 and #70 removed.
+  /// grows-with-successful-business shape this avoids.
   public query func operator_summary() : async {
     deliveriesOutstanding : Nat;
     deliveriesDelayed : Nat;
@@ -421,7 +421,7 @@ mixin (
     /// incremental counts had diverged and were **raised** to the recount — the tallies
     /// are correct again, but the bug that moved them is not fixed. A non-empty
     /// `refused` means the recount came out **lower** and the pass would not adopt it,
-    /// so those tallies are still suspect (#63). `recount_orders` is the on-demand form
+    /// so those tallies are still suspect. `recount_orders` is the on-demand form
     /// of the same pass, with the same rule.
     lastCountReconcile : ?{
       atNs : Int;
@@ -434,14 +434,14 @@ mixin (
     /// correlating against the sweep clock: an attempt materially newer than the
     /// success means the reconcile is trapping (RUNBOOK's monitoring section).
     lastCountReconcileAttemptNs : Int;
-    /// When the RESERVE reconcile was last attempted (#30 PR-B). Its success clock
+    /// When the RESERVE reconcile was last attempted. Its success clock
     /// is `reserve_status.reserveObservedAtNs`, and the two diverging is the one
     /// signal that says "the floor is stale on purpose": either the ledger read is
     /// failing, or every attempt has landed on a non-quiet window. Both under-sell
     /// rather than over-sell, so this is a P3 that explains refusals — not an
     /// incident.
     lastReserveReconcileAttemptNs : Int;
-    /// The rotating index scan's **coverage** (#63) — the reader without which a clean
+    /// The rotating index scan's **coverage** — the reader without which a clean
     /// scan says nothing.
     ///
     /// ⚠️ **Read `lastCompletedCycle` before reading the absence of an audit line as

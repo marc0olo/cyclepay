@@ -60,13 +60,12 @@ export function statusInfo(key: StatusKey): StatusInfo {
       return { label: "Awaiting payment", pill: "Awaiting payment", headline: () => "Awaiting your payment", terminal: false, tone: "active" };
     case "cancelled":
       // The buyer's own decision, and its own status — so a reload no longer
-      // tells someone who cancelled that their order "expired" (#34).
+      // tells someone who cancelled that their order "expired".
       return { label: "Cancelled", pill: "Cancelled", headline: () => "You cancelled this order", terminal: true, tone: "warn" };
     case "expired":
-      // TERMINAL as of #34, which deleted `#expired → #paid`. It used to say a
-      // completed payment still went through; that is no longer true, and a
-      // payment arriving now becomes an operator obligation to refund rather
-      // than cycles.
+      // TERMINAL: there is no `expired → paid` edge, so a payment arriving now
+      // becomes an operator obligation to refund rather than cycles. The copy must
+      // never suggest a completed payment could still go through.
       return { label: "Expired. This order can no longer be paid", pill: "Expired", headline: () => "This order expired", guidance: "This order can no longer be paid.", terminal: true, tone: "warn" };
     case "paid":
       return { label: "Payment received", pill: "Paid", headline: () => "Payment received, delivering now", terminal: false, tone: "active" };
@@ -83,10 +82,9 @@ export function statusInfo(key: StatusKey): StatusInfo {
 
 /// The payment reference for an order: `<principal>_<orderId>`.
 ///
-/// Computed here rather than returned by `create_order`, which used to hand it
-/// back so the frontend could append it to a Payment Link URL (#33 removed that).
-/// It still appears on the order page, because it is the reference on the buyer's
-/// card receipt and therefore the thing they quote to support.
+/// Computed here rather than returned by `create_order`. It appears on the order page,
+/// because it is the reference on the buyer's card receipt and therefore the thing they
+/// quote to support.
 ///
 /// It must match `Orders.clientReferenceId` exactly — the whole webhook
 /// attribution path parses this shape.
@@ -267,8 +265,8 @@ export function depositFeeLine(cycles: bigint, transferFee: bigint): string | nu
 
 /// How long until a deadline, for a live countdown.
 ///
-/// ⚠️ **A countdown, not a timestamp.** #33 requires this because the window is
-/// thirty-five minutes: "reserved until 14:32" misleads a buyer who looked away,
+/// ⚠️ **A countdown, not a timestamp**, because the window is thirty-five minutes:
+/// "reserved until 14:32" misleads a buyer who looked away,
 /// and a buyer who starts paying near the deadline loses the attempt — they are
 /// not charged, but the session closes under them. So the copy leans on the
 /// remaining time rather than the wall clock.
@@ -389,7 +387,7 @@ export interface ReceiptCheck {
 export function checkReceipt(
   v: ReceiptVerification,
   lockedCycles: bigint,
-  /// The simulation divisor from `pricing_status().config` (#99). `1n` in
+  /// The simulation divisor from `pricing_status().config`. `1n` in
   /// production, where every term below is unchanged.
   ///
   /// ⚠️ **Read from config rather than from the order.** The divisor is expected
@@ -456,13 +454,12 @@ export function parseUsdAmount(input: string): UsdAmountParse {
 /// something or come back later. A generic failure would leave them retrying a
 /// button that cannot succeed.
 ///
-/// ⚠️ **Aliased from the GENERATED bindings, never re-declared.** It WAS a
-/// hand-written mirror, and it had silently drifted two variants in each direction:
-/// it still carried `burnCapExhausted` and `floatLow`, which #30 PR-B deleted, and it
-/// was missing `amountBelowMin` (#33 PR-B) and `reserveShort` (#30 PR-B) — so the two
-/// refusals a buyer is most likely to see rendered as `undefined`. Nothing caught it,
-/// because the switch was exhaustive over the *stale* union and `main.ts` reached it
-/// through an `as` cast. Aliasing makes the next backend change a compile error here.
+/// ⚠️ **Aliased from the GENERATED bindings, never re-declared.** A hand-written mirror
+/// drifts in both directions at once — carrying variants the backend deleted while
+/// missing ones it added, so the refusals a buyer is most likely to see render as
+/// `undefined`. Nothing catches that: the switch stays exhaustive over the *stale* union
+/// and `main.ts` reaches it through an `as` cast. Aliasing makes the next backend change
+/// a compile error here.
 /// A type-only import, so this module stays runtime-dependency-free.
 export type GateReason = Reason;
 
@@ -518,8 +515,7 @@ const PRE_ANNOUNCED_INVITE_ONLY =
   + "Sign in, copy your principal from the top of the page, and send it to the "
   + "operator to be added.";
 
-/// The same two refusals, worded for a buyer who has **not attempted anything yet**
-/// (#99 2b).
+/// The same two refusals, worded for a buyer who has **not attempted anything yet**.
 ///
 /// ⚠️ **Why a second table rather than reusing `gateReasonMessage`: "Nothing was
 /// charged" is true after an attempt and misleading before one.** In a pre-emptive
@@ -589,8 +585,8 @@ export function createOrderErrorMessage(key: string): string {
       // it about who the caller is.
       return "Cycles can only be delivered to your own account. Nothing was charged. Reload the page and try again.";
     case "simulationScaleTooSmall":
-      // ⚠️ Names the SIMULATION as the cause, not payment processing (#99 review
-      // finding 2). `tierBelowFees` above says fees would exceed the amount, which
+      // ⚠️ Names the SIMULATION as the cause, not payment processing.
+      // `tierBelowFees` above says fees would exceed the amount, which
       // is true for its own cause and false for this one: here the amount is fine
       // and the operator's divisor scaled the cycles below what the cycles ledger
       // charges to accept a deposit. A larger amount can still help, so it says so.
@@ -600,8 +596,8 @@ export function createOrderErrorMessage(key: string): string {
         "Try a larger amount."
       );
     case "reserveUnavailable":
-      // #30 PR-B fails closed: selling against an unknown balance is what the
-      // check exists to prevent.
+      // Fails closed: selling against an unknown balance is what the check exists to
+      // prevent.
       return "The gateway could not confirm its cycle reserve. Nothing was charged. Try again in a minute.";
     case "sessionUnavailable":
       return "Card payments are unavailable right now. Nothing was charged. Please try again later.";
@@ -619,7 +615,7 @@ export function createOrderErrorMessage(key: string): string {
 
 /// What a buyer is told when their cancel refuses.
 ///
-/// ⚠️ **The copy left the canister in #123; the FACTS did not.** §7.2 is the rule: a
+/// ⚠️ **The copy lives here; the FACTS stay on the canister.** §7.2 is the rule: a
 /// refusal's payload must carry every fact its sentence asserts, which is why
 /// `notCancellable` and `settledInFlight` carry a status. Anything a buyer needs to
 /// verify independently — the status, the figures — is on `get_order` and `receipt`,
@@ -635,7 +631,7 @@ export function cancelOrderErrorMessage(error: CancelOrderError): string {
     case "notCancellable":
       return `This order is ${statusInfo(`${error.notCancellable.status}`).label.toLowerCase()} and cannot be cancelled. It will deliver, or contact support.`;
     case "sessionNotClosed":
-      // ⚠️ Three causes and no way to tell them apart (#118): the payment completed, the
+      // ⚠️ Three causes and no way to tell them apart: the payment completed, the
       // session had already expired, or Stripe refused the request. This sentence has to
       // be true of all three, so it says what happens next in each rather than claiming
       // which one it was.

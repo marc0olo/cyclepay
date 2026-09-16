@@ -182,12 +182,12 @@ module {
     #chargeRefunded : ChargeRefunded;
     /// An async payment method failed for good — the session will never pay.
     #asyncPaymentFailed : { eventId : Text; paymentIntent : Text };
-    /// Stripe closed the session unpaid (#33). **The only mechanism that expires
+    /// Stripe closed the session unpaid. **The only mechanism that expires
     /// an order** — there is no TTL sweep, deliberately: a sweep would flip a
     /// stuck order to `#expired` while its promise stayed held, so a broken order
     /// would look like a correctly expired one and the reserve would leak
     /// silently. Without it, a missed event leaves the order visibly `#created`
-    /// past its `expiresAtNs`, which IS the detection signal (#30).
+    /// past its `expiresAtNs`, which IS the detection signal.
     #sessionExpired : {
       eventId : Text;
       /// The session's own id, so the event can be bound to the order that
@@ -197,7 +197,7 @@ module {
       /// recorded — the residue case whose create-response was lost.
       clientReferenceId : ?Text;
     };
-    /// A chargeback. **Audit only** (#33): cycles are delivered and irreversible
+    /// A chargeback. **Audit only**: cycles are delivered and irreversible
     /// and the card network pulls the funds, so there is nothing to react to — but
     /// without the subscription a dispute is invisible to the operator.
     #disputeCreated : { eventId : Text; paymentIntent : Text; amountCents : ?Nat };
@@ -379,7 +379,7 @@ module {
   };
 
   /// Whether a paid amount may be honoured for this order (§3/§6.1) — since
-  /// #33 an **equality check, not a computation**.
+  /// An **equality check, not a computation**.
   ///
   /// Repricing existed because a fixed Payment Link could legitimately be paid
   /// for an amount the order was not created for: the buyer picked the link,
@@ -391,7 +391,7 @@ module {
   /// files a refundable obligation and delivers nothing.
   ///
   /// ⚠️ The collapse is what makes `lockedCycles` immutable after creation, and
-  /// #30's accounting is exact rather than conservative because of it. Anything
+  /// The reserve accounting is exact rather than conservative because of it. Anything
   /// that reintroduces "honour a different amount" reintroduces both problems.
   public type Honored = {
     /// The amount matched the quote, so the locked quantity stands verbatim.
@@ -425,17 +425,17 @@ module {
   /// just not by delivery; a non-2xx would make Stripe redeliver an event
   /// we have already routed.
   func queueRefundable(deps : Deps, kind : Orphans.Kind, detail : Text, nowNs : Int) : Http.Response {
-    // ⚠️ **No eviction to report since #37.** The loop that used to run here audited
-    // `orphanStore.evictedUnresolved` — "a live money obligation dropped from on-chain
-    // state", §4.1's one unforgivable event. With no bound there is nothing to drop, so
-    // the tag is deleted rather than left unreachable: a tag that cannot fire is a
+    // ⚠️ **Nothing can be evicted, so there is no eviction to report.** §4.1's one
+    // unforgivable event is "a live money obligation dropped from on-chain state", and
+    // with no bound on the store there is nothing to drop. Do not add a tag for it back:
+    // a tag that cannot fire is a
     // reader's false reassurance that someone is watching for it.
     let result = Orphans.add(deps.orphanStore, #card, kind, detail, nowNs);
     audit(deps, nowNs, "stripe.type1", "entry " # result.entry.id.toText() # ": " # detail);
     Http.text(200, "queued for operator review");
   };
 
-  /// File a refund-resolvable problem **on the order** (#37) and answer 200.
+  /// File a refund-resolvable problem **on the order** and answer 200.
   ///
   /// ⚠️ **The order-bound sibling of `queueRefundable`, and the split is the point.**
   /// That function now serves only `#unattributed`, which by definition has no order
@@ -527,7 +527,7 @@ module {
     };
 
     if (full) {
-      // ⚠️ **Two stores to close against since #37**, and forgetting either is a
+      // ⚠️ **Two stores to close against**, and forgetting either is a
       // silent failure: an obligation left open after the refund that settles it is
       // exactly the false worklist entry the queue's own rule forbids.
       let resolved = Orphans.resolveByPaymentRef(deps.orphanStore, refund.paymentIntent, nowNs);
@@ -603,7 +603,7 @@ module {
   /// An intent that has already funded an order arrived again. Two shapes:
   ///
   /// - **names the same order** → a redelivery past the dedup retention. Ack it.
-  /// - **names anything else** → the reference and our record disagree. Since #33
+  /// - **names anything else** → the reference and our record disagree.
   ///   nothing writes an attribution but the webhook itself and nothing but the
   ///   canister sets `client_reference_id`, so this should be unreachable — which
   ///   is exactly why it stays: an unreachable contradiction that fires means a
@@ -777,15 +777,14 @@ module {
     // status that passes here and is then refused by `isLegalTransition` traps,
     // and a trap on this path is a 5xx that Stripe retries for ~3 days.
     //
-    // `-Werror` does NOT protect this. Both arms typecheck whatever the matrix
-    // says, so the coupling is a comment and a test, not a compile error. #34
-    // deleted `#expired → #paid` and this guard had to lose `#expired` in the
-    // same change; #33 and #36 change the matrix again.
+    // ⚠️ `-Werror` does NOT protect this. Both arms typecheck whatever the matrix
+    // says, so the coupling is a comment and a test, not a compile error: change the
+    // matrix and this guard has to move with it.
     switch (order.status) {
       case (#created) {};
       case (#cancelled or #expired) {
-        // Real money against an order that can no longer be paid. Until #33 the
-        // Stripe session outlives both states, so this is reachable: a buyer who
+        // Real money against an order that can no longer be paid. The Stripe session
+        // outlives both states, so this is reachable: a buyer who
         // cancels and pays anyway, or who pays a link after the sweep expired the
         // order.
         //
@@ -855,7 +854,7 @@ module {
         // `cancel_order` cannot record an intent for one of those (no session id, so it
         // takes the sessionless branch without adding).
         deps.cancelRequests.remove(orderId);
-        // ⚠️ **Close any `#paidNotCredited` obligation for this order (#52).** The
+        // ⚠️ **Close any `#paidNotCredited` obligation for this order.** The
         // recovery sweep files that when Stripe reports a paid session we never
         // credited; this is the resend landing, which is the remedy the entry asks for.
         // The rule every closer follows here: **an open worklist entry
@@ -948,7 +947,7 @@ module {
     };
   };
 
-  /// Stripe closed a session unpaid (#33).
+  /// Stripe closed a session unpaid.
   ///
   /// ⚠️ **This handler must never trap.** A trap here is a 5xx, which Stripe
   /// retries for about three days. Three reachable cases, all of which end 200:
@@ -959,8 +958,8 @@ module {
   ///    `applyTransition` rather than being treated as an error.
   /// 2. **A session we do not recognise** — an order from before a reinstall, or
   ///    another integration pointed at this endpoint. Audit and ack.
-  /// 3. **A redelivery.** Deduped on the event id, so the status and (once #30
-  ///    lands) the tally are both no-ops.
+  /// 3. **A redelivery.** Deduped on the event id, so the status and the tally are
+  ///    both no-ops.
   ///
   /// **Binding:** if the order has a `stripeSessionId`, the event's must match it
   /// — a mismatch is audited and treated as unattributed. If it is null, attribute

@@ -1,4 +1,4 @@
-/// Operator-facing meaning: what each state IS, and what to do about it (#68).
+/// Operator-facing meaning: what each state IS, and what to do about it.
 ///
 /// ⚠️ **The hint tables are `Record<Tags<…>, Hint>`, so a missing hint is a COMPILE
 /// error** — and so is a hint for a tag the canister no longer has. A gate step could only
@@ -40,8 +40,8 @@ type Tags<T> = T extends { __kind__: infer K }
 
 /// ⚠️ **Projected off the actor, never imported by generated type name.** `actor.ts`
 /// already does this for `Order` and `Tier` — "immune to whatever type names bindgen
-/// exports" — and #85 is why: `Result_1`…`Result_12` are numbered by position in the
-/// `.did`, so adding a method renumbers them.
+/// exports". `Result_1`…`Result_12` are numbered by position in the `.did`, so adding a
+/// method renumbers them.
 type OrphanEntry = Awaited<ReturnType<Backend["orphans_unresolved"]>>["entries"][number];
 type CanPurchase = Awaited<ReturnType<Backend["can_purchase"]>>;
 type Refusals = Awaited<ReturnType<Backend["refusal_counts"]>>["counts"];

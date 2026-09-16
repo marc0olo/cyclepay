@@ -10,14 +10,11 @@ go-live approval.** It is not one.
 
 ## Status: run against reserve delivery on 2026-08-28
 
-⚠️ **This section was itself stale until 2026-09-01, and the staleness caused a wrong
-conclusion — so read the dates before trusting any row.** It claimed reserve delivery
-had never been run in a browser. That was true when written and false by the time it
-was read: #36 deleted the mint path on **2026-08-27**, and the run below happened on
-**2026-08-28**. A reviewer reading the old table concluded #5's gate was unverified and
-recommended re-running the whole plan. The tracker was right and this file was wrong,
-which is the reverse of the usual failure and the reason the dates are now in the
-heading.
+⚠️ **Read the dates before trusting any row.** A row here is a record of what a run on a
+given day did and did not observe, and the mechanism under it may have changed since. A
+row that was true when written and is now false reads exactly like a current gap, and the
+cost of that confusion is re-running a whole plan that was in fact verified. The dates in
+the heading are what make each row checkable.
 
 **What the 2026-08-28 run recorded**, all of it against `icrc1_transfer` out of the
 reserve, with no ICP or CMC in the path:
@@ -46,7 +43,7 @@ purchases, $5 and $20, both credited to the buyer's cycles-ledger account and sp
 |---|---|
 | ⚠️ **The buyer's cycles-ledger balance, read from the LEDGER, on a reserve delivery.** The 08-28 run confirmed the order view said `delivered` and an audit line recorded a block index — which is *the canister's own account* of the transfer, not an independent observation of the destination. The 08-13 run did read the balance directly, but under the mint path. **One command, not a re-run:** `icp cycles balance --of-principal <buyer>` before and after | group H below |
 | The CLI handoff — `icp identity link web` was never run, so "the cycles are reachable from the CLI" is still unproven. ⚠️ Doubly unproven since the page gained the id.ai prerequisite and the set-default step: without either, the commands run as the wrong identity against an empty balance | group H below, H4 |
-| Fixture capture — real payloads committed by #4; the parity test in `test/integration/src/fixtures.spec.ts` compares them against the crafted builder | group I, #4 (closed) |
+| Fixture capture — real payloads committed; the parity test in `test/integration/src/fixtures.spec.ts` compares them against the crafted builder | group I |
 | Async payment methods | ⚠️ **Not applicable** — `payment_method_types[]=card` is pinned, so a delayed method is unreachable |
 | Disputes | group G |
 | Anything live-mode | not local-testable by construction |
@@ -90,14 +87,14 @@ scenarios to work through or a by-hand reference for one of these steps.
 What you have to supply: a **Stripe sandbox account** with the Stripe CLI logged in
 to it, and a **restricted API key** (`rk_...`) with **Checkout Sessions = Write**
 and everything else None. Write is the level that also grants read, which the recovery
-sweep needs in order to retrieve a session (#52) — **measured, not inferred: a `rk_`
+sweep needs in order to retrieve a session — **measured, not inferred: a `rk_`
 key scoped to Checkout Sessions = Write returns HTTP 200 on
 `GET /v1/checkout/sessions/{id}`.** It is worth stating as a measurement because the
 failure mode is invisible to the test suite: PocketIC answers the sweep's outcall
 itself, so a key that could create sessions but not read them would 401 in production
 with every scenario green. `Main.mo` carries a `stripe.retrieveUnauthorized` audit tag
 for that case. No Payment Links, no Products, no Prices — the canister creates a
-session per order through the API (#33). Nothing else, and no mainnet.
+session per order through the API. Nothing else, and no mainnet.
 
 **How to create the key, and the go-live ordering, is RUNBOOK §3.**
 Get it right here rather than at go-live: the four settings that break
@@ -133,7 +130,7 @@ npm --prefix test/browser ci                    # only if you also want the suit
 #    move amount_total is enabled — src/backend/rails/Session.mo lists all eight
 #    next to the body builder, and test/session.test.mo asserts their absence.
 #    Nothing else to configure: the STRIPE_LINK_* variables went with
-#    Tier.paymentLinkUrl (#33).
+#    Tier.paymentLinkUrl.
 icp network start -d
 icp deploy
 scripts/local-dev-seed.sh
@@ -172,7 +169,7 @@ Then, in the browser at the frontend URL `icp deploy` printed
 
 1. **Click "Get cycles".** The landing page has one route into the buy form, and
    the form asks nothing about where the cycles go: they go to the account of the
-   principal you sign in as, and the gateway refuses any other destination (#29).
+   principal you sign in as, and the gateway refuses any other destination.
    That is what makes steps 6 and 7 meaningful.
 2. **Sign in.** You get **local** Internet Identity automatically —
    `http://id.ai.localhost:8000`, deployed by `ii: true` in `icp.yaml`, chosen by
@@ -181,7 +178,7 @@ Then, in the browser at the frontend URL `icp deploy` printed
    and local to this network, which is wiped by `icp network stop`.
 3. **Pick an amount and create the order.** The rate is locked here, not at payment.
 4. **Pay.** "Pay with card ↗" opens the order's own Checkout Session — the
-   canister created it and set `client_reference_id` on it through the API (#33),
+   canister created it and set `client_reference_id` on it through the API,
    so there is no link to configure and no parameter to append. Card
    `4242 4242 4242 4242`, any future expiry, any CVC. **You have 35 minutes**,
    enforced by Stripe; the button disappears at the deadline.
@@ -313,18 +310,18 @@ icp canister call backend pricing_status '()' --query   # expect ok = true
 
 Create an order and open the `stripeSessionUrl` on the returned order — that is
 the payment page. The canister creates a **Checkout Session per order** and sets
-`client_reference_id` through the API (#33), so there is no Payment Link to
+`client_reference_id` through the API, so there is no Payment Link to
 configure and no URL parameter to append. Pay with `4242 4242 4242 4242` and watch
 `get_order` reach `delivered`. `process_order` kicks the **delivery** without
 waiting for the sweep — callable as the order's own owner as well as admin since
-#30 PR-B — and `pending_deliveries` (admin) shows anything still outstanding
+and `pending_deliveries` (admin) shows anything still outstanding
 before the 2 h queue alert would. `delivery_journal` and `receipt` then carry the real
 cycles-ledger block index and the delivered quantity.
 
 ⚠️ **Fund the reserve AND call `refresh_reserve` before creating an order**, or
 every purchase is refused with `#reserveShort{available = 0}` against a funded
 account: solvency is decided against a lower bound that only rises by observation
-(#30 PR-B). `reserve_status.availableToSell` is the figure to check.
+`reserve_status.availableToSell` is the figure to check.
 
 ⚠️ **One thing that looks like a bug and is not:**
 
@@ -546,13 +543,13 @@ icp canister call backend receipt '("<orderId>")'           # owner identity onl
 | B2 | No reference | `stripe trigger checkout.session.completed` | `200`; `#unattributed`, `claimedRef` empty |
 | B3 | Forged owner | hand-edit the ref to another principal, same order id | `#unattributed` — "claimed owner does not match" |
 | B4 | Malformed reference | ref = `garbage` | `#unattributed` — "malformed" |
-| B5 | Payment for an **expired** order | there is no TTL to shorten since #33 — open the order's session URL, expire that session in the Stripe Dashboard so `checkout.session.expired` arrives, then pay a *previously opened* copy of the page | `200`; order **stays `Expired`**, `#unattributed` whose detail says "cannot be paid". **Refund it in Stripe.** Not honoured — #34 made expiry terminal |
-| B6 | Payment for a **cancelled** order | `cancel_order`, then pay a page you opened before cancelling | `200`; order **stays `Cancelled`**, the same refundable obligation. The buyer's decision wins; the money is refundable, never converted against it (#34). ⚠️ Hard to reach on purpose: cancel expires the session on Stripe *first*, so the payment usually cannot start at all |
-| B7 | There is no rescue lever | — | `attach_payment` was deleted in #33. For B5 and B6 the only remedy is a refund in Stripe, which auto-resolves the entry |
+| B5 | Payment for an **expired** order | there is no TTL to shorten — open the order's session URL, expire that session in the Stripe Dashboard so `checkout.session.expired` arrives, then pay a *previously opened* copy of the page | `200`; order **stays `Expired`**, `#unattributed` whose detail says "cannot be paid". **Refund it in Stripe.** Not honoured — expiry is terminal |
+| B6 | Payment for a **cancelled** order | `cancel_order`, then pay a page you opened before cancelling | `200`; order **stays `Cancelled`**, the same refundable obligation. The buyer's decision wins; the money is refundable, never converted against it. ⚠️ Hard to reach on purpose: cancel expires the session on Stripe *first*, so the payment usually cannot start at all |
+| B7 | There is no rescue lever | — | there is no attribution rescue. For B5 and B6 the only remedy is a refund in Stripe, which auto-resolves the entry |
 
 ## C. Amount honouring
 
-⚠️ **Three of these five rows became optional when #4 landed, and one should be dropped.**
+⚠️ **Three of these five rows are optional once the fixtures are captured, and one should be dropped.**
 They were written when crafted JSON was our only description of Stripe. The parity test in
 `test/integration/src/fixtures.spec.ts` now compares a **recorded real** session against the
 crafted builder on exactly the fields this group questions — `amount_total`, `currency`,
@@ -564,7 +561,7 @@ guard tests inherit its credibility.
 | **C1** | **required** | the happy path; covered by any real purchase |
 | **C4** | **required** | reachable with no tampering, and nothing else covers the ceiling's one live case |
 | C2, C5 | optional | the field question is automated; a hand-made session adds the HTTP path and ordering, not the shape |
-| C3 | **drop** | its own row says it is not a separate outcome since #33 — it *is* C2 |
+| C3 | **drop** | its own row says it is not a separate outcome — it *is* C2 |
 
 A manual plan ages against the automation built beside it. The rows to re-read first are the
 ones whose justification is about **what we cannot otherwise know**, because that is the
@@ -572,7 +569,7 @@ claim automation invalidates.
 
 | # | Scenario | How | Expect |
 |---|---|---|---|
-⚠️ **Rewritten by #33.** The canister sets the amount on the session, so C2 and
+⚠️ **The canister sets the amount on the session**, so C2 and
 C3 can no longer be produced through the app at all — which is the point of the
 change, and is why they are listed as *unreachable* rather than dropped. To
 exercise the mismatch branch you have to create a session outside the app (a
@@ -584,7 +581,7 @@ used to deliver silently.
 |---|---|---|---|
 | C1 | Exact quoted amount | pay the order's own session | `lockedCycles` verbatim; `paidUsdCents == pricing.usdCents` |
 | C2 | **Different amount** | not reachable through the app — hand-make a session at another `unit_amount` with the order's reference | `200`; **nothing delivered**, order stays `Created`, a refundable obligation naming both figures |
-| C3 | Below the fee floor | same, at e.g. $0.31 | the same obligation as C2 — since #33 "below the floor" is not a separate outcome, it is just a different amount |
+| C3 | Below the fee floor | same, at e.g. $0.31 | the same obligation as C2 — "below the floor" is not a separate outcome, it is just a different amount |
 | C4 | Above the per-purchase ceiling | lower `maxPurchaseUsdCents` below an existing order's amount, then pay that order's session | A refundable obligation, **nothing delivered**. This is the ceiling's one reachable case, and it needs no tampering |
 | C5 | Wrong currency | not reachable through the app — the request pins `usd`; hand-make a EUR session | `#unattributed` — "unexpected currency" |
 
@@ -595,7 +592,7 @@ used to deliver silently.
 | D1 | Resend one event | `stripe events resend <evt_...>` — the event id is on the Dashboard's event page. ⚠️ **NOT the Dashboard's own "Resend"**: that acts on a delivery attempt to a *registered* endpoint, and this plan's only transport is `stripe listen`, which is a live subscription with no endpoint and no attempt record. On a sandbox run there is no Resend button to find. (RUNBOOK §6's Dashboard instruction is for a deployment, which does have a registered endpoint.) | `200 duplicate event`; **no** second credit |
 | D2 | Two genuine payments | pay the same link twice (two intents) | second → `#duplicate` |
 | D3 | Same intent, new event id | resend after >7 days if you can arrange it, else trust D1 | `200 already credited`, `stripe.replayedAfterPruning` |
-| D4 | Credited elsewhere | not reachable through the app since #33 — nothing but the webhook writes an attribution. To force it, deliver a hand-made `completed` for order Y carrying an intent already credited to order X | nothing delivered; `stripe.creditedElsewhere` + a `#duplicate` naming both |
+| D4 | Credited elsewhere | not reachable through the app — nothing but the webhook writes an attribution. To force it, deliver a hand-made `completed` for order Y carrying an intent already credited to order X | nothing delivered; `stripe.creditedElsewhere` + a `#duplicate` naming both |
 
 ## E. Refunds — the highest-value group
 

@@ -24,7 +24,7 @@ fixed syntactic target and therefore gate-able.
 
   1. `undocumented()` reads the SOURCE and asks "does every endpoint have a doc". The
      first version asked this of `backend.did`, the tidier oracle — until endpoints moved
-     into `mixin` blocks (#120) and moc dropped every one of their docs from the
+     into `mixin` blocks and moc dropped every one of their docs from the
      interface, so the `.did` could no longer answer it. The source always could.
   2. `misattributed()` reads BOTH and asks "is the doc the interface publishes the one
      written above that endpoint". Only the `.did` can answer this, because the class it
@@ -48,11 +48,9 @@ worse than no check:
   - **A doc absorbed onto an endpoint from a NON-endpoint neighbour.** Invisible in
     source by construction: the block sits correctly above the state declaration that
     owns it, and the endpoint has its own `///`, so thief and victim both read clean.
-    Only the `.did` shows it. Four live instances existed at the tip of #120 —
-    `webhookSecret`'s doc published on `get_order`, the price tiles' on
-    `resolve_problem`, `rateRefreshFailures`' on `set_recovery_interval`, and
-    `allowedBuyers`' on `withdraw_reserve` — so `misattributed()` below covers this one
-    from the `.did` side, which is the only side that can see it.
+    Only the `.did` shows it — `webhookSecret`'s doc published on `get_order`, the price
+    tiles' on `resolve_problem` — so `misattributed()` below covers this one from the
+    `.did` side, which is the only side that can see it.
   - **Types, fields, and private helpers.** Only `public shared` / `public query`
     endpoints are checked.
   - **Doc quality.** A single `///` line satisfies it.
@@ -282,11 +280,11 @@ def main():
         )
         return 1
     # ⚠️ Counts the files that HOLD endpoints, not the files scanned. `Main.mo` is in the
-    # scan list and declares none since #120, so reporting the scan size would read as
-    # though the composition root still had some.
-    # ⚠️ **This used to be a SOUNDNESS precondition and is now only an architecture
-    # rule.** The old leak scan read any doc in the service block as floated off private
-    # state, which held only while no endpoint was declared in the composition root.
+    # scan list and declares none, so reporting the scan size would read as though the
+    # composition root still had some.
+    # ⚠️ **This is an architecture rule, not a SOUNDNESS precondition.** A leak scan that
+    # read any doc in the service block as floated off private state would hold only
+    # while no endpoint is declared in the composition root.
     # `misattributed()` compares published against written wherever the endpoint lives,
     # so it no longer depends on this. Kept because A1 is worth enforcing on its own, and
     # checked first so a stray root endpoint still gets its own message.
@@ -365,8 +363,8 @@ def main():
         return 1
 
     # ⚠️ Counts the files that HOLD endpoints, not the files scanned. `Main.mo` is in the
-    # scan list and declares none since #120, so reporting the scan size would read as
-    # though the composition root still had some.
+    # scan list and declares none, so reporting the scan size would read as though the
+    # composition root still had some.
     holders = sum(1 for f in files if ENDPOINT.search(open(f).read()))
     print(
         f"   {total} public endpoints across {holders} file(s): every one documented,"

@@ -128,9 +128,8 @@ if [ "$BOOTSTRAP" -eq 1 ]; then
   echo
   echo "--- bootstrapping Stripe-side config (dev values, never for mainnet) ---"
 
-  # No TTL to set: #33 deleted retention, so an order's deadline is its Stripe
-  # session's `expires_at` (~35 min, Stripe's own floor is 30). Nothing local
-  # shortens it — to see an expiry in a dev session, expire the session in the
+  # No TTL to set: an order's deadline is its Stripe session's `expires_at`
+  # (~35 min, Stripe's own floor is 30). Nothing local shortens it — to see an expiry in a dev session, expire the session in the
   # Stripe Dashboard and let `checkout.session.expired` arrive.
 
   # Declare the Stripe world. A sandbox forwarder sends livemode=false events, so
@@ -186,11 +185,11 @@ case "$WHSEC" in
     ;;
 esac
 
-# Sealed (#11) — the signing secret never appears in an ingress message or in this
+# Sealed — the signing secret never appears in an ingress message or in this
 # script's own process arguments.
 STRIPE_WEBHOOK_SECRET="$WHSEC" scripts/seal-secret.sh webhook-secret >/dev/null
 
-# ── the OTHER secret (#33) ───────────────────────────────────────────────────
+# ── the OTHER secret ───────────────────────────────────────────────────
 # The rail is live only when both are provisioned, so a webhook secret alone is
 # not enough any more: without an API key `create_order` cannot create a session
 # and nobody can pay. Checked rather than set, because the key is yours and it

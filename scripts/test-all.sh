@@ -51,8 +51,8 @@ cd "$(dirname "$0")/.."
 #
 # Two work-in-progress commits landed on `main` in one session — the branch had been
 # created before an intervening merge and never re-checked. `git branch --show-current`
-# before committing is written down in #12 both times, and the second time it still was
-# not run: a rule that needs remembering is a rule that gets skipped.
+# before committing was written down both times, and the second time it still was not
+# run: a rule that needs remembering is a rule that gets skipped.
 #
 # This gate runs far more often than commits do, so putting the answer on screen turns
 # "remember to check" into "you already know". Both strays were in fact caught by reading
@@ -119,7 +119,7 @@ detect_lanes() {
       # ⚠️ A backend change regenerates the .did, which the frontend bindings and the
       # integration bindings are both generated FROM. So it activates everything —
       # there is no such thing as a backend-only change here.
-      # `vendor/*` and `.gitmodules` are the pinned crypto (#11): a submodule bump changes
+      # `vendor/*` and `.gitmodules` are the pinned crypto: a submodule bump changes
       # what `Sealed.mo` compiles against, so it activates everything a backend change does.
       src/backend/*|test/*.mo|mops.toml|mops.lock|deployed/*|vendor/*|.gitmodules) lane_add backend; lane_add frontend; lane_add browser; lane_add integration; lane_add checks ;;
       src/frontend/*) lane_add frontend; lane_add browser; lane_add checks ;;
@@ -212,7 +212,7 @@ fi
 
 run "shell — no unquoted heredoc runs its own body" scripts/check-heredocs.sh
 
-# ⚠️ **This also runs the STABLE-COMPATIBILITY check now (#90), because mops.toml
+# ⚠️ **This also runs the STABLE-COMPATIBILITY check now, because mops.toml
 # configures `[canisters.backend.check-stable]`.** No separate step: `mops check` picks it
 # up, and CI runs the same command. Before that config, an incompatible stable shape
 # passed every one of these steps and was refused at DEPLOY time with an
@@ -282,17 +282,16 @@ run "every config setter has a reader" scripts/check-config-readers.py
 # complete and say nothing about whether the code honours it, and a method filed
 # controller-only whose body calls the delegable guard would pass such a table.
 run "admin tiers are enforced, not just listed" scripts/check-admin-tiers.py
-# Every mutating admin method is offered as a command or excluded on purpose (#97).
+# Every mutating admin method is offered as a command or excluded on purpose.
 # TypeScript makes a missing RENDERER a compile error and can say nothing about a method
 # that never entered the union, which is what this covers.
 run "every write is offered as a command, or excluded on purpose" scripts/check-admin-commands.py
 
 # ⚠️ **The step above checks WHICH methods the console offers; this one checks whether
 # the calls printed in prose still run.** Different question, different files, and the
-# gap between them was live: `audit_log` took `(opt nat, nat)` from #38 while three
-# places called it `'()'`, and RUNBOOK passed `quote_previews` a rail argument that #35
-# deleted -- the line it calls the fastest is-the-rail-quoting check. An operator finds
-# these mid-incident, by pasting one and getting a serialization error.
+# gap between them is real: a method gains an argument and the prose calling it does
+# not, or keeps passing one the method lost. An operator finds these mid-incident, by
+# pasting one and getting a serialization error.
 run "every documented canister call still matches the .did" scripts/check-doc-calls.py
 
 # ⚠️ **The decision record is enforced, not trusted.** Its predecessor was a 697-line
@@ -313,9 +312,9 @@ scripts/check-unused-exports.py
 
 # ⚠️ **A different class from the step above: two functions that BOTH have callers and
 # both do the same thing.** The loss there is not dead code but divergence — the next
-# correction lands on one of them. #136 shipped a review-caught instance on the money
-# path (`Reserve.deliverable` re-implementing `Delivery.deliverableCycles`), and the
-# check's first two versions could not see it, which is recorded in the script.
+# correction lands on one of them. The motivating shape is on the money path
+# (`Reserve.deliverable` re-implementing `Delivery.deliverableCycles`), and it is
+# invisible to a naive implementation — see the script for what it takes to see it.
 run "no module function body is duplicated across modules" scripts/check-duplicate-bodies.py
 
 # ⚠️ **Rendering, not parsing, is where a mermaid diagram fails silently.** A bare `#`
@@ -331,8 +330,14 @@ run "mermaid labels keep their text on GitHub" scripts/check-mermaid.py
 # "commit identification above" that had been deleted.
 run "every doc link resolves, file and #anchor" scripts/check-doc-links.py
 
-# Reads the regenerated .did, so it sits after the build step. #123 removed the last
-# `Result<_, Text>`; this keeps it removed.
+# ⚠️ **The rule this enforces lived in AGENTS.md as prose for exactly one commit**, and
+# the sweep that cleared 1,117 references still left three behind — all three the same
+# shape a hand-written scan pattern had excluded. `docs/agents/` is exempt; a qualified
+# external tracker (`owner/repo#NN`) is allowed and has one live instance.
+run "no bare issue reference outside docs/agents/" scripts/check-issue-refs.py
+
+# Reads the regenerated .did, so it sits after the build step. No endpoint returns a
+# `Result<_, Text>`; this keeps it that way.
 run "every endpoint error type is a variant, not text" scripts/check-typed-errors.py
 
 # ⚠️ **The Motoko half of the step above, and the compiler covers NONE of it:** M0194
@@ -372,7 +377,7 @@ else
   - no test hooks in the shipping bundle"
 fi
 
-# The reserve floor's premise, enforced rather than asserted (#30 PR-B).
+# The reserve floor's premise, enforced rather than asserted.
 #
 # `Reserve.mo`'s floor is a lower bound on the reserve balance ONLY because the
 # balance cannot fall except when we transfer out. What makes that true is that
@@ -412,7 +417,7 @@ fi
 # hierarchy still need eyes.
 run "brand lint — user-facing copy and tokens" bash scripts/brand-lint.sh
 
-# Browser specs (issue #6). These cover what jsdom is structurally blind to: the
+# Browser specs. These cover what jsdom is structurally blind to: the
 # CASCADE and LAYOUT. A class selector's `display` outranks the UA stylesheet's
 # `[hidden]`, so elements the app had hidden stayed on screen while every DOM
 # test passed — that shipped once, and these exist so it cannot again.

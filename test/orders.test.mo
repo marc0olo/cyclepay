@@ -15,19 +15,19 @@ import Orders "../src/backend/Orders";
 
 // Unit suite for the §4 order state machine and the Orders store.
 // Exhaustive: every (from, to) pair of the SEVEN statuses is checked against the
-// legal-transition table. (It said "8" and there are seven — the same stale-count class
-// the comment purge removed ten of, and #84's double-count test leans on this array.)
+// legal-transition table. ⚠️ **The double-count test below leans on `allStatuses`**, so
+// a status added to `Types` without a row here silently narrows the sweep.
 
 let allStatuses = Types.allStatuses;
 
 // The legal-transition table straight from spec §4 (+ the escalation edges from
-// §4.1/§5.1 and the #34 statuses). Kept as data here so the test is the spec
-// table, independent of the implementation's switch.
+// §4.1/§5.1). Kept as data here so the test is the spec table, independent of the
+// implementation's switch.
 let legalTransitions : [(Types.OrderStatus, Types.OrderStatus)] = [
   (#created, #cancelled),
   (#created, #expired),
   (#created, #paid),
-  // #30 PR-A: the whole money-out path is now one transfer from the reserve.
+  // The whole money-out path is one transfer from the reserve.
   // ⚠️ **Deleting this edge fails in the worst direction**: the transfer lands and
   // the order sits `#paid` forever, with the buyer already holding their cycles.
   (#paid, #delivered),
@@ -35,9 +35,9 @@ let legalTransitions : [(Types.OrderStatus, Types.OrderStatus)] = [
   // abandon_order: the operator ends it, having refunded by hand.
   (#paid, #abandoned),
   (#needsReview, #abandoned),
-  // #30 PR-B — `record_delivered`: the operator checked the cycles ledger and the
-  // transfer HAD landed. Its absence forced them to file a delivered order as
-  // abandoned, auditing a refund that never happened.
+  // `record_delivered`: the operator checked the cycles ledger and the transfer HAD
+  // landed. Without this edge a delivered order can only be filed as abandoned, which
+  // audits a refund that never happened.
   (#needsReview, #delivered),
 ];
 
@@ -70,9 +70,8 @@ let pricing : Types.Pricing = {
   rateQueriedSources = 5;
   feeBps = 290;
   feeFixedCents = 30;
-  // Deliberately EARLIER than any order's createdAtNs in these fixtures: the
-  // rate pair is read before the order exists, which is the whole reason #34
-  // records it separately.
+  // Deliberately EARLIER than any order's createdAtNs in these fixtures: the rate pair
+  // is read before the order exists, which is why it is recorded separately.
   ratesFetchedAtNs = 1;
 };
 
@@ -123,15 +122,12 @@ func drive(store : Orders.Store, id : Types.OrderId, path : [Types.OrderStatus])
   };
 };
 
-suite("the promise tally (#30 PR-B) — every writer moves it", func() {
-  // ⚠️ **These exist because of a real bug in this PR.** The tally was first wired
-  // into the three writers a comment claimed were the only ones (`create`,
-  // `applyTransition`, `markPaid`), and that comment was false in the file it was
-  // written in: `expireWithCause` and `expireBySession` (#47) also write status.
-  // They are #30's release points 4 and 1 — and point 1 is where EVERY unpaid
-  // order ends — so every expired order would have left its `lockedCycles` in
-  // `promised` forever, ratcheting `available` down until the gate refused sales
-  // against a full reserve.
+suite("the promise tally — every writer moves it", func() {
+  // ⚠️ **FIVE writers move status, not three.** `create`, `applyTransition` and
+  // `markPaid` are the obvious ones; `expireWithCause` and `expireBySession` also write
+  // it, and expiry is where EVERY unpaid order ends. A writer that skips the tally
+  // leaves its `lockedCycles` in `promised` forever, ratcheting `available` down until
+  // the gate refuses sales against a full reserve.
   //
   // The structural fix is `commitTransition`: one private function does the write,
   // both counters and the tally, so a sixth writer cannot forget. These tests are
@@ -172,8 +168,8 @@ suite("the promise tally (#30 PR-B) — every writer moves it", func() {
     switch (Orders.settleUnpayable(store, requested, "ord-1", #sessionExpired, 300)) {
       case (#ok(settled)) {
         assert settled.status == #cancelled;
-        // ⚠️ Nothing expired, so no cause is recorded. This is the provenance #34
-        // added `expiredBy` for, and the whole point of the fix.
+        // ⚠️ Nothing expired, so no cause is recorded — that is the provenance
+        // `expiredBy` carries.
         assert settled.expiredBy == null;
       };
       case (#err(_)) assert false;
@@ -316,8 +312,8 @@ suite("legal-transition matrix (exhaustive, 7×7)", func() {
   });
 
   test("the terminal statuses have no outgoing edge at all", func() {
-    // `#expired` joined this list in #34, when `#expired → #paid` was deleted:
-    // an expired order is a record of an attempt, not something still payable.
+    // `#expired` is on this list because an expired order is a record of an attempt,
+    // not something still payable.
     for (from in ([#delivered, #cancelled, #expired, #abandoned] : [Types.OrderStatus]).values()) {
       for (to in allStatuses.values()) {
         assert not Orders.isLegalTransition(from, to);
@@ -325,7 +321,7 @@ suite("legal-transition matrix (exhaustive, 7×7)", func() {
     };
   });
 
-  test("a cancelled order can NEVER be paid (#34's whole point)", func() {
+  test("a cancelled order can NEVER be paid", func() {
     // Asserted on its own rather than only as part of the table, because this
     // absence is the guarantee `cancel_order` rests on. If `#cancelled → #paid`
     // is ever added, the buyer-cancellation state stops meaning anything.
@@ -337,7 +333,7 @@ suite("legal-transition matrix (exhaustive, 7×7)", func() {
   test("needsReview has exactly TWO exits, and both need a human's finding", func() {
     // It is NOT re-drivable and NOT terminal. `#abandoned` is "the operator
     // refunded"; `#delivered` is "the operator read the cycles ledger and the
-    // transfer had landed" (#30 PR-B). Both are decisions, neither is automatic —
+    // transfer had landed". Both are decisions, neither is automatic —
     // `Recovery.isSweepable(#needsReview)` is false and stays false, because
     // re-driving an unknown money position is the double-spend this status prevents.
     //
@@ -421,10 +417,9 @@ suite("store: applyTransition", func() {
   });
 
   test("buyer cancellation path Created -> Cancelled, and it stops there", func() {
-    // Replaces "Created -> Expired -> Paid". #34 deleted `#expired → #paid`, so
-    // there is no late-payment path left to drive: an order that stopped being
-    // payable stays that way, and `Card.handleWebhook` files a payment against
-    // one as a refundable obligation instead.
+    // There is no late-payment path to drive: an order that stopped being payable stays
+    // that way, and `Card.handleWebhook` files a payment against one as a refundable
+    // obligation instead.
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
     drive(store, "ord-1", [#cancelled]);
@@ -473,7 +468,7 @@ suite("store: ownership and history", func() {
     // ⚠️ **`a-2` is inserted FIRST, so insertion order and id order disagree.** With
     // `a-1` first the two coincide and this test passes under either contract — which is
     // what it did while the index was a `List` holding insertion order, and what it
-    // would still do now. The index is a `Set` (#70), so id order is the contract, and
+    // would still do now. The index is a `Set`, so id order is the contract, and
     // this fails if anyone puts a `List` back.
     ignore newOrder(store, "a-2", alice);
     ignore newOrder(store, "b-1", bob);
@@ -493,7 +488,7 @@ suite("store: ownership and history", func() {
     assert not Types.isOwnedBy(#ii(alice), bob);
   });
 
-  test("isOwnDestination accepts only the caller's default subaccount (#29)", func() {
+  test("isOwnDestination accepts only the caller's default subaccount", func() {
     assert Types.isOwnDestination(#cyclesLedgerAccount({ owner = alice; subaccount = null }), alice);
     // Someone else's account — the case `create_order` used to accept.
     assert not Types.isOwnDestination(#cyclesLedgerAccount({ owner = bob; subaccount = null }), alice);
@@ -592,12 +587,10 @@ suite("parseClientReferenceId (§4.1 claimed-not-trusted)", func() {
 
 suite("markPaid (§6.1 amount honoring)", func() {
   test("created -> paid, and the LOCKED quantity is what survives", func() {
-    // Inverted by #33. `markPaid` used to take an honored quantity and overwrite
-    // `lockedCycles` with it, because a Payment Link could be paid for a
-    // different amount. Per-order sessions carry our own figure, so the webhook
-    // honours only the quoted amount and this argument is gone: what was locked
-    // at creation is what is delivered, for the order's whole life. #30's tally
-    // is exact rather than conservative because of that.
+    // Per-order sessions carry our own figure, so the webhook honours only the quoted
+    // amount: what was locked at creation is what is delivered, for the order's whole
+    // life. ⚠️ **Do NOT let `markPaid` take an honored quantity** — an overwritable
+    // `lockedCycles` makes the promise tally conservative instead of exact.
     let store = Orders.emptyStore();
     let created = newOrder(store, "ord-1", alice);
     switch (Orders.markPaid(store, "ord-1", 500, 300)) {
@@ -695,7 +688,7 @@ suite("openOrderCount — the Gate admission input", func() {
     // ⚠️ And it needs no outcall, which is the asymmetry worth remembering: a slot is
     // OUR resource, so we may grant it on our own clock — being early costs nothing,
     // because the order it frees is unpayable anyway once Stripe expires its session.
-    // Reserve capacity is money, so releasing THAT needs Stripe's authority (#52 PR-A).
+    // Reserve capacity is money, so releasing THAT needs Stripe's authority.
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
     ignore Orders.attachSession(store, "ord-1", "cs_1", "https://pay.example/1", 5_000, 120);
@@ -814,9 +807,7 @@ suite("status counts — the O(1) query inputs", func() {
   test("the bounded pass lands an order in exactly one bucket after a transition chain", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    // A real chain rather than a contrived one: paid, then escalated. (It used to be
-    // created → expired → paid, which #34 made illegal, and then paid → held short of
-    // float, which #36 deleted with the float.)
+    // A real chain rather than a contrived one: paid, then escalated.
     ignore Orders.applyTransition(store, "ord-1", #paid, 200);
     ignore Orders.applyTransition(store, "ord-1", #needsReview, 300);
     ignore Orders.reconcileBounded(store);
@@ -915,8 +906,8 @@ suite("status counts — the O(1) query inputs", func() {
   test("a status no order is in reads zero", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
-    // #delivered and the terminal #34 statuses are untracked by design (terminal or worklist-
-    // owned); the rest are tracked but empty here.
+    // The terminal statuses are untracked by design (terminal or worklist-owned); the
+    // rest are tracked but empty here.
     for (status in ([#paid, #delivered, #cancelled, #needsReview, #abandoned] : [Types.OrderStatus]).values()) {
       assert Orders.countOf(store, status) == 0;
     };
@@ -924,7 +915,7 @@ suite("status counts — the O(1) query inputs", func() {
 });
 
 
-suite("#37 — markDelayed records the first crossing, and only the first", func() {
+suite("markDelayed records the first crossing, and only the first", func() {
   test("first call records, later calls do not, and updatedAtNs never moves", func() {
     let store = Orders.emptyStore();
     let order = switch (
@@ -959,7 +950,7 @@ suite("#37 — markDelayed records the first crossing, and only the first", func
   });
 });
 
-suite("#37 — the unresolved-problems index", func() {
+suite("the unresolved-problems index", func() {
   func freshOrder(store : Orders.Store, id : Text) : Types.Order {
     switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1_000, pricing, 100)) {
       case (#ok(o)) o;
@@ -1015,8 +1006,8 @@ suite("#37 — the unresolved-problems index", func() {
     // that can disagree with the orders it points at and no way to tell which is
     // right. A disagreement means a writer bypassed fileProblem/resolveProblems.
     //
-    // ⚠️ **Both directions, because #63 split them across two mechanisms** and a test
-    // that only ran one would pass while the other was broken. The inside direction
+    // ⚠️ **Both directions, because two mechanisms split them** and a test that only ran
+    // one would pass while the other was broken. The inside direction
     // (nothing in the index lacks a problem) is `reconcileBounded`, daily; the outside
     // direction (nothing outside the index has one) is `scanChunk`, on a coverage
     // window. The full scan below is the independent oracle both are checked against.
@@ -1050,7 +1041,7 @@ suite("#37 — the unresolved-problems index", func() {
   });
 });
 
-suite("#37 — the pay link is dropped on the way into a terminal state", func() {
+suite("the pay link is dropped on the way into a terminal state", func() {
   func withUrl(store : Orders.Store, id : Text) : Types.Order {
     let o = switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1_000, pricing, 100)) {
       case (#ok(x)) x;
@@ -1099,7 +1090,7 @@ suite("#37 — the pay link is dropped on the way into a terminal state", func()
   });
 });
 
-suite("#37 — resolving a problem is precise, and refuses when it cannot be", func() {
+suite("resolving a problem is precise, and refuses when it cannot be", func() {
   func orderWith(store : Orders.Store, id : Text) : Types.Order {
     switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1_000, pricing, 100)) {
       case (#ok(o)) o;
@@ -1157,7 +1148,7 @@ suite("#37 — resolving a problem is precise, and refuses when it cannot be", f
   });
 });
 
-suite("#38 — filtered, cursor-paginated reads", func() {
+suite("filtered, cursor-paginated reads", func() {
   func mk(store : Orders.Store, id : Text, who : Principal, createdAtNs : Int) : Types.Order {
     switch (Orders.create(store, id, #ii(who), #card, #cyclesLedgerAccount({ owner = who; subaccount = null }), 1_000, pricing, createdAtNs)) {
       case (#ok(o)) o;
@@ -1228,7 +1219,7 @@ suite("#38 — filtered, cursor-paginated reads", func() {
     assert a.createdAtNs == 100;
   });
 
-  test("withUnresolvedProblems composes with the other filters (#37's thesis)", func() {
+  test("withUnresolvedProblems composes with the other filters", func() {
     // The worklist is a FILTER, not a parallel query — which is why it has to compose.
     let store = Orders.emptyStore();
     let a = mk(store, "w-1", alice, 100);
@@ -1247,7 +1238,7 @@ suite("#38 — filtered, cursor-paginated reads", func() {
   });
 });
 
-suite("#63 — the reconcile is bounded by flow, not by lifetime sales", func() {
+suite("the reconcile is bounded by flow, not by lifetime sales", func() {
   func mk(store : Orders.Store, id : Text) : Types.Order {
     switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), 1_000, pricing, 100)) {
       case (#ok(o)) o;
@@ -1332,8 +1323,8 @@ suite("#63 — the reconcile is bounded by flow, not by lifetime sales", func() 
     assert breach.expiredWas == 2 and breach.expiredIs == 1;
 
     // ⚠️ **Reported once, not daily.** The high-water mark follows the tally down, so an
-    // unfixed decrease does not re-fire on every pass — our own cadence bounding a rate
-    // against a persistent state is the fault #37 §2c removed from the audit log.
+    // unfixed decrease does not re-fire on every pass: bounding a rate by our own cadence
+    // against a persistent state is what fills the audit log with duplicates.
     let after = Orders.reconcileBounded(store);
     assert after.expiredWas == 1 and after.expiredIs == 1;
   });
@@ -1435,7 +1426,7 @@ suite("#63 — the reconcile is bounded by flow, not by lifetime sales", func() 
   });
 });
 
-suite("#39 — cumulative delivery figures", func() {
+suite("cumulative delivery figures", func() {
   func mk(store : Orders.Store, id : Text, cycles : Nat) : Types.Order {
     switch (Orders.create(store, id, #ii(alice), #card, #cyclesLedgerAccount({ owner = alice; subaccount = null }), cycles, pricing, 100)) {
       case (#ok(o)) o;
@@ -1520,14 +1511,14 @@ suite("#39 — cumulative delivery figures", func() {
   });
 });
 
-// ── #70: the buyer's page costs the buyer's page ────────────────────────────────────
+// ── The buyer's page costs the buyer's page ─────────────────────────────────────────
 //
 // ⚠️ **`scanned` exists because a query has no readable instruction counter.** "The work
 // does not grow with other principals' orders" is otherwise unassertable, and the half
 // that stays assertable — that the rows are right — passes for a function returning
 // nothing. So both halves ride ONE call below: split across two calls, each could pass
 // for a different broken implementation.
-suite("unresolvedProblemOrderCount is the index size (#68)", func() {
+suite("unresolvedProblemOrderCount is the index size", func() {
   test("it equals what materialising the worklist would have returned", func() {
     let store = Orders.emptyStore();
     ignore newOrder(store, "p-1", alice);
@@ -1548,7 +1539,7 @@ suite("unresolvedProblemOrderCount is the index size (#68)", func() {
   });
 });
 
-suite("cancelShape covers the whole status space (#127)", func() {
+suite("cancelShape covers the whole status space", func() {
   /// ⚠️ **`Types.allStatuses`, not a second hand-written list.** An earlier version of
   /// this suite copied the seven out and claimed "adding an eighth status is a compile
   /// error there, and this array is what then fails to cover it" — the first half is
@@ -1599,7 +1590,7 @@ suite("cancelShape covers the whole status space (#127)", func() {
   });
 });
 
-suite("ownerPage bounds the work, not just the response (#70)", func() {
+suite("ownerPage bounds the work, not just the response", func() {
   // Foreign ids all begin `0`, ours all begin `f`, so every one of bob's orders sorts
   // BEFORE every one of alice's — the worst case for a walk over the global store, which
   // is what this replaced.
@@ -1681,7 +1672,7 @@ suite("ownerPage bounds the work, not just the response (#70)", func() {
   });
 });
 
-suite("holderPage — the pagination boundaries (#127)", func() {
+suite("holderPage — the pagination boundaries", func() {
   /// The rules that were inline in `delayed_deliveries`: `nextCursor` is the last KEPT
   /// id rather than the last scanned, it is null when the scan runs out, and a limit of
   /// 0 or an over-large one means `maxPageSize`.

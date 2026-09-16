@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          # The pinned BLS12-381/vetKD packages (#11) are a git submodule that `mops`
+          # The pinned BLS12-381/vetKD packages are a git submodule that `mops`
           # resolves as a path dependency, so without this the backend does not compile
           # here at all — `mops install --locked` fails on a package directory that is
           # present in the lock and empty on disk. The `frontend` job deliberately does
@@ -88,6 +88,7 @@ jobs:
           scripts/check-typed-errors.py
           scripts/check-mermaid.py
           scripts/check-doc-links.py
+          scripts/check-issue-refs.py
 
   frontend:
     runs-on: ubuntu-latest
@@ -125,8 +126,8 @@ jobs:
             exit 1
           fi
 
-      # Issue #6. The cascade-and-layout bugs jsdom cannot see: it has neither,
-      # so `el.hidden` reads true for an element that is plainly on screen. Also
+      # The cascade-and-layout bugs jsdom cannot see: it has neither, so
+      # `el.hidden` reads true for an element that is plainly on screen. Also
       # the paint-level ones no assertion reaches, via committed `-linux`
       # screenshot baselines (test/browser/visual.spec.ts). Serves a build of the
       # frontend; no local network or deployed canister needed.
@@ -161,7 +162,7 @@ jobs:
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          # The pinned BLS12-381/vetKD packages (#11) are a git submodule that `mops`
+          # The pinned BLS12-381/vetKD packages are a git submodule that `mops`
           # resolves as a path dependency, so without this the backend does not compile
           # here at all — `mops install --locked` fails on a package directory that is
           # present in the lock and empty on disk. The `frontend` job deliberately does

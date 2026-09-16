@@ -9,8 +9,8 @@
 # RUN a deploy.
 #
 # The second one was introduced by the fix for a review finding whose entire subject was
-# that written-down lessons do not transfer. The rule was already in #12 from the first
-# incident. So it stops being a rule.
+# that written-down lessons do not transfer. The rule was already written down. So it
+# stops being a rule and becomes this check.
 #
 # ⚠️ **This belongs in the gate rather than the Traps section because its target is FIXED
 # syntax**, unlike a vocabulary sweep whose target moves with every issue — the same test
@@ -20,7 +20,7 @@
 # ⚠️ **What it does NOT catch — and the bigger gap is the first incident above.** That one
 # was an ad-hoc heredoc typed into a command that never became a file, so nothing scanning
 # `git ls-files` can ever see it. This gate covers heredocs **in committed scripts** only;
-# for one typed at a prompt the #12 rule still applies, and still has to be remembered.
+# one typed at a prompt still has to be quoted by hand, and still has to be remembered.
 #
 # ⚠️ Also not caught, and it is a REAL hazard rather than an oversight: a dollar amount in
 # an unquoted body. `$100 ceiling` expands to `00 ceiling` — silently, with no error, in a

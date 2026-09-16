@@ -1,4 +1,4 @@
-/// Candid **text** for `icp canister call`, and the typed command table (#97).
+/// Candid **text** for `icp canister call`, and the typed command table.
 ///
 /// ⚠️ **Why a table of per-method renderers rather than one generic value walker**, and
 /// not the reason first assumed. The guess was that `opt T` and `vec T` are both arrays
@@ -6,14 +6,14 @@
 /// declarations, and false of the actor-enabled ones used here, which map `opt T` to
 /// `T | null` and leave `vec T` as `T[]`. No ambiguity to resolve.
 ///
-/// The real reason is #97's first acceptance item: each renderer's parameters come from
-/// `Parameters<Backend[M]>`, so the table is coupled to the canister's interface. A
-/// generic walker takes `unknown` and would happily format a signature that changed
-/// underneath it.
+/// The real reason is coupling: each renderer's parameters come from
+/// `Parameters<Backend[M]>`, so the table is tied to the canister's interface. A generic
+/// walker takes `unknown` and would happily format a signature that changed underneath
+/// it.
 ///
 /// ⚠️ **Every renderer is typed off the actor, never off a string template.** A
 /// rendered `icp canister call` is a hand-written mirror of the canister's interface —
-/// the exact thing #66/#85 removed from the test suite — and it fails asymmetrically: a
+/// the shape this repo keeps out of its test suite — and it fails asymmetrically: a
 /// wrong argument is refused loudly, a signature that changed underneath produces a
 /// command that runs and does the wrong thing. `Parameters<Backend[M]>` makes that a
 /// typecheck failure instead.
@@ -50,7 +50,7 @@ export function bool(value: boolean): string {
 /// at runtime — this function only wraps it. What matters is the *type*: a bare
 /// `"refundAfterDelivery"` is not assignable to the enum, so
 /// `renderCall("resolve_problem", id, "refundAfterDelivery", ref)` no longer compiles.
-/// That was the whole point of #122, and it is enforced at the call rather than here.
+/// The guarantee is enforced at the call rather than here.
 ///
 /// Typed `string` rather than a union of every enum in the interface: each of those is a
 /// string enum, all are assignable to `string`, and naming them would be a hand-written

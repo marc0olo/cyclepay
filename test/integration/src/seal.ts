@@ -1,5 +1,5 @@
 /**
- * Seals a secret to the backend's vetKD public key, for the suite (#11).
+ * Seals a secret to the backend's vetKD public key, for the suite.
  *
  * Both setters take a ciphertext now, so every provisioning call in the suite goes
  * through here. That is deliberate: a helper per spec file would let the constants drift,

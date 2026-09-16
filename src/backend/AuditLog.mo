@@ -37,7 +37,7 @@
 /// counter with a monitoring row, not a line.
 ///
 /// ⚠️ **Nothing is dropped and the `capacity` parameter is gone rather than large**
-/// (#37). `seq` is monotonic and never reused; with no drops there are no gaps, so a
+/// `seq` is monotonic and never reused; with no drops there are no gaps, so a
 /// reader holding the last seq it saw can tell new events from an empty interval.
 import Queue "mo:core/Queue";
 import List "mo:core/List";
@@ -62,7 +62,7 @@ module {
     { events = Queue.empty(); var nextSeq = 0 };
   };
 
-  /// Append. **Nothing is evicted** (#37).
+  /// Append. **Nothing is evicted**.
   ///
   /// ⚠️ **The `capacity` parameter is gone, not defaulted to a large number.** A bound
   /// that is never reached still has to be reasoned about at every call site, and a later
@@ -84,15 +84,14 @@ module {
 
   public type Page = { events : [Event]; nextCursor : ?Nat };
 
-  /// One page of events, oldest → newest, after `afterSeq` (#38).
+  /// One page of events, oldest → newest, after `afterSeq`.
   ///
-  /// ⚠️ **This became necessary the moment #37 removed the ring.** The bound used to be
-  /// the ring itself, so nobody had to think about the response size; retention is now
-  /// total, and a query response is capped at ~2 MB. Removing the ring moved the problem
-  /// from *"history is lossy"* to *"the query cannot answer"* — both real, and only one
-  /// was fixed by removing the cap.
+  /// ⚠️ **Retention is total, which is why this has to paginate.** Nothing bounds the
+  /// log, and a query response is capped at ~2 MB — so an unpaged read is on a path to
+  /// *"the query cannot answer"*. ⚠️ **Do not answer that with a cap on the log**: that
+  /// trades it for *"history is lossy"*, which is the worse of the two.
   ///
-  /// Cursor on `seq`, which is monotonic and never reused, and now has **no gaps** since
+  /// Cursor on `seq`, which is monotonic, never reused, and has **no gaps**, since
   /// nothing is dropped. `nextCursor` is set only when further events remain, so a caller
   /// stops the moment it is null.
   public func page(log : Log, afterSeq : ?Nat, limit : Nat) : Page {
@@ -110,7 +109,7 @@ module {
     { events = collected.toArray(); nextCursor = null };
   };
 
-  /// One page of events, **newest → oldest**, strictly older than `beforeSeq` (#68).
+  /// One page of events, **newest → oldest**, strictly older than `beforeSeq`.
   ///
   /// ⚠️ **Why this exists rather than reversing `page`'s result.** Reversing a page gives
   /// the OLDEST events in descending order, which is the opposite of what an operator

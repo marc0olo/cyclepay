@@ -132,7 +132,7 @@ module {
     minRateSources : Nat;
     /// Simulation scale: deliver `1/divisor` of the cycles a purchase buys.
     /// **`1` is production and means the arithmetic below is bit-identical to
-    /// having no divisor at all** (#99).
+    /// having no divisor at all**.
     ///
     /// ⚠️ **`divisor > 1` IS the simulation-mode signal — there is no second
     /// flag.** A separate boolean could disagree with this number, and then two
@@ -182,18 +182,18 @@ module {
     /// A zero divisor would divide the whole quote away; `1` is "off".
     #zeroDivisor;
     /// This divisor scales the smallest purchase we sell down below what the
-    /// cycles-ledger deposit fee would eat (#99 2d). Carries both figures so an
+    /// cycles-ledger deposit fee would eat. Carries both figures so an
     /// operator can see how far past the band they went.
     #divisorUndeliverable : { scaledCycles : Nat; ledgerFee : Nat };
     /// ⚠️ **`divisor > 1` requires `expectLivemode == ?false` EXACTLY** — not
     /// merely "not live", because `null` means "either mode" and would accept live
     /// payments while under-delivering. The mutual half lives in
-    /// `set_expected_livemode` (#99 2a).
+    /// `set_expected_livemode`.
     #divisorNeedsSandbox : { expectLivemode : ?Bool };
     /// ⚠️ **The divisor is global rather than recorded per order**, which is only
     /// safe because it cannot change under stored orders: every earlier receipt
     /// would otherwise recompute against the new divisor and report a mismatch —
-    /// exactly the claim the landing page makes. Reinstall to change it (#99 2e).
+    /// exactly the claim the landing page makes. Reinstall to change it.
     #divisorChangeWithOrders : { stored : Nat };
   };
 
@@ -346,7 +346,7 @@ module {
   /// Why a quote could not be produced at all, as distinct from being stale.
   ///
   /// ⚠️ **Two causes, not one, and conflating them tells a buyer the wrong
-  /// thing.** Before #99 both arrived as a bare `#unpriceable`, which the
+  /// thing.** Collapsing them into a bare `#unpriceable` is what the
   /// frontend renders as *"Payment processing would exceed X. Pick a larger
   /// amount."* That is right for the first cause and wrong for the second: a
   /// buyer refused because the **simulation scale** is too small has not been

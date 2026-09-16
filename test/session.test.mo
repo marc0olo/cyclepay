@@ -1,4 +1,4 @@
-// Unit suite for Checkout Session request building and response parsing (#33).
+// Unit suite for Checkout Session request building and response parsing.
 //
 // Everything the canister sends to Stripe and everything it keeps from the reply
 // is decided by pure functions, so it is all pinned here. What this CANNOT reach
@@ -206,10 +206,10 @@ suite("parsing a created session", func() {
 
 suite("seconds to nanoseconds", func() {
   test("multiplies by 10^9", func() {
-    // ⚠️ THE most likely bug in #33. Stripe's `expires_at` is Unix SECONDS and IC
-    // time is nanoseconds; storing the raw value makes every order look expired
-    // since 1970 — the open-order cap frees instantly, #30's detection predicates
-    // fire on everything, and the UI shows every order expired.
+    // ⚠️ THE most likely bug on this path. Stripe's `expires_at` is Unix SECONDS and
+    // IC time is nanoseconds; storing the raw value makes every order look expired
+    // since 1970 — the open-order cap frees instantly, the detection predicates fire
+    // on everything, and the UI shows every order expired.
     assert Session.secondsToNs(1) == 1_000_000_000;
     assert Session.secondsToNs(1_800_000_000) == 1_800_000_000_000_000_000;
     assert Session.secondsToNs(0) == 0;
@@ -331,7 +331,7 @@ suite("classifying an outcall failure", func() {
   });
 });
 
-suite("retrieve: url, cap, and the classifier (#52)", func() {
+suite("retrieve: url, cap, and the classifier", func() {
   test("the retrieve url is the create url plus the session id", func() {
     assert Session.retrieveUrl("cs_test_abc") == "https://api.stripe.com/v1/checkout/sessions/cs_test_abc";
   });
@@ -397,7 +397,7 @@ suite("retrieve: url, cap, and the classifier (#52)", func() {
   });
 });
 
-suite("validateOrigin — https, or loopback http (#83 groundwork)", func() {
+suite("validateOrigin — https, or loopback http", func() {
   /// ⚠️ Stripe imposes no scheme requirement on `success_url` — it is a redirect target
   /// for the buyer's own browser, and Stripe's own quickstart uses
   /// `http://localhost:4242/success.html`. The https rule is ours, and its reason (never

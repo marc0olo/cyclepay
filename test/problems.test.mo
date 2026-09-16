@@ -3,7 +3,7 @@ import { test; suite } "mo:test";
 import Problems "../src/backend/Problems";
 import Types "../src/backend/Types";
 
-// Unit suite for order-bound problems (#37). All pure over an array, so the whole
+// Unit suite for order-bound problems. All pure over an array, so the whole
 // admission and resolution policy is pinned without an IC environment.
 
 let dup : Types.ProblemKind = #duplicate({ paymentRef = "pi_dup" });
@@ -141,7 +141,7 @@ suite("resolving", func() {
   });
 });
 
-suite("the kind's tag (#122)", func() {
+suite("the kind's tag", func() {
   test("⚠️ tagOf and kindToText cannot drift, because they agree on every kind", func() {
     // Two switches over the same variant, and only one of them is reachable from the
     // public interface now. Pinning them against each other is what makes adding a

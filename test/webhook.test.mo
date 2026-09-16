@@ -44,9 +44,8 @@ let pricing : Types.Pricing = {
   rateQueriedSources = 5;
   feeBps = 290;
   feeFixedCents = 30;
-  // Deliberately EARLIER than any order's createdAtNs in these fixtures: the
-  // rate pair is read before the order exists, which is the whole reason #34
-  // records it separately.
+  // Deliberately EARLIER than any order's createdAtNs in these fixtures: the rate pair
+  // is read before the order exists, which is why it is recorded separately.
   ratesFetchedAtNs = 1;
 };
 let lockedCycles : Nat = 3_500_000_000_000;
@@ -374,7 +373,7 @@ suite("a resent webhook is never a second payment", func() {
     assert AuditLog.events(deps.auditLog).find(
       func(e) = e.tag == "stripe.creditedElsewhere"
     ) != null;
-    // ⚠️ **The obligation lands in the ORPHAN list, not on an order (#37).** The
+    // ⚠️ **The obligation lands in the ORPHAN list, not on an order.** The
     // intent is credited to an id that is not in the store, so there is no order to
     // attach a problem to — and dropping it would break §4.1's invariant that every
     // verified dollar resolves to a delivery or to an obligation. Money that cannot
@@ -408,7 +407,7 @@ suite("a resent webhook is never a second payment", func() {
     withOrder(deps, #card);
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 500)).status_code == 200;
     assert deliver(deps, paidBody("evt_2", "pi_2", ?goodRef, 500)).status_code == 200;
-    // On the order now (#37); no orderId to compare, the order supplies it.
+    // On the order now; no orderId to compare, the order supplies it.
     assert Orphans.unresolved(deps.orphanStore).size() == 0;
     let filed = switch (Orders.get(deps.orders, orderId)) {
       case (?o) o.problems;
@@ -469,7 +468,7 @@ suite("charge.refunded: partial vs full", func() {
     };
 
     assert deliver(deps, partialRefundBody("evt_2", "pi_1", 125, 500)).status_code == 200;
-    // ⚠️ **On the ORDER now (#37).** No `orderId` to assert — the order it hangs off
+    // ⚠️ **On the ORDER now.** No `orderId` to assert — the order it hangs off
     // supplies that structurally, which is why the kind stopped carrying a copy.
     let order1 = switch (Orders.get(deps.orders, orderId)) {
       case (?o) o;
@@ -677,7 +676,7 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
     let resp = deliver(deps, paidBody("evt_2", "pi_2", ?goodRef, 500));
     assert resp.status_code == 200;
     assert bodyText(resp) == "queued for operator review";
-    // On the order (#37); the queue holds only order-less money now.
+    // On the order; the queue holds only order-less money now.
     assert Orphans.unresolved(deps.orphanStore).size() == 0;
     let queued = switch (Orders.get(deps.orders, orderId)) {
       case (?o) o.problems;
@@ -691,10 +690,9 @@ suite("handleWebhook: checkout happy path + dedup (§4.2)", func() {
   test("a payment for an unpayable order is a refundable obligation, never a trap", func() {
     // ⚠️ THE REGRESSION THIS PINS is a reachable `Runtime.trap` on the money-in
     // path. `markPaid`'s error arm traps, on the documented grounds that the
-    // status guard above it already checked the status. #34 deleted
-    // `#expired → #paid` from the matrix; had the guard kept admitting
-    // `#expired`, every such payment would have trapped — and a trap here is a
-    // 5xx that Stripe retries for about three days.
+    // status guard above it already checked the status. The matrix has no
+    // `#expired → #paid` edge, so a guard that admitted `#expired` would trap on every
+    // such payment — and a trap here is a 5xx that Stripe retries for about three days.
     //
     // `-Werror` cannot see that coupling: both arms typecheck whatever the matrix
     // says. This test is the coupling.
@@ -799,10 +797,8 @@ suite("handleWebhook: attribution failures are #unattributed (§4.1)", func() {
   });
 
   test("a paid amount that is not the quoted one, at any size", func() {
-    // Was two outcomes with two messages — `#belowFeeFloor` under the quote and
-    // repricing over it. #33 collapsed both into "not the amount we asked for",
-    // so 31¢ and 1000¢ against a 500¢ order are now the SAME case, and neither
-    // marks the order paid.
+    // One outcome, one message: "not the amount we asked for". 31¢ and 1000¢ against a
+    // 500¢ order are the SAME case, and neither marks the order paid.
     for (cents in ([31, 499, 501, 1_000] : [Nat]).values()) {
       let deps = freshDeps();
       withOrder(deps, #card);
@@ -856,7 +852,7 @@ suite("handleWebhook: the paid amount must EQUAL the quote (§3/§6.1)", func() 
   test("no order is ever paid at a quantity other than its locked one", func() {
     // The property behind the two tests above, stated once: whatever amount
     // arrives, an order that reaches #paid carries the quantity it was created
-    // with. This is what makes #30's tally exact.
+    // with. This is what makes the promise tally exact.
     for (cents in ([1, 31, 499, 500, 501, 1_000] : [Nat]).values()) {
       let deps = freshDeps();
       withOrder(deps, #card);
@@ -931,7 +927,7 @@ suite("handleWebhook: charge.refunded auto-resolve (§4.1)", func() {
 
     assert deliver(deps, refundBody("evt_2", "pi_1")).status_code == 200;
 
-    // On the order now (#37); the queue keeps only order-less money.
+    // On the order now; the queue keeps only order-less money.
     assert Orphans.unresolved(deps.orphanStore).size() == 0;
     let filed = switch (Orders.get(deps.orders, orderId)) {
       case (?o) o.problems;
@@ -989,10 +985,10 @@ suite("handleWebhook: the purchase ceiling", func() {
   test("a payment above the ceiling delivers nothing — an obligation instead", func() {
     let deps = { freshDeps() with maxPurchaseUsdCents = 1_000 };
     withOrder(deps, #card);
-    // Defence in depth since #33: the amount check alone would already refuse
-    // 5000¢ against a 500¢ order. The ceiling is what catches the case the
-    // equality cannot — an order created under a higher ceiling, matching its
-    // OWN quote, after the ceiling is lowered.
+    // Defence in depth: the amount check alone would already refuse 5000¢ against a
+    // 500¢ order. The ceiling is what catches the case the equality cannot — an order
+    // created under a higher ceiling, matching its OWN quote, after the ceiling is
+    // lowered.
     assert deliver(deps, paidBody("evt_1", "pi_1", ?goodRef, 5_000)).status_code == 200;
     assert statusOf(deps) == #created; // never marked paid
     let open = Orphans.unresolved(deps.orphanStore);
@@ -1001,9 +997,8 @@ suite("handleWebhook: the purchase ceiling", func() {
   });
 
   test("the ceiling's one REACHABLE case: lowered under an existing order", func() {
-    // Since #33 the paid amount must equal the quote, so a "tampered price" can
-    // no longer reach the ceiling — this is the only path left to it, and it
-    // needs no tampering at all. The order quotes 500¢ and is paid 500¢; the
+    // The paid amount must equal the quote, so a "tampered price" cannot reach the
+    // ceiling — this is the only path to it, and it needs no tampering at all. The order quotes 500¢ and is paid 500¢; the
     // ceiling moved to 100¢ underneath it. Without this branch the equality
     // check would pass and the order would deliver above a limit the operator has
     // since set. (Delete this test and `#aboveCeiling` becomes dead code.)
@@ -1109,7 +1104,7 @@ suite("a buyer's cancel is not a system expiry, THROUGH the webhook", func() {
 
     let ?settled = Orders.get(deps.orders, orderId) else Runtime.trap("order vanished");
     assert settled.status == #cancelled;
-    // Nothing expired, so no cause. This is the provenance #34 added `expiredBy` for.
+    // Nothing expired, so no cause — that is the provenance `expiredBy` carries.
     assert settled.expiredBy == null;
     // The honoured intent is pruned.
     assert not deps.cancelRequests.contains(orderId);

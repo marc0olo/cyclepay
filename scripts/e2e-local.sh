@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy-and-wiring smoke test against a real local network (issue #7).
+# Deploy-and-wiring smoke test against a real local network.
 #
 # Why this exists: the PocketIC suite installs wasms directly and never runs
 # `icp deploy`, so four things it covers perfectly well in-canister have **no
@@ -303,7 +303,7 @@ ok "http://id.ai.localhost:${GATEWAY##*:}/ → 200"
 
 # ── 6. the webhook route through the real gateway ─────────────────────────────
 step "6. signed webhook through the HTTP gateway"
-# Sealed (#11): the plaintext never becomes an ingress argument. The wrapper derives the
+# Sealed: the plaintext never becomes an ingress argument. The wrapper derives the
 # PocketIC master key from the (default, local) environment.
 STRIPE_WEBHOOK_SECRET="$WEBHOOK_SECRET" scripts/seal-secret.sh webhook-secret >/dev/null ||
   die "sealed set_webhook_secret failed (are you the controller?)"

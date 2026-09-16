@@ -467,7 +467,7 @@ export interface _SERVICE {
    */
   'add_allowed_buyer' : ActorMethod<[Principal], Result_11>,
   /**
-   * / Read **any** order by id (admin, #38).
+   * / Read **any** order by id (admin).
    * /
    * / ⚠️ **A deliberate exception to §2's "existence is not revealed to non-owners", so it
    * / audits itself on every use.** `get_order` is owner-scoped with no admin bypass, so
@@ -481,11 +481,11 @@ export interface _SERVICE {
    */
   'admin_order' : ActorMethod<[OrderId], [] | [Order]>,
   /**
-   * / Filtered, cursor-paginated order list (admin, #38).
+   * / Filtered, cursor-paginated order list (admin).
    * /
    * / ⚠️ **Do not sort by `createdAtNs`.** Ordering is by order id, which is arbitrary
    * / because ids are random — and time-ordering would mean materialising the filtered set
-   * / first, which is the unbounded scan #63 removed. Narrow with `createdFromNs` instead.
+   * / first, which is an unbounded scan. Narrow with `createdFromNs` instead.
    * /
    * / ⚠️ **Deliberately NOT audited, unlike `admin_order` and `admin_receipt` — do not
    * / "fix" the inconsistency.** Their line records *"an operator looked at THIS person's
@@ -500,7 +500,7 @@ export interface _SERVICE {
    */
   'admin_orders' : ActorMethod<[Filter, [] | [OrderId], bigint], Page__1>,
   /**
-   * / The same receipt, for **any** order (admin, #38) — and **audited**, which is the
+   * / The same receipt, for **any** order (admin) — and **audited**, which is the
    * / whole reason it is a separate method.
    * /
    * / ⚠️ **The audit is not about existence disclosure; it is about an operator leaving a
@@ -545,19 +545,17 @@ export interface _SERVICE {
    */
   'allowed_buyers' : ActorMethod<[], Array<Principal>>,
   /**
-   * / The operational trail, **paginated** (#38).
+   * / The operational trail, **paginated**.
    * /
-   * / ⚠️ **Pagination became necessary the moment #37 removed the ring.** The bound used
-   * / to be the 4,096-entry ring, so the response size took care of itself; retention is
-   * / now total. Removing the cap moved the problem from *"history is lossy"* to *"the
-   * / query cannot answer"* — both real, and removing the ring only fixed the first.
+   * / ⚠️ **Retention is total, which is why this has to paginate.** With no bound on the
+   * / store, an unpaginated read is on a path to a response nobody can receive.
    * /
    * / Cursor on `seq`, which now has **no gaps**: gaps used to be how a reader detected
    * / drops, and there are no drops.
    */
   'audit_log' : ActorMethod<[[] | [bigint], bigint], Page__2>,
   /**
-   * / **Admin: the audit trail, newest first** (#68).
+   * / **Admin: the audit trail, newest first**.
    * /
    * / The same events `audit_log` returns, in the order an operator reads them: someone
    * / opening the console wants what just happened, and the ascending view starts at the
@@ -601,7 +599,7 @@ export interface _SERVICE {
   'cancel_order' : ActorMethod<[OrderId], Result_16>,
   /**
    * / Public — the frontend renders the amount tiles from this. There is no link
-   * / to render: the canister creates a session per order (#33).
+   * / to render: the canister creates a session per order.
    */
   'card_tiers' : ActorMethod<[], Array<Tier>>,
   /**
@@ -644,7 +642,7 @@ export interface _SERVICE {
    */
   'cycles_status' : ActorMethod<[], { 'floor' : bigint, 'balance' : bigint }>,
   /**
-   * / Orders past `alertAfterNs` and still undelivered (admin, paged by #38).
+   * / Orders past `alertAfterNs` and still undelivered (admin, paged).
    * /
    * / The worklist behind `operator_summary.deliveriesDelayed`: one entry per order,
    * / with the journal figures a human needs to decide whether it is stuck or slow.
@@ -659,7 +657,7 @@ export interface _SERVICE {
    */
   'delivery_journal' : ActorMethod<[OrderId], [] | [JournalEntry]>,
   /**
-   * / The public trust figures (#39) — anonymous, safe on a landing page.
+   * / The public trust figures — anonymous, safe on a landing page.
    * /
    * / ⚠️ **The admission test is "what does a POLLER learn from the deltas?", not "does this
    * / field name a buyer?"** Cumulative counters are differentiable: anyone sampling this
@@ -678,7 +676,7 @@ export interface _SERVICE {
    * / Orders are never deleted, but a reinstall replaces the state, so a launch-day figure
    * / starts at zero whichever way it is built.
    * /
-   * / ⚠️ **The renderer must show that zero — do NOT add a threshold.** #39 first said "0
+   * / ⚠️ **The renderer must show that zero — do NOT add a threshold.** Saying "0
    * / orders delivered is worse than no badge" and that was rejected: an absent number is
    * / indistinguishable from a withheld one, and a rule that hides the figure exactly when
    * / the news is bad is a misleading presentation rather than a neutral one. This comment
@@ -719,7 +717,7 @@ export interface _SERVICE {
    */
   'expected_livemode' : ActorMethod<[], [] | [boolean]>,
   /**
-   * / **Admin: expire one `#created` order, releasing its reserve capacity** (#52).
+   * / **Admin: expire one `#created` order, releasing its reserve capacity**.
    * /
    * / ⚠️ **The lever for the class the sweep structurally CANNOT see**, so do not delete it
    * / as redundant with the sweep: an order whose session-create response was lost carries
@@ -783,15 +781,15 @@ export interface _SERVICE {
   >,
   /**
    * / Order history for the caller (§2, fixes the lost-receipt problem).
-   * / The caller's own orders, **paginated** (#38).
+   * / The caller's own orders, **paginated**.
    * /
    * / ⚠️ **This was a latent trap on the BUYER path, not an ergonomic wart.** It returned
    * / every order the caller owns, unbounded, and a query response is capped at ~2 MB —
    * / so an oversized read does not degrade, it **traps**. The open-order cap of 1 means
    * / a buyer accumulates them slowly, but nothing bounded it, and nothing drops orders
-   * / under #37.
+   * / on the order.
    * /
-   * / ⚠️ **Paging bounded the RESPONSE; `Orders.ownerPage` bounds the WORK (#70).** The
+   * / ⚠️ **Paging bounded the RESPONSE; `Orders.ownerPage` bounds the WORK.** The
    * / admin pager's owner filter walks every principal's orders to find one principal's,
    * / so this used to cost O(all orders ever created) in a single message — a page cap on
    * / a ~2 MB response, against a limit that is actually instructions. `ownerPage` walks
@@ -799,9 +797,9 @@ export interface _SERVICE {
    */
   'list_orders' : ActorMethod<[[] | [OrderId], bigint], Page__1>,
   /**
-   * / "Is anything wrong right now" in ONE call (#68).
+   * / "Is anything wrong right now" in ONE call.
    * /
-   * / ⚠️ **Public is a decision, not a default: #3's alerting needs no credentials.** What
+   * / ⚠️ **Public is a decision, not a default: alerting needs no credentials.** What
    * / reaches a human at 03:00 is a cron on the public queries, and an admin-gated summary
    * / would put that back on a credentialed cron. Everything here is a COUNT, never an
    * / entry, and `reserve_status` already publishes `totalOrders`, `openOrders`,
@@ -847,7 +845,7 @@ export interface _SERVICE {
    * / `orphansUnresolved` walks retained orphan history — both grow only while obligations
    * / go uncleared, and an orphan costs a real payment or the signing secret to create
    * / (`Orphans.add`), so neither is attacker-inflatable. Not O(1), and not the
-   * / grows-with-successful-business shape #69 and #70 removed.
+   * / grows-with-successful-business shape this avoids.
    */
   'operator_summary' : ActorMethod<
     [],
@@ -934,7 +932,7 @@ export interface _SERVICE {
     }
   >,
   /**
-   * / How much is outstanding, as two numbers rather than a collection (#38).
+   * / How much is outstanding, as two numbers rather than a collection.
    * /
    * / ⚠️ **The shape to poll, and the reason it exists separately from the list.** A
    * / paginated detail query needs a cheap total beside it or a monitor pages through
@@ -950,7 +948,7 @@ export interface _SERVICE {
     { 'orders' : bigint, 'unresolved' : bigint }
   >,
   /**
-   * / Manual delivery kick — **admin, or the order's own owner** (#30 PR-B).
+   * / Manual delivery kick — **admin, or the order's own owner**.
    * /
    * / Safe to spam by construction: every step is journalled, deduplicated, idempotent
    * / and single-flighted. A page refresh heals a stuck order in seconds rather than
@@ -968,7 +966,7 @@ export interface _SERVICE {
    * / closed the tab is exactly who most needs us to finish.
    * /
    * / ⚠️ **An owner kicking their own order is NOT audited**, because the log drops
-   * / nothing (#37) and a refresh loop would be permanent state growth driven by a
+   * / nothing and a refresh loop would be permanent state growth driven by a
    * / caller. An admin kick is audited — it is an ops action on someone else's order.
    */
   'process_order' : ActorMethod<[OrderId], Result_13>,
@@ -1005,8 +1003,8 @@ export interface _SERVICE {
   /**
    * / Record that an escalated order's cycles **did** reach the buyer (admin, §7).
    * /
-   * / The counterpart to `abandon_order`, and the reason #30 PR-B added the
-   * / `#needsReview → #delivered` edge. `#needsReview` means "we could not establish
+   * / The counterpart to `abandon_order`, and the reason the
+   * / `#needsReview → #delivered` edge exists. `#needsReview` means "we could not establish
    * / whether the transfer landed"; when the operator establishes on the cycles
    * / ledger that it did, this is how they say so. Without it their only lever was
    * / `abandon_order`, which files a delivered order as abandoned and audits a refund
@@ -1103,7 +1101,7 @@ export interface _SERVICE {
    */
   'refresh_reserve' : ActorMethod<[], bigint>,
   /**
-   * / Refusal tallies, and whether the gate is refusing right now (#61).
+   * / Refusal tallies, and whether the gate is refusing right now.
    * /
    * / ⚠️ **Public, like every other monitoring surface here** — operational state
    * / is public by design; the webhook secret is the only secret in the system.
@@ -1133,7 +1131,7 @@ export interface _SERVICE {
    */
   'remove_allowed_buyer' : ActorMethod<[Principal], Result_11>,
   /**
-   * / Reserve solvency and order counters, public (#30 PR-B).
+   * / Reserve solvency and order counters, public.
    * /
    * / `reserveFloor` − `promisedTotal` = `availableToSell`, in one answer, so "the ledger
    * / says 100 T and the gateway will sell 0" is diagnosable at a glance (§3.2).
@@ -1182,11 +1180,11 @@ export interface _SERVICE {
    * / fate they established on the cycles ledger.
    * /
    * / ⚠️ **This closes ORPHAN entries only — `#unattributed` and `#unprocessable`.**
-   * / Everything order-bound moved onto the orders in #37 and is closed by
+   * / Everything order-bound lives on the order and is closed by
    * / `resolve_problem`; pointing an operator here for those would be pointing them at the
    * / wrong method. Resolving an entry never transitions the order — see `Orphans`'s
    * / header.
-   * / Close **one** order-bound problem an operator has dealt with (#37).
+   * / Close **one** order-bound problem an operator has dealt with.
    * /
    * / ⚠️ **`paymentRef` is the selector, and dropping it over-resolves.** `sameShape`
    * / deliberately allows two unresolved `#duplicate` problems on one order with different
@@ -1213,7 +1211,7 @@ export interface _SERVICE {
    * /
    * / ⚠️ **This is no longer the rail's on/off switch.** An empty list used to
    * / pause the rail, and the audit line said "CARD RAIL PAUSED". With custom
-   * / amounts (#33) a buyer can order without any preset, so an empty list stops
+   * / amounts a buyer can order without any preset, so an empty list stops
    * / nothing — it just shows no tiles. The switch is both Stripe secrets being
    * / provisioned; `railsLive` is where that lives.
    */
@@ -1234,7 +1232,7 @@ export interface _SERVICE {
    * / nothing of value is at stake — and it is the default, so a fresh canister
    * / starts there.
    * /
-   * / ⚠️ **The other half of the divisor's mutual refusal (#99 2a).** While a
+   * / ⚠️ **The other half of the divisor's mutual refusal.** While a
    * / simulation divisor is set, this refuses anything but `?false`: live mode
    * / takes real money and delivers scaled cycles, and `null` accepts live
    * / payments too. Mutual, so **neither order of operations** reaches the state
@@ -1254,7 +1252,7 @@ export interface _SERVICE {
    * / Adjust pricing params (§7): fee formula, staleness window, delta guard.
    * / Validated atomically — a bad config never partially applies.
    * / ⚠️ **Three divisor guards live here rather than in `Pricing.validateConfig`,
-   * / because each needs context that module cannot see** (#99). All three are
+   * / because each needs context that module cannot see**. All three are
    * / checked before anything is written, so a bad config never partially applies.
    */
   'set_pricing_config' : ActorMethod<[Config], Result_4>,
@@ -1265,8 +1263,8 @@ export interface _SERVICE {
    */
   'set_recovery_interval' : ActorMethod<[bigint], Result_3>,
   /**
-   * / Provision or rotate the restricted Stripe API key (#33), sealed exactly as
-   * / `set_webhook_secret` is — same vetKey, one derivation for both (#11).
+   * / Provision or rotate the restricted Stripe API key, sealed exactly as
+   * / `set_webhook_secret` is — same vetKey, one derivation for both.
    * /
    * / The key to seal is a **restricted key** (`rk_...`) with *Checkout Sessions = Write*
    * / and everything else None; `Secret.mo` records why that scope, not this storage, is
@@ -1274,11 +1272,11 @@ export interface _SERVICE {
    */
   'set_stripe_api_key' : ActorMethod<[Uint8Array], Result_1>,
   /**
-   * / Set the origin Stripe returns buyers to (#33) — admin.
+   * / Set the origin Stripe returns buyers to — admin.
    * /
    * / Validated at set time rather than at session-create time, so a bad value
    * / fails in front of the operator who typed it instead of breaking every
-   * / purchase later. Until a domain is chosen (#40/#23) this is the canister's
+   * / purchase later. Until a domain is chosen this is the canister's
    * / own asset origin.
    */
   'set_stripe_origin' : ActorMethod<[string], Result_2>,
@@ -1291,13 +1289,13 @@ export interface _SERVICE {
    * / Provision or rotate the Stripe webhook signing secret (§7).
    * /
    * / Takes the full `whsec_...` string — the whole string, prefix included, is the HMAC
-   * / key — **sealed to this canister's vetKD public key** (#11). `scripts/seal-secret.sh`
+   * / key — **sealed to this canister's vetKD public key**. `scripts/seal-secret.sh`
    * / produces the argument; the plaintext never travels.
    * /
    * / ⚠️ **This closed the §7 provisioning exposure, and the note that used to sit here
    * / saying otherwise is gone rather than softened.** The ingress argument is now
    * / ciphertext, so the boundary node that terminates TLS sees nothing usable. What
-   * / remains is the at-rest exposure, which is the confidential subnet's job (#2) and not
+   * / remains is the at-rest exposure, which is the confidential subnet's job and not
    * / something rotation can help with.
    */
   'set_webhook_secret' : ActorMethod<[Uint8Array], Result_1>,
@@ -1316,7 +1314,7 @@ export interface _SERVICE {
    */
   'stripe_origin' : ActorMethod<[], [] | [string]>,
   /**
-   * / The outcall transform (#33). Referenced by name in the request, so it has to
+   * / The outcall transform. Referenced by name in the request, so it has to
    * / be a public `shared query` on the actor even though nothing should ever call
    * / it directly.
    * /
@@ -1335,9 +1333,9 @@ export interface _SERVICE {
    */
   'webhook_secret_status' : ActorMethod<[], Status>,
   /**
-   * / Return the reserve to the caller, refusing while anything is owed (#103).
+   * / Return the reserve to the caller, refusing while anything is owed.
    * /
-   * / ⚠️ **Why this exists at all.** #30 recorded no withdraw lever because *"the app is
+   * / ⚠️ **Why this exists at all.** There was no withdraw lever, on the grounds that *"the app is
    * / not in production and an over-funded local reserve costs nothing"* — true then, and
    * / false the moment the reserve is funded on mainnet, where it is real money in a
    * / ledger account with no way back. Decommissioning, or over-funding once, was a

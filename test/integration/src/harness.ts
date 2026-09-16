@@ -108,14 +108,12 @@ export const XRC_DECIMALS = 9;
 export const ICP_USD_RATE = 4_550_000_000n; // $4.55, 9 decimals
 export const TIER_USD_CENTS = 500n;
 export const TIER_LOCKED_CYCLES = 3_500_000_000_000n;
-/// The cycles ledger's fee. Since #30 PR-A it is charged on the **transfer** out
-/// of the reserve rather than on a `deposit` into the buyer's account, so a
-/// delivery still credits exactly `lockedCycles - CYCLES_LEDGER_FEE` — the same
-/// number, charged on a different operation, measured at 100 M either way.
+/// The cycles ledger's fee. Charged on the **transfer** out of the reserve, not on a
+/// `deposit` into the buyer's account, so a delivery credits exactly
+/// `lockedCycles - CYCLES_LEDGER_FEE` — 100 M.
 ///
-/// The name lost `DEPOSIT` because the operation changed; the constant is still
-/// a test-side copy of what `icrc1_fee` reports, and the suite asserts they
-/// agree rather than trusting this.
+/// The constant is a test-side copy of what `icrc1_fee` reports, and the suite asserts
+/// the two agree rather than trusting this.
 export const CYCLES_LEDGER_FEE = 100_000_000n;
 
 export const WEBHOOK_SECRET = 'whsec_8fJ3kQ9mN2pX7vR4tL6wY1zB5cD0eH';
@@ -125,17 +123,19 @@ export const user = createIdentity('cyclepay integration user');
 /// A second authenticated buyer, and the ONLY identity that can tell an
 /// owner-scoped method from an open one: `admin` is a controller (so it takes every
 /// admin branch) and `asAnon` owns nothing (so it is refused by accident rather than
-/// by the ownership check). Added for #30 PR-B's owner-scoped `process_order`.
+/// by the ownership check) — which is what `process_order`'s owner scoping needs.
 export const stranger = createIdentity('cyclepay integration stranger');
 
-/// Allow-list every identity that buys in these suites (#99 2b).
+/// Allow-list every identity that buys in these suites.
 ///
 /// ⚠️ **Required, not hygiene.** These suites fund a reserve and accept test-mode
 /// payments, which is exactly `Gate.Reason.unboundedGiveaway` — the faucet state —
 /// so without this `create_order` refuses before it ever reaches a Stripe outcall.
-/// 68 of 97 tests failed that way when the refusal first landed, which is the
-/// check being non-vacuous: a guard no test ever trips is a green check pointed at
-/// an untaken path.
+/// ⚠️ **Re-measurable rather than a recorded count**: delete this call and every
+/// order-creating scenario fails at `create_order` with `#unboundedGiveaway`. That is
+/// the guard being non-vacuous — one no test ever trips is a green check pointed at an
+/// untaken path — and it is worth re-running rather than trusting a number written here,
+/// which goes stale as scenarios are added.
 ///
 /// All three, including `admin`: a controller is not exempt, because the gate
 /// decides admission and knows nothing about controllers.
@@ -145,7 +145,7 @@ export async function allowTestBuyers(gw: Gateway): Promise<void> {
     // Idempotent by intent: a suite that provisions twice must not fail on a principal
     // that is already listed.
     //
-    // ⚠️ **Matched on the TAG, not on a substring (#123).** This read
+    // ⚠️ **Matched on the TAG, not on a substring.** This read
     // `.err.includes('already an allowed buyer')`, so rewording that sentence would have
     // turned an idempotent provision step into a thrown error in every suite — and the
     // message is buyer-facing prose nobody would think of as an API.
@@ -169,7 +169,7 @@ export interface Gateway {
   /// interruption tests to catch a money path mid-flight.
   deferredUser: DeferredActor<BackendService>;
   /// Admin identity, deferred — needed by any admin method that makes an outcall, so the
-  /// outcall can be answered while the call is still in flight. `expire_order` (#52) is
+  /// outcall can be answered while the call is still in flight. `expire_order` is
   /// the first; without it the ingress polls for 100 rounds and reports
   /// `BadIngressMessage` rather than "your outcall was never answered".
   deferredAdmin: DeferredActor<BackendService>;
@@ -376,8 +376,8 @@ export async function setCmcRate(
 ///
 /// Fund the gateway's reserve, and by default make it SELLABLE.
 ///
-/// ⚠️ **The transfer alone is not enough, and this is the trap #30 PR-B introduced
-/// on purpose.** Solvency is decided against `reserveFloor`, a maintained lower bound
+/// ⚠️ **The transfer alone is not enough, and that is deliberate.** Solvency is
+/// decided against `reserveFloor`, a maintained lower bound
 /// that starts at zero and only rises when the canister looks at the ledger. Funding
 /// without observing produces a gateway that refuses every order with
 /// `#reserveShort{available = 0}` against a fully funded account — which shows up
@@ -627,16 +627,11 @@ export function statusKey(holder: { status: StatusVariant }): OrderStatusKey {
   return Object.keys(holder.status)[0] as OrderStatusKey;
 }
 
-/// The order's own problems (#37), as the owner sees them.
-///
-/// ⚠️ **Owner-scoped, like `orderStatus`.** Reading another principal's order needs
-/// #38's admin view, which does not exist yet — so scenarios asserting a problem must
-/// either own the order or read it off the mutating call's return value.
 /// Every delayed delivery, paged to exhaustion.
 ///
-/// ⚠️ **Paging this exhausts the RESPONSE, not the scan.** `delayed_deliveries` still
-/// walks every order — #63 owns bounding that — so a full walk here is bounded by the
-/// number of delayed orders, not by the page size. Two different limits.
+/// ⚠️ **Paging this exhausts the RESPONSE, not the scan.** `delayed_deliveries` walks
+/// every order, so a full walk here is bounded by the number of delayed orders, not by
+/// the page size. Two different limits.
 export async function allDelayedDeliveries(gw: Gateway): Promise<DelayedDelivery[]> {
   const out: DelayedDelivery[] = [];
   let cursor: Opt<string> = [];
@@ -651,7 +646,7 @@ export async function allDelayedDeliveries(gw: Gateway): Promise<DelayedDelivery
 /// Every audit event, paged.
 ///
 /// ⚠️ **A helper rather than 23 edited call sites, and that is the right shape anyway.**
-/// `audit_log` is paginated since #38, and a scenario that reads only the first page
+/// `audit_log` is paginated, and a scenario that reads only the first page
 /// asserts about a prefix while reading like it asserts about the log — the truncated-run
 /// fault in a new place. Paging to exhaustion here means no scenario can accidentally
 /// make that mistake.
@@ -678,6 +673,12 @@ export async function allOwnedOrders(gw: Gateway): Promise<Order[]> {
   }
 }
 
+/// The order's own problems, as the owner sees them.
+///
+/// ⚠️ **Owner-scoped, like `orderStatus`**, because it reads `get_order` as the buyer.
+/// Another principal's order is visible only through `admin_orders`, so a scenario
+/// asserting a problem must either own the order or read it off the mutating call's
+/// return value.
 export async function orderProblems(gw: Gateway, orderId: string): Promise<Problem[]> {
   const result = await gw.asUser.get_order(orderId);
   if (result.length === 0) throw new Error(`order ${orderId} not visible to user`);
@@ -736,18 +737,17 @@ export function decodeBody(response: { body: Uint8Array | number[] }): string {
 
 
 
-// ── HTTPS outcalls (#33) ──────────────────────────────────────────────────────
+// ── HTTPS outcalls ──────────────────────────────────────────────────────
 //
 // PocketIC does not perform real outcalls: it parks each one and lets the test
 // answer it. That is *better* coverage than a live call for the request shape,
-// because the exact bytes the canister sends can be asserted — and nothing
-// pinned them before #33.
+// because the exact bytes the canister sends can be asserted — nothing else pins them.
 //
 // ⚠️ It is a MOCK, so two things it cannot tell you: the real cycle cost, and
 // whether the size cap is big enough for a real Stripe response. Both are first
 // observable in a manual run.
 
-/// Is this parked outcall the recovery sweep's session retrieve (#52), rather than
+/// Is this parked outcall the recovery sweep's session retrieve, rather than
 /// something a scenario asked for?
 ///
 /// The retrieve is the only **GET** the canister makes: creating a session is a POST to
@@ -770,12 +770,11 @@ export async function answerSweepRetrieveOpen(gw: Gateway, outcall: PendingHttps
 /// Returns the pending request so a test can assert on the URL, headers and body the
 /// canister actually built.
 ///
-/// ⚠️ **This used to return `pending[0]`, and #52 made that wrong.** The implicit
-/// contract was "there is only one outcall in flight" — true while `create_order` and
-/// `cancel_order` were the only producers. The recovery sweep is now a second, *background*
-/// producer: any scenario that advances the clock past a lingering `#created` order's
-/// deadline plus the grace makes it retrieve that order's session. Taking the first parked
-/// call then hands a scenario the sweep's GET and it asserts against the wrong request.
+/// ⚠️ **Never return `pending[0]`.** There can be more than one outcall in flight: the
+/// recovery sweep is a *background* producer, so any scenario that advances the clock
+/// past a lingering `#created` order's deadline plus the grace makes it retrieve that
+/// order's session. Taking the first parked call hands a scenario the sweep's GET and it
+/// asserts against the wrong request.
 ///
 /// ⚠️ **Strays are answered here rather than left for `afterEach`.** A parked outcall is
 /// an in-flight message; leaving it parked mid-scenario lets later ticks stack on it, and
@@ -835,7 +834,7 @@ export async function maybePendingOutcall(
   return undefined;
 }
 
-/// Wait for the sweep's session retrieve specifically (#52) — the mirror of
+/// Wait for the sweep's session retrieve specifically — the mirror of
 /// `awaitPendingOutcall`, which skips exactly this one.
 export async function awaitSweepRetrieve(gw: Gateway, rounds = 40): Promise<PendingHttpsOutcall> {
   for (let i = 0; i < rounds; i += 1) {
@@ -979,8 +978,8 @@ export async function answerOutcall(
 /// header through, the whole suite still passed. So the mock does not enforce
 /// consensus the way a real subnet does, and such a scenario asserts nothing.
 ///
-/// #33's claim stands: the transform is first observable in a manual run against
-/// real Stripe, where the failure is `No consensus could be reached` and the
+/// The transform is first observable in a manual run against real Stripe, where the
+/// failure is `No consensus could be reached` and the
 /// symptom is the entire rail down. `Session.classifyFailure` names that case so
 /// the audit log points at the transform when it happens.
 ///
@@ -1001,7 +1000,7 @@ export function sessionCreatedBody(opts: {
   });
 }
 
-/// `checkout.session.expired`, the only thing that expires an order (#33).
+/// `checkout.session.expired`, the only thing that expires an order.
 export function sessionExpiredBody(opts: {
   eventId: string;
   sessionId: string;
@@ -1035,7 +1034,7 @@ export function outcallBody(outcall: PendingHttpsOutcall): string {
   return new TextDecoder().decode(outcall.body);
 }
 
-/// `create_order`, answering the Checkout Session outcall it now blocks on (#33).
+/// `create_order`, answering the Checkout Session outcall it now blocks on.
 ///
 /// ⚠️ **Every successful `create_order` needs this.** The method awaits an HTTPS
 /// outcall before it returns, so a plain `await gw.asUser.create_order(...)`
@@ -1065,12 +1064,10 @@ export async function createOrderWithSession(
     opts.expiresAtSeconds ?? Number(await nowSeconds(gw.pic)) + 2_100;
   // ⚠️ **A UNIQUE session id per order, derived from the order it belongs to.**
   //
-  // `sessionCreatedBody` defaults to `cs_test_a1b2`, so before this every order in the
-  // suite shared one session id. That was invisible while nothing looked a session up by
-  // id — and #52's sweep does: its retrieve URL carries the id, so a scenario answering
-  // "expired" for its own order was settling whichever neighbour the scan reached first,
-  // while its own order sat `#created`. Three scenarios failed that way before the cause
-  // was found.
+  // `sessionCreatedBody` defaults to `cs_test_a1b2`, so a suite that takes the default
+  // gives every order one session id. The recovery sweep's retrieve URL carries the id,
+  // so a scenario answering "expired" for its own order would settle whichever
+  // neighbour the scan reached first while its own order sat `#created`.
   //
   // Derived rather than counted, so a session id in a failure message names the order it
   // belongs to instead of an anonymous sequence number. `client_reference_id` is
@@ -1086,7 +1083,7 @@ export async function createOrderWithSession(
   return settle();
 }
 
-/// `cancel_order`, answering the expire outcall it now blocks on (#33).
+/// `cancel_order`, answering the expire outcall it now blocks on.
 ///
 /// Cancellation is atomic with Stripe: the session is expired first, so this is
 /// an outcall too. `expireStatus` drives the three outcomes — 200 cancels, a
@@ -1115,11 +1112,9 @@ export async function cancelOrderWithExpire(
 
 /// `<principal>_<orderId>` — the attribution reference.
 ///
-/// Derived here because #33 dropped it from `create_order`'s response: the
-/// canister sets `client_reference_id` through the Stripe API now, so handing it
-/// back was a Payment-Link relic. Building it in the test is also stricter — it
-/// asserts the canister and the suite agree on the shape rather than trusting
-/// whatever the canister returned.
+/// Derived here rather than read off `create_order`'s response, which does not return
+/// it: the canister sets `client_reference_id` through the Stripe API. Building it in the
+/// test is also stricter — it asserts the canister and the suite agree on the shape.
 export function clientReferenceFor(orderId: string, who = user): string {
   return `${who.getPrincipal().toText()}_${orderId}`;
 }

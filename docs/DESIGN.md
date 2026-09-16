@@ -177,7 +177,7 @@ them a projection that can be rebuilt rather than a second source of truth.
 
 `Cancelled` and `Expired` are both terminal and unpayable, so they differ in exactly one
 thing: **who decided**. The buyer needs that difference — being told their order expired
-when they cancelled it is the defect #34 exists to fix — and `expiredBy` is where it is
+when they cancelled it is the defect `expiredBy` exists to prevent — and it is where that is
 recorded.
 
 ⚠️ **The write is racy by construction and that is not a bug to remove.** Cancelling
@@ -239,7 +239,7 @@ the balance:
   is the only way out, but it serves both:
   - **delivery**, to a buyer's own account, bounded by that order's promise, which the gate
     already admitted against this floor;
-  - **withdrawal** (#103), to a controller, guarded on there being **no promise-holder at
+  - **withdrawal**, to a controller, guarded on there being **no promise-holder at
     all** — so nothing can be owed to a buyer when it runs — and refused again after its
     own balance read, because the floor is still full across that await.
 
@@ -375,7 +375,7 @@ refund, read customers, or reach the account.
 is sealed (§7.3).** HMAC is symmetric, so *verify = forge*: anything that can check a
 signature can forge one, and encrypting the stored blob would only move the problem to the
 key that decrypts it. The plaintext therefore has to exist in memory at verification time,
-which is why at-rest confidentiality is a subnet property (#2) rather than something this
+which is why at-rest confidentiality is a subnet property rather than something this
 canister can solve.
 
 ⚠️ **The two exposures are separate and were routinely conflated.** *In transit* — a
@@ -383,7 +383,7 @@ secret arriving as an ingress argument, seen by the TLS-terminating boundary nod
 anything reading a shell history or CI log — is closed, by vetKD sealing. *At rest* — the
 value living in replicated, checkpointed canister memory — is not closed **by sealing**,
 and cannot be; it is closed by the confidential subnet instead, whose checkpoint and
-state-sync paths are confirmed confidential (owner, 2026-09-11). #11
+state-sync paths are confirmed confidential. Sealing
 works through why the obvious fix (store ciphertext, derive per use) fails on both
 economics and mechanism: at ~26 B cycles per derivation it would cost roughly 3.5 cents
 per webhook on an at-cost rail, and a checkpoint captures the heap, so a cached derived
@@ -460,7 +460,7 @@ never prunes. ⚠️ **These refusals are not inadmissible.** `expire_order` alr
 two of its own (`order.expireRaced`, `order.expireFailed`): both are admin-gated and
 follow a real outcall, and what the rule excludes is a *pre-commit refusal line fed by a
 free caller*, which is a different thing. So the guidance lives here and in the arm docs
-in `Orders.mo`, and #97's console renders per-case copy off the tag when it lands.
+in `Orders.mo`, and a console can render per-case copy off the tag.
 
 ⚠️ **What an operator loses is advisory only: the refusal IS the guard.** Misreading
 `#deliveryOutstanding` cannot cause the double payout, because the lever has already
@@ -480,7 +480,7 @@ refused. That is what makes the trade acceptable while there is no console.
 | `#notUnderReview` | Only an under-review order can be recorded as delivered | A live order delivers on its own |
 | `#transitionRefused` | The state machine refused the transition | Re-read the order; something moved it |
 
-`cancel_order`'s errors are typed too since #123 — §7.2 is the rule that let its copy move to the frontend, and what that rule refuses.
+`cancel_order`'s errors are typed too — §7.2 is the rule that let its copy move to the frontend, and what that rule refuses.
 
 ### §7.2 — Facts stay in the canister; copy may leave it
 
@@ -488,9 +488,9 @@ refused. That is what makes the trade acceptable while there is no console.
 a refusal's copy may live in the frontend **provided its payload carries every fact the
 sentence asserted.** Where the copy *is* the facts, it stays on-chain.
 
-`cancel_order` (#123) satisfies it: `#notCancellable` and `#settledInFlight` carry the
+`cancel_order` satisfies it: `#notCancellable` and `#settledInFlight` carry the
 status their sentences name, `#sessionNotClosed` is deliberately one tag for three
-indistinguishable causes (§4.3 / #118) — which is exactly what its sentence said — and
+indistinguishable causes (§4.3) — which is exactly what its sentence said — and
 nothing else in the seven asserted a fact beyond "this happened".
 
 ⚠️ **What is given up, stated because it is real.** With prose from the canister, the
@@ -555,7 +555,7 @@ ever deleted, or starts skipping, or stops collecting vectors, the acceptance re
 prose alone and nothing says so. The count floor and the abort-on-missing-submodule guard
 in that script exist for exactly that reason — a vacuous pass there is worse than a red
 gate. ⚠️ A **`moc` upgrade is the change most likely to surface this** (see the
-endpoint-doc inversion in #150): if a bump makes the vendored packages fail to compile, the
+endpoint-doc inversion below): if a bump makes the vendored packages fail to compile, the
 tempting fix is to skip their suites and move on, which quietly removes the only thing
 standing behind this section.
 
@@ -615,10 +615,9 @@ plumbing at every include site to work around by-value semantics.
 ⚠️ **Two counts in this section have different denominators, so each is stated with its
 instrument.** The seven records hold **21 `var` fields** between them — that is the
 number every claim in this section is about. `deployed/backend.most` separately declares
-**19 top-level stable names**, of which seven are those records; the figures moved
-independently (#130 removed two standalone stable `let`s that were never in a record,
-changing the second and not the first). A bare number here is how an edit lands on the
-quantity nobody measured.
+**19 top-level stable names**, of which seven are those records. The two figures move
+independently, so a bare number here is how an edit lands on the quantity nobody
+measured.
 
 ⚠️ **`webhookPaidOrder` uses a TAKE-ONCE accessor**, not a get/set pair: the dispatcher
 sets it and the mixin consumes it in the same message, so reading and clearing as one
@@ -633,7 +632,7 @@ is about MUTABLE state; a snapshot of an immutable value is the value.
 ⚠️⚠️ **Grouping also closed those fields to future extension, and THAT cost outlives the
 one-time drop below.** Before the split each of those 21 was an actor-level `var`, and
 adding another was free. Now a new field inside any `*State` record needs the migration
-chain this project has never had (§11 / #32) — measured both ways on the branch that
+chain this project has never had (§11) — measured both ways on the branch that
 introduced them:
 
 | Change | `mops check` |
@@ -651,7 +650,7 @@ field addition turns into a migration.
 ⚠️ **Grouping moved the stable shape, and that was a deliberate call, taken once.**
 Twenty-one stable variables were dropped rather than migrated, across two grouping passes — one per `var` field, all seven records. Legitimate only because
 there is no deployment whose data matters: pre-launch, with no migration chain (§11 /
-#32), reinstall is the documented loop. `scripts/check-stable-promotion.sh` refuses such
+§11), reinstall is the documented loop. `scripts/check-stable-promotion.sh` refuses such
 a promotion unless `--accept-reinstall` is passed, and prints which variables are lost —
 so the decision is stated rather than absorbed. **After the first deployment worth
 keeping, this is no longer available** and a change of this shape needs the chain.
@@ -679,7 +678,7 @@ keeping, this is no longer available** and a change of this shape needs the chai
    ⚠️ **What actually matters is the NAME, not the location, and an earlier version of
    this rule said "never moved to `Types.mo`" — absolute beyond its own reasoning.**
    Candid derives a type's published name from its declaration, so a move that keeps the
-   name keeps the interface: #134 moved `Amount` to `Types.mo` so `Purchase.plan` could
+   name keeps the interface: `Amount` lives in `Types.mo` so `Purchase.plan` can
    name it, and `type Amount` is byte-identical in `backend.did` before and after. A
    RENAME is what moves the interface. The acceptance test below is what tells the two
    apart, so relocate freely and let it decide.

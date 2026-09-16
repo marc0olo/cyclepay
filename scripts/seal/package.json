@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Seals a Stripe secret to the backend's vetKD public key, offline (#11)",
+  "description": "Seals a Stripe secret to the backend's vetKD public key, offline",
   "scripts": {
     "seal": "tsx src/index.ts",
     "typecheck": "tsc --noEmit"

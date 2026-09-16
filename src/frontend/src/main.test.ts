@@ -40,15 +40,14 @@ type Quote = {
   cycles: bigint | undefined;
 };
 
-/// $10 — the new floor (#33). The old $5 fixture is below it, so `Gate.admit`
-/// would refuse it and every downstream assertion would be about the wrong bound.
+/// $10 — the gate's floor. ⚠️ **Nothing below it**: `Gate.admit` refuses a cheaper
+/// amount, so every downstream assertion would be about the wrong bound.
 const TIER_CENTS = 1_000n;
 const TIER_CYCLES = 3_500_000_000_000n;
 
 const state = {
   tiers: [{ id: "tier10", usdCents: TIER_CENTS }],
-  /// The diagnostics panel's reads (#68). None of these had a surface before, so none
-  /// had a mock either.
+  /// The diagnostics panel's reads.
   health: true,
   /// Whether the diagnostics reads are refused, for the panel's locked path. A flag
   /// rather than a mutated mock: the mock object is shared across every test in this
@@ -82,7 +81,7 @@ const state = {
   lookupOrder: undefined as unknown,
   lookupReceipt: undefined as unknown,
   lookupJournal: undefined as unknown,
-  /// The simulation divisor `pricing_status` reports (#99). `1n` is production,
+  /// The simulation divisor `pricing_status` reports. `1n` is production,
   /// which is what almost every test wants; the simulation-mode tests set it.
   divisor: 1n,
   /// The buyer's own cycles balance, as the LEDGER reports it.
@@ -96,14 +95,14 @@ const state = {
   ledgerOldestTxId: null as bigint | null,
   indexError: false,
   indexRefusal: null as string | null,
-  /// Whether `lifecycle_config` fails, for the console's cannot-read path (#97).
+  /// Whether `lifecycle_config` fails, for the console's cannot-read path.
   lifecycleError: false,
-  /// The rail settings the console's configuration surface reads (#97).
+  /// The rail settings the console's configuration surface reads.
   expectedLivemode: false as boolean | null,
   stripeOrigin: "https://gateway.example" as string | null,
   apiKeySet: true,
   webhookSet: true,
-  /// What `can_purchase` refuses with, or null for admitted (#99).
+  /// What `can_purchase` refuses with, or null for admitted.
   canPurchase: null as { __kind__: string } | null,
   quote: {
     usdCents: TIER_CENTS,
@@ -177,10 +176,10 @@ const state = {
   /// Captured minCycles from the last create_order call.
   lastMinCycles: undefined as bigint | null | undefined,
   /// Captured destination from the last create_order call — the app builds it
-  /// from the session rather than reading it off the form (#29).
+  /// from the session rather than reading it off the form.
   lastDestination: undefined as unknown,
   /// Captured Amount variant, so a test can assert which of the two shapes the
-  /// app sent (#33).
+  /// app sent.
   lastAmount: undefined as unknown,
   order: undefined as Record<string, unknown> | undefined,
   receipt: undefined as Record<string, unknown> | undefined,
@@ -200,7 +199,7 @@ function anOrder(status: string, lockedCycles = TIER_CYCLES) {
     owner: { __kind__: "ii", ii: { toText: () => "aaaaa-aa" } },
     rail: "card",
     // The caller's own cycles-ledger account: the only destination `create_order`
-    // accepts (#29), so every fixture in this file has this shape.
+    // accepts, so every fixture in this file has this shape.
     destination: {
       __kind__: "cyclesLedgerAccount",
       cyclesLedgerAccount: { owner: { toText: () => "aaaaa-aa" }, subaccount: undefined },
@@ -267,18 +266,16 @@ const untypedOrderStubs = {
 
 const typedStubs = {
   card_tiers: async () => state.tiers,
-  // #97: the console's configuration surface reads these. Defaults match a provisioned
+  // The console's configuration surface reads these. Defaults match a provisioned
   // sandbox gateway, so most tests see a console that is fully configured.
   expected_livemode: async () => state.expectedLivemode,
   stripe_origin: async () => state.stripeOrigin,
   // The full `Status` shape, not just `isSet`: a duck-typed stub is the mirror this
-  // suite has removed before, and `satisfies Partial<Backend>` catches it.
-  // The full `Status`, not just `isSet`: a duck-typed stub is the mirror this suite has
-  // removed before, and `satisfies Partial<Backend>` catches it. The actor bindings map
-  // `opt nat` to an OPTIONAL property, so an unset timestamp is simply absent.
+  // suite exists to keep out, and `satisfies Partial<Backend>` catches it. The actor
+  // bindings map `opt nat` to an OPTIONAL property, so an unset timestamp is absent.
   stripe_api_key_status: async () => ({ isSet: state.apiKeySet, generation: 1n }),
   webhook_secret_status: async () => ({ isSet: state.webhookSet, generation: 1n }),
-  /// #99: what the gate answers for this caller at the minimum purchase. `null` is
+  /// What the gate answers for this caller at the minimum purchase. `null` is
   /// "admitted", which is what almost every test wants.
   // ⚠️ The `as unknown as` hop, for the reason documented on `fixtures.ts`'s
   // boundary: a ternary over the two Result arms widens to a union with optional
@@ -288,20 +285,20 @@ const typedStubs = {
       ? { ok: null }
       : { err: state.canPurchase }) as unknown as Backend["can_purchase"],
   lifecycle_config: async () => {
-    // #97: the console must SAY the read failed rather than render an empty table,
-    // which reads as "nothing is configured" — a calmer claim than "we could not ask".
+    // The console must SAY the read failed rather than render an empty table, which
+    // reads as "nothing is configured" — a calmer claim than "we could not ask".
     if (state.lifecycleError) throw new Error("lifecycle_config unreachable");
     return ({
     gate: {
       maxOpenOrdersPerPrincipal: 1n,
       minCanisterCycles: 5_000_000_000_000n,
-      // The #33 bounds: $10 floor, $100 ceiling.
+      // The gate's bounds: $10 floor, $100 ceiling.
       minPurchaseUsdCents: 1_000n,
       maxPurchaseUsdCents: 10_000n,
     },
-    // ⚠️ Added by the `satisfies`, not by anyone noticing. THIRD location with this same
-    // gap: `lifecycle_config` gained `delivery` in #68 step 1, and neither the fixtures
-    // nor this stub was updated. Both suites stayed green.
+    // ⚠️ **Kept honest by the `satisfies`, not by anyone noticing.** A stub that omits
+    // a field `lifecycle_config` returns drives this suite with a shape the canister
+    // does not produce, and stays green. `fixtures.ts` carries the same guard.
     delivery: { alertAfterNs: 7_200_000_000_000n, maxHoldNs: 259_200_000_000_000n },
     });
   },
@@ -415,10 +412,8 @@ vi.mock("./actor", () => ({
     },
   }),
   makeBackend: () => backend,
-  // #30 PR-A: the ledger's fee is read from the LEDGER, not disclosed by
-  // `quote_previews`. `state.transferFee` still drives it, so every existing
-  // assertion about how the fee is displayed keeps its lever — only where the
-  // number comes from changed.
+  // The ledger's fee is read from the LEDGER, not disclosed by `quote_previews`.
+  // `state.transferFee` is the lever every assertion about the displayed fee uses.
   makeCyclesLedger: () => ({
     // The dashboard's balance, read from the LEDGER rather than through the gateway.
     icrc1_balance_of: async () => {
@@ -703,7 +698,7 @@ describe("the deposit fee is disclosed on every order", () => {
   test("the tier label and the destination note both name it, with nothing to toggle", async () => {
     // This used to depend on a radio: a canister top-up paid no deposit fee, so
     // the note appeared only after switching to the account option. With one
-    // destination (#29) the fee applies always, so it is stated always — there is
+    // destination the fee applies always, so it is stated always — there is
     // no longer a state of this form in which it is hidden.
     await mount();
 
@@ -723,12 +718,10 @@ describe("the deposit fee is disclosed on every order", () => {
   });
 
   test("an unreachable ledger hides the fee rather than inventing one", async () => {
-    // #30 PR-A moved the fee from `quote_previews` (always answered, because the
-    // backend was already being called) to the cycles ledger (a second canister
-    // that can be down on its own). That is a NEW failure mode, and the safe
-    // direction is to show the locked quantity with no fee note: shown-too-high
-    // costs a buyer nothing, while a guessed fee promises cycles that will not
-    // arrive.
+    // The fee comes from the cycles ledger — a second canister that can be down on its
+    // own. The safe direction is to show the locked quantity with no fee note:
+    // shown-too-high costs a buyer nothing, while a guessed fee promises cycles that
+    // will not arrive.
     state.transferFeeError = true;
     await mount();
     // And the tile still prices, because the quote came from the backend.
@@ -749,7 +742,7 @@ describe("the deposit fee is disclosed on every order", () => {
     expect(el("detail-receive").textContent).toBe("≈ 3 T cycles");
     const note = el("detail-fee-note");
     expect(note.hidden).toBe(false);
-    // "3.5 T sent", not "minted" (#30 PR-C): the gateway transfers from its reserve.
+    // "3.5 T sent", not "minted": the gateway transfers from its reserve.
     expect(note.textContent).toContain("3.5 T sent");
     expect(note.textContent).not.toContain("minted");
   });
@@ -849,11 +842,9 @@ describe("the active order", () => {
   });
 
   test("cancelling reads as cancelled, and closes the order out", async () => {
-    // Inverted by #34. Cancelling used to transition to `#expired`, which was
-    // still payable — so the copy said a completed payment would still go
-    // through, and a buyer who had cancelled was told their order "expired".
-    // Now it is its own terminal status: `#cancelled → #paid` is absent from the
-    // matrix, so the order genuinely cannot be paid.
+    // Cancelling has its own terminal status rather than borrowing `#expired`:
+    // `#cancelled → #paid` is absent from the matrix, so the order genuinely cannot be
+    // paid, and the copy never tells a buyer who cancelled that their order expired.
     await mount();
     tierButton().click();
     await settle();
@@ -919,7 +910,7 @@ describe("receipt", () => {
   });
 });
 
-// ── one path in (#29) ─────────────────────────────────────────────────────────
+// ── one path in ─────────────────────────────────────────────────────────
 
 describe("one way into the buy view", () => {
   test("the landing page offers a single call to action, and the form waits behind it", async () => {
@@ -1280,7 +1271,7 @@ describe("the rate strip never contradicts the tiers", () => {
   });
 });
 
-// ── paying an order, and still being able to after a reload (#33) ─────────────
+// ── paying an order, and still being able to after a reload ─────────────
 
 describe("the pay button comes from the ORDER, not from browser memory", () => {
   test("a created order with a session offers it, pointing at Stripe's URL", async () => {
@@ -1309,9 +1300,8 @@ describe("the pay button comes from the ORDER, not from browser memory", () => {
   });
 
   test("the payment reference is shown, derived rather than handed back", async () => {
-    // It is the reference on the buyer's card receipt, so it stays on screen —
-    // but `create_order` no longer returns it (#33 dropped a Payment-Link relic
-    // from a public response type), so the page computes it.
+    // It is the reference on the buyer's card receipt, so it stays on screen — and
+    // `create_order` does not return it, so the page computes it.
     state.order = anOrder("created");
     await mount();
     await openFromHistory();
@@ -1367,12 +1357,12 @@ describe("expiry renders from the DEADLINE, not the status", () => {
     // Cancel is hidden too, and that is deliberate rather than incidental:
     // Stripe's expire endpoint accepts open sessions only, so past the deadline
     // `cancel_order` can only fail. A button that always fails is worse than
-    // none. (Freeing the buyer's slot in this state is #30's open-order-cap work.)
+    // none. (The open-order cap is what frees the buyer's slot in this state.)
     expect(el("cancel-area").hidden).toBe(true);
   });
 });
 
-// ── custom amounts, bounded by the BACKEND's numbers (#33) ────────────────────
+// ── custom amounts, bounded by the BACKEND's numbers ────────────────────
 
 describe("a buyer can type an amount", () => {
   function customField(): HTMLInputElement {
@@ -1496,13 +1486,13 @@ describe("the deadline is a countdown, not a timestamp", () => {
   });
 });
 
-describe("operator console (#68)", () => {
+describe("operator console", () => {
   test("#/admin owns the screen, and the buyer views are not on it", async () => {
     await mount("landing", "#/admin");
     expect(el("admin").hidden).toBe(false);
-    // ⚠️ One view owns the screen. This is the property #24 broke by hiding with
-    // `hidden` and un-hiding with a class; the browser suite is what can see that,
-    // and this only says the attribute is right.
+    // ⚠️ One view owns the screen. Hiding with `hidden` while un-hiding with a class
+    // defeats this: the browser suite is what can see that, and this only says the
+    // attribute is right.
     expect(el("view-landing").hidden).toBe(true);
     expect(el("history").hidden).toBe(true);
     expect(el("buy-flow").hidden).toBe(true);
@@ -1548,13 +1538,13 @@ describe("operator console (#68)", () => {
   });
 
   test("⚠️ the link command carries the --app the config layer chose", async () => {
-    // #83: Internet Identity derives a principal per origin, and without `--app` the
-    // CLI links one derived from the auth domain's own default. That principal is not
-    // the one shown above it, so the grant would land on the wrong identity.
+    // Internet Identity derives a principal per origin, and without `--app` the CLI
+    // links one derived from the auth domain's own default. That principal is not the
+    // one shown above it, so the grant would land on the wrong identity.
     //
-    // ⚠️ The title used to say "THIS page's domain", which stopped being true when the
-    // derivation origin was pinned: on a custom domain the value is deliberately the
-    // canister's origin rather than the address bar.
+    // ⚠️ **Not "THIS page's domain".** The derivation origin is pinned, so on a custom
+    // domain the value is deliberately the canister's origin rather than the address
+    // bar.
     await mount("landing", "#/admin");
     const command = el("admin-link-command").textContent ?? "";
     expect(command).toContain("icp identity link web");
@@ -1569,7 +1559,7 @@ describe("operator console (#68)", () => {
   });
 });
 
-describe("operator summary: wait versus work (#68)", () => {
+describe("operator summary: wait versus work", () => {
   const figures = (id: string): Record<string, string> => {
     const out: Record<string, string> = {};
     const dl = el(id);
@@ -1658,7 +1648,7 @@ describe("operator summary: wait versus work (#68)", () => {
   });
 });
 
-describe("worklists (#68)", () => {
+describe("worklists", () => {
   // ⚠️ `tr`, not `li`: the worklists are tables so an operator can compare rows on
   // one column. The row still carries `data-urgency`, which the Chromium suite reads.
   const rows = (id: string) => [...el(id).querySelectorAll("tr")];
@@ -1802,7 +1792,7 @@ describe("worklists (#68)", () => {
   });
 });
 
-describe("the operator console's panels (#68)", () => {
+describe("the operator console's panels", () => {
   const granted = {
     caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
     granted: true,
@@ -1833,7 +1823,7 @@ describe("the operator console's panels (#68)", () => {
 
   test("⚠️ opening a panel does NOT fire the audited reads", async () => {
     // `admin_order`, `admin_receipt` and `delivery_journal` are updates so the read
-    // itself is audited (#38). One line in the trail per panel render would make the
+    // itself is audited. One line in the trail per panel render would make the
     // trail useless, which is why the lookup is behind a button. This is the assertion
     // that keeps it that way.
     //
@@ -1979,7 +1969,7 @@ describe("the operator console's panels (#68)", () => {
   });
 });
 
-describe("order history (#68)", () => {
+describe("order history", () => {
   const rows = () => [...el("admin-history-rows").querySelectorAll("tr")];
   const granted = {
     caller: Principal.fromText("ryjl3-tyaaa-aaaaa-aaaba-cai"),
@@ -2061,7 +2051,7 @@ describe("order history (#68)", () => {
   });
 });
 
-describe("simulation mode says so, in words (#99 2h)", () => {
+describe("simulation mode says so, in words", () => {
   test("production shows no simulation note at all", async () => {
     await mount();
     // ⚠️ `hidden`, not absence: jsdom neither renders nor respects `hidden`, so a
@@ -2116,7 +2106,7 @@ describe("simulation mode says so, in words (#99 2h)", () => {
   });
 });
 
-describe("the gate notice: refusals no amount can fix (#99 2b)", () => {
+describe("the gate notice: refusals no amount can fix", () => {
   test("an admitted caller sees no notice", async () => {
     await mount();
     expect(document.getElementById("gate-notice")!.hidden).toBe(true);
@@ -2315,7 +2305,7 @@ describe("the landing view is about one thing", () => {
     const cta = el<HTMLButtonElement>("start-buy");
     expect(cta.textContent).toBe("Buy cycles");
     // ⚠️ Exactly one. The landing view deliberately does not ask a visitor to choose
-    // between routes before it (#29), and a second primary button is how that creeps
+    // between routes before it, and a second primary button is how that creeps
     // back in.
     expect(document.querySelectorAll("#view-landing .cta").length).toBe(1);
   });
@@ -2406,7 +2396,7 @@ describe("the console link appears only for someone who can use it", () => {
   });
 });
 
-describe("the console says what can be changed, and what it means (#97)", () => {
+describe("the console says what can be changed, and what it means", () => {
   /// The console is admin-gated, so every test here arrives as a controller.
   async function openConsole(): Promise<void> {
     state.adminStatus = {
@@ -2458,8 +2448,8 @@ describe("the console says what can be changed, and what it means (#97)", () => 
   });
 
   test("each config group carries the command that changes it, pre-filled", async () => {
-    // #97's point: the setters take whole records, and hand-authoring one while
-    // omitting a field silently changes a live parameter. The rendered command already
+    // The setters take whole records, and hand-authoring one while omitting a field
+    // silently changes a live parameter. The rendered command already
     // holds every current value, so an operator edits one number.
     await openConsole();
     const commands = [...document.querySelectorAll("#config-groups code.mono")]

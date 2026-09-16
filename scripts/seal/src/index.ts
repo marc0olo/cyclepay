@@ -1,5 +1,5 @@
 /**
- * Seals a Stripe secret to the backend canister's vetKD public key (#11).
+ * Seals a Stripe secret to the backend canister's vetKD public key.
  *
  * Two steps, and only the second one involves any identity:
  *

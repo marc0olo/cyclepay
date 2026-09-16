@@ -8,7 +8,7 @@
 /// true M-of-N needs a multisig canister installed as the sole controller
 /// (the documented hardening path, §7).
 ///
-/// ⚠️ **Authz is TWO tiers, not one (#68).** "Admin authz = caller ∈ controllers" was
+/// ⚠️ **Authz is TWO tiers, not one.** "Admin authz = caller ∈ controllers" was
 /// true until an app-admin role existed:
 ///
 ///   - `checkController` — the controller set, unchanged. Everything that changes the

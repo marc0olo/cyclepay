@@ -28,7 +28,7 @@ mixin (
 ) {
 
   /// Why a principal could not be added to, or removed from, one of the two lists
-  /// (#123).
+  /// (§4.3).
   ///
   /// ⚠️ **One type for both lists and both directions**, because the four methods refuse
   /// for exactly these three reasons and a caller acts on the reason, not on which list

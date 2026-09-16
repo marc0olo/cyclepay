@@ -55,7 +55,7 @@ func entryWith(
 
 
 
-suite("delivery: the fee is RECOVERABLE from the intent (#30 PR-A)", func() {
+suite("delivery: the fee is RECOVERABLE from the intent", func() {
   // ⚠️ This is what replaced an unverified claim about the cycles ledger's dedup
   // key. The replay path must send the fee the intent was BUILT with, or a
   // transfer that executed and lost its response could be replayed as a distinct
@@ -109,7 +109,7 @@ suite("delivery: the fee is RECOVERABLE from the intent (#30 PR-A)", func() {
 
 suite("interpretTransfer (§5.1)", func() {
   test("Ok and Duplicate both recover the block index — the replay payoff", func() {
-    // ⚠️ These are DISTINCT outcomes since #30 PR-B, and the reserve floor is why:
+    // ⚠️ These are DISTINCT outcomes, and the reserve floor is why:
     // a fresh block means this call debited the ledger, a duplicate means an earlier
     // one did. The floor is decremented when a transfer is issued, so a duplicate
     // must credit that decrement back while a fresh block must keep it. Collapsing
@@ -173,9 +173,8 @@ suite("journal", func() {
   rateQueriedSources = 5;
   feeBps = 290;
   feeFixedCents = 30;
-  // Deliberately EARLIER than any order's createdAtNs in these fixtures: the
-  // rate pair is read before the order exists, which is the whole reason #34
-  // records it separately.
+  // Deliberately EARLIER than any order's createdAtNs in these fixtures: the rate pair
+  // is read before the order exists, which is why it is recorded separately.
   ratesFetchedAtNs = 1;
 };
       paidUsdCents = null;
@@ -247,7 +246,7 @@ suite("journal", func() {
     assert journal.get("nope") == null;
   });
 
-  test("#37 §1b — patch records the last delivery error, and a success does not erase it", func() {
+  test("patch records the last delivery error, and a success does not erase it", func() {
     let journal = Delivery.emptyJournal();
     let o = order();
     ignore Delivery.openEntry(journal, o, intentAt(42), 100);
@@ -265,7 +264,7 @@ suite("journal", func() {
     assert settled.blockIndex == ?7;
   });
 
-  test("#37 §1b — a second failure overwrites rather than accumulating", func() {
+  test("a second failure overwrites rather than accumulating", func() {
     let journal = Delivery.emptyJournal();
     let o = order();
     ignore Delivery.openEntry(journal, o, intentAt(42), 100);
@@ -319,10 +318,9 @@ suite("stageOf (§5.1/§5.2 resume decision)", func() {
   });
 
   test("⚠️ #paid keeps replaying FOREVER — the retry cap does not apply to delivery", func() {
-    // #30 PR-B deleted the cap on this path, and the inverted assertion is the
-    // record of it: a replay here is provably safe (byte-identical args, the ledger
-    // deduplicates, `#Duplicate` recovers the block), so exhausting a counter turned
-    // a recoverable state into a manual one for no safety gain.
+    // ⚠️ **Do not add one.** A replay here is provably safe (byte-identical args, the
+    // ledger deduplicates, `#Duplicate` recovers the block), so exhausting a counter
+    // would turn a recoverable state into a manual one for no safety gain.
     //
     // "Forever" is bounded by TIME rather than by a count, twice over: the dedup
     // window escalates the intent (the test above), and §5.3's 72 h max-wait gets a
@@ -379,9 +377,9 @@ suite("terminationFor — the money position, not the status", func() {
 
 
   test("#paid: whether a refund is the answer depends on the JOURNAL, not the status", func() {
-    // #30 PR-A moved delivery onto `#paid`, so the status alone stopped being a
-    // money position. The dangerous cell is the middle one: telling an operator
-    // to refund a buyer who may already hold their cycles.
+    // Delivery hangs off `#paid`, so the status alone is not a money position. The
+    // dangerous cell is the middle one: telling an operator to refund a buyer who may
+    // already hold their cycles.
     let never = Delivery.terminationFor(#paid, null);
     assert never.stage == "deliveryWaitExceeded";
     assert Text.contains(never.detail, #text "no transfer attempted");

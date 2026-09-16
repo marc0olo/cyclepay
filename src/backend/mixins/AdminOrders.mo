@@ -64,7 +64,7 @@ mixin (
   /// ⚠️ **`alertAfterNs` is this predicate's THRESHOLD, not a trigger.** Lowering a
   /// filter costs nothing; lowering a trigger would file worklist entries for orders that
   /// deliver themselves.
-  /// One delayed delivery, as `delayed_deliveries` reports it (#37, paginated by #38).
+  /// One delayed delivery, as `delayed_deliveries` reports it, paginated.
   ///
   /// ⚠️ **`pastMaxHold` is a transient window, at most one sweep interval wide** — past
   /// `maxHoldNs` the next sweep escalates the order out of `#paid` and out of this set.
@@ -104,7 +104,7 @@ mixin (
     };
   };
 
-  /// Read **any** order by id (admin, #38).
+  /// Read **any** order by id (admin).
   ///
   /// ⚠️ **A deliberate exception to §2's "existence is not revealed to non-owners", so it
   /// audits itself on every use.** `get_order` is owner-scoped with no admin bypass, so
@@ -126,11 +126,11 @@ mixin (
     found;
   };
 
-  /// Filtered, cursor-paginated order list (admin, #38).
+  /// Filtered, cursor-paginated order list (admin).
   ///
   /// ⚠️ **Do not sort by `createdAtNs`.** Ordering is by order id, which is arbitrary
   /// because ids are random — and time-ordering would mean materialising the filtered set
-  /// first, which is the unbounded scan #63 removed. Narrow with `createdFromNs` instead.
+  /// first, which is an unbounded scan. Narrow with `createdFromNs` instead.
   ///
   /// ⚠️ **Deliberately NOT audited, unlike `admin_order` and `admin_receipt` — do not
   /// "fix" the inconsistency.** Their line records *"an operator looked at THIS person's
@@ -172,11 +172,11 @@ mixin (
   /// fate they established on the cycles ledger.
   ///
   /// ⚠️ **This closes ORPHAN entries only — `#unattributed` and `#unprocessable`.**
-  /// Everything order-bound moved onto the orders in #37 and is closed by
+  /// Everything order-bound lives on the order and is closed by
   /// `resolve_problem`; pointing an operator here for those would be pointing them at the
   /// wrong method. Resolving an entry never transitions the order — see `Orphans`'s
   /// header.
-  /// Close **one** order-bound problem an operator has dealt with (#37).
+  /// Close **one** order-bound problem an operator has dealt with.
   ///
   /// ⚠️ **`paymentRef` is the selector, and dropping it over-resolves.** `sameShape`
   /// deliberately allows two unresolved `#duplicate` problems on one order with different
@@ -200,8 +200,8 @@ mixin (
     paymentRef : ?Text,
   ) : async Result.Result<Nat, Problems.ResolveProblemError> {
     ops.requireAdmin(caller);
-    // Separated from "nothing to resolve" (#123): an unknown id used to answer the same
-    // way as a known order with nothing open, so a mistyped id read as "already done".
+    // ⚠️ Separate from "nothing to resolve", and it must stay separate: one answer for
+    // both makes a mistyped id read as "already done".
     if (Orders.get(orderStore, orderId) == null) return #err(#noSuchOrder({ orderId }));
     let candidates = Orders.unresolvedOfKind(orderStore, orderId, tag);
     if (candidates.size() == 0) return #err(#noSuchProblem({ tag }));
@@ -265,12 +265,10 @@ mixin (
     resolved;
   };
 
-  /// The operational trail, **paginated** (#38).
+  /// The operational trail, **paginated**.
   ///
-  /// ⚠️ **Pagination became necessary the moment #37 removed the ring.** The bound used
-  /// to be the 4,096-entry ring, so the response size took care of itself; retention is
-  /// now total. Removing the cap moved the problem from *"history is lossy"* to *"the
-  /// query cannot answer"* — both real, and removing the ring only fixed the first.
+  /// ⚠️ **Retention is total, which is why this has to paginate.** With no bound on the
+  /// store, an unpaginated read is on a path to a response nobody can receive.
   ///
   /// Cursor on `seq`, which now has **no gaps**: gaps used to be how a reader detected
   /// drops, and there are no drops.
@@ -282,7 +280,7 @@ mixin (
     AuditLog.page(auditLog, afterSeq, limit);
   };
 
-  /// **Admin: the audit trail, newest first** (#68).
+  /// **Admin: the audit trail, newest first**.
   ///
   /// The same events `audit_log` returns, in the order an operator reads them: someone
   /// opening the console wants what just happened, and the ascending view starts at the
@@ -301,7 +299,7 @@ mixin (
     AuditLog.recentPage(auditLog, beforeSeq, limit);
   };
 
-  /// Orders past `alertAfterNs` and still undelivered (admin, paged by #38).
+  /// Orders past `alertAfterNs` and still undelivered (admin, paged).
   ///
   /// The worklist behind `operator_summary.deliveriesDelayed`: one entry per order,
   /// with the journal figures a human needs to decide whether it is stuck or slow.
@@ -313,14 +311,13 @@ mixin (
     nextCursor : ?Types.OrderId;
   } {
     ops.requireAdmin(caller);
-    // ⚠️ **Bounded by the non-terminal index, not by lifetime sales (#63).** `#paid`
+    // ⚠️ **Bounded by the non-terminal index, not by lifetime sales.** `#paid`
     // holds its promise, so the index is a superset of the population and the filter is
     // exact — and the index is capped by the reserve rather than growing with sales.
     //
     // ⚠️ **The page bounds the RESPONSE; the index bounds the WORK. Both are needed
     // and they are different limits** — ~2 MB for the response, instructions per
-    // message for the walk — which is why paginating this in #38 did not make it
-    // bounded and the comment here said so until now.
+    // message for the walk — so paginating this does NOT make it bounded.
     let now = Time.now();
     let page = Orders.holderPage(
       orderStore,
@@ -388,7 +385,7 @@ mixin (
     paidIntents.get(paymentRef);
   };
 
-  /// **Admin: expire one `#created` order, releasing its reserve capacity** (#52).
+  /// **Admin: expire one `#created` order, releasing its reserve capacity**.
   ///
   /// ⚠️ **The lever for the class the sweep structurally CANNOT see**, so do not delete it
   /// as redundant with the sweep: an order whose session-create response was lost carries
@@ -512,7 +509,7 @@ mixin (
     // therefore untouched by this guard — escalation implies no outstanding call.
     //
     // ⚠️ **`unsettledDeliveries` now depends on this refusal for its completeness**, so
-    // this guard holds up more than the double-payout it was added for (#69). It is what
+    // this guard holds up more than the double-payout it was added for. It is what
     // keeps a transfer-in-flight order inside `promiseHolders`; relaxing it for operator
     // ergonomics would let the quiet window read quiet across an in-flight transfer,
     // which is the oversell direction. Integration scenario 78 owns it.
@@ -544,8 +541,8 @@ mixin (
 
   /// Record that an escalated order's cycles **did** reach the buyer (admin, §7).
   ///
-  /// The counterpart to `abandon_order`, and the reason #30 PR-B added the
-  /// `#needsReview → #delivered` edge. `#needsReview` means "we could not establish
+  /// The counterpart to `abandon_order`, and the reason the
+  /// `#needsReview → #delivered` edge exists. `#needsReview` means "we could not establish
   /// whether the transfer landed"; when the operator establishes on the cycles
   /// ledger that it did, this is how they say so. Without it their only lever was
   /// `abandon_order`, which files a delivered order as abandoned and audits a refund
@@ -582,7 +579,7 @@ mixin (
     #ok(delivered);
   };
 
-  /// The same receipt, for **any** order (admin, #38) — and **audited**, which is the
+  /// The same receipt, for **any** order (admin) — and **audited**, which is the
   /// whole reason it is a separate method.
   ///
   /// ⚠️ **The audit is not about existence disclosure; it is about an operator leaving a

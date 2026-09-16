@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Capture REAL Stripe event bodies as test fixtures (issue #4).
+# Capture REAL Stripe event bodies as test fixtures.
 #
 # Why: every Stripe payload in this repo is JSON we wrote from the API docs. The
 # suites therefore prove the canister matches *our reading* of Stripe, not Stripe.
@@ -71,9 +71,9 @@ report_status() {
       # ⚠️ **Print the command that works in THIS shell, not the tidy one.** Our own calls
       # go through `stripe_cli`, but a hint the operator pastes runs in their shell — where
       # an exported STRIPE_API_KEY makes the CLI use the restricted backend key and fail
-      # with "more_permissions_required". Protecting the script and printing bare copy is
-      # the same split #52 rejected: two of that round's eleven key-scope sites were
-      # terminal output, and they counted because that is the copy people follow.
+      # with "more_permissions_required". Protecting the script while printing bare copy
+      # would be the same split: terminal output is copy people follow, so it counts as a
+      # key-scope site like any document.
       case "${STRIPE_API_KEY:-}|$how" in
         ?*'|stripe '*) how="env -u STRIPE_API_KEY $how" ;;
       esac
@@ -161,15 +161,14 @@ of this script sent you to create a SEPA session by hand and pay it with a test
 IBAN — unnecessary, and nobody found out until someone ran the triggers and got the
 fixture anyway.
 
-⚠️ A `payment_intent: null` fixture was on this list and was REMOVED, deliberately.
-Since #33 this app pins `payment_method_types[]=card` at a fixed unit_amount above
-the $10 floor with no promo codes, so `payment_intent` is never absent — and an
-explicit `payment_method_types` overrides whatever the account has enabled, so the
-old justification here ("a delayed method could be enabled at account level") was
-simply wrong. The handler stays and is covered by a crafted body in
-`test/webhook.test.mo`, which is honest: #4 exists because crafted JSON encodes our
-assumptions about what Stripe *sends us*, and for a payload it will never send there
-is nothing to be wrong about. If a non-card method is ever enabled — a product
+⚠️ **A `payment_intent: null` fixture is deliberately NOT on this list.** This app pins
+`payment_method_types[]=card` at a fixed unit_amount above the $10 floor with no promo
+codes, so `payment_intent` is never absent — and an explicit `payment_method_types`
+overrides whatever the account has enabled, so "a delayed method could be enabled at
+account level" is not a reachable justification. The handler stays and is covered by a
+crafted body in `test/webhook.test.mo`, which is honest: capture exists because crafted
+JSON encodes our assumptions about what Stripe *sends us*, and for a payload it will
+never send there is nothing to be wrong about. If a non-card method is ever enabled — a product
 decision, not a config accident — capture becomes necessary again, because then the
 real shape is load-bearing.
 
@@ -229,7 +228,7 @@ process.stdin.on("data", (chunk) => {
     //
     // ⚠️ **This set is a deliberate SUPERSET of `wanted()` and the difference is not
     // drift.** `wanted()` drives the checklist and the missing-report, and no longer asks
-    // for `completed.no-intent` — unreachable since #33 pinned card. This set still
+    // for `completed.no-intent` — unreachable while card is pinned. This set still
     // accepts it, because if such a body ever does arrive it is worth having on disk
     // rather than discarded. Asking for it and accepting it are different questions:
     // do not "fix" one list to match the other.

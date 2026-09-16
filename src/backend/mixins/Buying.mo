@@ -61,7 +61,7 @@ mixin (
   },
 ) {
 
-  /// What the buyer is paying for: a preset, or an amount they typed (#33).
+  /// What the buyer is paying for: a preset, or an amount they typed.
   ///
   /// A variant rather than a second method, so the quote, the gate and the
   /// session path stay single. Everything downstream keys off gross USD cents,
@@ -92,15 +92,15 @@ mixin (
     /// simulation-scale case below is NOT folded in here.** Telling a buyer that
     /// payment processing is too large, when the cause is this gateway's
     /// simulation divisor, names the wrong party and prescribes a fix that may
-    /// not work (#99 review finding 2).
+    /// not work.
     #tierBelowFees : Text;
     /// The SCALED cycles would not clear the flat cycles-ledger deposit fee: this
-    /// gateway's simulation divisor is too large for this purchase (#99 2d).
+    /// gateway's simulation divisor is too large for this purchase.
     ///
     /// Not the buyer's fault and not fixable by them — it is an operator's
     /// configuration. Carries both figures so the refusal is diagnosable.
     #simulationScaleTooSmall : { scaledCycles : Nat; ledgerFee : Nat };
-    /// #30 PR-B: the reserve balance could not be read, so solvency is unknown.
+    /// The reserve balance could not be read, so solvency is unknown.
     /// Fails closed on purpose — selling against an unknown balance is exactly
     /// what the check exists to prevent. (A short reserve is reported through
     /// `#notAdmitted(#reserveShort)`, which carries both figures.)
@@ -119,9 +119,9 @@ mixin (
     #notAdmitted : Gate.Reason;
     /// The destination is not the caller's own default-subaccount cycles-ledger
     /// account. Cycles go to the buyer and nowhere else, and that is a property
-    /// of the canister rather than of whichever frontend called it (#29).
+    /// of the canister rather than of whichever frontend called it.
     #destinationNotOwned;
-    /// No payable Checkout Session could be created (#33): the API key or the
+    /// No payable Checkout Session could be created: the API key or the
     /// origin is unset, Stripe refused, or the outcall failed. Carries a reason
     /// so the operator can tell "not provisioned yet" from "Stripe is down"
     /// without reading the audit log. The order was created and then failed, so
@@ -143,7 +143,7 @@ mixin (
     /// ⚠️ `clientReferenceId` used to be here. It existed so the frontend could
     /// append `?client_reference_id=` to a **Payment Link URL**; the canister now
     /// sets it through the API, so it was a Payment-Link relic sitting in a public
-    /// response type (#33). It is derivable — `<principal>_<orderId>` — and the
+    /// response type. It is derivable — `<principal>_<orderId>` — and the
     /// frontend computes it for the receipt field rather than being handed it.
     order : Types.Order;
   };
@@ -160,7 +160,7 @@ mixin (
   /// here. The §6.1 pricing snapshot persisted on the order carries both rate
   /// inputs from that same epoch — which is what a buyer recomputes their own
   /// price from, and what a delivered order is auditable against. (It was also
-  /// what the webhook repriced a mismatched paid amount from, until #33 made a
+  /// what the webhook would reprice a mismatched paid amount from, before it became a
   /// mismatch deliver nothing.)
   ///
   /// Synchronous and awaitless by design: the rates come from the cache the
@@ -202,7 +202,7 @@ mixin (
             feeFixedCents = fee.feeFixedCents;
             // The one field of `Pricing.Rates` this copy used to drop. Without
             // it `createdAtNs` is the only timestamp on the record, and it is
-            // not when these rates were read (#34).
+            // not when these rates were read.
             ratesFetchedAtNs = rates.fetchedAtNs;
           },
         ));
@@ -239,7 +239,7 @@ mixin (
       case (#ok) {};
     };
     // Argument validation before any work, and before the gate: cycles go to the
-    // caller's own account or the order is not created (#29). Checked HERE
+    // caller's own account or the order is not created. Checked HERE
     // rather than in the frontend, because a hand-crafted call reaches this
     // method too — "the cycles come to you" is only true if the gateway enforces
     // it.
@@ -262,7 +262,7 @@ mixin (
     //
     // One call, and the ORDER of those four steps is documented on
     // `Purchase.plan` with a unit test per adjacent pair — which is what this
-    // extraction bought (#127). It decides everything the commit and the session
+    // extraction bought. It decides everything the commit and the session
     // need and touches no state: admission and quoting come in as functions, so
     // the live order count and the rate cache stay behind the closures that own
     // them.
@@ -333,7 +333,7 @@ mixin (
         // Stripe answered, so the outcall is working again. This is the ONLY
         // evidence that bears on `#stripeApiFailing` — `latchAdmission` cannot
         // clear it, because admission runs *before* this call and says nothing
-        // about it (#37 §2c).
+        // about it.
         gateState.latch := Gate.latchStripeApiOk(gateState.latch);
         // ⚠️ Re-check the status before storing. `create_order` committed the
         // order as `#created` and then awaited, so `cancel_order` from a second
@@ -379,7 +379,7 @@ mixin (
   };
 
   /// Public — the frontend renders the amount tiles from this. There is no link
-  /// to render: the canister creates a session per order (#33).
+  /// to render: the canister creates a session per order.
   public query func card_tiers() : async [Tiers.Tier] {
     tierState.cards;
   };

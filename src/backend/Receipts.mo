@@ -3,7 +3,7 @@
 ///
 /// ⚠️ **A module rather than a type in `Main.mo`, because TWO endpoints return it** —
 /// `receipt` (owner-scoped, a query) and `admin_receipt` (audited, an update) — and since
-/// #120 those live in different mixins. A type declared in one mixin is not visible to
+/// those live in different mixins. A type declared in one mixin is not visible to
 /// the other, and a copy in each is exactly the drift the single builder below exists to
 /// prevent.
 ///

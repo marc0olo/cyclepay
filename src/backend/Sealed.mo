@@ -1,4 +1,4 @@
-/// vetKD sealing (#11): what turns a ciphertext an operator sent into the plaintext
+/// vetKD sealing: what turns a ciphertext an operator sent into the plaintext
 /// secret `Secret.Store` holds.
 ///
 /// The problem this solves is **provisioning exposure**, and only that. `set_stripe_api_key`
@@ -9,9 +9,9 @@
 ///
 /// ⚠️ **At rest is NOT addressed here, deliberately.** The decrypted secret lives in
 /// canister memory, replicated and checkpointed like any other state. That is irreducible:
-/// HMAC verification needs the plaintext, so no scheme keeps it out of memory. #11 works
+/// HMAC verification needs the plaintext, so no scheme keeps it out of memory. Sealing works
 /// this through and rejects the alternatives; the posture is `docs/DESIGN.md` §7, and the
-/// confidentiality layer is the confidential subnet (#2), not this module.
+/// confidentiality layer is the confidential subnet, not this module.
 ///
 /// ⚠️ **What the unaudited dependency can and cannot cost us — `docs/DESIGN.md` §7.3.**
 /// The encrypting is done by the audited `@icp-sdk/vetkeys`; this side only DECRYPTS. So a
@@ -194,7 +194,7 @@ module {
   /// Opens a sealed secret with the unwrapped key.
   ///
   /// ⚠️ **Decrypting at provisioning time rather than storing the ciphertext is the
-  /// design.** It costs one derivation per call instead of one per use — #11 rejects
+  /// design.** It costs one derivation per call instead of one per use — and the
   /// per-use derivation because the webhook path would pay ~3.5 cents per event — and it
   /// means a ciphertext sealed to the wrong network fails **now**, in front of whoever is
   /// seeding it, rather than being accepted and found unreadable at the first webhook.

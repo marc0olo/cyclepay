@@ -5,9 +5,9 @@ import Iter "mo:core/Iter";
 import Text "mo:core/Text";
 
 // ⚠️ **A DEPENDENCY-CONTRACT test. It covers no logic this project wrote.** It guards a
-// `mo:core` version bump (mops pins 2.5.0) and nothing else — read as coverage of #70's
+// `mo:core` version bump (mops pins 2.5.0) and nothing else — read as coverage of our own
 // cursor correctness it would be three green assertions about someone else's library.
-// #70's own properties are pinned in `test/orders.test.mo` under `ownerPage`.
+// `ownerPage`'s own properties are pinned in `test/orders.test.mo`.
 //
 // What it pins: `Orders.ownerPage` walks a `Set<OrderId>` with a cursor that
 // `Orders.page` produces by walking a `Map<OrderId, Order>`, so the two structures must

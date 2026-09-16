@@ -1,11 +1,9 @@
 /// Types for the PocketIC suite.
 ///
-/// ⚠️ **Everything canister-shaped is PROJECTED off the generated service (#66), never
-/// restated.** This file used to hand-write 42 mirrors of the Motoko types with nothing
-/// checking them, and the drift was not theoretical: `GateReason` carried
-/// `burnCapExhausted` and `floatLow` after #36 deleted the treasury path and was missing
-/// `reserveShort` entirely, so a reserve-short refusal was undecodable and therefore
-/// untestable — found only because #61 needed to test that exact refusal.
+/// ⚠️ **Everything canister-shaped is PROJECTED off the generated service, never
+/// restated.** Hand-written mirrors of the Motoko types drift silently: a `GateReason`
+/// copy keeps variants the backend deleted and misses ones it added, so those refusals
+/// are undecodable and therefore untestable.
 ///
 /// ⚠️ **A mirror fails ASYMMETRICALLY, which is why no test caught it.** Declaring a
 /// field the canister lacks breaks the Candid decode and gets found. *Omitting* one
@@ -52,7 +50,7 @@ export type CreateOrderResult = Awaited<ReturnType<_SERVICE['create_order']>>;
 export type CreatedOrder = Extract<CreateOrderResult, { ok: unknown }>['ok'];
 export type CreateOrderError = Extract<CreateOrderResult, { err: unknown }>['err'];
 
-/// Derived the same way, so the suite cannot hold a stale copy of the variant (#123).
+/// Derived the same way, so the suite cannot hold a stale copy of the variant.
 export type CancelOrderResult = Awaited<ReturnType<_SERVICE['cancel_order']>>;
 export type CancelOrderError = Extract<CancelOrderResult, { err: unknown }>['err'];
 

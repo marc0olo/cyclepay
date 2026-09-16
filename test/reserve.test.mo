@@ -1,4 +1,4 @@
-// Unit suite for reserve solvency (#30). All pure, so all of it is pinned here —
+// Unit suite for reserve solvency. All pure, so all of it is pinned here —
 // the `create_order` half needs a ledger and lives in the PocketIC suite.
 import { suite; test } "mo:test";
 import Principal "mo:core/Principal";
@@ -51,9 +51,9 @@ suite("holdsPromise — which orders are owed cycles", func() {
     // cover and discover it one webhook at a time.
     assert Reserve.holdsPromise(#created);
     assert Reserve.holdsPromise(#paid);
-    // `#needsReview` holding is the point of #34's split: its meaning is "we do
-    // not know whether the cycles left the reserve", so releasing it would free
-    // cycles that may still have to be delivered — a double-sale.
+    // `#needsReview` holds because its meaning is "we do not know whether the cycles
+    // left the reserve", so releasing it would free cycles that may still have to be
+    // delivered — a double-sale.
     assert Reserve.holdsPromise(#needsReview);
     for (released in ([#delivered, #cancelled, #expired, #abandoned] : [Types.OrderStatus]).values()) {
       assert not Reserve.holdsPromise(released);
@@ -63,9 +63,9 @@ suite("holdsPromise — which orders are owed cycles", func() {
   test("EVERY status is decided, so a new one cannot default to released", func() {
     // The compiler enforces this (the switch is exhaustive and `-Werror` is on),
     // and the test states WHY it matters: a status added later that silently
-    // holds nothing releases cycles that are still owed. #30 rejected
-    // enumerating the holding statuses for exactly this reason — the terminal
-    // set is the smaller, more stable list.
+    // holds nothing releases cycles that are still owed. ⚠️ **Do NOT invert this into
+    // an enumeration of the holding statuses** — the terminal set is the smaller, more
+    // stable list, and a new status must default to holding.
     let all : [Types.OrderStatus] = [
       #created, #cancelled, #expired, #paid, #delivered, #needsReview, #abandoned,
     ];
@@ -93,10 +93,9 @@ suite("recount — the independent second derivation", func() {
   });
 
   test("⚠️ it is lockedCycles, with NO fee term", func() {
-    // The ledger charges its fee on top of the amount, so delivering
-    // `locked - fee` moves the balance by exactly `locked`. An earlier draft of
-    // #30 wrote `Σ (locked + fee)` and double-counted — which under-reports
-    // `available` and refuses sales that would have worked.
+    // The ledger charges its fee on top of the amount, so delivering `locked - fee`
+    // moves the balance by exactly `locked`. ⚠️ **`Σ (locked + fee)` double-counts**,
+    // under-reporting `available` and refusing sales that would have worked.
     assert Reserve.recount([orderAt("a", #paid, 3_500_000_000_000)]) == 3_500_000_000_000;
   });
 });
@@ -146,7 +145,7 @@ suite("applyDelta — saturation is reported, not swallowed", func() {
   });
 });
 
-suite("the reserve floor (#30 PR-B)", func() {
+suite("the reserve floor", func() {
   // ⚠️ **This suite replaced one that tested `promisedForDecision`** — a `max` of a
   // snapshotted and a live tally, which managed a race between a stale awaited
   // balance and a live tally. The floor design removes the race instead: the
@@ -229,7 +228,7 @@ suite("available and canCover", func() {
   });
 });
 
-suite("withdrawable — the refusal ladder, and its order (#127)", func() {
+suite("withdrawable — the refusal ladder, and its order", func() {
   /// ⚠️ **The order of the arms is behaviour.** An operator decommissioning a gateway
   /// reads the refusal as an instruction: "orders outstanding" is a state they have to
   /// clear, while "nothing to withdraw" invites a retry that will never differ. Reporting

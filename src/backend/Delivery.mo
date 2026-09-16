@@ -18,7 +18,7 @@
 /// delivery.
 ///
 /// ⚠️ **A third call site exists and it is a different DESTINATION CLASS, not a third
-/// outflow mechanism**: `Main.withdraw_reserve` (#103) transfers to a controller rather
+/// outflow mechanism**: `Main.withdraw_reserve` transfers to a controller rather
 /// than to a buyer. `Reserve.mo`'s outflow section names both classes and what bounds
 /// each; `withdrawArgs` below builds its args, and `withdrawMemo` separates the two in
 /// the ledger's own record.
@@ -110,7 +110,7 @@ module {
     icrc1_transfer : shared TransferArg -> async TransferResult;
     /// The reserve's authoritative balance, read by the hourly reconcile and by
     /// `refresh_reserve` — **never by the gate.** ⚠️ An earlier version of this
-    /// comment said `create_order` called it as the gate's read; #30 PR-B removed
+    /// comment said `create_order` called it as the gate's read; that read is gone —
     /// that read entirely, because an awaited value is historical by the time it is
     /// used. The gate decides against the maintained floor, synchronously.
     icrc1_balance_of : shared query Types.Account -> async Nat;
@@ -118,7 +118,7 @@ module {
 
   /// The canister's own cycles-ledger account — the reserve.
   ///
-  /// Default subaccount, matching #29's rule for a buyer's destination: one
+  /// Default subaccount, matching the rule for a buyer's destination: one
   /// canonical form, so "the reserve" names exactly one account in the ledger,
   /// in `reserve_status`, and in whatever an operator types at a terminal.
   public func reserveAccount(gateway : Principal) : Types.Account {
@@ -130,7 +130,7 @@ module {
 
 
 
-  /// **Seed** for the stored cycles-ledger transfer fee (#30 PR-B). The live value
+  /// **Seed** for the stored cycles-ledger transfer fee. The live value
   /// lives in `Main.cyclesLedgerFee`, because the ledger owns it and can move it.
   ///
   /// It is a seed and not a constant: `#BadFee` carries the ledger's expected fee,
@@ -158,7 +158,7 @@ module {
 
 
 
-  /// §5.1 for the reserve (#30 PR-A) — the delivery transfer's frozen args.
+  /// §5.1 for the reserve — the delivery transfer's frozen args.
   ///
   /// ⚠️ **`memo` is the order id, and that is a correctness requirement, not a
   /// convenience.** The ledger dedups on `(created_at_time, from, to, amount,
@@ -208,7 +208,7 @@ module {
     };
   };
 
-  /// Transfer args for a reserve WITHDRAWAL (#103) — the second destination class.
+  /// Transfer args for a reserve WITHDRAWAL — the second destination class.
   ///
   /// ⚠️ **This is not a delivery, and the difference is the destination.** Every other
   /// transfer this canister makes goes to a buyer's own account for an order they paid
@@ -242,9 +242,9 @@ module {
 
   /// What the buyer receives: the locked quantity less the ledger's transfer fee.
   ///
-  /// Probe-measured (#30): the ledger debits `amount + fee`, so sending
+  /// Probe-measured: the ledger debits `amount + fee`, so sending
   /// `lockedCycles - fee` moves the reserve by **exactly `lockedCycles`**. That
-  /// is why #30's promise tally is `Σ lockedCycles` with no separate fee term —
+  /// is why the promise tally is `Σ lockedCycles` with no separate fee term —
   /// an earlier draft wrote `Σ (lockedCycles + fee)` and double-counted.
   ///
   /// Null when the fee swallows the whole order, which the purchase floor makes
@@ -266,7 +266,7 @@ module {
     /// An EARLIER call moved the money; this one was deduplicated and handed back
     /// the original block. Still success — the §5.1 replay payoff.
     ///
-    /// ⚠️ **Distinct from `#delivered`, and #30 PR-B is why.** These were one case
+    /// ⚠️ **Distinct from `#delivered`, deliberately.** Treating them as one case
     /// (`#blockIndex`) until the reserve floor needed to know whether *this* call
     /// debited the ledger: the floor is decremented when a transfer is issued, so a
     /// deduplicated call must credit its decrement back (an earlier attempt's

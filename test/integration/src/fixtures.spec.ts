@@ -1,4 +1,4 @@
-// Real-Stripe-payload parity (issue #4).
+// Real-Stripe-payload parity.
 //
 // Every other Stripe payload in this repo is JSON we wrote from the API docs, so the
 // suites prove the canister matches *our reading* of Stripe rather than Stripe. This
@@ -71,7 +71,7 @@ describe('recorded Stripe events match what the canister expects', () => {
     // checked that the file captured for being unpaid contains the field it was captured
     // for. What matters is the rest of the shape, because our code reads it: the guard in
     // `Card.handleWebhook` acks these and waits, and `Session.classify` routes
-    // complete+unpaid to `#unknown` so the #52 sweep cannot claim a buyer paid.
+    // complete+unpaid to `#unknown` so the recovery sweep cannot claim a buyer paid.
     expect(ev.data.object.payment_status).not.toBe('paid');
     // Stripe still sends an intent for an unsettled session, so "unpaid" is NOT
     // detectable by a missing intent — the field we actually branch on is the only one
@@ -144,7 +144,7 @@ describe('capture progress', () => {
     const missing = all.filter((n) => fixture(n) === null);
     if (missing.length > 0) {
       // Deliberately not a failure: this suite must stay green before anyone has run
-      // the capture. The visibility is the point — see issue #4.
+      // the capture. The visibility is the point.
       // eslint-disable-next-line no-console
       console.log(
         `\n  ${all.length - missing.length}/${all.length} real Stripe fixtures captured.` +
@@ -156,15 +156,15 @@ describe('capture progress', () => {
   });
 });
 
-describe('real vs crafted: the same values, the same shape (#4 the point of the issue)', () => {
-  // ⚠️ **This is what #4 was opened for, and it did not exist until now.** Everything
-  // above pins the *real* bodies. This compares them against the **crafted** builders the
-  // rest of the suite runs on, field by field, because the crafted ones encode our
-  // reading of the API docs and that reading is the thing at risk.
+describe('real vs crafted: the same values, the same shape', () => {
+  // ⚠️ **This is the point of the whole file.** Everything above pins the *real* bodies.
+  // This compares them against the **crafted** builders the rest of the suite runs on,
+  // field by field, because the crafted ones encode our reading of the API docs and that
+  // reading is the thing at risk.
   //
-  // The precedent, from #4's own text: a unit test "covered" delayed-payment settlement by
-  // sending a second `checkout.session.completed`, an event Stripe does not send. Nothing
-  // could catch that except a real body.
+  // The precedent: a unit test "covered" delayed-payment settlement by sending a second
+  // `checkout.session.completed`, an event Stripe does not send. Nothing could catch
+  // that except a real body.
   //
   // Any disagreement here is a finding, not a failure: either our crafted payload is
   // wrong (and every suite built on it proves the wrong thing) or our parser reads a

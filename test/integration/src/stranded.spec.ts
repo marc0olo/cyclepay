@@ -1,4 +1,4 @@
-/// #52 — releasing reserve capacity stranded by a missed `checkout.session.expired`.
+/// Releasing reserve capacity stranded by a missed `checkout.session.expired`.
 ///
 /// ⚠️ **A separate PocketIC instance, and the reason is structural rather than
 /// stylistic.** The recovery sweep is a *background* actor that rotates through **every**
@@ -32,7 +32,7 @@ import {
 import type { Destination, Order } from './types';
 
 import { seal } from "./seal";
-/// The buyer's own cycles-ledger account — the only destination the gateway accepts (#29).
+/// The buyer's own cycles-ledger account — the only destination the gateway accepts.
 const USER_ACCOUNT: Destination = {
   cyclesLedgerAccount: { owner: user.getPrincipal(), subaccount: [] },
 };
@@ -80,8 +80,8 @@ beforeAll(async () => {
   // a missing outcall rather than a rail that was never opened.
   expectOk(await gw.asAdmin.set_webhook_secret(seal(gw.backendId, WEBHOOK_SECRET)));
   expectOk(await gw.asAdmin.set_stripe_api_key(seal(gw.backendId, 'rk_test_stranded_suite_key')));
-  // #99: these suites fund a reserve and accept test payments, so without an
-  // allow-list every create_order refuses as the faucet state.
+  // These suites fund a reserve and accept test payments, so without an allow-list
+  // every create_order refuses as the faucet state.
   await allowTestBuyers(gw);
   expectOk(await gw.asAdmin.set_stripe_origin('https://stranded.example'));
   expectOk(await gw.asAdmin.set_card_tiers([{ id: 'tier5', usdCents: TIER_USD_CENTS }]));
@@ -131,8 +131,8 @@ test('81 — a missed expiry event: the sweep asks Stripe and releases the capac
   // THE assertion: capacity came back, by exactly the order's own locked quantity.
   expect((await gw.asAnon.reserve_status()).promisedTotal).toBe(promisedBefore - stranded.lockedCycles);
   // ⚠️ The `expiredBy` provenance says *Stripe expired the session*, not that an operator
-  // or a buyer did — but nothing can read another principal's order until #38, so the
-  // status above is the assertion this scenario can make. Scenario 84 covers the half
+  // or a buyer did — but the harness reads orders as their owner, so the status above is
+  // the assertion this scenario can make. Scenario 84 covers the half
   // that matters: a buyer's own cancellation is never overwritten by this path.
   await setCmcRate(gw);
   await ensureRates(gw);
@@ -183,7 +183,7 @@ test('83 — past the retry horizon it becomes an obligation, and a resend close
     status: 'complete', payment_status: 'paid', payment_intent: 'pi_83',
   }));
 
-  // ⚠️ **Now on the ORDER, not in a queue (#37).** The problem always had an
+  // ⚠️ **Now on the ORDER, not in a queue.** The problem always had an
   // `orderId`, so the order it belongs to supplies that structurally — which is the
   // whole reason it moved. No `orderId` field to compare against any more.
   const filed = unresolvedProblems(await orderProblems(gw, paid.id))

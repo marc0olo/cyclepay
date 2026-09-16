@@ -51,8 +51,8 @@ import {
 /// ⚠️ **`--app localhost:5178` is baked into the CLI page's baseline, and that is the
 /// test server's port, not documentation.** The page derives it from
 /// `window.location.host`, so under Playwright it is correct and under any other origin
-/// it differs. Do not read the deployed `--app` value off this picture — #83 is where
-/// that value's source is decided.
+/// it differs. Do not read the deployed `--app` value off this picture — `config.ts` is
+/// where that value comes from.
 ///
 /// The market comes from the fixture backend, so the amounts, the rate strip and
 /// the fee line are fixed numbers rather than whatever a gateway last said. Under
@@ -134,13 +134,13 @@ test.describe("visual baselines", () => {
   });
 
   test("the delivered ORDER view, with the numbers on screen", async ({ page }) => {
-    // ⚠️ **#147: the shot the flow split left uncovered.** One baseline used to catch
-    // both surfaces — the order record with the tour inline — and when the tour moved
-    // to its own page the order view stopped being photographed at all.
+    // ⚠️ **Its own baseline, separate from the tour's.** One shot covering both
+    // surfaces leaves the order view unphotographed as soon as the tour moves.
     //
-    // It is worth its own baseline for its history: `#order-problems` and
-    // `#receipt-area` were once NESTED inside a `<details>` the app collapsed here, so
-    // the one page a buyer opens to see what they got showed no cycle quantity. Nothing
+    // It is worth photographing because the failure it catches is invisible to the DOM
+    // suite: `#order-problems` and `#receipt-area` nested inside a collapsed
+    // `<details>` means the one page a buyer opens to see what they got shows no cycle
+    // quantity. Nothing
     // hid them; the nesting did. `delivered.spec.ts` asserts they are VISIBLE; what a
     // picture adds is that nothing is painted over them.
     //

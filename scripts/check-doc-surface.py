@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Assert the docs' method lists match the canister's ACTUAL public surface.
 
-⚠️ **Why this is a gate step and not a review habit.** `docs/STRIPE.md` carried a table
-introduced with "this table is the whole admin surface" while missing **11 of 29**
-admin methods — every one added by #37 and #38, plus `expire_order` from #52, plus the
-two secret-status queries `RUNBOOK.md` tells an operator to call to confirm a rotation.
-`RUNBOOK.md` told them to call `webhook_status`, which has never existed; the method is
-`webhook_secret_status`.
+⚠️ **Why this is a gate step and not a review habit.** A table introduced with "this is
+the whole admin surface" drifts as methods land: one in `docs/STRIPE.md` was missing
+**11 of 29** admin methods, including the two secret-status queries `RUNBOOK.md` tells an
+operator to call to confirm a rotation — while `RUNBOOK.md` named `webhook_status`, which
+has never existed. The method is `webhook_secret_status`.
 
 Neither failure is visible by reading either document: a list of plausible method names
 reads as complete, and a name that does not exist reads exactly like one that does. The
@@ -20,8 +19,9 @@ Two things are deliberately NOT enforced, because enforcing them would make the 
 a nuisance rather than a tripwire:
 
   - **Prose descriptions.** Only names are compared. A stale *description* is a real
-    problem (`recount_orders` "rebuild… from the store" survived #63) but it is not
-    mechanically checkable, and a check that cannot see it must not imply it can.
+    problem — `recount_orders` described as "rebuild… from the store" after it became
+    bounded — but it is not mechanically checkable, and a check that cannot see it must
+    not imply it can.
   - **Every mention.** Only the explicitly-marked list blocks are compared. A method
     named in passing mid-paragraph is prose.
 
@@ -44,10 +44,9 @@ import re
 import sys
 
 DID = "src/backend/dist/backend.did"
-# ⚠️ **Endpoints live in `Main.mo` AND in `mixins/*.mo` since #120.** Scanning only the
-# composition root made this abort with "parser is wrong" the moment the first endpoint
-# moved — correctly, because a check that cannot find what it is checking must not report
-# a clean scan. Both are read as one body of source.
+# ⚠️ **Endpoints live in `Main.mo` AND in `mixins/*.mo`.** Scanning only the composition
+# root aborts with "parser is wrong", correctly: a check that cannot find what it is
+# checking must not report a clean scan. Both are read as one body of source.
 ENDPOINT_SOURCES = ("src/backend/Main.mo", "src/backend/mixins/*.mo")
 
 # Public, but not part of any documented "queries you can poll" list. Explicit, so a
@@ -67,7 +66,7 @@ PUBLIC_NOT_LISTED = {
 PUBLIC_WITH_CALLER = {
     "create_order",  # public update on the buyer path; the caller BECOMES the owner
     "can_purchase",  # the admission gate's cap is per principal, so it must read caller
-    # ⚠️ Ungated ON PURPOSE (#68): an admin who is NOT yet granted has to be able to read
+    # ⚠️ Ungated ON PURPOSE: an admin who is NOT yet granted has to be able to read
     # their own principal and see that it is not granted. A guarded version would reject
     # exactly the caller who needs the answer, and a UI could not tell "not granted" from
     # "not reachable". It discloses nothing about anyone else — the answer is about
@@ -104,7 +103,7 @@ def real_surface():
         code = "\n".join(
             l for l in body.split("\n") if not l.strip().startswith("//")
         )
-        # ⚠️ **Both guards mean admin scope here.** #68 split authz into two tiers —
+        # ⚠️ **Both guards mean admin scope here.** Authz has two tiers —
         # `requireController` (the rules) and `requireAdmin` (individual cases) — and the
         # docs' vocabulary has three blocks, public/owner/admin, which is coarser. The
         # tier a method sits in is enforced by `check-admin-tiers.py`; this check only
@@ -120,11 +119,11 @@ def real_surface():
         # — `getOwned`, `ownerPage`. If you add one, name it that way.**
         #
         # Enumerating literal call forms broke this TWICE, both times in the same
-        # direction. First a regex looked only for `order.owner` and missed
-        # `getOwned(store, id, caller)`. Then #70 replaced `owner = ?caller` with
-        # `ownerPage` and the third form was missing again. Both times an owner-scoped
-        # read was reported as PUBLIC — and since the .did is authoritative by then, the
-        # remedy on offer is to go and assert a false scope in the docs.
+        # direction: a regex looking only for `order.owner` misses
+        # `getOwned(store, id, caller)`, and one written for `owner = ?caller` misses
+        # `ownerPage`. Both times an owner-scoped read is reported as PUBLIC — and since
+        # the .did is authoritative by then, the remedy on offer is to go and assert a
+        # false scope in the docs.
         owner = re.search(r"Orders\.\w*(?:[Oo]wned|[Oo]wner)\w*\s*\(", code) is not None
         # ⚠️ **`unclassifiable` is load-bearing for a DIFFERENT check — do not relax it.**
         # `check-admin-tiers.py` derives its population from the guards, so a method MEANT
@@ -137,7 +136,7 @@ def real_surface():
         # the remedy. A method that destructures `{ caller }` and then calls neither
         # `requireAdmin` nor a recognised owner helper has been handed the caller and
         # done nothing this check understands with it — so say so and fail, rather than
-        # guessing the least safe answer. This alone would have caught #70's regression.
+        # guessing the least safe answer. This alone catches a renamed owner helper.
         # ⚠️ A PATTERN, not the literal `"{ caller }"`. All 36 caller-taking declarations
         # use that exact spelling today, so the substring worked — and a formatter
         # producing `({caller})`, or a declaration wrapped across lines, would fall

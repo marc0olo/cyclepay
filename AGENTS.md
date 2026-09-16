@@ -62,7 +62,7 @@ recorded reasoning — don't "fix" them without reading the rationale:
   the code rather than a memory of this file:
 
   - **Endpoints are in `src/backend/mixins/`**, nine of them split by feature, and
-    `Main.mo` declares **no public methods** (#120). `docs/DESIGN.md` §9.1 has the rules
+    `Main.mo` declares **no public methods**. `docs/DESIGN.md` §9.1 has the rules
     that split rests on — chiefly that `include` passes its arguments **by value**, so
     mutable state is grouped into records and transient state arrives as closures.
   - **The `lib/` layer is flat modules rather than a `lib/` directory**, and that is the
@@ -70,23 +70,17 @@ recorded reasoning — don't "fix" them without reading the rationale:
     `rails/Card` with its explicit `Card.Deps`. Stateless, state as a parameter, which is
     what lets the whole ingestion path unit-test with no IC environment. Equivalent
     separation under a different filename; nothing about it is a departure in substance.
-  - **A3 is PARTIALLY addressed, and the remainder is #127.** Endpoints moved but their
-    bodies were moved *verbatim*, so several still hold logic rather than authorize →
-    delegate → map. `create_order`'s decision — amount, admission, quote, the caller's
-    floor — is now `Purchase.plan`, which bought the thing worth buying: the **error
-    precedence** is unit-tested rather than reachable only through PocketIC. **Thirteen
-    endpoint bodies still exceed 20 code lines** (non-blank, non-comment lines,
-    INCLUSIVE of the `public …func` line and the closing `};`, across
-    `src/backend/mixins/*.mo` — a reviewer and I differed by exactly those two lines
-    before the rule said which) —
-    `create_order` among them, because the half that stays is the exception below.
-  - **#127's remainder, measured.** Four bodies were extracted from (`create_order`,
-    `cancel_order`, `withdraw_reserve`, `delayed_deliveries`). Of the nine still over 20
-    lines, the length is the RETURN TYPE or guards rather than extractable logic:
-    `reserve_status` is 16 of 33 lines of inline record type, `operator_summary` 11 of
-    23. A3 is about logic — "if a body is more than authorize → delegate → map, the
-    middle belongs in a module" — and a return type is neither. So the remaining nine are
-    not pending work; the 20-line metric counting type lines is a limit of the metric.
+  - **A3, and why nine endpoint bodies exceed 20 code lines anyway.** The rule is
+    "if a body is more than authorize → delegate → map, the middle belongs in a module",
+    and the decisions that were extractable have been: `create_order`'s — amount,
+    admission, quote, the caller's floor — is `Purchase.plan`, which is what made its
+    **error precedence** unit-testable rather than reachable only through PocketIC.
+    ⚠️ **In the nine bodies still over the line, the length is the RETURN TYPE or the
+    guards, not logic** — `reserve_status` is 16 of 33 lines of inline record type,
+    `operator_summary` 11 of 23. A3 is about logic, and a return type is neither, so
+    those are not pending work: the metric counts type lines. Measure a body as
+    non-blank, non-comment lines INCLUSIVE of the `public …func` line and the closing
+    `};`, because a reviewer and I differed by exactly those two.
   - ⚠️ **`check-did-signatures.sh` is an IDENTITY check, not a compatibility one, and it
     is not the authority on whether a deliberate interface edit is safe.** Naming an
     inline return record is `didc`-compatible in both directions — Candid is structural,
@@ -94,15 +88,13 @@ recorded reasoning — don't "fix" them without reading the rationale:
     changed, correctly for its own job: proving a relocation moved nothing. There is no
     compatibility check in the gate (`didc` is not wired in), so a deliberate change
     needs that judgement made by hand.
-  - ⚠️ **#127 is delivering TESTS, not smaller bodies, and the count will not move much.**
-    Measured on the first three: `create_order` 84 → 73 code lines, `cancel_order`
-    65 → 65, `withdraw_reserve` 46 → 48 (LARGER — a named ladder call site is longer
-    than the inline `if` it replaces), `delayed_deliveries` 42 → 32.
-    Both endpoints' `switch` blocks have the same number of arms either way; what the
-    extraction buys is that the decision becomes checkable without an IC environment —
-    `Purchase.plan`'s error precedence, `Orders.cancelShape`'s whole status space. Do not
-    read a static thirteen as work not done, and do not chase the number by moving code
-    that has nowhere better to live.
+  - ⚠️ **Extracting a decision buys TESTS, not a smaller body.** Measured: one
+    extraction left the body the same length and another made it LARGER, because a named
+    ladder call site is longer than the inline `if` it replaces. What it buys is that the
+    decision becomes checkable without an IC environment — `Purchase.plan`'s error
+    precedence, `Orders.cancelShape`'s whole status space. So do not read a body over the
+    line as work not done, and do not chase the count by moving code that has nowhere
+    better to live.
   - ⚠️ **One part of A3 is a STATED EXCEPTION, not unfinished work.** `create_order`'s
     body keeps commit → outcall → re-check → attach. The commit takes the reserve hold in
     a block with no `await` and the order id IS the `client_reference_id`, so the sequence
@@ -163,8 +155,8 @@ account**. That is the whole point, and it is why the Stripe rail gets the
 attention: for that user a stablecoin rail is not an option, because acquiring
 the stablecoin is the same problem over again.
 
-The card rail is the only rail — a second, disabled ck-USDC rail was removed in
-#35, because carrying a rail we do not ship made every other change bigger.
+The card rail is the only rail — a second, disabled ck-USDC rail was removed,
+because carrying a rail we do not ship made every other change bigger.
 
 `Types.Rail` stays a single-case variant so a future rail is an additive change
 rather than a schema-wide edit — the same reasoning as `Types.Owner`.
@@ -179,9 +171,23 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
   "this was previously wrong" is noise to everyone who reads the file later. ⚠️ The
   exception, and it is narrow: a comment that stops a future mistake stays, written as
   a **rule** rather than as a story about a past change.
+- ⚠️ **No bare `#NN` issue reference outside `docs/agents/`**, and
+  `scripts/check-issue-refs.py` enforces it. Not in code, not in tests, not in docs, not
+  in scripts, not in a suite or test name. An issue number reads as a pointer to a live
+  requirement and is a pointer to a closed argument — and it defers the work: whatever
+  the reference stood for has to be said here, in terms of the code as it is now, or
+  dropped. Name the mechanism, the file, or the rule instead.
+  - `docs/agents/` is exempt: it is agent process rather than product, and both files
+    there exist to point at issues.
+  - ⚠️ **An EXTERNAL tracker stays, written qualified** — `dfinity/icp-js-core#1384`,
+    never the number on its own. This is the narrow case worth keeping: an issue we
+    *rely on*,
+    about code this repo does not own, where the number is the only way a reader reaches
+    the claim's source. `src/frontend/src/ic-env.ts` is the live instance. The qualified
+    form is what makes the distinction checkable rather than a judgement call.
 - ⚠️ **There is no `design-docs/` any more, and its deletion is the cautionary tale
   for this rule.** Three files, 1,252 lines, no staleness banner — and 67 mentions in
-  one of them of architecture that #33, #35 and #36 had removed, while `Main.mo` and
+  one of them of architecture that had already been removed, while `Main.mo` and
   `Types.mo` still cited it by section number. Two of its claims had been **reversed**,
   not merely outdated, so a reader was carrying the opposite of the truth. What was
   still true is `docs/DESIGN.md` — 215 lines against 1,252, holding decisions and
@@ -247,7 +253,7 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
      ⚠️ **Derive the term list from the deletion itself, not from the names you remember
      — and include the VERB for what the mechanism did.** The first attempt at this swept
      `ring`, `capacity`, `float`, `treasury`, `burn cap` and missed **`evict`/`eviction`**,
-     which is the verb #37's headline change removed — leaving five survivors including an
+     which is a verb the code no longer uses — leaving five survivors including an
      operator-facing RUNBOOK line stating a cap that no longer exists as a parameter, and
      a second false `AddResult.evicted` reference 118 lines from the one that had just
      been fixed. Also sweep the **names of deleted variants**: `#deliveryDelayed` and
@@ -297,12 +303,12 @@ Issues for this repo live in GitHub Issues. See `docs/agents/issue-tracker.md`.
 
 **GitHub Issues is the single source of truth for all task and progress
 tracking.** `PRD.md` was deleted 2026-09-09: it was frozen in June and described the
-ICP-float / CMC-mint / ck-USDC architecture that #33, #35 and #36 removed, so a reader
+ICP-float / CMC-mint / ck-USDC architecture, none of which exists, so a reader
 found a confident account of a system that no longer exists. Recoverable from git history
-if ever needed; the M1 scope lives in issue #1.
+if ever needed.
 
 ⚠️ **Rewriting a long issue BODY goes through `scripts/issue-body.py`, not through a
-shell heredoc.** #52 destroyed #12's body — Markdown built in an *unquoted* heredoc let
+shell heredoc.** A long issue body was destroyed this way — Markdown built in an *unquoted* heredoc let
 the shell run the backticks in the text, and a mangled 101k-char body replaced 53k. The
 script does the three things that make the edit recoverable and checkable:
 
@@ -361,7 +367,7 @@ goes stale the next time a step is inserted, and the script derives its own numb
 | what you see | it means | what to do |
 |---|---|---|
 | `mops build`: `.did is out of date` | the **committed Candid file** does not match the code | `mops build`, commit the `.did`, regenerate the suite's bindings. ⚠️ Says NOTHING about stable state — an added method trips this and is perfectly upgradable |
-| `mops check`: `Stable compatibility check failed` | the **stable shape** cannot be reinterpreted from the deployed one | locally reinstall and reseed; on mainnet this needs a migration (#32). ⚠️ This is the one where deployed data is at stake |
+| `mops check`: `Stable compatibility check failed` | the **stable shape** cannot be reinterpreted from the deployed one | locally reinstall and reseed; on mainnet this needs a migration. ⚠️ This is the one where deployed data is at stake |
 
 **After ANY change that moves the stable shape — compatible or not** — once it is deployed
 (reinstalled and reseeded if it had to be):
@@ -401,7 +407,7 @@ probed against a deliberate mutation rather than assumed:
 |---|---|---|
 | `REPRESENTATION-ONLY` | both directions pass — equivalent signatures | promote without review; note the compiler bump in the commit |
 | `REAL shape change (upgrade-compatible)` | forward only — a field was added or widened | promote deliberately, and **name what moved** in the commit |
-| `NOT upgrade-compatible` | forward fails — a deployed canister cannot take it | not a promotion. Reinstall pre-launch, or write the migration (#32) |
+| `NOT upgrade-compatible` | forward fails — a deployed canister cannot take it | not a promotion. Reinstall pre-launch, or write the migration |
 
 ⚠️ **This is correct ONLY while the shape change is accompanied by a reinstall — and
 nothing in the toolchain will tell you when that stops being true.** Pre-launch,
@@ -410,7 +416,7 @@ it becomes a reflex. Once the canister holds data that cannot be recreated, the 
 still succeeds, the check goes green, and the incompatibility is blessed against real data.
 **The remedy for the failure is the command that erases the evidence of it.**
 
-After that point a failed check means *write a migration* (#32). ⚠️ **The trigger is a
+After that point a failed check means *write a migration* (`docs/OPERATE.md`, Mode 3). ⚠️ **The trigger is a
 state, not a date:** the first mainnet deploy you intend to keep, or the first real buyer's
 order. Until then reinstall is free and the chain buys nothing; after then `mops deployed`
 is silently the wrong answer.

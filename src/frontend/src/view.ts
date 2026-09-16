@@ -9,7 +9,7 @@
 /// order that has arrived, because that is a property of the order rather than of
 /// where the visitor navigated.
 ///
-/// `admin` is the operator console (#68). It is a view rather than a separate page for
+/// `admin` is the operator console. It is a view rather than a separate page for
 /// the same reason as the others: one owner of the screen, and hash routing that cannot
 /// 404 on reload from an asset canister.
 ///

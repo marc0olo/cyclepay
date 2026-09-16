@@ -67,7 +67,7 @@ the IMF rate for 2026-09-10: **1 XDR = $1.373470**, $1.00 = 0.728083 XDR.
 
 ⚠️ **Two subnets that are NOT the buyer's.**
 
-- **This gateway's own canister** targets a 7-node confidential subnet (#2), where these
+- **This gateway's own canister** targets a 7-node confidential subnet, where these
   costs scale by 7/13 ≈ 0.54. That affects *our* gas, not a buyer's app.
 - **A local `icp network` prices differently.** Solving two observations of this repo's
   backend (7.7 MB → 1,061,634,457 idle cycles/day; 336.7 MB → 9,465,058,545) gives 317,500

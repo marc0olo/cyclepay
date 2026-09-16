@@ -59,7 +59,7 @@ Mode 2. Keeping one local path means the local procedure has one shape.
 This project uses **`icp-cli`, never `dfx`**. Project configuration lives in
 `icp.yaml`; Motoko dependencies in `mops.toml` / `mops.lock`.
 
-⚠️ **Clone with submodules.** The backend decrypts its sealed secrets (#11) using a
+⚠️ **Clone with submodules.** The backend decrypts its sealed secrets using a
 BLS12-381 implementation pinned as a git submodule, resolved by `mops` as a path
 dependency — so without it nothing compiles:
 
@@ -81,7 +81,7 @@ through a real payment.
 
 ```sh
 # 1. dependencies and a local replica
-git submodule update --init --recursive   # the pinned crypto (#11), first time only
+git submodule update --init --recursive   # the pinned crypto, first time only
 mops install
 icp network start -d                    # PocketIC, gateway on :8000
 
@@ -136,13 +136,13 @@ Then buy: pick an amount, pay with `4242 4242 4242 4242`, and the order walks
 cannot price, which is how it says "seed first" rather than half-configuring.
 
 ⚠️ **Step 4 is the one nobody guesses.** With an empty allow-list every purchase
-refuses with `unboundedGiveaway` — the #99 faucet guard, not a misconfiguration. The
+refuses with `unboundedGiveaway` — the faucet guard, not a misconfiguration. The
 seed prints the exact command and does not treat it as a failure.
 
 ⚠️ **Step 5 needs a restricted key** (`rk_...`) with **Checkout Sessions = Write** and
 everything else None. Write is the level that also grants the read the recovery sweep
-needs (#52). No Payment Links exist to configure: the canister creates a Checkout
-Session per order through the API and sets `client_reference_id` on it (#33).
+needs. No Payment Links exist to configure: the canister creates a Checkout
+Session per order through the API and sets `client_reference_id` on it.
 
 ⚠️ **Do NOT `export STRIPE_API_KEY`** into a shell where you run the Stripe CLI. The CLI
 prefers it over your `stripe login` credential, and opening a CLI session needs a
@@ -158,7 +158,7 @@ broken app rather than a safe one:
 
 | What you see | Why |
 |---|---|
-| "No amounts are configured yet" | No presets registered. Since #33 that is **not** a paused rail — a custom amount still works; the seed registers the tiles |
+| "No amounts are configured yet" | No presets registered. That is **not** a paused rail — a custom amount still works; the seed registers the tiles |
 | "No exchange rate available yet" | Pricing needs the CMC rate, which only NNS governance can set — the seed reaches it through the local PocketIC control API |
 | "temporarily unavailable while the gateway is topped up" | `minCanisterCycles` is 5 T and `icp deploy` creates the canister with less. This is the canister's own **gas**, not the cycles it sells; the seed tops up rather than lowering the floor |
 | Orders paid but never delivered | The **cycles reserve** is empty — delivery transfers from the gateway's own cycles-ledger account |
@@ -320,7 +320,7 @@ icp cycles transfer -> refresh_reserve
 
 And the fifth, outside the canister: **the derivation origin decides who every buyer is.**
 It is pinned to the frontend canister's own origin (`src/frontend/src/config.ts`), which is
-what makes this test domain and whatever domain #40 settles on yield the **same**
+what makes this test domain and whatever production domain is chosen yield the **same**
 principals. Changing that pin after the first sign-in strands every account.
 
 ### Cycles
@@ -479,7 +479,7 @@ so it is accepted. Lower the floor for a demo and the same divisor is refused
 
 ### 4. The secrets, sealed, without any local script
 
-Both Stripe secrets are **encrypted to the canister before they are sent** (#11), so the
+Both Stripe secrets are **encrypted to the canister before they are sent**, so the
 plaintext never appears in an ingress message, a shell history or a CI log. The mainnet
 path differs from the local one only in the `ic` argument, which selects the **mainnet
 vetKD master key** — and that choice is derived from the environment rather than typed,
@@ -531,7 +531,7 @@ characters, so even the length disclosure could not separate them. The script no
 set-but-empty value outright and never reads the file for a named environment.
 
 ⚠️ **Use a SANDBOX restricted key (`rk_test_...`), Checkout Sessions = Write, everything
-else None.** Write is the level that also grants the read the #52 recovery sweep needs.
+else None.** Write is the level that also grants the read the recovery sweep needs.
 Never an unrestricted `sk_`: a leaked write-sessions key can only create sessions that pay
 *us*, while one that can issue refunds is materially worse.
 
@@ -808,7 +808,7 @@ because a go-live prerequisite filed somewhere else is one that gets discovered
 missing at go-live. The closed issues hold the reasoning; what is kept here is what a
 deployment turns on.
 
-**1. The migration chain, before there is data worth keeping** (#32). `Main.mo` is a
+**1. The migration chain, before there is data worth keeping**. `Main.mo` is a
 `persistent actor` with **inline initializers** and there is no
 `src/backend/migrations/`, so an incompatible stable-shape change has exactly one
 remedy — `icp deploy --mode reinstall` — and on a canister holding real orders,
@@ -829,14 +829,14 @@ early: `[canisters.backend.check-stable]` compares the actor against the committ
 Read the `migrating-motoko-actors` skill first. No `preupgrade`/`postupgrade`, no
 `(with migration = ...)`.
 
-**2. An alert someone actually receives** (#3). `RUNBOOK.md`'s monitoring section is a complete monitoring plan —
+**2. An alert someone actually receives**. `RUNBOOK.md`'s monitoring section is a complete monitoring plan —
 metric, threshold, severity, action — and nothing runs it. The whole P1 set polls
 **public queries**, so the alerting layer needs no key. It is done when those metrics
 reach a human out of hours **and someone has tripped one deliberately and watched it
 arrive**; the failure modes here are slow (a 2 h delay alert, a 72 h terminate bound),
 so what is needed is something that wakes a person, not a dashboard someone visits.
 
-**3. The claim, and the legal surface of being official** (#40).
+**3. The claim, and the legal surface of being official**.
 *"At cost"* must hold **net of card processing** or become a visible fee line — the
 fee is real (≈2.9% + $0.30) and the buyer pays it. Beside it: imprint, terms, privacy
 and contact; invoices a developer can expense, and the VAT position; a refund
@@ -850,7 +850,7 @@ canister id** (`config.ts`), so a test domain and whatever production domain is 
 yield the *same* principals. What would be one-way is making a custom domain itself the
 derivation origin — which this deployment does not do.
 
-**4. `stripe_origin` must be https and non-loopback once livemode is `?true`** (#143).
+**4. `stripe_origin` must be https and non-loopback once livemode is `?true`**.
 `Session.validateOrigin` accepts `http://` for loopback hosts, and nothing refuses the
 pair `expected_livemode = ?true` with `stripe_origin = http://localhost:8000` — a live
 gateway returning paying buyers to their own machine. So **read `stripe_origin` back
@@ -865,12 +865,12 @@ copy and **not** the constraint: its way out is blocked by a second guard entire
 (`#divisorChangeWithOrders`), so a simulation gateway with one stored order can never
 go live at all. Do not add a second lockout to a money-handling setter.
 
-**5. Attestation coverage of the confidential subnet** (`RUNBOOK.md`'s confidential-subnet checklist, #2). Checkpoints and
+**5. Attestation coverage of the confidential subnet** (`RUNBOOK.md`'s confidential-subnet checklist). Checkpoints and
 state-sync **are** confirmed confidential on the target subnet, which was the spec's
 "verify this hardest" item. Attestation coverage is the box still open: one unattested
 replica is one node provider who can read the webhook secret. That checklist is where it stays open.
 
-**6. Where the repo lives, before the "check the code" link is published** (#13, #23).
+**6. Where the repo lives, before the "check the code" link is published.**
 `RELEASE.md`'s trust story is *verify the deployed module hash against a tagged
 commit*, so the repository URL is a user-facing artifact. `cyclepay` also still names
 the upstream fork this repo grew from. Renaming or moving is free now and costs
@@ -881,9 +881,8 @@ redirect debt once that link is on a money page.
 ⚠️ **Two of these are knowingly NOT done on the live simulation deployment** — step 2's
 freezing threshold (still the 30-day default) and step 10's backup controller (one
 principal, no second). Both are single commands and both are production prerequisites,
-tracked on issue #171; they are deferred rather than missed. Read
-`icp canister status backend -e ic` before assuming either has been done on whatever
-deployment you are looking at.
+deferred rather than missed. Read `icp canister status backend -e ic` before assuming
+either has been done on whatever deployment you are looking at.
 
 1. **Deploy and verify** per `RELEASE.md` — reproducible build, published module
    hash, and `icp canister status` gated on matching it.

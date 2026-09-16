@@ -52,7 +52,7 @@ export function makeBackendAt(canisterId: string, identity?: Identity) {
   return createActor(canisterId, { agentOptions: agentOptions(identity) });
 }
 
-/// The cycles ledger, queried directly by this app (#30 PR-A).
+/// The cycles ledger, queried directly by this app.
 ///
 /// ⚠️ **Why the frontend asks the ledger instead of the backend.** The buyer sees
 /// `lockedCycles - transferFee`, and the fee is the ledger's to change. A canister
@@ -232,7 +232,7 @@ export type Backend = ReturnType<typeof makeBackend>;
 export type Order = NonNullable<Awaited<ReturnType<Backend["get_order"]>>>;
 export type Tier = Awaited<ReturnType<Backend["card_tiers"]>>[number];
 export type Destination = Parameters<Backend["create_order"]>[1];
-/// What the buyer is paying for: a preset or a typed amount (#33). Derived from
+/// What the buyer is paying for: a preset or a typed amount. Derived from
 /// the method signature rather than restated, so a backend change to the variant
 /// is a typecheck failure here rather than a silent divergence.
 export type Amount = Parameters<Backend["create_order"]>[0];

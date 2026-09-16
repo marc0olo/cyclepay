@@ -50,7 +50,7 @@ mixin (
   },
 ) {
 
-  /// Why a manual delivery kick did nothing (#30 PR-B).
+  /// Why a manual delivery kick did nothing.
   type ProcessOrderError = { #notFound; #inFlight };
 
   /// §2 query authz: `caller == order.owner`, null otherwise — existence is
@@ -60,7 +60,7 @@ mixin (
     Orders.getOwned(orderStore, id, caller);
   };
 
-  /// Why a buyer's cancel refused (§4.3, #123).
+  /// Why a buyer's cancel refused (§4.3).
   ///
   /// The wording moved to the frontend; the payloads carry every fact the sentences
   /// asserted, which is the condition under which copy may leave the canister — see
@@ -74,7 +74,7 @@ mixin (
     #notCancellable : { status : Types.OrderStatus };
     /// ⚠️ Stripe answered but would not close the session, and this arm cannot tell
     /// WHICH of three causes it was: the payment completed, the session had already
-    /// expired, or Stripe refused the request. One tag for all three is the point (#118)
+    /// expired, or Stripe refused the request. One tag for all three is the point
     /// — anything more specific would be a diagnosis this arm does not have.
     #sessionNotClosed;
     /// A 5xx or the outcall itself failing. The order stays payable and uncancelled.
@@ -87,15 +87,15 @@ mixin (
   };
 
   /// Order history for the caller (§2, fixes the lost-receipt problem).
-  /// The caller's own orders, **paginated** (#38).
+  /// The caller's own orders, **paginated**.
   ///
   /// ⚠️ **This was a latent trap on the BUYER path, not an ergonomic wart.** It returned
   /// every order the caller owns, unbounded, and a query response is capped at ~2 MB —
   /// so an oversized read does not degrade, it **traps**. The open-order cap of 1 means
   /// a buyer accumulates them slowly, but nothing bounded it, and nothing drops orders
-  /// under #37.
+  /// on the order.
   ///
-  /// ⚠️ **Paging bounded the RESPONSE; `Orders.ownerPage` bounds the WORK (#70).** The
+  /// ⚠️ **Paging bounded the RESPONSE; `Orders.ownerPage` bounds the WORK.** The
   /// admin pager's owner filter walks every principal's orders to find one principal's,
   /// so this used to cost O(all orders ever created) in a single message — a page cap on
   /// a ~2 MB response, against a limit that is actually instructions. `ownerPage` walks
@@ -105,12 +105,12 @@ mixin (
     limit : Nat,
   ) : async Orders.Page {
     // ⚠️ The SAME function the unit test's `scanned` bound is asserted on, with the
-    // count projected away here (#70). A separate uninstrumented path for production
+    // count projected away here. A separate uninstrumented path for production
     // would put that bound on code nobody runs.
     Orders.ownerPage(orderStore, caller, afterId, limit).page;
   };
 
-  /// Manual delivery kick — **admin, or the order's own owner** (#30 PR-B).
+  /// Manual delivery kick — **admin, or the order's own owner**.
   ///
   /// Safe to spam by construction: every step is journalled, deduplicated, idempotent
   /// and single-flighted. A page refresh heals a stuck order in seconds rather than
@@ -128,7 +128,7 @@ mixin (
   /// closed the tab is exactly who most needs us to finish.
   ///
   /// ⚠️ **An owner kicking their own order is NOT audited**, because the log drops
-  /// nothing (#37) and a refresh loop would be permanent state growth driven by a
+  /// nothing and a refresh loop would be permanent state growth driven by a
   /// caller. An admin kick is audited — it is an ops action on someone else's order.
   public shared ({ caller }) func process_order(id : Types.OrderId) : async Result.Result<Types.Order, ProcessOrderError> {
     let isAdmin = Auth.checkAdmin(caller, Principal.isController, ops.isGrantedAdmin).isOk();
@@ -169,7 +169,7 @@ mixin (
     let ?order = Orders.getOwned(orderStore, id, caller) else return #err(#notFound);
     // WHICH answer is `Orders.cancelShape`'s decision, over the whole status space and
     // unit-tested there; how it READS stays here, because a buyer sees these words
-    // verbatim (§4.3 / #118).
+    // verbatim (§4.3).
     switch (Orders.cancelShape(order.status)) {
       case (#proceed) {};
       case (#alreadyCancelled) return #ok(order);
@@ -180,11 +180,11 @@ mixin (
     };
     // `#cancelled`, not `#expired`: the buyer's own decision is a distinct state,
     // so a reload shows them "Cancelled" rather than telling them their order
-    // expired (#34). And `#cancelled → #paid` is absent from the matrix, which is
+    // expired. And `#cancelled → #paid` is absent from the matrix, which is
     // what makes a cancelled order unpayable by construction rather than by a
     // runtime check somebody has to remember.
     //
-    // ── Atomic with Stripe (#33, option B) ──────────────────────────────────
+    // ── Atomic with Stripe ─────────────────────────────────────────────────
     // Expire the session FIRST, then mark the order. Nothing is ever *half*
     // cancelled: if the session is still live on Stripe, the order is not
     // cancelled. That ordering is the whole reason `#cancelled → #paid` never

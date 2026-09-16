@@ -176,9 +176,7 @@ fi
 # `scripts/.local-dev.env` is gitignored, so a value set there is set once instead
 # of exported into every new shell — and it stays out of shell history, `ps` and
 # any terminal transcript, which matters for `STRIPE_API_KEY`.
-# ⚠️ Named for what it IS, not what it was. It held `STRIPE_LINK_*` values until #33
-# deleted the Payment Link mechanism; it is now the local dev config, and the only
-# variable anything reads from it is STRIPE_API_KEY.
+# ⚠️ The only variable anything reads from it is STRIPE_API_KEY.
 DEV_ENV_FILE="scripts/.local-dev.env"
 if [ -f "$DEV_ENV_FILE" ]; then
   BEFORE_KEY="${STRIPE_API_KEY:-}"
@@ -191,15 +189,12 @@ fi
 
 # ── presets ──────────────────────────────────────────────────────────────────
 step "card presets"
-# ⚠️ An empty list is NO LONGER a pause lever (#33): a custom amount is orderable
+# ⚠️ An empty list is NO LONGER a pause lever: a custom amount is orderable
 # without any preset, so an empty list just shows no tiles. The rail's switch is
 # both Stripe secrets being provisioned.
 #
-# The `STRIPE_LINK_*` resolver that used to live here is gone: #33 removed
-# `Tier.paymentLinkUrl`, so there was nothing left for it to populate.
-#
-# The presets are $10 / $20 / $50. The old $5 tier is gone because the gate's
-# floor is $10, and registering it would be refused as `belowFloor`.
+# The presets are $10 / $20 / $50. ⚠️ **Nothing below $10**: the gate's floor is $10, and
+# registering a cheaper tier is refused as `belowFloor`.
 icp canister call backend set_card_tiers \
   '(vec { record { id = "t10"; usdCents = 1_000 : nat };
           record { id = "t20"; usdCents = 2_000 : nat };
@@ -221,7 +216,7 @@ ok "2 h alert, 72 h max hold"
 
 
 # ── the admission gate ───────────────────────────────────────────────────────
-# ── Stripe API key + return origin (#33) ─────────────────────────────────────
+# ── Stripe API key + return origin ─────────────────────────────────────
 step "Stripe session config"
 # ⚠️ **`STRIPE_API_KEY` belongs in `scripts/.local-dev.env`, not on a command
 # line.** That file is gitignored and is sourced above, so the key never appears
@@ -238,7 +233,7 @@ step "Stripe session config"
 # ⚠️ A reinstall wipes both secrets and this script only restores the key, so
 # after `--mode reinstall` you still need `scripts/stripe-dev.sh` before paying.
 if [ -n "${STRIPE_API_KEY:-}" ]; then
-  # Sealed (#11). `seal-secret.sh` reads STRIPE_API_KEY itself, from the environment or
+  # Sealed. `seal-secret.sh` reads STRIPE_API_KEY itself, from the environment or
   # from scripts/.local-dev.env, so the value is never passed as an argument.
   scripts/seal-secret.sh api-key >/dev/null \
     || die "sealed set_stripe_api_key was refused (too short, or not a controller?)"
@@ -248,7 +243,7 @@ else
   # signing in, quoting — while `create_order` fails at the outcall with a real
   # Stripe 401 rather than at a config check. That is a better local default than
   # refusing to create orders at all, and the failure names itself.
-  # Sealed like the real thing (#11), so the placeholder path exercises the same code —
+  # Sealed like the real thing, so the placeholder path exercises the same code —
   # a local default that skipped sealing would leave the decrypt path untested until the
   # first operator with a real key.
   STRIPE_API_KEY='rk_test_PLACEHOLDER_set_STRIPE_API_KEY_to_create_sessions' \
@@ -282,7 +277,7 @@ fi
 # fetches it). Delivery never depended on this — the webhook does that work — but the
 # redirect did.
 #
-# ⚠️ Not a chosen domain, just the one that works locally. #40/#23 decide the real one.
+# ⚠️ Not a chosen domain, just the one that works locally.
 ORIGIN="http://frontend.local.localhost:${GATEWAY_PORT}"
 icp canister call backend set_stripe_origin "(\"${ORIGIN}\")" >/dev/null \
   || die "set_stripe_origin refused ${ORIGIN} — https, or loopback http, with no query or fragment"
@@ -333,7 +328,7 @@ if [ "$NEED_TOP_UP" -eq 1 ] && ! TOP_UP_OUT="$(icp canister top-up backend --amo
     converts more, or stop and start the network for freshly seeded principals."
 fi
 
-step "buyer allow-list (#99)"
+step "buyer allow-list"
 # ⚠️ **A local gateway with a funded reserve and no allow-list REFUSES every
 # buyer**, and the reason is not obvious from the refusal alone. The gate calls
 # that state `unboundedGiveaway`: Stripe test payments are free and unlimited, so
@@ -403,9 +398,9 @@ RESERVE_TOPPED_UP=1
 RESERVE_OBSERVED=0
 RESERVE_OBSERVED_BALANCE=""
 if RESERVE_OUT="$(icp cycles transfer "$RESERVE_TOP_UP" "$BACKEND_ID" 2>&1)"; then
-  # ⚠️ **A funded reserve is not a SELLABLE reserve until the gateway looks.** #30
-  # PR-B decides solvency against a maintained lower bound on this account, and that
-  # bound only ever rises by observation: it starts at zero on a fresh install, and a
+  # ⚠️ **A funded reserve is not a SELLABLE reserve until the gateway looks.** Solvency
+  # is decided against a maintained lower bound on this account, and that bound only ever
+  # rises by observation: it starts at zero on a fresh install, and a
   # transfer into the account is invisible to it. Without this call the seed produces
   # a gateway that refuses every purchase with `#reserveShort{available = 0}` while
   # the ledger holds 100 T — and nothing fails, compiles differently, or says why.
@@ -467,8 +462,8 @@ else
 fi
 
 step "admission gate"
-# The #33 bounds: a $10 floor and a $100 ceiling. One pair governs presets AND
-# custom amounts — do not add a custom-amount-specific limit.
+# A $10 floor and a $100 ceiling. One pair governs presets AND custom amounts — do not
+# add a custom-amount-specific limit.
 #
 # ⚠️ **One open order per principal, the shipped value — not a dev convenience.** It used
 # to be 3 here, which meant local runs never exercised the product decision: a buyer who
@@ -499,7 +494,7 @@ fi
 ok "cycles floor kept at $((FLOOR / 1000000000000)) T; canister holds $((BALANCE / 1000000000000)) T"
 
 # ⚠️ **`unboundedGiveaway` is not a seeding failure, and reporting it as one sent two
-# readers hunting a misconfiguration that was not there.** It is the #99 faucet guard
+# readers hunting a misconfiguration that was not there.** It is the faucet guard
 # saying the allow-list is empty — the one step this script cannot do for you, because
 # the principal it needs is the one your browser signs in with. Every other refusal here
 # IS a seeding failure and still dies.
@@ -611,7 +606,7 @@ cat <<NOTES
   What works now, and what needs Stripe:
     - Browsing amounts, signing in, creating an order, cancelling: all work
       — but CREATING an order needs your principal on the buyer allow-list
-      first (#99). Sign in, copy the principal, then:
+      first. Sign in, copy the principal, then:
         icp canister call backend add_allowed_buyer '(principal "<yours>")'
       Or re-run this script with BUYER_PRINCIPAL=<principal>. Without it the
       gateway refuses every buyer with unboundedGiveaway, because a funded

@@ -30,7 +30,7 @@ mixin (
   },
 ) {
 
-  /// The outcall transform (#33). Referenced by name in the request, so it has to
+  /// The outcall transform. Referenced by name in the request, so it has to
   /// be a public `shared query` on the actor even though nothing should ever call
   /// it directly.
   ///

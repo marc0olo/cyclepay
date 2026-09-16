@@ -5,13 +5,13 @@ import Tiers "../src/backend/Tiers";
 // replacement depends on it) and lookup.
 
 func tier(id : Text, usdCents : Nat) : Tiers.Tier {
-  // `paymentLinkUrl` went with the Payment Links (#33): a preset is an amount
-  // and an id, and the amount is pinned by the session the canister creates.
+  // A preset is an amount and an id, and nothing else: the amount is pinned by the
+  // session the canister creates, so there is no URL to carry.
   { id; usdCents };
 };
 
 /// The bounds every case below validates against, except the ones probing a
-/// bound itself. Matches Gate.defaultConfig() as of #33: $10 floor, $100 ceiling.
+/// bound itself. Matches Gate.defaultConfig(): $10 floor, $100 ceiling.
 let floor : Nat = 1_000;
 let ceiling : Nat = 10_000;
 

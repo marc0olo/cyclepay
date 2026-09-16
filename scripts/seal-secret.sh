@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Provision a Stripe secret into the backend, sealed with vetKD (#11).
+# Provision a Stripe secret into the backend, sealed with vetKD.
 #
 # Usage:
 #   scripts/seal-secret.sh api-key         [environment]   # reads STRIPE_API_KEY

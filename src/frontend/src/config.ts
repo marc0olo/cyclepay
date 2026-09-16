@@ -28,11 +28,11 @@ export function isLocalNetwork(hostname: string = window.location.hostname): boo
 /// the case its own guidance says breaks authentication rather than a no-op.
 ///
 /// ⚠️ **Pinned to the FRONTEND CANISTER's origin, never to the domain the page came from,
-/// and that is what makes the domain reversible.** #40 records the origin as irreversible
-/// after the first purchase, which is true of a *custom domain* used as the derivation
-/// origin. Deriving from the canister id instead means this test domain and whatever
-/// production domain #40 settles on both yield the SAME principals, so the decision stops
-/// being one-way. The canister id is the one identifier a domain change cannot alter.
+/// and that is what makes the domain reversible.** A *custom domain* used as the
+/// derivation origin is irreversible after the first purchase. Deriving from the canister
+/// id instead means this test domain and whatever production domain is chosen both yield
+/// the SAME principals, so the decision stops being one-way. The canister id is the one
+/// identifier a domain change cannot alter.
 ///
 /// The cost is a second file: II fetches `/.well-known/ii-alternative-origins` from THIS
 /// origin, cross-origin, and refuses to derive for any serving origin the file does not

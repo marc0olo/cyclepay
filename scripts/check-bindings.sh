@@ -11,12 +11,11 @@
 # check exists for.** Same pattern the gate already applies one layer down to
 # `src/backend/dist/backend.did` — regenerate, diff, fail on drift.
 #
-# ⚠️ **Why generated at all.** `test/integration/src/idl.ts` used to hand-transcribe 555
+# ⚠️ **Why generated at all.** Hand-transcribing `test/integration/src/idl.ts` is 555
 # lines of `IDL.Func` declarations, and `types.ts` 42 TypeScript mirrors, with nothing
-# checking either against the Motoko. The drift was real: `GateReason` still carried
-# `burnCapExhausted` and `floatLow` after #36 deleted the treasury path, and was missing
-# `reserveShort` entirely — so a reserve-short refusal was undecodable from the suite and
-# therefore untestable, found only because #61 needed to test that exact refusal.
+# checking either against the Motoko. Such a copy drifts in both directions at once: a
+# `GateReason` mirror keeps variants the backend deleted and misses ones it added, so
+# those refusals are undecodable from the suite and therefore untestable.
 #
 # ⚠️ **And a mirror fails ASYMMETRICALLY, which is why no test caught it.** Declaring a
 # field the canister lacks breaks the Candid decode and gets found. *Omitting* one decodes

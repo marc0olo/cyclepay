@@ -6,8 +6,8 @@ import { IDL } from "@icp-sdk/core/candid";
 import { idlFactory } from "./bindings/declarations/backend.did.js";
 import type { Backend } from "./actor";
 
-/// A minimal Candid **text** reader, for the one assertion #97 actually asks for:
-/// that the rendered command PARSED equals the tuple the backend expects.
+/// A minimal Candid **text** reader, for the one assertion that matters here: that the
+/// rendered command PARSED equals the tuple the backend expects.
 ///
 /// ⚠️ **Provenance is not enough, and that is the whole point of parsing back.** A test
 /// that checks "the arguments came from the row" passes for a renderer that reads the
@@ -57,8 +57,8 @@ function parseCandid(src: string): unknown {
     }
     if (peek("opt")) { eat("opt"); return { some: value() }; }
     // A payload-free variant, `variant { tag }`. Returned as a wrapper rather than a
-    // bare string so an assertion cannot confuse it with the text `"duplicate"` — which
-    // is exactly the confusion #122 removed from the interface.
+    // bare string so an assertion cannot confuse it with the text `"duplicate"` — the
+    // confusion the variant-typed interface exists to prevent.
     if (peek("variant")) {
       eat("variant");
       eat("{");
@@ -139,10 +139,10 @@ function argsOf(command: string): string {
   return out;
 }
 
-describe("the rendered command is what the canister expects (#97)", () => {
+describe("the rendered command is what the canister expects", () => {
   test("⚠️ a whole config record round-trips field for field", () => {
-    // The case #97 names: the setters take whole records, and hand-authoring one while
-    // omitting or fat-fingering a field silently changes a live parameter.
+    // The setters take whole records, and hand-authoring one while omitting or
+    // fat-fingering a field silently changes a live parameter.
     const pricing = {
       feeBps: 290n,
       feeFixedCents: 30n,
@@ -168,11 +168,11 @@ describe("the rendered command is what the canister expects (#97)", () => {
   });
 
   test("⚠️ resolve_problem keeps its three arguments in ORDER and shape", () => {
-    // The one #97 singles out: dropping `paymentRef` over-resolves, because one order
-    // can carry several unresolved problems of the same kind. A swap here closes the
+    // Dropping `paymentRef` over-resolves, because one order can carry several
+    // unresolved problems of the same kind. A swap here closes the
     // wrong obligation and the record then says an obligation was handled that was not.
     //
-    // ⚠️ **The kind is a VARIANT now (#122), and that is visible in this test as a
+    // ⚠️ **The kind is a VARIANT now, and that is visible in this test as a
     // type rather than an assertion.** It used to be `text`, so `"refundAfterDelivery"`
     // was a valid argument and a typo was a runtime miss. The enum below is the whole
     // guarantee: passing the string fails to compile, which no runtime assertion here
