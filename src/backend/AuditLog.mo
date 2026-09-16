@@ -86,13 +86,12 @@ module {
 
   /// One page of events, oldest → newest, after `afterSeq`.
   ///
-  /// ⚠️ **Retention is total, which is why this has to paginate.** The bound used to be
-  /// the ring itself, so nobody had to think about the response size; retention is now
-  /// total, and a query response is capped at ~2 MB. Removing the ring moved the problem
-  /// from *"history is lossy"* to *"the query cannot answer"* — both real, and only one
-  /// was fixed by removing the cap.
+  /// ⚠️ **Retention is total, which is why this has to paginate.** Nothing bounds the
+  /// log, and a query response is capped at ~2 MB — so an unpaged read is on a path to
+  /// *"the query cannot answer"*. ⚠️ **Do not answer that with a cap on the log**: that
+  /// trades it for *"history is lossy"*, which is the worse of the two.
   ///
-  /// Cursor on `seq`, which is monotonic and never reused, and now has **no gaps** since
+  /// Cursor on `seq`, which is monotonic, never reused, and has **no gaps**, since
   /// nothing is dropped. `nextCursor` is set only when further events remain, so a caller
   /// stops the moment it is null.
   public func page(log : Log, afterSeq : ?Nat, limit : Nat) : Page {

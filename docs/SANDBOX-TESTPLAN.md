@@ -10,14 +10,11 @@ go-live approval.** It is not one.
 
 ## Status: run against reserve delivery on 2026-08-28
 
-⚠️ **This section was itself stale until 2026-09-01, and the staleness caused a wrong
-conclusion — so read the dates before trusting any row.** It claimed reserve delivery
-had never been run in a browser. That was true when written and false by the time it
-was read: the mint path was deleted before the run below happened. A reviewer reading
-the old table concluded this plan's gate was unverified and
-recommended re-running the whole plan. The tracker was right and this file was wrong,
-which is the reverse of the usual failure and the reason the dates are now in the
-heading.
+⚠️ **Read the dates before trusting any row.** A row here is a record of what a run on a
+given day did and did not observe, and the mechanism under it may have changed since. A
+row that was true when written and is now false reads exactly like a current gap, and the
+cost of that confusion is re-running a whole plan that was in fact verified. The dates in
+the heading are what make each row checkable.
 
 **What the 2026-08-28 run recorded**, all of it against `icrc1_transfer` out of the
 reserve, with no ICP or CMC in the path:

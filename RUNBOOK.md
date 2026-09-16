@@ -1145,11 +1145,10 @@ never tell a fresh `created` order from one that lapsed an hour ago.
 - **`orphans_unresolved`** for the entries themselves. `orphan_depth` is
   public, so **alert on the public depth and only fetch details when it fires** —
   that keeps the key out of the polling loop.
-- ⚠️ **The audit log no longer drops anything.** It was a 4,096-entry ring, and
-  gaps in `seq` were how you detected drops; there are no gaps now, and `seq` is only a
-  never-reused ordering. What has not changed is what it IS: *telemetry*. The order
-  store, delivery journal and orphan list are the records of money, and an order's own
-  `problems` array is where its obligations live.
+- ⚠️ **The audit log drops nothing, so a gap in `seq` is not a signal** — do not alert
+  on one. `seq` is a never-reused ordering and nothing else. What the log IS, though, is
+  *telemetry*: the order store, delivery journal and orphan list are the records of
+  money, and an order's own `problems` array is where its obligations live.
 
 ### Off-chain
 

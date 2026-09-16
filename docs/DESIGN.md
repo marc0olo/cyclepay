@@ -615,10 +615,9 @@ plumbing at every include site to work around by-value semantics.
 ⚠️ **Two counts in this section have different denominators, so each is stated with its
 instrument.** The seven records hold **21 `var` fields** between them — that is the
 number every claim in this section is about. `deployed/backend.most` separately declares
-**19 top-level stable names**, of which seven are those records; the figures moved
-independently (two standalone stable `let`s that were never in a record have since gone,
-changing the second and not the first). A bare number here is how an edit lands on the
-quantity nobody measured.
+**19 top-level stable names**, of which seven are those records. The two figures move
+independently, so a bare number here is how an edit lands on the quantity nobody
+measured.
 
 ⚠️ **`webhookPaidOrder` uses a TAKE-ONCE accessor**, not a get/set pair: the dispatcher
 sets it and the mixin consumes it in the same message, so reading and clearing as one

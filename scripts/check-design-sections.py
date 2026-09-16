@@ -50,12 +50,11 @@ import sys
 SPEC = "docs/DESIGN.md"
 CODE_GLOBS = ("src/backend/*.mo", "src/backend/mixins/*.mo", "test/*.mo")
 SECTION = re.compile(r"§([0-9][0-9a-z]*(?:\.[0-9a-z]+)*)")
-# ⚠️ An issue's OWN sections must be written `#NN §2c`, never bare: the `#NN ` prefix is
-# the disambiguator, because a bare `§2c` is indistinguishable from a design section and
-# this check will demand one. (Nothing in the tree carries one today; the pattern stays so
-# that writing one is not a failure.)
-ISSUE_SCOPED = re.compile(r"#[0-9]+\s+§[0-9]")
-# ⚠️ A `§N` in code must mean a DESIGN section. `RUNBOOK §1` in a comment was read as a
+# ⚠️ **A `§N` in code means a DESIGN section, full stop.** There is no issue-scoped
+# escape hatch: an issue's own section numbering used to be written `#NN §2c` and skipped
+# here, and `check-issue-refs.py` now forbids the `#NN` that made it distinguishable. So
+# a `§` that is not a design section has nowhere to hide, which is the point — refer to
+# another document's sections by NAME. `RUNBOOK §1` in a comment was read as a
 # citation of DESIGN §1 and kept a dead row alive; refer to another document's sections
 # by NAME in code, never by glyph.
 FOREIGN_SCOPED = re.compile(r"(RUNBOOK|STRIPE|OPERATE|TEST-COVERAGE|SANDBOX-TESTPLAN|VERIFY|RELEASE|ARCHITECTURE)[^§]{0,12}§[0-9]")
@@ -70,9 +69,6 @@ def cited():
         for f in glob.glob(pat):
             for i, line in enumerate(open(f, errors="replace"), 1):
                 for m in SECTION.finditer(line):
-                    before = line[max(0, m.start() - 8):m.end()]
-                    if ISSUE_SCOPED.search(before):
-                        continue
                     # A citation of ANOTHER document's section, which this check would
                     # otherwise bank as a DESIGN citation. Reported, never counted.
                     if FOREIGN_SCOPED.search(line[max(0, m.start() - 40):m.end()]):

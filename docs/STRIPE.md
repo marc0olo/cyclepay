@@ -547,13 +547,13 @@ later. Because the record is still there, that payment is
 is therefore **refunded**, not delivered: an `#unattributed` obligation is
 filed carrying the payment intent, and a `charge.refunded` resolves it.
 
-That is a deliberate narrowing. A late payment is not honoured at the
-locked quantity for the life of the canister; the price of that guarantee was an
-order that could be paid long after the buyer, the operator and the rate had all
-moved on. What survives is the half that matters — **the record is never deleted,
-so a late payment is never a mystery charge.** The window itself is narrow:
-the session and the order now die together, so a session that can still be paid
-always belongs to an order that can still accept it.
+That is a deliberate narrowing, and the alternative is what it buys: honouring a late
+payment at the locked quantity for the life of the canister would mean an order that can
+be paid long after the buyer, the operator and the rate have all moved on. What is kept
+instead is the half that matters — **the record is never deleted, so a late payment is
+never a mystery charge.** The window itself is narrow: the session and the order die
+together, so a session that can still be paid always belongs to an order that can still
+accept it.
 
 Deleting records past a horizon — even with a tombstone set, so a late payment
 could at least be *diagnosed* before being refunded — would contradict the

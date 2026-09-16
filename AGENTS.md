@@ -155,8 +155,8 @@ account**. That is the whole point, and it is why the Stripe rail gets the
 attention: for that user a stablecoin rail is not an option, because acquiring
 the stablecoin is the same problem over again.
 
-The card rail is the only rail — a second, disabled ck-USDC rail was removed in
-removed, because carrying a rail we do not ship made every other change bigger.
+The card rail is the only rail — a second, disabled ck-USDC rail was removed,
+because carrying a rail we do not ship made every other change bigger.
 
 `Types.Rail` stays a single-case variant so a future rail is an additive change
 rather than a schema-wide edit — the same reasoning as `Types.Owner`.
@@ -171,13 +171,20 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
   "this was previously wrong" is noise to everyone who reads the file later. ⚠️ The
   exception, and it is narrow: a comment that stops a future mistake stays, written as
   a **rule** rather than as a story about a past change.
-- ⚠️ **No `#NN` issue reference outside `docs/agents/`.** Not in code, not in tests, not
-  in docs, not in scripts, not in a suite or test name. An issue number reads as a
-  pointer to a live requirement and is a pointer to a closed argument — and it defers the
-  work: whatever the reference was standing in for has to be said here, in terms of the
-  code as it is now, or dropped. Name the mechanism, the file, or the rule instead. The
-  one place a number is allowed is `docs/agents/`, which is agent process rather than
-  product.
+- ⚠️ **No bare `#NN` issue reference outside `docs/agents/`**, and
+  `scripts/check-issue-refs.py` enforces it. Not in code, not in tests, not in docs, not
+  in scripts, not in a suite or test name. An issue number reads as a pointer to a live
+  requirement and is a pointer to a closed argument — and it defers the work: whatever
+  the reference stood for has to be said here, in terms of the code as it is now, or
+  dropped. Name the mechanism, the file, or the rule instead.
+  - `docs/agents/` is exempt: it is agent process rather than product, and both files
+    there exist to point at issues.
+  - ⚠️ **An EXTERNAL tracker stays, written qualified** — `dfinity/icp-js-core#1384`,
+    never the number on its own. This is the narrow case worth keeping: an issue we
+    *rely on*,
+    about code this repo does not own, where the number is the only way a reader reaches
+    the claim's source. `src/frontend/src/ic-env.ts` is the live instance. The qualified
+    form is what makes the distinction checkable rather than a judgement call.
 - ⚠️ **There is no `design-docs/` any more, and its deletion is the cautionary tale
   for this rule.** Three files, 1,252 lines, no staleness banner — and 67 mentions in
   one of them of architecture that had already been removed, while `Main.mo` and

@@ -889,14 +889,12 @@ persistent actor CyclesGateway {
       let ?id = Orders.idFromEntropy(entropy) else return #err(#idGeneration);
       // ── ONE SYNCHRONOUS BLOCK: decide, then hold. No `await` between them. ──
       //
-      // ⚠️ **This was a real correctness bug, not a hypothetical.** The check and
-      // the hold used to be separated by the `raw_rand` await above, so two
-      // concurrent `create_order` calls could both pass the gate against the same
-      // `promised` and only then both hold — together promising more than the
-      // balance either of them checked. **Two honest buyers, no attacker.** An earlier
-      // reading called interleaved creates safe because "each resumes
-      // after the other has recorded its promise", which is true only when the
-      // check and the hold cannot be split.
+      // ⚠️ **Never put an `await` between the check and the hold.** Split by one, two
+      // concurrent `create_order` calls both pass the gate against the same `promised`
+      // and only then both hold — together promising more than the balance either of
+      // them checked. **Two honest buyers, no attacker.** Interleaved creates are safe
+      // only because the check and the hold cannot be split: "each resumes after the
+      // other has recorded its promise" is true of this shape and of no other.
       //
       // The redraw loop is why the decision is *inside* the loop rather than
       // before it: a duplicate id sends us back through `raw_rand`, and re-deciding
@@ -1388,14 +1386,14 @@ persistent actor CyclesGateway {
         case (#beginDelivery) {
           // Delivery is ONE transfer out of the reserve.
           //
-          // ⚠️ **The fee is READ FROM STATE, and this whole case is now
-          // synchronous.** It used to `await icrc1_fee()` here; that
-          // await is gone because `#BadFee` is the ledger telling us the fee, which
-          // makes a stored copy self-correcting. See `reserveState.cyclesLedgerFee`.
+          // ⚠️ **The fee is READ FROM STATE, and this whole case is synchronous.** Do
+          // NOT `await icrc1_fee()` here: `#BadFee` is the ledger telling us the fee,
+          // which makes a stored copy self-correcting. See
+          // `reserveState.cyclesLedgerFee`.
           //
-          // ⚠️ **Do not put an await back between here and the transfer issue.** Two
-          // things depend on there being none: the post-await re-read this case used
-          // to need is gone (nothing can move the order in a synchronous stretch),
+          // ⚠️ **And do not put any other await between here and the transfer issue.**
+          // Two things depend on there being none: no order can move inside a
+          // synchronous stretch, so this case needs no re-read,
           // and `unsettledDeliveries` — the reconcile's quiet-window predicate —
           // relies on an intent never being visible without its transfer having been
           // issued in the same message. Its doc spells that out.
@@ -2199,10 +2197,10 @@ persistent actor CyclesGateway {
   // wait a full interval because a background sweep (which enumerated
   // `pending` before that order turned #paid) was still in flight.
   //
-  // ⚠️ This is the **§5.2 recovery** timer and it stays. A retention sweep that once ran
-  // ahead of it is gone, and the two were never the same job —
-  // this one backstops a money-out message that died, which no webhook reports.
-  // Ask Stripe about `#created` orders whose expiry event never arrived.
+  // ⚠️ This is the **§5.2 recovery** timer and it stays. It is not a retention sweep and
+  // must not be folded into one: this one backstops a money-out message that died, which
+  // no webhook reports, and asks Stripe about `#created` orders whose expiry event never
+  // arrived.
   //
   // ⚠️ **Bounded per pass and resumed on the next one.** The stranded population is
   // **correlated** — one unprovisioned webhook secret or one frozen canister strands

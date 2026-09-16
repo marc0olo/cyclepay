@@ -881,9 +881,8 @@ redirect debt once that link is on a money page.
 ⚠️ **Two of these are knowingly NOT done on the live simulation deployment** — step 2's
 freezing threshold (still the 30-day default) and step 10's backup controller (one
 principal, no second). Both are single commands and both are production prerequisites,
-tracked on issue #171; they are deferred rather than missed. Read
-`icp canister status backend -e ic` before assuming either has been done on whatever
-deployment you are looking at.
+deferred rather than missed. Read `icp canister status backend -e ic` before assuming
+either has been done on whatever deployment you are looking at.
 
 1. **Deploy and verify** per `RELEASE.md` — reproducible build, published module
    hash, and `icp canister status` gated on matching it.

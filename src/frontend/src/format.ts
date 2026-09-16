@@ -615,7 +615,7 @@ export function createOrderErrorMessage(key: string): string {
 
 /// What a buyer is told when their cancel refuses.
 ///
-/// ⚠️ **The copy left the canister in #123; the FACTS did not.** §7.2 is the rule: a
+/// ⚠️ **The copy lives here; the FACTS stay on the canister.** §7.2 is the rule: a
 /// refusal's payload must carry every fact its sentence asserts, which is why
 /// `notCancellable` and `settledInFlight` carry a status. Anything a buyer needs to
 /// verify independently — the status, the figures — is on `get_order` and `receipt`,

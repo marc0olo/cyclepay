@@ -200,8 +200,8 @@ mixin (
     paymentRef : ?Text,
   ) : async Result.Result<Nat, Problems.ResolveProblemError> {
     ops.requireAdmin(caller);
-    // Separated from "nothing to resolve": an unknown id used to answer the same
-    // way as a known order with nothing open, so a mistyped id read as "already done".
+    // ⚠️ Separate from "nothing to resolve", and it must stay separate: one answer for
+    // both makes a mistyped id read as "already done".
     if (Orders.get(orderStore, orderId) == null) return #err(#noSuchOrder({ orderId }));
     let candidates = Orders.unresolvedOfKind(orderStore, orderId, tag);
     if (candidates.size() == 0) return #err(#noSuchProblem({ tag }));

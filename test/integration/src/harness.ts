@@ -113,8 +113,7 @@ export const TIER_LOCKED_CYCLES = 3_500_000_000_000n;
 /// `lockedCycles - CYCLES_LEDGER_FEE` — 100 M.
 ///
 /// The constant is a test-side copy of what `icrc1_fee` reports, and the suite asserts
-/// they
-/// agree rather than trusting this.
+/// the two agree rather than trusting this.
 export const CYCLES_LEDGER_FEE = 100_000_000n;
 
 export const WEBHOOK_SECRET = 'whsec_8fJ3kQ9mN2pX7vR4tL6wY1zB5cD0eH';
@@ -132,9 +131,11 @@ export const stranger = createIdentity('cyclepay integration stranger');
 /// ⚠️ **Required, not hygiene.** These suites fund a reserve and accept test-mode
 /// payments, which is exactly `Gate.Reason.unboundedGiveaway` — the faucet state —
 /// so without this `create_order` refuses before it ever reaches a Stripe outcall.
-/// Removing this call fails most of the suite at once, which is the check being
-/// non-vacuous: a guard no test ever trips is a green check pointed at
-/// an untaken path.
+/// ⚠️ **Re-measurable rather than a recorded count**: delete this call and every
+/// order-creating scenario fails at `create_order` with `#unboundedGiveaway`. That is
+/// the guard being non-vacuous — one no test ever trips is a green check pointed at an
+/// untaken path — and it is worth re-running rather than trusting a number written here,
+/// which goes stale as scenarios are added.
 ///
 /// All three, including `admin`: a controller is not exempt, because the gate
 /// decides admission and knows nothing about controllers.
@@ -740,7 +741,7 @@ export function decodeBody(response: { body: Uint8Array | number[] }): string {
 //
 // PocketIC does not perform real outcalls: it parks each one and lets the test
 // answer it. That is *better* coverage than a live call for the request shape,
-// because the exact bytes the canister sends can be asserted.
+// because the exact bytes the canister sends can be asserted — nothing else pins them.
 //
 // ⚠️ It is a MOCK, so two things it cannot tell you: the real cycle cost, and
 // whether the size cap is big enough for a real Stripe response. Both are first

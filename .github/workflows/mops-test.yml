@@ -88,6 +88,7 @@ jobs:
           scripts/check-typed-errors.py
           scripts/check-mermaid.py
           scripts/check-doc-links.py
+          scripts/check-issue-refs.py
 
   frontend:
     runs-on: ubuntu-latest

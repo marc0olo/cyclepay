@@ -2,8 +2,8 @@
 """Fail if a public endpoint returns `Result<_, Text>`.
 
 An untyped error forces every caller to match on prose to tell one failure from another
-(`reviewing-motoko` T4). The sweep that removed the last one finished in #123; this is
-what keeps it finished.
+(`reviewing-motoko` T4). No endpoint returns one today, and this is what keeps it that
+way.
 
 ⚠️ **Enforced rather than achieved, because achieved uniformity decays.** Three surfaces
 in this repo reached "complete" and then regressed while nothing was watching — the admin

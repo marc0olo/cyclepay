@@ -512,7 +512,7 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
     amountCents: TIER_USD_CENTS,
   }));
   expect(doublePay.status_code).toBe(200);
-  // On the ORDER now — the order supplies the id the kind used to carry.
+  // On the ORDER: the order supplies the id, so the kind does not carry one.
   const dupProblem = (await orderProblems(gw, orderA.id)).find(
     (p) => 'duplicate' in p.kind
       && (p.kind as { duplicate: { paymentRef: string } }).duplicate.paymentRef === 'pi_a_double',
@@ -535,10 +535,9 @@ test('08 — duplicate/replay: every dedup layer holds through real ingress (§4
   // refunded — the automatic closer matches on the reference and is exact, so only the
   // manual lever could ever guess, and it declines instead.
   //
-  // ⚠️ **The candidate list is DATA now, not a sentence to grep.** This used to
-  // assert `/2 unresolved duplicate problems/` and two `toContain`s against one Text —
-  // so the count, the kind and the references were all recovered by matching prose. A
-  // console offering the operator a choice had to do the same.
+  // ⚠️ **The candidate list is DATA, not a sentence to grep.** A Text payload would
+  // force the count, the kind and the references to be recovered by matching prose —
+  // here and in any console offering the operator a choice.
   const ambiguous = expectErr(
     await gw.asAdmin.resolve_problem(orderA.id, { duplicate: null }, []),
   ) as { ambiguous: { tag: unknown; candidates: string[] } };
@@ -950,11 +949,9 @@ test('18 — an expired order is never deleted, and a late payment is refunded n
   // make that unreachable — and a trap here is a 5xx Stripe retries for ~3 days.
   // So: 200, status unmoved, obligation filed.
   //
-  // The second half this scenario once asserted is gone: `attach_payment`
-  // refusing the same order. There is no rescue lever at all now, so the ONLY
-  // remedy for the payment below is a refund in Stripe — which is why the
-  // obligation being filed, rather than the payment being silently dropped, is
-  // the whole safety property here.
+  // There is no rescue lever, so the ONLY remedy for the payment below is a refund in
+  // Stripe — which is why the obligation being filed, rather than the payment being
+  // silently dropped, is the whole safety property here.
   await ensureRates(gw);
   expect(await deliverWebhook(gw, checkoutSessionBody({
     eventId: 'evt_late', paymentIntent: 'pi_late', clientReferenceId: lapsedRef,
@@ -1745,21 +1742,16 @@ test('35 — past the max-wait bound the order terminates so the operator refund
 });
 
 test('39 — a payment against a CANCELLED order is refunded, never a trap', async () => {
-  // What survives of scenarios 36–39, which went with `attach_payment`.
+  // The heir of scenarios 36–39, which covered an operator's manual payment-attachment
+  // rescue. There is no such lever: WE set `client_reference_id` through the API, so the
+  // attribution failure it existed for cannot happen, and an unattributable payment is
+  // refunded rather than converted.
   //
-  // Those four covered the operator's manual rescue: the lost-webhook recovery,
-  // its dedup against the webhook route, its obligation-closing, and its amount
-  // rules. All four are gone — under per-order sessions WE set
-  // `client_reference_id` through the API, so the attribution failure the lever
-  // existed for cannot happen, and an unattributable payment is refunded rather
-  // than converted.
-  //
-  // One half had to be kept, and it is the dangerous one. `Orders.markPaid` TRAPS
-  // on an illegal transition; `Card.handleWebhook`'s status guard is what makes
-  // that unreachable, and `-Werror` checks neither against the matrix. That guard
-  // had a sibling in `attach_payment` — the webhook's was fixed and the other missed,
-  // other one. With one caller left, this is the whole coupling, and a trap here
-  // is a 5xx Stripe retries for ~3 days.
+  // ⚠️ **What had to survive is the dangerous half.** `Orders.markPaid` TRAPS on an
+  // illegal transition, and `Card.handleWebhook`'s status guard is the only thing that
+  // makes that unreachable — `-Werror` checks neither against the matrix. `handleWebhook`
+  // is now the single caller, so this scenario is the whole coupling, and a trap here is
+  // a 5xx Stripe retries for ~3 days.
   //
   // Cancelled rather than expired, because it needs no clock: advancing time here
   // would leak into every scenario after this one (scenario 18 holds the expired
@@ -3403,14 +3395,13 @@ test('73 — a funded reserve is not a SELLABLE reserve until the gateway looks'
 // -- 74 was deleted with the lever it depended on ------------------
 //
 // Its subject was "a deliberately wrong stored ledger fee still delivers, and
-// `#BadFee` persists the correction". Staging that needed `set_cycles_ledger_fee` to
-// make the stored fee wrong — and that lever has been deleted as self-justifying: the
-// only state it fixed was one that it, or a ~70,000× ledger fee rise, could create,
-// and its own typo silently shorted buyers.
+// `#BadFee` persists the correction". Staging that needs a `set_cycles_ledger_fee`
+// lever, and there is none: the only state such a lever fixes is one that it, or a
+// ~70,000× ledger fee rise, could create, and a typo in it silently shorts buyers.
 //
-// ⚠️ **So the lever was also this test's only seam, and deleting it deletes the
-// scenario.** The alternative — shipping an admin money lever to production so a test
-// can stage a state — is the wrong trade. What covers the mechanism now:
+// ⚠️ **That lever is also this scenario's only seam, so there is no scenario.** The
+// alternative — shipping an admin money lever to production so a test can stage a
+// state — is the wrong trade. What covers the mechanism instead:
 //
 //   - `test/cmc.test.mo` pins `interpretTransfer(#Err(#BadFee))` → `#badFee(expected)`,
 //     so the ledger's report is still read correctly.
@@ -3776,11 +3767,10 @@ test('87 — the stranded scan RESUMES: a crowd of due orders does not starve th
   // The bug it guards: the scan takes at most `maxRetrievesPerPass` due orders, and a
   // due order that stays due — answered `open`, or a retrieve that keeps failing — is
   // asked again on every pass while orders behind it are never reached at all. A bound
-  // without a resume bounds *which* orders get looked at, not how many. That is not
-  // hypothetical: two scenarios failed with "the sweep never retrieved session …"
-  // because their order sat behind ten permanently-due neighbours, and the deleted
-  // retention sweep solved it with a keyed cursor before it was removed with the
-  // module and the reasoning together.
+  // without a resume bounds *which* orders get looked at, not how many — and the symptom
+  // is "the sweep never retrieved session …" for an order sitting behind ten
+  // permanently-due neighbours. ⚠️ **A keyed cursor is what closes it**, not a bigger
+  // bound.
   await setCmcRate(gw);
   await ensureRates(gw);
 

@@ -40,15 +40,14 @@ type Quote = {
   cycles: bigint | undefined;
 };
 
-/// $10 — the new floor. The old $5 fixture is below it, so `Gate.admit`
-/// would refuse it and every downstream assertion would be about the wrong bound.
+/// $10 — the gate's floor. ⚠️ **Nothing below it**: `Gate.admit` refuses a cheaper
+/// amount, so every downstream assertion would be about the wrong bound.
 const TIER_CENTS = 1_000n;
 const TIER_CYCLES = 3_500_000_000_000n;
 
 const state = {
   tiers: [{ id: "tier10", usdCents: TIER_CENTS }],
-  /// The diagnostics panel's reads. None of these had a surface before, so none
-  /// had a mock either.
+  /// The diagnostics panel's reads.
   health: true,
   /// Whether the diagnostics reads are refused, for the panel's locked path. A flag
   /// rather than a mutated mock: the mock object is shared across every test in this

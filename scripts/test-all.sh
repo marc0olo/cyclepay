@@ -330,6 +330,12 @@ run "mermaid labels keep their text on GitHub" scripts/check-mermaid.py
 # "commit identification above" that had been deleted.
 run "every doc link resolves, file and #anchor" scripts/check-doc-links.py
 
+# ⚠️ **The rule this enforces lived in AGENTS.md as prose for exactly one commit**, and
+# the sweep that cleared 1,117 references still left three behind — all three the same
+# shape a hand-written scan pattern had excluded. `docs/agents/` is exempt; a qualified
+# external tracker (`owner/repo#NN`) is allowed and has one live instance.
+run "no bare issue reference outside docs/agents/" scripts/check-issue-refs.py
+
 # Reads the regenerated .did, so it sits after the build step. No endpoint returns a
 # `Result<_, Text>`; this keeps it that way.
 run "every endpoint error type is a variant, not text" scripts/check-typed-errors.py
