@@ -37,10 +37,8 @@ this tree:
     so `RUNBOOK.md`, the file where a false warning costs an operator the most, sat
     almost entirely outside it.
 
-And where a block honestly holds three distinct traps (`Main.mo`'s quiet-window
-predicate) the cap pushed toward deleting a real warning. A ceiling has none of those
-properties: it counts every shape, in every file type, and cannot be satisfied by
-reformatting.
+A ceiling has none of those properties: it counts every shape, in every file type, and
+cannot be satisfied by reformatting.
 
 ## What about the markers PUBLISHED into the .did?
 

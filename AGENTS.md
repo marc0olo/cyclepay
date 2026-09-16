@@ -187,8 +187,7 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
     one-line ceiling edit with the reason in the commit, and a cleanup pass ratchets it
     down visibly in the diff.
   - **A comment block with three markers almost certainly has one trap and two
-    explanations** — worth checking against the phrase test above. Judgement, not a rule:
-    a block can honestly hold three, and `Main.mo`'s quiet-window predicate does.
+    explanations** — worth checking against the phrase test above. Judgement, not a rule.
   - **An endpoint `///` doc is PUBLISHED** into `backend.did` and the generated
     TypeScript, so a marker there reaches API callers. Keep the ones a caller can act on
     (*"uncertified query answers, nothing may be wired to decide on them"*); a note to the
