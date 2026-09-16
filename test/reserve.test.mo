@@ -92,7 +92,7 @@ suite("recount — the independent second derivation", func() {
     assert Reserve.recount([]) == 0;
   });
 
-  test("⚠️ it is lockedCycles, with NO fee term", func() {
+  test("it is lockedCycles, with NO fee term", func() {
     // The ledger charges its fee on top of the amount, so delivering `locked - fee`
     // moves the balance by exactly `locked`. ⚠️ **`Σ (locked + fee)` double-counts**,
     // under-reporting `available` and refusing sales that would have worked.
@@ -107,7 +107,7 @@ suite("tallyDelta — when the tally moves, and when it must not", func() {
     assert Reserve.tallyDelta(#created, #paid) == #none;
   });
 
-  test("⚠️ #created → #paid is ZERO: release is at DELIVERY, not at payment", func() {
+  test("#created → #paid is ZERO: release is at DELIVERY, not at payment", func() {
     // The two-orders-one-reserve failure this prevents: order A holds 72 T, the
     // buyer pays, and if the tally released here order B for 72 T would be
     // admitted against capacity order A still needs — both then paid out of a
@@ -168,7 +168,7 @@ suite("the reserve floor", func() {
     assert same.floor == 1_000 and same.adopted;
   });
 
-  test("⚠️ a NON-quiet observation is NOT adopted — the bug this guards", func() {
+  test("a NON-quiet observation is NOT adopted — the bug this guards", func() {
     // Adoption across an in-flight outflow overwrites a floor that moved in the
     // gap: reconcile reads B = F, a delivery issues and drops the floor to F − L,
     // the continuation adopts B = F, and the decrement is ERASED while the transfer
@@ -240,7 +240,7 @@ suite("withdrawable — the refusal ladder, and its order", func() {
     assert Reserve.withdrawable(1, 3_500, 0, noFee) == #err(#ordersOutstanding({ holders = 1; promised = 3_500 }));
   });
 
-  test("⚠️ the holder count decides, and the tally is only carried", func() {
+  test("the holder count decides, and the tally is only carried", func() {
     // `applyDelta` clamps a release to zero, so `promised` can read 0 while holders
     // exist — the saturation state. Guarding on the tally would admit the withdrawal
     // this ladder exists to refuse, so a zero tally with a live holder must still refuse.
@@ -260,7 +260,7 @@ suite("withdrawable — the refusal ladder, and its order", func() {
     assert Reserve.withdrawable(0, 0, 99, 100) == #err(#belowLedgerFee({ floor = 99; fee = 100 }));
   });
 
-  test("⚠️ the amount is the floor LESS the fee, because the ledger charges it on top", func() {
+  test("the amount is the floor LESS the fee, because the ledger charges it on top", func() {
     // The same correction §5.4 carries for delivery: debiting `amount` alone would leave
     // the floor overstating the account by exactly the fee.
     assert Reserve.withdrawable(0, 0, 101, 100) == #ok({ debited = 101; amount = 1 });

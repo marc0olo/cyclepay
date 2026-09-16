@@ -131,7 +131,7 @@ def real_surface():
         # looks public. This outcome is what names it. The two checks compose, and neither
         # covers that gap alone.
         #
-        # ⚠️ **The DEFAULT was the defect, not the pattern.** Falling through to "public"
+        # **The DEFAULT was the defect, not the pattern.** Falling through to "public"
         # is what let both earlier breaks offer "go assert a false scope in the docs" as
         # the remedy. A method that destructures `{ caller }` and then calls neither
         # `requireAdmin` nor a recognised owner helper has been handed the caller and

@@ -93,7 +93,7 @@ suite("audit log paging", func() {
     assert third.nextCursor == null;
   });
 
-  test("⚠️ recentPage walks NEWEST first, which is what the console shows", func() {
+  test("recentPage walks NEWEST first, which is what the console shows", func() {
     let log = filled(5);
     let first = AuditLog.recentPage(log, null, 2);
     assert first.events.size() == 2;
@@ -101,7 +101,7 @@ suite("audit log paging", func() {
     assert first.events[1].seq == 3;
   });
 
-  test("⚠️ recentPage's cursor is the OLDEST seq returned — the mirror of page's", func() {
+  test("recentPage's cursor is the OLDEST seq returned — the mirror of page's", func() {
     // The one trap in having both: the same `Page` type carries opposite cursor
     // meanings. Swapping them pages the wrong way and looks like a stuck first page.
     let log = filled(5);

@@ -16,7 +16,7 @@
 /// is *money we took and have not delivered against*, and the remedy is either finishing
 /// the delivery or refunding in Stripe.
 ///
-/// ⚠️ **Resolution lives on the entry, never on the order.** Resolving here transitions
+/// **Resolution lives on the entry, never on the order.** Resolving here transitions
 /// nothing: an order's status says where the *order* got to, an entry says what the
 /// *operator* still owes, and an entry may name no order at all. The two exits that do
 /// move an order are `abandon_order` and `record_delivered`, both explicit.

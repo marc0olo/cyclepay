@@ -290,11 +290,11 @@ module {
   /// Every `OrderStatus`, and its index — **the pair a test needs to iterate the status
   /// space, kept HERE so `-Werror` can enforce it.**
   ///
-  /// ⚠️ **This lived in `test/orders.test.mo` and could not do its job there.** Measured:
+  /// **Do not move this into `test/`, where it cannot do its job.** Measured:
   /// `mops check -- -Werror` does not compile `test/` at all, and `mops test` passes
   /// `--hide-warnings` (see `mops.toml`), so a non-exhaustive match in a test file is a
-  /// suppressed M0145 — the array silently stayed at seven while the type grew, and every
-  /// suite iterating it quietly tested less than it claimed. In `src/` the switch below is
+  /// suppressed M0145 — the array stays at its old length while the type grows, and every
+  /// suite iterating it quietly tests less than it claims. In `src/` the switch below is
   /// compiled by the gate, so an eighth status **fails the build** until it is handled.
   ///
   /// ⚠️ **What this buys, exactly: `-Werror` forces the VISIT, and the array is two

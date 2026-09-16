@@ -139,7 +139,7 @@ mixin (
   /// this an update, since audits write state, on the call an operator makes repeatedly.
   /// Same reasoning keeps `orphans`, `orphan_depth` and `problem_depth` unaudited.
   ///
-  /// ⚠️ **What would change that:** a filter narrowing to a *single named principal* as
+  /// **What would change that:** a filter narrowing to a *single named principal* as
   /// the normal way to drive this. `owner : ?Principal` makes it possible today; it is not
   /// the intended use, and if it becomes one the list inherits the audit.
   public shared query ({ caller }) func admin_orders(
@@ -171,7 +171,7 @@ mixin (
   /// acting off-chain: a refund issued in the Stripe Dashboard, or a delivery whose
   /// fate they established on the cycles ledger.
   ///
-  /// ⚠️ **This closes ORPHAN entries only — `#unattributed` and `#unprocessable`.**
+  /// **This closes ORPHAN entries only — `#unattributed` and `#unprocessable`.**
   /// Everything order-bound lives on the order and is closed by
   /// `resolve_problem`; pointing an operator here for those would be pointing them at the
   /// wrong method. Resolving an entry never transitions the order — see `Orphans`'s
@@ -183,7 +183,7 @@ mixin (
   /// payment references (a buyer who pays three times), so closing by tag alone marks an
   /// obligation settled that nobody has settled.
   ///
-  /// ⚠️ **Problems in an array have no stable handle, so the dedup key IS the handle** —
+  /// **Problems in an array have no stable handle, so the dedup key IS the handle** —
   /// `(kindTag, identifyingRef)`, the same pair `sameShape` uses. One definition, both
   /// users.
   ///
@@ -392,13 +392,13 @@ mixin (
   /// neither `expiresAtNs` (nothing to trigger on) nor `stripeSessionId` (nothing to query
   /// with), and Stripe's session list cannot be filtered by `client_reference_id`.
   ///
-  /// ⚠️ **Expire-first, exactly as `cancel_order` does, and for exactly that reason.**
+  /// **Expire-first, exactly as `cancel_order` does, and for exactly that reason.**
   /// Nothing is ever half-expired: if the session is still live on Stripe, the order does
   /// not move. A successful expire is what makes "expired" mean *provably unpayable*
   /// rather than assumed, because Stripe guarantees a session ends in exactly one of
   /// completed/expired.
   ///
-  /// ⚠️ **`#notOpen` changes nothing, and that is not timidity.** It means the session
+  /// **`#notOpen` changes nothing, and that is not timidity.** It means the session
   /// completed or already expired, and those demand opposite actions — expiring an order
   /// whose buyer just paid would strand a real payment. Let the webhook (or the sweep)
   /// settle it on Stripe's answer.
@@ -492,7 +492,7 @@ mixin (
     // lost — and after `#abandoned` nothing sweeps the order, so nothing ever
     // discovers which. The buyer keeps the cycles and gets the refund.
     //
-    // ⚠️ It is not only a race with a call in flight. The wider case is the one that
+    // It is not only a race with a call in flight. The wider case is the one that
     // needs no timing at all: an intent whose transfer executed and whose reply was
     // lost looks exactly like one that never executed, and this lever would decide
     // between them by guessing. **Deciding an unknown money position is precisely
@@ -588,7 +588,7 @@ mixin (
   /// `admin_order`'s audit **bypassable by calling the other method**. Reading an operator
   /// read as harmless because the data is reachable elsewhere is the mistake to avoid.
   ///
-  /// ⚠️ **A separate method rather than a branch, because auditing writes state.** An
+  /// **A separate method rather than a branch, because auditing writes state.** An
   /// audited read cannot be a `query`, and folding this into `receipt` would make **every
   /// buyer's** receipt read an update — the common path through consensus to serve the
   /// rare one.

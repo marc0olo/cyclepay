@@ -1,6 +1,6 @@
 /// Candid **text** for `icp canister call`, and the typed command table.
 ///
-/// ⚠️ **Why a table of per-method renderers rather than one generic value walker**, and
+/// **Why a table of per-method renderers rather than one generic value walker**, and
 /// not the reason first assumed. The guess was that `opt T` and `vec T` are both arrays
 /// in the bindings, making an empty one ambiguous — that is true of the RAW
 /// declarations, and false of the actor-enabled ones used here, which map `opt T` to

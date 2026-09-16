@@ -24,7 +24,7 @@ import Types "../Types";
 /// this mixin records is the same intent the webhook reads (`docs/DESIGN.md` §4.3). An
 /// accessor pair would have worked too; a copy would have silently broken attribution.
 ///
-/// ⚠️ **The two `async*` helpers stay in the composition root.** `expireStripeSession`
+/// **The two `async*` helpers stay in the composition root.** `expireStripeSession`
 /// makes the Stripe outcall and `processDelivery` drives money out of the reserve; both
 /// are actor-bound and both are shared with the timers. Passing them as
 /// `async*`-returning closures keeps one implementation for the endpoint and the sweep,
@@ -89,13 +89,13 @@ mixin (
   /// Order history for the caller (§2, fixes the lost-receipt problem).
   /// The caller's own orders, **paginated**.
   ///
-  /// ⚠️ **This was a latent trap on the BUYER path, not an ergonomic wart.** It returned
+  /// **This was a latent trap on the BUYER path, not an ergonomic wart.** It returned
   /// every order the caller owns, unbounded, and a query response is capped at ~2 MB —
   /// so an oversized read does not degrade, it **traps**. The open-order cap of 1 means
   /// a buyer accumulates them slowly, but nothing bounded it, and nothing drops orders
   /// on the order.
   ///
-  /// ⚠️ **Paging bounded the RESPONSE; `Orders.ownerPage` bounds the WORK.** The
+  /// **Paging bounded the RESPONSE; `Orders.ownerPage` bounds the WORK.** The
   /// admin pager's owner filter walks every principal's orders to find one principal's,
   /// so this used to cost O(all orders ever created) in a single message — a page cap on
   /// a ~2 MB response, against a limit that is actually instructions. `ownerPage` walks
@@ -127,7 +127,7 @@ mixin (
   /// the UI makes fulfilling an obligation depend on the buyer returning, and whoever
   /// closed the tab is exactly who most needs us to finish.
   ///
-  /// ⚠️ **An owner kicking their own order is NOT audited**, because the log drops
+  /// **An owner kicking their own order is NOT audited**, because the log drops
   /// nothing and a refresh loop would be permanent state growth driven by a
   /// caller. An admin kick is audited — it is an ops action on someone else's order.
   public shared ({ caller }) func process_order(id : Types.OrderId) : async Result.Result<Types.Order, ProcessOrderError> {

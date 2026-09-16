@@ -4,17 +4,14 @@ import { describe, expect, test } from "vitest";
 
 /// Text tokens must be readable against the ground they sit on, in BOTH themes.
 ///
-/// ⚠️ **This exists because a palette value shipped that failed AA and nobody could
-/// see it from the CSS.** `--icp-fg-muted` was `#868078`, which is 3.71:1 on the
-/// parchment background: it fails WCAG AA for body text and clears only the
-/// large-text bar, while `.muted` is 0.875rem prose all over the app. It was found by
-/// a person saying the light theme was hard to read, which is the slowest possible
-/// detector and only works for whoever happens to look.
+/// **A contrast failure is invisible from the CSS**, which is why it is measured here
+/// rather than reviewed. A muted grey on the parchment ground can sit at 3.71:1 —
+/// clearing only the large-text bar while `.muted` is 0.875rem prose all over the app —
+/// and the detector is otherwise a person saying the light theme is hard to read.
 ///
-/// ⚠️ **And the DARK palette was already correct**, tuned upward from the same brand
-/// values (`#8f867a` where the reference has `#7a7367`). So one mode had been fixed and
-/// the other had not, with nothing recording that the fix had happened. That asymmetry
-/// is the thing this file prevents from recurring.
+/// **Both themes are measured, because they are tuned from the same brand values and
+/// drift apart.** One mode can be correct while the other is not, with nothing recording
+/// which. That asymmetry is what this file exists to catch.
 /// ⚠️ **What this suite CANNOT see: opacity composition.** It measures a token against
 /// a token, and `opacity` composites on top of the result afterwards — so a rule like
 /// `.flow-step { opacity: 0.55 }` (`styles.css:1125`) makes text render at a ratio this
@@ -91,7 +88,7 @@ const THEMES = [
 ] as const;
 
 describe("every text token is readable on its own ground", () => {
-  test("⚠️ the theme blocks were actually found", () => {
+  test("the theme blocks were actually found", () => {
     // Guards every assertion below: see the note at `DARK_AT`.
     expect(DARK_AT).toBeGreaterThan(0);
     expect(LIGHT.length).toBeGreaterThan(200);
@@ -151,7 +148,7 @@ describe("every text token is readable on its own ground", () => {
     });
   }
 
-  test("⚠️ the CTA bar's own pair is checked against each other, not the page", () => {
+  test("the CTA bar's own pair is checked against each other, not the page", () => {
     // It is theme-stable near-black by rule, so measuring it against `--icp-bg` would
     // pass in light and fail in dark while the bar itself is identical in both.
     const ratio = contrast(themed(LIGHT, "icp-cta-bar-fg"), themed(LIGHT, "icp-cta-bar"));

@@ -49,7 +49,7 @@ suite("checkAdmin (the CASES tier: controller OR granted)", func() {
     assert Auth.checkAdmin(bob, noController, func p = p == bob) == #ok;
   });
 
-  test("⚠️ a controller passes WITHOUT being granted — the tiers are nested", func() {
+  test("a controller passes WITHOUT being granted — the tiers are nested", func() {
     // Denying a controller a per-order decision would only mean they add themselves to
     // the list first, and would make the controller a weaker principal than the admin it
     // grants.
@@ -62,7 +62,7 @@ suite("checkAdmin (the CASES tier: controller OR granted)", func() {
     assert Auth.checkAdmin(bob, noController, noAdmin) == #err(#notAdmin);
   });
 
-  test("⚠️ anonymous is refused even when BOTH predicates would admit it", func() {
+  test("anonymous is refused even when BOTH predicates would admit it", func() {
     // The shared identity must never hold either tier, and the ordering is what
     // guarantees it: the anonymous check fires before any predicate is consulted.
     assert Auth.checkAdmin(anon, func _ = true, func _ = true) == #err(#anonymous);

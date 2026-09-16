@@ -155,7 +155,7 @@ describe("cancelOrderErrorMessage", () => {
     }
   });
 
-  test("⚠️ sessionNotClosed claims no diagnosis, and says how to find out", () => {
+  test("sessionNotClosed claims no diagnosis, and says how to find out", () => {
     // The content requirement with a design record behind it: three causes, and this
     // sentence has to be true of all of them. It must NOT assert which one happened,
     // and it must tell the buyer where the answer is. Moved here from integration 42b
@@ -176,7 +176,7 @@ describe("cancelOrderErrorMessage", () => {
 });
 
 describe("createOrderErrorMessage", () => {
-  test("⚠️ EVERY backend variant maps to a written message, not the fallback", () => {
+  test("EVERY backend variant maps to a written message, not the fallback", () => {
     // ⚠️ The keys come from `CREATE_ORDER_ERROR_KEYS`, which is typed
     // `Record<CreateOrderError["__kind__"], true>` — so a new backend variant is a
     // compile error there and lands here automatically. An earlier version of
@@ -296,7 +296,7 @@ describe("gateReasonMessage", () => {
 });
 
 describe("the two-cause #unpriceable split", () => {
-  test("⚠️ the simulation cause does NOT blame payment processing", () => {
+  test("the simulation cause does NOT blame payment processing", () => {
     // The defect this split exists to fix: rendered as `tierBelowFees`, a buyer
     // refused by the operator's divisor is told the processing fee is too large.
     const msg = createOrderErrorMessage("simulationScaleTooSmall");
@@ -319,7 +319,7 @@ describe("the faucet and allow-list refusals", () => {
   const faucet = { __kind__: "unboundedGiveaway", unboundedGiveaway: { reserveFloor: 1n } };
   const unlisted = { __kind__: "buyerNotAllowed", buyerNotAllowed: null };
 
-  test("⚠️ BOTH tell the buyer they must be invited, and how to ask", () => {
+  test("BOTH tell the buyer they must be invited, and how to ask", () => {
     // An earlier version withheld the allow-list from the faucet case, reasoning that
     // the empty list is the operator's misconfiguration so asking for access "would
     // not help". That was FALSE, and a test pinned it: the condition is
@@ -333,7 +333,7 @@ describe("the faucet and allow-list refusals", () => {
     }
   });
 
-  test("⚠️ neither uses operator vocabulary", () => {
+  test("neither uses operator vocabulary", () => {
     // A buyer must not be told the gateway is an "unbounded giveaway", or read a
     // description of the faucet. brand-lint checks characters, not audience, so
     // nothing else catches this.
@@ -409,7 +409,7 @@ describe("cyclesCredited", () => {
 });
 
 describe("depositFeeLine", () => {
-  test("⚠️ states the fee at a size where the figures read the SAME", () => {
+  test("states the fee at a size where the figures read the SAME", () => {
     // The case that made the disclosure disappear: 3.5 T less 100 M is "3.5 T" at
     // three decimals, so `creditedSplit.note` is silent and the buy view had nothing
     // left to say about a charge the buyer pays on every order. Reachable by an
@@ -525,7 +525,7 @@ describe("checkReceipt: the simulation divisor", () => {
   };
   const PRODUCTION = 3_500_000_000_000n;
 
-  test("⚠️ divisor 1 is byte-identical to the receipt with no divisor at all", () => {
+  test("divisor 1 is byte-identical to the receipt with no divisor at all", () => {
     // Including the formula string: a production receipt must not gain a term.
     const before = checkReceipt(verification, PRODUCTION);
     const explicit = checkReceipt(verification, PRODUCTION, 1n);
@@ -538,7 +538,7 @@ describe("checkReceipt: the simulation divisor", () => {
     expect(check.matches).toBe(true);
   });
 
-  test("⚠️ recomputed stays the PRODUCTION quantity — the receipt shows both legs", () => {
+  test("recomputed stays the PRODUCTION quantity — the receipt shows both legs", () => {
     // The whole value of a global divisor: what production would have locked is
     // recomputed here from the order's own rate inputs, not stored and trusted.
     const check = checkReceipt(verification, PRODUCTION / 1_000n, 1_000n);
@@ -593,7 +593,7 @@ describe("formatAgo", () => {
     expect(formatAgo(now + 60_000, now)).toBe("in the future (check the clock)");
   });
 
-  test("⚠️ NOT timeUntil: that returns null for anything past", () => {
+  test("NOT timeUntil: that returns null for anything past", () => {
     // Reusing it here would render every observation as absent, i.e. "never observed"
     // for a reserve observed a minute ago, which is the one number the line reports.
     expect(timeUntil(now - 60_000, now)).toBeNull();
@@ -674,7 +674,7 @@ describe("decodeBurnMemo: which action a burn was", () => {
   });
 });
 
-describe("⚠️ a burn is the CHARGE, never the outcome", () => {
+describe("a burn is the CHARGE, never the outcome", () => {
   // Measured, not reasoned: a create pinned to a nonexistent subnet and a withdraw to a
   // nonexistent canister both FAILED, and both still wrote a burn whose memo is
   // indistinguishable from the succeeding case. The refund arrived as a separate later
@@ -703,7 +703,7 @@ describe("⚠️ a burn is the CHARGE, never the outcome", () => {
     expect(decodeBurnMemo([new Uint8Array([0x81, 0x40])])).toEqual({ kind: "unknown" });
   });
 
-  test("⚠️ the refund sentinels are NOT decoded here, because they are forgeable", () => {
+  test("the refund sentinels are NOT decoded here, because they are forgeable", () => {
     // `FD * 32` is a failed creation's refund and `FF * 32` a failed withdraw's, but both
     // arrive as MINTS, and `deposit` takes a caller-supplied memo. Decoding them would let
     // anyone deposit memoed `FF * 32` and fake a refund. They are only ever seen on mints,

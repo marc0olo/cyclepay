@@ -171,6 +171,25 @@ rather than a schema-wide edit — the same reasoning as `Types.Owner`.
   "this was previously wrong" is noise to everyone who reads the file later. ⚠️ The
   exception, and it is narrow: a comment that stops a future mistake stays, written as
   a **rule** rather than as a story about a past change.
+- ⚠️ **The ⚠️ marker is for a TRAP, not for a fact**, and
+  `scripts/check-markers.py` enforces the part a check can own. The test is: *can the
+  next editor act on this the wrong way, and would the damage be unrecoverable or
+  invisible?* **"Do not add a force flag to `refresh_reserve`"** earns it — the flag
+  reintroduces the bug the predicate prevents. **"This count going LOW is the oversell
+  direction"** does not: it is orientation, it keeps every word of its text, and it loses
+  the glyph. The marker only works while it is rare, and the asymmetry is why it matters:
+  an unread warning on the money path costs more than a missing one, because its presence
+  is what a reviewer trusts.
+  - **Never in a test, suite or describe NAME.** The name states the property; the glyph
+    adds nothing and prints on every run.
+  - **Never three to a comment block.** One is a warning, three is the block's ordinary
+    voice and the reader cannot tell which line is the trap. Two is allowed — a block can
+    hold two distinct traps.
+  - **An endpoint `///` doc is PUBLISHED** into `backend.did` and the generated
+    TypeScript, so a marker there reaches API callers. Keep the ones a caller can act on
+    (*"uncertified query answers, nothing may be wired to decide on them"*); a note to the
+    next editor about our own layout or history belongs in a `//` beside the
+    implementation.
 - ⚠️ **No bare `#NN` issue reference outside `docs/agents/`**, and
   `scripts/check-issue-refs.py` enforces it. Not in code, not in tests, not in docs, not
   in scripts, not in a suite or test name. An issue number reads as a pointer to a live

@@ -2,17 +2,15 @@
 # Assert the canister's Candid SIGNATURES are unchanged against a git ref, ignoring doc
 # comments.
 #
-# ⚠️ **Why signatures rather than the whole file.** A pure relocation of endpoints must
+# **Why signatures rather than the whole file.** A pure relocation of endpoints must
 # not move the interface, and `git diff` on `backend.did` is the natural proof — until doc
 # text moves independently of the API, at which point a byte diff can no longer tell "I
 # relocated code" from "I changed the contract".
 #
-# ⚠️ **The original reason for that has REVERSED, and the check outlives it.** It was: moc
-# did not emit doc comments for mixin members, so relocating an endpoint into a mixin
-# deleted ~6 doc lines from the interface while changing nothing about it. **moc 1.16.0
-# emits them**, so a relocation now carries its doc along and leaves the `.did` doc lines
-# untouched. What still moves independently is an ordinary doc EDIT — now published, so it
-# shows up in the interface diff — which is the same confusion from the other direction.
+# moc 1.16.0 emits doc comments for mixin members, so a relocation carries its doc along
+# and leaves the `.did` doc lines untouched. What moves independently is an ordinary doc
+# EDIT: it is published, so it shows up in the interface diff beside real signature
+# changes, which is the confusion this separates.
 #
 # So this strips `///` lines from both sides and compares what is left: method names,
 # argument names and types, return types, and every type declaration. That is the part a

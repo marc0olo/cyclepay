@@ -52,7 +52,7 @@ suite("defaults", func() {
     assert config.maxPurchaseUsdCents > 0;
   });
 
-  test("⚠️ the documented defaults ARE these defaults — RUNBOOK section 5a's table", func() {
+  test("the documented defaults ARE these defaults — RUNBOOK section 5a's table", func() {
     // The assertion the suite above cannot make. Every other case here derives its
     // expectations FROM `config`, so all of them stay green when a default moves — and
     // the operator-facing table in RUNBOOK's admission-gate section had drifted on two of four rows, with
@@ -459,7 +459,7 @@ suite("the faucet refusal", func() {
     assert Gate.admit(config, sandboxHealthy, amount) == #ok;
   });
 
-  test("⚠️ EACH leg of the triple turns it off on its own", func() {
+  test("EACH leg of the triple turns it off on its own", func() {
     // Not one test per happy path: a predicate with three terms needs each term
     // shown to be load-bearing, or a stuck `true` in any of them passes.
     // 1. Live mode: real money in, so free-payment giveaway is not the risk.
@@ -470,7 +470,7 @@ suite("the faucet refusal", func() {
     assert Gate.admit(config, { faucet with reserveFloor = 0 }, amount) == #ok;
   });
 
-  test("⚠️ an EMPTY list does not filter per buyer — that would break Part 1", func() {
+  test("an EMPTY list does not filter per buyer — that would break Part 1", func() {
     // The state a sandbox gateway is configured in before the list is populated.
     // Filtering here would refuse every buyer during exactly the window the
     // deployment is being explored in, which is why the empty case is bounded by
@@ -484,7 +484,7 @@ suite("the faucet refusal", func() {
     == #err(#buyerNotAllowed);
   });
 
-  test("⚠️ the faucet is checked FIRST, so it cannot be shadowed by the request", func() {
+  test("the faucet is checked FIRST, so it cannot be shadowed by the request", func() {
     // A below-minimum amount arriving while we are a faucet must report the
     // faucet. Reported as `#amountBelowMin` the condition would never latch and
     // `refusingNow` would claim we are admitting — the console lying about the
@@ -503,7 +503,7 @@ suite("the faucet refusal", func() {
     == #err(#buyerNotAllowed);
   });
 
-  test("⚠️ at go-live the list has NO effect — an unlisted buyer is admitted", func() {
+  test("at go-live the list has NO effect — an unlisted buyer is admitted", func() {
     // A list that keeps filtering after go-live is an outage nobody would look
     // for. `healthy` is live mode with an empty list and nobody allowed.
     assert Gate.admit(config, healthy, amount) == #ok;
@@ -538,7 +538,7 @@ suite("the faucet refusal", func() {
     assert not second.announce;
   });
 
-  test("⚠️ admission CLEARS it — admission is direct proof the predicate was false", func() {
+  test("admission CLEARS it — admission is direct proof the predicate was false", func() {
     // The decision that separates it from `#stripeApiFailing`. Decided the other
     // way, `refusingNow` reports the faucet forever after the operator populates
     // the list and buyers start succeeding.
@@ -552,7 +552,7 @@ suite("the faucet refusal", func() {
     assert admitted.stripeApiFailing;
   });
 
-  test("⚠️ #buyerNotAllowed is LAST, so it cannot shadow a GATEWAY fact", func() {
+  test("#buyerNotAllowed is LAST, so it cannot shadow a GATEWAY fact", func() {
     // `can_purchase` is a query the frontend uses to ask "can anyone buy right
     // now", and every suite probes it anonymously — an unlisted caller. Checked
     // early, that probe answered `#buyerNotAllowed` and hid the gas floor behind
@@ -569,7 +569,7 @@ suite("the faucet refusal", func() {
     == #err(#buyerNotAllowed);
   });
 
-  test("⚠️ the two new checks sit at OPPOSITE ends, and that is one argument", func() {
+  test("the two new checks sit at OPPOSITE ends, and that is one argument", func() {
     // The faucet is a gateway fact so nothing may shadow it; the unlisted buyer is
     // a principal fact so it may shadow nothing. A broke faucet reports the
     // faucet, a broke bounded gateway reports the gas floor.

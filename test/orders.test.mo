@@ -140,7 +140,7 @@ suite("the promise tally — every writer moves it", func() {
     assert Orders.promised(store) == order.lockedCycles;
   });
 
-  test("⚠️ expireBySession returns the hold to zero — release point 1, the common one", func() {
+  test("expireBySession returns the hold to zero — release point 1, the common one", func() {
     // Stripe says the session died unpaid. This is the path every abandoned
     // checkout takes, and the one that leaked.
     let store = Orders.emptyStore();
@@ -152,7 +152,7 @@ suite("the promise tally — every writer moves it", func() {
     assert Orders.promised(store) == 0;
   });
 
-  test("⚠️ a requested cancel settles as CANCELLED, whoever gets there first", func() {
+  test("a requested cancel settles as CANCELLED, whoever gets there first", func() {
     // The race: `cancel_order` expires the session at Stripe before recording the
     // cancel, so Stripe's `checkout.session.expired` webhook can settle the order
     // first — and it did, in a real local run, recording the buyer's own decision as
@@ -181,7 +181,7 @@ suite("the promise tally — every writer moves it", func() {
     assert not requested.contains("ord-1");
   });
 
-  test("⚠️ and with NO requested cancel it is a real expiry, with its cause", func() {
+  test("and with NO requested cancel it is a real expiry, with its cause", func() {
     // The other half. Without this, the assertion above would be satisfied by a
     // function that always cancels — which would record every abandoned checkout as
     // the buyer's decision.
@@ -197,7 +197,7 @@ suite("the promise tally — every writer moves it", func() {
     assert Orders.promised(store) == 0;
   });
 
-  test("⚠️ expireWithCause returns the hold to zero — release point 4", func() {
+  test("expireWithCause returns the hold to zero — release point 4", func() {
     // In-call session-creation failure: no session ever existed.
     let store = Orders.emptyStore();
     ignore newOrder(store, "ord-1", alice);
@@ -273,7 +273,7 @@ suite("the promise tally — every writer moves it", func() {
 });
 
 suite("allStatuses is tied to the type", func() {
-  test("⚠️ every OrderStatus variant appears exactly once", func() {
+  test("every OrderStatus variant appears exactly once", func() {
     // If this fails, `allStatuses` and `Types.OrderStatus` have diverged and every test
     // that iterates the array is quietly testing less than it claims.
     assert allStatuses.size() == Types.statusCount;
@@ -680,7 +680,7 @@ suite("openOrderCount — the Gate admission input", func() {
     assert Orders.openOrderCount(store, alice, 200) == 0;
   });
 
-  test("⚠️ a #created order PAST ITS DEADLINE frees the slot without any Stripe call", func() {
+  test("a #created order PAST ITS DEADLINE frees the slot without any Stripe call", func() {
     // The half that makes a cap of 1 safe. Without it, one missed
     // `checkout.session.expired` locks the buyer out **permanently** — not for the 35
     // minutes the session lasts, because nothing else moves a `#created` order.
@@ -702,7 +702,7 @@ suite("openOrderCount — the Gate admission input", func() {
     };
   });
 
-  test("⚠️ a null deadline still occupies the slot", func() {
+  test("a null deadline still occupies the slot", func() {
     // `expiresAtNs` is null until the session-create response lands. Counting that as
     // free would hand out a slot on the strength of an order whose fate we do not know —
     // and the residue case (a lost create response) is a canister-level fault whose only
@@ -853,7 +853,7 @@ suite("status counts — the O(1) query inputs", func() {
     };
   });
 
-  test("⚠️ a tally that reads TOO HIGH is refused, not repaired", func() {
+  test("a tally that reads TOO HIGH is refused, not repaired", func() {
     // ⚠️ **The one-directional rule, in the direction that must not be adopted.** A
     // recount below the maintained tally is indistinguishable from an index missing a
     // member, so adopting it is the only way an index bug could lower `promised` and
@@ -880,7 +880,7 @@ suite("status counts — the O(1) query inputs", func() {
     assert Orders.reconcileBounded(store).refused.size() == 1;
   });
 
-  test("⚠️ a tally that reads TOO LOW is raised, because an under-count stops the sweeps", func() {
+  test("a tally that reads TOO LOW is raised, because an under-count stops the sweeps", func() {
     // The other half of the same rule. An under-counted `#paid` reads as zero to
     // `sweepableCount`, which short-circuits the recovery sweep — so money-out stops
     // while orders sit paid and undelivered. Raising is the safe direction and it is
@@ -1001,7 +1001,7 @@ suite("the unresolved-problems index", func() {
     assert Orders.unresolvedProblemCount(store) == 2;
   });
 
-  test("⚠️ the index agrees with a full scan — the tripwire that makes derived state safe", func() {
+  test("the index agrees with a full scan — the tripwire that makes derived state safe", func() {
     // Without this the index is the `delayedAlerts` mistake again: a second structure
     // that can disagree with the orders it points at and no way to tell which is
     // right. A disagreement means a writer bypassed fileProblem/resolveProblems.
@@ -1098,7 +1098,7 @@ suite("resolving a problem is precise, and refuses when it cannot be", func() {
     };
   };
 
-  test("⚠️ two #duplicate problems with different refs are BOTH kept", func() {
+  test("two #duplicate problems with different refs are BOTH kept", func() {
     // This is the state that made a tag-only resolver dangerous: the dedup key is
     // (kind, paymentRef), so a buyer paying three times files three problems.
     let store = Orders.emptyStore();
@@ -1254,7 +1254,7 @@ suite("the reconcile is bounded by flow, not by lifetime sales", func() {
     ignore Orders.applyTransition(store, id, #delivered, 300);
   };
 
-  test("⚠️ the promise recount does not read terminal orders — the acceptance criterion", func() {
+  test("the promise recount does not read terminal orders — the acceptance criterion", func() {
     // ⚠️ **Two assertions, and neither alone is worth anything.** "It reads few orders"
     // passes trivially for a pass that reads none and answers wrong; "it answers
     // correctly" passes for the O(every order) pass this replaced. What has to hold is
@@ -1302,7 +1302,7 @@ suite("the reconcile is bounded by flow, not by lifetime sales", func() {
     assert Orders.reconcileBounded(store).staleHolders.size() == 0;
   });
 
-  test("⚠️ `#expired` is checked by monotonicity, and a decrease is a breach", func() {
+  test("`#expired` is checked by monotonicity, and a decrease is a breach", func() {
     // `#expired` is the ONE tracked status that is terminal, so the index cannot recount
     // it. Its inbound edge is `#created → #expired` and the matrix has no outbound one,
     // so the tally can only rise — which is what makes a cheap check sound here and
@@ -1339,7 +1339,7 @@ suite("the reconcile is bounded by flow, not by lifetime sales", func() {
     assert Orders.reconcileBounded(store).expiredOverflow;
   });
 
-  test("⚠️ the rotating scan never claims coverage it did not achieve", func() {
+  test("the rotating scan never claims coverage it did not achieve", func() {
     // ⚠️ **The three-state requirement, at its mechanical root.** A chunk that stopped
     // early must return a cursor; only exhaustion returns null. If it ever returned null
     // early, a partial pass would read as a completed one and `no drift` would mean
@@ -1367,7 +1367,7 @@ suite("the reconcile is bounded by flow, not by lifetime sales", func() {
     assert first.visited + second.visited + third.visited == Orders.storedCount(store);
   });
 
-  test("⚠️ the scan finds the one error the daily pass cannot see, and the tally follows", func() {
+  test("the scan finds the one error the daily pass cannot see, and the tally follows", func() {
     // The money-critical case. A non-terminal order missing from the index while
     // `promised` is missing its cycles too: the two agree with each other, so the daily
     // recount reports nothing, and the reserve reads as MORE available than it is.
@@ -1466,7 +1466,7 @@ suite("cumulative delivery figures", func() {
     assert t.orders == 0 and t.cycles == 0 and t.usdCents == 0;
   });
 
-  test("⚠️ the OPERATOR path counts too — the undercount this would otherwise ship", func() {
+  test("the OPERATOR path counts too — the undercount this would otherwise ship", func() {
     // `record_delivered` drives `#needsReview → #delivered` and writes the journal's
     // `cyclesDelivered` as **null**, so a counter maintained at the sites that write that
     // field would miss exactly these — the rare, high-touch orders most likely to be
@@ -1483,7 +1483,7 @@ suite("cumulative delivery figures", func() {
     assert t.usdCents == 7_500;
   });
 
-  test("⚠️ double-counting is unrepresentable, not merely guarded", func() {
+  test("double-counting is unrepresentable, not merely guarded", func() {
     // `#delivered` has no outbound edge, so `commitTransition` cannot run twice for a
     // delivered order. Pinned by trying every status as a follow-on transition: all must
     // be refused, and the totals must not move.
@@ -1549,7 +1549,7 @@ suite("cancelShape covers the whole status space", func() {
   /// bitmask test guarding it.
   let every = Types.allStatuses;
 
-  test("⚠️ #created is the ONLY status a buyer can cancel", func() {
+  test("#created is the ONLY status a buyer can cancel", func() {
     // The money property: `#paid`, `#delivered` and `#needsReview` hold or have spent
     // cycles, and `#abandoned` is the operator's terminal decision after refunding by
     // hand. A buyer cancelling any of them would release a promise against cycles that
@@ -1566,7 +1566,7 @@ suite("cancelShape covers the whole status space", func() {
     assert Orders.cancelShape(#paid) == #notCancellable(#paid);
   });
 
-  test("⚠️ every non-cancellable status names ITSELF back", func() {
+  test("every non-cancellable status names ITSELF back", func() {
     // The endpoint interpolates this into the buyer's message, so a shape that carried
     // the wrong status would produce a sentence about the wrong order state.
     for (st in every.values()) {
@@ -1708,7 +1708,7 @@ suite("holderPage — the pagination boundaries", func() {
     assert Orders.holderPage(store3(), null, Orders.maxPageSize + 1, keepAll).items.size() == 3;
   });
 
-  test("⚠️ the cursor counts KEPT ids, not scanned ones", func() {
+  test("the cursor counts KEPT ids, not scanned ones", func() {
     // The page must FILL for this rule to bite: with a-2 skipped, a cursor taken from
     // the scan position would be ?"a-2" and the next page would start after it, dropping
     // a-2 from every later page even though it was never examined.

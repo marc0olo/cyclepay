@@ -2,7 +2,7 @@
 # Decide whether a `deployed/backend.most` promotion is REPRESENTATION-ONLY or a real
 # shape change — before it is committed.
 #
-# ⚠️ **Why this exists.** A promotion resets the reference point the upgrade check
+# **Why this exists.** A promotion resets the reference point the upgrade check
 # compares against, so it is the one operation that can blind that check. One hole is a
 # baseline left stale; the mirror image is a baseline promoted past a real change because
 # the diff looked like noise. Both are invisible in a `git diff`.

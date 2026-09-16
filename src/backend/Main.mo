@@ -84,7 +84,7 @@ persistent actor CyclesGateway {
   // none of which depends on the secrets. One derivation therefore serves the API key and
   // the webhook secret — they share `Sealed.keyLabel`.
   //
-  // ⚠️ **`transient`, so an upgrade drops it**, and the next provisioning derives again
+  // **`transient`, so an upgrade drops it**, and the next provisioning derives again
   // for ~26 B cycles. Orthogonal persistence would keep it for free, and that is exactly
   // the trap: editing `Sealed.context` or `Sealed.keyLabel` would then leave a cache
   // serving the key for the OLD values until the canister was reinstalled, so sealing
@@ -108,7 +108,7 @@ persistent actor CyclesGateway {
     // `success_url` is an open redirect that Stripe renders *after a real
     // payment* — a phishing primitive wearing a genuine receipt page.
     //
-    // ⚠️ Changing it later invalidates nothing already paid, but Internet Identity
+    // Changing it later invalidates nothing already paid, but Internet Identity
     // derives a principal **per origin**, so an origin change is a user-visible
     // migration rather than a config tweak: existing buyers get new principals and
     // cannot see their old orders. Choose it once.
@@ -156,14 +156,14 @@ persistent actor CyclesGateway {
   // to sell. So an empty list means unrestricted while the reserve floor is zero
   // (where nothing can be sold anyway) and refusing-everyone once it is not.
   //
-  // ⚠️ At go-live (`stripe.expectLivemode == ?true`) it has no effect whatsoever. A list
+  // At go-live (`stripe.expectLivemode == ?true`) it has no effect whatsoever. A list
   // that keeps filtering after go-live is an outage nobody would look for.
   let allowedBuyers = Set.empty<Principal>();
 
   // The RULES tier: controller only. Traps rather than returning an error so an
   // unauthorized call can never be mistaken for a handled outcome.
   //
-  // ⚠️ **Everything that changes the rules is here, and `scripts/check-admin-tiers.py`
+  // **Everything that changes the rules is here, and `scripts/check-admin-tiers.py`
   // is what keeps it that way** — it reads each method's body and fails when the guard it
   // calls is not the one its tier declares. A table alone would prove the list complete
   // and say nothing about whether the code honours it.
@@ -194,7 +194,7 @@ persistent actor CyclesGateway {
 
   // ── The buyer allow-list ────────────────────────────────────────────────
   //
-  // ⚠️ **Controller-only, like everything that changes the RULES.** The list
+  // **Controller-only, like everything that changes the RULES.** The list
   // decides who may take cycles out of a funded reserve for free test money, so
   // it is not a per-case decision an admin makes — it is a rule.
 
@@ -207,7 +207,7 @@ persistent actor CyclesGateway {
   let orderStore : Orders.Store = Orders.emptyStore();
 
   // The price tiles, as one record.
-  // ⚠️ **A record rather than loose `var` fields, because `include` passes by value.**
+  // **A record rather than loose `var` fields, because `include` passes by value.**
   // A mixin handed a bare `var` gets a snapshot from install time, so its
   // writes land on a copy and its reads never move. A record is a heap object, so the
   // mixin and the actor share one. Grouped by subsystem, which is the slice a mixin
@@ -225,7 +225,7 @@ persistent actor CyclesGateway {
 
   // The admission gate's mutable state, as ONE record.
   //
-  // ⚠️ **A record rather than three `var` fields, because `include` passes by value** —
+  // **A record rather than three `var` fields, because `include` passes by value** —
   // a mixin handed a bare `var` gets a snapshot from install time, so its writes land
   // on a copy and its reads never move. A record is a heap object, so the mixin and the
   // actor share it. Grouped by subsystem rather than one wrapper per field: that is the
@@ -239,7 +239,7 @@ persistent actor CyclesGateway {
     var config : Gate.Config;
     // Refusal tallies and the rail-state latch.
     //
-    // ⚠️ **Stable, because they replace an audit line.** These carry the content
+    // **Stable, because they replace an audit line.** These carry the content
     // of a per-attempt audit line that no longer exists, so losing them on upgrade
     // would lose the volume signal the monitoring rows read.
     var refusals : Gate.RefusalCounts;
@@ -263,7 +263,7 @@ persistent actor CyclesGateway {
   let rateCache : Pricing.Cache = Pricing.emptyCache();
 
   // Pricing policy and the last refresh attempt, as one record.
-  // ⚠️ **A record rather than loose `var` fields, because `include` passes by value.**
+  // **A record rather than loose `var` fields, because `include` passes by value.**
   // A mixin handed a bare `var` gets a snapshot from install time, so its
   // writes land on a copy and its reads never move. A record is a heap object, so the
   // mixin and the actor share one. Grouped by subsystem, which is the slice a mixin
@@ -532,7 +532,7 @@ persistent actor CyclesGateway {
   // Three management-canister calls on a cold cache: entropy for the transport keypair,
   // the derivation itself, and the derived public key the reply is verified against.
   //
-  // ⚠️ **Two concurrent provisioning calls on a cold cache will both derive.** Accepted
+  // **Two concurrent provisioning calls on a cold cache will both derive.** Accepted
   // rather than prevented: derivation is deterministic, so both get the identical key and
   // the only cost is a duplicate ~26 B cycle fee. Both are controller-gated and
   // provisioning is rare, so a lock would guard against nothing that happens.
@@ -713,9 +713,9 @@ persistent actor CyclesGateway {
       let kind = Session.classifyFailure(e.message());
       return #failed(Session.failureAdvice(kind) # " [" # e.message() # "]");
     };
-    // ⚠️ Classified in ONE place, by status. See `Session.expireOutcome`: this used to
-    // grep the error prose for three invented phrases, so the "already paid" branch
-    // could never fire against real Stripe.
+    // Classified in ONE place, by STATUS — see `Session.expireOutcome`. Never key this
+    // off the error prose: a phrase that is not exactly Stripe's wording makes the
+    // branch it guards unreachable against the real API.
     Session.expireOutcome(response.status, response.body);
   };
 
@@ -823,7 +823,7 @@ persistent actor CyclesGateway {
 
   // **The** admission decision: everything `Gate.admit` asks, plus solvency.
   //
-  // ⚠️ **One callable answer, deliberately.** Solvency is not part of
+  // **One callable answer, deliberately.** Solvency is not part of
   // `Gate.admit` because reading the reserve needs an `await` and `admit` is
   // synchronous by design — but that leaves the decision with two owners, and
   // `-Werror` cannot see that calling `admit` alone is *half* a decision. A future
@@ -842,7 +842,7 @@ persistent actor CyclesGateway {
       case (#err(reason)) return #err(reason);
       case (#ok) {};
     };
-    // ⚠️ **Synchronous, and that is the whole design.** `reserveState.floor` is a
+    // **Synchronous, and that is the whole design.** `reserveState.floor` is a
     // maintained lower bound on the ledger balance, moved only by our own
     // outflows — so there is no awaited value to go stale and nothing to pair
     // across an await. `Reserve.mo`'s floor section carries the asymmetry this
@@ -947,12 +947,11 @@ persistent actor CyclesGateway {
   // Tally a refusal, and write an audit line **only** on the transition into a
   // rail-state condition.
   //
-  // ⚠️ **The one place a refusal is recorded.** It replaced two
-  // `audit("order.notAdmitted", …)` calls, both pre-commit, both reachable for
-  // free — `#amountBelowMin` needs no prior state at all, so one cent from any
-  // fresh principal would drive one permanent line per attempt. The audit log is
-  // the only structure here whose growth is not
-  // attacker-priced, which is why this is a counter and not a line.
+  // **The one place a refusal is recorded, and it is a COUNTER rather than an audit
+  // line.** A pre-commit refusal is reachable for free — `#amountBelowMin` needs no
+  // prior state at all, so one cent from any fresh principal would drive one permanent
+  // line per attempt. The audit log is the only structure here whose growth is not
+  // attacker-priced.
   func noteRefusal(reason : Gate.Reason) {
     gateState.refusals := Gate.countRefusal(gateState.refusals, reason);
     let latched = Gate.latchRefusal(gateState.latch, reason);
@@ -965,7 +964,7 @@ persistent actor CyclesGateway {
   // Which `sessionConfig` failures are rail **state** — a configuration fact
   // about this gateway rather than anything about the request.
   //
-  // ⚠️ **Exhaustive on purpose.** `sessionConfig` can only produce the first two
+  // **Exhaustive on purpose.** `sessionConfig` can only produce the first two
   // today, but a new `Session.Error` must decide whether it is a persistent
   // configuration state (latch it, announce once) or a transient outcall failure
   // (do not latch — a transient that latched would be cleared by the next
@@ -1012,11 +1011,10 @@ persistent actor CyclesGateway {
   // Tally a failed session creation, announcing once on the way into the
   // condition.
   //
-  // ⚠️ **Per-attempt before this.** `stripe.sessionFailed` wrote one line per try,
-  // and the reachable driver is not a transient outage — it is a key that is
-  // **present but invalid**, rotated or revoked at Stripe without updating the
-  // canister. `sessionConfig` cannot see that (the secret exists), so every attempt
-  // reaches the outcall, 401s, and files a line. A transient timeout is
+  // **A line per attempt is what this avoids, and the driver is not a transient
+  // outage** — it is a key that is **present but invalid**, rotated or revoked at
+  // Stripe without updating the canister. `sessionConfig` cannot see that (the secret
+  // exists), so every attempt reaches the outcall and 401s. A transient timeout is
   // self-limiting; a revoked key repeats until `minCanisterCycles` closes the rail.
   //
   // ⚠️ **The order-record half of that loop is NOT fixed here.** Each attempt still
@@ -1025,7 +1023,7 @@ persistent actor CyclesGateway {
   // the `client_reference_id` — so no pre-commit check can cover this branch. A
   // circuit breaker is deferred until there is evidence it is needed; this fixes the
   // audit half, which is the permanent one.
-  // ⚠️ **Takes a DETAIL rather than a `Session.Error`, because the callers know
+  // **Takes a DETAIL rather than a `Session.Error`, because the callers know
   // different things.** It used to render `sessionErrorToText(e)`, and the retrieve
   // path's `#unauthorized` has no honest `Session.Error` to pass: `#railClosed` renders
   // as "the API key is not provisioned", which is exactly wrong — the key is present
@@ -1071,7 +1069,7 @@ persistent actor CyclesGateway {
 
   // The reserve's own mutable state, as ONE record.
   //
-  // ⚠️ **A record rather than four `var` fields, because `include` passes by value.**
+  // **A record rather than four `var` fields, because `include` passes by value.**
   // A mixin handed `var reserveState.floor` would get a snapshot from install time — its
   // writes would land on a copy and its reads would never move. A record is a heap
   // object, so the mixin and the actor share it. The alternative, an accessor closure
@@ -1079,11 +1077,11 @@ persistent actor CyclesGateway {
   // semantics; grouping by subsystem is also what `reviewing-motoko` A6 asks for —
   // a mixin receives the slice it uses, not the fields one at a time.
   //
-  // ⚠️ **This moved the stable shape**, deliberately and once: pre-launch, with no
-  // migration chain, a reinstall is the documented loop and there is no data to
-  // preserve. `deployed/backend.most` is promoted in the same commit, and
-  // `scripts/check-stable-promotion.sh` reports it as a REAL shape change rather than
-  // renumbering — which is the distinction that makes the promotion reviewable.
+  // **Grouping fields into a record CHANGES the stable shape**, so it is a reinstall
+  // and a `deployed/backend.most` promotion in the same commit. There is no migration
+  // chain, so that is the documented loop pre-launch;
+  // `scripts/check-stable-promotion.sh` reports such a promotion as a REAL shape change
+  // rather than renumbering, which is what makes it reviewable.
   let reserveState : {
     // A maintained **lower bound** on the reserve's ledger balance.
     //
@@ -1114,7 +1112,7 @@ persistent actor CyclesGateway {
 
     // The cycles ledger's transfer fee, as last learned from the ledger.
     //
-    // ⚠️ **Stored rather than awaited, and `#BadFee` is why that is safe.** An ICRC-1
+    // **Stored rather than awaited, and `#BadFee` is why that is safe.** An ICRC-1
     // ledger rejects a wrong fee **definitively and reports the expected one**, so a stale
     // value costs one rejected call, self-corrects in the same message, and is persisted
     // for every later order. In exchange the delivery path loses an await — and with it
@@ -1173,16 +1171,16 @@ persistent actor CyclesGateway {
   // recovery sweep, and the admin expire. The buyer's own cancellation was recorded as
   // `#sessionExpired`, which is exactly the provenance `expiredBy` exists to keep.
   //
-  // ⚠️ **Intent, not a lock, and that distinction is the fix.** An earlier attempt used
-  // a transient set and made the sweep skip; the webhook lives in another module that
-  // could not see it, so it went on winning. Preventing the race needs every writer to
-  // remember a guard. Recording the intent means whoever wins ATTRIBUTES correctly, so
-  // the race stops mattering. `Orders.settleUnpayable` is the one place that reads it.
+  // **Intent, not a lock, and the distinction is what makes it work.** A lock would
+  // need every writer to remember a guard, and the webhook lives in another module —
+  // so the writer that forgets goes on winning. Recording the intent means whoever
+  // wins ATTRIBUTES correctly, so the race stops mattering.
+  // `Orders.settleUnpayable` is the one place that reads it.
   //
-  // ⚠️ **`expireWithCause`'s own no-op guard cannot cover this.** That guard protects
+  // **`expireWithCause`'s own no-op guard cannot cover this.** That guard protects
   // an order that is ALREADY `#cancelled`; here the cancel has not been recorded yet.
   //
-  // ⚠️ **Stable, because a trap or an upgrade mid-cancel must not lose the intent** —
+  // **Stable, because a trap or an upgrade mid-cancel must not lose the intent** —
   // that is precisely the window where the order settles without the buyer. A new
   // stable var is upgrade-compatible; this is not a field on an existing record.
   //
@@ -1202,7 +1200,7 @@ persistent actor CyclesGateway {
   // for an order whose session never attached, and `cancel_order` records nothing for
   // one of those — with no session id it takes the sessionless branch.
   //
-  // ⚠️ **A stale entry could never mis-attribute even so**, because a delivered or paid
+  // **A stale entry could never mis-attribute even so**, because a delivered or paid
   // order cannot transition to `#cancelled`. The reason to bound it is stable growth,
   // not correctness — which is why the fix is one removal at the third exit rather than
   // threading the set through every status writer.
@@ -1229,7 +1227,7 @@ persistent actor CyclesGateway {
   // ── Delivery timeline config (§5.3) ─────────────────────────────────────
 
   // Delivery policy, as one record.
-  // ⚠️ **A record rather than loose `var` fields, because `include` passes by value.**
+  // **A record rather than loose `var` fields, because `include` passes by value.**
   // A mixin handed a bare `var` gets a snapshot from install time, so its
   // writes land on a copy and its reads never move. A record is a heap object, so the
   // mixin and the actor share one. Grouped by subsystem, which is the slice a mixin
@@ -1328,7 +1326,7 @@ persistent actor CyclesGateway {
             // Tell someone while the cause is still fixable, and keep retrying: most
             // incidents end here with the order delivering.
             //
-            // ⚠️ **One line per order, bounded by `markDelayed`** — it returns true only
+            // **One line per order, bounded by `markDelayed`** — it returns true only
             // on the first crossing, so the line needs no bookkeeping of its own and
             // passes `AuditLog.mo`'s admission rule.
             //
@@ -1403,11 +1401,11 @@ persistent actor CyclesGateway {
             // and audited rather than silent so that a future move in either
             // number surfaces as a stuck order with a reason instead of a trap.
             //
-            // ⚠️ This is the ONE state the stored fee cannot correct itself out of:
+            // This is the ONE state the stored fee cannot correct itself out of:
             // nothing reaches the ledger, so no `#BadFee` ever arrives to fix the copy,
             // and every order stalls here — audited, loudly, once per order.
             //
-            // ⚠️ **There is deliberately no admin lever to reset the fee, and the
+            // **There is deliberately no admin lever to reset the fee, and the
             // reason is worth keeping.** One existed briefly and was
             // deleted as self-justifying: reaching this state needs the ledger to
             // report a fee above a whole order's locked quantity — a ~70,000× rise,
@@ -1513,7 +1511,7 @@ persistent actor CyclesGateway {
               // The floor then drops by `amount + corrected fee` while the promise tally
               // drops by the amount alone, so `available` drifts down by the delta —
               // fractions of a fee, erring conservative. Not a bug (§5.4).
-              // ⚠️ **Learn the fee for every LATER order.** This arm is the only place
+              // **Learn the fee for every LATER order.** This arm is the only place
               // the ledger tells us its fee, so persisting here bounds the cost of a
               // stale copy to one rejected call. It does **not** change this order's
               // intent — rebuilding that is the double-pay this path exists to avoid.
@@ -1630,7 +1628,7 @@ persistent actor CyclesGateway {
     // The maintained tally covers exactly the sweepable status, so an idle sweep is
     // free — which is what makes a short cadence affordable.
     if (sweepableCount() == 0) return 0;
-    // ⚠️ **Over the non-terminal index, not the order store.** `#paid` — the one
+    // **Over the non-terminal index, not the order store.** `#paid` — the one
     // sweepable status — holds its promise, so the index is a superset of the population
     // and the filter is exact. This used to walk every order ever created on every tick
     // that had work, a cost that grows with lifetime sales and never comes back down.
@@ -1676,7 +1674,7 @@ persistent actor CyclesGateway {
   // Every promise-holding order paired with its journal entry — **the only route either
   // reader takes to the journal**, so neither can be bounded and the other not.
   //
-  // ⚠️ Bounded by `promiseHolders`, which is bounded by flow (§5.4), NOT by the journal,
+  // Bounded by `promiseHolders`, which is bounded by flow (§5.4), NOT by the journal,
   // which gains an entry per `#paid` order and never loses one.
   func forEachPromisedDelivery(f : (Types.Order, Types.JournalEntry) -> ()) {
     for (id in Orders.promiseHolderIds(orderStore)) {
@@ -1696,7 +1694,7 @@ persistent actor CyclesGateway {
   // escalation makes the quiet window unsatisfiable for the life of the canister: every
   // reconcile skips, every `refresh_reserve` skips, and top-ups stop registering.
   //
-  // ⚠️ **This count going LOW is the oversell direction** — a quiet window that reads
+  // **This count going LOW is the oversell direction** — a quiet window that reads
   // quiet while a transfer is in flight lets the floor adopt a balance the transfer has
   // already left. So completeness is the property to protect, and it is by construction
   // rather than by recount: a transfer is only ever issued from `#paid`, `#paid` holds
@@ -1706,7 +1704,7 @@ persistent actor CyclesGateway {
   // block in the same patch, `#needsReview` is still non-terminal and still indexed, and
   // `#abandoned` is **refused while a transfer is open** (`abandon_order`).
   //
-  // ⚠️ A stale index member is harmless here and does not need dropping: its order reads
+  // A stale index member is harmless here and does not need dropping: its order reads
   // non-`#paid`, so it simply does not count.
   //
   // ⚠️ **Do not add a force flag to `refresh_reserve`.** Adopting across an unsettled
@@ -1725,7 +1723,7 @@ persistent actor CyclesGateway {
 
   // How long a `#paid` order has waited, as a stage; `null` for any other status.
   //
-  // ⚠️ **ONE read of the clock per order.** "Is it delayed" and "is it past max hold" are
+  // **ONE read of the clock per order.** "Is it delayed" and "is it past max hold" are
   // both answered off this single value. Calling `waitStage` twice worked — it is
   // deterministic — but it put a second call site of the same computation in the code
   // whose point is one definition, and `pastMaxHold` would have diverged silently if this
@@ -1764,7 +1762,7 @@ persistent actor CyclesGateway {
 
   // How many deliveries are late — the count behind `delayed_deliveries`' page.
   //
-  // ⚠️ Bounded by `promiseHolders`, which is bounded by flow (§5.4), not by lifetime
+  // Bounded by `promiseHolders`, which is bounded by flow (§5.4), not by lifetime
   // sales.
   func delayedDeliveryCount(nowNs : Int) : Nat {
     var n = 0;
@@ -1810,7 +1808,7 @@ persistent actor CyclesGateway {
   // then and only then does the observed balance bound the current one. Any of the
   // three failing means an outflow may have moved the balance in the gap, and
   // adopting would erase rule 2's decrement.
-  // ⚠️ **`holdersAfter` is returned rather than left for the caller to re-read, and
+  // **`holdersAfter` is returned rather than left for the caller to re-read, and
   // that is the point.** `withdraw_reserve` must re-check the promise-holder count
   // after this await — the floor is still full across it, so a `create_order` queued
   // here would be admitted against a reserve about to leave. Handing the count back
@@ -1895,7 +1893,7 @@ persistent actor CyclesGateway {
     // Where the current coverage cycle has reached. `null` means a cycle is about to
     // start from the beginning of the store.
     //
-    // ⚠️ **Persistent, because the coverage claim is what this state is for.** A
+    // **Persistent, because the coverage claim is what this state is for.** A
     // transient cursor would silently restart every cycle on every upgrade, so
     // `lastIndexScanCycle` would report a completed pass that an upgrade had truncated —
     // a green check that means nothing.
@@ -1906,7 +1904,7 @@ persistent actor CyclesGateway {
     // The last **completed** cycle — the only thing that licenses reading a clean scan
     // as evidence about the whole store.
     //
-    // ⚠️ **This field IS the third state.** `orders.problemIndexDrift` and
+    // **This field IS the third state.** `orders.problemIndexDrift` and
     // `orders.unindexedHolders` only mean "a writer bypassed the maintaining functions"
     // if the absence of those lines means "we looked". Without a completed-cycle stamp,
     // silence means either *verified clean* or *not yet visited*, which are two readings
@@ -1983,7 +1981,7 @@ persistent actor CyclesGateway {
   // is written only when it fires — a clean pass writes nothing, because a daily "all
   // well" line would bury the one that matters.
   //
-  // ⚠️ **`adopted` and `refused` are separate tags on purpose.** They demand opposite
+  // **`adopted` and `refused` are separate tags on purpose.** They demand opposite
   // readings: an adopted drift means *the tallies are correct again and a writer lost
   // an adjustment*; a refused one means *the tallies are still suspect and the pass
   // would not touch them*. One tag covering both would be a row an operator cannot act
@@ -2076,13 +2074,12 @@ persistent actor CyclesGateway {
   // replaced summed every order ever created in one message and was on a path to the
   // instruction limit.
   //
-  // ⚠️ **Daily is a SUFFICIENCY choice, not a cost one.** Drift can only come from a
+  // **Daily is a SUFFICIENCY choice, not a cost one.** Drift can only come from a
   // bookkeeping bug, which does not need a 15-minute detection window. Do not justify
   // the cadence by cost — that would describe a scan this function no longer performs.
   //
-  // ⚠️ **Still not chunked, and that is the same reason as before**: a global sum
-  // cannot be split across messages, because mutations between chunks manufacture
-  // false drift. What changed is that the sums no longer need history. The check that
+  // **Not chunked, and it cannot be**: a global sum cannot be split across messages,
+  // because mutations between chunks manufacture false drift. The check that
   // *does* need every order — the outside direction of both indexes — is
   // `scanIndexChunk`, which may be chunked precisely because it evaluates a per-order
   // predicate rather than a sum.
@@ -2118,7 +2115,7 @@ persistent actor CyclesGateway {
 
   // One chunk of the rotating scan, on the sweep cadence.
   //
-  // ⚠️ **Sweep cadence rather than daily, because one of its findings is money.**
+  // **Sweep cadence rather than daily, because one of its findings is money.**
   // `unindexedHolders` is the one inconsistency the daily reconcile cannot see: an
   // order that holds a promise, is missing from the index, and whose cycles are missing
   // from `promised` too — index and tally agree, both low, and the reserve reads as
@@ -2136,7 +2133,7 @@ persistent actor CyclesGateway {
   // computed from the live interval so an operator reads the window rather than deriving
   // it.
   //
-  // ⚠️ **Detached into its own message by the caller, like the reconcile**, so a trap
+  // **Detached into its own message by the caller, like the reconcile**, so a trap
   // here cannot take the sweep — and therefore money-out — down with it. It takes no
   // `await`, so its own state commits or rolls back as a unit.
   func scanIndexChunk() {
@@ -2158,7 +2155,7 @@ persistent actor CyclesGateway {
         "orders.unindexedHolders",
         chunk.unindexedHolders.size().toText() # " order(s) hold a promise and were missing from the"
         # " non-terminal index; they have been added: " # chunk.unindexedHolders.values().join(", ")
-        # ". ⚠️ This is the one bookkeeping error the daily reconcile cannot see — index and promise"
+        # ". This is the one bookkeeping error the daily reconcile cannot see — index and promise"
         # " tally can be missing the same order and agree with each other, so the reserve reads as MORE"
         # " available than it is and can be oversold. The next reconcile will raise `promised` to the"
         # " larger index. Find the writer that set a status outside Orders.create and"
@@ -2197,17 +2194,17 @@ persistent actor CyclesGateway {
   // wait a full interval because a background sweep (which enumerated
   // `pending` before that order turned #paid) was still in flight.
   //
-  // ⚠️ This is the **§5.2 recovery** timer and it stays. It is not a retention sweep and
+  // This is the **§5.2 recovery** timer and it stays. It is not a retention sweep and
   // must not be folded into one: this one backstops a money-out message that died, which
   // no webhook reports, and asks Stripe about `#created` orders whose expiry event never
   // arrived.
   //
-  // ⚠️ **Bounded per pass and resumed on the next one.** The stranded population is
+  // **Bounded per pass and resumed on the next one.** The stranded population is
   // **correlated** — one unprovisioned webhook secret or one frozen canister strands
   // every order in that window at once — so "rare" describes incidents, not orders per
   // incident. Uncapped, one incident becomes N outcalls an hour for as long as it lasts.
   //
-  // ⚠️ **Bounded by the non-terminal index, not by lifetime sales.** It still
+  // **Bounded by the non-terminal index, not by lifetime sales.** It still
   // runs detached in its own message, because it makes outcalls and a release check
   // must not be able to stop money-out. The `countOf(#created)` gate below is a
   // maintained tally, so an idle pass is free.
@@ -2223,7 +2220,7 @@ persistent actor CyclesGateway {
     // Collect every due order first. This costs **no outcalls**, so it is the cheap
     // half; the cap applies to the expensive half below.
     //
-    // ⚠️ **Over the non-terminal index, not the order store.**
+    // **Over the non-terminal index, not the order store.**
     // `Recovery.expiryCheckDue` matches `#created` alone, which holds its promise, so
     // the index is a superset of the population and the filter is exact. This used to
     // walk every order ever created on every hourly pass.
@@ -2279,7 +2276,7 @@ persistent actor CyclesGateway {
       // These two arms passed the admission rule on a technicality: their
       // frequency is bounded by *our own* sweep cadence, which the rule accepts.
       //
-      // ⚠️ **But our cadence bounds a RATE, and a rate against an unfixed persistent
+      // **But our cadence bounds a RATE, and a rate against an unfixed persistent
       // condition is unbounded over time.** A revoked key — the exact cause
       // `#stripeApiFailing` exists for — fails the retrieve on every stranded order the
       // sweep touches: hourly, up to `maxRetrievesPerPass` each pass, forever, for one
@@ -2325,7 +2322,7 @@ persistent actor CyclesGateway {
       case (#ok(#completePaid({ paymentIntent }))) {
         // The buyer paid and we never credited it: we missed the `completed` event.
         //
-        // ⚠️ **This is NOT the leak, and the difference decides the urgency.** Capacity
+        // **This is NOT the leak, and the difference decides the urgency.** Capacity
         // held against an order the buyer genuinely paid for is capacity *correctly
         // committed* — the promise is doing its job and releases at delivery once the
         // event lands. So there is nothing to release here and nothing to hurry.
@@ -2344,8 +2341,8 @@ persistent actor CyclesGateway {
         // Past the horizon: nobody is going to credit this on its own.
         //
         // ⚠️ **Do not re-file — and that guard is now free.** `Problems.file` dedups on
-        // the kind's `paymentRef`, so the explicit `hasUnresolvedPaidNotCredited` check
-        // this used to need is gone along with the function.
+        // the kind's `paymentRef`, so no explicit `hasUnresolvedPaidNotCredited` check
+        // is needed alongside it.
         //
         // ⚠️ **The dedup is only safe because of one coupling, which survives the move:**
         // the problem cannot be closed while it still exists, because its closer is *the
@@ -2395,7 +2392,7 @@ persistent actor CyclesGateway {
       // cadence buys nothing and lengthens the window on the one finding that can
       // indicate an oversellable reserve. Detached for the same reason as the reconcile.
       //
-      // ⚠️ **No cadence claim to make.** The cursor advances inside the detached
+      // **No cadence claim to make.** The cursor advances inside the detached
       // message, so a chunk that traps simply leaves the cursor where it was and the
       // next tick retries the same chunk — a permanently trapping chunk stalls coverage
       // (visible as a frozen `indexScan.inFlightCycle.ordersRead`) rather than
@@ -2419,7 +2416,7 @@ persistent actor CyclesGateway {
       };
       // ── Rule 1: the floor learns about top-ups only by looking ──
       //
-      // ⚠️ **After the sweep, and INLINE — both deliberate, and for opposite
+      // **After the sweep, and INLINE — both deliberate, and for opposite
       // reasons from the count reconcile above.**
       //
       // *After*, because a quiet window is what makes an observation adoptable, and
@@ -2538,7 +2535,7 @@ persistent actor CyclesGateway {
   // `Orders.Store`, the maps and sets) are heap objects, so those pass directly and
   // write through.
   //
-  // ⚠️ **Accessors rather than wrapping the `var` in a record**, which is the other fix
+  // **Accessors rather than wrapping the `var` in a record**, which is the other fix
   // and the expensive one: wrapping changes the actor's stable shape, and with no
   // migration chain that means a reinstall. Closures are parameters, never stable
   // state, so `deployed/backend.most` does not move for this split.

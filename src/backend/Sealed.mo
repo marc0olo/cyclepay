@@ -13,7 +13,7 @@
 /// this through and rejects the alternatives; the posture is `docs/DESIGN.md` §7, and the
 /// confidentiality layer is the confidential subnet, not this module.
 ///
-/// ⚠️ **What the unaudited dependency can and cannot cost us — `docs/DESIGN.md` §7.3.**
+/// **What the unaudited dependency can and cannot cost us — `docs/DESIGN.md` §7.3.**
 /// The encrypting is done by the audited `@icp-sdk/vetkeys`; this side only DECRYPTS. So a
 /// bug here fails provisioning closed — the operator gets an error and no secret is stored
 /// — rather than weakening a ciphertext that is already on the wire. That asymmetry is why
@@ -84,10 +84,10 @@ module {
 
   /// The derivation fee to attach, from the system rather than from a constant.
   ///
-  /// ⚠️ **This used to be `26_153_846_153` written by hand**, matching the "VetKeys"
-  /// section of <https://docs.internetcomputer.org/references/cycles-cost-formulas>. moc
-  /// 1.16.0 exposes the replica's own figure, so there is no longer a number here to go
-  /// stale — which is the whole reason for the `mo:⛔` import.
+  /// **Never write the figure by hand** — the published one in the "VetKeys" section of
+  /// <https://docs.internetcomputer.org/references/cycles-cost-formulas> goes stale, and
+  /// moc 1.16.0 exposes the replica's own. That is the whole reason for the `mo:⛔`
+  /// import.
   ///
   /// ⚠️ **A non-zero result code means the key name or curve was rejected, and that is
   /// returned rather than defaulted.** Falling back to a literal on rejection would make

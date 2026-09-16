@@ -26,7 +26,7 @@ import Tiers "../Tiers";
 /// copy — and the `<system>` capability. Keeping the cancel/re-arm there also means a
 /// mixin cannot stop the rate refresh or the recovery sweep from an endpoint.
 ///
-/// ⚠️ **State parameters name only the fields these setters touch** (`docs/DESIGN.md`
+/// **State parameters name only the fields these setters touch** (`docs/DESIGN.md`
 /// §9.1), so the compiler enforces the slice rather than a comment claiming it.
 mixin (
   orderStore : Orders.Store,
@@ -71,7 +71,7 @@ mixin (
 
   /// Adjust pricing params (§7): fee formula, staleness window, delta guard.
   /// Validated atomically — a bad config never partially applies.
-  /// ⚠️ **Three divisor guards live here rather than in `Pricing.validateConfig`,
+  /// **Three divisor guards live here rather than in `Pricing.validateConfig`,
   /// because each needs context that module cannot see**. All three are
   /// checked before anything is written, so a bad config never partially applies.
   public shared ({ caller }) func set_pricing_config(config : Pricing.Config) : async Result.Result<(), Pricing.ConfigError> {
@@ -130,7 +130,7 @@ mixin (
   /// Replace the card presets (§3/§7 — admin, validated atomically: a bad config
   /// never partially applies).
   ///
-  /// ⚠️ **This is no longer the rail's on/off switch.** An empty list used to
+  /// **This is no longer the rail's on/off switch.** An empty list used to
   /// pause the rail, and the audit line said "CARD RAIL PAUSED". With custom
   /// amounts a buyer can order without any preset, so an empty list stops
   /// nothing — it just shows no tiles. The switch is both Stripe secrets being
@@ -266,7 +266,7 @@ mixin (
   /// `pricing_status` and `reserve_status` — these are the rules users are held
   /// to, not secrets.
   ///
-  /// ⚠️ **`delivery` is here because `set_delivery_config` had NO reader at all.**
+  /// **`delivery` is here because `set_delivery_config` had NO reader at all.**
   /// `maxHoldNs` decides when a paid order escalates to `#needsReview` and `alertAfterNs`
   /// is the delay-alert threshold — both global policy of ours, and both write-only until
   /// now: they appeared in the setter's argument and its error variant and in no return

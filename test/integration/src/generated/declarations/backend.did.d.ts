@@ -494,7 +494,7 @@ export interface _SERVICE {
    * / this an update, since audits write state, on the call an operator makes repeatedly.
    * / Same reasoning keeps `orphans`, `orphan_depth` and `problem_depth` unaudited.
    * /
-   * / ⚠️ **What would change that:** a filter narrowing to a *single named principal* as
+   * / **What would change that:** a filter narrowing to a *single named principal* as
    * / the normal way to drive this. `owner : ?Principal` makes it possible today; it is not
    * / the intended use, and if it becomes one the list inherits the audit.
    */
@@ -509,7 +509,7 @@ export interface _SERVICE {
    * / `admin_order`'s audit **bypassable by calling the other method**. Reading an operator
    * / read as harmless because the data is reachable elsewhere is the mistake to avoid.
    * /
-   * / ⚠️ **A separate method rather than a branch, because auditing writes state.** An
+   * / **A separate method rather than a branch, because auditing writes state.** An
    * / audited read cannot be a `query`, and folding this into `receipt` would make **every
    * / buyer's** receipt read an update — the common path through consensus to serve the
    * / rare one.
@@ -659,7 +659,7 @@ export interface _SERVICE {
   /**
    * / The public trust figures — anonymous, safe on a landing page.
    * /
-   * / ⚠️ **The admission test is "what does a POLLER learn from the deltas?", not "does this
+   * / **The admission test is "what does a POLLER learn from the deltas?", not "does this
    * / field name a buyer?"** Cumulative counters are differentiable: anyone sampling this
    * / query recovers each delivery's cycles, USD and timing from the increments. That is
    * / accepted here because it is not new — `reserve_status` is already public and its
@@ -668,15 +668,15 @@ export interface _SERVICE {
    * / what will wave through the field that *does* add something. Do not add a
    * / most-recent-order field, a largest-purchase field, or anything per-principal.
    * /
-   * / ⚠️ **`refusingNow` is REUSED, not re-derived.** It is the same `gateState.latch`
+   * / **`refusingNow` is REUSED, not re-derived.** It is the same `gateState.latch`
    * / `refusal_counts` reports, so "is the rail accepting orders" has one definition and
    * / cannot come out differently on two surfaces.
    * /
-   * / ⚠️ **The counters read zero on a fresh install and that is correct, not a bug.**
+   * / **The counters read zero on a fresh install and that is correct, not a bug.**
    * / Orders are never deleted, but a reinstall replaces the state, so a launch-day figure
    * / starts at zero whichever way it is built.
    * /
-   * / ⚠️ **The renderer must show that zero — do NOT add a threshold.** Saying "0
+   * / **The renderer must show that zero — do NOT add a threshold.** Saying "0
    * / orders delivered is worse than no badge" and that was rejected: an absent number is
    * / indistinguishable from a withheld one, and a rule that hides the figure exactly when
    * / the news is bad is a misleading presentation rather than a neutral one. This comment
@@ -686,13 +686,13 @@ export interface _SERVICE {
    * / `nullPaid` should always be 0. It counts delivered orders whose `paidUsdCents` was
    * / unset, which `markPaid` makes unreachable — a non-zero value means the USD total is
    * / understated and the reason is a bug in this canister, not in the display.
-   * / ⚠️ **One call, because it is the landing page's whole backend.** `availableToSell`
+   * / **One call, because it is the landing page's whole backend.** `availableToSell`
    * / and `refusingNow` also appear on `reserve_status` and `refusal_counts` — that is
    * / duplication of the READER, not of the definition: both are read here from the same
    * / state those queries read, never recomputed. Folding them in keeps a first paint to a
    * / single round trip and a single mock in the test harness.
    * /
-   * / ⚠️ **`availableToSell` leads, and it is a different KIND of number from the
+   * / **`availableToSell` leads, and it is a different KIND of number from the
    * / others.** It is derived from a balance on the cycles ledger that anyone can query
    * / without this canister's cooperation, so a visitor can check it rather than believe
    * / it. The delivered totals are ours to report. Do not present them as equivalent.
@@ -724,13 +724,13 @@ export interface _SERVICE {
    * / neither `expiresAtNs` (nothing to trigger on) nor `stripeSessionId` (nothing to query
    * / with), and Stripe's session list cannot be filtered by `client_reference_id`.
    * /
-   * / ⚠️ **Expire-first, exactly as `cancel_order` does, and for exactly that reason.**
+   * / **Expire-first, exactly as `cancel_order` does, and for exactly that reason.**
    * / Nothing is ever half-expired: if the session is still live on Stripe, the order does
    * / not move. A successful expire is what makes "expired" mean *provably unpayable*
    * / rather than assumed, because Stripe guarantees a session ends in exactly one of
    * / completed/expired.
    * /
-   * / ⚠️ **`#notOpen` changes nothing, and that is not timidity.** It means the session
+   * / **`#notOpen` changes nothing, and that is not timidity.** It means the session
    * / completed or already expired, and those demand opposite actions — expiring an order
    * / whose buyer just paid would strand a real payment. Let the webhook (or the sweep)
    * / settle it on Stripe's answer.
@@ -764,7 +764,7 @@ export interface _SERVICE {
    * / `pricing_status` and `reserve_status` — these are the rules users are held
    * / to, not secrets.
    * /
-   * / ⚠️ **`delivery` is here because `set_delivery_config` had NO reader at all.**
+   * / **`delivery` is here because `set_delivery_config` had NO reader at all.**
    * / `maxHoldNs` decides when a paid order escalates to `#needsReview` and `alertAfterNs`
    * / is the delay-alert threshold — both global policy of ours, and both write-only until
    * / now: they appeared in the setter's argument and its error variant and in no return
@@ -783,13 +783,13 @@ export interface _SERVICE {
    * / Order history for the caller (§2, fixes the lost-receipt problem).
    * / The caller's own orders, **paginated**.
    * /
-   * / ⚠️ **This was a latent trap on the BUYER path, not an ergonomic wart.** It returned
+   * / **This was a latent trap on the BUYER path, not an ergonomic wart.** It returned
    * / every order the caller owns, unbounded, and a query response is capped at ~2 MB —
    * / so an oversized read does not degrade, it **traps**. The open-order cap of 1 means
    * / a buyer accumulates them slowly, but nothing bounded it, and nothing drops orders
    * / on the order.
    * /
-   * / ⚠️ **Paging bounded the RESPONSE; `Orders.ownerPage` bounds the WORK.** The
+   * / **Paging bounded the RESPONSE; `Orders.ownerPage` bounds the WORK.** The
    * / admin pager's owner filter walks every principal's orders to find one principal's,
    * / so this used to cost O(all orders ever created) in a single message — a page cap on
    * / a ~2 MB response, against a limit that is actually instructions. `ownerPage` walks
@@ -799,7 +799,7 @@ export interface _SERVICE {
   /**
    * / "Is anything wrong right now" in ONE call.
    * /
-   * / ⚠️ **Public is a decision, not a default: alerting needs no credentials.** What
+   * / **Public is a decision, not a default: alerting needs no credentials.** What
    * / reaches a human at 03:00 is a cron on the public queries, and an admin-gated summary
    * / would put that back on a credentialed cron. Everything here is a COUNT, never an
    * / entry, and `reserve_status` already publishes `totalOrders`, `openOrders`,
@@ -818,13 +818,13 @@ export interface _SERVICE {
    * /   - both: a transfer issued long enough ago that the clock ran out, including one that
    * /     landed without its block recorded.
    * /
-   * / ⚠️ That last case is the CANONICAL outstanding shape (`intent` set, `blockIndex`
+   * / That last case is the CANONICAL outstanding shape (`intent` set, `blockIndex`
    * / null), not a delayed-only one — it is what `unsettledDeliveries` exists to detect and
    * / what freezes the reconcile's quiet window. Filing it under "delayed, not outstanding"
    * / would tell an operator that `outstanding = 0` means no transfer is in flight, when a
    * / transfer of unknown fate is exactly what it means.
    * /
-   * / ⚠️ So `outstanding = 0, delayed = 1` is a real state, not the summary contradicting
+   * / So `outstanding = 0, delayed = 1` is a real state, not the summary contradicting
    * / itself — and a UI that presented one as a subset of the other would be wrong exactly
    * / where it matters.
    * /
@@ -833,7 +833,7 @@ export interface _SERVICE {
    * / `orphansUnresolved` and `problemsUnresolved` are the three that mean a human is
    * / needed. A summary that flattened those would make waiting look like work.
    * /
-   * / ⚠️ **`deliveriesOutstanding` is exactly the reserve reconcile's quiet-window
+   * / **`deliveriesOutstanding` is exactly the reserve reconcile's quiet-window
    * / predicate**, deliberately: it is also the answer to "why does the reconcile keep
    * / skipping", and sharing the definition means the number an operator reads cannot
    * / disagree with the number the reconcile acted on.
@@ -841,7 +841,7 @@ export interface _SERVICE {
    * / **What bounds each number, stated because "bounded" alone would hide a difference:**
    * / `ordersNeedingReview`, `ordersWithProblems` and `availableToSell` are O(1) tallies.
    * / `deliveriesOutstanding` and `deliveriesDelayed` are bounded by `promiseHolders`, i.e.
-   * / by flow (§5.4). ⚠️ `problemsUnresolved` is bounded by the unresolved-problem index and
+   * / by flow (§5.4). `problemsUnresolved` is bounded by the unresolved-problem index and
    * / `orphansUnresolved` walks retained orphan history — both grow only while obligations
    * / go uncleared, and an orphan costs a real payment or the signing secret to create
    * / (`Orphans.add`), so neither is attacker-inflatable. Not O(1), and not the
@@ -965,7 +965,7 @@ export interface _SERVICE {
    * / the UI makes fulfilling an obligation depend on the buyer returning, and whoever
    * / closed the tab is exactly who most needs us to finish.
    * /
-   * / ⚠️ **An owner kicking their own order is NOT audited**, because the log drops
+   * / **An owner kicking their own order is NOT audited**, because the log drops
    * / nothing and a refresh loop would be permanent state growth driven by a
    * / caller. An admin kick is audited — it is an ops action on someone else's order.
    */
@@ -1037,7 +1037,7 @@ export interface _SERVICE {
    * / reserve. There is deliberately **no** force flag and no full-scan rebuild: a lever
    * / for adopting the unsafe direction would be a lever for the bug.
    * /
-   * / ⚠️ **No longer the expensive path**, and it stays admin-only anyway — it writes
+   * / **No longer the expensive path**, and it stays admin-only anyway — it writes
    * / tallies the gate reads.
    */
   'recount_orders' : ActorMethod<[], Array<[string, bigint]>>,
@@ -1094,7 +1094,7 @@ export interface _SERVICE {
    * / cycles on ledger calls). The sweep does this hourly; this is the lever for
    * / right after `icp cycles transfer`, so a top-up is sellable immediately.
    * /
-   * / ⚠️ **`scripts/local-dev-seed.sh` and RUNBOOK's top-up step call this**, and
+   * / **`scripts/local-dev-seed.sh` and RUNBOOK's top-up step call this**, and
    * / forgetting it is invisible to every typecheck: the floor stays at zero, so the
    * / gateway refuses every sale against a fully funded reserve and nothing anywhere
    * / says why.
@@ -1179,7 +1179,7 @@ export interface _SERVICE {
    * / acting off-chain: a refund issued in the Stripe Dashboard, or a delivery whose
    * / fate they established on the cycles ledger.
    * /
-   * / ⚠️ **This closes ORPHAN entries only — `#unattributed` and `#unprocessable`.**
+   * / **This closes ORPHAN entries only — `#unattributed` and `#unprocessable`.**
    * / Everything order-bound lives on the order and is closed by
    * / `resolve_problem`; pointing an operator here for those would be pointing them at the
    * / wrong method. Resolving an entry never transitions the order — see `Orphans`'s
@@ -1191,7 +1191,7 @@ export interface _SERVICE {
    * / payment references (a buyer who pays three times), so closing by tag alone marks an
    * / obligation settled that nobody has settled.
    * /
-   * / ⚠️ **Problems in an array have no stable handle, so the dedup key IS the handle** —
+   * / **Problems in an array have no stable handle, so the dedup key IS the handle** —
    * / `(kindTag, identifyingRef)`, the same pair `sameShape` uses. One definition, both
    * / users.
    * /
@@ -1209,7 +1209,7 @@ export interface _SERVICE {
    * / Replace the card presets (§3/§7 — admin, validated atomically: a bad config
    * / never partially applies).
    * /
-   * / ⚠️ **This is no longer the rail's on/off switch.** An empty list used to
+   * / **This is no longer the rail's on/off switch.** An empty list used to
    * / pause the rail, and the audit line said "CARD RAIL PAUSED". With custom
    * / amounts a buyer can order without any preset, so an empty list stops
    * / nothing — it just shows no tiles. The switch is both Stripe secrets being
@@ -1251,7 +1251,7 @@ export interface _SERVICE {
   /**
    * / Adjust pricing params (§7): fee formula, staleness window, delta guard.
    * / Validated atomically — a bad config never partially applies.
-   * / ⚠️ **Three divisor guards live here rather than in `Pricing.validateConfig`,
+   * / **Three divisor guards live here rather than in `Pricing.validateConfig`,
    * / because each needs context that module cannot see**. All three are
    * / checked before anything is written, so a bad config never partially applies.
    */
@@ -1281,7 +1281,7 @@ export interface _SERVICE {
    */
   'set_stripe_origin' : ActorMethod<[string], Result_2>,
   /**
-   * / ⚠️ **Declared inside the mixin body, not above it and not in `Types.mo`.** Only
+   * / **Declared inside the mixin body, not above it and not in `Types.mo`.** Only
    * / imports may precede a `mixin` block (M0228, "mixins may only be declared at the
    * / top-level"), and Candid type names come from the Motoko declaration — moving this
    * / to `Types.mo` would risk renaming it in the interface, which is the one thing this
@@ -1292,7 +1292,7 @@ export interface _SERVICE {
    * / key — **sealed to this canister's vetKD public key**. `scripts/seal-secret.sh`
    * / produces the argument; the plaintext never travels.
    * /
-   * / ⚠️ **This closed the §7 provisioning exposure, and the note that used to sit here
+   * / **This closed the §7 provisioning exposure, and the note that used to sit here
    * / saying otherwise is gone rather than softened.** The ingress argument is now
    * / ciphertext, so the boundary node that terminates TLS sees nothing usable. What
    * / remains is the at-rest exposure, which is the confidential subnet's job and not
@@ -1335,11 +1335,10 @@ export interface _SERVICE {
   /**
    * / Return the reserve to the caller, refusing while anything is owed.
    * /
-   * / ⚠️ **Why this exists at all.** There was no withdraw lever, on the grounds that *"the app is
-   * / not in production and an over-funded local reserve costs nothing"* — true then, and
-   * / false the moment the reserve is funded on mainnet, where it is real money in a
-   * / ledger account with no way back. Decommissioning, or over-funding once, was a
-   * / permanent loss.
+   * / **Why this exists at all.** A funded mainnet reserve is real money in a ledger
+   * / account with no way back, so without this lever decommissioning — or over-funding
+   * / once — is a permanent loss. *"An over-funded local reserve costs nothing"* is true
+   * / of a local network and of nothing else.
    * /
    * / ⚠️ **It grants a controller NO new capability, which is what makes it safe.** A
    * / controller can install arbitrary code, so they can already move the reserve

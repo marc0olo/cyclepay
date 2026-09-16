@@ -72,7 +72,7 @@ test.describe("view routing", () => {
 });
 
 test.describe("no progress strip anywhere", () => {
-  test("⚠️ the four-step strip is gone, and the hero figure is not it", async ({ page }) => {
+  test("the four-step strip is gone, and the hero figure is not it", async ({ page }) => {
     // The strip read "1 Sign in, 2 Pay, 3 Link the CLI, 4 Deploy" above the amount
     // picker, narrating a four-stage journey above a single decision. Removed.
     //

@@ -3,7 +3,7 @@ import { describe, expect, test } from "vitest";
 import { type Route, parseRoute, routeHash } from "./view";
 
 describe("the dashboard's two records are one view with a tab", () => {
-  test("⚠️ the bare hash still means the DEFAULT tab", () => {
+  test("the bare hash still means the DEFAULT tab", () => {
     // Every link, test and bookmark written before tabs existed points at `#/history`.
     // If the bare form stopped resolving, all of them would land on the landing page.
     expect(parseRoute("#/history")).toEqual({ view: "history", tab: "orders" });
@@ -44,7 +44,7 @@ describe("the dashboard's two records are one view with a tab", () => {
     }
   });
 
-  test("⚠️ the bare `#/admin` still means the default panel", () => {
+  test("the bare `#/admin` still means the default panel", () => {
     // The header link, the RUNBOOK's printed hash and every test written before the
     // panels existed all use the bare form. It must not become the landing page.
     expect(parseRoute("#/admin")).toEqual({ view: "admin", tab: "now" });

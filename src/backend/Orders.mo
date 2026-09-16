@@ -104,13 +104,13 @@ module {
     var tallySaturations : Nat;
     /// Orders carrying at least one **unresolved** problem.
     ///
-    /// ⚠️ **An index, because the alternative is a full scan on the webhook path.**
+    /// **An index, because the alternative is a full scan on the webhook path.**
     /// `resolveByPaymentRef` runs synchronously inside the `charge.refunded` handler,
     /// where a trap is a 5xx Stripe retries for three days. Under indefinite retention
     /// a scan over every order ever created is exactly the hazard this codebase guards
     /// everywhere else.
     ///
-    /// ⚠️ **A status index would NOT have bounded it** — `#duplicate` is filed from a
+    /// **A status index would NOT have bounded it** — `#duplicate` is filed from a
     /// catch-all covering `#delivered` (the *common* case: order delivered, buyer pays
     /// again) as well as terminal statuses, so a non-terminal index narrows nothing.
     /// Establish that a bound narrows the set before writing that it does.
@@ -131,13 +131,13 @@ module {
     unresolvedProblems : Set.Set<Types.OrderId>;
     /// Orders whose promise is still held — i.e. **the non-terminal set**.
     ///
-    /// ⚠️ **Named for the predicate that defines it, not for what it is used for.**
+    /// **Named for the predicate that defines it, not for what it is used for.**
     /// `Reserve.holdsPromise` IS the membership rule, and it is the same predicate the
     /// `promised` tally moves on, so the two cannot drift apart into two definitions of
     /// "still live". ⚠️ Do not read this as `reserve_status.openOrders` — that figure is
     /// the `#created` tally alone, a strict subset.
     ///
-    /// ⚠️ **Bounded by the reserve, which is what makes it fit in one message.** Every
+    /// **Bounded by the reserve, which is what makes it fit in one message.** Every
     /// member holds its `lockedCycles` in `promised`, and admission refuses once
     /// `promised` would exceed the reserve floor (`Reserve.canCover`), so
     /// `|promiseHolders| ≤ reserveFloor / minimum order`. That bound is set by **flow**,
@@ -155,7 +155,7 @@ module {
     promiseHolders : Set.Set<Types.OrderId>;
     /// Cumulative deliveries, for the public trust figures.
     ///
-    /// ⚠️ **Counted in `commitTransition` on the transition INTO `#delivered`, which is
+    /// **Counted in `commitTransition` on the transition INTO `#delivered`, which is
     /// the only place it can be counted exactly.** Six call sites move an order to
     /// `#delivered`, so a per-site counter would be six chances to forget — and this file
     /// already carries the scar of a comment that named "the only three writers" and was
@@ -386,7 +386,7 @@ module {
   /// reserve, and this rule makes that unreachable: the direction the index can be
   /// wrong in is the direction the reconcile will not follow.
   ///
-  /// ⚠️ **A refused decrease has two causes and the daily pass cannot separate them** —
+  /// **A refused decrease has two causes and the daily pass cannot separate them** —
   /// either the index is missing a member (the tally is right) or the tally gained an
   /// adjustment it should not have (the index is right). Both are bugs in this file and
   /// both are the same P2 response, *find the writer*; and `scanChunk` distinguishes
@@ -396,7 +396,7 @@ module {
 
   /// Reconcile every maintained tally **without reading history**.
   ///
-  /// ⚠️ **Bounded by the two indexes plus one O(1) size read, so its cost is set by
+  /// **Bounded by the two indexes plus one O(1) size read, so its cost is set by
   /// flow rather than by lifetime sales.** The pass it replaced summed every order ever
   /// created in a single message; under indefinite retention that is on a path to the
   /// instruction limit, and a reconcile that traps leaves the tallies *unverified*
@@ -529,7 +529,7 @@ module {
   /// is the truncated-gate-run fault in a different substrate. The caller owns the
   /// cursor and the reporting; this function owns one chunk.
   ///
-  /// ⚠️ **Chunking is sound here and is not for the reconcile, for a reason worth
+  /// **Chunking is sound here and is not for the reconcile, for a reason worth
   /// keeping straight.** Each verdict is a **per-order predicate** — the order's own
   /// status or problems against its membership — read within one message, so it is
   /// evaluated against a consistent view no matter what happens to other orders
@@ -854,7 +854,7 @@ module {
     // elsewhere cannot forget, because writing a status *is* calling this. Doing it at
     // the call sites would work today and silently stop working on the next one.
     //
-    // ⚠️ Safe against every reader: the recovery sweep reads `stripeSessionId`, not the
+    // Safe against every reader: the recovery sweep reads `stripeSessionId`, not the
     // url, and the frontend only offers the pay link while the order is `#created`. A
     // terminal order should not be carrying a payable link at all.
     // ⚠️ **`Reserve.holdsPromise` is the authority on terminality, so this reuses it
@@ -1338,7 +1338,7 @@ module {
   /// ordinary buyer's history page traps. The failure is availability on a routine
   /// action, not a drain: both callers are queries, free to the caller and off consensus.
   ///
-  /// ⚠️ **Returns `scanned` because there is no instruction counter a query can read.**
+  /// **Returns `scanned` because there is no instruction counter a query can read.**
   /// "The work does not grow with other principals' orders" is otherwise unassertable,
   /// and the half that stays assertable — that the rows are right — passes for a
   /// function returning nothing. `Main.list_orders` calls THIS and projects the page

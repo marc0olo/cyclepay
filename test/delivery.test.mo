@@ -191,7 +191,7 @@ suite("journal", func() {
     };
   };
 
-  test("⚠️ openEntry records the ORDER's status, never a literal", func() {
+  test("openEntry records the ORDER's status, never a literal", func() {
     // ⚠️ **This is a coupling guard, and the coupling is invisible from either end.**
     // `Main.unsettledDeliveries` reads this field back and tests it for `#paid` to
     // decide whether a reserve observation may be adopted. A literal here that
@@ -317,7 +317,7 @@ suite("stageOf (§5.1/§5.2 resume decision)", func() {
     assert Delivery.stageOf(#paid, ?entry, 1_000, window) == #finishDelivery(77);
   });
 
-  test("⚠️ #paid keeps replaying FOREVER — the retry cap does not apply to delivery", func() {
+  test("#paid keeps replaying FOREVER — the retry cap does not apply to delivery", func() {
     // ⚠️ **Do not add one.** A replay here is provably safe (byte-identical args, the
     // ledger deduplicates, `#Duplicate` recovers the block), so exhausting a counter
     // would turn a recoverable state into a manual one for no safety gain.
@@ -395,7 +395,7 @@ suite("terminationFor — the money position, not the status", func() {
     assert Text.contains(landed.detail, #text "do NOT re-send");
   });
 
-  test("⚠️ a missing journal is a KNOWN position for #paid, and that is the point", func() {
+  test("a missing journal is a KNOWN position for #paid, and that is the point", func() {
     // ⚠️ **Load-bearing, and the opposite of what the name suggests.** An order can
     // sit `#paid` with nothing ever sent — that is the **certain** position, not a
     // broken invariant, because `#paid` is reached by the webhook and delivery is

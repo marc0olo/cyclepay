@@ -93,7 +93,7 @@ mixin (
   /// reserve. There is deliberately **no** force flag and no full-scan rebuild: a lever
   /// for adopting the unsafe direction would be a lever for the bug.
   ///
-  /// ⚠️ **No longer the expensive path**, and it stays admin-only anyway — it writes
+  /// **No longer the expensive path**, and it stays admin-only anyway — it writes
   /// tallies the gate reads.
   public shared ({ caller }) func recount_orders() : async [(Text, Nat)] {
     ops.requireAdmin(caller);
@@ -108,7 +108,7 @@ mixin (
   /// cycles on ledger calls). The sweep does this hourly; this is the lever for
   /// right after `icp cycles transfer`, so a top-up is sellable immediately.
   ///
-  /// ⚠️ **`scripts/local-dev-seed.sh` and RUNBOOK's top-up step call this**, and
+  /// **`scripts/local-dev-seed.sh` and RUNBOOK's top-up step call this**, and
   /// forgetting it is invisible to every typecheck: the floor stays at zero, so the
   /// gateway refuses every sale against a fully funded reserve and nothing anywhere
   /// says why.
@@ -119,11 +119,10 @@ mixin (
 
   /// Return the reserve to the caller, refusing while anything is owed.
   ///
-  /// ⚠️ **Why this exists at all.** There was no withdraw lever, on the grounds that *"the app is
-  /// not in production and an over-funded local reserve costs nothing"* — true then, and
-  /// false the moment the reserve is funded on mainnet, where it is real money in a
-  /// ledger account with no way back. Decommissioning, or over-funding once, was a
-  /// permanent loss.
+  /// **Why this exists at all.** A funded mainnet reserve is real money in a ledger
+  /// account with no way back, so without this lever decommissioning — or over-funding
+  /// once — is a permanent loss. *"An over-funded local reserve costs nothing"* is true
+  /// of a local network and of nothing else.
   ///
   /// ⚠️ **It grants a controller NO new capability, which is what makes it safe.** A
   /// controller can install arbitrary code, so they can already move the reserve
@@ -164,7 +163,7 @@ mixin (
       case null {};
     };
     // Observe before withdrawing, or an unobserved top-up is stranded — which defeats
-    // the lever. ⚠️ **And an empty promise index is exactly what makes the observation
+    // the lever. **And an empty promise index is exactly what makes the observation
     // adoptable**: `unsettledDeliveries` is a walk over `promiseHolders`, so no
     // holders means no unsettled deliveries means the reconcile's quiet window holds.
     // The withdraw guard and the observation guard are the same structure, so they

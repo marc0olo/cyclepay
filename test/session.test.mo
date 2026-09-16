@@ -363,7 +363,7 @@ suite("retrieve: url, cap, and the classifier", func() {
     };
   });
 
-  test("⚠️ complete-but-UNPAID is never read as paid", func() {
+  test("complete-but-UNPAID is never read as paid", func() {
     // A delayed-notification method (SEPA, ACH, boleto) closes the session before the
     // money settles. Our sessions pin `payment_method_types[]=card` so this is
     // unreachable — but folding it into the paid case would make the sweep file an
@@ -418,7 +418,7 @@ suite("validateOrigin — https, or loopback http", func() {
       == #ok("http://frontend.local.localhost:8000");
   });
 
-  test("⚠️ a host that merely CONTAINS localhost is refused", func() {
+  test("a host that merely CONTAINS localhost is refused", func() {
     // The trap a substring match would fall into, and the reason the host is parsed.
     assert Session.validateOrigin("http://localhost.evil.com") == #err(#notHttps);
     assert Session.validateOrigin("http://evil.com/localhost") == #err(#notHttps);
@@ -461,7 +461,7 @@ suite("validateOrigin — https, or loopback http", func() {
     assert Session.validateOrigin("") == #err(#empty);
   });
 
-  test("⚠️ a degenerate authority is refused, and does not TRAP", func() {
+  test("a degenerate authority is refused, and does not TRAP", func() {
     // `"".split(#char '@')` yields zero elements, so an array index underflowed on Nat
     // and `set_stripe_origin("http://")` trapped instead of returning its Result. Every
     // member of the family, because sampling one member of a family is what let the

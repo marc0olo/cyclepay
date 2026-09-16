@@ -71,13 +71,13 @@ or a granted admin and for nobody else.
 | **Diagnostics** | `health` · queue depths · the recovery sweep with its count drift · the audit trail, newest first and paged |
 | **Configuration** | the config groups, the write commands, and this browser's identity |
 
-⚠️ **The CLI is still the answer for four things**, and the panels do not replace
+**The CLI is still the answer for four things**, and the panels do not replace
 them: anything that **writes** (the console prints the command for you to run,
 it does not send it); reading when the **frontend is down or not yet deployed**,
 which is most of `docs/OPERATE.md`; a **scripted or monitored** read, where the public queries
 below are the interface; and `-e ic` **before** the frontend canister exists.
 
-⚠️ **Opening the console spends no audit entries.** `admin_order`,
+**Opening the console spends no audit entries.** `admin_order`,
 `admin_receipt` and `delivery_journal` are updates precisely so the read is
 recorded, so no panel calls them on open — the Orders lookup is explicit,
 and one deliberate lookup is one audited read.
@@ -96,7 +96,7 @@ cycles).
 
 HMAC is symmetric, so verify = forge — anyone holding this secret can forge "paid"
 webhooks and drain **the entire reserve**, one order at a time, at the operator's expense.
-⚠️ **The reserve balance is the blast-radius bound, so size it to what you can afford to
+**The reserve balance is the blast-radius bound, so size it to what you can afford to
 lose in one window** — there is no per-period cap standing behind it. It is stored
 **plaintext by design** (`Secret.mo` documents the SEV-SNP posture; the confidential-subnet
 checklist below is the checklist).
@@ -148,7 +148,7 @@ which is the confidential-subnet checklist below.
 
 **Suspected leak — immediate actions** (in this order):
 
-1. ⚠️ **Know what you can and cannot do.** A forged webhook drains at most what the
+1. **Know what you can and cannot do.** A forged webhook drains at most what the
    reserve holds — that balance **is** the blast radius, and there is no cap or pause
    lever standing behind it.
 
@@ -257,7 +257,7 @@ argument lands in shell history, in `ps` output and in CI logs, which would reop
 exposure sealing exists to close. The examples above show the variable inline for brevity;
 in a real session, export it or use the file.
 
-⚠️ **Provisioning the two secrets is what OPENS the rail** (§5b of `docs/STRIPE.md`
+**Provisioning the two secrets is what OPENS the rail** (§5b of `docs/STRIPE.md`
 for why capability rather than declaration), so do them last. Rotating either
 closes the rail until both are valid again — which is a deliberate ordering
 property, not an outage: no API key means no payable session, no webhook secret
@@ -307,11 +307,11 @@ Plus the two already in `docs/OPERATE.md`: **USD** (any other currency is refuse
 `#unattributed`, a refund obligation) and **card-only**
 (delayed methods are handled, but they make money-in asynchronous).
 
-⚠️ **A mismatch is not silent.** An earlier design repriced from the order's
-own snapshot and deliver a different quantity, with the audit log showing an
-ordinary completed purchase and no alert anywhere. It now delivers nothing and files
-an `#unattributed` whose detail names both figures — so an amount-moving setting shows up
-as a queue entry on the first order, not as a slow drift in what buyers receive.
+**A mismatch is not silent.** A gateway that repriced from the order's own snapshot
+would deliver a different quantity with the audit log showing an ordinary completed
+purchase and no alert anywhere. This one delivers nothing and files an `#unattributed`
+whose detail names both figures — so an amount-moving setting shows up as a queue entry
+on the first order, not as a slow drift in what buyers receive.
 
 ⚠️ **Test-mode and live-mode keys are different objects.** Going live means a
 live-mode restricted key and a live-mode webhook secret, both re-provisioned
@@ -322,10 +322,9 @@ buy anything, not lost money.
 
 ### What the app does with no presets
 
-⚠️ **An empty preset list is NOT the rail's off switch any anymore**. It was,
-and the audit line said "CARD RAIL PAUSED". With custom amounts it stops nothing: a
-buyer can order any amount between the floor and the ceiling without a preset, so
-an empty list means only that no tiles are shown. `create_order` still answers
+**An empty preset list is NOT the rail's off switch.** With custom amounts it stops
+nothing: a buyer can order any amount between the floor and the ceiling without a
+preset, so an empty list means only that no tiles are shown. `create_order` still answers
 `#unknownTier` for a `#tier` id that is not registered.
 
 **The switch is both Stripe secrets being provisioned**, which is derived from
@@ -461,7 +460,7 @@ under-sells and can never over-sell.
 Delivery is one `icrc1_transfer` out of that account, and the buyer receives
 `lockedCycles − fee`, where the fee is the **stored** one (the ledger
 reports its own fee on `#BadFee`, so the copy self-corrects and delivery needs no
-`icrc1_fee` round trip). ⚠️ **Nothing writes that stored fee but the ledger itself.**
+`icrc1_fee` round trip). **Nothing writes that stored fee but the ledger itself.**
 An admin lever for it existed briefly and was deleted as self-justifying: the only
 state it fixed was one it could create, and its own typo silently shorted buyers. If
 the ledger's fee ever exceeds an order's locked quantity, delivery stalls loudly on
@@ -472,14 +471,13 @@ promise tally has no separate fee term.
 
 ⚠️ **Nothing creates cycles here.** Refills are `icp cycles transfer` from outside.
 
-⚠️ **`withdraw_reserve` exists, and the reason it was once rejected had
-expired.** That reason was *"the app is not in production and an over-funded local
-reserve costs nothing"* — true then, and false the moment the reserve is funded on
-mainnet, where it is real money in a ledger account with nothing to retrieve it.
+**`withdraw_reserve` exists because a funded mainnet reserve is real money in a ledger
+account**, and without the lever there is nothing to retrieve it. *"An over-funded
+reserve costs nothing"* holds on a local network and nowhere else.
 
 It is controller-only and refused while **any** promise-holder exists, so nothing can
 be owed to a buyer when it runs. It grants a controller no capability they lack: a
-controller can already move the reserve by upgrading the canister. ⚠️ **A
+controller can already move the reserve by upgrading the canister. **A
 decommissioning lever, not an incident one** — see the three-step evacuation in the
 suspected-leak section above.
 
@@ -526,17 +524,17 @@ icp canister call backend set_gate_config \
 
 | Lever | Default | What it protects | Sizing |
 |---|---|---|---|
-| `maxOpenOrdersPerPrincipal` | **1** | Unbounded state growth. Abandoned orders are the only thing a user can create for free, so this is the real bound. Nothing sweeps them away (the order-expiry section): a slot frees when Stripe expires the session, when the buyer cancels, or via `expire_order`. | ⚠️ **1 is a product choice and it is felt.** A buyer who abandons a checkout cannot start another until that session expires (~35 min) — including whoever is demoing this. Raise it for power users; must be > 0, and 0 is rejected as config. |
+| `maxOpenOrdersPerPrincipal` | **1** | Unbounded state growth. Abandoned orders are the only thing a user can create for free, so this is the real bound. Nothing sweeps them away (the order-expiry section): a slot frees when Stripe expires the session, when the buyer cancels, or via `expire_order`. | **1 is a product choice and it is felt.** A buyer who abandons a checkout cannot start another until that session expires (~35 min) — including whoever is demoing this. Raise it for power users; must be > 0, and 0 is rejected as config. |
 | `minCanisterCycles` | 5 T | **This canister's own gas.** Below it the gate stops admitting NEW orders. It does not gate delivery, cancellation or the webhook, so a paid order is still delivered below the floor. | Sized against a gas **drain**, not against freezing: freezing is ~149x further down (~34 B, 30 days of idle burn), so at 5 T sales close with over a year of runway in hand. It is the only bound on order flooding from rotating principals, and on a revoked Stripe key retrying its session outcall at ~220 M a try. Lowering it toward the freezing threshold removes that bound. `0` disables the check. |
-| `maxPurchaseUsdCents` | **10 000 (\$100)** | Operator typo in a tier, and the webhook's upward repricing path. ⚠️ **It IS the per-order reserve exposure** — the main lever against reserve griefing. | Set just above your largest tier. `set_card_tiers` rejects any tier above it, and the webhook refuses to deliver against a payment above it. |
+| `maxPurchaseUsdCents` | **10 000 (\$100)** | Operator typo in a tier, and the webhook's upward repricing path. **It IS the per-order reserve exposure** — the main lever against reserve griefing. | Set just above your largest tier. `set_card_tiers` rejects any tier above it, and the webhook refuses to deliver against a payment above it. |
 | `minPurchaseUsdCents` | **1 000 (\$10)** | A purchase too small to be worth an outcall and a reserve hold — and one that does not buy what a buyer came for. | Two independent floors hold it at \$10: the 30¢ fixed fee is 9.0% of \$5 against 5.9% of \$10, and \$5 buys 3.313 T against the **4.0 T** two default-funded canisters need, so it fails on the second one. `docs/BUYER-COST-MODEL.md` carries the model, and `test/buyer-cost.test.mo` pins it. |
 
 **All four deliberately default to non-zero**, unlike the tier list. A limit where 0
-would brick the canister rather than protect it has to ship armed. ⚠️ **The tier list is
+would brick the canister rather than protect it has to ship armed. **The tier list is
 no longer the rail's on/off switch** — that is "both Stripe secrets
 provisioned", and an empty tier list stops no purchase the canister can see (the presets-and-keys section).
 
-⚠️ **This table's Default column is pinned to the code.** It was wrong in two of four
+**This table's Default column is pinned to the code.** It was wrong in two of four
 rows for long enough that the `set_gate_config` example above pasted a \$1 000 ceiling
 and a cap of 20 — an operator following `docs/OPERATE.md`'s Mode 3 step 9 to "review the admission gate" would
 have re-based the exposure this ceiling exists to bound. `test/gate.test.mo` now fails
@@ -575,7 +573,7 @@ This section said "the only thing" for long enough that the monitoring section's
 |---|---|---|
 | `checkout.session.expired` | the normal path; releases the promise | never sent if the event is not subscribed (`docs/OPERATE.md`, Mode 2) |
 | `cancel_order` (owner) | produces `cancelled`, also releasing | expires the session at Stripe first, so a paid race wins |
-| `expire_order` (admin) | asks Stripe to expire, then settles | ⚠️ refuses `#sessionNotOpen` once the session has *already* expired or completed at Stripe — which is exactly the missed-event case below |
+| `expire_order` (admin) | asks Stripe to expire, then settles | refuses `#sessionNotOpen` once the session has *already* expired or completed at Stripe — which is exactly the missed-event case below |
 
 `expire_order` is therefore the manual release for an order whose session is **still
 open** at Stripe, and for the residue class with no `stripeSessionId` at all (expired
@@ -603,15 +601,13 @@ also climbs is what it looks like.
 
 **The lever for THIS case is off-chain: resend `checkout.session.expired` from the
 Stripe Dashboard** (the monitoring section's P2 row) — because the session has genuinely expired there, so
-`expire_order` refuses it (table above). ⚠️ An earlier version of this note said there was "no
-operator lever at all", which contradicted that row — the honest statement is that
-the remedy exists but is **gated on noticing**, because nothing on-chain surfaces the
-stranded order. That observability gap, and an on-chain remedy, are what the ranked
-fixes describe; PR-B does not close them. Bounded per incident by the purchase
+`expire_order` refuses it (table above). So the remedy exists but is **gated on
+noticing**: nothing on-chain surfaces the stranded order, which is the observability gap
+the ranked fixes describe. Bounded per incident by the purchase
 ceiling, and unbounded only in aggregate against a failure that Stripe itself retries
 for ~3 days first.
 
-⚠️ **Nothing exposes it yet**: order reads are owner-scoped and `reserve_status`
+**Nothing exposes it yet**: order reads are owner-scoped and `reserve_status`
 carries only counts, so the monitoring section records this as a gap with an interim signal rather
 than as an alert you can wire. The admin order listing is what closes it.
 
@@ -657,7 +653,7 @@ are worth keeping apart:
 | **Webhooks healthy** — the ordinary case | one create, ≈222 M | **≈68,000** | ≈128,000 |
 | **Webhooks failing** — a missed expiry event per order | create + retrieve, ≈612 M | **≈24,000** | ≈46,000 |
 
-⚠️ **The retrieve is NOT on the abuse path in normal operation, and the grace is
+**The retrieve is NOT on the abuse path in normal operation, and the grace is
 what keeps it off.** Stripe fires `checkout.session.expired` within seconds of the
 deadline, so an abandoned order is already `#expired` about half an hour before the
 sweep would look at it — `expiryCheckDue` tests the status first. So a buyer, or an
@@ -665,7 +661,7 @@ attacker, abandoning orders costs the gateway one create outcall each, exactly a
 in the normal case. The second row is the *degraded* case: it needs the webhook path broken
 as well, which is a different incident with its own P1 rows in the monitoring section.
 
-⚠️ **These four figures are computed from the formula above, not carried forward.** At
+**These four figures are computed from the formula above, not carried forward.** At
 `max_response_bytes` 16,384 and 32,768 with a 15 T spendable balance they are 67,685 /
 128,413 healthy and 24,515 / 46,236 degraded — recompute rather than reuse if a cap
 changes, because a stale performance number reads exactly like a measured one. (The
@@ -677,7 +673,7 @@ hours of sustained paid-for abuse. And one thing improved in the same change: th
 per-principal *instantaneous* strand fell from 20 open orders to **1**, a 20×
 reduction in what a single identity can tie up at once.
 
-⚠️ **The retrieve's cap is deliberately double the others', so its call costs
+**The retrieve's cap is deliberately double the others', so its call costs
 roughly double.** A *completed* session carries `customer_details`, a resolved
 `payment_intent` and `total_details` that a freshly created one does not, and an
 over-cap response fails the call outright rather than truncating. Two consequences
@@ -688,7 +684,7 @@ strands every order in its window at once — which is why the sweep caps retrie
 per pass (`Recovery.maxRetrievesPerPass`) and resumes rather than draining a
 backlog in one go.
 
-⚠️ **The cap counts response HEADERS, not just the body, and it is checked
+**The cap counts response HEADERS, not just the body, and it is checked
 twice** — once on the raw response, once on the transform's Candid-encoded
 output. Three distinct rejects, and the middle one misleads:
 `Header size exceeds specified response size limit` (headers alone),
@@ -742,9 +738,9 @@ escalated" is not one thing:
 |---|---|---|
 | the intent aged past the ledger's ~24 h dedup window, or the ledger answered `#TooOld` (the same case, told to us) | **unknown** — a replay is no longer protected | establish the fate on the ledger; the order id is in the transfer's **memo** |
 | §5.3's 72 h max-wait, on an order where **nothing was ever sent** | **certain** — fiat in, nothing moved | refund in the Stripe Dashboard |
-| `journalInconsistent` | unreachable guard | ⚠️ if this ever fires, `lockedCycles` acquired a second writer — a much bigger problem than one order |
+| `journalInconsistent` | unreachable guard | if this ever fires, `lockedCycles` acquired a second writer — a much bigger problem than one order |
 
-⚠️ **So `NeedsReview` is NOT always an unknown position.** `delivery_journal(orderId)` and
+**So `NeedsReview` is NOT always an unknown position.** `delivery_journal(orderId)` and
 the queue entry's `detail` say which — `terminationFor` derives it from the journal
 rather than the status, precisely because the status cannot tell these apart. Reaching
 the *unknown* case at all takes a ~day-long cycles-ledger outage with an hourly sweep
@@ -772,7 +768,7 @@ already have landed — the buyer would keep the cycles and get the refund. It i
 wait, not a block: the ~24 h fuse moves such an order to `NeedsReview`, which is this
 table, where establishing the fate first is the documented procedure.
 
-⚠️ **`record_delivered` exists because its absence made the record lie**.
+**`record_delivered` exists because its absence made the record lie**.
 Until it did, `abandon_order` was the only exit, so an order whose cycles the buyer
 demonstrably held could only be filed as abandoned — auditing a refund that never
 happened. The block index is required: it is the evidence that you looked, and the
@@ -816,11 +812,11 @@ entry without a human deciding anything.
 | Kind | Refund settles it? | Money position | Action |
 |---|---|---|---|
 | `#duplicate {orderId; paymentRef}` | ✅ **yes**, automatically | Fiat in twice for one order; the second payment delivered nothing | Refund `paymentRef` in the Stripe Dashboard (search by payment_intent). The `charge.refunded` webhook auto-resolves the entry; `resolve_orphan` is the fallback. |
-| `#unattributed {claimedRef; paymentRef}` | ✅ **yes**, automatically | Fiat in, and no order that can accept it: a bad or missing `client_reference_id`, an owner/rail/currency mismatch, **a paid amount that is not the one the order asked Stripe for**, or a payment against a `cancelled` or `expired` order — the common producer. The entry's `detail` says which | Inspect the session in Stripe by `paymentRef`, then **refund** → auto-resolve (or `resolve_orphan`). This is the only remedy, whatever the order's status. ⚠️ If the detail says the amount is not the quoted one, refunding is not the end of it: the session carried our own figure, so something in the Stripe configuration moved the total — check the forbidden-settings list in `docs/STRIPE.md` before the next order, because it will recur. |
+| `#unattributed {claimedRef; paymentRef}` | ✅ **yes**, automatically | Fiat in, and no order that can accept it: a bad or missing `client_reference_id`, an owner/rail/currency mismatch, **a paid amount that is not the one the order asked Stripe for**, or a payment against a `cancelled` or `expired` order — the common producer. The entry's `detail` says which | Inspect the session in Stripe by `paymentRef`, then **refund** → auto-resolve (or `resolve_orphan`). This is the only remedy, whatever the order's status. If the detail says the amount is not the quoted one, refunding is not the end of it: the session carried our own figure, so something in the Stripe configuration moved the total — check the forbidden-settings list in `docs/STRIPE.md` before the next order, because it will recur. |
 | `#deliveryStuck {stage}` (on the order) | ❌ **no** — see the stage table below | **Depends entirely on `stage`.** One of them means the buyer may already hold their cycles, so a blind refund pays twice | Read `stage` first, then follow its row |
-| `#refundAfterDelivery {paymentRef; cycles; refundedCents; fullRefund}` (on the order) | ❌ **no, and never** | **A loss, not a recoverable position**: the fiat was refunded or charged back *after* the cycles were credited. Cycles cannot be clawed back | Nothing to recover on-chain. Reconcile in the Dashboard by `paymentRef` to see whether this was your own refund (a support decision) or a dispute (a fraud signal). For repeated disputes, tighten Stripe Radar and lower the per-purchase ceiling (the admission-gate section). ⚠️ **Nothing auto-resolves it, deliberately: the refund is the event that created it**, so resolving on that event would close the entry with the loss unrecorded |
-| `#paidNotCredited {orderId; paymentRef; sessionId}` | ❌ **no — and a refund alone makes it worse** | **The buyer paid and this gateway never credited them.** Found by the recovery sweep asking Stripe about a `#created` order past its deadline, once Stripe has had longer than its ~3-day redelivery window to hand us the `completed` event it owed. The order is still `Created`, so it still holds reserve capacity — correctly, because the cycles are genuinely owed | ⚠️ **RESEND FIRST, ALWAYS.** Find the event in the Stripe Dashboard (search by `paymentRef`) and resend `checkout.session.completed`. That credits the order through the normal path, delivers the cycles, and **closes this entry automatically**. <br><br>⚠️ **Refunding instead does not settle it, and leaves no way out.** The refund returns the money and leaves the order in `Created` holding capacity, and a *complete* session never fires `checkout.session.expired`, so nothing is left that can release it — `expire_order` correctly refuses (Stripe reports the session not-open), and `abandon_order` cannot act on `Created`. If you have already refunded: resend anyway to move the order to `Paid`, then `abandon_order`. **The buyer keeps cycles they were refunded for** — that is the cost of refunding first, and it is why the order of operations is the whole procedure. <br><br>The entry does **not** auto-resolve on `charge.refunded`, deliberately: refunding settles the money and leaves the order broken, so auto-closing would delete the only worklist item pointing at the stranded capacity |
-| `#unprocessable {eventId; field}` | ❌ no — the position is unknown | A verified Stripe event was missing a required field, so the canister could not tell whether money moved | Look the `eventId` up in the Dashboard. **Paid** → refund. **Not paid** → nothing happened; `resolve_orphan`. Then find the configuration that produced it: the canister controls every field it sends, so a missing one points at an account-level API-version change (`docs/OPERATE.md` pins it) and will recur until fixed. ⚠️ Resolve only after establishing the money position — once resolved, a later resend is allowed to file again |
+| `#refundAfterDelivery {paymentRef; cycles; refundedCents; fullRefund}` (on the order) | ❌ **no, and never** | **A loss, not a recoverable position**: the fiat was refunded or charged back *after* the cycles were credited. Cycles cannot be clawed back | Nothing to recover on-chain. Reconcile in the Dashboard by `paymentRef` to see whether this was your own refund (a support decision) or a dispute (a fraud signal). For repeated disputes, tighten Stripe Radar and lower the per-purchase ceiling (the admission-gate section). **Nothing auto-resolves it, deliberately: the refund is the event that created it**, so resolving on that event would close the entry with the loss unrecorded |
+| `#paidNotCredited {orderId; paymentRef; sessionId}` | ❌ **no — and a refund alone makes it worse** | **The buyer paid and this gateway never credited them.** Found by the recovery sweep asking Stripe about a `#created` order past its deadline, once Stripe has had longer than its ~3-day redelivery window to hand us the `completed` event it owed. The order is still `Created`, so it still holds reserve capacity — correctly, because the cycles are genuinely owed | **RESEND FIRST, ALWAYS.** Find the event in the Stripe Dashboard (search by `paymentRef`) and resend `checkout.session.completed`. That credits the order through the normal path, delivers the cycles, and **closes this entry automatically**. <br><br>**Refunding instead does not settle it, and leaves no way out.** The refund returns the money and leaves the order in `Created` holding capacity, and a *complete* session never fires `checkout.session.expired`, so nothing is left that can release it — `expire_order` correctly refuses (Stripe reports the session not-open), and `abandon_order` cannot act on `Created`. If you have already refunded: resend anyway to move the order to `Paid`, then `abandon_order`. **The buyer keeps cycles they were refunded for** — that is the cost of refunding first, and it is why the order of operations is the whole procedure. <br><br>The entry does **not** auto-resolve on `charge.refunded`, deliberately: refunding settles the money and leaves the order broken, so auto-closing would delete the only worklist item pointing at the stranded capacity |
+| `#unprocessable {eventId; field}` | ❌ no — the position is unknown | A verified Stripe event was missing a required field, so the canister could not tell whether money moved | Look the `eventId` up in the Dashboard. **Paid** → refund. **Not paid** → nothing happened; `resolve_orphan`. Then find the configuration that produced it: the canister controls every field it sends, so a missing one points at an account-level API-version change (`docs/OPERATE.md` pins it) and will recur until fixed. Resolve only after establishing the money position — once resolved, a later resend is allowed to file again |
 
 ### `#deliveryStuck`'s stages — read `stage`, never the kind
 
@@ -832,12 +828,12 @@ the code rather than a gap in this table.
 
 | `stage` | Money position | Action |
 |---|---|---|
-| `staleIntent` | ⚠️ **UNKNOWN.** A transfer was issued, no block was recorded, and the intent is past the ledger's ~24 h dedup window — so a replay is no longer protected and re-sending could pay twice | **Establish its fate on the cycles ledger**, matching the order id in the transfer's **memo**, the `created_at_time` and the amount from `delivery_journal(orderId)`. **Executed** → the buyer has them: `record_delivered '("<orderId>", <blockIndex>)'`, then `resolve_orphan`. **Not executed** → fiat in, nothing delivered: refund in Stripe, `abandon_order`, then `resolve_orphan`. ⚠️ **Never rebuild the intent** — past the window a rebuilt one pays twice |
-| `landedNotRecorded` | **Certain, and in the buyer's favour**: the transfer landed (the block is in the entry and the journal) and the order never moved to delivered. **The buyer HAS their cycles** | Confirm the block on the cycles ledger, then `record_delivered '("<orderId>", <blockIndex>)'` → `resolve_orphan`. ⚠️ **Do NOT re-send.** Should be unreachable — the block and the transition commit in one synchronous block — so if you are reading this, file it as a bug too |
+| `staleIntent` | **UNKNOWN.** A transfer was issued, no block was recorded, and the intent is past the ledger's ~24 h dedup window — so a replay is no longer protected and re-sending could pay twice | **Establish its fate on the cycles ledger**, matching the order id in the transfer's **memo**, the `created_at_time` and the amount from `delivery_journal(orderId)`. **Executed** → the buyer has them: `record_delivered '("<orderId>", <blockIndex>)'`, then `resolve_orphan`. **Not executed** → fiat in, nothing delivered: refund in Stripe, `abandon_order`, then `resolve_orphan`. **Never rebuild the intent** — past the window a rebuilt one pays twice |
+| `landedNotRecorded` | **Certain, and in the buyer's favour**: the transfer landed (the block is in the entry and the journal) and the order never moved to delivered. **The buyer HAS their cycles** | Confirm the block on the cycles ledger, then `record_delivered '("<orderId>", <blockIndex>)'` → `resolve_orphan`. **Do NOT re-send.** Should be unreachable — the block and the transition commit in one synchronous block — so if you are reading this, file it as a bug too |
 | `deliveryWaitExceeded` | **Certain**: fiat in, **nothing was ever sent** — no transfer was attempted before the 72 h bound | Refund in the Stripe Dashboard, `abandon_order '("<orderId>", "<reason>")'`, then `resolve_orphan` |
 | `transferRejected` | The cycles ledger refused the call definitively, so nothing moved | Read the `detail` for the ledger's reason. `#InsufficientFunds` → the reserve is short: top it up and `refresh_reserve`, then re-drive with `process_order`. Fiat is in and nothing was delivered, so refunding is always a valid resolution |
-| `journalInconsistent` | ⚠️ **An invariant breach, not a money position** — the intent's amount exceeds the order's locked quantity, which cannot happen because the amount was derived by subtracting a fee from it | **File it as a bug**: `lockedCycles` has acquired a second writer, which is a larger problem than one order. Establish the transfer's fate on the ledger before re-sending anything |
-| `missingJournal` / `notInFlight` | ⚠️ **Also invariant breaches.** The order's status implies money-out work the journal cannot support, or the drive loop escalated a status that has no delivery in flight | Reconstruct from `audit_log` and the cycles ledger; treat as a bug and file it |
+| `journalInconsistent` | **An invariant breach, not a money position** — the intent's amount exceeds the order's locked quantity, which cannot happen because the amount was derived by subtracting a fee from it | **File it as a bug**: `lockedCycles` has acquired a second writer, which is a larger problem than one order. Establish the transfer's fate on the ledger before re-sending anything |
+| `missingJournal` / `notInFlight` | **Also invariant breaches.** The order's status implies money-out work the journal cannot support, or the drive loop escalated a status that has no delivery in flight | Reconstruct from `audit_log` and the cycles ledger; treat as a bug and file it |
 
 ### An unattributed payment has exactly one remedy: refund — and it is usually not "unattributable"
 
@@ -869,7 +865,7 @@ the deliberate cost of the deletion, and it matches the decision that this app
 does not model refunds. A refund auto-resolves the entry (a partial one leaves it
 open, carrying the remainder).
 
-⚠️ If you find yourself wanting the lever back, the thing to check first is
+If you find yourself wanting the lever back, the thing to check first is
 whether attribution is broken — nothing but the canister writes
 `client_reference_id`, so a payment that cannot be attributed is a bug worth
 finding, not a routine occurrence to be papered over.
@@ -887,7 +883,7 @@ that expectation forms, so: to look at recent orders, set `createdFromNs` rather
 reading page one. The third argument to each call is `limit`, and `null` in the second
 position means "from the beginning"; pass the returned `nextCursor` back to continue.
 
-⚠️ **Sorting by time is deliberately not offered.** It would mean materialising the whole
+**Sorting by time is deliberately not offered.** It would mean materialising the whole
 filtered set before sorting, which is an **unbounded scan**, and a
 time index would be one more piece of derived state the daily reconcile has to adjudicate.
 
@@ -920,7 +916,7 @@ typed, rather than a sentence to read them out of). A buyer who pays three times
 have not refunded. Refunding one and closing another is the mistake this refusal
 exists to prevent — the error message is the disambiguation step, not an obstacle.
 
-⚠️ **A resolved problem stays on the order.** Nothing drops, so the worklist filter
+**A resolved problem stays on the order.** Nothing drops, so the worklist filter
 stops listing the order while its history remains readable. "It disappeared" is not
 what success looks like here.
 
@@ -929,7 +925,7 @@ what success looks like here.
 | `duplicate` | **yes** when several exist | you refunded that specific second payment in Stripe |
 | `deliveryStuck` | no — one per order | you established the money position and acted (the triage section's stage table) |
 | `refundAfterDelivery` | **yes** when several exist | you reconciled the recorded loss; the cycles are not recoverable |
-| `paidNotCredited` | **yes** when several exist | ⚠️ normally closes ITSELF on the resend — closing it by hand says you gave up on crediting the buyer |
+| `paidNotCredited` | **yes** when several exist | normally closes ITSELF on the resend — closing it by hand says you gave up on crediting the buyer |
 
 ## 7. Recovery timer & manual kicks (§5.2)
 
@@ -955,7 +951,7 @@ icp canister call backend process_order '("<orderId>")' -e ic --identity <operat
   incrementally so the admission-gate queries stay O(1); the reconcile is the check
   that they still match. It audits **only when something moved** — a clean line every
   day would bury the one that matters. `recount_orders` runs the same pass on demand.
-- ⚠️ **Its cost is bounded by open orders, not by lifetime sales**, and that
+- **Its cost is bounded by open orders, not by lifetime sales**, and that
   changes what a stale reconcile means. It recounts over the non-terminal order set,
   which the reserve caps, so `lastCountReconcile.ordersRead` should stay flat as sales
   accumulate. If it starts tracking total orders, the bound has broken.
@@ -966,7 +962,7 @@ icp canister call backend process_order '("<orderId>")' -e ic --identity <operat
   missing a member, and adopting it is the only way a bookkeeping bug could lower
   `promised` and oversell the reserve. `recount_orders` follows the same rule; there is
   deliberately no force flag.
-- ⚠️ **One check cannot be daily, and it says so instead of pretending.** Whether
+- **One check cannot be daily, and it says so instead of pretending.** Whether
   anything *outside* an index satisfies the index's predicate is the only question that
   needs every order, so it runs as a rotating per-order scan, one chunk per sweep.
   `recovery_status.indexScan` is its coverage: `lastCompletedCycle` is the only thing
@@ -976,7 +972,7 @@ icp canister call backend process_order '("<orderId>")' -e ic --identity <operat
   with a recent `completedAtNs` is *verified clean*, and silence without one is
   *unverified*, which carries the opposite response: wait for the pass rather than hunt
   for a writer.
-- ⚠️ **The rotating scan converts unbounded WORK into unbounded LATENCY, and the honest claim is
+- **The rotating scan converts unbounded WORK into unbounded LATENCY, and the honest claim is
   "bounded per message" rather than "bounded".** The daily pass verifies only the inside
   direction of each index. Detecting the outside direction — an order that holds a
   promise and is not indexed — takes up to one full cycle, and the cycle grows
@@ -986,7 +982,7 @@ icp canister call backend process_order '("<orderId>")' -e ic --identity <operat
   that traps is fatal, latency that grows is degradable **and observable** — but it is a
   trade, and `indexScan.expectedFullCycleNs` is where you read the current value rather
   than assume this paragraph is still accurate.
-- ⚠️ **`set_recovery_interval` is a lever on that latency, and its name does not say
+- **`set_recovery_interval` is a lever on that latency, and its name does not say
   so.** The scan rides the sweep, so coarsening the cadence to the §5.1 ceiling of 6 h —
   **24× the default** — takes the same 365k store to ~46 days per cycle. The
   `recovery.intervalSet` audit line now names the resulting window, so the consequence
@@ -1044,7 +1040,7 @@ it can give is actionable (`canisterCyclesLow`, `amountAboveMax`,
 decided synchronously inside `create_order` — so pair it with
 `reserve_status.availableToSell`.
 
-### ⚠️ The reserve is the one metric anyone can poll — including you
+### The reserve is the one metric anyone can poll — including you
 
 The reserve is an account on the cycles ledger, so `icrc1_balance_of` answers for
 free, from any identity, with no cooperation from this canister. That is the
@@ -1061,7 +1057,7 @@ availableToSell`, and the three figures together separate the causes of a refusa
 | `reserveFloor` fine, `promisedTotal` high | genuinely committed to live orders → wait or raise the reserve |
 | `availableToSell` 0 with both low | the reserve is spent → fund it |
 
-⚠️ **`reserveObservedAtNs` is what makes the first row diagnosable**, and
+**`reserveObservedAtNs` is what makes the first row diagnosable**, and
 `recovery_status.lastReserveReconcileAttemptNs` is its pair: an attempt clock newer
 than the success clock means the hourly reconcile is running and *not adopting* —
 either the ledger read is failing or every attempt landed while a delivery was in
@@ -1082,39 +1078,39 @@ Severity: **P1** = wake someone; **P2** = same working day; **P3** = review week
 | `reserve_status.promisedTotal` | climbing while deliveries do not complete | **P2** | money in, nothing delivered — those orders are on the clock toward the 72 h bound. `pending_deliveries` says which and why |
 | `recovery_status.lastSweep.atNs` | older than 2 intervals | **P2** | the sweep timer is not running; nothing recovers while it is dead |
 | `recovery_status.lastCountReconcile.drift` | non-empty | **P2** | a per-status tally had diverged and was **raised** to the recount. The counts are correct again; the bookkeeping bug that moved them is not fixed. They gate admission and they short-circuit the sweeps, so an under-counted `Paid` reads as zero to the recovery sweep and money-out silently stops |
-| `recovery_status.lastCountReconcile.refused` | non-empty | **P2** | ⚠️ **The opposite reading to the row above, and the tallies are still suspect.** The recount came out **below** the maintained tally, which is indistinguishable from the non-terminal index missing a member — so it was refused and the maintained value stands. That over-refuses rather than overselling, which is why refusing is right. Two causes with one response, *find the writer*: either the index lost a member or a tally gained an adjustment. `orders.unindexedHolders` from the rotating scan tells you which |
+| `recovery_status.lastCountReconcile.refused` | non-empty | **P2** | **The opposite reading to the row above, and the tallies are still suspect.** The recount came out **below** the maintained tally, which is indistinguishable from the non-terminal index missing a member — so it was refused and the maintained value stands. That over-refuses rather than overselling, which is why refusing is right. Two causes with one response, *find the writer*: either the index lost a member or a tally gained an adjustment. `orders.unindexedHolders` from the rotating scan tells you which |
 | `orders.unindexedHolders` in the audit log | any occurrence | **P1** | ⚠️ **The one bookkeeping error nothing else can see, and it is on the money side.** An order held a promise and was missing from the non-terminal index — and if `promised` was missing its cycles too, the two agreed with each other, so the daily reconcile reported nothing while `reserve_status.availableToSell` read HIGHER than the truth. The reserve was oversellable. The scan added the order and the next reconcile raises `promised`, so the exposure closes on its own; what does not close is the writer that set a status outside `Orders.create` and `Orders.commitTransition`. Find it. Then check `reserve_status.availableToSell` against the ledger before selling more |
 | `orders.staleHolders` in the audit log | any occurrence | **P2** | the reverse direction: a **terminal** order was still in the non-terminal index, so `promised` may have been holding cycles that were already released — over-refusing, not overselling. Dropped on sight, because the order's own status is the authority. Same writer to find as the row above |
-| `orders.problemIndexDrift` / `orders.unindexedProblems` in the audit log | any occurrence | **P2** | ⚠️ **Not a data problem — a code problem.** The unresolved-problems index is maintained by exactly two functions, `Orders.fileProblem` and `Orders.resolveProblems`. Either tag means something else wrote `order.problems` directly. **The repair is not the fix**: find the writer. `problemIndexDrift` is an id in the index with no unresolved problem — the worklist showed an obligation that was already closed. `unindexedProblems` is the worse direction: an order carried an unresolved obligation the worklist did **not** show and `resolveByPaymentRef` could not reach |
-| `orders.expiredWentBackwards` in the audit log | any occurrence | **P2** | the `Expired` tally fell, which the transition matrix makes impossible — `created → expired` is its only inbound edge and it has no outbound one. A bookkeeping breach in `Orders.bump`. ⚠️ **Reported once per decrease, not daily**, so a second occurrence means it fell again. `Expired` is an operator metric that nothing decides on, so this is a bug report rather than an exposure |
+| `orders.problemIndexDrift` / `orders.unindexedProblems` in the audit log | any occurrence | **P2** | **Not a data problem — a code problem.** The unresolved-problems index is maintained by exactly two functions, `Orders.fileProblem` and `Orders.resolveProblems`. Either tag means something else wrote `order.problems` directly. **The repair is not the fix**: find the writer. `problemIndexDrift` is an id in the index with no unresolved problem — the worklist showed an obligation that was already closed. `unindexedProblems` is the worse direction: an order carried an unresolved obligation the worklist did **not** show and `resolveByPaymentRef` could not reach |
+| `orders.expiredWentBackwards` in the audit log | any occurrence | **P2** | the `Expired` tally fell, which the transition matrix makes impossible — `created → expired` is its only inbound edge and it has no outbound one. A bookkeeping breach in `Orders.bump`. **Reported once per decrease, not daily**, so a second occurrence means it fell again. `Expired` is an operator metric that nothing decides on, so this is a bug report rather than an exposure |
 | `orders.expiredOverflow` in the audit log | any occurrence | **P2** | the `Expired` tally plus the non-terminal order count exceeds the number of orders in the store. Those two sets are disjoint subsets of it, so this is arithmetically impossible and `Expired` is over-counted. Same class as the row above — observability, not money |
-| `recovery_status.indexScan.lastCompletedCycle` | empty, or `completedAtNs` older than a small multiple of `indexScan.expectedFullCycleNs` | **P2** | ⚠️ **Without this the clean-scan rows above mean nothing.** The rotating scan verifies the one property that needs every order, so it can only speak for what it has visited: silence plus a recent `completedAtNs` is *verified clean*, silence with no completed cycle is *unverified*. ⚠️ **Compare against `indexScan.expectedFullCycleNs`, not against a remembered number** — it is computed from the live store size and the live sweep cadence, and `set_recovery_interval` can move it by 24×. Empty long past that, with `inFlightCycle.ordersRead` frozen, means a chunk is trapping — the cursor does not advance, so the next sweep retries the same chunk rather than skipping forward |
+| `recovery_status.indexScan.lastCompletedCycle` | empty, or `completedAtNs` older than a small multiple of `indexScan.expectedFullCycleNs` | **P2** | **Without this the clean-scan rows above mean nothing.** The rotating scan verifies the one property that needs every order, so it can only speak for what it has visited: silence plus a recent `completedAtNs` is *verified clean*, silence with no completed cycle is *unverified*. **Compare against `indexScan.expectedFullCycleNs`, not against a remembered number** — it is computed from the live store size and the live sweep cadence, and `set_recovery_interval` can move it by 24×. Empty long past that, with `inFlightCycle.ordersRead` frozen, means a chunk is trapping — the cursor does not advance, so the next sweep retries the same chunk rather than skipping forward |
 | `recovery_status.lastCountReconcile.atNs` | older than ~48 h while `lastSweep` advances, or materially older than `lastCountReconcileAttemptNs` | **P3** | the daily reconcile is failing. It runs in its own message, so it cannot take the sweep down with it — money-out is unaffected — but the tallies are now **unverified**, not known-good. Written only on success, and the cadence is claimed by the sweep, so a reconcile that traps retries daily rather than every tick. `recount_orders` is the on-demand repair and will show the same failure if it is a real one |
 | `reserve_status.openOrders` | climbing while `delivered` does not | **P3** | order-creation abuse; lever is `maxOpenOrdersPerPrincipal` (the admission-gate section) |
 | `refusal_counts.refusingNow.reserveShort` | true | **P1** | the rail is refusing sales for want of reserve. Exactly one `gate.startedRefusing` line marks when it began — the counter says how many buyers have been turned away since. Fund the reserve (the reserve section); it clears on the next successful admission |
-| `refusal_counts.refusingNow.canisterCyclesLow` | true | **P1** | the gate is refusing on its own gas. Same shape as above, different lever: top up the canister (`cycles_status`). ⚠️ **Do not expect a corroborating `pricing_status` alert, and do not read its absence as a false positive.** At the 5 T default the gate closes while the balance is still ~5000x the 1 B a rate call must attach, so pricing keeps working long after sales stop. Pricing alerting *too* means the floor has been set near `0`, which is a second finding. ⚠️ Sales are closed but delivery is not: orders already paid for keep being delivered, so this is revenue stopping, not money going missing |
+| `refusal_counts.refusingNow.canisterCyclesLow` | true | **P1** | the gate is refusing on its own gas. Same shape as above, different lever: top up the canister (`cycles_status`). **Do not expect a corroborating `pricing_status` alert, and do not read its absence as a false positive.** At the 5 T default the gate closes while the balance is still ~5000x the 1 B a rate call must attach, so pricing keeps working long after sales stop. Pricing alerting *too* means the floor has been set near `0`, which is a second finding. Sales are closed but delivery is not: orders already paid for keep being delivered, so this is revenue stopping, not money going missing |
 | `refusal_counts.refusingNow.railClosed` | true | **P1** | ⚠️ **The rail is not provisioned, so every purchase is being refused before the gate is even consulted.** Expected on a fresh deployment — `docs/OPERATE.md` provisions the secrets last — and an incident at any other time. `stripe_api_key_status().isSet` and `stripe_origin()` say which half is missing. One `gate.startedRefusing` line marks when it began; `counts.railClosed` says how many buyers hit it since |
 | `refusal_counts.refusingNow.stripeApiFailing` | true | **P1** | ⚠️ **The key is present but Stripe is refusing it — rotated or revoked without updating the canister.** Distinct from `railClosed`: that one says *provision the key*, this one says *rotate it*. `sessionConfig` cannot detect it, so every purchase reaches the outcall, 401s, and is refused. ⚠️ **Each attempt also commits an order and expires it**, and the open-order cap does not bound that because the record is not `Created` — so the order table grows while this is true. Set a fresh restricted key (the presets-and-keys section); it clears on the next successful session |
-| `refusal_counts.counts.amountBelowMin` | climbing | **P3** | ⚠️ **Two very different causes and the counter cannot tell them apart.** Either the buy UI is offering an amount the gate refuses — a bug, and every affected buyer sees a dead end — or someone is probing the cheapest free refusal there is (one cent needs no order, no payment, no prior state). Compare against `reserve_status.openOrders`: climbing refusals with flat order creation is probing, climbing alongside real traffic is the UI |
+| `refusal_counts.counts.amountBelowMin` | climbing | **P3** | **Two very different causes and the counter cannot tell them apart.** Either the buy UI is offering an amount the gate refuses — a bug, and every affected buyer sees a dead end — or someone is probing the cheapest free refusal there is (one cent needs no order, no payment, no prior state). Compare against `reserve_status.openOrders`: climbing refusals with flat order creation is probing, climbing alongside real traffic is the UI |
 | `refusal_counts.counts.amountAboveMax` | climbing | **P3** | buyers are asking for more than the per-order ceiling allows. If it is sustained the ceiling is mispriced for demand, not misconfigured — raising it raises per-order reserve exposure (the admission-gate section), so treat it as a pricing decision |
 | `refusal_counts.counts.tooManyOpenOrders` | climbing | **P3** | buyers hitting the one-open-order cap. Expected in normal use — a buyer who abandons a checkout and retries meets it — so alert on the **rate**, not the total |
-| `refusal_counts.counts.railClosed` | climbing while `refusingNow.railClosed` is **false** | **P2** | ⚠️ **Should be unreachable.** `sessionConfig` can only fail with a missing key or origin, both of which latch — so a climbing counter with a clear flag means it failed some other way, and the mapping in `Main.mo`'s `railClosureCondition` needs re-reading against the current `Session.Error` |
+| `refusal_counts.counts.railClosed` | climbing while `refusingNow.railClosed` is **false** | **P2** | **Should be unreachable.** `sessionConfig` can only fail with a missing key or origin, both of which latch — so a climbing counter with a clear flag means it failed some other way, and the mapping in `Main.mo`'s `railClosureCondition` needs re-reading against the current `Session.Error` |
 | `reserve_status.availableToSell` | 0, or far below `reserveFloor` − `promisedTotal` as you expect it | **P2** | the gateway is refusing sales. Three causes and the same query separates them: the reserve is genuinely spent (`reserveFloor` low), it is committed to live orders (`promisedTotal` high), or **the floor has not observed a top-up** (`reserveObservedAtNs` old). The last is the common one and the lever is `refresh_reserve` |
 | `reserve_status.reserveObservedAtNs` | materially older than `recovery_status.lastReserveReconcileAttemptNs` | **P3** | the hourly reserve reconcile is attempting and not adopting: either the ledger read is failing (`reserve.observeFailed` in the audit log) or every attempt lands while a delivery is in flight (`reserve.reconcileSkipped`). Under-sells rather than over-sells, so it explains refusals; it is not a loss |
-| `delivery.feeChanged` in the audit log | on **every** delivery rather than once | **P3** | the stored cycles-ledger fee is stale, so every order pays one rejected call before its transfer lands. Self-correcting by design — the first `#BadFee` persists the ledger's value — so a *repeating* tag means the correction is not sticking (an upgrade reverting the stored value, or the ledger's fee moving repeatedly). ⚠️ **This is the ONLY detector for a stored fee that will not stick**, since nothing but the ledger writes that value and the persistence itself is untested (`docs/TEST-COVERAGE.md`). Each occurrence costs one rejected call, never a wrong debit — the buyer still gets the quoted amount and the reserve absorbs the real fee. If it repeats, redeploy rather than looking for a lever; there is none, deliberately |
-| `refusal_counts.refusingNow.stripeApiFailing` true, with `gate.startedRefusing` naming **retrieve REFUSED** | any occurrence | **P1** | ⚠️ **The restricted key cannot read Checkout Sessions, so stranded capacity can never be released automatically.** The recovery sweep's retrieve is 401/403ing. Fix the key's permission (Checkout Sessions = **Write**, which is the level that also grants read — the presets-and-keys section) and rotate it in; nothing else recovers. Until it is fixed, `expire_order` is the manual release. <br><br>⚠️ **A per-occurrence `stripe.retrieveUnauthorized` tag was rejected for this.** It would fire **once per stranded order per hourly pass** — up to ~240 permanent lines a day for one unfixed problem once the ring was gone. Our own cadence bounded a *rate*, and a rate against an unfixed persistent condition is unbounded over time. It is now the same latched condition as a failing session *create* or *expire*, because a 401 on any of the three is one incident with one lever: **rotate the key** |
-| buyers report that cancelling does nothing, or `admin_orders` shows no order has ever reached `cancelled` | any occurrence | **P2** | ⚠️ **`cancel_order`'s "Stripe would not close the payment session" answer has three causes and the buyer-facing arm deliberately records none of them.** Two are normal and settle themselves (the payment won the race, or the session had already expired); the third is a malformed expire request from this canister, which leaves the order `#created` and payable while every cancel fails the same way. That is what makes one manual run diagnostic: `expire_order '("<a live created order>")'` takes the identical path, is admin-authenticated, and audits Stripe's body verbatim as `order.expireRaced`. Read that line. A session-state refusal there means the two normal causes; anything else is ours to fix. ⚠️ There is no counter for this yet — `Gate.RefusalCounts` cannot gain a field without an upgrade-incompatible stable change — so the detection is this row, not a metric |
+| `delivery.feeChanged` in the audit log | on **every** delivery rather than once | **P3** | the stored cycles-ledger fee is stale, so every order pays one rejected call before its transfer lands. Self-correcting by design — the first `#BadFee` persists the ledger's value — so a *repeating* tag means the correction is not sticking (an upgrade reverting the stored value, or the ledger's fee moving repeatedly). **This is the ONLY detector for a stored fee that will not stick**, since nothing but the ledger writes that value and the persistence itself is untested (`docs/TEST-COVERAGE.md`). Each occurrence costs one rejected call, never a wrong debit — the buyer still gets the quoted amount and the reserve absorbs the real fee. If it repeats, redeploy rather than looking for a lever; there is none, deliberately |
+| `refusal_counts.refusingNow.stripeApiFailing` true, with `gate.startedRefusing` naming **retrieve REFUSED** | any occurrence | **P1** | **The restricted key cannot read Checkout Sessions, so stranded capacity can never be released automatically.** The recovery sweep's retrieve is 401/403ing. Fix the key's permission (Checkout Sessions = **Write**, which is the level that also grants read — the presets-and-keys section) and rotate it in; nothing else recovers. Until it is fixed, `expire_order` is the manual release. <br><br>**A per-occurrence `stripe.retrieveUnauthorized` tag was rejected for this.** It would fire **once per stranded order per hourly pass** — up to ~240 permanent lines a day for one unfixed problem once the ring was gone. Our own cadence bounded a *rate*, and a rate against an unfixed persistent condition is unbounded over time. It is now the same latched condition as a failing session *create* or *expire*, because a 401 on any of the three is one incident with one lever: **rotate the key** |
+| buyers report that cancelling does nothing, or `admin_orders` shows no order has ever reached `cancelled` | any occurrence | **P2** | **`cancel_order`'s "Stripe would not close the payment session" answer has three causes and the buyer-facing arm deliberately records none of them.** Two are normal and settle themselves (the payment won the race, or the session had already expired); the third is a malformed expire request from this canister, which leaves the order `#created` and payable while every cancel fails the same way. That is what makes one manual run diagnostic: `expire_order '("<a live created order>")'` takes the identical path, is admin-authenticated, and audits Stripe's body verbatim as `order.expireRaced`. Read that line. A session-state refusal there means the two normal causes; anything else is ours to fix. There is no counter for this yet — `Gate.RefusalCounts` cannot gain a field without an upgrade-incompatible stable change — so the detection is this row, not a metric |
 | `stripe.retrieveFailed` in the audit log | repeatedly for the same order | **P3** | Stripe is unreachable or answering non-200 for the session read. Distinct from the row above on purpose: **"Stripe refused the read" and "Stripe is down" are different actions.** Transient failures retry hourly and need nothing; a persistent one means the outcall path is broken, so check `pricing_status` (the same egress) before suspecting the key |
 | `stripe.paidAwaitingEvent` in the audit log | any occurrence | **P2** | a buyer paid and Stripe has not delivered `checkout.session.completed`. **Not yet an obligation** — Stripe redelivers for ~3 days and the entry is deliberately withheld until then — but it IS the support signal: the buyer's own page renders expired from `expiresAtNs`, so expect a contact the same hour. If it is one order, resend the event from the Dashboard now rather than waiting. If it is many, the webhook endpoint is broken: check the secret and the subscribed event list (the presets-and-keys section) |
 | `stripe.paidNotCredited` in the audit log | any occurrence | **P1** | a buyer paid, Stripe has given up redelivering, and the obligation is now filed on the order itself. Follow the `#paidNotCredited` triage row — **resend first, always** |
 | `stripe.retrieveUnreadable` in the audit log | any occurrence | **P3** | Stripe answered the session read in a shape the classifier does not recognise, so the sweep did nothing (fail-safe). Capacity stays held until it is understood. Most likely an API-version change; `docs/OPERATE.md` pins the version, so this points at an account-level change |
 | `reserve.unexplainedShortfall` in the audit log | any occurrence | **P1** | the ledger holds LESS than the floor's lower bound, which the design says is impossible — no allowance exists and `withdraw` is unused. Treat as a bookkeeping breach: stop selling (`set_gate_config` with a high `minPurchaseUsdCents`, or pause), reconcile the journal against the ledger, and find the outflow before funding anything |
 | an order still `created` past its own `expiresAtNs` | any | **P2** | a `checkout.session.expired` was missed. Nothing sweeps it (the order-expiry section, deliberately — a sweep would hide a held reserve): resend the event from the Stripe Dashboard. Query it with `admin_orders '(record { status = opt variant { created }; owner = null; createdFromNs = null; createdToNs = null; withUnresolvedProblems = false }, null, 200)'` and compare each `expiresAtNs` against now |
-| `pricing_status.xrcCanisterId` | anything other than `uf6dk-hyaaa-aaaaq-qaaaq-cai` | **P1** | **on mainnet this must be the real Exchange Rate Canister.** The id is resolved from a `PUBLIC_CANISTER_ID:xrc` canister environment variable so a local network can point at a mock; a mainnet canister reporting any other id is pricing real sales off something that is not the market. Only a controller can inject it, so this reads as either a misconfigured deploy or a compromised controller. ⚠️ **There is no burn cap to pull — it went with the ICP mint path.** To stop new orders while investigating, `set_gate_config` with `minCanisterCycles` above the canister's current balance: the gate refuses every creation. It does **not** stop delivery of an order already paid, or the webhook. **`null` is not a pass** — it means no refresh has reached the XRC call at all (expected for seconds after an install or upgrade, since the value is transient). Do **not** wait on `lastAttempt` becoming non-null: that field is persistent, so it survives the upgrade and is already set while this one is still null. Re-read until `lastAttempt.atNs` post-dates the deploy. A *failing* refresh never shows null here — the id is recorded when the call is constructed, so a rejected call reads as a non-null id plus `lastAttempt.ok = false` |
+| `pricing_status.xrcCanisterId` | anything other than `uf6dk-hyaaa-aaaaq-qaaaq-cai` | **P1** | **on mainnet this must be the real Exchange Rate Canister.** The id is resolved from a `PUBLIC_CANISTER_ID:xrc` canister environment variable so a local network can point at a mock; a mainnet canister reporting any other id is pricing real sales off something that is not the market. Only a controller can inject it, so this reads as either a misconfigured deploy or a compromised controller. **There is no burn cap to pull — it went with the ICP mint path.** To stop new orders while investigating, `set_gate_config` with `minCanisterCycles` above the canister's current balance: the gate refuses every creation. It does **not** stop delivery of an order already paid, or the webhook. **`null` is not a pass** — it means no refresh has reached the XRC call at all (expected for seconds after an install or upgrade, since the value is transient). Do **not** wait on `lastAttempt` becoming non-null: that field is persistent, so it survives the upgrade and is already set while this one is still null. Re-read until `lastAttempt.atNs` post-dates the deploy. A *failing* refresh never shows null here — the id is recorded when the call is constructed, so a rejected call reads as a non-null id plus `lastAttempt.ok = false` |
 | `pricing_status.rates.quality.receivedRates` | drops to `minRateSources` | **P3** | thin market — a price from 2 sources is not one from 12 |
 | `health` | unreachable | **P1** | canister stopped, frozen, or out of cycles |
 
-⚠️ **One row above needs a controller key and a comparison you make yourself, and
+**One row above needs a controller key and a comparison you make yourself, and
 saying so is the point.** "An order still `created` past its own `expiresAtNs`" is
 the reserve's detection predicate 1 — the signal that exists *because* there is no
 sweep that would have hidden a held reserve.
@@ -1157,8 +1153,8 @@ never tell a fresh `created` order from one that lapsed an hour ago.
   transient failures lose nothing — but a *permanent* 4xx can get the endpoint
   disabled, which is why verified-but-unprocessable events are acked 200 (triage).
 - **Stripe payouts.** No on-chain signal, so the Dashboard is the only view.
-  ⚠️ **Disputes DO produce one**, contrary to what this row used to say:
-  `charge.dispute.created` is parsed and audited as `stripe.disputeCreated`
+  **Disputes DO produce one**: `charge.dispute.created` is parsed and audited as
+  `stripe.disputeCreated`
   (`rails/Card.mo`), carrying the intent and the amount. It is audit-only — the cycles are
   delivered and irreversible while the card network pulls the fiat back — so the Dashboard
   is still where it is resolved, but the operator learns it happened from the audit log.
@@ -1279,7 +1275,7 @@ release doc doesn't cover:
   which wipes local orders, the audit log and the delivery journal, and takes
   seconds. `scripts/e2e-local.sh` detects the trap and does it automatically.
 
-  ⚠️ **This is a development lever and has no mainnet counterpart.** `reinstall`
+  **This is a development lever and has no mainnet counterpart.** `reinstall`
   discards every order, journal and dedup set, so on mainnet a shape change needs
   the mops migration chain (section 1.1 item 1) — which is why no migration file is
   written before the schema settles: every file replays forever on a fresh install.
@@ -1291,9 +1287,8 @@ release doc doesn't cover:
   secret) survives upgrades via orthogonal persistence. **Transient knobs reset
   on upgrade**: the HTTP body cap (64 KiB), the single-flight guards, and the
   index-scan cursor's in-flight cycle — that reset is deliberate (a guard stuck
-  by an upgrade cannot deadlock anything). ⚠️ **The two capacities this list used
-  to name are gone**: there is neither an error-queue capacity nor an audit-log
-  ring, so neither is a knob to re-check after a deploy.
+  by an upgrade cannot deadlock anything). **There is no error-queue capacity and no
+  audit-log ring**, so neither is a knob to re-check after a deploy.
 - After every upgrade: `health`, `recovery_status` (timer re-armed),
   `webhook_secret_status.generation` unchanged, one test order end-to-end
   if the change touched money paths.

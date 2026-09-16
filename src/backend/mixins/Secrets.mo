@@ -45,7 +45,7 @@ mixin (
   openSealed : (Blob) -> async* Result.Result<Blob, Sealed.ProvisionError>,
 ) {
 
-  /// ⚠️ **Declared inside the mixin body, not above it and not in `Types.mo`.** Only
+  /// **Declared inside the mixin body, not above it and not in `Types.mo`.** Only
   /// imports may precede a `mixin` block (M0228, "mixins may only be declared at the
   /// top-level"), and Candid type names come from the Motoko declaration — moving this
   /// to `Types.mo` would risk renaming it in the interface, which is the one thing this
@@ -56,7 +56,7 @@ mixin (
   /// key — **sealed to this canister's vetKD public key**. `scripts/seal-secret.sh`
   /// produces the argument; the plaintext never travels.
   ///
-  /// ⚠️ **This closed the §7 provisioning exposure, and the note that used to sit here
+  /// **This closed the §7 provisioning exposure, and the note that used to sit here
   /// saying otherwise is gone rather than softened.** The ingress argument is now
   /// ciphertext, so the boundary node that terminates TLS sees nothing usable. What
   /// remains is the at-rest exposure, which is the confidential subnet's job and not

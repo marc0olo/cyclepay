@@ -53,7 +53,7 @@ func cycles(grossCents : Nat) : Nat {
 let UPFRONT_2_CANISTERS = 4_000_000_000_000;
 
 suite("docs/BUYER-COST-MODEL.md — the fee arithmetic is this canister's", func() {
-  test("⚠️ the restated fee IS `Pricing.defaultConfig()`'s", func() {
+  test("the restated fee IS `Pricing.defaultConfig()`'s", func() {
     // The load-bearing assertion of this file. Everything below computes expected figures
     // from `fee`, so without this the suite would verify the formula against a literal
     // nobody else uses and report green while the deployed configuration moved.
@@ -65,7 +65,7 @@ suite("docs/BUYER-COST-MODEL.md — the fee arithmetic is this canister's", func
     assert Pricing.defaultConfig().feeFixedCents == fee.feeFixedCents;
   });
 
-  test("⚠️ $5 nets 455 cents, not 456 — feeCents CEILINGS the bps part", func() {
+  test("$5 nets 455 cents, not 456 — feeCents CEILINGS the bps part", func() {
     // (500 × 290 + 9_999) / 10_000 = 15, not the 14 that flooring gives. $5 is the only
     // tier in the table where the two disagree, which is why a floored transcription of
     // the formula looked correct everywhere else.
@@ -88,7 +88,7 @@ suite("docs/BUYER-COST-MODEL.md — the fee arithmetic is this canister's", func
 });
 
 suite("docs/BUYER-COST-MODEL.md — the tier table", func() {
-  test("⚠️ $5 does NOT cover two canisters at the CLI default", func() {
+  test("$5 does NOT cover two canisters at the CLI default", func() {
     let got = cycles(500);
     // 3.313 T, and the document says so. Asserted as a range because the last digits
     // depend on the rate pair's integer encoding, not on anything this test is about.
@@ -112,7 +112,7 @@ suite("docs/BUYER-COST-MODEL.md — the tier table", func() {
     assert c50 >= 35_129_000_000_000 and c50 <= 35_131_000_000_000;
   });
 
-  test("⚠️ one canister is affordable at $5, which is why the failure lands on the second", func() {
+  test("one canister is affordable at $5, which is why the failure lands on the second", func() {
     // The failure mode the document describes: `icp deploy` creates the first canister and
     // then asks for another 2 T the buyer does not have. Reported by the CLI, with nothing
     // pointing back at the purchase being too small.

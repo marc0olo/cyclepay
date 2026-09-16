@@ -636,7 +636,7 @@ beforeEach(() => {
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 describe("tier rendering", () => {
-  test("⚠️ an EMPTY tier list says so, rather than loading for ever", async () => {
+  test("an EMPTY tier list says so, rather than loading for ever", async () => {
     // The state every fresh deployment starts in, and it read "Loading amounts..."
     // permanently on mainnet. `loadMarket` calls `renderTiers()` at its end, but
     // `marketState` is set to "loaded" by its CALLER after the await -- so the render
@@ -747,7 +747,7 @@ describe("the deposit fee is disclosed on every order", () => {
     expect(note.textContent).not.toContain("minted");
   });
 
-  test("⚠️ and the real ledger fee is disclosed even though it rounds away", async () => {
+  test("and the real ledger fee is disclosed even though it rounds away", async () => {
     // The default `state.transferFee` is the ledger's actual 100 M, which at 3.5 T
     // does not change the figure at three decimals. This card was the last place the
     // fee was stated once `renderDestinationNote` went, and the note it used answers
@@ -1046,7 +1046,7 @@ describe("the delivered tour", () => {
     expect(el("view-cli").hidden).toBe(true);
   });
 
-  test("⚠️ a delivered order LINKS to the guidance rather than embedding it", async () => {
+  test("a delivered order LINKS to the guidance rather than embedding it", async () => {
     // The link is the only thing the record says about next steps, and it appears
     // only once there is a balance to link a CLI to: offering the step earlier is how
     // a buyer runs a command against an empty account.
@@ -1260,7 +1260,7 @@ describe("the rate strip never contradicts the tiers", () => {
     expect(label).toBe("");
   });
 
-  test("⚠️ a usable rate is on the CARD, and the strip goes quiet", async () => {
+  test("a usable rate is on the CARD, and the strip goes quiet", async () => {
     // The strip printed the rate, the fee and "cycles are locked at order creation",
     // all of which the card above states, the fee twice over. Its one remaining job is
     // to say there is no rate, so with a rate it says nothing at all.
@@ -1463,7 +1463,7 @@ describe("the deadline is a countdown, not a timestamp", () => {
     expect(el("order-deadline").textContent).toMatch(/9 min|10 min/);
   });
 
-  test("⚠️ the edge warning fires on the CLOCK, not on every render", async () => {
+  test("the edge warning fires on the CLOCK, not on every render", async () => {
     // The advice is worth reading at three minutes and is noise at ten, where it was
     // a hundred and forty characters of caution above the price it qualified. Both
     // regimes are asserted: a test for the warning alone would pass against copy that
@@ -1523,7 +1523,7 @@ describe("operator console", () => {
     expect(text).toMatch(/changing configuration or secrets is not/);
   });
 
-  test("⚠️ a controller is NOT reported as ungranted", async () => {
+  test("a controller is NOT reported as ungranted", async () => {
     // The tiers are nested. A controller passes the admin guard without being on the
     // list, so "not granted" would be true and useless.
     state.adminStatus = {
@@ -1537,7 +1537,7 @@ describe("operator console", () => {
     expect(text).not.toMatch(/Not granted/);
   });
 
-  test("⚠️ the link command carries the --app the config layer chose", async () => {
+  test("the link command carries the --app the config layer chose", async () => {
     // Internet Identity derives a principal per origin, and without `--app` the CLI
     // links one derived from the auth domain's own default. That principal is not the
     // one shown above it, so the grant would land on the wrong identity.
@@ -1569,7 +1569,7 @@ describe("operator summary: wait versus work", () => {
     return out;
   };
 
-  test("⚠️ the two groups are split by whether a human is required, not by severity", async () => {
+  test("the two groups are split by whether a human is required, not by severity", async () => {
     state.operatorSummary = {
       ...state.operatorSummary,
       ordersNeedingReview: 2n,
@@ -1658,7 +1658,7 @@ describe("worklists", () => {
     isController: false,
   };
 
-  test("⚠️ an ungranted identity is told WHY the lists are absent", async () => {
+  test("an ungranted identity is told WHY the lists are absent", async () => {
     // Four empty lists would read as "nothing to do", which is the opposite of the truth
     // for a caller the canister refuses.
     await mount("landing", "#/admin");
@@ -1698,7 +1698,7 @@ describe("worklists", () => {
     expect((orphanRows[0] as HTMLElement).dataset.urgency).toBe("act");
   });
 
-  test("⚠️ one row per unresolved PROBLEM, not per order", async () => {
+  test("one row per unresolved PROBLEM, not per order", async () => {
     // `resolve_problem` takes a kind, so an order with two open problems is two
     // obligations. Collapsing them to one row would hide one.
     state.adminStatus = granted;
@@ -1821,7 +1821,7 @@ describe("the operator console's panels", () => {
     }
   });
 
-  test("⚠️ opening a panel does NOT fire the audited reads", async () => {
+  test("opening a panel does NOT fire the audited reads", async () => {
     // `admin_order`, `admin_receipt` and `delivery_journal` are updates so the read
     // itself is audited. One line in the trail per panel render would make the
     // trail useless, which is why the lookup is behind a button. This is the assertion
@@ -1864,7 +1864,7 @@ describe("the operator console's panels", () => {
     expect(el("lookup-state").textContent).toMatch(/Enter an order id/);
   });
 
-  test("⚠️ the tab count AGREES with the headline, because both come from the summary", async () => {
+  test("the tab count AGREES with the headline, because both come from the summary", async () => {
     // The regression this pins: the badge counted worklist rows while the headline
     // counted the summary's figures, so one screen showed 3 and "5 things need a person".
     // An operator who spots two numbers for one thing stops trusting both.
@@ -1896,7 +1896,7 @@ describe("the operator console's panels", () => {
     expect(el("atab-worklists-count").textContent).toBe("");
   });
 
-  test("⚠️ the audit trail shows the NEWEST event first", async () => {
+  test("the audit trail shows the NEWEST event first", async () => {
     // What an operator opening the console wants. The ascending view starts at the first
     // line ever written, so on a trail of any age the panel would open on ancient history
     // and "Load more" would walk towards the present.
@@ -1917,7 +1917,7 @@ describe("the operator console's panels", () => {
     expect(el("diag-audit-more").hidden).toBe(false);
   });
 
-  test("⚠️ a refused diagnostics read hides the body rather than leaving four empty headings", async () => {
+  test("a refused diagnostics read hides the body rather than leaving four empty headings", async () => {
     // Reporting the failure on the health line alone left the depths, the sweep and the
     // trail as a heading over prose over nothing, which reads as a broken page rather
     // than a refused one.
@@ -2010,7 +2010,7 @@ describe("order history", () => {
     expect((rows()[0] as HTMLElement).dataset.urgency).toBe("wait");
   });
 
-  test("⚠️ after a filter change, Load more pages the NEW filter, not the old one", async () => {
+  test("after a filter change, Load more pages the NEW filter, not the old one", async () => {
     // Paging the new filter from the old filter's position skips rows silently rather
     // than erroring, which is the worst shape for a history someone is auditing.
     //
@@ -2064,7 +2064,7 @@ describe("simulation mode says so, in words", () => {
     expect(document.getElementById("trust-capacity-note")).toBeNull();
   });
 
-  test("⚠️ simulation mode states the scale on the buy view, as a sentence", async () => {
+  test("simulation mode states the scale on the buy view, as a sentence", async () => {
     state.divisor = 1_000n;
     await mount();
     const note = document.getElementById("simulation-note")!;
@@ -2076,7 +2076,7 @@ describe("simulation mode says so, in words", () => {
     expect(note.textContent).toMatch(/no money moves/i);
   });
 
-  test("⚠️ the reserve figure does NOT repeat the scale, on either mode", async () => {
+  test("the reserve figure does NOT repeat the scale, on either mode", async () => {
     // It used to carry its own sentence explaining the ratio between this figure and a
     // quote — 775 T available while $10 buys 7 G. That comparison is only made by
     // someone mid-purchase, and these figures are the landing page's trust panel; the
@@ -2112,7 +2112,7 @@ describe("the gate notice: refusals no amount can fix", () => {
     expect(document.getElementById("gate-notice")!.hidden).toBe(true);
   });
 
-  test("⚠️ an uninvited tester is told BEFORE picking an amount", async () => {
+  test("an uninvited tester is told BEFORE picking an amount", async () => {
     // The criterion this exists for: an unlisted buyer used to pick an amount, sign
     // in and press Buy to find out.
     state.canPurchase = { __kind__: "buyerNotAllowed", buyerNotAllowed: null } as never;
@@ -2149,7 +2149,7 @@ describe("the gate notice: refusals no amount can fix", () => {
     expect(notice.textContent).not.toMatch(/giveaway|faucet|reserve|unbounded/i);
   });
 
-  test("⚠️ a VOLATILE refusal is NOT pre-announced — the existing rule still holds", async () => {
+  test("a VOLATILE refusal is NOT pre-announced — the existing rule still holds", async () => {
     // `#reserveShort` names how much is available, so a smaller amount may work, and
     // the figure would be stale by construction in a banner. It belongs at the moment
     // of the attempt. This is the assertion that stops the notice growing into the
@@ -2201,7 +2201,7 @@ describe("the signed-in principal is copyable", () => {
     return document.querySelector<HTMLButtonElement>("#auth-area button.copy")!;
   }
 
-  test("⚠️ it copies the FULL principal, not the truncated display text", async () => {
+  test("it copies the FULL principal, not the truncated display text", async () => {
     // The whole point. The header shows `eoyfw…4qe` for width; copying that hands
     // over something useless in `add_allowed_buyer` or `add_admin`.
     const clip = stubClipboard("ok");
@@ -2241,7 +2241,7 @@ describe("the signed-in principal is copyable", () => {
     expect(clip.last()).toBe(FULL_PRINCIPAL);
   });
 
-  test("⚠️ a REJECTED write reports failure rather than going quiet", async () => {
+  test("a REJECTED write reports failure rather than going quiet", async () => {
     // The bug this replaced: the catch ran, the header had no node to select, and it
     // returned having done nothing visible. A button that speaks only on success is
     // indistinguishable from one that ignored the click.
@@ -2256,7 +2256,7 @@ describe("the signed-in principal is copyable", () => {
     expect(btn.title).toMatch(/C to copy/i);
   });
 
-  test("⚠️ NO async clipboard at all still reports, rather than doing nothing", async () => {
+  test("NO async clipboard at all still reports, rather than doing nothing", async () => {
     // `navigator.clipboard` is absent on any non-secure origin — a LAN IP, a plain
     // http host. The old code optional-chained the whole promise chain, so
     // `writeText` was never called, `then` never ran (no feedback) and `catch` never
@@ -2282,7 +2282,7 @@ describe("the signed-in principal is copyable", () => {
 });
 
 describe("the landing view is about one thing", () => {
-  test("⚠️ the banners are ABOVE the views, not after them", async () => {
+  test("the banners are ABOVE the views, not after them", async () => {
     // The defect this pins: `#auth-error`, `#gate-notice` and `#simulation-note` used
     // to sit AFTER `#view-landing` in the document, so on the landing view they
     // rendered below the entire page — a notice saying "you cannot buy here"
@@ -2343,7 +2343,7 @@ describe("the console link appears only for someone who can use it", () => {
     return document.getElementById("admin-nav");
   }
 
-  test("⚠️ an ordinary buyer never sees it", async () => {
+  test("an ordinary buyer never sees it", async () => {
     // This is the whole reason the link is conditional. `view.ts`'s rule is that a
     // console link on a purchase page is noise for every visitor who is not an
     // operator — a link shown unconditionally would break that rule, not implement it.
@@ -2368,7 +2368,7 @@ describe("the console link appears only for someone who can use it", () => {
     expect(link.getAttribute("href")).toBe("#/admin");
   });
 
-  test("⚠️ a controller sees it WITHOUT being granted — the tiers are nested", async () => {
+  test("a controller sees it WITHOUT being granted — the tiers are nested", async () => {
     // A controller passes the admin guard without appearing on the granted list, so
     // keying the link on `granted` alone would hide the console from the one identity
     // that can do everything in it.
@@ -2407,7 +2407,7 @@ describe("the console says what can be changed, and what it means", () => {
     await mount("landing", "#/admin");
   }
 
-  test("⚠️ every configuration field is shown, with a meaning and an effect", async () => {
+  test("every configuration field is shown, with a meaning and an effect", async () => {
     // The gap this closes: the console had NO config surface. Nine setters existed and
     // it displayed the current value of none of them, so "what mode is this gateway in"
     // was answerable only by reading the source.
@@ -2432,7 +2432,7 @@ describe("the console says what can be changed, and what it means", () => {
     expect(scaled.textContent).toMatch(/1\/1000/);
   });
 
-  test("⚠️ nanoseconds and basis points are shown in units a person reads", async () => {
+  test("nanoseconds and basis points are shown in units a person reads", async () => {
     // A raw 300000000000 is not a number anyone reads as five minutes, and 290 is not a
     // number anyone reads as 2.9%. Both keep the raw value beside them, because the
     // command takes the raw one.
@@ -2461,7 +2461,7 @@ describe("the console says what can be changed, and what it means", () => {
     expect(commands.some((c) => c.includes("set_delivery_config"))).toBe(true);
   });
 
-  test("⚠️ NO command is offered for either secret", async () => {
+  test("NO command is offered for either secret", async () => {
     // Permanent: a rendered command containing the key lands in this page's DOM and its
     // clipboard. The console reports whether they are set and nothing else.
     await openConsole();
@@ -2481,7 +2481,7 @@ describe("the console says what can be changed, and what it means", () => {
     }
   });
 
-  test("⚠️ an irreversible action states what it cannot undo, next to the command", async () => {
+  test("an irreversible action states what it cannot undo, next to the command", async () => {
     // The reason these are commands rather than buttons. A button removes the half that
     // matters: the human reading an irreversible instruction before running it.
     await openConsole();
@@ -2504,7 +2504,7 @@ describe("the console says what can be changed, and what it means", () => {
 });
 
 describe("the dashboard: balance, then history", () => {
-  test("⚠️ the balance is read from the LEDGER, not from the gateway", async () => {
+  test("the balance is read from the LEDGER, not from the gateway", async () => {
     // The one number a buyer should never have to take our word for. It also closes
     // the loop on what the purchase flow promises: "your cycles go to your account"
     // becomes something the page demonstrates rather than asserts.
@@ -2540,7 +2540,7 @@ describe("the dashboard: balance, then history", () => {
     await settle();
   }
 
-  test("⚠️ five columns, five cells, and no single-value RAIL column", async () => {
+  test("five columns, five cells, and no single-value RAIL column", async () => {
     // The header used to carry a RAIL column with no cell behind it: six headers,
     // five cells, so every column from Rail onward rendered the NEXT field's value.
     // Cycles under "Rail", price under "Cycles", status under "Price".
@@ -2551,7 +2551,7 @@ describe("the dashboard: balance, then history", () => {
     expect([...headers].map((h) => h.textContent)).not.toContain("Rail");
   });
 
-  test("⚠️ a row is reachable by keyboard, not only by clicking the row", async () => {
+  test("a row is reachable by keyboard, not only by clicking the row", async () => {
     // `tr.onclick` shows no destination on hover and cannot be tabbed to. The order
     // id is an anchor, so the row has a real target and a focus ring.
     await openDashboard();
@@ -2591,7 +2591,7 @@ describe("the cycles ledger's own record, from the index canister", () => {
     await settle();
   }
 
-  test("⚠️ direction comes from the ACCOUNTS, not from the kind", async () => {
+  test("direction comes from the ACCOUNTS, not from the kind", async () => {
     // The one formatting choice here that could mislead about money: a `transfer` is
     // in or out depending on which side the caller is, and an unsigned "0.5 T
     // transfer" would let a buyer read a payment as a charge.
@@ -2691,7 +2691,7 @@ describe("the cycles ledger's own record, from the index canister", () => {
     expect(rows[1]!.querySelector('a[href*="/canister/"]')).toBeNull();
   });
 
-  test("⚠️ a refund mint is NOT labelled a refund", async () => {
+  test("a refund mint is NOT labelled a refund", async () => {
     // A failed creation refunds with memo `FD * 32` and a failed withdraw with `FF * 32`,
     // but both are MINTS and `deposit` takes a caller-supplied memo, so naming them would
     // let anyone deposit memoed `FF * 32` and fake a refund row. The pair still reads
@@ -2709,7 +2709,7 @@ describe("the cycles ledger's own record, from the index canister", () => {
     expect(text).not.toMatch(/refund/i);
   });
 
-  test("⚠️ neither burn label claims the operation succeeded", async () => {
+  test("neither burn label claims the operation succeeded", async () => {
     // Both memos are exactly what a FAILED create and a FAILED withdraw wrote, so a label
     // asserting an outcome would be false on this very input.
     state.ledgerTxs = [
@@ -2724,7 +2724,7 @@ describe("the cycles ledger's own record, from the index canister", () => {
     expect(text).toContain("Canister top-up");
   });
 
-  test("⚠️ a burn never shows the viewer as the other party", async () => {
+  test("a burn never shows the viewer as the other party", async () => {
     // `burn.from` IS this account, so putting it in the counterparty column rendered
     // the viewer their own principal under "Other party".
     //
@@ -2763,7 +2763,7 @@ describe("the cycles ledger's own record, from the index canister", () => {
     expect(link.getAttribute("href")).toBe("#/order/f22bd6dc4932a8480f3cee3669a48cc6");
   });
 
-  test("⚠️ a memo from anyone BUT the gateway is not read as an order", async () => {
+  test("a memo from anyone BUT the gateway is not read as an order", async () => {
     // Transfer memos are CALLER-supplied. Ungated, a stranger could send one cycle
     // memoed with a real order id and put a false order reference in this list. The
     // memo below is byte-identical to the passing case above; only the sender differs,
@@ -2792,7 +2792,7 @@ describe("the cycles ledger's own record, from the index canister", () => {
     expect(document.querySelector('#ledger-history a[href^="#/order/"]')).toBeNull();
   });
 
-  test("⚠️ a gateway memo that is not an order id does not reach the href", async () => {
+  test("a gateway memo that is not an order id does not reach the href", async () => {
     // The sender gate passes here: this IS from the gateway. What stops it is the shape
     // check. Without one, whatever the memo decoded to would be interpolated straight
     // into a link, and `parseRoute` would not resolve it either. Mutation-checked:
@@ -2826,7 +2826,7 @@ describe("the cycles ledger's own record, from the index canister", () => {
     expect(document.querySelector('#ledger-history a[href^="#/order/"]')).toBeNull();
   });
 
-  test("⚠️ an unrecognised kind is NAMED, not dropped", async () => {
+  test("an unrecognised kind is NAMED, not dropped", async () => {
     // A row the ledger recorded and this page cannot classify still belongs in a list
     // a buyer reconciles a balance against. Dropping it makes the list quietly wrong.
     state.ledgerTxs = [{ id: 9n, transaction: tx("somethingNew", {}) }];
@@ -2841,7 +2841,7 @@ describe("the cycles ledger's own record, from the index canister", () => {
       .toMatch(/no ledger activity yet/i);
   });
 
-  test("⚠️ the two failure modes read differently", async () => {
+  test("the two failure modes read differently", async () => {
     // The index answers with a MESSAGE rather than a reject when it cannot serve the
     // account, so folding both into one line would discard the only diagnosis there is.
     state.indexError = true;
@@ -2887,7 +2887,7 @@ describe("the dashboard's two records are tabs", () => {
     expect(el("panel-ledger").hidden).toBe(false);
   });
 
-  test("⚠️ exactly ONE tab is marked current, in both directions", async () => {
+  test("exactly ONE tab is marked current, in both directions", async () => {
     // `aria-current="false"` still reads as present to some assistive tech, so the
     // attribute is removed rather than written false. Asserting only the selected tab
     // would pass with both marked, which announces two current tabs.
@@ -2899,7 +2899,7 @@ describe("the dashboard's two records are tabs", () => {
     expect(el("tab-orders").hasAttribute("aria-current")).toBe(false);
   });
 
-  test("⚠️ the ledger index is NOT queried for a panel nobody opened", async () => {
+  test("the ledger index is NOT queried for a panel nobody opened", async () => {
     // 25 index rows for a hidden panel is work with no reader. The index mock throws
     // if `state.indexError` is set, so a fetch on the orders tab would surface as the
     // unreachable message inside the panel rather than as silence.
@@ -2928,7 +2928,7 @@ describe("the order page reads as a checkout", () => {
     await openFromHistory();
   }
 
-  test("⚠️ the amounts come BEFORE the actions in the document", async () => {
+  test("the amounts come BEFORE the actions in the document", async () => {
     // The reading order was the defect: a buyer was asked to click "Pay with card"
     // some 350px above learning what the charge was, because the figures sat in a
     // list below both buttons. Asserted as document order rather than as pixels, so
@@ -2965,7 +2965,7 @@ describe("the order page reads as a checkout", () => {
     expect(el("order-cycles").textContent).not.toMatch(/transfer fee/);
   });
 
-  test("⚠️ and it still states the fee where the two figures read the SAME", async () => {
+  test("and it still states the fee where the two figures read the SAME", async () => {
     // At 3.5 T the 100 M fee rounds away at three decimals, and the sub-line used to
     // be suppressed here — "3.500 T credited, 3.500 T sent less the 100 M fee" does
     // read as a contradiction. So the WORDING changes rather than the disclosure
@@ -2982,7 +2982,7 @@ describe("the order page reads as a checkout", () => {
     expect(el("order-cycles-note").textContent).not.toMatch(/sent, less/);
   });
 
-  test("⚠️ both actions sit in ONE row, with nothing between them", async () => {
+  test("both actions sit in ONE row, with nothing between them", async () => {
     // Each used to be followed by its own paragraph, which put sixty words between
     // two choices and made them read as unrelated controls.
     await openCreated();
@@ -2997,7 +2997,7 @@ describe("the order page reads as a checkout", () => {
     expect(el("cancel-order").classList.contains("danger")).toBe(true);
   });
 
-  test("⚠️ the pay note cannot outlive the pay button", async () => {
+  test("the pay note cannot outlive the pay button", async () => {
     // One predicate drives both. A note about a control that is not on screen is a
     // claim about a control that is not there.
     await openCreated();
@@ -3010,7 +3010,7 @@ describe("the order page reads as a checkout", () => {
     expect(el("pay-note").hidden).toBe(true);
   });
 
-  test("⚠️ the status is stated ONCE, by the heading", async () => {
+  test("the status is stated ONCE, by the heading", async () => {
     // The page led with a neutral "Your purchase" and a badge in the far corner, and
     // the line under it repeated the badge. The heading is the statement now.
     await openCreated();
@@ -3019,7 +3019,7 @@ describe("the order page reads as a checkout", () => {
     expect(el("order-status-line").hidden).toBe(true);
   });
 
-  test("⚠️ and it IS stated for a status the timeline has no slot for", async () => {
+  test("and it IS stated for a status the timeline has no slot for", async () => {
     // The other half, without which the assertion above would be satisfied by simply
     // deleting the line. `step === -1` statuses carry the only information available.
     state.order = anOrder("expired");
@@ -3044,7 +3044,7 @@ describe("the order page reads as a checkout", () => {
     expect(clip.last()).toBe("abcdef0123456789abcdef0123456789");
   });
 
-  test("⚠️ a second render does not stack a copy button", async () => {
+  test("a second render does not stack a copy button", async () => {
     // `renderOrder` runs on every 3 s poll tick and these buttons are built there, so
     // an append would grow one per tick. `replaceChildren` is what keeps it at one.
     //
@@ -3074,7 +3074,7 @@ describe("a delivered order states each fact once", () => {
     await openFromHistory();
   }
 
-  test("⚠️ the price appears ONCE on the page, not in two lists", async () => {
+  test("the price appears ONCE on the page, not in two lists", async () => {
     // "You pay $10.00" in the summary and "You paid $10.00" in the receipt were the
     // same number written by two code paths. Counted across the whole order section,
     // so a future second list fails this rather than passing quietly.
@@ -3083,7 +3083,7 @@ describe("a delivered order states each fact once", () => {
     expect(text.match(/\$10\.00/g)?.length).toBe(1);
   });
 
-  test("⚠️ the cycle figure appears once as a figure", async () => {
+  test("the cycle figure appears once as a figure", async () => {
     // Same defect on the other row: "You receive 7.138 G" and "Cycles delivered
     // 7.138 G". The formula line below restates the arithmetic on purpose, which is a
     // different claim, so only the FIGURE cells are counted.
@@ -3094,7 +3094,7 @@ describe("a delivered order states each fact once", () => {
     expect(document.getElementById("receipt-delivered")).toBeNull();
   });
 
-  test("⚠️ simulation mode is stated once, not at the top AND in the receipt", async () => {
+  test("simulation mode is stated once, not at the top AND in the receipt", async () => {
     // `renderSimulationNote` looped over two element ids and wrote the same sentence
     // into both, so this screen said it twice.
     state.divisor = 1_000n;
@@ -3112,7 +3112,7 @@ describe("a delivered order states each fact once", () => {
     expect(el("order-receive-label").textContent).toBe("You received");
   });
 
-  test("⚠️ a PAID order has paid but not received, and says so", async () => {
+  test("a PAID order has paid but not received, and says so", async () => {
     // One "is it complete" flag would print "You received" beside cycles that have
     // not moved yet. Two independent tenses.
     state.order = anOrder("paid");
@@ -3130,7 +3130,7 @@ describe("a delivered order states each fact once", () => {
     expect(el("order-receive-label").textContent).toBe("You receive");
   });
 
-  test("⚠️ the heading names the OUTCOME and the quantity together", async () => {
+  test("the heading names the OUTCOME and the quantity together", async () => {
     // The one question a delivered order has to answer, answered where a reader lands
     // rather than in a badge in the far corner. The timeline and the badge are both
     // gone; this is the single statement that replaced them.
@@ -3155,7 +3155,7 @@ describe("a delivered order states each fact once", () => {
 });
 
 describe("the CLI page stands on its own", () => {
-  test("⚠️ it opens with NO order in play at all", async () => {
+  test("it opens with NO order in play at all", async () => {
     // The point of the change. `state.order = null` means `get_order` answers nothing,
     // which is exactly a visitor arriving from the dashboard a week after buying.
     state.order = undefined;
@@ -3169,7 +3169,7 @@ describe("the CLI page stands on its own", () => {
     expect(el("order-missing").hidden).toBe(true);
   });
 
-  test("⚠️ there is no four-step strip left anywhere", async () => {
+  test("there is no four-step strip left anywhere", async () => {
     // It was removed from this page first (it narrates one purchase journey and this
     // page is reachable from the dashboard), and then from the buy view too: above a
     // single decision, a four-stage strip describes stages the visitor cannot act on.
@@ -3222,7 +3222,7 @@ describe("the delivered page leads with the outcome", () => {
     await openFromHistory();
   }
 
-  test("⚠️ every order FACT is in the card, and nothing is left loose around it", async () => {
+  test("every order FACT is in the card, and nothing is left loose around it", async () => {
     // The complaint this fixes: a tidy frame with a wall of prose outside it. The
     // reference and the next step were both loose lines below the card; they are rows
     // and a footer inside it now.
@@ -3234,7 +3234,7 @@ describe("the delivered page leads with the outcome", () => {
     }
   });
 
-  test("⚠️ the next step is ANCHORED in the card, not floating below it", async () => {
+  test("the next step is ANCHORED in the card, not floating below it", async () => {
     await openDelivered();
     expect(el("order-next-row").hidden).toBe(false);
     expect(document.querySelector("#active-order .checkout-summary")!.contains(el("order-next-link")))
@@ -3244,7 +3244,7 @@ describe("the delivered page leads with the outcome", () => {
     expect(el("order-next-row").textContent).toMatch(/deploy canisters/i);
   });
 
-  test("⚠️ the PROOF collapses but every fact stays open", async () => {
+  test("the PROOF collapses but every fact stays open", async () => {
     // The rule this respects: the receipt must not sit behind a disclosure. It exists
     // because the quantity and a problem notice once hid behind one. Those stay open;
     // only the arithmetic closes.
@@ -3279,7 +3279,7 @@ describe("the delivered page leads with the outcome", () => {
 });
 
 describe("two rendering bugs found by looking at the page", () => {
-  test("⚠️ the orders table shows the BADGE form, not a sentence", async () => {
+  test("the orders table shows the BADGE form, not a sentence", async () => {
     // It rendered `info.label`, so the status column read "Expired. This order can no
     // longer be paid" — a sentence in a column whose other cells are a date, an id and
     // two figures. `pill` existed for this and was only used on the order page.
@@ -3292,7 +3292,7 @@ describe("two rendering bugs found by looking at the page", () => {
     expect(status).not.toMatch(/no longer be paid/);
   });
 
-  test("⚠️ a ghost anchor takes no underline, so it reads as one control", async () => {
+  test("a ghost anchor takes no underline, so it reads as one control", async () => {
     // Half of a bug in the dashboard's CLI link: `a.ghost` inherited the global anchor
     // underline, so a bordered box also looked like a link — two fighting affordances.
     // Asserted on a ghost anchor that exists on THIS layer; the dashboard's own link
@@ -3309,7 +3309,7 @@ describe("two rendering bugs found by looking at the page", () => {
 });
 
 describe("the amount picker offers four choices, one of them Custom", () => {
-  test("⚠️ the field is CLOSED until Custom is chosen", async () => {
+  test("the field is CLOSED until Custom is chosen", async () => {
     // An always-open field competed with the presets for the same decision, and needed
     // the label "or enter an amount" to explain a relationship the layout denied.
     await mount();
@@ -3331,7 +3331,7 @@ describe("the amount picker offers four choices, one of them Custom", () => {
     expect(tiles[tiles.length - 1]!.className).toContain("tier");
   });
 
-  test("⚠️ picking a preset closes the field again", async () => {
+  test("picking a preset closes the field again", async () => {
     // The one-answer rule, in both directions. Leaving it open after a preset was
     // chosen would show a field whose value is being ignored.
     await mount();
@@ -3356,7 +3356,7 @@ describe("the amount picker offers four choices, one of them Custom", () => {
     expect(el("tier-custom").textContent).toMatch(/\$10\.00 to \$100\.00/);
   });
 
-  test("⚠️ no rate means the tiles say NOTHING, and the strip says it once", async () => {
+  test("no rate means the tiles say NOTHING, and the strip says it once", async () => {
     // Four copies of one fact about the gateway: three tiles, the field, the button.
     state.quote = { usdCents: TIER_CENTS, feeCents: 45n, netCents: 455n, cycles: undefined };
     await mount();
@@ -3387,7 +3387,7 @@ describe("the amount picker offers four choices, one of them Custom", () => {
 });
 
 describe("the landing call to action is part of the argument", () => {
-  test("⚠️ it lives INSIDE the hero's copy column, not below the section", async () => {
+  test("it lives INSIDE the hero's copy column, not below the section", async () => {
     // It was a sibling of `<section class="hero">`, so the grid frame closed above it
     // and it terminated neither column of a two-column layout. Asserted structurally
     // rather than by pixels: a CSS-only nudge cannot satisfy this.
@@ -3435,7 +3435,7 @@ describe("a typed amount gets the SAME detail as a preset", () => {
     await settle();
   }
 
-  test("⚠️ the split rows are FILLED, not three empty labels", async () => {
+  test("the split rows are FILLED, not three empty labels", async () => {
     // The bug: `customQuote` kept only `.cycles` from the preview and discarded
     // `feeCents` and `netCents`, so the card had no split for a typed amount and
     // rendered "Payment processing", "Buys cycles" and "Operator margin" with nothing
@@ -3449,7 +3449,7 @@ describe("a typed amount gets the SAME detail as a preset", () => {
     expect(el("detail-margin").textContent).toBe("none");
   });
 
-  test("⚠️ no labelled row in the card is ever left blank", async () => {
+  test("no labelled row in the card is ever left blank", async () => {
     // The general form of the same defect: a label with no value reads as a figure
     // that failed to load. Asserted across every row so a future row cannot ship
     // half-wired the way these three did.
@@ -3463,7 +3463,7 @@ describe("a typed amount gets the SAME detail as a preset", () => {
     }
   });
 
-  test("⚠️ no rate means no CARD, not a card with a hole in it", async () => {
+  test("no rate means no CARD, not a card with a hole in it", async () => {
     // ⚠️ **This path is why the "no labelled row is blank" test above was vacuous.**
     // That test only ever ran the PRICED path, because the mock always answers with
     // cycles. With no rate, `renderAmountDetail` wrote an empty string into "You
@@ -3477,7 +3477,7 @@ describe("a typed amount gets the SAME detail as a preset", () => {
     expect(el<HTMLButtonElement>("create-order").disabled).toBe(true);
   });
 
-  test("⚠️ and a PRESET with no rate hides it too, not just a typed amount", async () => {
+  test("and a PRESET with no rate hides it too, not just a typed amount", async () => {
     // The other half: the bug was in the shared renderer, so both paths reach it.
     state.quote = { ...state.quote, cycles: undefined };
     await mount();
@@ -3502,7 +3502,7 @@ describe("the CLI page is a numbered sequence", () => {
     await settle();
   }
 
-  test("⚠️ all FOUR steps are there, in order, and step 2 is the one that was missing", async () => {
+  test("all FOUR steps are there, in order, and step 2 is the one that was missing", async () => {
     // The page shipped two cards covering four commands and omitted `icp identity
     // default` entirely. Without it a buyer links, verifies with an explicit
     // `--identity` flag, sees a match, then deploys as whatever their default identity
@@ -3534,7 +3534,7 @@ describe("the CLI page is a numbered sequence", () => {
     expect(el("cmd-link").textContent).not.toContain(" dev ");
   });
 
-  test("⚠️ the prerequisite IS step one, and it names where to do it", async () => {
+  test("the prerequisite IS step one, and it names where to do it", async () => {
     // It was the last paragraph of the first card — after the command it guards, so a
     // warning read only by someone who already failed. Then it was a panel above the
     // list, which reads as preamble. It is step one.
@@ -3550,7 +3550,7 @@ describe("the CLI page is a numbered sequence", () => {
     expect(first.querySelector("#cli-guide")).not.toBeNull();
   });
 
-  test("⚠️ the agent aside does not break out to full bleed", async () => {
+  test("the agent aside does not break out to full bleed", async () => {
     // `.explainer.sunk` breaks the measure with a negative inline margin and paints its
     // own background — a landing-page band. Directly under a numbered procedure it read
     // as a different page pasted on.
@@ -3567,7 +3567,7 @@ describe("the CLI page is a numbered sequence", () => {
       .toBe("https://cli.internetcomputer.org/1.4/guides/managing-identities/#signing-in-as-a-specific-app");
   });
 
-  test("⚠️ the verify step states the values THIS page shows", async () => {
+  test("the verify step states the values THIS page shows", async () => {
     // The reason to verify here rather than in the docs: both numbers are in front of
     // the buyer. The expected balance comes from the same ledger read the heading uses,
     // so the page cannot tell a buyer to expect a figure it is not itself showing.

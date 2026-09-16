@@ -485,7 +485,7 @@ module {
   /// never fire, and cancelling a paid order reported "could not reach Stripe" while
   /// latching `stripeApiFailing`: a P1 saying "rotate the key" for a key that was fine.
   ///
-  /// ⚠️ **And the unit test asserted the INVENTED wording**, so it passed against a
+  /// **And the unit test asserted the INVENTED wording**, so it passed against a
   /// string Stripe never sends. A matcher can only be tested against prose if the prose
   /// is real; a status code needs no such faith.
   ///
@@ -496,7 +496,7 @@ module {
   /// nothing about the session, and bucketing it as `#notOpen` would tell a buyer their
   /// live order was settled.
   ///
-  /// ⚠️ **A 400 is not proof of the session's state either.** A malformed request from
+  /// **A 400 is not proof of the session's state either.** A malformed request from
   /// this module would answer 400 as well, and this function cannot separate the two.
   /// The body travels in `#notOpen` so a caller that is allowed to log it can record
   /// what Stripe actually said, rather than this module guessing the wording in

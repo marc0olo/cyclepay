@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 # Fail on an UNQUOTED heredoc whose body contains a command substitution.
 #
-# ⚠️ **Twice in three days, in two different substrates.** First, building Markdown for a
-# GitHub issue body inside `<<PY` let the shell execute the backticks in the text and put a
-# mangled 101k-char body live in place of 53k. Then, unquoting `<<NOTES` in
-# `scripts/stripe-dev.sh` so one variable would interpolate activated three `…` spans that
-# had been inert prose — `icp deploy` among them, so printing the closing notes would have
-# RUN a deploy.
+# **Two substrates, both live in this repo.** Markdown for a GitHub issue body inside
+# `<<PY` lets the shell execute the backticks in the text — that has put a mangled
+# 101k-char body live in place of 53k. And unquoting a `<<NOTES` block so that one
+# variable interpolates activates every `…` span in it, `icp deploy` included, so
+# printing a script's closing notes RUNS a deploy.
 #
-# The second one was introduced by the fix for a review finding whose entire subject was
-# that written-down lessons do not transfer. The rule was already written down. So it
-# stops being a rule and becomes this check.
+# Written down as a rule it did not hold: the second instance arrived in the fix for a
+# review finding whose subject was that written-down lessons do not transfer. Hence a
+# check rather than a rule.
 #
-# ⚠️ **This belongs in the gate rather than the Traps section because its target is FIXED
+# **This belongs in the gate rather than the Traps section because its target is FIXED
 # syntax**, unlike a vocabulary sweep whose target moves with every issue — the same test
 # the outflow census passes. A fixed target can be enforced; a judgement call can only be
 # surfaced.

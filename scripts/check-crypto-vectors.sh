@@ -9,13 +9,13 @@
 # implementations — so what they assert is not this port's arithmetic restated but values
 # a reviewed implementation produced.
 #
-# ⚠️ **Why run them here when the source repository already does.** Two reasons, and the
+# **Why run them here when the source repository already does.** Two reasons, and the
 # second is the one that matters:
 #
 #   1. `mops test` does not descend into path dependencies, so these suites execute in
 #      this project only if something runs them explicitly. Nothing else does.
 #   2. The upstream run proves the vectors under **that repository's** toolchain pins, not
-#      ours. ⚠️ **They HAVE now diverged** — upstream is pinned to moc 1.15.1 and this
+#      ours. **They HAVE now diverged** — upstream is pinned to moc 1.15.1 and this
 #      project moved to 1.16.0 — which is why the run below rewrites the pin instead of
 #      testing in place. Upstream is a frozen proof of concept; this project's compiler
 #      moves, so the combination actually shipped here is tested nowhere else.
