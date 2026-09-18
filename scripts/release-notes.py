@@ -144,12 +144,13 @@ All three must agree: your build, the hashes above, and the canister.
 
 ⚠️ **`frontend.wasm` is not a meaningful check.** It is the pinned recipe's pre-built
 certified-assets canister — identical for every project using it, and unrelated to the
-page anyone is served, which lives in canister state. To check the frontend, compare what
-it serves against your own build:
+page anyone is served, which lives in canister state. To check the frontend, compare the
+state hash it publishes against one computed from your own build (needs a Rust toolchain
+on first run, to build the verifier the pinned release ships):
 
 ```bash
 npm --prefix src/frontend ci && npm --prefix src/frontend run build
-scripts/check-frontend-assets.py -e ic
+scripts/check-frontend-hash.py -e ic
 ```
 
 `docs/VERIFY.md` has the rest, including what only a buyer can check and the known limits.

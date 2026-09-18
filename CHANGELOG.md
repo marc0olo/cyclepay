@@ -9,6 +9,16 @@ real money.
 
 ## Unreleased
 
+**Frontend verification is one check over the whole served surface.**
+`scripts/check-frontend-hash.py` compares the canister's `state_hash` against one computed
+from a local `src/frontend/dist` by the verifier the pinned certified-assets release
+ships, and replaces the per-asset content comparison. The hash covers every asset's bytes
+in every encoding, its `content_type` and response headers, and the redirect rules in
+match order, so header and routing drift now fail the check; the comparison it replaces
+read asset bytes only, and could not see a drifted CSP. It needs a Rust toolchain on first
+run, and refuses to compare unless the canister's `version()` matches the
+`@dfinity/static-site` pin in `icp.yaml`.
+
 ## 0.1.0-beta.1
 
 First tagged release. The gateway was already running on mainnet in **simulation mode**,

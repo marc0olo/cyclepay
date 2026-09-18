@@ -58,7 +58,7 @@ gh release create vX.Y.Z --prerelease --verify-tag -t vX.Y.Z \
 
 scripts/release.sh vX.Y.Z --install -e ic --identity <operator>  # 4. install + gate
 
-icp deploy frontend -e ic && scripts/check-frontend-assets.py -e ic   # 5. frontend
+icp deploy frontend -e ic && scripts/check-frontend-hash.py -e ic     # 5. frontend
 
 # 6. update the Status line in docs/VERIFY.md — one sentence, naming this version
 ```
@@ -98,12 +98,15 @@ deployment becomes unverifiable without anyone noticing.
 instruction gets skipped, and a skipped verification is indistinguishable from a passing
 one. The hash is read from the canister, never from the build.
 
-⚠️ **The frontend is checked by its ASSETS, not its module hash.** The
+⚠️ **The frontend is checked by its STATE HASH, not its module hash.** The
 `@dfinity/static-site` recipe installs a pre-built certified-assets wasm, so that hash
 describes the recipe — identical for every project using it, and unrelated to the page
 anyone is served. The content lives in canister state, put there by the sync plugin, so
-`check-frontend-assets.py` compares each asset's `Identity` `sha256` from
-`get_asset_details` against `src/frontend/dist`. A mismatch names the asset.
+`check-frontend-hash.py` compares the canister's `state_hash` against one computed from
+`src/frontend/dist` by the verifier that release ships. That one value covers every
+asset's bytes in every encoding, its `content_type` and response headers, and the
+redirect rules in match order — so a drifted CSP fails it, which a per-asset content
+comparison cannot see.
 
 ## Verifying a release (anyone)
 
@@ -116,12 +119,16 @@ scripts/reproducible-build.sh vX.Y.Z          # rebuild the backend in the conta
 icp canister status <backend-id> -n ic -p     # read the deployed module hash
 
 npm --prefix src/frontend ci && npm --prefix src/frontend run build
-scripts/check-frontend-assets.py -e ic        # compare served assets to that build
+scripts/check-frontend-hash.py -e ic          # compare the served state hash to that build
 ```
+
+The frontend check builds its verifier from `dfinity/certified-assets` at the tag
+`icp.yaml` pins, so it needs a Rust toolchain on the first run and caches the binary
+under `.cache/` afterwards.
 
 ⚠️ **`-n` for an id, `-e` for a name.** `icp` refuses a network flag when the canister is
 named rather than addressed by principal — *"specify an environment instead"*. The status
-line takes the backend's id, so it uses `-n ic`; the asset check resolves the name
+line takes the backend's id, so it uses `-n ic`; the frontend check resolves the name
 `frontend` from the committed `.icp/data/mappings/ic.ids.json`, so it uses `-e ic`.
 
 `release/MODULE-HASHES.txt`, the hash in the release notes and the canister's
@@ -130,16 +137,19 @@ commit gives different bytes on different platforms. The module hash is also on 
 public dashboard (`dashboard.internetcomputer.org/canister/<id>`).
 
 **What each half proves.** The backend hash ties the running module to a tagged commit.
-The asset comparison ties the served page to that same tree — the frontend module hash
+The state hash ties the served page to that same tree — the frontend module hash
 proves nothing, because it is the recipe's. Beyond that, every HTTP response carries
 `IC-Certificate` and `IC-CertificateExpression` over the asset tree and the gateway
 rejects responses whose certificate does not verify; there is no uncertified raw mode to
 turn off, the way the legacy asset canister needed `allow_raw_access: false`.
 
-⚠️ **`state_hash` is a fingerprint, not a check.** The canister publishes one root hash
-over everything it certifies, and `check-frontend-assets.py` prints it — publish it with
-a release so later drift is detectable. It is computed inside the canister, so it cannot
-be derived from a build; the per-asset comparison is what ties a deployment to a source.
+⚠️ **The recipe pin is load-bearing for verification.** The state hash is frozen per
+certified-assets release: the compressor builds behind it, `MAX_CHUNK_SIZE`, the digest
+layout, and the 404 and clean-URL rules the preparation synthesizes all change the
+number. So bumping `@dfinity/static-site` in `icp.yaml` invalidates every hash published
+before it, and a verifier needs the new tag. `check-frontend-hash.py` refuses to compare
+unless the canister's own `version()` matches that pin, so a version-crossing comparison
+fails loudly instead of looking like content drift.
 
 ## Caveats (stated, not hidden)
 

@@ -7,18 +7,37 @@ Two separate questions, with different answers.
 
 ## "Is the page I am using built from this repo?" — yes, check it
 
-This takes two minutes and needs no identity:
+This needs no identity, and a Rust toolchain the first time:
 
 ```bash
 git clone --recurse-submodules https://github.com/marc0olo/cyclepay && cd cyclepay
+git checkout vX.Y.Z                             # the release the deployment published
 npm --prefix src/frontend ci && npm --prefix src/frontend run build
-scripts/check-frontend-assets.py -e ic
+scripts/check-frontend-hash.py -e ic
 ```
 
-It compares the `sha256` the canister publishes for **every asset it serves** against the
-file your own build produced, and names any that differ. At the time of writing it passes:
-all ten built assets — `index.html`, both bundles, all four fonts, both `.well-known`
-files — match byte for byte.
+⚠️ **Check out the tag, not `main`.** The deployment is a release; `main` moves on after
+it. Comparing a `main` build against a released deployment reports a mismatch that means
+nothing, and `main` is one commit past a tag more often than not. This page said "no
+checkout" until it was measured: `main` and `v0.1.0-beta.1` differ by HTML comments in
+`index.html`, which is enough to change the hash.
+
+The canister publishes a **state hash**: one SHA-256 over every asset it serves — each
+one's bytes in every encoding, its `content_type` and its response headers — plus the
+redirect rules in match order. The check computes the same number from the directory your
+own build just produced and compares them. Equal means the canister serves exactly that
+build, down to the CSP.
+
+It computes that number with the verifier from `dfinity/certified-assets` at the release
+`icp.yaml` pins, built from source on first run and cached under `.cache/`. That is the
+Rust dependency, and building it rather than downloading it is the point: the hash is
+only worth anything if the thing computing it came from source you can read. The check
+also refuses to compare unless the canister reports running that same release, because
+the hash is frozen per release and a version-crossing comparison would fail for no
+reason.
+
+No result is quoted here, because a status written into prose is what goes stale. Run
+the command: it reads the live hash, and the answer is only as old as your terminal.
 
 ⚠️ **Do not check the frontend's module hash instead.** The `@dfinity/static-site` recipe
 installs a pre-built certified-assets wasm, so that hash describes the recipe, not the
@@ -100,7 +119,7 @@ declares the cycles-ledger interface the canister may call, and `icrc2_approve` 
 ledger's `withdraw` are absent — so they cannot be called, which is what makes the floor
 a valid lower bound. `scripts/test-all.sh` fails on a declaration that widens it.
 
-**Frontend responses are certified per response**, on top of the asset comparison above:
+**Frontend responses are certified per response**, on top of the state-hash check above:
 each carries `IC-Certificate` over the asset tree and the gateway rejects a response whose
 certificate does not verify. There is no uncertified raw mode to switch off.
 
