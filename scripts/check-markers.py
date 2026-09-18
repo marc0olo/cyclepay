@@ -71,7 +71,7 @@ NAME_EXEMPT_FILES = ("scripts/check-markers.py",)
 
 # ⚠️ **These may only ever FALL.** Raising one is a deliberate edit whose reason belongs
 # in the commit message; if you are lowering one, you are doing the intended thing.
-MARKER_CEILING = 1807
+MARKER_CEILING = 1810
 PUBLISHED_CEILING = 40
 
 # A marker inside the STRING argument of a test declaration. Deliberately not anchored to

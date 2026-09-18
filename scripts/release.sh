@@ -31,7 +31,9 @@ icp_args=("$@")
 # look like versions are checked: building HEAD or a bare commit to inspect hashes is a
 # normal thing to do and does not need an entry.
 version="${ref#v}"
+is_version=false
 if printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'; then
+  is_version=true
   # -F -x: the version contains dots, which as a regex would match any character —
   # `0.1.0` would accept a `## 0X1X0` heading. Fixed string, whole line.
   if ! git show "$ref:CHANGELOG.md" 2>/dev/null | grep -qxF "## $version"; then
@@ -63,13 +65,28 @@ trap cleanup EXIT
 # temp dir; pruning first keeps those from accumulating in `git worktree list`.
 git worktree prune
 git worktree add -q --detach "$fe_tree" "$ref"
-npm --prefix "$fe_tree/src/frontend" ci
-npm --prefix "$fe_tree/src/frontend" run build
+# ⚠️ **`cd`, not `npm --prefix`.** With a prefix under `mktemp -d` — on macOS a
+# `/var/folders/...` path that resolves through a symlink — `npm ci` takes the package
+# name from the directory instead of `package.json` and dies with
+# `Missing: frontend@0.1.0 from lock file`, though the package is `cyclepay-frontend`.
+# Measured both ways: the same command against a `/private/tmp` path succeeds, so it is
+# the path shape rather than the flag, and `--prefix` elsewhere in the repo (always a
+# relative path inside it) is unaffected. A subshell keeps the cwd change local.
+(cd "$fe_tree/src/frontend" && npm ci && npm run build)
 # --print takes the TREE ROOT, so the recipe pin and the `dist` are the same ref's.
 scripts/check-frontend-hash.py --print "$fe_tree" > release/FRONTEND-STATE-HASH.txt
 echo "frontend: $(cat release/FRONTEND-STATE-HASH.txt) (state hash, from $ref)"
 
-scripts/release-notes.py "$ref"
+# ⚠️ **Notes only for a version ref.** This script documents building `HEAD` or a bare
+# commit to inspect hashes, and the changelog gate above deliberately skips those — but
+# `release-notes.py` aborts on a ref with no `## <version>` changelog section, so for
+# years the documented inspection build could not finish. An inspection build wants the
+# hashes, not release notes.
+if $is_version; then
+  scripts/release-notes.py "$ref"
+else
+  echo "notes: skipped — $ref is not a version ref (hashes above are the point)"
+fi
 
 expected="$(awk '/backend\.wasm/{print $1}' release/MODULE-HASHES.txt)"
 [ -n "$expected" ] || { echo "error: no backend.wasm hash in release/MODULE-HASHES.txt" >&2; exit 1; }
@@ -79,9 +96,15 @@ echo "built:    $expected"
 
 if ! $install; then
   echo
-  echo "Publish release/NOTES.md as the release body — it carries the hashes verbatim,"
-  echo "the architecture they were built on, and how to reproduce them."
-  echo "Then install and gate in one step:"
+  # ⚠️ Not for a non-version ref: no notes were written for it, so this would send an
+  # operator to publish whatever `release/NOTES.md` happens to hold from a previous run.
+  if $is_version; then
+    echo "Publish release/NOTES.md as the release body — it carries the hashes verbatim,"
+    echo "the architecture they were built on, and how to reproduce them."
+    echo "Then install and gate in one step:"
+  else
+    echo "Inspection build of $ref. To install and gate a release, use a version ref:"
+  fi
   echo "    scripts/release.sh $ref --install -e ic --identity <operator>"
   exit 0
 fi
