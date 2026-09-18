@@ -9,6 +9,21 @@ real money.
 
 ## Unreleased
 
+**Frontend verification is one check over the whole served surface.**
+`scripts/check-frontend-hash.py` compares the canister's `state_hash` against one computed
+from a local `src/frontend/dist` by the verifier the pinned certified-assets release
+ships, and replaces the per-asset content comparison. The hash covers every asset's bytes
+in every encoding, its `content_type` and response headers, and the redirect rules in
+match order, so header and routing drift now fail the check; the comparison it replaces
+read asset bytes only, and could not see a drifted CSP. It needs a Rust toolchain on first
+run, and refuses to compare unless the canister's `version()` matches the
+`@dfinity/static-site` pin in `icp.yaml`.
+
+**A release publishes that hash.** The procedure tells a verifier to build a tag, so the
+notes now carry the number that tag produces and the certified-assets release it was
+computed under. `release.sh` builds the frontend from the ref in a worktree rather than
+from the working tree, the way the backend is already built from a `git archive` of it.
+
 ## 0.1.0-beta.1
 
 First tagged release. The gateway was already running on mainnet in **simulation mode**,
@@ -29,8 +44,8 @@ principal, so a funded gateway cannot be drained by free test payments.
 `scripts/release.sh` builds in a digest-pinned container, installs that artifact, and
 gates on the canister reporting the hash it built, so the published bytes and the running
 bytes cannot drift apart. The container is
-`ghcr.io/dfinity/icp-dev-env-motoko:v2.2.1`, pinned by digest. `scripts/check-frontend-assets.py` compares every asset the
-frontend serves against a local build. Rebuild the tag and check both yourself —
+`ghcr.io/dfinity/icp-dev-env-motoko:v2.2.1`, pinned by digest. The frontend is checked
+against a local build too. Rebuild the tag and check both yourself —
 [`docs/VERIFY.md`](docs/VERIFY.md) has the commands.
 
 **Known limits, stated in `docs/VERIFY.md`:** any single controller can upgrade and drain;

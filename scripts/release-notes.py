@@ -15,9 +15,21 @@ table would break both.
 pre-built certified-assets canister — the same module for every project that uses it — so
 comparing it proves nothing about the page anyone is served. Someone who matches it and
 concludes the frontend is verified has verified the recipe. The notes point that reader at
-the asset check instead.
+the frontend's STATE hash instead, which is the one that describes the page.
 
-Usage: scripts/release-notes.py <version> [hashes-file] [out-file]
+⚠️ **The verify instructions are generic, and must stay that way.** The same rendered
+text ships with every release, including tags cut before a given helper existed, so it
+offers the repo's check and the bare verifier side by side and lets the checked-out tree
+decide which is available. Naming the release a script arrived in would make every future
+set of notes carry a fact about the past that nothing checks.
+
+⚠️ **The frontend state hash is published, and it has to be.** The procedure tells a
+verifier to build a TAG, so they need a number that fixes what that tag produced.
+Without it the only thing linking a tag to the running canister is our word about which
+release is deployed — and a `main` build reports a mismatch that means nothing, since
+`main` moves on after a release.
+
+Usage: scripts/release-notes.py <version> [hashes-file] [out-file] [frontend-hash-file]
 """
 
 import re
@@ -26,11 +38,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _github_anchor import anchor, self_test as anchor_self_test  # noqa: E402
+from _recipe_pin import pin_in, self_test as pin_self_test  # noqa: E402
 
 # ⚠️ **Written out, not left as `<backend-id>`.** The notes' audience is precisely the
 # people who do not know this canister's id, and it is a stable identifier rather than a
 # perishable figure — unlike a hash, which is why no hash is hardcoded anywhere.
 BACKEND = "saz2a-riaaa-aaaay-aadha-cai"
+FRONTEND = "shy4u-4qaaa-aaaay-aadhq-cai"
 REPO = "https://github.com/marc0olo/cyclepay"
 
 WHAT = {
@@ -69,15 +83,25 @@ def _self_test() -> None:
 def main() -> int:
     _self_test()
     anchor_self_test()
+    pin_self_test()
     if len(sys.argv) < 2:
         sys.exit("usage: scripts/release-notes.py <version> [hashes-file] [out-file]")
     version = sys.argv[1].lstrip("v")
     hashes_path = Path(sys.argv[2] if len(sys.argv) > 2 else "release/MODULE-HASHES.txt")
     out_path = Path(sys.argv[3] if len(sys.argv) > 3 else "release/NOTES.md")
+    fe_path = Path(sys.argv[4] if len(sys.argv) > 4 else "release/FRONTEND-STATE-HASH.txt")
 
     if not hashes_path.exists():
         sys.exit(f"error: {hashes_path} is missing — the build has not run.\n"
                  f"    scripts/release.sh {sys.argv[1]}")
+    # Required, not optional: see the module docstring. Notes without it publish a
+    # backend a verifier can pin and a frontend they cannot.
+    if not fe_path.exists():
+        sys.exit(f"error: {fe_path} is missing — the frontend hash has not been computed.\n"
+                 f"    scripts/release.sh {sys.argv[1]}")
+    fe_hash = fe_path.read_text().strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", fe_hash):
+        sys.exit(f"ABORT: {fe_path} holds no 64-char hex hash: {fe_hash!r}")
     raw = hashes_path.read_text()
     # ⚠️ Abort rather than degrade. Publishing "built on unknown" two lines above the rule
     # telling a verifier to compare like for like would be worse than failing here.
@@ -101,6 +125,18 @@ def main() -> int:
     # that describes a release.
     if not changelog_section(version, changelog):
         sys.exit(f"ABORT: CHANGELOG.md has no '## {version}' section — the notes would link to nothing")
+    # ⚠️ **The pin comes from the REF too.** The state hash is frozen per certified-assets
+    # release, so the number means nothing without the release it was computed under —
+    # and reading that from the working tree would publish the CURRENT pin beside a hash
+    # computed under the tag's. Same fallback as the changelog, for HEAD and bare commits.
+    at_ref_yaml = subprocess.run(["git", "show", f"{ref}:icp.yaml"], capture_output=True, text=True)
+    icp_yaml = at_ref_yaml.stdout if at_ref_yaml.returncode == 0 else Path("icp.yaml").read_text()
+    # Imported from `_recipe_pin`, the same reader `check-frontend-hash.py` picks the
+    # verifier with, so the published release and the computed hash cannot disagree.
+    ca_version = pin_in(icp_yaml)
+    if ca_version is None:
+        sys.exit("ABORT: no `@dfinity/static-site@vX.Y.Z` pin found — the frontend hash would"
+                 " be published with no release to interpret it under")
     # ⚠️ The SAME anchor rule `check-doc-links.py` verifies the docs with — imported, not
     # restated, because a second copy of it is exactly the class of duplication this repo
     # keeps finding, and this is the copy nothing gates: `release/NOTES.md` is build
@@ -142,15 +178,42 @@ icp canister status {BACKEND} -n ic -p
 
 All three must agree: your build, the hashes above, and the canister.
 
-⚠️ **`frontend.wasm` is not a meaningful check.** It is the pinned recipe's pre-built
-certified-assets canister — identical for every project using it, and unrelated to the
-page anyone is served, which lives in canister state. To check the frontend, compare what
-it serves against your own build:
+## Frontend state hash
+
+```
+{fe_hash}  certified-assets v{ca_version}
+```
+
+One SHA-256 over everything the frontend canister serves: every asset's bytes in every
+encoding, its `content_type` and response headers, and the redirect rules in match order.
+Built from `src/frontend/dist` at this tag.
+
+⚠️ **`frontend.wasm` above is not a meaningful check.** It is the pinned recipe's
+pre-built certified-assets canister — identical for every project using it, and unrelated
+to the page anyone is served. This state hash is the one that describes the page.
+
+Build this tag's frontend, then compare, either way round. Both need a Rust toolchain:
+the hash is defined by certified-assets' own preparation code, so computing it means
+running that project's verifier, built once from source and then cached.
 
 ```bash
+# from the v{version} checkout above
 npm --prefix src/frontend ci && npm --prefix src/frontend run build
-scripts/check-frontend-assets.py -e ic
+
+# (a) the repo's check, if this tree has it: it reads the pin, builds a matching
+#     verifier, confirms the canister runs that release, and compares for you
+scripts/check-frontend-hash.py -e ic
+
+# (b) the verifier on its own, which works in any tree and depends on nothing of ours
+cargo install --git https://github.com/dfinity/certified-assets \\
+  --tag v{ca_version} --locked state-hash-cli
+state-hash src/frontend/dist
+icp canister call {FRONTEND} state_hash '()' -n ic -o hex | tail -c 65
 ```
+
+Three things must agree, as with the backend: your build, the hash above, and the live
+canister. ⚠️ **Build the tag, not `main`** — `main` moves on after a release, and one
+changed HTML comment is enough to change this number.
 
 `docs/VERIFY.md` has the rest, including what only a buyer can check and the known limits.
 """

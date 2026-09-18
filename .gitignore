@@ -65,6 +65,11 @@ test/integration/node_modules/
 # committed, the binary is not
 test/integration/wasm/
 
+# `state-hash` verifiers built by scripts/check-frontend-hash.py, one directory per
+# certified-assets release. Built from the pinned tag on first use and cached; never
+# committed (a compiled binary, and this repo has tracked build output before).
+.cache/
+
 # Python bytecode from the repo scripts (they are run directly, never imported
 # except by a one-off probe, which is how this got committed once).
 __pycache__/

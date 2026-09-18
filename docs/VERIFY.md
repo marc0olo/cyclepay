@@ -7,18 +7,46 @@ Two separate questions, with different answers.
 
 ## "Is the page I am using built from this repo?" — yes, check it
 
-This takes two minutes and needs no identity:
+The canister publishes a **state hash**: one SHA-256 over every asset it serves — each
+one's bytes in every encoding, its `content_type` and its response headers — plus the
+redirect rules in match order. Compute the same number from your own build and compare.
+Equal means the canister serves exactly that build, down to the CSP.
+
+You need `icp`, Node, and a Rust toolchain. The Rust part is not avoidable and is the
+same for both routes below: the hash is defined by the certified-assets project's own
+preparation code, so computing it means running that project's verifier, which is built
+once from source and then cached.
 
 ```bash
 git clone --recurse-submodules https://github.com/marc0olo/cyclepay && cd cyclepay
+git checkout vX.Y.Z                             # the release the deployment published
 npm --prefix src/frontend ci && npm --prefix src/frontend run build
-scripts/check-frontend-assets.py -e ic
+scripts/check-frontend-hash.py -e ic
 ```
 
-It compares the `sha256` the canister publishes for **every asset it serves** against the
-file your own build produced, and names any that differ. At the time of writing it passes:
-all ten built assets — `index.html`, both bundles, all four fonts, both `.well-known`
-files — match byte for byte.
+That script only arranges the steps: it reads the pinned certified-assets release out of
+`icp.yaml`, builds the matching verifier, refuses to compare unless the canister reports
+running that release, and diffs the two numbers. Run the steps yourself instead if you
+would rather execute none of our code — it is the same verifier either way:
+
+```bash
+cargo install --git https://github.com/dfinity/certified-assets \
+  --tag v0.3.3 --locked state-hash-cli        # the release icp.yaml pins
+state-hash src/frontend/dist
+icp canister call shy4u-4qaaa-aaaay-aadhq-cai state_hash '()' -n ic -o hex | tail -c 65
+```
+
+The two numbers must match. No result is quoted on this page: run it, and the answer is
+as fresh as your terminal.
+
+⚠️ **Check out the tag, not `main`.** The deployment is a release and `main` moves on
+after it, so a `main` build reports a mismatch that means nothing. One changed HTML
+comment is enough to change the hash.
+
+⚠️ **Build the verifier, never download one.** A hash is worth only as much as the thing
+that computed it, so both routes build it from a tag of the certified-assets source.
+`--locked` is part of that: without it `cargo install` re-resolves dependencies, and a
+newer `brotli` patch emits different bytes for the same input, which changes the hash.
 
 ⚠️ **Do not check the frontend's module hash instead.** The `@dfinity/static-site` recipe
 installs a pre-built certified-assets wasm, so that hash describes the recipe, not the
@@ -100,7 +128,7 @@ declares the cycles-ledger interface the canister may call, and `icrc2_approve` 
 ledger's `withdraw` are absent — so they cannot be called, which is what makes the floor
 a valid lower bound. `scripts/test-all.sh` fails on a declaration that widens it.
 
-**Frontend responses are certified per response**, on top of the asset comparison above:
+**Frontend responses are certified per response**, on top of the state-hash check above:
 each carries `IC-Certificate` over the asset tree and the gateway rejects a response whose
 certificate does not verify. There is no uncertified raw mode to switch off.
 

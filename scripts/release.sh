@@ -45,6 +45,30 @@ fi
 
 scripts/reproducible-build.sh "$ref" release
 
+# ⚠️ **The frontend is built from the REF, in a worktree, not from the working tree.**
+# The backend gets this for free (`reproducible-build.sh` builds a `git archive` of the
+# ref); the frontend has no such step, and a working-tree build would publish whatever
+# is checked out. That is not hypothetical: `main` one commit past a tag changed HTML
+# comments in `index.html`, which changes the hash, so a release cut from a tag would
+# have published a number no verifier of that tag could reproduce.
+#
+# The hash needs `dist`, and nothing else builds it this early: `icp deploy frontend`
+# does, but that is step 5, long after these notes are published.
+fe_tmp="$(mktemp -d)"
+fe_tree="$fe_tmp/frontend-at-ref"
+# `git worktree remove` deletes the worktree but not the temp dir holding it.
+cleanup() { git worktree remove --force "$fe_tree" >/dev/null 2>&1 || true; rm -rf "$fe_tmp"; }
+trap cleanup EXIT
+# A run killed before its trap fired leaves a registration pointing at a deleted
+# temp dir; pruning first keeps those from accumulating in `git worktree list`.
+git worktree prune
+git worktree add -q --detach "$fe_tree" "$ref"
+npm --prefix "$fe_tree/src/frontend" ci
+npm --prefix "$fe_tree/src/frontend" run build
+# --print takes the TREE ROOT, so the recipe pin and the `dist` are the same ref's.
+scripts/check-frontend-hash.py --print "$fe_tree" > release/FRONTEND-STATE-HASH.txt
+echo "frontend: $(cat release/FRONTEND-STATE-HASH.txt) (state hash, from $ref)"
+
 scripts/release-notes.py "$ref"
 
 expected="$(awk '/backend\.wasm/{print $1}' release/MODULE-HASHES.txt)"
