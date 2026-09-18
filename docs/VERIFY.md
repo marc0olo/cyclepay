@@ -7,7 +7,15 @@ Two separate questions, with different answers.
 
 ## "Is the page I am using built from this repo?" — yes, check it
 
-This needs no identity, and a Rust toolchain the first time:
+The canister publishes a **state hash**: one SHA-256 over every asset it serves — each
+one's bytes in every encoding, its `content_type` and its response headers — plus the
+redirect rules in match order. Compute the same number from your own build and compare.
+Equal means the canister serves exactly that build, down to the CSP.
+
+You need `icp`, Node, and a Rust toolchain. The Rust part is not avoidable and is the
+same for both routes below: the hash is defined by the certified-assets project's own
+preparation code, so computing it means running that project's verifier, which is built
+once from source and then cached.
 
 ```bash
 git clone --recurse-submodules https://github.com/marc0olo/cyclepay && cd cyclepay
@@ -16,28 +24,29 @@ npm --prefix src/frontend ci && npm --prefix src/frontend run build
 scripts/check-frontend-hash.py -e ic
 ```
 
-⚠️ **Check out the tag, not `main`.** The deployment is a release; `main` moves on after
-it. Comparing a `main` build against a released deployment reports a mismatch that means
-nothing, and `main` is one commit past a tag more often than not. This page said "no
-checkout" until it was measured: `main` and `v0.1.0-beta.1` differ by HTML comments in
-`index.html`, which is enough to change the hash.
+That script only arranges the steps: it reads the pinned certified-assets release out of
+`icp.yaml`, builds the matching verifier, refuses to compare unless the canister reports
+running that release, and diffs the two numbers. Run the steps yourself instead if you
+would rather execute none of our code — it is the same verifier either way:
 
-The canister publishes a **state hash**: one SHA-256 over every asset it serves — each
-one's bytes in every encoding, its `content_type` and its response headers — plus the
-redirect rules in match order. The check computes the same number from the directory your
-own build just produced and compares them. Equal means the canister serves exactly that
-build, down to the CSP.
+```bash
+cargo install --git https://github.com/dfinity/certified-assets \
+  --tag v0.3.3 --locked state-hash-cli        # the release icp.yaml pins
+state-hash src/frontend/dist
+icp canister call shy4u-4qaaa-aaaay-aadhq-cai state_hash '()' -n ic -o hex | tail -c 65
+```
 
-It computes that number with the verifier from `dfinity/certified-assets` at the release
-`icp.yaml` pins, built from source on first run and cached under `.cache/`. That is the
-Rust dependency, and building it rather than downloading it is the point: the hash is
-only worth anything if the thing computing it came from source you can read. The check
-also refuses to compare unless the canister reports running that same release, because
-the hash is frozen per release and a version-crossing comparison would fail for no
-reason.
+The two numbers must match. No result is quoted on this page: run it, and the answer is
+as fresh as your terminal.
 
-No result is quoted here, because a status written into prose is what goes stale. Run
-the command: it reads the live hash, and the answer is only as old as your terminal.
+⚠️ **Check out the tag, not `main`.** The deployment is a release and `main` moves on
+after it, so a `main` build reports a mismatch that means nothing. One changed HTML
+comment is enough to change the hash.
+
+⚠️ **Build the verifier, never download one.** A hash is worth only as much as the thing
+that computed it, so both routes build it from a tag of the certified-assets source.
+`--locked` is part of that: without it `cargo install` re-resolves dependencies, and a
+newer `brotli` patch emits different bytes for the same input, which changes the hash.
 
 ⚠️ **Do not check the frontend's module hash instead.** The `@dfinity/static-site` recipe
 installs a pre-built certified-assets wasm, so that hash describes the recipe, not the

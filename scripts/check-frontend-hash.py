@@ -28,6 +28,12 @@ but only for the compressors this release links. A canister synced by some other
 program that injected its own compressors matches no hash this tool computes.
 
 Usage: scripts/check-frontend-hash.py [-e ENV | -n NETWORK]   (default: -e ic)
+       scripts/check-frontend-hash.py --print [TREE]          (no canister; prints the hash)
+
+`--print` computes the hash of a tree's built `dist` and prints it, for `release.sh` to
+publish. It takes a TREE ROOT rather than a `dist` path so the pin and the directory
+always come from the same tree: pairing one release's `dist` with another's recipe pin
+would publish a number that no verifier can reproduce.
 """
 import re
 import shutil
@@ -35,26 +41,19 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _recipe_pin import pin_of_tree, self_test as pin_self_test  # noqa: E402
+
 DIST = Path("src/frontend/dist")
 REPO = "https://github.com/dfinity/certified-assets"
 # Built verifiers, one directory per release, so the path itself records the version
 # and a bumped pin can never silently reuse the previous binary.
 CACHE = Path(".cache/state-hash")
 
-RECIPE_PIN = re.compile(r'type:\s*"@dfinity/static-site@v(\d+\.\d+\.\d+)"')
 VERSION_REPLY = re.compile(
     r"major\s*=\s*(\d+)\s*:\s*nat32;\s*minor\s*=\s*(\d+)\s*:\s*nat32;\s*patch\s*=\s*(\d+)"
 )
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
-
-
-def pinned_version() -> str:
-    """The certified-assets release `icp.yaml` pins. The recipe and the canister ship
-    as a version-locked pair, so the recipe version IS the canister version."""
-    m = RECIPE_PIN.search(Path("icp.yaml").read_text())
-    if not m:
-        sys.exit("error: no `@dfinity/static-site@vX.Y.Z` recipe pin found in icp.yaml")
-    return m.group(1)
 
 
 def icp(method: str, args: str, net: list[str], *extra: str) -> str:
@@ -92,7 +91,12 @@ def verifier(version: str) -> Path:
     if not shutil.which("cargo"):
         sys.exit("error: this check builds the verifier from source and needs cargo.\n"
                  "    Install Rust (https://rustup.rs), then re-run.")
-    print(f"   building state-hash v{version} from {REPO} (once, then cached)")
+    # ⚠️ **stderr, not stdout.** `--print` writes the hash to stdout and `release.sh`
+    # captures it, so a progress line on stdout lands in the published hash file. It
+    # only shows up on a COLD cache, which is a fresh machine and the first release
+    # after a recipe bump — the runs where a release is least able to absorb it.
+    print(f"   building state-hash v{version} from {REPO} (once, then cached)",
+          file=sys.stderr)
     out = subprocess.run(
         ["cargo", "install", "--git", REPO, "--tag", f"v{version}",
          "--locked", "state-hash-cli", "--root", str(CACHE / version)],
@@ -103,19 +107,19 @@ def verifier(version: str) -> Path:
     return binary
 
 
-def local_hash(binary: Path) -> str:
-    out = subprocess.run([str(binary), str(DIST)], capture_output=True, text=True)
+def local_hash(binary: Path, dist: Path) -> str:
+    out = subprocess.run([str(binary), str(dist)], capture_output=True, text=True)
     if out.returncode != 0:
-        sys.exit(f"error: `state-hash {DIST}` failed:\n{out.stderr.strip()}")
+        sys.exit(f"error: `state-hash {dist}` failed:\n{out.stderr.strip()}")
     return out.stdout.strip()
 
 
 def _self_test() -> None:
     """⚠️ Unconditional. Three parsers stand between this check and a false result, and
-    each reads text some other tool formats: `icp.yaml`, and two shapes of `icp` output.
-    A formatting change would otherwise surface as an unexplained hash mismatch."""
-    assert RECIPE_PIN.search('      type: "@dfinity/static-site@v0.3.3"').group(1) == "0.3.3"
-    assert RECIPE_PIN.search('type: "@dfinity/motoko@v5.1.0"') is None, "matched the wrong recipe"
+    each reads text some other tool formats: `icp.yaml` (in `_recipe_pin`, whose own
+    self-test is called here), and two shapes of `icp` output. A formatting change would
+    otherwise surface as an unexplained hash mismatch."""
+    pin_self_test()
     v = VERSION_REPLY.search(
         "(record { major = 0 : nat32; minor = 3 : nat32; patch = 3 : nat32 })"
     )
@@ -128,14 +132,35 @@ def _self_test() -> None:
     assert HEX64.match(digest) and not HEX64.match(digest.upper())
 
 
+def print_only(argv: list[str]) -> int:
+    """The hash of one tree's built `dist`, and nothing else on stdout, so `release.sh`
+    can capture it. Same code path as the comparison below, so the number a release
+    publishes and the number a verifier checks cannot come from different logic."""
+    if len(argv) > 1:
+        sys.exit("usage: scripts/check-frontend-hash.py --print [TREE]")
+    tree = Path(argv[0]) if argv else Path(".")
+    dist = tree / DIST
+    if not dist.is_dir():
+        sys.exit(f"error: {dist} is missing. Build it first:\n"
+                 f"    npm --prefix {tree / 'src/frontend'} ci && "
+                 f"npm --prefix {tree / 'src/frontend'} run build")
+    h = local_hash(verifier(pin_of_tree(tree)), dist)
+    if not HEX64.match(h):
+        sys.exit(f"ABORT: state-hash printed no 64-char hex hash: {h!r}")
+    print(h)
+    return 0
+
+
 def main() -> int:
     _self_test()
+    if sys.argv[1:2] == ["--print"]:
+        return print_only(sys.argv[2:])
     net = sys.argv[1:] or ["-e", "ic"]
     if not DIST.is_dir():
         sys.exit(f"error: {DIST} is missing. Build it first:\n"
                  f"    npm --prefix src/frontend ci && npm --prefix src/frontend run build")
 
-    pinned = pinned_version()
+    pinned = pin_of_tree()
     deployed = canister_version(net)
     if deployed != pinned:
         sys.exit(f"ABORT: the canister runs certified-assets v{deployed}, icp.yaml pins "
@@ -150,7 +175,7 @@ def main() -> int:
                  "either never\n    completed a sync, or one is running now. Re-read it once "
                  "`icp deploy frontend` finishes.")
 
-    local = local_hash(verifier(pinned))
+    local = local_hash(verifier(pinned), DIST)
     if not HEX64.match(local):
         sys.exit(f"ABORT: state-hash printed no 64-char hex hash: {local!r}")
 
