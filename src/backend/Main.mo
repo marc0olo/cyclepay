@@ -27,7 +27,7 @@ import Call "mo:ic/Call";
 // `Sealed.mo` needs. Only reached through the `management` actor declaration below.
 import IC "mo:ic/Types";
 // The unwrapped vetKey's type, for the cache below. EXPERIMENTAL — see Sealed.mo.
-import G1 "mo:sealed-secrets-bls/G1";
+import G1 "mo:ic-bls12-381/G1";
 import AuditLog "AuditLog";
 import Auth "Auth";
 import Cmc "Cmc";
