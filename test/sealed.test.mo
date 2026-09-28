@@ -6,14 +6,14 @@ import Nat32 "mo:core/Nat32";
 import Nat8 "mo:core/Nat8";
 import Runtime "mo:core/Runtime";
 import Text "mo:core/Text";
-import G1 "mo:sealed-secrets-bls/G1";
-import Scalar "mo:sealed-secrets-bls/Scalar";
+import G1 "mo:ic-bls12-381/G1";
+import Scalar "mo:ic-bls12-381/Scalar";
 import Sealed "../src/backend/Sealed";
 import Secret "../src/backend/Secret";
 
 /// ⚠️ **This suite deliberately does NOT re-test the crypto.** The curve arithmetic, the
-/// pairing, hash-to-curve and the IBE/vetKey formats are covered by 102 vector tests in
-/// `vendor/icp-seeding-secrets-poc/motoko/{bls12-381,vetkeys}`, generated from the audited Rust reference and
+/// pairing, hash-to-curve and the IBE/vetKey formats are covered by 108 vector tests in
+/// `vendor/icp-seeding-secrets-poc/motoko/{bls12-381,vetkeys}`, generated from the Rust reference and
 /// run as their own gate step (`scripts/test-all.sh`). Restating them here would measure
 /// the same thing twice and grow the impression of coverage without adding any.
 ///

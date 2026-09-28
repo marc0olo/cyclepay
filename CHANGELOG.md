@@ -24,6 +24,13 @@ notes now carry the number that tag produces and the certified-assets release it
 computed under. `release.sh` builds the frontend from the ref in a worktree rather than
 from the working tree, the way the backend is already built from a `git archive` of it.
 
+**The pinned BLS12-381 port is faster and renamed.** `vendor/icp-seeding-secrets-poc` moves
+to a version whose field arithmetic uses Barrett reduction and shift-based bit access, so
+decrypting a sealed secret costs about 3.1 billion instructions rather than 5.4. The
+package is now `ic-bls12-381`. Behaviour is unchanged: the same 102 reference vectors pass,
+alongside 6 new ones, and the interface and stable shape are untouched. The backend module
+hash changes.
+
 ## 0.1.0-beta.1
 
 First tagged release. The gateway was already running on mainnet in **simulation mode**,

@@ -18,13 +18,13 @@ ic = "4.2.0"
 # REGISTRY name and fails with `Package '...@vendor/icp-seeding-secrets-poc/...' not found`, which
 # reads like a missing package rather than a malformed path. Measured.
 #
-# ⚠️ **EXPERIMENTAL, UNAUDITED.** No published Motoko package has BLS12-381, so
-# there is nothing to depend on instead. What this code does and does not carry
-# is `docs/DESIGN.md` §7.3: it DECRYPTS, and the encrypting is done by the
-# audited `@icp-sdk/vetkeys`, so a bug here fails provisioning closed rather
-# than weakening a ciphertext already on the wire. Delete both when
-# `mo:ic-vetkeys` ships the curve.
-sealed-secrets-bls = "./vendor/icp-seeding-secrets-poc/motoko/bls12-381"
+# ⚠️ **EXPERIMENTAL, UNAUDITED.** `mo:ic-vetkeys` has no BLS12-381, and the one
+# on mops (ICDevs' `bls12-381`) is not tested against `ic_bls12_381`'s vectors.
+# What this code does and does not carry is `docs/DESIGN.md` §7.3: it DECRYPTS,
+# and the encrypting is done client-side by `@icp-sdk/vetkeys`, so a bug here
+# fails provisioning closed rather than weakening a ciphertext already on the
+# wire. Delete both when `mo:ic-vetkeys` ships the curve.
+ic-bls12-381 = "./vendor/icp-seeding-secrets-poc/motoko/bls12-381"
 sealed-secrets-vetkeys = "./vendor/icp-seeding-secrets-poc/motoko/vetkeys"
 # SHAKE256 and the field-tower hashing the two packages above need.
 sha3 = "0.1.1"

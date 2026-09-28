@@ -12,9 +12,10 @@
  * That split is why this file never talks to a network: if it could fetch the public key,
  * whoever answered could substitute one they hold.
  *
- * ⚠️ **The encryption here is the audited half.** `@icp-sdk/vetkeys` is DFINITY's own
- * library. The canister's decryption runs on an experimental BLS12-381 port — see
- * `docs/DESIGN.md` §7.3 for why that asymmetry is what makes the arrangement acceptable.
+ * ⚠️ **The encryption here is the stronger half.** `@icp-sdk/vetkeys` is DFINITY's own
+ * library, on the independently audited `@noble/curves`. The canister's decryption runs on
+ * an experimental BLS12-381 port — see `docs/DESIGN.md` §7.3 for why that asymmetry is what
+ * makes the arrangement acceptable.
  */
 import { writeFileSync } from "node:fs";
 import { Principal } from "@icp-sdk/core/principal";

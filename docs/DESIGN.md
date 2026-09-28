@@ -518,37 +518,47 @@ first webhook. `Secret.set`'s length floor then applies to the decrypted value, 
 envelope.
 
 ⚠️ **The decrypting code is EXPERIMENTAL and UNAUDITED, and the reason that is acceptable
-here is an asymmetry — not a judgement that the code is fine.** No published Motoko package
-implements BLS12-381, so `vendor/icp-seeding-secrets-poc` (a git submodule, pinned by
-commit) supplies it. The division of labour is what matters:
+here is an asymmetry — not a judgement that the code is fine.** `mo:ic-vetkeys` has no
+BLS12-381, so `vendor/icp-seeding-secrets-poc` (a git submodule, pinned by commit) supplies
+the curve as `ic-bls12-381` and the vetKD layer on it. ICDevs' `bls12-381` on mops is a
+separate implementation of the same curve that nobody has run against `ic_bls12_381`'s
+vectors, so it is not a drop-in replacement. The division of labour is what matters:
 
 | step | performed by | audited |
 |---|---|---|
-| derive the public key | `@icp-sdk/vetkeys` (client) | yes — DFINITY's own |
-| **encrypt the secret** | `@icp-sdk/vetkeys` (client) | yes |
+| derive the public key | `@icp-sdk/vetkeys` (client) | its curve, `@noble/curves`, is |
+| **encrypt the secret** | `@icp-sdk/vetkeys` (client) | its curve, `@noble/curves`, is |
 | decrypt in-canister | the pinned Motoko port | **no** |
 
-The secret's confidentiality *in transit* rests entirely on the ciphertext, which audited
-code produced, and on the vetKD protocol. The unaudited half only **opens** that ciphertext,
-after it has already crossed the boundary node safely — so a bug there fails provisioning
-closed (an error, nothing stored) rather than weakening anything in flight. Set against the
-alternative it replaced, a live `rk_...` in an ingress argument, this cannot be worse.
+`@icp-sdk/vetkeys` is DFINITY's own library and makes no audit claim of its own; the
+BLS12-381 and hash-to-curve it builds on come from `@noble/curves`, which Cure53 audited in
+2024 with both in scope. The secret's confidentiality *in transit* rests entirely on the
+ciphertext, which that client code produced, and on the vetKD protocol. The unaudited half
+only **opens** that ciphertext, after it has already crossed the boundary node safely — so
+a bug there fails provisioning closed (an error, nothing stored) rather than weakening
+anything in flight. Set against the alternative it replaced, a live `rk_...` in an ingress
+argument, this cannot be worse.
 
-⚠️ **Two limits of that argument, stated because an asymmetry is easy to over-claim.**
+⚠️ **Three limits of that argument, stated because an asymmetry is easy to over-claim.**
 First, `VetKey.decryptAndVerify`'s verification step *is* security-relevant: if it were
 vacuous, a forged vetKD reply would be accepted — though only the subnet serving the key
 could forge one, and it can read canister memory regardless, so it is not new exposure.
 Second, the argument is architectural; nobody here has reviewed the field arithmetic. What
-stands in for that is `scripts/check-crypto-vectors.sh`, which runs the port's 102 vectors
-— generated from the audited Rust implementations — in this project's gate under this
-project's toolchain. That is not an audit and does not pretend to be.
+stands in for that is `scripts/check-crypto-vectors.sh`, which runs the port's 108 vectors
+— generated from `ic_bls12_381` and `ic-vetkeys`, DFINITY's Rust implementations, which are
+themselves unaudited — in this project's gate under this project's toolchain. That is not an
+audit and does not pretend to be. Third, the port's point decompression does not check
+membership of the prime-order subgroup, which `ic_bls12_381` does. Every point it
+decompresses here comes from a controller (the ciphertext — both provisioning endpoints are
+`requireController`) or from the subnet (the vetKD reply and public key), and both can
+already read canister memory, so the gap admits no one new.
 
 ⚠️ **The acceptance is DECIDED, and it is conditional on a check — not on the argument
 above.** Unaudited crypto on this path was accepted for this repository by its owner. What
 makes that safe to have decided is not the asymmetry, which is reasoning, but
-`scripts/check-crypto-vectors.sh`: 102 vectors from the audited Rust implementations, run
-in this project's gate under **this project's** toolchain pins. Upstream is a frozen proof
-of concept and our `moc` moves, so that combination is tested nowhere else.
+`scripts/check-crypto-vectors.sh`: 108 vectors from the Rust reference, run in this
+project's gate under **this project's** toolchain pins. Upstream pins its own `moc` and ours
+moves independently, so that combination is tested nowhere else.
 
 **So the check is load-bearing for the decision, and the failure mode is silent.** If it is
 ever deleted, or starts skipping, or stops collecting vectors, the acceptance rests on
@@ -559,7 +569,8 @@ endpoint-doc inversion below): if a bump makes the vendored packages fail to com
 tempting fix is to skip their suites and move on, which quietly removes the only thing
 standing behind this section.
 
-**Deletion criterion:** when `mo:ic-vetkeys` ships BLS12-381, the submodule and both path
+**Deletion criterion:** when `mo:ic-vetkeys` ships BLS12-381 — or a published curve is shown
+to agree with `ic_bls12_381` on the port's vectors — the submodule and both path
 dependencies go, and this section becomes a note about what used to be here.
 
 ## §8 — Verifiability

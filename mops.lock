@@ -1,13 +1,13 @@
 {
   "version": 3,
-  "mopsTomlDepsHash": "c4ee1d73153a398567b6ab37788ac783d497dc9a3bb241271293b8b1559c294d",
-  "localDepsHash": "f4bb69c4f016aec249f958fd79291fe4d89d20419f43e1dfc1d6e034e970c003",
+  "mopsTomlDepsHash": "7a063cb98749a977b63b09f87b878ee464f6aecd603d875033450d491f5efd5e",
+  "localDepsHash": "b9761d43453b62517a2c0779f580818788ee682a07464d5261d9f447dafa2f2e",
   "deps": {
     "base": "0.14.5",
     "core": "2.6.1",
     "ic": "4.2.0",
+    "ic-bls12-381": "./vendor/icp-seeding-secrets-poc/motoko/bls12-381",
     "iterext": "https://github.com/timohanke/motoko-iterext#v2.0.0",
-    "sealed-secrets-bls": "./vendor/icp-seeding-secrets-poc/motoko/bls12-381",
     "sealed-secrets-vetkeys": "./vendor/icp-seeding-secrets-poc/motoko/vetkeys",
     "sha2": "0.2.5",
     "sha3": "0.1.1",

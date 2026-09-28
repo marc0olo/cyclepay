@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# The pinned BLS12-381 and vetKD packages match the audited Rust reference, under OUR
-# toolchain.
+# The pinned BLS12-381 and vetKD packages match the Rust reference, under OUR toolchain.
 #
 # `src/backend/Sealed.mo` decrypts the Stripe secrets with an EXPERIMENTAL, UNAUDITED
-# BLS12-381 port, pinned as a git submodule at `vendor/icp-seeding-secrets-poc`. No
-# published Motoko package has the curve, so there is nothing to depend on instead. Its
-# vectors were generated from `ic_bls12_381` and `ic-vetkeys` — the audited Rust
-# implementations — so what they assert is not this port's arithmetic restated but values
-# a reviewed implementation produced.
+# BLS12-381 port, pinned as a git submodule at `vendor/icp-seeding-secrets-poc`, because
+# `mo:ic-vetkeys` has no curve. Its vectors were generated from `ic_bls12_381` and
+# `ic-vetkeys` — DFINITY's Rust implementations, themselves unaudited — so what they
+# assert is not this port's arithmetic restated but values an independent implementation
+# produced.
 #
 # **Why run them here when the source repository already does.** Two reasons, and the
 # second is the one that matters:
@@ -17,8 +16,8 @@
 #   2. The upstream run proves the vectors under **that repository's** toolchain pins, not
 #      ours. **They HAVE now diverged** — upstream is pinned to moc 1.15.1 and this
 #      project moved to 1.16.0 — which is why the run below rewrites the pin instead of
-#      testing in place. Upstream is a frozen proof of concept; this project's compiler
-#      moves, so the combination actually shipped here is tested nowhere else.
+#      testing in place. Upstream pins its own compiler and this project's moves
+#      independently, so the combination actually shipped here is tested nowhere else.
 #
 # It is also what makes a submodule work at all: `mops` cannot address a package inside a
 # repository subdirectory — measured, it silently DISCARDS the subdirectory and installs
@@ -36,7 +35,7 @@
 # reference on the vectors it ships. They are not an audit, they do not cover inputs the
 # generator never produced, and passing here is not a statement that the implementation is
 # constant-time or side-channel free. `docs/DESIGN.md` §7.3 carries the argument for why
-# that is acceptable on THIS path — the audited `@icp-sdk/vetkeys` does the encrypting, so
+# that is acceptable on THIS path — the client-side `@icp-sdk/vetkeys` does the encrypting, so
 # a bug here fails provisioning closed rather than weakening a ciphertext in flight.
 set -Eeuo pipefail
 cd "$(dirname "$0")/.."
@@ -90,7 +89,7 @@ OURS="$(sed -nE 's/^moc = "([^"]+)"/\1/p' mops.toml | head -1)"
 # copy of someone else's tests.
 #
 # ⚠️ **Both packages must be SIBLINGS in one root.** `vetkeys` declares
-# `sealed-secrets-bls = "../bls12-381"`, a path relative to its own directory — a
+# `ic-bls12-381 = "../bls12-381"`, a path relative to its own directory — a
 # per-package root gives `package error [M0012], file "../bls12-381" does not exist`, and
 # only for the second package, so it fails in a way that reads as package-specific.
 WORK="$(mktemp -d)"
@@ -153,7 +152,7 @@ for pkg in bls12-381 vetkeys; do
 done
 
 # A floor, not an exact count, so adding vectors upstream does not fail the gate — but
-# losing most of them does. 102 at the pinned commit.
+# losing most of them does. 108 at the pinned commit.
 #
 # ⚠️ One variable, used by both the test and the message. Written as two literals, raising
 # the floor left the failure text quoting the OLD number — caught by mutating it.

@@ -14,7 +14,7 @@
 /// confidentiality layer is the confidential subnet, not this module.
 ///
 /// **What the unaudited dependency can and cannot cost us — `docs/DESIGN.md` §7.3.**
-/// The encrypting is done by the audited `@icp-sdk/vetkeys`; this side only DECRYPTS. So a
+/// The encrypting is done client-side by `@icp-sdk/vetkeys`; this side only DECRYPTS. So a
 /// bug here fails provisioning closed — the operator gets an error and no secret is stored
 /// — rather than weakening a ciphertext that is already on the wire. That asymmetry is why
 /// an experimental BLS12-381 is acceptable on this path and would not be on a path where a
@@ -31,9 +31,9 @@ import Blob "mo:core/Blob";
 import Nat32 "mo:core/Nat32";
 import Result "mo:core/Result";
 import Text "mo:core/Text";
-import G1 "mo:sealed-secrets-bls/G1";
-import G2 "mo:sealed-secrets-bls/G2";
-import Scalar "mo:sealed-secrets-bls/Scalar";
+import G1 "mo:ic-bls12-381/G1";
+import G2 "mo:ic-bls12-381/G2";
+import Scalar "mo:ic-bls12-381/Scalar";
 import Ibe "mo:sealed-secrets-vetkeys/Ibe";
 import VetKey "mo:sealed-secrets-vetkeys/VetKey";
 
